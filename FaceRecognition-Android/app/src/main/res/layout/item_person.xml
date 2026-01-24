@@ -11,14 +11,14 @@
         android:layout_marginBottom="4dp"
         android:layout_marginLeft="16dp"
         android:layout_marginRight="16dp"
-        app:cardCornerRadius = "16dp"
+        app:cardCornerRadius = "24dp"
         app:cardBackgroundColor="@android:color/transparent"
-        app:cardElevation="0dp">
+        app:cardElevation="4dp">
 
         <RelativeLayout
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:background="@drawable/glass_panel">
+            android:background="@drawable/bg_card">
 
             <androidx.cardview.widget.CardView
                 android:id="@+id/cardFace"

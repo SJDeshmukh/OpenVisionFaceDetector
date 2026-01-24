@@ -5,7 +5,6 @@ import {
   Filter, 
   Download,
   Calendar,
-  Clock,
   MapPin,
   User,
   ChevronDown,
@@ -101,26 +100,23 @@ const Attendance = () => {
     return { label: 'Late', color: 'bg-amber-100 text-amber-700' };
   };
 
-  // Real timeline data derived from actual logs
-  const getTimeline = (currentLog) => {
-    // Helper to parse timestamp as UTC
-    const parseTime = (ts) => new Date(ts.endsWith('Z') ? ts : ts + 'Z');
+  // Group logs by name
+  const groupedLogs = logs.reduce((acc, log) => {
+    if (!acc[log.name]) {
+      acc[log.name] = [];
+    }
+    acc[log.name].push(log);
+    return acc;
+  }, {});
 
-    // Filter all logs for the same person on the same day (in local time)
-    const logDate = parseTime(currentLog.timestamp).toDateString();
-    
-    return logs
-      .filter(log => 
-        log.name === currentLog.name && 
-        parseTime(log.timestamp).toDateString() === logDate
-      )
-      .sort((a, b) => parseTime(a.timestamp) - parseTime(b.timestamp))
-      .map(log => ({
-        time: parseTime(log.timestamp).toLocaleTimeString(),
-        event: log.status === 'CHECK_IN' ? 'Check In' : 'Check Out',
-        location: 'Main Entrance'
-      }));
-  };
+  // Convert to array and sort by latest timestamp
+  const sortedGroups = Object.entries(groupedLogs)
+    .map(([name, userLogs]) => ({
+      name,
+      logs: userLogs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)), // Descending
+      latestLog: userLogs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0]
+    }))
+    .sort((a, b) => new Date(b.latestLog.timestamp) - new Date(a.latestLog.timestamp));
 
   return (
     <div className="space-y-6">
@@ -245,10 +241,11 @@ const Attendance = () => {
           <tbody className="divide-y divide-slate-100">
             {loading ? (
               <tr><td colSpan="7" className="p-8 text-center text-slate-500">Loading logs...</td></tr>
-            ) : logs.length === 0 ? (
+            ) : sortedGroups.length === 0 ? (
               <tr><td colSpan="7" className="p-8 text-center text-slate-500">No attendance records found.</td></tr>
             ) : (
-              logs.map((log, idx) => {
+              sortedGroups.map((group, idx) => {
+                const log = group.latestLog; // Show latest log in summary
                 const status = getStatus(log.timestamp);
                 const isExpanded = expandedRow === idx;
                 
@@ -278,15 +275,13 @@ const Attendance = () => {
                               <User size={20} />
                             </div>
                           )}
-                          <span className="font-medium text-slate-900">{log.name}</span>
+                          <div>
+                             <span className="font-medium text-slate-900 block">{log.name}</span>
+                             <span className="text-xs text-slate-500">{group.logs.length} Records</span>
+                          </div>
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
-                        {/* Treat timestamp as UTC if it looks naive, or just let browser handle it.
-                            If server sends "2026-01-24 10:00:00", browser sees it as local.
-                            If user is in same timezone as server, it's fine.
-                            If user is ahead (IST vs UTC), 10:00 UTC becomes 10:00 IST (wrong).
-                            We can force it to be treated as UTC by appending 'Z' if missing. */}
                         {new Date(log.timestamp.endsWith('Z') ? log.timestamp : log.timestamp + 'Z').toLocaleDateString()}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-slate-700">
@@ -314,40 +309,48 @@ const Attendance = () => {
                     </tr>
                     {isExpanded && (
                       <tr className="bg-slate-50/50">
-                        <td colSpan="8" className="px-6 py-4 pl-20">
-                          <div className="flex gap-6">
-                             {/* Captured Frame */}
-                             <div className="flex flex-col gap-2">
-                                <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Captured Frame</h4>
-                                {log.captured_image ? (
-                                  <img 
-                                    src={log.captured_image.startsWith('data:') ? log.captured_image : `data:image/jpeg;base64,${log.captured_image}`} 
-                                    alt="Captured Event" 
-                                    className="h-32 w-32 rounded-lg object-cover border border-slate-200 shadow-sm"
-                                  />
-                                ) : (
-                                  <div className="h-32 w-32 rounded-lg bg-slate-100 flex items-center justify-center text-slate-400 border border-slate-200">
-                                    <span className="text-xs">No Image</span>
-                                  </div>
-                                )}
-                             </div>
-
-                             {/* Timeline */}
-                             <div className="flex-1 space-y-4">
-                                <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Day Timeline</h4>
-                                <div className="relative border-l-2 border-slate-200 ml-2 space-y-6 pb-2">
-                                  {getTimeline(log).map((event, i) => (
-                                    <div key={i} className="relative pl-6">
-                                      <div className="absolute -left-[9px] top-0 w-4 h-4 rounded-full bg-white border-2 border-blue-500"></div>
-                                      <p className="text-sm font-semibold text-slate-800">{event.event}</p>
-                                      <p className="text-xs text-slate-500 flex items-center mt-1">
-                                        <Clock size={12} className="mr-1" />
-                                        {event.time}
-                                      </p>
-                                    </div>
-                                  ))}
-                                </div>
-                             </div>
+                        <td colSpan="7" className="px-6 py-4 pl-12">
+                          <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
+                             <table className="w-full text-left">
+                                <thead className="bg-slate-50 border-b border-slate-100">
+                                   <tr>
+                                      <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Image</th>
+                                      <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Time</th>
+                                      <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Date</th>
+                                      <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Status</th>
+                                   </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-50">
+                                   {group.logs.map((historyLog, hIdx) => (
+                                      <tr key={hIdx} className="hover:bg-slate-50">
+                                         <td className="px-4 py-2">
+                                            {historyLog.captured_image ? (
+                                              <img 
+                                                src={historyLog.captured_image.startsWith('data:') ? historyLog.captured_image : `data:image/jpeg;base64,${historyLog.captured_image}`} 
+                                                alt="Thumb" 
+                                                className="h-12 w-12 rounded-md object-cover border border-slate-200"
+                                              />
+                                            ) : (
+                                              <div className="h-12 w-12 rounded-md bg-slate-100 flex items-center justify-center text-slate-400">
+                                                <User size={16} />
+                                              </div>
+                                            )}
+                                         </td>
+                                         <td className="px-4 py-2 text-sm font-mono text-slate-700">
+                                            {new Date(historyLog.timestamp.endsWith('Z') ? historyLog.timestamp : historyLog.timestamp + 'Z').toLocaleTimeString()}
+                                         </td>
+                                         <td className="px-4 py-2 text-sm text-slate-600">
+                                            {new Date(historyLog.timestamp.endsWith('Z') ? historyLog.timestamp : historyLog.timestamp + 'Z').toLocaleDateString()}
+                                         </td>
+                                         <td className="px-4 py-2">
+                                            <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${getStatus(historyLog.timestamp).color}`}>
+                                               {historyLog.status === 'CHECK_IN' ? 'Check In' : 'Check Out'}
+                                            </span>
+                                         </td>
+                                      </tr>
+                                   ))}
+                                </tbody>
+                             </table>
                           </div>
                         </td>
                       </tr>
