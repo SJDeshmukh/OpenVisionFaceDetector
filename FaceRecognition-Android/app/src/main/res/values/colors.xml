@@ -1,19 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Brand Colors - Crisp Enterprise Theme -->
-    <color name="primary_soft_blue">#2563EB</color> <!-- Stronger Tech Blue -->
-    <color name="primary_sky_blue">#EFF6FF</color>
+    <!-- Brand Colors - VisionX Soft Theme -->
+    <color name="primary_soft_blue">#6C63FF</color> <!-- Soft Violet -->
+    <color name="primary_sky_blue">#E0E7FF</color> <!-- Very Light Violet -->
     
-    <color name="secondary_mint_green">#10B981</color> <!-- Vivid Emerald -->
-    <color name="secondary_lavender">#F3F4F6</color>
+    <color name="secondary_mint_green">#00BFA5</color> <!-- Soft Teal -->
+    <color name="secondary_lavender">#F3E8FF</color> <!-- Light Lavender -->
     
     <!-- Backgrounds -->
-    <color name="background_off_white">#F9FAFB</color> <!-- Clean Gray-White -->
+    <color name="background_off_white">#F0F4F8</color> <!-- Soft Blue-Gray -->
     <color name="background_card">#FFFFFF</color>
     
     <!-- Text -->
-    <color name="text_primary">#111827</color> <!-- Deep Black/Blue -->
-    <color name="text_secondary">#4B5563</color> <!-- Cool Gray -->
+    <color name="text_primary">#2D3748</color> <!-- Soft Dark Blue-Gray -->
+    <color name="text_secondary">#718096</color> <!-- Soft Gray -->
     <color name="text_hint">#9CA3AF</color>
     
     <!-- UI Elements -->
