@@ -279,10 +279,15 @@ const Attendance = () => {
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
-                        {new Date(log.timestamp).toLocaleDateString()}
+                        {/* Treat timestamp as UTC if it looks naive, or just let browser handle it.
+                            If server sends "2026-01-24 10:00:00", browser sees it as local.
+                            If user is in same timezone as server, it's fine.
+                            If user is ahead (IST vs UTC), 10:00 UTC becomes 10:00 IST (wrong).
+                            We can force it to be treated as UTC by appending 'Z' if missing. */}
+                        {new Date(log.timestamp.endsWith('Z') ? log.timestamp : log.timestamp + 'Z').toLocaleDateString()}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-slate-700">
-                        {new Date(log.timestamp).toLocaleTimeString()}
+                        {new Date(log.timestamp.endsWith('Z') ? log.timestamp : log.timestamp + 'Z').toLocaleTimeString()}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
                         <div className="flex items-center space-x-1">
