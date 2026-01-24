@@ -6,7 +6,7 @@ services:
     buildCommand: cd backend && pip install -r requirements.txt
     startCommand: cd backend && gunicorn app:app
     plan: free
-    autoDeploy: false
+    autoDeploy: true
 
   - type: web
     name: face-detection-frontend
