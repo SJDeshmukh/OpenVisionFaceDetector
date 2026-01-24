@@ -83,6 +83,10 @@ const Login = () => {
           Default Admin: admin / admin123
           <br/>
           Kiosk User: kiosk / kiosk123
+          <br/>
+          <span className="text-[10px] text-slate-400 mt-2 block">
+            API: {import.meta.env.VITE_BACKEND_URL ? 'Env' : 'Fallback'}
+          </span>
         </div>
       </div>
     </div>
