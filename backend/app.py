@@ -11,8 +11,13 @@ CORS(app)  # Enable CORS for Web Dashboard
 
 # --- Web Dashboard ---
 @app.route("/")
-def dashboard():
-    return render_template("dashboard.html")
+def home():
+    return jsonify({
+        "status": "online",
+        "service": "Face Detection Backend API",
+        "version": "1.0.0",
+        "message": "Please use the Frontend Application to access the dashboard."
+    })
 
 # --- Database Setup ---
 def init_db():
