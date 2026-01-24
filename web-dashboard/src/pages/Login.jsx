@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { Shield, Lock, User } from 'lucide-react';
 
+import { API_URL } from '../config';
+
 const Login = () => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -84,8 +86,8 @@ const Login = () => {
           <br/>
           Kiosk User: kiosk / kiosk123
           <br/>
-          <span className="text-[10px] text-slate-400 mt-2 block">
-            API: {import.meta.env.VITE_BACKEND_URL ? 'Env' : 'Fallback'}
+          <span className="text-[10px] text-slate-400 mt-2 block break-all">
+            Connecting to: {API_URL}
           </span>
         </div>
       </div>

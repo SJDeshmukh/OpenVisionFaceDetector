@@ -17,9 +17,3 @@ services:
       - type: rewrite
         source: /**
         destination: /index.html
-    envVars:
-      - key: VITE_BACKEND_URL
-        fromService:
-          type: web
-          name: face-detection-backend
-          property: host
