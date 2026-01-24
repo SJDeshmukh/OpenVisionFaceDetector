@@ -16,7 +16,7 @@ public class DBManager extends SQLiteOpenHelper {
     public static ArrayList<Person> personList = new ArrayList<Person>();
 
     public DBManager(Context context) {
-        super(context, "mydb" , null, 2);
+        super(context, "mydb" , null, 3);
     }
 
     @Override
@@ -24,7 +24,7 @@ public class DBManager extends SQLiteOpenHelper {
         // TODO Auto-generated method stub
         db.execSQL(
                 "create table person " +
-                        "(name text, face blob, templates blob, phone text, department text, designation text)"
+                        "(name text, face blob, templates blob, phone text, department text, designation text, synced integer default 1)"
         );
     }
 
@@ -35,7 +35,18 @@ public class DBManager extends SQLiteOpenHelper {
         onCreate(db);
     }
 
-    public void insertPerson (String name, Bitmap face, byte[] templates, String phone, String department, String designation) {
+    public void insertPerson (String name, Bitmap face, byte[] templates, String phone, String department, String designation, boolean synced) {
+
+        // Check if person already exists
+        boolean exists = false;
+        for (int i = 0; i < personList.size(); i++) {
+            if (personList.get(i).name.equals(name)) {
+                exists = true;
+                // Remove from memory to replace later
+                personList.remove(i);
+                break;
+            }
+        }
 
         ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
         face.compress(Bitmap.CompressFormat.PNG, 100, byteArrayOutputStream);
@@ -49,14 +60,61 @@ public class DBManager extends SQLiteOpenHelper {
         contentValues.put("phone", phone);
         contentValues.put("department", department);
         contentValues.put("designation", designation);
-        db.insert("person", null, contentValues);
+        contentValues.put("synced", synced ? 1 : 0);
 
-        personList.add(new Person(name, face, templates, phone, department, designation));
+        if (exists) {
+            db.update("person", contentValues, "name = ?", new String[]{name});
+        } else {
+            db.insert("person", null, contentValues);
+        }
+
+        Person p = new Person(name, face, templates, phone, department, designation);
+        p.synced = synced;
+        personList.add(p);
+    }
+    
+    // Overload for backward compatibility (defaults to synced=true)
+    public void insertPerson (String name, Bitmap face, byte[] templates, String phone, String department, String designation) {
+        insertPerson(name, face, templates, phone, department, designation, true);
+    }
+
+    public void updatePersonStatus(String name, boolean synced) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues contentValues = new ContentValues();
+        contentValues.put("synced", synced ? 1 : 0);
+        db.update("person", contentValues, "name = ?", new String[]{name});
+        
+        for (Person p : personList) {
+            if (p.name.equals(name)) {
+                p.synced = synced;
+                break;
+            }
+        }
+    }
+
+    public void updatePerson(String name, String phone, String department, String designation) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues contentValues = new ContentValues();
+        contentValues.put("phone", phone);
+        contentValues.put("department", department);
+        contentValues.put("designation", designation);
+
+        db.update("person", contentValues, "name = ?", new String[]{name});
+
+        // Update in-memory list
+        for (Person p : personList) {
+            if (p.name.equals(name)) {
+                p.phone = phone;
+                p.department = department;
+                p.designation = designation;
+                break;
+            }
+        }
     }
 
     public Integer deletePerson (String name) {
         for(int i = 0; i < personList.size(); i ++) {
-            if(personList.get(i).name == name) {
+            if(personList.get(i).name.equals(name)) {
                 personList.remove(i);
                 i --;
             }
@@ -101,14 +159,38 @@ public class DBManager extends SQLiteOpenHelper {
             
             int desigIdx = res.getColumnIndex("designation");
             if (desigIdx != -1) designation = res.getString(desigIdx);
+            
+            boolean synced = true;
+            int syncedIdx = res.getColumnIndex("synced");
+            if (syncedIdx != -1) synced = res.getInt(syncedIdx) == 1;
 
             Bitmap face = BitmapFactory.decodeByteArray(faceJpg, 0, faceJpg.length);
 
             Person person = new Person(name, face, templates, phone, department, designation);
-            personList.add(person);
+            person.synced = synced;
+            
+            // Deduplicate: If name exists, replace it (keep latest)
+            boolean found = false;
+            for (int i = 0; i < personList.size(); i++) {
+                if (personList.get(i).name.equals(name)) {
+                    personList.set(i, person);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                personList.add(person);
+            }
 
             res.moveToNext();
         }
         res.close();
+    }
+
+    public boolean personExists(String name) {
+        for (Person p : personList) {
+            if (p.name.equals(name)) return true;
+        }
+        return false;
     }
 }
