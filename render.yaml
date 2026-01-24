@@ -8,9 +8,9 @@ services:
     plan: free
     autoDeploy: false
 
-  - type: static
+  - type: web
     name: face-detection-frontend
-    region: ohio
+    env: static
     buildCommand: cd web-dashboard && npm install && npm run build
     staticPublishPath: web-dashboard/dist
     envVars:
