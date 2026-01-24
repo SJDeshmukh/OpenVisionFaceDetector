@@ -20,6 +20,7 @@ const People = () => {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
   const [formData, setFormData] = useState({ 
     name: '', 
     phone: '', 
@@ -53,6 +54,48 @@ const People = () => {
         setFormData({ ...formData, photo: reader.result, photoPreview: reader.result });
       };
       reader.readAsDataURL(file);
+    }
+  };
+
+  const openAddModal = () => {
+    setIsEditing(false);
+    setFormData({ 
+      name: '', 
+      phone: '', 
+      department: '', 
+      designation: '', 
+      photo: null, 
+      photoPreview: null 
+    });
+    setIsModalOpen(true);
+  };
+
+  const handleEdit = (user) => {
+    setIsEditing(true);
+    setFormData({
+      name: user.name,
+      phone: user.phone || '',
+      department: user.department || '',
+      designation: user.designation || '',
+      photo: user.face_image,
+      photoPreview: user.face_image && user.face_image.startsWith('data:') 
+        ? user.face_image 
+        : `data:image/jpeg;base64,${user.face_image}`
+    });
+    setIsModalOpen(true);
+  };
+
+  const handleDelete = async (name) => {
+    if (window.confirm(`Are you sure you want to delete ${name}?`)) {
+      try {
+        const response = await axios.delete(`${API_URL}/sync/delete/${name}`);
+        if (response.data.status === 'success') {
+          fetchUsers();
+        }
+      } catch (error) {
+        console.error("Error deleting user:", error);
+        alert("Failed to delete user");
+      }
     }
   };
 
@@ -92,14 +135,6 @@ const People = () => {
     }
   };
 
-  const getStatusColor = (status) => {
-    switch (status) {
-      case 'Active': return 'bg-green-100 text-green-700';
-      case 'Disabled': return 'bg-red-100 text-red-700';
-      default: return 'bg-slate-100 text-slate-700';
-    }
-  };
-
   const getQualityColor = (quality) => {
     switch (quality) {
       case 'Good': return 'text-green-600';
@@ -117,7 +152,6 @@ const People = () => {
     department: u.department || 'Unassigned',
     designation: u.designation || 'Employee',
     phone: u.phone || 'N/A',
-    status: i % 10 === 0 ? 'Disabled' : 'Active',
     quality: ['Good', 'Good', 'Average'][i % 3],
     lastActive: '2 mins ago'
   }));
@@ -135,7 +169,7 @@ const People = () => {
             <span>Import</span>
           </button>
           <button 
-            onClick={() => setIsModalOpen(true)}
+            onClick={openAddModal}
             className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium transition-colors shadow-sm">
             <Plus size={18} />
             <span>Add Employee</span>
@@ -174,7 +208,6 @@ const People = () => {
                 <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Employee</th>
                 <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">ID</th>
                 <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Department</th>
-                <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Status</th>
                 <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Face Quality</th>
                 <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Actions</th>
               </tr>
@@ -218,12 +251,6 @@ const People = () => {
                         {user.department}
                       </span>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(user.status)}`}>
-                        <span className={`w-1.5 h-1.5 rounded-full mr-1.5 ${user.status === 'Active' ? 'bg-green-500' : 'bg-red-500'}`}></span>
-                        {user.status}
-                      </span>
-                    </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm">
                       <div className="flex items-center space-x-1">
                         <div className={`w-2 h-2 rounded-full ${user.quality === 'Good' ? 'bg-green-500' : user.quality === 'Average' ? 'bg-amber-500' : 'bg-red-500'}`}></div>
@@ -232,10 +259,14 @@ const People = () => {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                       <div className="flex justify-end space-x-2">
-                        <button className="p-1 text-slate-400 hover:text-blue-600 transition-colors">
+                        <button 
+                          onClick={() => handleEdit(user)}
+                          className="p-1 text-slate-400 hover:text-blue-600 transition-colors">
                           <Edit2 size={16} />
                         </button>
-                        <button className="p-1 text-slate-400 hover:text-red-600 transition-colors">
+                        <button 
+                          onClick={() => handleDelete(user.name)}
+                          className="p-1 text-slate-400 hover:text-red-600 transition-colors">
                           <Trash2 size={16} />
                         </button>
                         <button className="p-1 text-slate-400 hover:text-slate-600 transition-colors">
@@ -267,7 +298,7 @@ const People = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
             <div className="flex justify-between items-center p-6 border-b border-slate-100">
-              <h2 className="text-xl font-bold text-slate-800">Add New Employee</h2>
+              <h2 className="text-xl font-bold text-slate-800">{isEditing ? 'Edit Employee' : 'Add New Employee'}</h2>
               <button onClick={() => setIsModalOpen(false)} className="text-slate-400 hover:text-slate-600">
                 <X size={24} />
               </button>
@@ -305,8 +336,9 @@ const People = () => {
                     value={formData.name}
                     onChange={(e) => setFormData({...formData, name: e.target.value})}
                     placeholder="e.g. John Doe"
-                    className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                    className={`w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 ${isEditing ? 'opacity-50 cursor-not-allowed' : ''}`}
                     required
+                    readOnly={isEditing}
                   />
                 </div>
               </div>
@@ -358,7 +390,7 @@ const People = () => {
                   disabled={submitting || !formData.name || !formData.photo}
                   className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {submitting ? 'Registering...' : 'Register Employee'}
+                  {submitting ? 'Saving...' : (isEditing ? 'Save Changes' : 'Register Employee')}
                 </button>
               </div>
             </form>
