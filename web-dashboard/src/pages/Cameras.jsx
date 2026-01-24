@@ -22,7 +22,7 @@ const Cameras = () => {
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
-        const response = await fetch('http://localhost:5001/api/stream/view');
+        const response = await fetch(`${API_URL}/stream/view`);
         const data = await response.json();
         
         if (data.status === 'online' && data.image) {

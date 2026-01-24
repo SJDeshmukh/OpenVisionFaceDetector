@@ -14,8 +14,7 @@ import {
   Building2
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-
-const API_URL = 'http://127.0.0.1:5001/api';
+import { API_URL } from '../config';
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const ACTIVITY_TYPES = ['Work', 'Meal', 'Break', 'Custom'];

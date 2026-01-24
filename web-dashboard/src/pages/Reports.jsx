@@ -22,8 +22,7 @@ import {
   Cell,
   Legend
 } from 'recharts';
-
-const API_URL = 'http://127.0.0.1:5001/api';
+import { API_URL } from '../config';
 
 const COLORS = ['#22c55e', '#f59e0b', '#ef4444'];
 

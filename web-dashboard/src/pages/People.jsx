@@ -14,8 +14,7 @@ import {
   User,
   Camera
 } from 'lucide-react';
-
-const API_URL = 'http://127.0.0.1:5001/api';
+import { API_URL } from '../config';
 
 const People = () => {
   const [users, setUsers] = useState([]);

@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: face-detection-backend
+    env: python
+    region: ohio
+    buildCommand: cd backend && pip install -r requirements.txt
+    startCommand: cd backend && gunicorn app:app
+    plan: free
+    autoDeploy: false
+
+  - type: static
+    name: face-detection-frontend
+    region: ohio
+    buildCommand: cd web-dashboard && npm install && npm run build
+    staticPublishPath: web-dashboard/dist
+    envVars:
+      - key: VITE_BACKEND_URL
+        fromService:
+          type: web
+          name: face-detection-backend
+          property: url
+

@@ -9,30 +9,74 @@ import {
   MapPin,
   User,
   ChevronDown,
-  ChevronRight
+  ChevronRight,
+  RefreshCw
 } from 'lucide-react';
 import { cn } from '../lib/utils';
-
-const API_URL = 'http://127.0.0.1:5001/api';
+import { API_URL } from '../config';
 
 const Attendance = () => {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [expandedRow, setExpandedRow] = useState(null);
 
+  const [filterOptions, setFilterOptions] = useState({ departments: [], designations: [] });
+  const [filters, setFilters] = useState({
+    startDate: '',
+    endDate: '',
+    department: '',
+    designation: '',
+    name: ''
+  });
+
   useEffect(() => {
+    fetchFilters();
     fetchLogs();
   }, []);
 
-  const fetchLogs = async () => {
+  const fetchFilters = async () => {
     try {
-      const response = await axios.get(`${API_URL}/attendance`);
-      setLogs(response.data.attendance || []);
-      setLoading(false);
+      const res = await axios.get(`${API_URL}/reports/filters`);
+      setFilterOptions({
+        departments: res.data?.departments || [],
+        designations: res.data?.designations || []
+      });
+    } catch (error) {
+      console.error("Error fetching filters:", error);
+    }
+  };
+
+  const fetchLogs = async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (filters.startDate) params.append('start_date', filters.startDate);
+      if (filters.endDate) params.append('end_date', filters.endDate);
+      if (filters.department) params.append('department', filters.department);
+      if (filters.designation) params.append('designation', filters.designation);
+      if (filters.name) params.append('name', filters.name);
+
+      const response = await axios.get(`${API_URL}/attendance?${params.toString()}`);
+      setLogs(response.data?.attendance || []);
     } catch (error) {
       console.error("Error fetching logs:", error);
+    } finally {
       setLoading(false);
     }
+  };
+
+  const handleSearch = () => {
+    fetchLogs();
+  };
+
+  const handleExport = () => {
+    const params = new URLSearchParams();
+    if (filters.startDate) params.append('start_date', filters.startDate);
+    if (filters.endDate) params.append('end_date', filters.endDate);
+    if (filters.department) params.append('department', filters.department);
+    if (filters.designation) params.append('designation', filters.designation);
+    
+    window.location.href = `${API_URL}/reports/export?${params.toString()}`;
   };
 
   const getStatus = (timestamp) => {
@@ -69,47 +113,99 @@ const Attendance = () => {
         </div>
         <div className="flex space-x-3">
            <div className="relative">
-              <button className="flex items-center space-x-2 px-4 py-2 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 font-medium transition-colors">
+              <button 
+                onClick={() => {
+                   setFilters({
+                    startDate: new Date().toISOString().split('T')[0],
+                    endDate: new Date().toISOString().split('T')[0],
+                    department: '',
+                    designation: '',
+                    name: ''
+                  });
+                  // Need to wait for state update or call fetch directly with new params. 
+                  // Since setState is async, we'll just set it and let user click refresh or add a useEffect dependency if we wanted auto-refresh.
+                  // For better UX, let's trigger a fetch with today's date directly or just update state and let user search.
+                  // Or better, just set state and call fetchLogs() logic manually or use a separate effect.
+                  // Let's keep it simple: Reset state.
+                }}
+                className="flex items-center space-x-2 px-4 py-2 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 font-medium transition-colors"
+              >
                 <Calendar size={18} />
                 <span>Today</span>
               </button>
            </div>
-          <button className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium transition-colors shadow-sm">
-            <Download size={18} />
-            <span>Export Report</span>
-          </button>
+           <button 
+             onClick={fetchLogs}
+             className="flex items-center space-x-2 px-4 py-2 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 font-medium transition-colors"
+           >
+             <RefreshCw size={18} className={loading ? "animate-spin" : ""} />
+             <span>Refresh</span>
+           </button>
         </div>
       </div>
 
       {/* Filters */}
-      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-wrap gap-4 items-center">
-        <div className="relative flex-1 min-w-[200px]">
+      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col md:flex-row gap-4 items-end md:items-center flex-wrap">
+        <div className="relative flex-1 min-w-[200px] w-full">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
           <input 
             type="text" 
             placeholder="Search by employee..." 
+            value={filters.name}
+            onChange={(e) => setFilters({...filters, name: e.target.value})}
+            onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
             className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
           />
         </div>
         
-        <div className="w-40">
-          <select className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-600 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20">
-            <option>All Departments</option>
-            <option>Engineering</option>
-            <option>Sales</option>
+        <div className="w-full md:w-auto">
+            <input 
+              type="date" 
+              value={filters.startDate}
+              onChange={(e) => setFilters({...filters, startDate: e.target.value})}
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-600 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+            />
+        </div>
+
+        <div className="w-full md:w-auto">
+            <input 
+              type="date" 
+              value={filters.endDate}
+              onChange={(e) => setFilters({...filters, endDate: e.target.value})}
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-600 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+            />
+        </div>
+        
+        <div className="w-full md:w-40">
+          <select 
+            value={filters.department}
+            onChange={(e) => setFilters({...filters, department: e.target.value})}
+            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-600 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+          >
+            <option value="">All Departments</option>
+            {filterOptions?.departments?.map(dept => (
+              <option key={dept} value={dept}>{dept}</option>
+            ))}
           </select>
         </div>
 
-        <div className="w-40">
-          <select className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-600 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20">
-            <option>All Statuses</option>
-            <option>On Time</option>
-            <option>Late</option>
-            <option>Absent</option>
+        <div className="w-full md:w-40">
+          <select 
+            value={filters.designation}
+            onChange={(e) => setFilters({...filters, designation: e.target.value})}
+            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-600 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+          >
+            <option value="">All Designations</option>
+            {filterOptions?.designations?.map(desig => (
+              <option key={desig} value={desig}>{desig}</option>
+            ))}
           </select>
         </div>
 
-        <button className="p-2 text-slate-400 hover:text-slate-600 transition-colors border border-slate-200 rounded-lg">
+        <button 
+          onClick={handleSearch}
+          className="p-2 bg-blue-600 text-white hover:bg-blue-700 transition-colors border border-transparent rounded-lg"
+        >
           <Filter size={20} />
         </button>
       </div>
