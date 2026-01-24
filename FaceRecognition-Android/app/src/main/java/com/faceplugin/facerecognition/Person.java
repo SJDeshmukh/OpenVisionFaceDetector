@@ -10,6 +10,7 @@ public class Person {
     public String phone;
     public String department;
     public String designation;
+    public boolean synced = true;
 
     public Person() {
 

@@ -3,6 +3,8 @@ package com.faceplugin.facerecognition
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Base64
 import android.widget.ImageButton
 import android.widget.Toast
@@ -19,6 +21,15 @@ import retrofit2.Response
 class MainActivity : AppCompatActivity() {
 
     private lateinit var dbManager: DBManager
+    private val handler = Handler(Looper.getMainLooper())
+    private val syncInterval: Long = 3000 // 3 seconds for near real-time
+
+    private val syncRunnable = object : Runnable {
+        override fun run() {
+            syncFacesFromBackend()
+            handler.postDelayed(this, syncInterval)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -56,7 +67,7 @@ class MainActivity : AppCompatActivity() {
         // Initialize DB and Sync
         dbManager = DBManager(this)
         dbManager.loadPerson()
-        syncFacesFromBackend()
+        // Removed sync from onCreate to rely on onResume
 
         // Setup Bottom Navigation
         val bottomNav = findViewById<BottomNavigationView>(R.id.bottom_navigation)
@@ -119,16 +130,52 @@ class MainActivity : AppCompatActivity() {
             .commit()
     }
 
+    override fun onResume() {
+        super.onResume()
+        handler.removeCallbacks(syncRunnable) // Prevent duplicates
+        handler.post(syncRunnable) // Start sync immediately
+    }
+
+    override fun onPause() {
+        super.onPause()
+        handler.removeCallbacks(syncRunnable) // Stop sync when backgrounded
+    }
+
     private fun syncFacesFromBackend() {
         RetrofitClient.getService().downloadFaces().enqueue(object : Callback<SyncResponse> {
             override fun onResponse(call: Call<SyncResponse>, response: Response<SyncResponse>) {
                 if (response.isSuccessful) {
-                    val faces = response.body()?.faces
+                    val faces = response.body()?.faces ?: emptyList()
+                    val serverNames = faces.map { it.name }.toSet()
+                    
+                    // 1. Delete faces that are not on the server (BUT protect unsynced local faces)
+                    val localPersons = DBManager.personList.toList() // Copy list to avoid concurrent modification
+                    var deletedCount = 0
+                    
+                    localPersons.forEach { person ->
+                        if (!serverNames.contains(person.name)) {
+                            // Only delete if it was previously synced.
+                            // If synced == false, it means it's a new local user waiting for upload.
+                            if (person.synced) {
+                                dbManager.deletePerson(person.name)
+                                deletedCount++
+                            }
+                        }
+                    }
+
+                    // 2. Add or Update faces
                     var newFacesCount = 0
-                    faces?.forEach { faceData ->
+                    var updatedFacesCount = 0
+                    
+                    faces.forEach { faceData ->
                         // Check if exists
-                        val exists = DBManager.personList.any { it.name == faceData.name }
-                        if (!exists) {
+                        val existingPerson = DBManager.personList.find { it.name == faceData.name }
+                        
+                        val phone = faceData.phone ?: ""
+                        val dept = faceData.department ?: ""
+                        val desig = faceData.designation ?: ""
+
+                        if (existingPerson == null) {
                             try {
                                 val templates = Base64.decode(faceData.templates, Base64.NO_WRAP)
                                 val faceImageBytes = Base64.decode(faceData.faceImage, Base64.NO_WRAP)
@@ -136,20 +183,67 @@ class MainActivity : AppCompatActivity() {
 
                                 // Insert into DB and memory
                                 if (faceBitmap != null) {
-                                    val phone = faceData.phone ?: ""
-                                    val dept = faceData.department ?: ""
-                                    val desig = faceData.designation ?: ""
-                                    
                                     dbManager.insertPerson(faceData.name, faceBitmap, templates, phone, dept, desig)
                                     newFacesCount++
                                 }
                             } catch (e: Exception) {
                                 e.printStackTrace()
                             }
+                        } else {
+                            // Check for updates
+                            var needsMetadataUpdate = false
+                            if (existingPerson.phone != phone || 
+                                existingPerson.department != dept || 
+                                existingPerson.designation != desig) {
+                                needsMetadataUpdate = true
+                            }
+                            
+                            // Check for Face Update
+                            var needsFaceUpdate = false
+                            try {
+                                val serverTemplates = Base64.decode(faceData.templates, Base64.NO_WRAP)
+                                // Compare byte arrays
+                                if (!java.util.Arrays.equals(existingPerson.templates, serverTemplates)) {
+                                    needsFaceUpdate = true
+                                }
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                            }
+                            
+                            // If it was marked as not synced but now it is on server, mark it as synced
+                            if (!existingPerson.synced) {
+                                dbManager.updatePersonStatus(faceData.name, true)
+                                // No toast needed, silent update
+                            }
+
+                            if (needsFaceUpdate) {
+                                // Perform Full Update
+                                try {
+                                    val templates = Base64.decode(faceData.templates, Base64.NO_WRAP)
+                                    val faceImageBytes = Base64.decode(faceData.faceImage, Base64.NO_WRAP)
+                                    val faceBitmap = BitmapFactory.decodeByteArray(faceImageBytes, 0, faceImageBytes.size)
+                                    
+                                    if (faceBitmap != null) {
+                                        dbManager.insertPerson(faceData.name, faceBitmap, templates, phone, dept, desig)
+                                        updatedFacesCount++
+                                    }
+                                } catch (e: Exception) {
+                                    e.printStackTrace()
+                                }
+                            } else if (needsMetadataUpdate) {
+                                dbManager.updatePerson(faceData.name, phone, dept, desig)
+                                updatedFacesCount++
+                            }
                         }
                     }
-                    if (newFacesCount > 0) {
-                        Toast.makeText(this@MainActivity, "Synced $newFacesCount new faces from cloud", Toast.LENGTH_SHORT).show()
+                    if (newFacesCount > 0 || deletedCount > 0 || updatedFacesCount > 0) {
+                        Toast.makeText(this@MainActivity, "Synced: $newFacesCount added, $updatedFacesCount updated, $deletedCount deleted", Toast.LENGTH_SHORT).show()
+                        
+                        // Force UI Refresh if UsersFragment is visible
+                        val currentFragment = supportFragmentManager.findFragmentById(R.id.fragment_container)
+                        if (currentFragment is UsersFragment) {
+                            currentFragment.refreshList()
+                        }
                     }
                 }
             }

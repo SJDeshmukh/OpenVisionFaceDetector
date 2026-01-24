@@ -149,9 +149,16 @@ public class EnrollFragment extends Fragment {
             String department = etDepartment.getText().toString().trim();
             String designation = etDesignation.getText().toString().trim();
             
-            // Save to Local DB
-            dbManager.insertPerson(name, faceImage, templates, phone, department, designation);
-            Toast.makeText(getContext(), getString(R.string.person_enrolled) + " " + name, Toast.LENGTH_SHORT).show();
+            boolean exists = dbManager.personExists(name);
+            
+            // Save to Local DB (Optimistic UI - marked as not synced)
+            dbManager.insertPerson(name, faceImage, templates, phone, department, designation, false);
+            
+            if (exists) {
+                Toast.makeText(getContext(), "Updated existing user: " + name, Toast.LENGTH_SHORT).show();
+            } else {
+                Toast.makeText(getContext(), getString(R.string.person_enrolled) + " " + name, Toast.LENGTH_SHORT).show();
+            }
 
             // Sync to Backend
             syncToBackend(name, templates, faceImage, phone, department, designation);
@@ -176,6 +183,9 @@ public class EnrollFragment extends Fragment {
             public void onResponse(Call<Void> call, Response<Void> response) {
                 if (response.isSuccessful()) {
                     Toast.makeText(getContext(), "Synced to Cloud", Toast.LENGTH_SHORT).show();
+                    if (dbManager != null) {
+                        dbManager.updatePersonStatus(name, true);
+                    }
                 } else {
                      Toast.makeText(getContext(), "Sync Failed: " + response.code(), Toast.LENGTH_SHORT).show();
                 }

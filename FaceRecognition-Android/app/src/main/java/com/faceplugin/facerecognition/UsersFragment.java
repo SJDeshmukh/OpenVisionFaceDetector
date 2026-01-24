@@ -102,6 +102,10 @@ public class UsersFragment extends Fragment {
     @Override
     public void onResume() {
         super.onResume();
+        refreshList();
+    }
+
+    public void refreshList() {
         if (adapter != null) {
             adapter.notifyDataSetChanged();
         }
