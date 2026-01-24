@@ -103,19 +103,22 @@ const Attendance = () => {
 
   // Real timeline data derived from actual logs
   const getTimeline = (currentLog) => {
-    // Filter all logs for the same person on the same day
-    const logDate = new Date(currentLog.timestamp).toDateString();
+    // Helper to parse timestamp as UTC
+    const parseTime = (ts) => new Date(ts.endsWith('Z') ? ts : ts + 'Z');
+
+    // Filter all logs for the same person on the same day (in local time)
+    const logDate = parseTime(currentLog.timestamp).toDateString();
     
     return logs
       .filter(log => 
         log.name === currentLog.name && 
-        new Date(log.timestamp).toDateString() === logDate
+        parseTime(log.timestamp).toDateString() === logDate
       )
-      .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
+      .sort((a, b) => parseTime(a.timestamp) - parseTime(b.timestamp))
       .map(log => ({
-        time: new Date(log.timestamp).toLocaleTimeString(),
+        time: parseTime(log.timestamp).toLocaleTimeString(),
         event: log.status === 'CHECK_IN' ? 'Check In' : 'Check Out',
-        location: 'Main Entrance' // Currently we assume single camera location
+        location: 'Main Entrance'
       }));
   };
 
