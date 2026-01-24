@@ -1,5 +1,6 @@
 import sqlite3
 import base64
+import os
 from flask import Flask, Blueprint, request, jsonify, render_template
 from flask_cors import CORS
 from services.llm_service import generate_greeting
@@ -8,6 +9,9 @@ from collections import defaultdict
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
+
+# Ensure database is always accessed from the same location (backend directory)
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'faces.db')
 
 # --- Web Dashboard ---
 @app.route("/")
@@ -21,7 +25,7 @@ def home():
 
 # --- Database Setup ---
 def init_db():
-    conn = sqlite3.connect('faces.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS faces
                  (name TEXT PRIMARY KEY, templates TEXT, face_image TEXT)''')
@@ -125,7 +129,7 @@ greeting_bp = Blueprint("greeting", __name__, url_prefix="/api")
 
 @greeting_bp.route("/companies", methods=["GET"])
 def get_companies():
-    conn = sqlite3.connect('faces.db')
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute("SELECT id, name FROM companies")
@@ -141,7 +145,7 @@ def create_company():
         return jsonify({"error": "Name is required"}), 400
         
     try:
-        conn = sqlite3.connect('faces.db')
+        conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("INSERT INTO companies (name, draft_timetable, live_timetable) VALUES (?, ?, ?)", 
                   (name, '[]', '[]'))
@@ -156,7 +160,7 @@ def create_company():
 
 @greeting_bp.route("/companies/<int:company_id>", methods=["GET"])
 def get_company_details(company_id):
-    conn = sqlite3.connect('faces.db')
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute("SELECT * FROM companies WHERE id = ?", (company_id,))
@@ -181,7 +185,7 @@ def update_draft_timetable(company_id):
     if isinstance(draft_timetable, list):
         draft_timetable = json.dumps(draft_timetable)
 
-    conn = sqlite3.connect('faces.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""UPDATE companies 
                  SET draft_timetable = ?, last_modified_by = ?, last_modified_at = ? 
@@ -196,7 +200,7 @@ def publish_timetable(company_id):
     data = request.json
     published_by = data.get("published_by", "unknown")
     
-    conn = sqlite3.connect('faces.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     # Copy draft to live
     c.execute("""UPDATE companies 
@@ -209,7 +213,7 @@ def publish_timetable(company_id):
 
 @greeting_bp.route("/reports/analytics", methods=["GET"])
 def get_analytics():
-    conn = sqlite3.connect('faces.db')
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
@@ -305,7 +309,7 @@ def export_report():
     import io
     from flask import Response
     
-    conn = sqlite3.connect('faces.db')
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
@@ -363,7 +367,7 @@ def export_report():
 
 @greeting_bp.route("/reports/filters", methods=["GET"])
 def get_report_filters():
-    conn = sqlite3.connect('faces.db')
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
@@ -394,7 +398,7 @@ def login():
 
     print(f"Login Attempt: User={username}, Pass={password}") # DEBUG LOG
 
-    conn = sqlite3.connect('faces.db')
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute("SELECT * FROM system_users WHERE username = ? AND password = ?", (username, password))
@@ -419,7 +423,7 @@ def register_user():
     password = data.get("password")
     role = data.get("role", "user") # admin or user
 
-    conn = sqlite3.connect('faces.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
         c.execute("INSERT INTO system_users (username, password, role) VALUES (?, ?, ?)", 
@@ -437,7 +441,7 @@ def register_user():
 
 @greeting_bp.route("/settings", methods=["GET"])
 def get_settings():
-    conn = sqlite3.connect('faces.db')
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute("SELECT key, value FROM system_settings")
@@ -450,7 +454,7 @@ def get_settings():
 @greeting_bp.route("/settings", methods=["POST"])
 def update_settings():
     data = request.json
-    conn = sqlite3.connect('faces.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
         for key, value in data.items():
@@ -467,7 +471,7 @@ def update_settings():
 # --- User Management Endpoints ---
 @greeting_bp.route("/users", methods=["GET"])
 def get_users():
-    conn = sqlite3.connect('faces.db')
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute("SELECT username, role FROM system_users")
@@ -490,7 +494,7 @@ def update_user(username):
     if not password and not role:
         return jsonify({"error": "Nothing to update"}), 400
 
-    conn = sqlite3.connect('faces.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
         if password and role:
@@ -515,7 +519,7 @@ def delete_user(username):
     if username == "admin": # Prevent deleting the main admin
         return jsonify({"error": "Cannot delete default admin"}), 403
 
-    conn = sqlite3.connect('faces.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
         c.execute("DELETE FROM system_users WHERE username = ?", (username,))
@@ -545,7 +549,7 @@ def upload_face():
     if not name:
         return jsonify({"error": "Missing name"}), 400
 
-    conn = sqlite3.connect('faces.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
         c.execute("INSERT OR REPLACE INTO faces (name, templates, face_image, phone, department, designation) VALUES (?, ?, ?, ?, ?, ?)",
@@ -559,7 +563,7 @@ def upload_face():
 
 @greeting_bp.route("/sync/download", methods=["GET"])
 def download_faces():
-    conn = sqlite3.connect('faces.db')
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute("SELECT * FROM faces")
@@ -584,7 +588,7 @@ def delete_face(name):
     if not name:
         return jsonify({"error": "Missing name"}), 400
 
-    conn = sqlite3.connect('faces.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
         c.execute("DELETE FROM faces WHERE name = ?", (name,))
@@ -627,7 +631,7 @@ def person_event():
 
     # Case 3: Person detected and recognized
     # --- Check-in / Check-out Logic ---
-    conn = sqlite3.connect('faces.db')
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
@@ -731,7 +735,7 @@ def person_event():
 
 @greeting_bp.route("/attendance", methods=["GET"])
 def get_attendance():
-    conn = sqlite3.connect('faces.db')
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
 
@@ -926,7 +930,7 @@ def get_attendance_summary():
     date_str = request.args.get('date', datetime.now().strftime('%Y-%m-%d'))
     company_id = request.args.get('company_id', 1) # Default to company ID 1
 
-    conn = sqlite3.connect('faces.db')
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
