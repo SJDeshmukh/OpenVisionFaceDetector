@@ -679,7 +679,7 @@ def person_event():
                      print(f"Ignoring future timestamp (timezone mismatch?) for {name}. Allowing entry.")
 
     except Exception as e:
-        print(f"Cooldown Error: {e}")
+        print(f"Cooldown Error: {e}" )
 
     new_status = 'CHECK_IN'
     if last_record and last_record['status'] == 'CHECK_IN':
