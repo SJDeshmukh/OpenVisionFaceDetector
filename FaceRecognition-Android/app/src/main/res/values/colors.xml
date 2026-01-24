@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Brand Colors - Crisp Enterprise Theme -->
+    <color name="primary_soft_blue">#2563EB</color> <!-- Stronger Tech Blue -->
+    <color name="primary_sky_blue">#EFF6FF</color>
+    
+    <color name="secondary_mint_green">#10B981</color> <!-- Vivid Emerald -->
+    <color name="secondary_lavender">#F3F4F6</color>
+    
+    <!-- Backgrounds -->
+    <color name="background_off_white">#F9FAFB</color> <!-- Clean Gray-White -->
+    <color name="background_card">#FFFFFF</color>
+    
+    <!-- Text -->
+    <color name="text_primary">#111827</color> <!-- Deep Black/Blue -->
+    <color name="text_secondary">#4B5563</color> <!-- Cool Gray -->
+    <color name="text_hint">#9CA3AF</color>
+    
+    <!-- UI Elements -->
+    <color name="divider">#E5E7EB</color>
+    <color name="success_green">#059669</color>
+    <color name="warning_amber">#D97706</color>
+    <color name="error_red">#DC2626</color>
+    
+    <!-- Legacy/System mapping -->
+    <color name="colorPrimary">@color/primary_soft_blue</color>
+    <color name="colorPrimaryVariant">@color/primary_sky_blue</color>
+    <color name="colorOnPrimary">#FFFFFF</color>
+    
+    <color name="colorSecondary">@color/secondary_mint_green</color>
+    <color name="colorSecondaryVariant">@color/secondary_lavender</color>
+    <color name="colorOnSecondary">@color/white</color>
+    
+    <color name="black">#111827</color>
+    <color name="white">#FFFFFF</color>
+
+    <!-- Legacy Compatibility Mappings (Fixing Build Errors) -->
+    <color name="pink_touch">@color/secondary_mint_green</color>
+    <color name="pink_700">@color/primary_soft_blue</color>
+    <color name="md_theme_light_onBackground">@color/text_primary</color>
+    
+    <color name="ai_neon_blue">@color/primary_soft_blue</color>
+    <color name="ai_deep_black">#0F172A</color> <!-- Slate 900 for dark mode/overlays -->
+    <color name="ai_surface">@color/background_card</color>
+    
+    <color name="ai_text_primary">@color/text_primary</color>
+    <color name="ai_text_secondary">@color/text_secondary</color>
+    <color name="ai_error_red">@color/error_red</color>
+
+    <color name="ai_glass_surface">#E6FFFFFF</color> <!-- 90% White for crisp glass -->
+    <color name="ai_neon_purple">@color/primary_soft_blue</color>
+
+    <color name="md_theme_dark_inverseOnSurface">@color/text_primary</color>
+    <color name="md_theme_dark_errorContainer">@color/error_red</color>
+    <color name="md_theme_dark_onPrimaryContainer">@color/primary_soft_blue</color>
+    <color name="md_theme_dark_surface">@color/background_card</color>
+    <color name="md_theme_dark_scrim">#99000000</color>
+    <color name="md_theme_dark_onTertiary">@color/white</color>
+    <color name="md_theme_dark_onSurface">@color/text_primary</color>
+</resources>
