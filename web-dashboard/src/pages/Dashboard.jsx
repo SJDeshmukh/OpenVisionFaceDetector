@@ -20,8 +20,7 @@ import {
 } from 'recharts';
 import { useState, useEffect } from 'react';
 import axios from 'axios';
-
-const API_URL = 'http://127.0.0.1:5001/api';
+import { API_URL } from '../config';
 
 const Dashboard = () => {
   const [stats, setStats] = useState({

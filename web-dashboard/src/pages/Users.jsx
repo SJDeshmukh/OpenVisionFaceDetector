@@ -1,8 +1,7 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Search, Trash2, UserCheck } from 'lucide-react';
-
-const API_URL = 'http://127.0.0.1:5001/api';
+import { API_URL } from '../config';
 
 const Users = () => {
   const [users, setUsers] = useState([]);
