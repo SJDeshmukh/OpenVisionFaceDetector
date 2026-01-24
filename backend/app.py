@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for Web Dashboard
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 # --- Web Dashboard ---
 @app.route("/")
