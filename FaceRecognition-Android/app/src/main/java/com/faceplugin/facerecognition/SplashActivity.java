@@ -46,13 +46,30 @@ public class SplashActivity extends AppCompatActivity {
         SharedPreferences prefs = getSharedPreferences("app_prefs", MODE_PRIVATE);
         String savedUrl = prefs.getString("server_url", null);
 
-        if (savedUrl != null) {
-            tvStatus.setText("Connecting to saved server...");
-            // Verify saved URL
-            checkServer(savedUrl, true);
-        } else {
-            startNetworkScan();
-        }
+        // Priority 1: Check Render URL (Cloud)
+        String RENDER_URL = "https://face-detection-backend-69o7.onrender.com/";
+        tvStatus.setText("Checking Cloud Server...");
+
+        new Thread(() -> {
+            if (pingServer(RENDER_URL)) {
+                runOnUiThread(() -> {
+                    tvStatus.setText("Connected to Cloud Server");
+                    RetrofitClient.setBaseUrl(RENDER_URL);
+                    proceedToNextScreen();
+                });
+            } else {
+                // Priority 2: Check Saved URL (if exists and different from Render)
+                if (savedUrl != null && !savedUrl.equals(RENDER_URL)) {
+                    runOnUiThread(() -> {
+                        tvStatus.setText("Checking Saved Server...");
+                        checkServer(savedUrl, true);
+                    });
+                } else {
+                    // Priority 3: Scan Local Network
+                    runOnUiThread(() -> startNetworkScan());
+                }
+            }
+        }).start();
     }
 
     private void checkServer(String url, boolean isSaved) {

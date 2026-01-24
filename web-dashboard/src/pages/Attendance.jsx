@@ -32,6 +32,13 @@ const Attendance = () => {
   useEffect(() => {
     fetchFilters();
     fetchLogs();
+    
+    // Auto-refresh every 5 seconds
+    const interval = setInterval(() => {
+      fetchLogs();
+    }, 5000);
+    
+    return () => clearInterval(interval);
   }, []);
 
   const fetchFilters = async () => {
@@ -291,22 +298,40 @@ const Attendance = () => {
                     </tr>
                     {isExpanded && (
                       <tr className="bg-slate-50/50">
-                        <td colSpan="7" className="px-6 py-4 pl-20">
-                          <div className="space-y-4">
-                            <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Day Timeline</h4>
-                            <div className="relative border-l-2 border-slate-200 ml-2 space-y-6 pb-2">
-                              {getTimeline(log).map((event, i) => (
-                                <div key={i} className="relative pl-6">
-                                  <div className="absolute -left-[9px] top-0 w-4 h-4 rounded-full bg-white border-2 border-blue-500"></div>
-                                  <p className="text-sm font-semibold text-slate-800">{event.event}</p>
-                                  <p className="text-xs text-slate-500 flex items-center mt-1">
-                                    <Clock size={12} className="mr-1" /> {event.time}
-                                    <span className="mx-2">•</span>
-                                    <MapPin size={12} className="mr-1" /> {event.location}
-                                  </p>
+                        <td colSpan="8" className="px-6 py-4 pl-20">
+                          <div className="flex gap-6">
+                             {/* Captured Frame */}
+                             <div className="flex flex-col gap-2">
+                                <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Captured Frame</h4>
+                                {log.captured_image ? (
+                                  <img 
+                                    src={log.captured_image.startsWith('data:') ? log.captured_image : `data:image/jpeg;base64,${log.captured_image}`} 
+                                    alt="Captured Event" 
+                                    className="h-32 w-32 rounded-lg object-cover border border-slate-200 shadow-sm"
+                                  />
+                                ) : (
+                                  <div className="h-32 w-32 rounded-lg bg-slate-100 flex items-center justify-center text-slate-400 border border-slate-200">
+                                    <span className="text-xs">No Image</span>
+                                  </div>
+                                )}
+                             </div>
+
+                             {/* Timeline */}
+                             <div className="flex-1 space-y-4">
+                                <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Day Timeline</h4>
+                                <div className="relative border-l-2 border-slate-200 ml-2 space-y-6 pb-2">
+                                  {getTimeline(log).map((event, i) => (
+                                    <div key={i} className="relative pl-6">
+                                      <div className="absolute -left-[9px] top-0 w-4 h-4 rounded-full bg-white border-2 border-blue-500"></div>
+                                      <p className="text-sm font-semibold text-slate-800">{event.event}</p>
+                                      <p className="text-xs text-slate-500 flex items-center mt-1">
+                                        <Clock size={12} className="mr-1" />
+                                        {event.time}
+                                      </p>
+                                    </div>
+                                  ))}
                                 </div>
-                              ))}
-                            </div>
+                             </div>
                           </div>
                         </td>
                       </tr>
