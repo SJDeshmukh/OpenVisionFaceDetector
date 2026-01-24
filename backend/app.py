@@ -96,6 +96,24 @@ def init_db():
         c.execute("INSERT INTO companies (name, draft_timetable, live_timetable) VALUES (?, ?, ?)", 
                   ('Open Vision', '[]', '[]'))
     
+    # --- New Table for System Settings ---
+    c.execute('''CREATE TABLE IF NOT EXISTS system_settings
+                 (key TEXT PRIMARY KEY, value TEXT)''')
+                 
+    # Default Settings
+    default_settings = {
+        "threshold": "0.6",
+        "cooldown": "30",
+        "work_start_time": "09:00",
+        "late_threshold": "09:30",
+        "auto_checkout": "false",
+        "voice_greeting": "true",
+        "admin_alerts": "false"
+    }
+    
+    for key, val in default_settings.items():
+        c.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)", (key, val))
+
     conn.commit()
     conn.close()
 
@@ -410,6 +428,37 @@ def register_user():
         return jsonify({"status": "success", "message": "User created"})
     except sqlite3.IntegrityError:
         return jsonify({"error": "Username already exists"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+# --- System Settings Endpoints ---
+
+@greeting_bp.route("/settings", methods=["GET"])
+def get_settings():
+    conn = sqlite3.connect('faces.db')
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute("SELECT key, value FROM system_settings")
+    rows = c.fetchall()
+    conn.close()
+    
+    settings = {row['key']: row['value'] for row in rows}
+    return jsonify(settings)
+
+@greeting_bp.route("/settings", methods=["POST"])
+def update_settings():
+    data = request.json
+    conn = sqlite3.connect('faces.db')
+    c = conn.cursor()
+    try:
+        for key, value in data.items():
+            # Ensure value is string
+            val_str = str(value) if value is not None else ""
+            c.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)", (key, val_str))
+        conn.commit()
+        return jsonify({"status": "success", "message": "Settings updated"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
@@ -851,14 +900,15 @@ def upload_stream_frame():
         
         return jsonify({"status": "success"})
     except Exception as e:
+        print(f"Stream Upload Error: {e}")
         return jsonify({"error": str(e)}), 500
 
 @greeting_bp.route("/stream/view", methods=["GET"])
 def view_stream_frame():
-    # Check if frame is stale (older than 5 seconds)
+    # Check if frame is stale (older than 10 seconds)
     if latest_frame["timestamp"]:
         delta = datetime.now() - latest_frame["timestamp"]
-        if delta.total_seconds() > 5:
+        if delta.total_seconds() > 10:
             return jsonify({"status": "offline", "image": None})
             
     if latest_frame["data"]:

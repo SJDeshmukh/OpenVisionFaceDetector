@@ -206,7 +206,7 @@ const People = () => {
                         )}
                         <div>
                           <div className="text-sm font-medium text-slate-900">{user.name}</div>
-                          <div className="text-xs text-slate-500">Software Engineer</div>
+                          <div className="text-xs text-slate-500">{user.designation || 'Employee'}</div>
                         </div>
                       </div>
                     </td>

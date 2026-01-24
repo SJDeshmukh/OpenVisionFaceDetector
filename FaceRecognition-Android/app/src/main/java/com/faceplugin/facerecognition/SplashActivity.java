@@ -144,8 +144,9 @@ public class SplashActivity extends AppCompatActivity {
         try {
             URL url = new URL(baseUrl + "api/ping");
             HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-            connection.setConnectTimeout(500);
-            connection.setReadTimeout(500);
+            // Increased timeout to account for Render cold starts (free tier sleeps)
+            connection.setConnectTimeout(5000);
+            connection.setReadTimeout(5000);
             connection.setRequestMethod("GET");
             int code = connection.getResponseCode();
             connection.disconnect();
