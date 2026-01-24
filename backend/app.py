@@ -635,19 +635,54 @@ def person_event():
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
-    # Get last status
-    c.execute("SELECT status FROM attendance WHERE name = ? ORDER BY timestamp DESC LIMIT 1", (name,))
+    # Get last status and timestamp
+    c.execute("SELECT * FROM attendance WHERE name = ? ORDER BY timestamp DESC LIMIT 1", (name,))
     last_record = c.fetchone()
     
+    # --- Cooldown Check ---
+    try:
+        if last_record:
+            last_ts_str = last_record['timestamp']
+            # Parse timestamp (handle both with and without microseconds)
+            if '.' in last_ts_str:
+                last_ts = datetime.strptime(last_ts_str, '%Y-%m-%d %H:%M:%S.%f')
+            else:
+                last_ts = datetime.strptime(last_ts_str, '%Y-%m-%d %H:%M:%S')
+            
+            # Get cooldown setting
+            c.execute("SELECT value FROM system_settings WHERE key='cooldown'")
+            row = c.fetchone()
+            cooldown_seconds = int(row['value']) if row else 30
+            
+            if (datetime.now() - last_ts).total_seconds() < cooldown_seconds:
+                print(f"Cooldown active for {name}. Skipping.")
+                conn.close()
+                return jsonify({"speak": False})
+    except Exception as e:
+        print(f"Cooldown Error: {e}")
+
     new_status = 'CHECK_IN'
     if last_record and last_record['status'] == 'CHECK_IN':
         new_status = 'CHECK_OUT'
     
     # Insert new record with image
+    # Use UTC for storage to ensure consistency
+    current_time_utc = datetime.utcnow()
+    # But for now, since we use naive datetimes everywhere, let's stick to naive local server time
+    # to avoid breaking existing logic that expects naive objects.
+    # Ideally, we should migrate to UTC everywhere.
+    # Given the user's issue "past attendance", let's make sure we return ISO 8601 strings in API.
+    
     current_time = datetime.now()
-    c.execute("INSERT INTO attendance (name, timestamp, status, captured_image) VALUES (?, ?, ?, ?)", 
-              (name, current_time, new_status, captured_image))
-    conn.commit()
+    try:
+        c.execute("INSERT INTO attendance (name, timestamp, status, captured_image) VALUES (?, ?, ?, ?)", 
+                  (name, current_time, new_status, captured_image))
+        conn.commit()
+        print(f"Attendance Recorded: {name} - {new_status} at {current_time}")
+    except Exception as e:
+        print(f"Insert Error: {e}")
+        conn.close()
+        return jsonify({"error": "Database Insert Failed"}), 500
     
     # --- Context Determination Logic ---
     activity_context = None
