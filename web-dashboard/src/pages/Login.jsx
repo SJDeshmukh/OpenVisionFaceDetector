@@ -1,4 +1,4 @@
-import { useState } from 'react';
+yes do all thingsimport { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { Shield, Lock, User } from 'lucide-react';
@@ -85,10 +85,6 @@ const Login = () => {
           Default Admin: admin / admin123
           <br/>
           Kiosk User: kiosk / kiosk123
-          <br/>
-          <span className="text-[10px] text-slate-400 mt-2 block break-all">
-            Connecting to: {API_URL}
-          </span>
         </div>
       </div>
     </div>

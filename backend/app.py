@@ -553,6 +553,9 @@ def delete_face(name):
 @greeting_bp.route("/person-event", methods=["POST"])
 def person_event():
     data = request.json
+    
+    # Debug Log
+    print(f"Received person-event: detected={data.get('detected')}, recognized={data.get('recognized')}, name={data.get('name')}")
 
     detected = data.get("detected", False)
     recognized = data.get("recognized", False)
@@ -828,7 +831,8 @@ def calculate_daily_hours(records):
 # In-memory storage for the latest frame (single device support for now)
 latest_frame = {
     "data": None,
-    "timestamp": None
+    "timestamp": None,
+    "source_ip": None
 }
 
 @greeting_bp.route("/stream/upload", methods=["POST"])
@@ -842,6 +846,8 @@ def upload_stream_frame():
             
         latest_frame["data"] = image_data
         latest_frame["timestamp"] = datetime.now()
+        # Capture Real IP (Render uses X-Forwarded-For)
+        latest_frame["source_ip"] = request.headers.get('X-Forwarded-For', request.remote_addr)
         
         return jsonify({"status": "success"})
     except Exception as e:
@@ -856,7 +862,11 @@ def view_stream_frame():
             return jsonify({"status": "offline", "image": None})
             
     if latest_frame["data"]:
-        return jsonify({"status": "online", "image": latest_frame["data"]})
+        return jsonify({
+            "status": "online", 
+            "image": latest_frame["data"],
+            "source_ip": latest_frame.get("source_ip", "Unknown")
+        })
     else:
         return jsonify({"status": "offline", "image": None})
 

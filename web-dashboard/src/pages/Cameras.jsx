@@ -1,4 +1,5 @@
-  import { useState, useEffect } from 'react';
+import { API_URL } from '../config';
+import { useState, useEffect } from 'react';
 import { 
   Plus, 
   Wifi, 
@@ -33,7 +34,12 @@ const Cameras = () => {
           
           setLiveImage(imgData);
           setIsLive(true);
-          setCameras(prev => prev.map(c => c.id === 1 ? { ...c, status: 'Online', lastActive: 'Live Now' } : c));
+          setCameras(prev => prev.map(c => c.id === 1 ? { 
+            ...c, 
+            status: 'Online', 
+            lastActive: 'Live Now',
+            ip: data.source_ip || 'Device Connected'
+          } : c));
         } else {
           setIsLive(false);
           setCameras(prev => prev.map(c => c.id === 1 ? { ...c, status: 'Offline', lastActive: 'Offline' } : c));
