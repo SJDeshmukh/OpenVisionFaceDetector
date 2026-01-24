@@ -18,5 +18,4 @@ services:
         fromService:
           type: web
           name: face-detection-backend
-          property: url
-
+          property: host
