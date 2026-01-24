@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <stroke android:width="2dp" android:color="@color/ai_neon_blue" />
+            <solid android:color="#00000000" />
+            <corners android:radius="16dp" />
+        </shape>
+    </item>
+    <!-- Top Left Corner -->
+    <item android:top="0dp" android:left="0dp" android:right="200dp" android:bottom="200dp">
+        <shape android:shape="rectangle">
+            <stroke android:width="4dp" android:color="@color/ai_neon_blue" />
+            <solid android:color="#00000000" />
+            <corners android:topLeftRadius="16dp" />
+        </shape>
+    </item>
+    <!-- Top Right Corner -->
+    <item android:top="0dp" android:right="0dp" android:left="200dp" android:bottom="200dp">
+        <shape android:shape="rectangle">
+            <stroke android:width="4dp" android:color="@color/ai_neon_blue" />
+            <solid android:color="#00000000" />
+            <corners android:topRightRadius="16dp" />
+        </shape>
+    </item>
+    <!-- Bottom Left Corner -->
+    <item android:bottom="0dp" android:left="0dp" android:right="200dp" android:top="200dp">
+        <shape android:shape="rectangle">
+            <stroke android:width="4dp" android:color="@color/ai_neon_blue" />
+            <solid android:color="#00000000" />
+            <corners android:bottomLeftRadius="16dp" />
+        </shape>
+    </item>
+    <!-- Bottom Right Corner -->
+    <item android:bottom="0dp" android:right="0dp" android:left="200dp" android:top="200dp">
+        <shape android:shape="rectangle">
+            <stroke android:width="4dp" android:color="@color/ai_neon_blue" />
+            <solid android:color="#00000000" />
+            <corners android:bottomRightRadius="16dp" />
+        </shape>
+    </item>
+</layer-list>

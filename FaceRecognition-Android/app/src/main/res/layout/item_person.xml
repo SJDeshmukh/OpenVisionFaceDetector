@@ -1,0 +1,72 @@
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app =  "http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content" >
+
+    <androidx.cardview.widget.CardView
+        android:layout_width="match_parent"
+        android:layout_height="80dp"
+        android:layout_marginTop="4dp"
+        android:layout_marginBottom="4dp"
+        android:layout_marginLeft="16dp"
+        android:layout_marginRight="16dp"
+        app:cardCornerRadius = "16dp"
+        app:cardBackgroundColor="@android:color/transparent"
+        app:cardElevation="0dp">
+
+        <RelativeLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/glass_panel">
+
+            <androidx.cardview.widget.CardView
+                android:id="@+id/cardFace"
+                app:cardElevation = "0dp"
+                app:cardCornerRadius = "25dp"
+                android:foregroundGravity = "center"
+                android:layout_marginLeft="16dp"
+                android:layout_centerVertical="true"
+                android:layout_width = "50dp"
+                android:layout_height = "50dp"
+                android:layout_alignParentLeft="true"
+                app:cardBackgroundColor="@android:color/transparent">
+
+                <ImageView
+                    android:id="@+id/imageFace"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:scaleType = "centerCrop"
+                    />
+            </androidx.cardview.widget.CardView>
+
+            <TextView
+                android:id="@+id/textName"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="16dp"
+                android:gravity="center_vertical"
+                android:layout_centerVertical="true"
+                android:layout_toRightOf="@+id/cardFace"
+                android:layout_toLeftOf="@+id/buttonDelete"
+                android:textColor="@color/ai_text_primary"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                />
+
+            <ImageButton
+                android:id="@+id/buttonDelete"
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:layout_marginRight="16dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                app:tint="@color/ai_error_red"
+                app:srcCompat="@drawable/ic_delete"
+                android:layout_centerVertical="true"
+                android:layout_alignParentRight="true"
+                />
+        </RelativeLayout>
+
+    </androidx.cardview.widget.CardView>
+
+</LinearLayout>
