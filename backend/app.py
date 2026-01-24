@@ -654,10 +654,30 @@ def person_event():
             row = c.fetchone()
             cooldown_seconds = int(row['value']) if row else 30
             
-            if (datetime.now() - last_ts).total_seconds() < cooldown_seconds:
+            # Calculate time difference
+            # Use abs() to handle cases where DB has "future" timestamps due to timezone mixups
+            # (e.g. if DB has IST but server checks against UTC)
+            delta_seconds = (datetime.now() - last_ts).total_seconds()
+            print(f"Cooldown Check: Name={name}, Last={last_ts}, Now={datetime.now()}, Delta={delta_seconds}s, Limit={cooldown_seconds}s")
+            
+            if 0 <= delta_seconds < cooldown_seconds:
                 print(f"Cooldown active for {name}. Skipping.")
                 conn.close()
                 return jsonify({"speak": False})
+            elif delta_seconds < 0:
+                 # Last record is in the future.
+                 # If it's just a few seconds (clock skew), treat as cooldown.
+                 # If it's large (timezone mismatch), we should probably allow it to correct the drift, 
+                 # OR block it if we want to enforce strictness. 
+                 # Given the issues, let's allow it if it's > 60 seconds in future (assume data error/timezone),
+                 # but block if it's within 0 to -60 seconds (likely just double scan with clock skew).
+                 if abs(delta_seconds) < 60:
+                     print(f"Cooldown active (future skew) for {name}. Skipping.")
+                     conn.close()
+                     return jsonify({"speak": False})
+                 else:
+                     print(f"Ignoring future timestamp (timezone mismatch?) for {name}. Allowing entry.")
+
     except Exception as e:
         print(f"Cooldown Error: {e}")
 
