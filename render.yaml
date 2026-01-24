@@ -13,6 +13,10 @@ services:
     env: static
     buildCommand: cd web-dashboard && npm install && npm run build
     staticPublishPath: web-dashboard/dist
+    routes:
+      - type: rewrite
+        source: /**
+        destination: /index.html
     envVars:
       - key: VITE_BACKEND_URL
         fromService:
