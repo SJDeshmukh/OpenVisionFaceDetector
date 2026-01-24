@@ -18,8 +18,15 @@ import { API_URL } from '../config';
 
 const Settings = () => {
   const { user } = useAuth();
+  
+  // System Settings State
   const [threshold, setThreshold] = useState(0.6);
   const [cooldown, setCooldown] = useState(30);
+  const [workStartTime, setWorkStartTime] = useState("09:00");
+  const [lateThreshold, setLateThreshold] = useState("09:30");
+  const [autoCheckout, setAutoCheckout] = useState(false);
+  const [voiceGreeting, setVoiceGreeting] = useState(true);
+  const [adminAlerts, setAdminAlerts] = useState(false);
   
   // User Management State
   const [systemUsers, setSystemUsers] = useState([]);
@@ -28,10 +35,48 @@ const Settings = () => {
   const [userForm, setUserForm] = useState({ username: '', password: '', role: 'user' });
 
   useEffect(() => {
+    fetchSettings();
     if (user?.role === 'admin') {
       fetchSystemUsers();
     }
   }, [user]);
+
+  const fetchSettings = async () => {
+    try {
+      const res = await axios.get(`${API_URL}/settings`);
+      const s = res.data;
+      if (s) {
+        if (s.threshold) setThreshold(parseFloat(s.threshold));
+        if (s.cooldown) setCooldown(parseInt(s.cooldown));
+        if (s.work_start_time) setWorkStartTime(s.work_start_time);
+        if (s.late_threshold) setLateThreshold(s.late_threshold);
+        if (s.auto_checkout) setAutoCheckout(s.auto_checkout === 'true');
+        if (s.voice_greeting) setVoiceGreeting(s.voice_greeting === 'true');
+        if (s.admin_alerts) setAdminAlerts(s.admin_alerts === 'true');
+      }
+    } catch (error) {
+      console.error("Error fetching settings:", error);
+    }
+  };
+
+  const handleSaveSettings = async () => {
+    try {
+      const payload = {
+        threshold,
+        cooldown,
+        work_start_time: workStartTime,
+        late_threshold: lateThreshold,
+        auto_checkout: autoCheckout,
+        voice_greeting: voiceGreeting,
+        admin_alerts: adminAlerts
+      };
+      await axios.post(`${API_URL}/settings`, payload);
+      alert("Settings saved successfully!");
+    } catch (error) {
+      console.error("Error saving settings:", error);
+      alert("Failed to save settings");
+    }
+  };
 
   const fetchSystemUsers = async () => {
     try {
@@ -108,7 +153,10 @@ const Settings = () => {
           <h1 className="text-2xl font-bold text-slate-800">System Configuration</h1>
           <p className="text-slate-500">Manage global settings for the attendance system.</p>
         </div>
-        <button className="flex items-center space-x-2 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium transition-colors shadow-sm">
+        <button 
+          onClick={handleSaveSettings}
+          className="flex items-center space-x-2 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium transition-colors shadow-sm"
+        >
           <Save size={18} />
           <span>Save Changes</span>
         </button>
@@ -221,15 +269,31 @@ const Settings = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
            <div>
              <label className="block text-sm font-semibold text-slate-700 mb-2">Work Start Time</label>
-             <input type="time" defaultValue="09:00" className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+             <input 
+               type="time" 
+               value={workStartTime}
+               onChange={(e) => setWorkStartTime(e.target.value)}
+               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20" 
+             />
            </div>
            <div>
              <label className="block text-sm font-semibold text-slate-700 mb-2">Late Mark Threshold</label>
-             <input type="time" defaultValue="09:30" className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+             <input 
+               type="time" 
+               value={lateThreshold}
+               onChange={(e) => setLateThreshold(e.target.value)}
+               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20" 
+             />
            </div>
         </div>
         <div className="flex items-center space-x-3 pt-4 border-t border-slate-100">
-          <input type="checkbox" id="auto_checkout" className="w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500" />
+          <input 
+            type="checkbox" 
+            id="auto_checkout" 
+            checked={autoCheckout}
+            onChange={(e) => setAutoCheckout(e.target.checked)}
+            className="w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500" 
+          />
           <label htmlFor="auto_checkout" className="text-sm text-slate-700">Auto check-out employees at midnight if no exit recorded</label>
         </div>
       </Section>
@@ -242,7 +306,14 @@ const Settings = () => {
               <p className="text-xs text-slate-500">Play text-to-speech greeting upon successful recognition</p>
             </div>
             <div className="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
-                <input type="checkbox" name="toggle" id="toggle" className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer checked:right-0 checked:border-green-400"/>
+                <input 
+                  type="checkbox" 
+                  name="toggle" 
+                  id="toggle" 
+                  checked={voiceGreeting}
+                  onChange={(e) => setVoiceGreeting(e.target.checked)}
+                  className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer checked:right-0 checked:border-green-400"
+                />
                 <label htmlFor="toggle" className="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer checked:bg-green-400"></label>
             </div>
           </div>
@@ -252,8 +323,15 @@ const Settings = () => {
               <p className="text-xs text-slate-500">Email admin on unknown face detection</p>
             </div>
              <div className="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
-                <input type="checkbox" name="toggle2" id="toggle2" className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
-                <label htmlFor="toggle2" className="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer"></label>
+                <input 
+                  type="checkbox" 
+                  name="toggle2" 
+                  id="toggle2" 
+                  checked={adminAlerts}
+                  onChange={(e) => setAdminAlerts(e.target.checked)}
+                  className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer checked:right-0 checked:border-green-400"
+                />
+                <label htmlFor="toggle2" className="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer checked:bg-green-400"></label>
             </div>
           </div>
         </div>

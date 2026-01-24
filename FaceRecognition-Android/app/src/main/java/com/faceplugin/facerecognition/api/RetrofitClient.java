@@ -4,9 +4,8 @@ import retrofit2.Retrofit;
 import retrofit2.converter.gson.GsonConverterFactory;
 
 public class RetrofitClient {
-    // For Android Emulator, use 10.0.2.2.
-    // For Physical Device, use your computer's LAN IP (e.g. 192.168.1.x)
-    private static String BASE_URL = "http://192.168.1.2:5001/";
+    // Default to Render Cloud URL
+    private static String BASE_URL = "https://face-detection-backend-69o7.onrender.com/";
     
     private static Retrofit retrofit = null;
 

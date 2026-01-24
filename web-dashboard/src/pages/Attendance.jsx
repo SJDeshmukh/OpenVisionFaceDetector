@@ -18,6 +18,7 @@ import { API_URL } from '../config';
 const Attendance = () => {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [expandedRow, setExpandedRow] = useState(null);
 
   const [filterOptions, setFilterOptions] = useState({ departments: [], designations: [] });
@@ -31,15 +32,18 @@ const Attendance = () => {
 
   useEffect(() => {
     fetchFilters();
-    fetchLogs();
+  }, []);
+
+  useEffect(() => {
+    fetchLogs(); // Trigger fetch on mount and filter change
     
-    // Auto-refresh every 5 seconds
+    // Auto-refresh every 5 seconds using current filters
     const interval = setInterval(() => {
-      fetchLogs();
+      fetchLogs(true); // isBackground = true (Silent refresh)
     }, 5000);
     
     return () => clearInterval(interval);
-  }, []);
+  }, [filters]); // Re-create interval when filters change to capture new state
 
   const fetchFilters = async () => {
     try {
@@ -53,8 +57,10 @@ const Attendance = () => {
     }
   };
 
-  const fetchLogs = async () => {
-    setLoading(true);
+  const fetchLogs = async (isBackground = false) => {
+    // Only set refreshing state for manual actions (not auto-refresh)
+    if (!isBackground) setIsRefreshing(true);
+    
     try {
       const params = new URLSearchParams();
       if (filters.startDate) params.append('start_date', filters.startDate);
@@ -68,7 +74,9 @@ const Attendance = () => {
     } catch (error) {
       console.error("Error fetching logs:", error);
     } finally {
+      // Always turn off blocking loader (for initial load) and refreshing spinner
       setLoading(false);
+      setIsRefreshing(false);
     }
   };
 
@@ -142,10 +150,10 @@ const Attendance = () => {
               </button>
            </div>
            <button 
-             onClick={fetchLogs}
+             onClick={() => fetchLogs(false)}
              className="flex items-center space-x-2 px-4 py-2 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 font-medium transition-colors"
            >
-             <RefreshCw size={18} className={loading ? "animate-spin" : ""} />
+             <RefreshCw size={18} className={isRefreshing ? "animate-spin" : ""} />
              <span>Refresh</span>
            </button>
         </div>
@@ -225,7 +233,7 @@ const Attendance = () => {
               <th className="w-10 px-6 py-4"></th>
               <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Employee</th>
               <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Date</th>
-              <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Check In</th>
+              <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Time</th>
               <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Camera</th>
               <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Status</th>
               <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Confidence</th>
@@ -255,20 +263,20 @@ const Attendance = () => {
                         {isExpanded ? <ChevronDown size={16} className="text-slate-400" /> : <ChevronRight size={16} className="text-slate-400" />}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        {log.captured_image ? (
-                          <img 
-                            src={log.captured_image.startsWith('data:') ? log.captured_image : `data:image/jpeg;base64,${log.captured_image}`} 
-                            alt="Captured" 
-                            className="h-10 w-10 rounded-full object-cover border border-slate-200"
-                          />
-                        ) : (
-                          <div className="h-10 w-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-400">
-                            <User size={20} />
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap font-medium text-slate-900">
-                        {log.name}
+                        <div className="flex items-center space-x-3">
+                          {log.captured_image ? (
+                            <img 
+                              src={log.captured_image.startsWith('data:') ? log.captured_image : `data:image/jpeg;base64,${log.captured_image}`} 
+                              alt="Captured" 
+                              className="h-10 w-10 rounded-full object-cover border border-slate-200"
+                            />
+                          ) : (
+                            <div className="h-10 w-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-400">
+                              <User size={20} />
+                            </div>
+                          )}
+                          <span className="font-medium text-slate-900">{log.name}</span>
+                        </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
                         {new Date(log.timestamp).toLocaleDateString()}
