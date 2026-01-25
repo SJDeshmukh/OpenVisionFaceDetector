@@ -42,6 +42,7 @@ public class EnrollFragment extends Fragment {
     private TextInputEditText etMobile;
     private TextInputEditText etDepartment;
     private TextInputEditText etDesignation;
+    private TextInputEditText etShift;
     private Button btnProceed;
     private DBManager dbManager;
 
@@ -57,6 +58,7 @@ public class EnrollFragment extends Fragment {
         etMobile = view.findViewById(R.id.etMobile);
         etDepartment = view.findViewById(R.id.etDepartment);
         etDesignation = view.findViewById(R.id.etDesignation);
+        etShift = view.findViewById(R.id.etShift);
         btnProceed = view.findViewById(R.id.btnProceed);
         dbManager = new DBManager(requireContext());
         dbManager.loadPerson();
@@ -148,10 +150,13 @@ public class EnrollFragment extends Fragment {
             String phone = etMobile.getText().toString().trim();
             String department = etDepartment.getText().toString().trim();
             String designation = etDesignation.getText().toString().trim();
+            String shift = etShift.getText().toString().trim();
             
             boolean exists = dbManager.personExists(name);
             
             // Save to Local DB (Optimistic UI - marked as not synced)
+            // Note: Local DB schema update for 'shift' is pending, so we might lose it locally if we don't update DBManager.
+            // But requirement is backend sync. We will send it to backend regardless.
             dbManager.insertPerson(name, faceImage, templates, phone, department, designation, false);
             
             if (exists) {
@@ -161,23 +166,24 @@ public class EnrollFragment extends Fragment {
             }
 
             // Sync to Backend
-            syncToBackend(name, templates, faceImage, phone, department, designation);
+            syncToBackend(name, templates, faceImage, phone, department, designation, shift);
             
             // Clear inputs
             etName.setText("");
             etMobile.setText("");
             etDepartment.setText("");
             etDesignation.setText("");
+            etShift.setText("");
         }
     }
 
-    private void syncToBackend(String name, byte[] templates, Bitmap faceImage, String phone, String department, String designation) {
+    private void syncToBackend(String name, byte[] templates, Bitmap faceImage, String phone, String department, String designation, String shift) {
         String templatesBase64 = Base64.encodeToString(templates, Base64.NO_WRAP);
         ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
         faceImage.compress(Bitmap.CompressFormat.JPEG, 100, byteArrayOutputStream);
         String faceImageBase64 = Base64.encodeToString(byteArrayOutputStream.toByteArray(), Base64.NO_WRAP);
 
-        SyncRequest syncRequest = new SyncRequest(name, templatesBase64, faceImageBase64, phone, department, designation);
+        SyncRequest syncRequest = new SyncRequest(name, templatesBase64, faceImageBase64, phone, department, designation, shift);
         RetrofitClient.getService().uploadFace(syncRequest).enqueue(new Callback<Void>() {
             @Override
             public void onResponse(Call<Void> call, Response<Void> response) {

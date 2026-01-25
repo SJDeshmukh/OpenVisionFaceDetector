@@ -21,13 +21,17 @@ public class SyncRequest {
     @SerializedName("designation")
     private String designation;
 
-    public SyncRequest(String name, String templates, String faceImage, String phone, String department, String designation) {
+    @SerializedName("shift")
+    private String shift;
+
+    public SyncRequest(String name, String templates, String faceImage, String phone, String department, String designation, String shift) {
         this.name = name;
         this.templates = templates;
         this.faceImage = faceImage;
         this.phone = phone;
         this.department = department;
         this.designation = designation;
+        this.shift = shift;
     }
 
     public String getName() { return name; }
@@ -36,4 +40,5 @@ public class SyncRequest {
     public String getPhone() { return phone; }
     public String getDepartment() { return department; }
     public String getDesignation() { return designation; }
+    public String getShift() { return shift; }
 }
