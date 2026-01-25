@@ -2,22 +2,29 @@ import React, { useState, useEffect } from 'react';
 import { API_BASE_URL } from '../config';
 
 const Wages = () => {
+  // Helper to format date as YYYY-MM-DD in local time
+  const formatDate = (date) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  // Calculate default dates (First and Last day of current month)
+  const now = new Date();
+  const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+
   const [payrollData, setPayrollData] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [startDate, setStartDate] = useState(new Date().toISOString().split('T')[0]);
-  const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0]);
+  const [startDate, setStartDate] = useState(formatDate(firstDay));
+  const [endDate, setEndDate] = useState(formatDate(lastDay));
   const [hasChanges, setHasChanges] = useState(false);
   const [saveLoading, setSaveLoading] = useState(false);
   const [workingHours, setWorkingHours] = useState(8.0);
   const [workingHoursChanged, setWorkingHoursChanged] = useState(false);
 
-  // Helper to get first and last day of current month
   useEffect(() => {
-    const date = new Date();
-    const firstDay = new Date(date.getFullYear(), date.getMonth(), 1).toISOString().split('T')[0];
-    const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0).toISOString().split('T')[0];
-    setStartDate(firstDay);
-    setEndDate(lastDay);
     fetchWorkingHours();
   }, []);
 
@@ -268,7 +275,7 @@ const Wages = () => {
                     </td>
                     <td className="py-3 px-4 text-right">
                       <div className="flex items-center justify-end gap-2 relative group">
-                        <span className="text-slate-400 text-sm">$</span>
+                        <span className="text-slate-400 text-sm">RS</span>
                         <input 
                           type="number" 
                           min="0"
@@ -282,11 +289,11 @@ const Wages = () => {
                     </td>
                     <td className="py-3 px-4 text-right">
                         <div className="text-sm font-bold text-slate-900 block">
-                            ₹{parseFloat(person.total_cost || 0).toFixed(2)}
+                            RS {parseFloat(person.total_cost || 0).toFixed(2)}
                         </div>
                         {parseFloat(person.total_hours || 0) > 0 && parseFloat(person.daily_wage || 0) > 0 && (
                             <span className="text-[10px] text-slate-400 block mt-1">
-                                {person.total_hours}h × ₹{(parseFloat(person.daily_wage)/workingHours).toFixed(2)}/hr
+                                {person.total_hours}h × RS {(parseFloat(person.daily_wage)/workingHours).toFixed(2)}/hr
                             </span>
                         )}
                     </td>
