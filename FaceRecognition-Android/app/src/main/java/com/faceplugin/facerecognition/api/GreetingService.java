@@ -28,4 +28,7 @@ public interface GreetingService {
 
     @DELETE("api/sync/delete/{name}")
     Call<Void> deleteFace(@Path("name") String name);
+
+    @GET("api/shifts")
+    Call<ShiftsResponse> getShifts();
 }
