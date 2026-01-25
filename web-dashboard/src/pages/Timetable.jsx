@@ -24,10 +24,12 @@ const Timetable = () => {
   const [companies, setCompanies] = useState([]);
   const [selectedCompanyId, setSelectedCompanyId] = useState(null);
   const [activities, setActivities] = useState([]); // This is the DRAFT state
+  const [shifts, setShifts] = useState([]); // Defined Shifts
   const [loading, setLoading] = useState(true);
   const [isDirty, setIsDirty] = useState(false);
   const [showActivityModal, setShowActivityModal] = useState(false);
   const [showCompanyModal, setShowCompanyModal] = useState(false);
+  const [showShiftModal, setShowShiftModal] = useState(false);
   
   // Form States
   const [editingActivity, setEditingActivity] = useState(null);
@@ -45,6 +47,11 @@ const Timetable = () => {
       greeting: 'normal'
     }
   });
+  const [shiftForm, setShiftForm] = useState({
+    name: '',
+    start_time: '09:00',
+    end_time: '17:00'
+  });
   const [newCompanyName, setNewCompanyName] = useState('');
 
   useEffect(() => {
@@ -54,6 +61,7 @@ const Timetable = () => {
   useEffect(() => {
     if (selectedCompanyId) {
       fetchTimetable(selectedCompanyId);
+      fetchShifts(selectedCompanyId);
     }
   }, [selectedCompanyId]);
 
@@ -73,6 +81,47 @@ const Timetable = () => {
       setCompanies([]);
       setLoading(false);
     }
+  };
+
+  const fetchShifts = async (companyId) => {
+    try {
+      const res = await axios.get(`${API_URL}/companies/${companyId}/shifts`);
+      let data = res.data;
+      if (typeof data === 'string') {
+        try {
+           data = JSON.parse(data);
+        } catch(e) {
+           data = [];
+        }
+      }
+      setShifts(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error("Error fetching shifts:", error);
+      setShifts([]);
+    }
+  };
+
+  const saveShifts = async (updatedShifts) => {
+    try {
+      await axios.put(`${API_URL}/companies/${selectedCompanyId}/shifts`, updatedShifts);
+      setShifts(updatedShifts);
+    } catch (error) {
+      alert("Failed to save shifts");
+    }
+  };
+
+  const handleAddShift = async () => {
+    if (!shiftForm.name) return;
+    const newShift = { ...shiftForm };
+    const updatedShifts = [...shifts, newShift];
+    await saveShifts(updatedShifts);
+    setShiftForm({ name: '', start_time: '09:00', end_time: '17:00' });
+  };
+
+  const handleDeleteShift = async (index) => {
+    if (!confirm("Delete this shift?")) return;
+    const updatedShifts = shifts.filter((_, i) => i !== index);
+    await saveShifts(updatedShifts);
   };
 
   const fetchTimetable = async (companyId) => {
@@ -267,6 +316,14 @@ const Timetable = () => {
               <Plus size={20} />
             </button>
 
+            <button 
+              onClick={() => setShowShiftModal(true)}
+              className="p-2.5 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors text-slate-600 hover:text-slate-800 shadow-sm"
+              title="Manage Shifts"
+            >
+              <Clock size={20} />
+            </button>
+
             <div className="h-8 w-px bg-slate-200 mx-2 hidden md:block"></div>
 
             <button 
@@ -442,6 +499,28 @@ const Timetable = () => {
               {/* Basic Info */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="col-span-2">
+                  <label className="block text-sm font-medium text-slate-800 mb-1.5">Select Shift (Template)</label>
+                  <select 
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-2.5 text-slate-900 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 mb-4"
+                    onChange={(e) => {
+                      const shift = shifts.find(s => s.name === e.target.value);
+                      if (shift) {
+                        setActivityForm({
+                          ...activityForm,
+                          name: shift.name,
+                          start_time: shift.start_time,
+                          end_time: shift.end_time
+                        });
+                      }
+                    }}
+                    value=""
+                  >
+                    <option value="" disabled>Select a shift to auto-fill...</option>
+                    {shifts.map((s, i) => (
+                      <option key={i} value={s.name}>{s.name} ({s.start_time} - {s.end_time})</option>
+                    ))}
+                  </select>
+
                   <label className="block text-sm font-medium text-slate-800 mb-1.5">Activity Name</label>
                   <input 
                     type="text" 
@@ -602,6 +681,82 @@ const Timetable = () => {
               >
                 Create
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Shift Management Modal */}
+      {showShiftModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[60]">
+          <div className="bg-white border border-slate-200 rounded-xl shadow-xl w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-lg font-bold text-slate-900">Manage Shifts</h3>
+              <button onClick={() => setShowShiftModal(false)} className="text-slate-400 hover:text-slate-600">
+                <X size={20} />
+              </button>
+            </div>
+            
+            {/* List of Shifts */}
+            <div className="space-y-3 mb-6">
+              {shifts.length === 0 && <p className="text-slate-500 text-sm text-center py-4">No shifts defined yet.</p>}
+              {shifts.map((shift, idx) => (
+                <div key={idx} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg border border-slate-100">
+                  <div>
+                    <p className="font-medium text-slate-800">{shift.name}</p>
+                    <p className="text-xs text-slate-500">{shift.start_time} - {shift.end_time}</p>
+                  </div>
+                  <button 
+                    onClick={() => handleDeleteShift(idx)}
+                    className="text-red-500 hover:text-red-700 p-1.5 hover:bg-red-50 rounded-md transition-colors"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div className="border-t border-slate-200 pt-6">
+              <h4 className="text-sm font-bold text-slate-800 mb-4">Add New Shift</h4>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Shift Name</label>
+                  <input 
+                    type="text" 
+                    value={shiftForm.name}
+                    onChange={(e) => setShiftForm({...shiftForm, name: e.target.value})}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+                    placeholder="e.g. Morning Shift"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">Start Time</label>
+                    <input 
+                      type="time" 
+                      value={shiftForm.start_time}
+                      onChange={(e) => setShiftForm({...shiftForm, start_time: e.target.value})}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">End Time</label>
+                    <input 
+                      type="time" 
+                      value={shiftForm.end_time}
+                      onChange={(e) => setShiftForm({...shiftForm, end_time: e.target.value})}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                </div>
+                <button 
+                  onClick={handleAddShift}
+                  disabled={!shiftForm.name}
+                  className="w-full py-2.5 bg-blue-600 text-white rounded-lg font-medium text-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  Add Shift
+                </button>
+              </div>
             </div>
           </div>
         </div>

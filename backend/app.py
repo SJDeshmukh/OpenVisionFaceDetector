@@ -110,17 +110,24 @@ def init_db():
                   name TEXT UNIQUE, 
                   draft_timetable TEXT, 
                   live_timetable TEXT,
+                  shifts TEXT DEFAULT '[]',
                   last_modified_by TEXT,
                   last_modified_at DATETIME,
                   published_by TEXT,
                   published_at DATETIME)''')
 
+    # Check for shifts column in existing table and add if missing
+    c.execute("PRAGMA table_info(companies)")
+    columns = [info[1] for info in c.fetchall()]
+    if 'shifts' not in columns:
+        c.execute("ALTER TABLE companies ADD COLUMN shifts TEXT DEFAULT '[]'")
+
     # Create default company if not exists
     c.execute("SELECT * FROM companies WHERE name = 'Open Vision'")
     if not c.fetchone():
-        # Initialize with empty JSON array for timetables
-        c.execute("INSERT INTO companies (name, draft_timetable, live_timetable) VALUES (?, ?, ?)", 
-                  ('Open Vision', '[]', '[]'))
+        # Initialize with empty JSON array for timetables and shifts
+        c.execute("INSERT INTO companies (name, draft_timetable, live_timetable, shifts) VALUES (?, ?, ?, ?)", 
+                  ('Open Vision', '[]', '[]', '[]'))
     
     # --- New Table for System Settings ---
     c.execute('''CREATE TABLE IF NOT EXISTS system_settings
@@ -219,6 +226,35 @@ def update_draft_timetable(company_id):
     conn.close()
     return jsonify({"success": True})
 
+@greeting_bp.route("/companies/<int:company_id>/shifts", methods=["GET"])
+def get_company_shifts(company_id):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute("SELECT shifts FROM companies WHERE id = ?", (company_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if row and row['shifts']:
+        return jsonify(row['shifts']) # Returns the JSON string directly
+    else:
+        return jsonify("[]")
+
+@greeting_bp.route("/companies/<int:company_id>/shifts", methods=["PUT"])
+def update_company_shifts(company_id):
+    shifts_data = request.json
+    
+    import json
+    shifts_str = json.dumps(shifts_data)
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE companies SET shifts = ? WHERE id = ?", (shifts_str, company_id))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({"success": True})
+
 @greeting_bp.route("/shifts", methods=["GET"])
 def get_shifts_list():
     conn = sqlite3.connect(DB_PATH)
@@ -226,19 +262,34 @@ def get_shifts_list():
     c = conn.cursor()
     
     # Default to company ID 1 for now
-    c.execute("SELECT live_timetable FROM companies WHERE id = 1")
+    c.execute("SELECT shifts, live_timetable FROM companies WHERE id = 1")
     row = c.fetchone()
     conn.close()
     
     shifts = []
-    if row and row['live_timetable']:
+    if row:
         import json
-        try:
-            timetable = json.loads(row['live_timetable'])
-            # Extract unique activity names as shifts
-            shifts = list(set([item.get('name') for item in timetable if item.get('name')]))
-        except:
-            pass
+        # Priority 1: Explicit Shifts
+        if row['shifts'] and row['shifts'] != '[]':
+            try:
+                shifts_data = json.loads(row['shifts'])
+                # Handle both list of strings and list of objects
+                if shifts_data and isinstance(shifts_data, list):
+                    if len(shifts_data) > 0 and isinstance(shifts_data[0], dict):
+                        shifts = [s.get('name') for s in shifts_data if s.get('name')]
+                    else:
+                        shifts = shifts_data
+            except:
+                pass
+
+        # Priority 2: Fallback to Live Timetable
+        if not shifts and row['live_timetable']:
+            try:
+                timetable = json.loads(row['live_timetable'])
+                # Extract unique activity names as shifts
+                shifts = list(set([item.get('name') for item in timetable if item.get('name')]))
+            except:
+                pass
             
     # Ensure default shifts exist if list is empty
     if not shifts:
