@@ -36,7 +36,7 @@ const ActivityDashboard = ({ activities = [] }) => {
                 {activity.activity && activity.activity !== 'Work' && ` (${activity.activity})`}
               </span>
               <p className="text-xs text-slate-400 mt-1">
-                {activity.timestamp ? new Date(activity.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '--:--'}
+                {activity.timestamp ? new Date(activity.timestamp.replace(' ', 'T')).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '--:--'}
               </p>
             </div>
           </div>

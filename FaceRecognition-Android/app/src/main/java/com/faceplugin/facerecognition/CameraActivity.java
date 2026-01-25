@@ -53,6 +53,8 @@ import android.util.Log;
 
 import android.speech.tts.TextToSpeech;
 import java.util.Locale;
+import java.util.Date;
+import java.text.SimpleDateFormat;
 
 import android.media.AudioManager;
 import android.media.ToneGenerator;

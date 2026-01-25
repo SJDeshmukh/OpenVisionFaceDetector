@@ -8,6 +8,8 @@ const Wages = () => {
   const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0]);
   const [hasChanges, setHasChanges] = useState(false);
   const [saveLoading, setSaveLoading] = useState(false);
+  const [workingHours, setWorkingHours] = useState(8.0);
+  const [workingHoursChanged, setWorkingHoursChanged] = useState(false);
 
   // Helper to get first and last day of current month
   useEffect(() => {
@@ -16,7 +18,37 @@ const Wages = () => {
     const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0).toISOString().split('T')[0];
     setStartDate(firstDay);
     setEndDate(lastDay);
+    fetchWorkingHours();
   }, []);
+
+  const fetchWorkingHours = async () => {
+      try {
+          const res = await fetch(`${API_BASE_URL}/companies/1`);
+          const data = await res.json();
+          if (data.working_hours) {
+              setWorkingHours(parseFloat(data.working_hours));
+          }
+      } catch (e) {
+          console.error("Error fetching working hours", e);
+      }
+  };
+
+  const saveWorkingHours = async () => {
+      try {
+          const res = await fetch(`${API_BASE_URL}/companies/1`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ working_hours: parseFloat(workingHours) })
+          });
+          if (res.ok) {
+              setWorkingHoursChanged(false);
+              fetchPayroll(); // Refresh calculation
+          }
+      } catch (e) {
+          console.error("Error saving working hours", e);
+      }
+  };
+
 
   const fetchPayroll = async () => {
     setLoading(true);
@@ -44,8 +76,8 @@ const Wages = () => {
     newData[index].daily_wage = parseFloat(value) || 0;
     
     // Recalculate cost immediately
-    // Assumption: Daily Wage is for 8 hours. Hourly Rate = Daily / 8.
-    const hourlyRate = newData[index].daily_wage / 8.0; 
+    // Assumption: Daily Wage is for 'workingHours'. Hourly Rate = Daily / workingHours.
+    const hourlyRate = newData[index].daily_wage / workingHours; 
     newData[index].total_cost = (newData[index].total_hours * hourlyRate).toFixed(2);
     
     setPayrollData(newData);
@@ -141,8 +173,36 @@ const Wages = () => {
           
           <div className="sm:ml-auto flex items-center gap-2 text-xs text-amber-600 bg-amber-50 px-3 py-2 rounded-lg border border-amber-100">
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
-            Cost is calculated based on an 8-hour workday standard.
+            Cost is calculated based on exact payable hours (Total Payable Hours × Hourly Rate).
           </div>
+        </div>
+
+        {/* Working Hours Setting */}
+        <div className="bg-slate-50 border-b border-slate-200 p-4 rounded-t-lg flex items-center gap-4 mb-4">
+            <div className="flex items-center gap-2">
+                <label className="text-sm font-semibold text-slate-700">Standard Daily Working Hours:</label>
+                <input 
+                    type="number" 
+                    step="0.5"
+                    min="1"
+                    max="24"
+                    value={workingHours}
+                    onChange={(e) => {
+                        setWorkingHours(e.target.value);
+                        setWorkingHoursChanged(true);
+                    }}
+                    className="w-20 px-2 py-1 border border-slate-300 rounded text-sm focus:ring-2 focus:ring-blue-500"
+                />
+                <span className="text-xs text-slate-500">hours/day</span>
+            </div>
+            {workingHoursChanged && (
+                <button 
+                    onClick={saveWorkingHours}
+                    className="text-xs bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700 transition-colors"
+                >
+                    Update Calculation
+                </button>
+            )}
         </div>
 
         <div className="overflow-x-auto rounded-lg border border-slate-200">
@@ -221,12 +281,12 @@ const Wages = () => {
                       </div>
                     </td>
                     <td className="py-3 px-4 text-right">
-                        <span className="text-sm font-bold text-slate-900 block">
-                            ${person.total_cost}
-                        </span>
-                        {person.total_hours > 0 && person.daily_wage > 0 && (
-                            <span className="text-xs text-slate-400">
-                                ${(person.daily_wage/8).toFixed(2)}/hr
+                        <div className="text-sm font-bold text-slate-900 block">
+                            ₹{parseFloat(person.total_cost || 0).toFixed(2)}
+                        </div>
+                        {parseFloat(person.total_hours || 0) > 0 && parseFloat(person.daily_wage || 0) > 0 && (
+                            <span className="text-[10px] text-slate-400 block mt-1">
+                                {person.total_hours}h × ₹{(parseFloat(person.daily_wage)/workingHours).toFixed(2)}/hr
                             </span>
                         )}
                     </td>
@@ -239,7 +299,7 @@ const Wages = () => {
                     <tr>
                         <td colSpan="6" className="py-3 px-4 text-right text-sm uppercase tracking-wider">Total Estimated Cost</td>
                         <td className="py-3 px-4 text-right text-base text-blue-700">
-                            ${payrollData.reduce((acc, curr) => acc + parseFloat(curr.total_cost || 0), 0).toFixed(2)}
+                            ₹{payrollData.reduce((acc, curr) => acc + parseFloat(curr.total_cost || 0), 0).toFixed(2)}
                         </td>
                     </tr>
                 </tfoot>

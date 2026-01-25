@@ -304,10 +304,10 @@ const Attendance = () => {
                         {log.shift || <span className="text-slate-400 italic">None</span>}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
-                        {new Date(log.timestamp.endsWith('Z') ? log.timestamp : log.timestamp + 'Z').toLocaleDateString()}
+                        {new Date(log.timestamp.replace(' ', 'T')).toLocaleDateString()}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-slate-700">
-                        {new Date(log.timestamp.endsWith('Z') ? log.timestamp : log.timestamp + 'Z').toLocaleTimeString()}
+                        {new Date(log.timestamp.replace(' ', 'T')).toLocaleTimeString()}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700 border border-blue-100">
@@ -358,10 +358,10 @@ const Attendance = () => {
                                             )}
                                          </td>
                                          <td className="px-4 py-2 text-sm font-mono text-slate-700">
-                                            {new Date(historyLog.timestamp.endsWith('Z') ? historyLog.timestamp : historyLog.timestamp + 'Z').toLocaleTimeString()}
+                                            {new Date(historyLog.timestamp.replace(' ', 'T')).toLocaleTimeString()}
                                          </td>
                                          <td className="px-4 py-2 text-sm text-slate-600">
-                                            {new Date(historyLog.timestamp.endsWith('Z') ? historyLog.timestamp : historyLog.timestamp + 'Z').toLocaleDateString()}
+                                            {new Date(historyLog.timestamp.replace(' ', 'T')).toLocaleDateString()}
                                          </td>
                                          <td className="px-4 py-2">
                                             <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${getStatus(historyLog).color}`}>

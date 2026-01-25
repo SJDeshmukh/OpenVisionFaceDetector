@@ -96,6 +96,13 @@ def init_db():
         print("Migrating: Adding is_late column to attendance table")
         c.execute("ALTER TABLE attendance ADD COLUMN is_late INTEGER DEFAULT 0")
 
+    # Check for working_hours in companies table
+    c.execute("PRAGMA table_info(companies)")
+    companies_columns = [info[1] for info in c.fetchall()]
+    if 'working_hours' not in companies_columns:
+        print("Migrating: Adding working_hours column to companies table")
+        c.execute("ALTER TABLE companies ADD COLUMN working_hours REAL DEFAULT 8.0")
+
     # Create default admin if not exists
     c.execute("SELECT * FROM system_users WHERE username = 'admin'")
     if not c.fetchone():
@@ -194,21 +201,24 @@ def create_company():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@greeting_bp.route("/companies/<int:company_id>/shifts", methods=["PUT"])
-def update_shifts(company_id):
+@greeting_bp.route("/companies/<int:company_id>", methods=["PUT"])
+def update_company_settings(company_id):
     data = request.json
-    shifts = data.get("shifts") # Expecting JSON string or object
-    
-    if shifts is None:
-        return jsonify({"error": "shifts is required"}), 400
-
-    import json
-    if isinstance(shifts, list):
-        shifts = json.dumps(shifts)
+    shifts = data.get("shifts") 
+    working_hours = data.get("working_hours")
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("UPDATE companies SET shifts = ? WHERE id = ?", (shifts, company_id))
+
+    if shifts is not None:
+        import json
+        if isinstance(shifts, list):
+            shifts = json.dumps(shifts)
+        c.execute("UPDATE companies SET shifts = ? WHERE id = ?", (shifts, company_id))
+    
+    if working_hours is not None:
+        c.execute("UPDATE companies SET working_hours = ? WHERE id = ?", (working_hours, company_id))
+
     conn.commit()
     conn.close()
     return jsonify({"success": True})
@@ -480,7 +490,11 @@ def export_report():
     writer.writerow(['Name', 'Date', 'Time', 'Status', 'Department', 'Designation'])
     
     for row in rows:
-        ts = datetime.strptime(row['timestamp'], '%Y-%m-%d %H:%M:%S.%f')
+        try:
+            ts = datetime.strptime(row['timestamp'], '%Y-%m-%d %H:%M:%S.%f')
+        except ValueError:
+            ts = datetime.strptime(row['timestamp'], '%Y-%m-%d %H:%M:%S')
+            
         date_str = ts.strftime('%Y-%m-%d')
         time_str = ts.strftime('%I:%M %p')
         
@@ -576,15 +590,20 @@ def get_payroll_report():
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
-    # 1. Fetch Timetable
-    c.execute("SELECT live_timetable FROM companies WHERE id = 1")
+    # 1. Fetch Timetable and Working Hours
+    c.execute("SELECT live_timetable, working_hours FROM companies WHERE id = 1")
     company_row = c.fetchone()
     timetable = []
-    if company_row and company_row['live_timetable']:
-        try:
-            timetable = json.loads(company_row['live_timetable'])
-        except:
-            timetable = []
+    company_working_hours = 8.0 # Default
+
+    if company_row:
+        if company_row['live_timetable']:
+            try:
+                timetable = json.loads(company_row['live_timetable'])
+            except:
+                timetable = []
+        if company_row['working_hours']:
+            company_working_hours = float(company_row['working_hours'])
 
     # 2. Fetch Persons (to get wages)
     c.execute("SELECT name, daily_wage, department, designation, face_image, phone FROM faces")
@@ -630,17 +649,20 @@ def get_payroll_report():
             records = user_date_records.get((name, d_str), [])
             
             if records:
-                daily_stats = calculate_daily_hours(records, timetable)
-                total_hours += daily_stats['total_hours']
-                if daily_stats['total_hours'] > 0:
+                # Use the helper function directly which returns hours float
+                # NOTE: calculate_daily_hours helper returns FLOAT (hours), not dict
+                daily_hours = calculate_daily_hours(records, timetable)
+                total_hours += daily_hours
+                if daily_hours > 0:
                     days_present += 1
             
             current_date += timedelta(days=1)
             
         daily_wage = person_info['daily_wage'] or 0
         
-        # Cost Calculation: (Total Hours / 8) * Daily Wage
-        hourly_rate = daily_wage / 8.0 if daily_wage else 0
+        # Cost Calculation: (Total Hours / Working Hours) * Daily Wage
+        # This calculates EXACT cost based on Payable Hours
+        hourly_rate = daily_wage / company_working_hours if daily_wage and company_working_hours > 0 else 0
         total_cost = round(total_hours * hourly_rate, 2)
         
         payroll_data.append({
@@ -652,7 +674,8 @@ def get_payroll_report():
             "daily_wage": daily_wage,
             "total_hours": round(total_hours, 2),
             "days_present": days_present,
-            "total_cost": total_cost
+            "total_cost": total_cost,
+            "company_working_hours": company_working_hours # Pass back to UI for display
         })
         
     return jsonify({"payroll": payroll_data})
