@@ -54,6 +54,9 @@ import android.util.Log;
 import android.speech.tts.TextToSpeech;
 import java.util.Locale;
 
+import android.media.AudioManager;
+import android.media.ToneGenerator;
+
 public class CameraActivity extends AppCompatActivity implements TextToSpeech.OnInitListener {
 
     static String TAG = CameraActivity.class.getSimpleName();
@@ -206,9 +209,15 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
                             Toast.makeText(CameraActivity.this, greeting.getText(), Toast.LENGTH_LONG).show();
                         });
                         
+                        // TTS commented out
+                        /*
                         if (tts != null) {
                             tts.speak(greeting.getText(), TextToSpeech.QUEUE_FLUSH, null, null);
                         }
+                        */
+
+                        // Play Sound
+                        playAttendanceSound(greeting.getStatus());
                     }
                 }
             }
@@ -219,6 +228,21 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
                 Log.e(TAG, "API Error", t);
             }
         });
+    }
+
+    private void playAttendanceSound(String status) {
+        try {
+            ToneGenerator toneGen = new ToneGenerator(AudioManager.STREAM_MUSIC, 100);
+            if ("CHECK_IN".equals(status)) {
+                // Check In Sound - High Pitch "Success" feel
+                toneGen.startTone(ToneGenerator.TONE_PROP_BEEP, 200); 
+            } else {
+                // Check Out Sound - Different Tone (Double beep or lower)
+                toneGen.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 200);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
     @Override
