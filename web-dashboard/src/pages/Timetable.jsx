@@ -162,7 +162,7 @@ const Timetable = () => {
     }
 
     try {
-      await axios.put(`${API_URL}/companies/${selectedCompanyId}/shifts`, {
+      await axios.put(`${API_URL}/companies/${selectedCompanyId}`, {
         shifts: updatedShifts
       });
       setShifts(updatedShifts);
@@ -179,7 +179,7 @@ const Timetable = () => {
     if (!confirm("Delete this shift? Activities linked to this shift will lose the association.")) return;
     const updatedShifts = shifts.filter(s => s.id !== id);
     try {
-      await axios.put(`${API_URL}/companies/${selectedCompanyId}/shifts`, {
+      await axios.put(`${API_URL}/companies/${selectedCompanyId}`, {
         shifts: updatedShifts
       });
       setShifts(updatedShifts);

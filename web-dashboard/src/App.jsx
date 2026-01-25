@@ -47,6 +47,7 @@ function App() {
               <Route path="/audit-logs" element={<AuditLogs />} />
               <Route path="/timetable" element={<Timetable />} />
               <Route path="/wages" element={<Wages />} />
+              <Route path="/live-attendance" element={<LiveAttendance />} />
             </Route>
 
             {/* Shared/User Routes */}

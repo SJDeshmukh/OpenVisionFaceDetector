@@ -650,10 +650,10 @@ def get_payroll_report():
             
             if records:
                 # Use the helper function directly which returns hours float
-                # NOTE: calculate_daily_hours helper returns FLOAT (hours), not dict
-                daily_hours = calculate_daily_hours(records, timetable)
-                total_hours += daily_hours
-                if daily_hours > 0:
+                # NOTE: calculate_daily_hours helper returns DICT
+                stats = calculate_daily_hours(records, timetable)
+                total_hours += stats['total_hours']
+                if stats['total_hours'] > 0:
                     days_present += 1
             
             current_date += timedelta(days=1)
