@@ -220,7 +220,7 @@ def update_draft_timetable(company_id):
     return jsonify({"success": True})
 
 @greeting_bp.route("/shifts", methods=["GET"])
-def get_shifts():
+def get_shifts_list():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
