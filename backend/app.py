@@ -1419,16 +1419,21 @@ def calculate_daily_hours(records, timetable=None):
                         is_gap_payable = False
                         if last_checkout_activity:
                              # Find activity in timetable
-                             for act in timetable:
-                                 if act.get('name') == last_checkout_activity:
-                                     # Default is_payable to True for Work, False for others if not specified?
-                                     # User said: "if it is off, then the activity is not payable".
-                                     # In our JSON, we defaulted is_payable to True in UI, but existing data might miss it.
-                                     # Let's assume default True for 'Work' type, False for others if missing.
-                                     act_type = act.get('type', 'Work')
-                                     default_payable = (act_type == 'Work')
-                                     is_gap_payable = act.get('is_payable', default_payable)
-                                     break
+                              for act in timetable:
+                                if act.get('name') == last_checkout_activity:
+                                    # Default is_payable to True for Work, False for others if not specified?
+                                    # User said: "if it is off, then the activity is not payable".
+                                    # In our JSON, we defaulted is_payable to True in UI, but existing data might miss it.
+                                    # Let's assume default True for 'Work' type, False for others if missing.
+                                    act_type = act.get('type', 'Work')
+                                    
+                                    # LOGIC FIX: Gaps AFTER 'Work' should NOT be payable (this implies off-duty).
+                                    # Only gaps after 'Break' or specific payable activities should be paid.
+                                    if act_type == 'Work':
+                                        is_gap_payable = False
+                                    else:
+                                        is_gap_payable = act.get('is_payable', False)
+                                    break
                         
                         if is_gap_payable:
                             total_seconds += gap_seconds
