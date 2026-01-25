@@ -1,5 +1,6 @@
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import logo from '../assets/logo_openvision.png';
 import { 
   LayoutDashboard, 
   Users, 
@@ -43,10 +44,10 @@ export const Sidebar = () => {
   return (
     <aside className="fixed left-0 top-0 h-full w-64 bg-slate-900 text-white z-20 flex flex-col shadow-xl">
       <div className="h-16 flex items-center px-6 border-b border-slate-800">
-        <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center mr-3">
-          <Shield size={20} className="text-white" />
+        <div className="w-8 h-8 flex items-center justify-center mr-3">
+          <img src={logo} alt="VisionX" className="w-full h-full object-contain" />
         </div>
-        <span className="text-lg font-bold tracking-tight">SecureFace</span>
+        <span className="text-lg font-bold tracking-tight">VisionX</span>
       </div>
 
       <div className="flex-1 overflow-y-auto py-6 px-3 space-y-1 custom-scrollbar">

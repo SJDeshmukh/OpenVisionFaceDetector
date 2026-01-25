@@ -57,7 +57,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:background="@drawable/glass_panel"
+            android:background="@drawable/bg_glass_card"
             android:padding="20dp">
 
             <TextView
@@ -65,7 +65,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="Liveness score: 0.83"
-                android:textColor="@color/ai_text_primary"
+                android:textColor="@color/vision_text_primary"
                 android:textSize="16sp"
                 android:layout_marginBottom="12dp" />
 
@@ -74,7 +74,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="Quality score: 0.83"
-                android:textColor="@color/ai_text_primary"
+                android:textColor="@color/vision_text_primary"
                 android:textSize="16sp"
                 android:layout_marginBottom="12dp" />
 
@@ -83,7 +83,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="Luminance: 0.83"
-                android:textColor="@color/ai_text_primary"
+                android:textColor="@color/vision_text_primary"
                 android:textSize="16sp"
                 android:layout_marginBottom="12dp" />
 
@@ -92,7 +92,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="Angles: 0.0, 0.0, 0.0"
-                android:textColor="@color/ai_text_primary"
+                android:textColor="@color/vision_text_primary"
                 android:textSize="16sp"
                 android:layout_marginBottom="12dp" />
 

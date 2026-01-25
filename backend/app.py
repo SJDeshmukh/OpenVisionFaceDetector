@@ -616,6 +616,7 @@ def person_event():
     person_id = data.get("person_id")
     confidence = data.get("confidence", 0)
     captured_image = data.get("image") # Base64 string of the frame
+    is_attendance = data.get("is_attendance", True) # Default to True for backward compatibility
 
     # Case 1: No person detected
     if not detected:
@@ -630,6 +631,15 @@ def person_event():
         })
 
     # Case 3: Person detected and recognized
+    
+    # If this is just an identification check (e.g. from Admin panel), do not record attendance
+    if not is_attendance:
+        print(f"Admin Identification Check: {name}")
+        return jsonify({
+            "speak": True,
+            "text": f"Identified: {name}"
+        })
+
     # --- Check-in / Check-out Logic ---
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row

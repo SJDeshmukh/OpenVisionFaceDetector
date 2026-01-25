@@ -463,18 +463,14 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
             faceBottom = Math.max(faceBottom, faceBox.landmarks_68[i * 2 + 1]);
         }
 
-        float sizeRate = 0.30f;
-        float interRate = 0.03f;
+        float sizeRate = 0.25f;
+        float interRate = 0.10f;
         Size frameSize = new Size(PREVIEW_WIDTH, PREVIEW_HEIGHT);
         RectF roiRect = CaptureView.getROIRect(frameSize);
         float centerY = (faceBox.y2 + faceBox.y1) / 2;
         float topY = centerY - (faceBox.y2 - faceBox.y1) * 2 / 3;
         float interX = Math.max(0f, roiRect.left - faceLeft) + Math.max(0f, faceRight - roiRect.right);
         float interY = Math.max(0f, roiRect.top - topY) + Math.max(0f, faceBottom - roiRect.bottom);
-        if(interX / roiRect.width() > interRate || interY / roiRect.height() > interRate) {
-            return FACE_CAPTURE_STATE.FIT_IN_CIRCLE;
-        }
-
         if(interX / roiRect.width() > interRate || interY / roiRect.height() > interRate) {
             return FACE_CAPTURE_STATE.FIT_IN_CIRCLE;
         }
