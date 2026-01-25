@@ -10,6 +10,7 @@ import AuditLogs from './pages/AuditLogs';
 import Login from './pages/Login';
 import Timetable from './pages/Timetable';
 import Wages from './pages/Wages';
+import LiveAttendance from './pages/LiveAttendance';
 import { AuthProvider, useAuth } from './context/AuthContext';
 
 // Protected Route Component
