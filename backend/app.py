@@ -219,6 +219,34 @@ def update_draft_timetable(company_id):
     conn.close()
     return jsonify({"success": True})
 
+@greeting_bp.route("/shifts", methods=["GET"])
+def get_shifts():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    # Default to company ID 1 for now
+    c.execute("SELECT live_timetable FROM companies WHERE id = 1")
+    row = c.fetchone()
+    conn.close()
+    
+    shifts = []
+    if row and row['live_timetable']:
+        import json
+        try:
+            timetable = json.loads(row['live_timetable'])
+            # Extract unique activity names as shifts
+            shifts = list(set([item.get('name') for item in timetable if item.get('name')]))
+        except:
+            pass
+            
+    # Ensure default shifts exist if list is empty
+    if not shifts:
+        shifts = ["Morning Shift", "Night Shift", "General"]
+        
+    return jsonify({"shifts": shifts})
+
+
 @greeting_bp.route("/companies/<int:company_id>/publish", methods=["POST"])
 def publish_timetable(company_id):
     data = request.json
@@ -568,6 +596,30 @@ def update_settings():
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
+
+@greeting_bp.route("/shifts", methods=["GET"])
+def get_shifts():
+    import json
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    # Get live timetable for the default company (ID 1)
+    c.execute("SELECT live_timetable FROM companies WHERE id = 1")
+    row = c.fetchone()
+    conn.close()
+    
+    shifts = []
+    if row and row['live_timetable']:
+        try:
+            timetable = json.loads(row['live_timetable'])
+            # Extract activities of type 'Work' as shifts
+            shifts = list(set([item['name'] for item in timetable if item.get('type') == 'Work']))
+            shifts.sort()
+        except Exception as e:
+            print(f"Error parsing timetable for shifts: {e}")
+            
+    return jsonify({"shifts": shifts})
 
 # --- User Management Endpoints ---
 @greeting_bp.route("/users", methods=["GET"])

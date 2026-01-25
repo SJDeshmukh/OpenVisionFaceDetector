@@ -162,7 +162,7 @@ const Timetable = () => {
     }
   };
 
-  const handleSaveActivity = () => {
+  const handleSaveActivity = async () => {
     const newActivity = {
       ...activityForm,
       id: activityForm.id || Date.now() // Simple ID generation
@@ -179,9 +179,12 @@ const Timetable = () => {
     updatedActivities.sort((a, b) => a.start_time.localeCompare(b.start_time));
 
     setActivities(updatedActivities);
-    setIsDirty(true);
+    setIsDirty(false);
     setShowActivityModal(false);
     resetActivityForm();
+    
+    // Auto-save
+    await handleSaveDraft(updatedActivities);
   };
 
   const handleDeleteActivity = async (id) => {

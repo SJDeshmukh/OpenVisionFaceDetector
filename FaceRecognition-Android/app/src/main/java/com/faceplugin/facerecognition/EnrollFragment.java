@@ -12,6 +12,8 @@ import android.util.Base64;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.ArrayAdapter;
+import android.widget.AutoCompleteTextView;
 import android.widget.Button;
 import android.widget.Toast;
 
@@ -22,6 +24,7 @@ import androidx.annotation.Nullable;
 import androidx.fragment.app.Fragment;
 
 import com.faceplugin.facerecognition.api.RetrofitClient;
+import com.faceplugin.facerecognition.api.ShiftsResponse;
 import com.faceplugin.facerecognition.api.SyncRequest;
 import com.google.android.material.textfield.TextInputEditText;
 import com.ocp.facesdk.FaceBox;
@@ -42,7 +45,7 @@ public class EnrollFragment extends Fragment {
     private TextInputEditText etMobile;
     private TextInputEditText etDepartment;
     private TextInputEditText etDesignation;
-    private TextInputEditText etShift;
+    private AutoCompleteTextView etShift;
     private Button btnProceed;
     private DBManager dbManager;
 
@@ -59,6 +62,15 @@ public class EnrollFragment extends Fragment {
         etDepartment = view.findViewById(R.id.etDepartment);
         etDesignation = view.findViewById(R.id.etDesignation);
         etShift = view.findViewById(R.id.etShift);
+        // Initial empty state while loading
+        String[] loadingShifts = new String[] {"Loading shifts..."};
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(requireContext(), android.R.layout.simple_dropdown_item_1line, loadingShifts);
+        etShift.setAdapter(adapter);
+        etShift.setEnabled(false); // Disable until loaded
+        
+        // Fetch dynamic shifts from backend
+        fetchShifts(adapter, etShift);
+        
         btnProceed = view.findViewById(R.id.btnProceed);
         dbManager = new DBManager(requireContext());
         dbManager.loadPerson();
@@ -128,6 +140,36 @@ public class EnrollFragment extends Fragment {
         });
 
         return view;
+    }
+
+    private void fetchShifts(ArrayAdapter<String> adapter, AutoCompleteTextView etShift) {
+        RetrofitClient.getService().getShifts().enqueue(new Callback<ShiftsResponse>() {
+            @Override
+            public void onResponse(Call<ShiftsResponse> call, Response<ShiftsResponse> response) {
+                if (response.isSuccessful() && response.body() != null) {
+                    List<String> dynamicShifts = response.body().getShifts();
+                    if (dynamicShifts != null && !dynamicShifts.isEmpty()) {
+                        adapter.clear();
+                        adapter.addAll(dynamicShifts);
+                        adapter.notifyDataSetChanged();
+                        etShift.setEnabled(true);
+                        etShift.setText(dynamicShifts.get(0), false); // Select first by default
+                    } else {
+                        adapter.clear();
+                        adapter.add("No shifts found");
+                        adapter.notifyDataSetChanged();
+                    }
+                }
+            }
+
+            @Override
+            public void onFailure(Call<ShiftsResponse> call, Throwable t) {
+                adapter.clear();
+                adapter.add("Failed to load shifts");
+                adapter.notifyDataSetChanged();
+                t.printStackTrace();
+            }
+        });
     }
 
     private void processImage(Bitmap bitmap) {

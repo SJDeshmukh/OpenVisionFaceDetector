@@ -68,7 +68,7 @@ const Dashboard = () => {
     return () => clearInterval(interval);
   }, []);
 
-  const KpiCard = ({ title, value, subtext, icon: Icon, color, trend }) => (
+  const KpiCard = ({ title, value, subtext, icon: Icon, color }) => (
     <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-between h-32 relative overflow-hidden group hover:shadow-md transition-shadow">
       <div className="flex justify-between items-start z-10">
         <div>
