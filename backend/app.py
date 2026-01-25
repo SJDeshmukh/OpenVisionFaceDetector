@@ -522,7 +522,15 @@ def export_report():
                     dt_obj = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S.%f')
                 else:
                     dt_obj = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S')
-                date_str = dt_obj.strftime('%Y-%m-%d')
+                
+                # Shift Day Logic: If time is < 06:00, assign to previous day
+                # This ensures night shifts (e.g. ending at 1am) are grouped with the start day
+                if dt_obj.hour < 6:
+                    adjusted_date = dt_obj.date() - timedelta(days=1)
+                else:
+                    adjusted_date = dt_obj.date()
+                    
+                date_str = adjusted_date.strftime('%Y-%m-%d')
                 user_date_records[(row['name'], date_str)].append(dict(row))
             except:
                 continue
@@ -745,7 +753,14 @@ def get_payroll_report():
                 dt_obj = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S.%f')
             else:
                 dt_obj = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S')
-            date_str = dt_obj.strftime('%Y-%m-%d')
+            
+            # Shift Day Logic: If time is < 06:00, assign to previous day
+            if dt_obj.hour < 6:
+                adjusted_date = dt_obj.date() - timedelta(days=1)
+            else:
+                adjusted_date = dt_obj.date()
+                
+            date_str = adjusted_date.strftime('%Y-%m-%d')
             user_date_records[(row['name'], date_str)].append(dict(row))
         except:
             continue
@@ -1085,6 +1100,24 @@ def person_event():
     if last_record and last_record['status'] == 'CHECK_IN':
         expected_status = 'CHECK_OUT'
 
+    # Helper function for time conversion
+    def to_mins(hm):
+        try:
+            # Basic cleanup for robustness
+            hm = str(hm).strip().lower().replace(' am', '').replace(' pm', '').replace('am', '').replace('pm', '')
+            if ':' in hm:
+                parts = hm.split(':')
+            elif '.' in hm:
+                parts = hm.split('.')
+            else:
+                return 0
+            
+            h = int(parts[0])
+            m = int(parts[1])
+            return h * 60 + m
+        except:
+            return 0
+
     # Identify Activity Context FIRST to determine duplication rules
     activity_name = "Work" # Default
     activity_type = "Work"
@@ -1117,13 +1150,6 @@ def person_event():
             current_hm = now.strftime('%H:%M')
             day_name = now.strftime('%a')
             
-            def to_mins(hm):
-                try:
-                    h, m = map(int, hm.split(':'))
-                    return h * 60 + m
-                except:
-                    return 0
-
             curr_mins = to_mins(current_hm)
             today_acts = [a for a in timetable if day_name in a.get('days', [])]
             
@@ -1145,7 +1171,21 @@ def person_event():
                 act_rules = act.get('rules', {})
                 act_grace = int(act_rules.get('grace_period', tolerance))
                 
-                if (start_mins - act_grace) <= curr_mins <= (end_mins + act_grace):
+                is_match = False
+                start_window = start_mins - act_grace
+                end_window = end_mins + act_grace
+                
+                if start_mins > end_mins:
+                    # Night shift (spans midnight)
+                    # Match if time is >= start_window OR <= end_window
+                    if curr_mins >= start_window or curr_mins <= end_window:
+                        is_match = True
+                else:
+                    # Standard shift
+                    if start_window <= curr_mins <= end_window:
+                        is_match = True
+                        
+                if is_match:
                     # Filter by Shift ID if activity has one
                     act_shift_id = act.get('shift_id')
                     # If activity has a shift_id, it MUST match the user's shift_id
@@ -1329,13 +1369,25 @@ def person_event():
                 curr_mins = now_check.hour * 60 + now_check.minute
             
             start_hm = best_match.get('start_time', '09:00')
-            h, m = map(int, start_hm.split(':'))
-            start_mins = h * 60 + m
-            threshold_mins = start_mins + grace_period
+            start_mins = to_mins(start_hm)
             
-            if curr_mins > threshold_mins:
+            # Night Shift Support
+            end_hm = best_match.get('end_time', '17:00')
+            end_mins = to_mins(end_hm)
+            
+            threshold_mins = start_mins + grace_period
+            check_mins = curr_mins
+            
+            if start_mins > end_mins:
+                 # Night shift: If current time is in the "next day" window (e.g. 00:00 to end_time + buffer)
+                 # We treat it as belonging to the shift started previous day.
+                 # Buffer: 6 hours (360 mins) to catch very late arrivals
+                 if curr_mins <= (end_mins + 360):
+                     check_mins += 1440
+            
+            if check_mins > threshold_mins:
                 is_late = 1
-                print(f"Late Detected: {name} (Time: {curr_mins}, Start: {start_mins}, Grace: {grace_period})")
+                print(f"Late Detected: {name} (Time: {check_mins}, Start: {start_mins}, Grace: {grace_period})")
         except Exception as e:
             print(f"Late Calculation Error: {e}")
 
