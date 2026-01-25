@@ -185,9 +185,9 @@ const Wages = () => {
         </div>
 
         {/* Working Hours Setting */}
-        <div className="bg-slate-50 border-b border-slate-200 p-4 rounded-t-lg flex items-center gap-4 mb-4">
+        <div className="bg-slate-50 border-b border-slate-200 p-4 rounded-t-lg flex flex-col sm:flex-row sm:items-center gap-4 mb-4">
             <div className="flex items-center gap-2">
-                <label className="text-sm font-semibold text-slate-700">Standard Daily Working Hours:</label>
+                <label className="text-sm font-semibold text-slate-700 whitespace-nowrap">Standard Daily Working Hours:</label>
                 <input 
                     type="number" 
                     step="0.5"
@@ -200,12 +200,12 @@ const Wages = () => {
                     }}
                     className="w-20 px-2 py-1 border border-slate-300 rounded text-sm focus:ring-2 focus:ring-blue-500"
                 />
-                <span className="text-xs text-slate-500">hours/day</span>
+                <span className="text-xs text-slate-500 whitespace-nowrap">hours/day</span>
             </div>
             {workingHoursChanged && (
                 <button 
                     onClick={saveWorkingHours}
-                    className="text-xs bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700 transition-colors"
+                    className="text-xs bg-blue-600 text-white px-3 py-2 sm:py-1 rounded hover:bg-blue-700 transition-colors w-full sm:w-auto"
                 >
                     Update Calculation
                 </button>

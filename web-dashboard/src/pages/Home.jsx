@@ -47,7 +47,7 @@ const Home = () => {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ delay: 0.5, duration: 1 }}
-        className="absolute bottom-10 left-0 right-0 flex justify-center space-x-12 text-gray-400"
+        className="absolute bottom-10 left-0 right-0 flex justify-center gap-6 sm:gap-12 text-gray-400 px-4"
       >
         <div className="text-center">
           <p className="text-3xl font-bold text-white">99.9%</p>

@@ -14,7 +14,9 @@ import {
   LogOut,
   CalendarClock,
   DollarSign,
-  Activity
+  Activity,
+  Menu,
+  X
 } from 'lucide-react';
 
 const adminNavItems = [
@@ -34,7 +36,7 @@ const userNavItems = [
   { name: 'Attendance', path: '/attendance', icon: ClipboardList },
 ];
 
-export const Sidebar = () => {
+export const Sidebar = ({ isOpen, onClose }) => {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
 
@@ -46,53 +48,78 @@ export const Sidebar = () => {
   const navItems = user?.role === 'admin' ? adminNavItems : userNavItems;
 
   return (
-    <aside className="fixed left-0 top-0 h-full w-64 bg-slate-900 text-white z-20 flex flex-col shadow-xl">
-      <div className="h-16 flex items-center px-6 border-b border-slate-800">
-        <div className="w-8 h-8 flex items-center justify-center mr-3">
-          <img src={logo} alt="VisionX" className="w-full h-full object-contain" />
+    <>
+      {/* Mobile Overlay */}
+      {isOpen && (
+        <div 
+          className="fixed inset-0 bg-black/50 z-30 lg:hidden"
+          onClick={onClose}
+        />
+      )}
+      
+      <aside className={`fixed left-0 top-0 h-full w-64 bg-slate-900 text-white z-40 flex flex-col shadow-xl transition-transform duration-300 ease-in-out ${
+        isOpen ? 'translate-x-0' : '-translate-x-full'
+      } lg:translate-x-0`}>
+        <div className="h-16 flex items-center justify-between px-6 border-b border-slate-800">
+          <div className="flex items-center">
+            <div className="w-8 h-8 flex items-center justify-center mr-3">
+              <img src={logo} alt="VisionX" className="w-full h-full object-contain" />
+            </div>
+            <span className="text-lg font-bold tracking-tight">VisionX</span>
+          </div>
+          <button onClick={onClose} className="lg:hidden text-slate-400 hover:text-white">
+            <X size={20} />
+          </button>
         </div>
-        <span className="text-lg font-bold tracking-tight">VisionX</span>
-      </div>
 
-      <div className="flex-1 overflow-y-auto py-6 px-3 space-y-1 custom-scrollbar">
-        {navItems.map((item) => (
-          <NavLink
-            key={item.path}
-            to={item.path}
-            className={({ isActive }) =>
-              `flex items-center px-3 py-2.5 rounded-lg transition-all duration-200 group ${
-                isActive 
-                  ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/20' 
-                  : 'text-slate-400 hover:bg-slate-800 hover:text-white'
-              }`
-            }
+        <div className="flex-1 overflow-y-auto py-6 px-3 space-y-1 custom-scrollbar">
+          {navItems.map((item) => (
+            <NavLink
+              key={item.path}
+              to={item.path}
+              onClick={() => onClose?.()} // Close sidebar on mobile when link clicked
+              className={({ isActive }) =>
+                `flex items-center px-3 py-2.5 rounded-lg transition-all duration-200 group ${
+                  isActive 
+                    ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/20' 
+                    : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                }`
+              }
+            >
+              <item.icon size={20} className="mr-3" />
+              <span className="text-sm font-medium">{item.name}</span>
+            </NavLink>
+          ))}
+        </div>
+
+        <div className="p-4 border-t border-slate-800">
+          <button 
+            onClick={handleLogout}
+            className="flex items-center w-full px-3 py-2.5 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-red-400 transition-colors"
           >
-            <item.icon size={20} className="mr-3" />
-            <span className="text-sm font-medium">{item.name}</span>
-          </NavLink>
-        ))}
-      </div>
-
-      <div className="p-4 border-t border-slate-800">
-        <button 
-          onClick={handleLogout}
-          className="flex items-center w-full px-3 py-2.5 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-red-400 transition-colors"
-        >
-          <LogOut size={20} className="mr-3" />
-          <span className="text-sm font-medium">Sign Out</span>
-        </button>
-      </div>
-    </aside>
+            <LogOut size={20} className="mr-3" />
+            <span className="text-sm font-medium">Sign Out</span>
+          </button>
+        </div>
+      </aside>
+    </>
   );
 };
 
-export const Topbar = () => {
+export const Topbar = ({ onToggleSidebar }) => {
   const { user } = useAuth();
 
   return (
-    <header className="fixed top-0 left-64 right-0 h-16 bg-white border-b border-slate-200 z-10 flex items-center justify-between px-8 shadow-sm">
-      <div className="flex items-center w-96">
-        <div className="relative w-full">
+    <header className="fixed top-0 left-0 lg:left-64 right-0 h-16 bg-white border-b border-slate-200 z-30 flex items-center justify-between px-4 lg:px-8 shadow-sm transition-all duration-300">
+      <div className="flex items-center w-full max-w-xl">
+        <button 
+          onClick={onToggleSidebar}
+          className="mr-4 p-2 text-slate-500 hover:bg-slate-100 rounded-lg lg:hidden"
+        >
+          <Menu size={24} />
+        </button>
+
+        <div className="relative w-full max-w-md hidden sm:block">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
           <input 
             type="text" 

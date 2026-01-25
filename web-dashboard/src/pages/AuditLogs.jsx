@@ -17,6 +17,7 @@ const AuditLogs = () => {
       </div>
 
       <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+        <div className="overflow-x-auto">
         <table className="w-full text-left border-collapse">
           <thead>
             <tr className="bg-slate-50 border-b border-slate-200">
@@ -51,6 +52,7 @@ const AuditLogs = () => {
             ))}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );
