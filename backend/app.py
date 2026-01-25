@@ -789,18 +789,27 @@ def person_event():
     best_match = None
     
     try:
-        # Fetch Timetable
-        c.execute("SELECT live_timetable FROM companies WHERE id = 1")
+        # Fetch Timetable and Shifts
+        c.execute("SELECT live_timetable, shifts FROM companies WHERE id = 1")
         company_row = c.fetchone()
         
         # Fetch User Shift
         c.execute("SELECT shift FROM faces WHERE name = ?", (name,))
         face_row = c.fetchone()
-        user_shift = face_row['shift'] if face_row and 'shift' in face_row.keys() else None
+        user_shift_name = face_row['shift'] if face_row and 'shift' in face_row.keys() else None
 
         if company_row and company_row['live_timetable']:
             import json
             timetable = json.loads(company_row['live_timetable'])
+            shifts_data = json.loads(company_row['shifts']) if company_row['shifts'] else []
+            
+            # Resolve User Shift ID
+            user_shift_id = None
+            if user_shift_name:
+                for s in shifts_data:
+                    if s.get('name') == user_shift_name:
+                        user_shift_id = s.get('id')
+                        break
             
             now = datetime.now()
             current_hm = now.strftime('%H:%M')
@@ -816,10 +825,6 @@ def person_event():
             curr_mins = to_mins(current_hm)
             today_acts = [a for a in timetable if day_name in a.get('days', [])]
             
-            # Filter by User Shift if available (Only for Work type, breaks are usually global or embedded)
-            # Actually, breaks might be shift-specific too.
-            # Strategy: Find all acts that cover current time.
-            
             matching_acts = []
             
             # Fetch Settings
@@ -834,12 +839,19 @@ def person_event():
                 
                 # Check if current time is within this activity (with buffer)
                 if (start_mins - tolerance) <= curr_mins <= (end_mins + tolerance):
-                    matching_acts.append(act)
+                    # Filter by Shift ID if activity has one
+                    act_shift_id = act.get('shift_id')
+                    # If activity has a shift_id, it MUST match the user's shift_id
+                    # If activity has NO shift_id, it is global (matches everyone)
+                    if act_shift_id:
+                        if user_shift_id and int(act_shift_id) == int(user_shift_id):
+                            matching_acts.append(act)
+                    else:
+                        matching_acts.append(act)
             
             # Prioritize:
-            # 1. Exact Shift Match (if defined)
-            # 2. 'Break' type over 'Work' type (Lunch > Work)
-            # 3. Specificity
+            # 1. 'Break' type over 'Work' type (Lunch > Work)
+            # 2. Specificity (Shift-specific > Global) - handled by filtering above mostly
             
             best_match = None
             
@@ -849,14 +861,9 @@ def person_event():
                 best_match = breaks[0] # Pick first break
             elif matching_acts:
                 # If only work acts, pick the one matching user shift
-                if user_shift:
-                    shift_match = [a for a in matching_acts if a.get('name') == user_shift]
-                    if shift_match:
-                        best_match = shift_match[0]
-                
-                # Fallback to first work act
-                if not best_match:
-                    best_match = matching_acts[0]
+                # If we have multiple (e.g. global Work and Shift Work), prefer Shift Work?
+                # For now, just pick the first one.
+                best_match = matching_acts[0]
             
             if best_match:
                 activity_name = best_match.get('name', 'Work')
@@ -1039,7 +1046,7 @@ def get_attendance():
     status = request.args.get('status')
 
     query = """
-        SELECT a.*, f.department, f.designation 
+        SELECT a.*, f.department, f.designation, f.shift
         FROM attendance a
         LEFT JOIN faces f ON a.name = f.name
         WHERE 1=1
@@ -1105,7 +1112,8 @@ def get_attendance():
             "activity": row["activity"] if "activity" in row.keys() else "",
             "captured_image": img,
             "department": row["department"] if "department" in row.keys() else "",
-            "designation": row["designation"] if "designation" in row.keys() else ""
+            "designation": row["designation"] if "designation" in row.keys() else "",
+            "shift": row["shift"] if "shift" in row.keys() else ""
         })
     
     return jsonify({"attendance": attendance})

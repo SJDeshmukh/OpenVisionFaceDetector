@@ -249,18 +249,19 @@ const Attendance = () => {
             <tr className="bg-slate-50 border-b border-slate-200">
               <th className="w-10 px-6 py-4"></th>
               <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Employee</th>
+              <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Shift</th>
               <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Date</th>
               <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Time</th>
-              <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Camera</th>
+              <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Activity</th>
               <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Status</th>
               <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Confidence</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {loading ? (
-              <tr><td colSpan="7" className="p-8 text-center text-slate-500">Loading logs...</td></tr>
+              <tr><td colSpan="8" className="p-8 text-center text-slate-500">Loading logs...</td></tr>
             ) : sortedGroups.length === 0 ? (
-              <tr><td colSpan="7" className="p-8 text-center text-slate-500">No attendance records found.</td></tr>
+              <tr><td colSpan="8" className="p-8 text-center text-slate-500">No attendance records found.</td></tr>
             ) : (
               sortedGroups.map((group, idx) => {
                 const log = group.latestLog; // Show latest log in summary
@@ -300,16 +301,18 @@ const Attendance = () => {
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
+                        {log.shift || <span className="text-slate-400 italic">None</span>}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
                         {new Date(log.timestamp.endsWith('Z') ? log.timestamp : log.timestamp + 'Z').toLocaleDateString()}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-slate-700">
                         {new Date(log.timestamp.endsWith('Z') ? log.timestamp : log.timestamp + 'Z').toLocaleTimeString()}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
-                        <div className="flex items-center space-x-1">
-                          <MapPin size={14} className="text-slate-400" />
-                          <span>Main Entrance</span>
-                        </div>
+                         <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700 border border-blue-100">
+                           {log.activity || 'Work'}
+                         </span>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${status.color}`}>
@@ -327,7 +330,7 @@ const Attendance = () => {
                     </tr>
                     {isExpanded && (
                       <tr className="bg-slate-50/50">
-                        <td colSpan="7" className="px-6 py-4 pl-12">
+                        <td colSpan="8" className="px-6 py-4 pl-12">
                           <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
                              <table className="w-full text-left">
                                 <thead className="bg-slate-50 border-b border-slate-100">
