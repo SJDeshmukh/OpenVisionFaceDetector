@@ -13,6 +13,8 @@ import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.Spinner;
+import android.widget.ArrayAdapter;
 import android.widget.Toast;
 
 import androidx.activity.result.ActivityResultLauncher;
@@ -24,11 +26,15 @@ import androidx.fragment.app.Fragment;
 import com.faceplugin.facerecognition.api.RetrofitClient;
 import com.faceplugin.facerecognition.api.SyncRequest;
 import com.google.android.material.textfield.TextInputEditText;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 import com.ocp.facesdk.FaceBox;
 import com.ocp.facesdk.FaceSDK;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 
@@ -42,9 +48,11 @@ public class EnrollFragment extends Fragment {
     private TextInputEditText etMobile;
     private TextInputEditText etDepartment;
     private TextInputEditText etDesignation;
-    private TextInputEditText etShift;
+    private Spinner spShift;
     private Button btnProceed;
     private DBManager dbManager;
+    private List<String> shiftNames = new ArrayList<>();
+    private ArrayAdapter<String> shiftAdapter;
 
     private ActivityResultLauncher<Intent> cameraLauncher;
     private ActivityResultLauncher<Intent> galleryLauncher;
@@ -58,10 +66,18 @@ public class EnrollFragment extends Fragment {
         etMobile = view.findViewById(R.id.etMobile);
         etDepartment = view.findViewById(R.id.etDepartment);
         etDesignation = view.findViewById(R.id.etDesignation);
-        etShift = view.findViewById(R.id.etShift);
+        spShift = view.findViewById(R.id.spShift);
         btnProceed = view.findViewById(R.id.btnProceed);
         dbManager = new DBManager(requireContext());
         dbManager.loadPerson();
+
+        // Setup Spinner
+        shiftNames.add("No Shift"); // Default
+        shiftAdapter = new ArrayAdapter<>(requireContext(), android.R.layout.simple_spinner_item, shiftNames);
+        shiftAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spShift.setAdapter(shiftAdapter);
+
+        fetchShifts();
 
         // Initialize Launchers
         cameraLauncher = registerForActivityResult(
@@ -150,7 +166,8 @@ public class EnrollFragment extends Fragment {
             String phone = etMobile.getText().toString().trim();
             String department = etDepartment.getText().toString().trim();
             String designation = etDesignation.getText().toString().trim();
-            String shift = etShift.getText().toString().trim();
+            String shift = spShift.getSelectedItem() != null ? spShift.getSelectedItem().toString() : "";
+            if (shift.equals("No Shift")) shift = "";
             
             boolean exists = dbManager.personExists(name);
             
@@ -173,8 +190,43 @@ public class EnrollFragment extends Fragment {
             etMobile.setText("");
             etDepartment.setText("");
             etDesignation.setText("");
-            etShift.setText("");
+            spShift.setSelection(0);
         }
+    }
+
+    private void fetchShifts() {
+        // Fetch company details (assuming ID 1 for now)
+        RetrofitClient.getService().getCompany(1).enqueue(new Callback<JsonObject>() {
+            @Override
+            public void onResponse(Call<JsonObject> call, Response<JsonObject> response) {
+                if (response.isSuccessful() && response.body() != null) {
+                    try {
+                        JsonObject company = response.body();
+                        if (company.has("shifts")) {
+                            JsonArray shiftsArray = company.getAsJsonArray("shifts");
+                            shiftNames.clear();
+                            shiftNames.add("No Shift");
+                            for (JsonElement s : shiftsArray) {
+                                JsonObject shiftObj = s.getAsJsonObject();
+                                if (shiftObj.has("name") && shiftObj.has("active") && shiftObj.get("active").getAsBoolean()) {
+                                    shiftNames.add(shiftObj.get("name").getAsString());
+                                }
+                            }
+                            if (getActivity() != null) {
+                                getActivity().runOnUiThread(() -> shiftAdapter.notifyDataSetChanged());
+                            }
+                        }
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }
+                }
+            }
+
+            @Override
+            public void onFailure(Call<JsonObject> call, Throwable t) {
+                t.printStackTrace();
+            }
+        });
     }
 
     private void syncToBackend(String name, byte[] templates, Bitmap faceImage, String phone, String department, String designation, String shift) {

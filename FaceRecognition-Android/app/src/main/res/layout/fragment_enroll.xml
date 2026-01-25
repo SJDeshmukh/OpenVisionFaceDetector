@@ -119,25 +119,23 @@
                     android:inputType="text" />
             </com.google.android.material.textfield.TextInputLayout>
 
-            <com.google.android.material.textfield.TextInputLayout
+            <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginBottom="24dp"
-                android:hint="Shift (e.g. Morning Shift)"
-                android:textColorHint="@color/vision_text_tertiary"
-                app:boxStrokeColor="@color/vision_blue"
-                app:boxStrokeWidth="1dp"
-                app:hintTextColor="@color/vision_blue"
-                style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+                android:text="Shift"
+                android:textColor="@color/vision_text_tertiary"
+                android:textSize="12sp"
+                android:layout_marginBottom="4dp"
+                android:layout_marginStart="4dp"/>
 
-                <com.google.android.material.textfield.TextInputEditText
-                    android:id="@+id/etShift"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:textColor="@color/vision_text_primary"
-                    android:background="@drawable/bg_input_field"
-                    android:inputType="text" />
-            </com.google.android.material.textfield.TextInputLayout>
+            <Spinner
+                android:id="@+id/spShift"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:layout_marginBottom="24dp"
+                android:background="@drawable/bg_input_field"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"/>
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnProceed"

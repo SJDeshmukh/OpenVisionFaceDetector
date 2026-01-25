@@ -108,6 +108,7 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS companies
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, 
                   name TEXT UNIQUE, 
+                  shifts TEXT,
                   draft_timetable TEXT, 
                   live_timetable TEXT,
                   last_modified_by TEXT,
@@ -118,9 +119,16 @@ def init_db():
     # Create default company if not exists
     c.execute("SELECT * FROM companies WHERE name = 'Open Vision'")
     if not c.fetchone():
-        # Initialize with empty JSON array for timetables
-        c.execute("INSERT INTO companies (name, draft_timetable, live_timetable) VALUES (?, ?, ?)", 
-                  ('Open Vision', '[]', '[]'))
+        # Initialize with empty JSON array for timetables and shifts
+        c.execute("INSERT INTO companies (name, shifts, draft_timetable, live_timetable) VALUES (?, ?, ?, ?)", 
+                  ('Open Vision', '[]', '[]', '[]'))
+    
+    # Check for shifts column in companies table and add if missing
+    c.execute("PRAGMA table_info(companies)")
+    companies_columns = [info[1] for info in c.fetchall()]
+    if 'shifts' not in companies_columns:
+        print("Migrating: Adding shifts column to companies table")
+        c.execute("ALTER TABLE companies ADD COLUMN shifts TEXT DEFAULT '[]'")
     
     # --- New Table for System Settings ---
     c.execute('''CREATE TABLE IF NOT EXISTS system_settings
@@ -171,8 +179,8 @@ def create_company():
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("INSERT INTO companies (name, draft_timetable, live_timetable) VALUES (?, ?, ?)", 
-                  (name, '[]', '[]'))
+        c.execute("INSERT INTO companies (name, shifts, draft_timetable, live_timetable) VALUES (?, ?, ?, ?)", 
+                  (name, '[]', '[]', '[]'))
         conn.commit()
         company_id = c.lastrowid
         conn.close()
@@ -181,6 +189,25 @@ def create_company():
         return jsonify({"error": "Company already exists"}), 409
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@greeting_bp.route("/companies/<int:company_id>/shifts", methods=["PUT"])
+def update_shifts(company_id):
+    data = request.json
+    shifts = data.get("shifts") # Expecting JSON string or object
+    
+    if shifts is None:
+        return jsonify({"error": "shifts is required"}), 400
+
+    import json
+    if isinstance(shifts, list):
+        shifts = json.dumps(shifts)
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE companies SET shifts = ? WHERE id = ?", (shifts, company_id))
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True})
 
 @greeting_bp.route("/companies/<int:company_id>", methods=["GET"])
 def get_company_details(company_id):
@@ -192,7 +219,15 @@ def get_company_details(company_id):
     conn.close()
     
     if row:
-        return jsonify(dict(row))
+        data = dict(row)
+        import json
+        for key in ['shifts', 'draft_timetable', 'live_timetable']:
+            if data.get(key):
+                try:
+                    data[key] = json.loads(data[key])
+                except:
+                    data[key] = []
+        return jsonify(data)
     else:
         return jsonify({"error": "Company not found"}), 404
 

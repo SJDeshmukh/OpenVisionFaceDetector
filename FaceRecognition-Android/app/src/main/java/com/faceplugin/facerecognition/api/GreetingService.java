@@ -28,4 +28,7 @@ public interface GreetingService {
 
     @DELETE("api/sync/delete/{name}")
     Call<Void> deleteFace(@Path("name") String name);
+
+    @GET("api/companies/{id}")
+    Call<com.google.gson.JsonObject> getCompany(@Path("id") int id);
 }
