@@ -20,7 +20,13 @@ def generate_greeting(name, status='CHECK_IN', context=None):
 
     # Context-Specific Greetings
     if context:
-        if context == 'leaving_for_lunch' and status == 'CHECK_OUT':
+        if context == 'late_arrival' and status == 'CHECK_IN':
+            return random.choice([
+                f"{time_greeting} {name}, you are a bit late today.",
+                f"Welcome {name}, please try to be on time.",
+                f"Hello {name}, you have checked in late."
+            ])
+        elif context == 'leaving_for_lunch' and status == 'CHECK_OUT':
             return random.choice([
                 f"Enjoy your lunch, {name}!",
                 f"Have a good meal, {name}.",
