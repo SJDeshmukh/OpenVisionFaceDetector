@@ -44,7 +44,8 @@ const Reports = () => {
     startDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
     endDate: new Date().toISOString().split('T')[0],
     department: '',
-    designation: ''
+    designation: '',
+    type: 'detailed'
   });
 
   useEffect(() => {
@@ -86,6 +87,7 @@ const Reports = () => {
     params.append('end_date', filters.endDate);
     if (filters.department) params.append('department', filters.department);
     if (filters.designation) params.append('designation', filters.designation);
+    params.append('type', filters.type);
     
     window.location.href = `${API_URL}/reports/export?${params.toString()}`;
   };
@@ -199,7 +201,7 @@ const Reports = () => {
               Advanced Report Generation
             </h3>
             
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 items-end">
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Start Date</label>
                 <input 
@@ -245,6 +247,18 @@ const Reports = () => {
                   {filterOptions.designations.map(desig => (
                     <option key={desig} value={desig}>{desig}</option>
                   ))}
+                </select>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Report Type</label>
+                <select 
+                  value={filters.type}
+                  onChange={(e) => setFilters({...filters, type: e.target.value})}
+                  className="w-full rounded-lg border-slate-200 text-sm focus:ring-blue-500 focus:border-blue-500"
+                >
+                  <option value="detailed">Detailed Attendance Log</option>
+                  <option value="summary">Payroll & Hours Summary</option>
                 </select>
               </div>
               

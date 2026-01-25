@@ -451,6 +451,7 @@ def export_report():
     import csv
     import io
     from flask import Response
+    from collections import defaultdict
     
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -461,7 +462,123 @@ def export_report():
     end_date = request.args.get('end_date', datetime.now().strftime('%Y-%m-%d'))
     department = request.args.get('department')
     designation = request.args.get('designation')
+    report_type = request.args.get('type', 'detailed') # detailed or summary
     
+    if report_type == 'summary':
+        # --- Summary / Payroll Report ---
+        
+        # 1. Fetch Company Settings (Working Hours & Timetable)
+        c.execute("SELECT live_timetable, working_hours FROM companies WHERE id = 1")
+        company_row = c.fetchone()
+        timetable = []
+        company_working_hours = 8.0 # Default
+        if company_row:
+            if company_row['live_timetable']:
+                try:
+                    timetable = json.loads(company_row['live_timetable'])
+                except:
+                    timetable = []
+            if company_row['working_hours']:
+                company_working_hours = float(company_row['working_hours'])
+
+        # 2. Fetch Persons (with filters applied if needed, but usually we want all for payroll)
+        # Apply filters to faces query
+        faces_query = "SELECT name, daily_wage, department, designation, phone FROM faces WHERE 1=1"
+        faces_params = []
+        if department:
+            faces_query += " AND department = ?"
+            faces_params.append(department)
+        if designation:
+            faces_query += " AND designation = ?"
+            faces_params.append(designation)
+            
+        c.execute(faces_query, faces_params)
+        persons = {row['name']: dict(row) for row in c.fetchall()}
+        
+        # 3. Fetch Attendance for the period
+        # We need attendance for ALL filtered users
+        placeholders = ','.join(['?'] * len(persons))
+        if not persons:
+            rows = []
+        else:
+            query = f"""
+                SELECT * FROM attendance 
+                WHERE date(timestamp) BETWEEN ? AND ?
+                AND name IN ({placeholders})
+                ORDER BY timestamp ASC
+            """
+            params = [start_date, end_date] + list(persons.keys())
+            c.execute(query, params)
+            rows = c.fetchall()
+            
+        conn.close()
+        
+        # Group records
+        user_date_records = defaultdict(list)
+        for row in rows:
+            ts = row['timestamp']
+            try:
+                if '.' in ts:
+                    dt_obj = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S.%f')
+                else:
+                    dt_obj = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S')
+                date_str = dt_obj.strftime('%Y-%m-%d')
+                user_date_records[(row['name'], date_str)].append(dict(row))
+            except:
+                continue
+
+        # Create CSV
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow([
+            'Employee Name', 'Department', 'Designation', 'Phone',
+            'Days Present', 'Total Payable Hours', 
+            'Standard Daily Hours', 'Daily Wage', 'Hourly Rate', 'Total Estimated Wage'
+        ])
+        
+        for name, person_info in persons.items():
+            total_hours = 0
+            days_present = 0
+            
+            # Iterate through date range
+            current_date = datetime.strptime(start_date, '%Y-%m-%d')
+            end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+            
+            while current_date <= end_dt:
+                d_str = current_date.strftime('%Y-%m-%d')
+                records = user_date_records.get((name, d_str), [])
+                if records:
+                    stats = calculate_daily_hours(records, timetable)
+                    total_hours += stats['total_hours']
+                    if stats['total_hours'] > 0:
+                        days_present += 1
+                current_date += timedelta(days=1)
+            
+            daily_wage = person_info['daily_wage'] or 0
+            hourly_rate = daily_wage / company_working_hours if daily_wage and company_working_hours > 0 else 0
+            total_wage = round(total_hours * hourly_rate, 2)
+            
+            writer.writerow([
+                name,
+                person_info['department'] or '',
+                person_info['designation'] or '',
+                person_info['phone'] or '',
+                days_present,
+                round(total_hours, 2),
+                company_working_hours,
+                daily_wage,
+                round(hourly_rate, 2),
+                total_wage
+            ])
+            
+        output.seek(0)
+        return Response(
+            output.getvalue(),
+            mimetype="text/csv",
+            headers={"Content-disposition": f"attachment; filename=payroll_summary_{start_date}_to_{end_date}.csv"}
+        )
+
+    # --- Default Detailed Log Report ---
     query = """
         SELECT a.name, a.timestamp, a.status, f.department, f.designation
         FROM attendance a
@@ -516,7 +633,7 @@ def export_report():
     return Response(
         output.getvalue(),
         mimetype="text/csv",
-        headers={"Content-disposition": f"attachment; filename=attendance_report_{start_date}_to_{end_date}.csv"}
+        headers={"Content-disposition": f"attachment; filename=attendance_log_{start_date}_to_{end_date}.csv"}
     )
 
 @greeting_bp.route("/reports/filters", methods=["GET"])
