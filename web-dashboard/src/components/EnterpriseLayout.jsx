@@ -13,7 +13,8 @@ import {
   Search,
   LogOut,
   CalendarClock,
-  DollarSign
+  DollarSign,
+  Activity
 } from 'lucide-react';
 
 const adminNavItems = [
