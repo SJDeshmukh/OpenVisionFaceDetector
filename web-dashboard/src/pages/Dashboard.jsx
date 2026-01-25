@@ -21,6 +21,7 @@ import {
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { API_URL } from '../config';
+import ActivityDashboard from '../components/ActivityDashboard';
 
 const Dashboard = () => {
   const [stats, setStats] = useState({
