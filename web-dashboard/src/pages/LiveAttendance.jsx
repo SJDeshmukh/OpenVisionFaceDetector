@@ -71,12 +71,12 @@ const LiveAttendance = () => {
   };
 
   return (
-    <div className="h-[calc(100vh-8rem)] flex flex-col lg:flex-row gap-6">
+    <div className="h-[calc(100vh-9rem)] flex flex-col lg:flex-row gap-6 overflow-hidden">
       
       {/* Left Column: Live Feed */}
-      <div className="flex-1 flex flex-col gap-6">
-        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex-1 flex flex-col">
-          <div className="flex justify-between items-center mb-4">
+      <div className="flex-1 flex flex-col gap-6 min-h-0">
+        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex-1 flex flex-col min-h-0">
+          <div className="flex justify-between items-center mb-4 flex-shrink-0">
             <div>
               <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
                 <Video className="text-blue-500" size={24} />
@@ -90,7 +90,7 @@ const LiveAttendance = () => {
             </div>
           </div>
 
-          <div className="flex-1 bg-slate-900 rounded-xl overflow-hidden relative group">
+          <div className="flex-1 bg-slate-900 rounded-xl overflow-hidden relative group min-h-0">
              {isConnected && liveImage ? (
                <img src={liveImage} alt="Live" className="w-full h-full object-contain" />
              ) : (
