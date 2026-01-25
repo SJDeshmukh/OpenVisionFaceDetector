@@ -54,6 +54,9 @@ import retrofit2.Call;
 import retrofit2.Callback;
 import retrofit2.Response;
 
+import android.media.AudioManager;
+import android.media.ToneGenerator;
+
 public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitListener {
 
     static String TAG = IdentifyFragment.class.getSimpleName();
@@ -204,9 +207,12 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                             });
                         }
 
+                        // TTS commented out as per requirement
+                        /*
                         if (tts != null) {
                             tts.speak(greeting.getText(), TextToSpeech.QUEUE_FLUSH, null, null);
                         }
+                        */
                     }
                 }
             }
@@ -216,6 +222,21 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 Log.e(TAG, "API Error", t);
             }
         });
+    }
+
+    private void playAttendanceSound(String status) {
+        try {
+            ToneGenerator toneGen = new ToneGenerator(AudioManager.STREAM_MUSIC, 100);
+            if ("CHECK_IN".equals(status)) {
+                // Check In Sound - High Pitch "Success" feel
+                toneGen.startTone(ToneGenerator.TONE_PROP_BEEP, 200); 
+            } else {
+                // Check Out Sound - Different Tone (Double beep or lower)
+                toneGen.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 200);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
     @Override
