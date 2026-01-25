@@ -88,6 +88,10 @@ def init_db():
         print("Migrating: Adding activity column to attendance table")
         c.execute("ALTER TABLE attendance ADD COLUMN activity TEXT")
 
+    if 'is_late' not in attendance_columns:
+        print("Migrating: Adding is_late column to attendance table")
+        c.execute("ALTER TABLE attendance ADD COLUMN is_late INTEGER DEFAULT 0")
+
     # Create default admin if not exists
     c.execute("SELECT * FROM system_users WHERE username = 'admin'")
     if not c.fetchone():
@@ -254,6 +258,21 @@ def get_analytics():
     grace_period = int(row['value']) if row else 15
 
     def get_late_users(target_date_str):
+        # 1. Try to use is_late column (New Logic)
+        try:
+            c.execute("SELECT COUNT(DISTINCT name) as count FROM attendance WHERE date(timestamp) = ? AND is_late = 1", (target_date_str,))
+            db_late_count = c.fetchone()['count']
+            if db_late_count > 0:
+                # If we found explicit late records, return the list of names (need to fetch names)
+                c.execute("SELECT DISTINCT name FROM attendance WHERE date(timestamp) = ? AND is_late = 1", (target_date_str,))
+                return [r['name'] for r in c.fetchall()]
+        except Exception as e:
+            print(f"Error checking is_late column: {e}")
+
+        # 2. Fallback to calculation (Legacy Logic or if count is 0)
+        # Note: If count is 0, it might be that nobody is late, or it's old data.
+        # Running calculation is safe (should return 0 if nobody is late).
+        
         day_name = datetime.strptime(target_date_str, '%Y-%m-%d').strftime('%a')
         
         # Fetch all Check-Ins for the date with User Shift (First Check-in per user)
@@ -423,13 +442,20 @@ def export_report():
     
     for row in rows:
         ts = datetime.strptime(row['timestamp'], '%Y-%m-%d %H:%M:%S.%f')
+        date_str = ts.strftime('%Y-%m-%d')
+        time_str = ts.strftime('%I:%M %p')
+        
+        status_str = row['status']
+        if row['status'] == 'CHECK_IN' and 'is_late' in row.keys() and row['is_late'] == 1:
+            status_str = 'Late'
+            
         writer.writerow([
             row['name'], 
-            ts.strftime('%Y-%m-%d'), 
-            ts.strftime('%H:%M:%S'), 
-            row['status'],
-            row['department'] or '',
-            row['designation'] or ''
+            date_str, 
+            time_str, 
+            status_str, 
+            row['department'] or 'N/A', 
+            row['designation'] or 'N/A'
         ])
     
     output.seek(0)
@@ -725,6 +751,7 @@ def person_event():
     # Identify Activity Context FIRST to determine duplication rules
     activity_name = "Work" # Default
     activity_type = "Work"
+    best_match = None
     
     try:
         # Fetch Timetable
@@ -760,10 +787,11 @@ def person_event():
             
             matching_acts = []
             
-            # Fetch Tolerance
-            c.execute("SELECT value FROM system_settings WHERE key='activity_tolerance'")
-            row = c.fetchone()
-            tolerance = int(row['value']) if row else 30
+            # Fetch Settings
+            c.execute("SELECT key, value FROM system_settings WHERE key IN ('activity_tolerance', 'late_grace_period')")
+            settings = {row['key']: row['value'] for row in c.fetchall()}
+            tolerance = int(settings.get('activity_tolerance', 30))
+            grace_period = int(settings.get('late_grace_period', 15))
             
             for act in today_acts:
                 start_mins = to_mins(act.get('start_time', '00:00'))
@@ -878,6 +906,29 @@ def person_event():
     if last_record and last_record['status'] == 'CHECK_IN':
         new_status = 'CHECK_OUT'
     
+    # Calculate Late Status
+    is_late = 0
+    if new_status == 'CHECK_IN' and best_match:
+        try:
+            # Ensure grace_period is available
+            if 'grace_period' not in locals(): grace_period = 15
+            
+            # Recalculate curr_mins if needed
+            if 'curr_mins' not in locals():
+                now_check = datetime.now()
+                curr_mins = now_check.hour * 60 + now_check.minute
+            
+            start_hm = best_match.get('start_time', '09:00')
+            h, m = map(int, start_hm.split(':'))
+            start_mins = h * 60 + m
+            threshold_mins = start_mins + grace_period
+            
+            if curr_mins > threshold_mins:
+                is_late = 1
+                print(f"Late Detected: {name} (Time: {curr_mins}, Start: {start_mins}, Grace: {grace_period})")
+        except Exception as e:
+            print(f"Late Calculation Error: {e}")
+
     # Insert new record with image
     # Use UTC for storage to ensure consistency
     current_time_utc = datetime.utcnow()
@@ -888,10 +939,10 @@ def person_event():
     
     current_time = datetime.now()
     try:
-        c.execute("INSERT INTO attendance (name, timestamp, status, captured_image, activity) VALUES (?, ?, ?, ?, ?)", 
-                  (name, current_time, new_status, captured_image, activity_name))
+        c.execute("INSERT INTO attendance (name, timestamp, status, captured_image, activity, is_late) VALUES (?, ?, ?, ?, ?, ?)", 
+                  (name, current_time, new_status, captured_image, activity_name, is_late))
         conn.commit()
-        print(f"Attendance Recorded: {name} - {new_status} ({activity_name}) at {current_time}")
+        print(f"Attendance Recorded: {name} - {new_status} ({activity_name}) Late={is_late} at {current_time}")
     except Exception as e:
         print(f"Insert Error: {e}")
         conn.close()
@@ -922,6 +973,8 @@ def person_event():
     
     if new_status == 'CHECK_IN':
         display_status = f"Check In: {current_time.strftime('%I:%M %p')}"
+        if is_late:
+            display_status += " (Late)"
         if activity_name != 'Work':
              display_status += f" ({activity_name})"
     else:
@@ -1013,6 +1066,8 @@ def get_attendance():
             "name": row["name"],
             "timestamp": row["timestamp"],
             "status": row["status"],
+            "is_late": row["is_late"] if "is_late" in row.keys() else 0,
+            "activity": row["activity"] if "activity" in row.keys() else "",
             "captured_image": img,
             "department": row["department"] if "department" in row.keys() else "",
             "designation": row["designation"] if "designation" in row.keys() else ""

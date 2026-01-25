@@ -93,10 +93,28 @@ const Attendance = () => {
     window.location.href = `${API_URL}/reports/export?${params.toString()}`;
   };
 
-  const getStatus = (timestamp) => {
-    const hour = new Date(timestamp).getHours();
+  const getStatus = (log) => {
+    // Backend provided late flag
+    if (log.is_late === 1) {
+      return { label: 'Late', color: 'bg-amber-100 text-amber-700' };
+    }
+    
+    // Check Out
+    if (log.status === 'CHECK_OUT') {
+      return { label: 'Check Out', color: 'bg-slate-100 text-slate-700' };
+    }
+
+    // On Time Check In
+    if (log.status === 'CHECK_IN') {
+      return { label: 'On Time', color: 'bg-green-100 text-green-700' };
+    }
+
+    // Fallback based on timestamp if old data (legacy support)
+    // Note: This fallback uses hardcoded 9:30 AM which might differ from DB logic
+    // but useful for old records without is_late flag.
+    const hour = new Date(log.timestamp).getHours();
     if (hour < 9) return { label: 'Early', color: 'bg-blue-100 text-blue-700' };
-    if (hour === 9 && new Date(timestamp).getMinutes() <= 30) return { label: 'On Time', color: 'bg-green-100 text-green-700' };
+    if (hour === 9 && new Date(log.timestamp).getMinutes() <= 30) return { label: 'On Time', color: 'bg-green-100 text-green-700' };
     return { label: 'Late', color: 'bg-amber-100 text-amber-700' };
   };
 
@@ -246,7 +264,7 @@ const Attendance = () => {
             ) : (
               sortedGroups.map((group, idx) => {
                 const log = group.latestLog; // Show latest log in summary
-                const status = getStatus(log.timestamp);
+                const status = getStatus(log);
                 const isExpanded = expandedRow === idx;
                 
                 return (
@@ -343,8 +361,9 @@ const Attendance = () => {
                                             {new Date(historyLog.timestamp.endsWith('Z') ? historyLog.timestamp : historyLog.timestamp + 'Z').toLocaleDateString()}
                                          </td>
                                          <td className="px-4 py-2">
-                                            <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${getStatus(historyLog.timestamp).color}`}>
-                                               {historyLog.status === 'CHECK_IN' ? 'Check In' : 'Check Out'}
+                                            <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${getStatus(historyLog).color}`}>
+                                               {getStatus(historyLog).label}
+                                               {historyLog.activity && historyLog.activity !== 'Work' && ` (${historyLog.activity})`}
                                             </span>
                                          </td>
                                       </tr>

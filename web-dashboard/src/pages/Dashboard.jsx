@@ -80,12 +80,6 @@ const Dashboard = () => {
         </div>
       </div>
       <div className="flex items-center mt-2 z-10">
-        {trend && (
-          <span className={`text-xs font-semibold flex items-center ${trend > 0 ? 'text-green-600' : 'text-red-600'} mr-2`}>
-            {trend > 0 ? <ArrowUp size={12} /> : <ArrowDown size={12} />}
-            {Math.abs(trend)}%
-          </span>
-        )}
         <span className="text-xs text-slate-400">{subtext}</span>
       </div>
       
@@ -130,7 +124,7 @@ const Dashboard = () => {
         <KpiCard 
           title="Late Arrivals" 
           value={stats.late} 
-          subtext="Checked in after 9:30 AM" 
+          subtext="Exceeded grace period" 
           icon={Clock} 
           color="bg-amber-500" 
           trend={8}

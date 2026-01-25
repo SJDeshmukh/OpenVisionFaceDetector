@@ -125,16 +125,19 @@ const Timetable = () => {
     }
   };
 
-  const handleSaveDraft = async () => {
+  const handleSaveDraft = async (dataToSave = null) => {
     try {
+      const payload = dataToSave || activities;
       await axios.put(`${API_URL}/companies/${selectedCompanyId}/draft`, {
-        draft_timetable: activities,
+        draft_timetable: payload,
         modified_by: user.username
       });
       setIsDirty(false);
-      alert("Draft saved successfully!");
+      // alert("Draft saved successfully!"); // Removed alert for smoother auto-save UX
+      console.log("Draft auto-saved");
     } catch (error) {
-      alert("Failed to save draft");
+      console.error("Failed to save draft", error);
+      alert("Failed to save draft to backend");
     }
   };
 
@@ -181,11 +184,13 @@ const Timetable = () => {
     resetActivityForm();
   };
 
-  const handleDeleteActivity = (id) => {
+  const handleDeleteActivity = async (id) => {
     if (!confirm("Delete this activity?")) return;
     const updated = activities.filter(a => a.id !== id);
     setActivities(updated);
-    setIsDirty(true);
+    setIsDirty(false);
+    // Auto-save
+    await handleSaveDraft(updated);
   };
 
   const openAddModal = () => {

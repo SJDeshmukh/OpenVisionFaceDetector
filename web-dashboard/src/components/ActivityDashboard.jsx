@@ -24,11 +24,16 @@ const ActivityDashboard = ({ activities = [] }) => {
             </div>
             <div className="text-right">
               <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                activity.status === 'CHECK_IN' 
-                  ? 'bg-green-100 text-green-800' 
-                  : 'bg-purple-100 text-purple-800'
+                activity.is_late === 1
+                  ? 'bg-amber-100 text-amber-800'
+                  : activity.status === 'CHECK_IN' 
+                    ? 'bg-green-100 text-green-800' 
+                    : 'bg-purple-100 text-purple-800'
               }`}>
-                {activity.status === 'CHECK_IN' ? 'Check In' : 'Check Out'}
+                {activity.is_late === 1 
+                  ? 'Late' 
+                  : (activity.status === 'CHECK_IN' ? 'Check In' : 'Check Out')}
+                {activity.activity && activity.activity !== 'Work' && ` (${activity.activity})`}
               </span>
               <p className="text-xs text-slate-400 mt-1">
                 {activity.timestamp ? new Date(activity.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '--:--'}
