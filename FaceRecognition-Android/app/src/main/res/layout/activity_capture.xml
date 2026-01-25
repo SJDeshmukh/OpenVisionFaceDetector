@@ -43,7 +43,7 @@
         android:orientation="horizontal"
         android:gravity="center_vertical"
         android:padding="16dp"
-        android:background="@drawable/glass_panel"
+        android:background="@drawable/bg_glass_card"
         app:layout_constraintTop_toTopOf="parent">
 
         <ImageView
@@ -57,10 +57,11 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="AI Analysis Mode"
-            android:textColor="@color/ai_neon_blue"
+            android:textColor="@color/vision_cyan"
             android:textSize="18sp"
             android:textStyle="bold"
-            android:fontFamily="sans-serif-medium" />
+            android:fontFamily="sans-serif-medium"
+            android:letterSpacing="0.05" />
     </LinearLayout>
 
     <TextView
@@ -70,7 +71,7 @@
         android:layout_marginEnd="20dp"
         android:layout_marginTop="16dp"
         android:text=""
-        android:textColor="@color/ai_error_red"
+        android:textColor="@color/vision_error"
         android:textSize="16sp"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintTop_toBottomOf="@id/header_capture" />
@@ -82,7 +83,7 @@
         android:paddingBottom="24dp"
         android:paddingTop="16dp"
         android:layout_margin="16dp"
-        android:background="@drawable/glass_panel"
+        android:background="@drawable/bg_glass_card"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"

@@ -1,6 +1,7 @@
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
-import { ScanFace, ArrowRight } from 'lucide-react';
+import { ArrowRight } from 'lucide-react';
+import logo from '../assets/logo_openvision.png';
 
 const Home = () => {
   const navigate = useNavigate();
@@ -16,13 +17,14 @@ const Home = () => {
         <div className="flex justify-center mb-8">
           <div className="relative">
             <div className="absolute inset-0 bg-blue-500 blur-2xl opacity-20 rounded-full"></div>
-            <ScanFace size={80} className="text-blue-400 relative z-10" />
+            <img src={logo} alt="VisionX" className="w-32 h-32 relative z-10 object-contain" />
           </div>
         </div>
 
-        <h1 className="text-6xl font-bold mb-6 bg-clip-text text-transparent bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400">
-          Smart Attendance System
+        <h1 className="text-6xl font-bold mb-2 bg-clip-text text-transparent bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400">
+          VisionX
         </h1>
+        <p className="text-xl text-blue-300 font-medium mb-6">Powered by OpenVision</p>
         
         <p className="text-xl text-gray-300 mb-10 max-w-2xl mx-auto leading-relaxed">
           Experience the future of attendance management with our AI-powered Face Recognition solution. 

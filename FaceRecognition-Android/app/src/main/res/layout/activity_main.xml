@@ -4,6 +4,7 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:background="@color/vision_navy_900"
     tools:context=".MainActivity">
 
     <include
@@ -24,12 +25,14 @@
         android:id="@+id/bottom_navigation"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="@android:color/white"
-        app:itemIconTint="@color/primary_soft_blue"
-        app:itemTextColor="@color/primary_soft_blue"
+        android:background="@color/vision_navy_800"
+        app:itemIconTint="@color/vision_blue"
+        app:itemTextColor="@color/vision_text_secondary"
+        app:itemRippleColor="@color/vision_cyan"
+        app:itemActiveIndicatorStyle="@null"
         app:layout_constraintBottom_toBottomOf="parent"
         app:menu="@menu/bottom_nav_menu"
         app:labelVisibilityMode="labeled"
-        android:elevation="8dp"/>
+        android:elevation="16dp"/>
 
 </androidx.constraintlayout.widget.ConstraintLayout>

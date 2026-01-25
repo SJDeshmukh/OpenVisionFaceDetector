@@ -3,12 +3,13 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/background_off_white"
+    android:background="@color/vision_navy_900"
     android:fillViewport="true">
 
     <androidx.constraintlayout.widget.ConstraintLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:animateLayoutChanges="true"
         android:padding="24dp">
 
         <TextView
@@ -16,98 +17,136 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="Let's get you registered!"
-            android:textColor="@color/text_primary"
+            android:textColor="@color/vision_text_primary"
             android:textSize="24sp"
             android:textStyle="bold"
+            android:fontFamily="sans-serif-medium"
+            android:letterSpacing="0.05"
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toTopOf="parent"
-            app:layout_constraintBottom_toTopOf="@+id/cardDetails"
+            app:layout_constraintBottom_toTopOf="@+id/containerDetails"
             android:layout_marginBottom="24dp" />
 
-        <androidx.cardview.widget.CardView
-            android:id="@+id/cardDetails"
+        <LinearLayout
+            android:id="@+id/containerDetails"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            app:cardBackgroundColor="@android:color/white"
-            app:cardCornerRadius="24dp"
-            app:cardElevation="4dp"
+            android:background="@drawable/bg_glass_card"
+            android:elevation="4dp"
+            android:orientation="vertical"
+            android:padding="24dp"
             app:layout_constraintBottom_toBottomOf="parent"
             app:layout_constraintTop_toTopOf="parent"
             app:layout_constraintVertical_bias="0.3">
 
-            <LinearLayout
+            <com.google.android.material.textfield.TextInputLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="24dp">
+                android:layout_marginBottom="16dp"
+                android:hint="Full Name"
+                android:textColorHint="@color/vision_text_tertiary"
+                app:boxStrokeColor="@color/vision_blue"
+                app:boxStrokeWidth="1dp"
+                app:hintTextColor="@color/vision_blue"
+                style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
 
-                <com.google.android.material.textfield.TextInputLayout
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/etName"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginBottom="16dp"
-                    android:hint="Full Name"
-                    style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+                    android:textColor="@color/vision_text_primary"
+                    android:background="@drawable/bg_input_field"
+                    android:inputType="textPersonName" />
+            </com.google.android.material.textfield.TextInputLayout>
 
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/etName"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:inputType="textPersonName" />
-                </com.google.android.material.textfield.TextInputLayout>
+            <com.google.android.material.textfield.TextInputLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="16dp"
+                android:hint="Mobile Number"
+                android:textColorHint="@color/vision_text_tertiary"
+                app:boxStrokeColor="@color/vision_blue"
+                app:boxStrokeWidth="1dp"
+                app:hintTextColor="@color/vision_blue"
+                style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
 
-                <com.google.android.material.textfield.TextInputLayout
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/etMobile"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginBottom="16dp"
-                    android:hint="Mobile Number"
-                    style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+                    android:textColor="@color/vision_text_primary"
+                    android:background="@drawable/bg_input_field"
+                    android:inputType="phone" />
+            </com.google.android.material.textfield.TextInputLayout>
 
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/etMobile"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:inputType="phone" />
-                </com.google.android.material.textfield.TextInputLayout>
+            <com.google.android.material.textfield.TextInputLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="16dp"
+                android:hint="Department"
+                android:textColorHint="@color/vision_text_tertiary"
+                app:boxStrokeColor="@color/vision_blue"
+                app:boxStrokeWidth="1dp"
+                app:hintTextColor="@color/vision_blue"
+                style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
 
-                <com.google.android.material.textfield.TextInputLayout
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/etDepartment"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginBottom="16dp"
-                    android:hint="Department"
-                    style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+                    android:textColor="@color/vision_text_primary"
+                    android:background="@drawable/bg_input_field"
+                    android:inputType="text" />
+            </com.google.android.material.textfield.TextInputLayout>
 
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/etDepartment"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:inputType="text" />
-                </com.google.android.material.textfield.TextInputLayout>
+            <com.google.android.material.textfield.TextInputLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="24dp"
+                android:hint="Designation"
+                android:textColorHint="@color/vision_text_tertiary"
+                app:boxStrokeColor="@color/vision_blue"
+                app:boxStrokeWidth="1dp"
+                app:hintTextColor="@color/vision_blue"
+                style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
 
-                <com.google.android.material.textfield.TextInputLayout
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/etDesignation"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginBottom="24dp"
-                    android:hint="Designation"
-                    style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+                    android:textColor="@color/vision_text_primary"
+                    android:background="@drawable/bg_input_field"
+                    android:inputType="text" />
+            </com.google.android.material.textfield.TextInputLayout>
 
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/etDesignation"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:inputType="text" />
-                </com.google.android.material.textfield.TextInputLayout>
+            <Button
+                android:id="@+id/btnProceed"
+                android:layout_width="match_parent"
+                android:layout_height="60dp"
+                android:text="Proceed to Register Face"
+                android:textAllCaps="false"
+                android:drawableStart="@android:drawable/ic_menu_camera"
+                android:drawableTint="@color/vision_text_primary"
+                android:paddingStart="24dp"
+                android:paddingEnd="24dp"
+                style="@style/ButtonStyle"
+                android:letterSpacing="0.05"
+                android:fontFamily="sans-serif-medium"/>
 
-                <Button
-                    android:id="@+id/btnProceed"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="Proceed to Register Face"
-                    android:textAllCaps="false"
-                    style="@style/Widget.App.Button.Primary" />
+        </LinearLayout>
 
-            </LinearLayout>
-
-        </androidx.cardview.widget.CardView>
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Powered by OpenVision"
+            android:textColor="@color/vision_text_tertiary"
+            android:textSize="12sp"
+            android:layout_marginTop="24dp"
+            android:letterSpacing="0.05"
+            app:layout_constraintTop_toBottomOf="@+id/containerDetails"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintBottom_toBottomOf="parent" />
 
     </androidx.constraintlayout.widget.ConstraintLayout>
 </ScrollView>

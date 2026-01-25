@@ -190,7 +190,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     private void sendPersonEvent(boolean detected, boolean recognized, String personId, String name, float confidence, Bitmap image) {
         GreetingService service = RetrofitClient.getService();
         String imageBase64 = Utils.bitmapToBase64(image);
-        PersonEventRequest request = new PersonEventRequest(detected, recognized, personId, name, confidence, imageBase64);
+        PersonEventRequest request = new PersonEventRequest(detected, recognized, personId, name, confidence, imageBase64, false);
 
         service.sendPersonEvent(request).enqueue(new Callback<GreetingResponse>() {
             @Override
