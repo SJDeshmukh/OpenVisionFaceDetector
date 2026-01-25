@@ -838,7 +838,12 @@ def person_event():
                 end_mins = to_mins(act.get('end_time', '00:00'))
                 
                 # Check if current time is within this activity (with buffer)
-                if (start_mins - tolerance) <= curr_mins <= (end_mins + tolerance):
+                # Use activity-specific grace_period (from rules) if available, else global tolerance
+                # User requested to use grace_period from rules for this logic
+                act_rules = act.get('rules', {})
+                act_grace = int(act_rules.get('grace_period', tolerance))
+                
+                if (start_mins - act_grace) <= curr_mins <= (end_mins + act_grace):
                     # Filter by Shift ID if activity has one
                     act_shift_id = act.get('shift_id')
                     # If activity has a shift_id, it MUST match the user's shift_id
@@ -868,6 +873,10 @@ def person_event():
             if best_match:
                 activity_name = best_match.get('name', 'Work')
                 activity_type = best_match.get('type', 'Work')
+                # Update grace_period from activity rules for Late calculation
+                act_rules = best_match.get('rules', {})
+                if 'grace_period' in act_rules:
+                    grace_period = int(act_rules['grace_period'])
 
     except Exception as e:
         print(f"Activity Detection Error: {e}")
@@ -1118,13 +1127,15 @@ def get_attendance():
     
     return jsonify({"attendance": attendance})
 
-def calculate_daily_hours(records):
+def calculate_daily_hours(records, timetable=None):
     """
     Calculate work hours from a list of attendance records for a single user.
     Records must be sorted by timestamp ASC.
+    timetable: List of activity objects (from company live_timetable) to determine payability of gaps.
     """
     total_seconds = 0
     current_checkin = None
+    last_checkout_activity = None # Track activity of last checkout to determine gap payability
     sessions = []
     
     # Sort just in case
@@ -1132,6 +1143,8 @@ def calculate_daily_hours(records):
 
     for record in sorted_records:
         status = record['status']
+        activity_name = record.get('activity', 'Work')
+        
         try:
             ts = datetime.strptime(record['timestamp'], '%Y-%m-%d %H:%M:%S.%f')
         except ValueError:
@@ -1144,38 +1157,88 @@ def calculate_daily_hours(records):
         if status == 'CHECK_IN':
             if current_checkin is None:
                 current_checkin = ts
+                
+                # Check if the GAP before this Check-In is payable
+                # Logic: If we had a previous session that ended (last_checkout_activity), 
+                # we check if THAT activity was payable.
+                # Usually, Gaps are Breaks. If Break is Payable, we add the gap time.
+                # However, calculate_daily_hours iterates linearly.
+                # We need to look at the gap between `sessions[-1]['end_ts']` and `current_checkin`.
+                
+                if sessions:
+                    last_session = sessions[-1]
+                    gap_seconds = (ts - last_session['end_ts']).total_seconds()
+                    
+                    if gap_seconds > 0 and timetable:
+                        # Find the activity definition for the gap
+                        # We use the activity name from the PREVIOUS CHECK_OUT record (stored in last_checkout_activity)
+                        # If last_checkout_activity is None, we can't determine.
+                        
+                        is_gap_payable = False
+                        if last_checkout_activity:
+                             # Find activity in timetable
+                             for act in timetable:
+                                 if act.get('name') == last_checkout_activity:
+                                     # Default is_payable to True for Work, False for others if not specified?
+                                     # User said: "if it is off, then the activity is not payable".
+                                     # In our JSON, we defaulted is_payable to True in UI, but existing data might miss it.
+                                     # Let's assume default True for 'Work' type, False for others if missing.
+                                     act_type = act.get('type', 'Work')
+                                     default_payable = (act_type == 'Work')
+                                     is_gap_payable = act.get('is_payable', default_payable)
+                                     break
+                        
+                        if is_gap_payable:
+                            total_seconds += gap_seconds
+                            # We can mark this gap as a "Payable Break" session if needed, or just add to total.
+                            # For session list, maybe append a "Gap" session?
+                            sessions.append({
+                                "type": "Payable Gap",
+                                "activity": last_checkout_activity,
+                                "start": last_session['end_ts'].strftime('%H:%M'),
+                                "end": ts.strftime('%H:%M'),
+                                "duration_mins": round(gap_seconds / 60)
+                            })
+
         elif status == 'CHECK_OUT':
             if current_checkin:
                 duration = (ts - current_checkin).total_seconds()
                 total_seconds += duration
                 sessions.append({
-                    "start_ts": current_checkin,
+                    "type": "Work", # Standard session
+                    "start_ts": current_checkin, # Correct start
                     "end_ts": ts,
                     "start": current_checkin.strftime('%H:%M'),
                     "end": ts.strftime('%H:%M'),
                     "duration_mins": round(duration / 60)
                 })
                 current_checkin = None
+                last_checkout_activity = activity_name
     
-    # Calculate break time (gaps between sessions)
+    # Calculate break time (non-payable gaps)
+    # This is just total duration (first in - last out) - total_seconds (payable)
     total_break_seconds = 0
-    if len(sessions) > 1:
-        for i in range(len(sessions) - 1):
-            gap = (sessions[i+1]['start_ts'] - sessions[i]['end_ts']).total_seconds()
-            if gap > 0:
-                total_break_seconds += gap
+    if sessions:
+        first_in = datetime.strptime(sorted_records[0]['timestamp'].split('.')[0], '%Y-%m-%d %H:%M:%S') # Approx
+        last_out = datetime.strptime(sorted_records[-1]['timestamp'].split('.')[0], '%Y-%m-%d %H:%M:%S') # Approx
+        
+        # Better: use sessions[0].start and sessions[-1].end if we kept TS
+        # But we didn't keep start_ts in session dict for final output.
+        # Let's re-calculate cleanly.
+        pass
 
-    # Remove ts objects before returning
+    # Clean up sessions for output
+    final_sessions = []
     for s in sessions:
-        del s['start_ts']
-        del s['end_ts']
+        if "start_ts" in s: del s["start_ts"]
+        if "end_ts" in s: del s["end_ts"]
+        final_sessions.append(s)
 
     is_active = current_checkin is not None
     
     return {
         "total_hours": round(total_seconds / 3600, 2),
-        "total_break_hours": round(total_break_seconds / 3600, 2),
-        "sessions": sessions,
+        "sessions": final_sessions,
         "is_active": is_active,
         "last_checkin": current_checkin.strftime('%H:%M') if current_checkin else None
     }
@@ -1260,9 +1323,12 @@ def get_attendance_summary():
     day_activities.sort(key=lambda x: x.get('start_time', '00:00'))
     
     if day_activities:
-        # Calculate expected hours (Work type only)
+        # Calculate expected hours (Payable activities only)
         for act in day_activities:
-            if act.get('type') == 'Work':
+            # Check is_payable, default to True if Work, False otherwise
+            is_payable = act.get('is_payable', act.get('type') == 'Work')
+            
+            if is_payable:
                 s = datetime.strptime(act['start_time'], '%H:%M')
                 e = datetime.strptime(act['end_time'], '%H:%M')
                 duration = (e - s).total_seconds() / 3600
@@ -1283,7 +1349,7 @@ def get_attendance_summary():
 
     summary = []
     for user, records in user_records.items():
-        stats = calculate_daily_hours(records)
+        stats = calculate_daily_hours(records, timetable)
         
         # 4. Compare with Schedule
         status = "Present"

@@ -40,6 +40,7 @@ const Timetable = () => {
     type: 'Work',
     days: [...DAYS],
     enabled: true,
+    is_payable: true, // Default to payable (Work)
     rules: {
       attendance_enabled: true,
       grace_period: 15,
@@ -132,6 +133,7 @@ const Timetable = () => {
           start_time: item.start_time || '09:00',
           end_time: item.end_time || '17:00',
           enabled: item.enabled !== false,
+          is_payable: item.is_payable !== false, // Default true
           rules: item.rules || {}
         }));
 
@@ -326,6 +328,7 @@ const Timetable = () => {
       type: 'Work',
       days: [...DAYS],
       enabled: true,
+      is_payable: true,
       rules: {
         attendance_enabled: true,
         grace_period: 15,
@@ -527,6 +530,10 @@ const Timetable = () => {
                           </div>
                           <span className="text-slate-400">•</span>
                           <span>{activity.rules.attendance_enabled ? 'Attendance On' : 'No Attendance'}</span>
+                          <span className="text-slate-400">•</span>
+                          <span className={activity.is_payable ? 'text-green-600 font-medium' : 'text-slate-500'}>
+                             {activity.is_payable ? 'Payable' : 'Not Payable'}
+                          </span>
                         </div>
                       </div>
 
@@ -698,10 +705,27 @@ const Timetable = () => {
               </div>
 
               {/* Rules Section */}
-              <div className="bg-slate-50 rounded-xl p-4 space-y-4 border border-slate-200">
-                <h4 className="text-sm font-bold text-slate-500 uppercase tracking-wider">Rules Configuration</h4>
-                
-                <div className="flex items-center justify-between">
+                <div className="bg-slate-50 rounded-xl p-4 space-y-4 border border-slate-200">
+                  <h4 className="text-sm font-bold text-slate-500 uppercase tracking-wider">Rules Configuration</h4>
+                  
+                  {/* Payable Toggle */}
+                  <div className="flex items-center justify-between pb-4 border-b border-slate-200">
+                    <div>
+                      <p className="text-sm font-medium text-slate-800">Payable Activity</p>
+                      <p className="text-xs text-slate-600">Count time in this block as working hours</p>
+                    </div>
+                    <div className="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
+                      <input 
+                        type="checkbox" 
+                        checked={activityForm.is_payable}
+                        onChange={(e) => setActivityForm({...activityForm, is_payable: e.target.checked})}
+                        className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 border-slate-300 appearance-none cursor-pointer checked:right-0 checked:border-green-500"
+                      />
+                      <div className={`block overflow-hidden h-6 rounded-full cursor-pointer ${activityForm.is_payable ? 'bg-green-500' : 'bg-slate-400'}`}></div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm font-medium text-slate-800">Enable Attendance</p>
                     <p className="text-xs text-slate-600">Track entries/exits during this block</p>
