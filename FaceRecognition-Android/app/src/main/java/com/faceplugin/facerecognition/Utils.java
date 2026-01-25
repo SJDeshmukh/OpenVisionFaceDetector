@@ -97,6 +97,21 @@ public class Utils {
         return android.util.Base64.encodeToString(byteArray, android.util.Base64.NO_WRAP);
     }
 
+    public static Bitmap resizeBitmap(Bitmap image, int maxWidth) {
+        if (image == null) return null;
+        if (maxWidth <= 0) return image;
+        
+        int width = image.getWidth();
+        int height = image.getHeight();
+        
+        if (width <= maxWidth) return image;
+        
+        float ratio = (float) width / height;
+        int newHeight = (int) (maxWidth / ratio);
+        
+        return Bitmap.createScaledBitmap(image, maxWidth, newHeight, false);
+    }
+
     public static Uri saveBitmapToCache(Context context, Bitmap bitmap) {
         try {
             java.io.File cachePath = new java.io.File(context.getCacheDir(), "images");

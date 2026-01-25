@@ -196,8 +196,13 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
 
     private void sendPersonEvent(boolean detected, boolean recognized, String personId, String name, float confidence, Bitmap image) {
         GreetingService service = RetrofitClient.getService();
-        String imageBase64 = Utils.bitmapToBase64(image);
-        PersonEventRequest request = new PersonEventRequest(detected, recognized, personId, name, confidence, imageBase64);
+        
+        // Resize image to max 320px width to ensure successful upload and save bandwidth
+        Bitmap resizedBitmap = Utils.resizeBitmap(image, 320);
+        String imageBase64 = Utils.bitmapToBase64(resizedBitmap);
+        
+        // Use constructor with is_attendance=true explicitly
+        PersonEventRequest request = new PersonEventRequest(detected, recognized, personId, name, confidence, imageBase64, true);
         
         service.sendPersonEvent(request).enqueue(new Callback<GreetingResponse>() {
             @Override

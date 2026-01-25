@@ -97,7 +97,11 @@ const Timetable = () => {
       // Parse shifts
       let parsedShifts = [];
       try {
-        parsedShifts = JSON.parse(res.data.shifts || '[]');
+        if (typeof res.data.shifts === 'string') {
+           parsedShifts = JSON.parse(res.data.shifts);
+        } else if (Array.isArray(res.data.shifts)) {
+           parsedShifts = res.data.shifts;
+        }
       } catch (e) {
         console.error("Failed to parse shifts JSON:", e);
       }
@@ -106,7 +110,11 @@ const Timetable = () => {
       // Parse draft timetable
       let draft = [];
       try {
-        draft = JSON.parse(res.data.draft_timetable || '[]');
+        if (typeof res.data.draft_timetable === 'string') {
+          draft = JSON.parse(res.data.draft_timetable);
+        } else if (Array.isArray(res.data.draft_timetable)) {
+          draft = res.data.draft_timetable;
+        }
       } catch (e) {
         console.error("Failed to parse timetable JSON:", e);
       }
@@ -279,6 +287,10 @@ const Timetable = () => {
 
     setActivities(updatedActivities);
     setIsDirty(true);
+    
+    // Auto-save changes to draft
+    handleSaveDraft(updatedActivities);
+    
     setShowActivityModal(false);
     resetActivityForm();
   };
