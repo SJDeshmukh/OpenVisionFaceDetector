@@ -18,6 +18,7 @@ import { API_URL } from '../config';
 
 const People = () => {
   const [users, setUsers] = useState([]);
+  const [shifts, setShifts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -26,13 +27,16 @@ const People = () => {
     phone: '', 
     department: '', 
     designation: '', 
+    shift: '',
     photo: null, 
-    photoPreview: null 
+    photoPreview: null,
+    templates: ''
   });
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     fetchUsers();
+    fetchShifts();
   }, []);
 
   const fetchUsers = async () => {
@@ -43,6 +47,18 @@ const People = () => {
     } catch (error) {
       console.error("Error fetching users:", error);
       setLoading(false);
+    }
+  };
+
+  const fetchShifts = async () => {
+    try {
+      // Assuming company ID 1 for now as per other parts of the app
+      const response = await axios.get(`${API_URL}/companies/1`);
+      if (response.data && response.data.shifts) {
+        setShifts(response.data.shifts);
+      }
+    } catch (error) {
+      console.error("Error fetching shifts:", error);
     }
   };
 
@@ -64,8 +80,10 @@ const People = () => {
       phone: '', 
       department: '', 
       designation: '', 
+      shift: '',
       photo: null, 
-      photoPreview: null 
+      photoPreview: null,
+      templates: ''
     });
     setIsModalOpen(true);
   };
@@ -77,10 +95,12 @@ const People = () => {
       phone: user.phone || '',
       department: user.department || '',
       designation: user.designation || '',
+      shift: user.shift || '',
       photo: user.face_image,
       photoPreview: user.face_image && user.face_image.startsWith('data:') 
         ? user.face_image 
-        : `data:image/jpeg;base64,${user.face_image}`
+        : `data:image/jpeg;base64,${user.face_image}`,
+      templates: user.templates || ''
     });
     setIsModalOpen(true);
   };
@@ -110,8 +130,9 @@ const People = () => {
         phone: formData.phone,
         department: formData.department,
         designation: formData.designation,
+        shift: formData.shift,
         face_image: formData.photo,
-        templates: "" 
+        templates: formData.templates 
       };
 
       const response = await axios.post(`${API_URL}/sync/upload`, payload);
@@ -122,8 +143,10 @@ const People = () => {
             phone: '', 
             department: '', 
             designation: '', 
+            shift: '',
             photo: null, 
-            photoPreview: null 
+            photoPreview: null,
+            templates: ''
         });
         fetchUsers(); 
       }
@@ -208,6 +231,7 @@ const People = () => {
                 <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Employee</th>
                 <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">ID</th>
                 <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Department</th>
+                <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Shift</th>
                 <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Face Quality</th>
                 <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Actions</th>
               </tr>
@@ -215,11 +239,11 @@ const People = () => {
             <tbody className="divide-y divide-slate-100">
               {loading ? (
                 <tr>
-                  <td colSpan="6" className="px-6 py-8 text-center text-slate-500">Loading employees...</td>
+                  <td colSpan="7" className="px-6 py-8 text-center text-slate-500">Loading employees...</td>
                 </tr>
               ) : augmentedUsers.length === 0 ? (
                 <tr>
-                  <td colSpan="6" className="px-6 py-8 text-center text-slate-500">No employees found.</td>
+                  <td colSpan="7" className="px-6 py-8 text-center text-slate-500">No employees found.</td>
                 </tr>
               ) : (
                 augmentedUsers.map((user, idx) => (
@@ -250,6 +274,9 @@ const People = () => {
                       <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700">
                         {user.department}
                       </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
+                      {user.shift || '-'}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm">
                       <div className="flex items-center space-x-1">
@@ -366,15 +393,30 @@ const People = () => {
                   </div>
               </div>
               
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-700">Designation</label>
-                <input 
-                    type="text" 
-                    value={formData.designation}
-                    onChange={(e) => setFormData({...formData, designation: e.target.value})}
-                    placeholder="e.g. Senior Developer"
-                    className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                />
+              <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-700">Designation</label>
+                    <input 
+                        type="text" 
+                        value={formData.designation}
+                        onChange={(e) => setFormData({...formData, designation: e.target.value})}
+                        placeholder="e.g. Senior Developer"
+                        className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-700">Shift</label>
+                    <select 
+                        value={formData.shift}
+                        onChange={(e) => setFormData({...formData, shift: e.target.value})}
+                        className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                    >
+                        <option value="">Select Shift</option>
+                        {shifts.map((s, idx) => (
+                            <option key={idx} value={s.name}>{s.name} ({s.start_time} - {s.end_time})</option>
+                        ))}
+                    </select>
+                  </div>
               </div>
 
               <div className="flex gap-3 pt-2">

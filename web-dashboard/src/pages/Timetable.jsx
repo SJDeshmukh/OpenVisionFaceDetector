@@ -149,6 +149,22 @@ const Timetable = () => {
   };
 
   const handleSaveShift = async () => {
+    if (!shiftForm.name.trim()) {
+        alert("Shift name is required");
+        return;
+    }
+
+    // Check for duplicate name
+    const isDuplicate = shifts.some(s => 
+      s.name.toLowerCase() === shiftForm.name.trim().toLowerCase() && 
+      s.id !== shiftForm.id
+    );
+    
+    if (isDuplicate) {
+      alert(`Shift name '${shiftForm.name}' is already active.`);
+      return;
+    }
+
     const newShift = {
       ...shiftForm,
       id: shiftForm.id || Date.now()
@@ -272,6 +288,22 @@ const Timetable = () => {
   };
 
   const handleSaveActivity = () => {
+    if (!activityForm.name.trim()) {
+        alert("Activity name is required");
+        return;
+    }
+
+    // Check for duplicate name
+    const isDuplicate = activities.some(a => 
+      a.name.toLowerCase() === activityForm.name.trim().toLowerCase() && 
+      a.id !== activityForm.id
+    );
+
+    if (isDuplicate) {
+      alert(`Activity name '${activityForm.name}' is already active.`);
+      return;
+    }
+
     const newActivity = {
       ...activityForm,
       id: activityForm.id || Date.now() // Simple ID generation
