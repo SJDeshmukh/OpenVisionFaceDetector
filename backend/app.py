@@ -1103,17 +1103,29 @@ def person_event():
     # Helper function for time conversion
     def to_mins(hm):
         try:
-            # Basic cleanup for robustness
-            hm = str(hm).strip().lower().replace(' am', '').replace(' pm', '').replace('am', '').replace('pm', '')
-            if ':' in hm:
-                parts = hm.split(':')
-            elif '.' in hm:
-                parts = hm.split('.')
+            hm_str = str(hm).strip().lower()
+            is_pm = 'pm' in hm_str
+            is_am = 'am' in hm_str
+            
+            # Remove am/pm for parsing
+            clean_str = hm_str.replace(' am', '').replace(' pm', '').replace('am', '').replace('pm', '').strip()
+            
+            if ':' in clean_str:
+                parts = clean_str.split(':')
+            elif '.' in clean_str:
+                parts = clean_str.split('.')
             else:
                 return 0
             
             h = int(parts[0])
             m = int(parts[1])
+            
+            # 12-hour to 24-hour conversion
+            if is_pm and h != 12:
+                h += 12
+            elif is_am and h == 12:
+                h = 0
+                
             return h * 60 + m
         except:
             return 0
@@ -1160,6 +1172,35 @@ def person_event():
             settings = {row['key']: row['value'] for row in c.fetchall()}
             tolerance = int(settings.get('activity_tolerance', 30))
             grace_period = int(settings.get('late_grace_period', 15))
+
+            # --- Check Yesterday's Night Shifts (Spillover) ---
+            # If current time is early morning, it might belong to a shift that started yesterday
+            yesterday_obj = now - timedelta(days=1)
+            yesterday_name = yesterday_obj.strftime('%a')
+            yesterday_acts = [a for a in timetable if yesterday_name in a.get('days', [])]
+
+            for act in yesterday_acts:
+                s = to_mins(act.get('start_time', '00:00'))
+                e = to_mins(act.get('end_time', '00:00'))
+                if s > e: # Night Shift from Yesterday
+                    act_rules = act.get('rules', {})
+                    act_grace = int(act_rules.get('grace_period', tolerance))
+                    
+                    # Check if current time is within the end window (morning of today)
+                    # e.g. End 01:00. Curr 00:15. Matches.
+                    if curr_mins <= (e + act_grace):
+                        # Verify Shift ID Match
+                        act_shift_id = act.get('shift_id')
+                        is_match = False
+                        if act_shift_id:
+                            if user_shift_id and int(act_shift_id) == int(user_shift_id):
+                                is_match = True
+                        else:
+                            is_match = True
+                            
+                        if is_match:
+                            matching_acts.append(act)
+                            print(f"Matched Yesterday's Night Shift: {act.get('name')}")
             
             for act in today_acts:
                 start_mins = to_mins(act.get('start_time', '00:00'))
@@ -1177,8 +1218,10 @@ def person_event():
                 
                 if start_mins > end_mins:
                     # Night shift (spans midnight)
-                    # Match if time is >= start_window OR <= end_window
-                    if curr_mins >= start_window or curr_mins <= end_window:
+                    # For TODAY'S night shift, we only match the START (evening) part.
+                    # The END (morning) part belongs to TOMORROW (which will be caught by 'Yesterday Check' tomorrow).
+                    # If we match 'end_window' here, we incorrectly match Day X's 00:15 to Day X's 5pm shift (instead of Day X-1's).
+                    if curr_mins >= start_window:
                         is_match = True
                 else:
                     # Standard shift

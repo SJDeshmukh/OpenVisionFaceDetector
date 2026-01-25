@@ -252,7 +252,11 @@ const Wages = () => {
                       <div className="flex items-center gap-3">
                         <div className="w-10 h-10 rounded-full bg-slate-200 overflow-hidden flex-shrink-0 border border-slate-300">
                           {person.face_image ? (
-                            <img src={`data:image/jpeg;base64,${person.face_image}`} alt={person.name} className="w-full h-full object-cover" />
+                            <img 
+                              src={person.face_image.startsWith('data:') ? person.face_image : `data:image/jpeg;base64,${person.face_image}`} 
+                              alt={person.name} 
+                              className="w-full h-full object-cover" 
+                            />
                           ) : (
                             <div className="w-full h-full flex items-center justify-center text-slate-400 font-bold text-xs">
                               {person.name.substring(0,2).toUpperCase()}
