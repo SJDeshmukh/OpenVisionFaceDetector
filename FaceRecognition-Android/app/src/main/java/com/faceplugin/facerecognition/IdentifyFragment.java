@@ -193,7 +193,15 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     private void sendPersonEvent(boolean detected, boolean recognized, String personId, String name, float confidence, Bitmap image) {
         GreetingService service = RetrofitClient.getService();
         String imageBase64 = Utils.bitmapToBase64(image);
-        PersonEventRequest request = new PersonEventRequest(detected, recognized, personId, name, confidence, imageBase64, false);
+
+        // Determine attendance flag based on User Role
+        // If Admin -> is_attendance = false (Testing Mode: No Cooldown, No DB Record)
+        // If User/Kiosk -> is_attendance = true (Production Mode: Cooldown, DB Record)
+        android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
+        String role = prefs.getString("role", "user");
+        boolean isAttendance = !"admin".equalsIgnoreCase(role);
+
+        PersonEventRequest request = new PersonEventRequest(detected, recognized, personId, name, confidence, imageBase64, isAttendance);
 
         service.sendPersonEvent(request).enqueue(new Callback<GreetingResponse>() {
             @Override
@@ -207,12 +215,10 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                             });
                         }
 
-                        // TTS commented out as per requirement
-                        /*
-                        if (tts != null) {
-                            tts.speak(greeting.getText(), TextToSpeech.QUEUE_FLUSH, null, null);
-                        }
-                        */
+                        // Play Sound based on Status (Check-In vs Check-Out)
+                        String status = greeting.getStatus();
+                        if (status == null) status = "CHECK_IN"; // Fallback
+                        playAttendanceSound(status); 
                     }
                 }
             }

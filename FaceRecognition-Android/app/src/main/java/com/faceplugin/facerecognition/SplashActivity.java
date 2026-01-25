@@ -45,24 +45,33 @@ public class SplashActivity extends AppCompatActivity {
         // Check for saved server URL first
         SharedPreferences prefs = getSharedPreferences("app_prefs", MODE_PRIVATE);
         String savedUrl = prefs.getString("server_url", null);
-
-        // Priority 1: Check Render URL (Cloud)
         String RENDER_URL = "https://face-detection-backend-69o7.onrender.com/";
-        tvStatus.setText("Checking Cloud Server...");
+
+        tvStatus.setText("Connecting to Server...");
 
         new Thread(() -> {
-            if (pingServer(RENDER_URL)) {
-                runOnUiThread(() -> {
-                    tvStatus.setText("Connected to Cloud Server");
-                    RetrofitClient.setBaseUrl(RENDER_URL);
-                    proceedToNextScreen();
-                });
-            } else {
-                // Priority 2: Check Saved URL (if exists and different from Render)
-                if (savedUrl != null && !savedUrl.equals(RENDER_URL)) {
+            // Priority 1: Check Saved URL (if exists)
+            boolean savedConnected = false;
+            if (savedUrl != null && !savedUrl.isEmpty()) {
+                runOnUiThread(() -> tvStatus.setText("Connecting to saved server..."));
+                if (pingServer(savedUrl, 2000)) {
+                    savedConnected = true;
                     runOnUiThread(() -> {
-                        tvStatus.setText("Checking Saved Server...");
-                        checkServer(savedUrl, true);
+                        tvStatus.setText("Connected to Server");
+                        RetrofitClient.setBaseUrl(savedUrl);
+                        proceedToNextScreen();
+                    });
+                }
+            }
+
+            if (!savedConnected) {
+                // Priority 2: Check Cloud URL
+                runOnUiThread(() -> tvStatus.setText("Connecting to cloud server..."));
+                if (pingServer(RENDER_URL, 5000)) {
+                    runOnUiThread(() -> {
+                        tvStatus.setText("Connected to Cloud Server");
+                        RetrofitClient.setBaseUrl(RENDER_URL);
+                        proceedToNextScreen();
                     });
                 } else {
                     // Priority 3: Scan Local Network
@@ -72,25 +81,8 @@ public class SplashActivity extends AppCompatActivity {
         }).start();
     }
 
-    private void checkServer(String url, boolean isSaved) {
-        new Thread(() -> {
-            if (pingServer(url)) {
-                runOnUiThread(() -> {
-                    RetrofitClient.setBaseUrl(url);
-                    proceedToNextScreen();
-                });
-            } else {
-                if (isSaved) {
-                    runOnUiThread(() -> startNetworkScan());
-                } else {
-                    // Should not happen in single check
-                }
-            }
-        }).start();
-    }
-
     private void startNetworkScan() {
-        runOnUiThread(() -> tvStatus.setText("Scanning local network for server..."));
+        runOnUiThread(() -> tvStatus.setText("Searching for local server..."));
         
         new Thread(() -> {
             WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
@@ -105,7 +97,7 @@ public class SplashActivity extends AppCompatActivity {
                 executor.execute(() -> {
                     if (isServerFound.get()) return;
                     String url = "http://" + testIp + ":5001/";
-                    if (pingServer(url)) {
+                    if (pingServer(url, 1000)) {
                         if (!isServerFound.getAndSet(true)) {
                             Log.d("SplashActivity", "Server found: " + url);
                             runOnUiThread(() -> {
@@ -140,13 +132,12 @@ public class SplashActivity extends AppCompatActivity {
         }).start();
     }
 
-    private boolean pingServer(String baseUrl) {
+    private boolean pingServer(String baseUrl, int timeout) {
         try {
             URL url = new URL(baseUrl + "api/ping");
             HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-            // Increased timeout to account for Render cold starts (free tier sleeps)
-            connection.setConnectTimeout(5000);
-            connection.setReadTimeout(5000);
+            connection.setConnectTimeout(timeout);
+            connection.setReadTimeout(timeout);
             connection.setRequestMethod("GET");
             int code = connection.getResponseCode();
             connection.disconnect();
