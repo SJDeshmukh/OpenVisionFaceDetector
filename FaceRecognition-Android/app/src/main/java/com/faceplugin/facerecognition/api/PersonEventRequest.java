@@ -1,12 +1,20 @@
 package com.faceplugin.facerecognition.api;
 
+import com.google.gson.annotations.SerializedName;
+
 public class PersonEventRequest {
     private boolean detected;
     private boolean recognized;
+
+    @SerializedName("person_id")
     private String personId;
+
     private String name;
     private float confidence;
+
+    @SerializedName("image")
     private String imageBase64;
+
     private boolean is_attendance;
 
     // Constructor with is_attendance
