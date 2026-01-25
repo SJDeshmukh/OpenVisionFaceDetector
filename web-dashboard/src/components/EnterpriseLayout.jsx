@@ -12,13 +12,15 @@ import {
   Bell, 
   Search,
   LogOut,
-  CalendarClock
+  CalendarClock,
+  DollarSign
 } from 'lucide-react';
 
 const adminNavItems = [
   { name: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
   { name: 'People', path: '/people', icon: Users },
   { name: 'Timetable', path: '/timetable', icon: CalendarClock },
+  { name: 'Wages', path: '/wages', icon: DollarSign },
   { name: 'Attendance', path: '/attendance', icon: ClipboardList },
   { name: 'Cameras', path: '/cameras', icon: Video },
   { name: 'Reports', path: '/reports', icon: FileText },

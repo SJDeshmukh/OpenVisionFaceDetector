@@ -81,6 +81,10 @@ def init_db():
         print("Migrating: Adding shift column to faces table")
         c.execute("ALTER TABLE faces ADD COLUMN shift TEXT")
 
+    if 'daily_wage' not in faces_columns:
+        print("Migrating: Adding daily_wage column to faces table")
+        c.execute("ALTER TABLE faces ADD COLUMN daily_wage REAL DEFAULT 0")
+
     # Check for activity column in attendance table and add if missing
     c.execute("PRAGMA table_info(attendance)")
     attendance_columns = [info[1] for info in c.fetchall()]
@@ -521,6 +525,138 @@ def get_report_filters():
         "designations": designations
     })
 
+@greeting_bp.route("/persons", methods=["GET"])
+def get_persons():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute("SELECT name, department, designation, shift, daily_wage, face_image, phone FROM faces")
+    rows = c.fetchall()
+    conn.close()
+    
+    persons = []
+    for row in rows:
+        persons.append(dict(row))
+    return jsonify({"persons": persons})
+
+@greeting_bp.route("/persons/wages", methods=["PUT"])
+def update_wages():
+    data = request.json
+    updates = data.get("updates") # List of {name: "John", daily_wage: 100}
+    
+    if not updates:
+        return jsonify({"error": "No updates provided"}), 400
+        
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    try:
+        for item in updates:
+            name = item.get("name")
+            wage = item.get("daily_wage")
+            if name and wage is not None:
+                c.execute("UPDATE faces SET daily_wage = ? WHERE name = ?", (wage, name))
+        conn.commit()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+@greeting_bp.route("/reports/payroll", methods=["GET"])
+def get_payroll_report():
+    import json
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
+    
+    if not start_date or not end_date:
+        return jsonify({"error": "start_date and end_date are required"}), 400
+        
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    # 1. Fetch Timetable
+    c.execute("SELECT live_timetable FROM companies WHERE id = 1")
+    company_row = c.fetchone()
+    timetable = []
+    if company_row and company_row['live_timetable']:
+        try:
+            timetable = json.loads(company_row['live_timetable'])
+        except:
+            timetable = []
+
+    # 2. Fetch Persons (to get wages)
+    c.execute("SELECT name, daily_wage, department, designation, face_image, phone FROM faces")
+    persons = {row['name']: dict(row) for row in c.fetchall()}
+    
+    # 3. Fetch Attendance
+    c.execute("""
+        SELECT * FROM attendance 
+        WHERE date(timestamp) BETWEEN ? AND ? 
+        ORDER BY timestamp ASC
+    """, (start_date, end_date))
+    rows = c.fetchall()
+    conn.close()
+    
+    # Group by User and Date
+    user_date_records = defaultdict(list)
+    for row in rows:
+        ts = row['timestamp']
+        # Handle various timestamp formats safely
+        try:
+            if '.' in ts:
+                dt_obj = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S.%f')
+            else:
+                dt_obj = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S')
+            date_str = dt_obj.strftime('%Y-%m-%d')
+            user_date_records[(row['name'], date_str)].append(dict(row))
+        except:
+            continue
+        
+    # Calculate Totals
+    payroll_data = []
+    
+    # Iterate over all known persons
+    for name, person_info in persons.items():
+        total_hours = 0
+        days_present = 0
+        
+        current_date = datetime.strptime(start_date, '%Y-%m-%d')
+        end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+        
+        while current_date <= end_dt:
+            d_str = current_date.strftime('%Y-%m-%d')
+            records = user_date_records.get((name, d_str), [])
+            
+            if records:
+                daily_stats = calculate_daily_hours(records, timetable)
+                total_hours += daily_stats['total_hours']
+                if daily_stats['total_hours'] > 0:
+                    days_present += 1
+            
+            current_date += timedelta(days=1)
+            
+        daily_wage = person_info['daily_wage'] or 0
+        
+        # Cost Calculation: (Total Hours / 8) * Daily Wage
+        hourly_rate = daily_wage / 8.0 if daily_wage else 0
+        total_cost = round(total_hours * hourly_rate, 2)
+        
+        payroll_data.append({
+            "name": name,
+            "department": person_info['department'],
+            "designation": person_info['designation'],
+            "face_image": person_info['face_image'],
+            "phone": person_info['phone'],
+            "daily_wage": daily_wage,
+            "total_hours": round(total_hours, 2),
+            "days_present": days_present,
+            "total_cost": total_cost
+        })
+        
+    return jsonify({"payroll": payroll_data})
+
 @greeting_bp.route("/ping", methods=["GET"])
 def ping():
     return jsonify({"status": "ok", "message": "Server is running"})
@@ -755,6 +891,24 @@ def person_event():
     confidence = data.get("confidence", 0)
     captured_image = data.get("image") # Base64 string of the frame
     is_attendance = data.get("is_attendance", True) # Default to True for backward compatibility
+    
+    # Determine current time from mobile timestamp if available
+    timestamp_str = data.get("timestamp")
+    current_time_obj = datetime.now()
+    
+    if timestamp_str:
+        try:
+            # Parse ISO 8601 string (e.g. 2023-10-27T10:00:00.123)
+            current_time_obj = datetime.strptime(timestamp_str, "%Y-%m-%dT%H:%M:%S.%f")
+        except ValueError:
+            try:
+                # Fallback for format without milliseconds
+                current_time_obj = datetime.strptime(timestamp_str, "%Y-%m-%dT%H:%M:%S")
+            except ValueError:
+                print(f"Invalid timestamp format: {timestamp_str}. Using server time.")
+                current_time_obj = datetime.now()
+    else:
+        current_time_obj = datetime.now()
 
     # Case 1: No person detected
     if not detected:
@@ -782,7 +936,15 @@ def person_event():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
+
+    # Determine Expected Status EARLY (for better activity matching)
+    c.execute("SELECT * FROM attendance WHERE name = ? ORDER BY timestamp DESC LIMIT 1", (name,))
+    last_record = c.fetchone()
     
+    expected_status = 'CHECK_IN'
+    if last_record and last_record['status'] == 'CHECK_IN':
+        expected_status = 'CHECK_OUT'
+
     # Identify Activity Context FIRST to determine duplication rules
     activity_name = "Work" # Default
     activity_type = "Work"
@@ -811,7 +973,7 @@ def person_event():
                         user_shift_id = s.get('id')
                         break
             
-            now = datetime.now()
+            now = current_time_obj
             current_hm = now.strftime('%H:%M')
             day_name = now.strftime('%a')
             
@@ -854,22 +1016,78 @@ def person_event():
                     else:
                         matching_acts.append(act)
             
+            # --- Fallback Logic for Very Late/Early Arrivals ---
+            # If no activity matches the strict time window (e.g. user arrives at 6pm for a 9-5 shift),
+            # matching_acts will be empty. We should try to find the intended "Work" activity 
+            # so we can correctly mark them as Late (instead of "On Time" for generic Work).
+            if not matching_acts:
+                 # Find potential Work activities for this user (Shift-specific or Global)
+                 potential_acts = []
+                 for act in today_acts:
+                     # Only consider WORK activities
+                     if act.get('type', 'Work') != 'Work':
+                         continue
+
+                     # Check Shift Match
+                     act_shift_id = act.get('shift_id')
+                     is_shift_match = False
+                     if act_shift_id:
+                         if user_shift_id and int(act_shift_id) == int(user_shift_id):
+                             is_shift_match = True
+                     else:
+                         is_shift_match = True # Global activity matches everyone
+                     
+                     if is_shift_match:
+                         potential_acts.append(act)
+                 
+                 if potential_acts:
+                     # If multiple work activities, which one to pick?
+                     # 1. Sort by start time
+                     potential_acts.sort(key=lambda x: to_mins(x.get('start_time', '00:00')))
+                     
+                     # 2. Pick the one that is "closest" or just the first/last?
+                     # Common case: One main shift (9-5). Pick it.
+                     # Complex case: Shift A (9-1), Shift B (2-6).
+                     # If user comes at 7pm. They missed BOTH. 
+                     # Should we check them in for Shift A or Shift B?
+                     # Probably Shift A (Start of day). 
+                     # Let's pick the FIRST work activity of the day.
+                     best_fallback = potential_acts[0]
+                     
+                     print(f"Fallback Activity Match: {best_fallback.get('name')} (Strict window missed)")
+                     matching_acts.append(best_fallback)
+
             # Prioritize:
-            # 1. 'Break' type over 'Work' type (Lunch > Work)
-            # 2. Specificity (Shift-specific > Global) - handled by filtering above mostly
+            # New Logic (User Request):
+            # If CHECK_IN (Starting something): Prioritize Longest Duration Activity (Work) over sub-activities (Break)
+            # If CHECK_OUT (Ending something): Prioritize Breaks (Lunch) over Work? Or maybe consistent?
+            # User specifically said: "he will be marked for the first activity which is work... all activies marked missed except longest"
             
             best_match = None
             
-            # Check for Breaks first
-            breaks = [a for a in matching_acts if a.get('type', '').lower() != 'work']
-            if breaks:
-                best_match = breaks[0] # Pick first break
-            elif matching_acts:
-                # If only work acts, pick the one matching user shift
-                # If we have multiple (e.g. global Work and Shift Work), prefer Shift Work?
-                # For now, just pick the first one.
-                best_match = matching_acts[0]
-            
+            if matching_acts:
+                # Helper to calculate duration
+                def get_duration(act):
+                    s = to_mins(act.get('start_time', '00:00'))
+                    e = to_mins(act.get('end_time', '00:00'))
+                    d = e - s
+                    if d < 0: d += 24*60 # Handle overnight
+                    return d
+
+                if expected_status == 'CHECK_IN':
+                    # Prioritize Longest Duration (Work)
+                    matching_acts.sort(key=get_duration, reverse=True)
+                    best_match = matching_acts[0]
+                    print(f"Check-In Priority: Picked Longest Duration ({best_match.get('name')})")
+                else:
+                    # Check-Out Logic: Prioritize Breaks?
+                    # Original logic prioritized Breaks over Work. Let's keep that for Check-Out to allow "Going to Lunch"
+                    breaks = [a for a in matching_acts if a.get('type', '').lower() != 'work']
+                    if breaks:
+                        best_match = breaks[0]
+                    else:
+                        best_match = matching_acts[0]
+
             if best_match:
                 activity_name = best_match.get('name', 'Work')
                 activity_type = best_match.get('type', 'Work')
@@ -886,7 +1104,7 @@ def person_event():
     # Logic: For non-Work activities (Breaks), if we have a complete pair (OUT and IN), block further scans.
     
     if activity_type.lower() != 'work':
-        today_str = datetime.now().strftime('%Y-%m-%d')
+        today_str = current_time_obj.strftime('%Y-%m-%d')
         c.execute("""
             SELECT count(*) as count 
             FROM attendance 
@@ -907,9 +1125,10 @@ def person_event():
                 "text": f"You have already completed {activity_name}."
             })
 
-    # Get last status and timestamp
-    c.execute("SELECT * FROM attendance WHERE name = ? ORDER BY timestamp DESC LIMIT 1", (name,))
-    last_record = c.fetchone()
+    # Get last status and timestamp (Already fetched above as last_record)
+    # c.execute("SELECT * FROM attendance WHERE name = ? ORDER BY timestamp DESC LIMIT 1", (name,))
+    # last_record = c.fetchone()
+    
     
     # --- Cooldown Check ---
     try:
@@ -966,7 +1185,7 @@ def person_event():
             
             # Recalculate curr_mins if needed
             if 'curr_mins' not in locals():
-                now_check = datetime.now()
+                now_check = current_time_obj
                 curr_mins = now_check.hour * 60 + now_check.minute
             
             start_hm = best_match.get('start_time', '09:00')
@@ -988,7 +1207,7 @@ def person_event():
     # Ideally, we should migrate to UTC everywhere.
     # Given the user's issue "past attendance", let's make sure we return ISO 8601 strings in API.
     
-    current_time = datetime.now()
+    current_time = current_time_obj
     try:
         c.execute("INSERT INTO attendance (name, timestamp, status, captured_image, activity, is_late) VALUES (?, ?, ?, ?, ?, ?)", 
                   (name, current_time, new_status, captured_image, activity_name, is_late))
@@ -1215,17 +1434,62 @@ def calculate_daily_hours(records, timetable=None):
                 current_checkin = None
                 last_checkout_activity = activity_name
     
-    # Calculate break time (non-payable gaps)
-    # This is just total duration (first in - last out) - total_seconds (payable)
-    total_break_seconds = 0
-    if sessions:
-        first_in = datetime.strptime(sorted_records[0]['timestamp'].split('.')[0], '%Y-%m-%d %H:%M:%S') # Approx
-        last_out = datetime.strptime(sorted_records[-1]['timestamp'].split('.')[0], '%Y-%m-%d %H:%M:%S') # Approx
-        
-        # Better: use sessions[0].start and sessions[-1].end if we kept TS
-        # But we didn't keep start_ts in session dict for final output.
-        # Let's re-calculate cleanly.
-        pass
+    # --- Deduct Unpaid Overlaps (e.g. working through unpaid lunch) ---
+    if timetable and records and total_seconds > 0:
+        try:
+            # 1. Determine Date/Day
+            # records are sorted, take first
+            ts_str = sorted_records[0]['timestamp']
+            if '.' in ts_str:
+                ref_dt = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S.%f')
+            else:
+                ref_dt = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S')
+            
+            day_name = ref_dt.strftime('%a')
+            date_str = ref_dt.strftime('%Y-%m-%d')
+            
+            # 2. Find Unpaid Activities for this day
+            unpaid_acts = []
+            for act in timetable:
+                if day_name in act.get('days', []):
+                    act_type = act.get('type', 'Work')
+                    # Default is_payable: True for Work, False for others
+                    is_payable = act.get('is_payable', act_type == 'Work')
+                    if not is_payable:
+                        unpaid_acts.append(act)
+            
+            # 3. Calculate Overlap
+            deduction_seconds = 0
+            for act in unpaid_acts:
+                try:
+                    s_str = act.get('start_time')
+                    e_str = act.get('end_time')
+                    if not s_str or not e_str: continue
+                    
+                    act_start = datetime.strptime(f"{date_str} {s_str}", '%Y-%m-%d %H:%M')
+                    act_end = datetime.strptime(f"{date_str} {e_str}", '%Y-%m-%d %H:%M')
+                    
+                    for session in sessions:
+                        if session.get('type') == 'Work' and 'start_ts' in session and 'end_ts' in session:
+                            s_start = session['start_ts']
+                            s_end = session['end_ts']
+                            
+                            # Overlap Logic
+                            overlap_start = max(s_start, act_start)
+                            overlap_end = min(s_end, act_end)
+                            
+                            if overlap_end > overlap_start:
+                                overlap = (overlap_end - overlap_start).total_seconds()
+                                deduction_seconds += overlap
+                except Exception as e:
+                    print(f"Error parsing activity times for deduction: {e}")
+
+            if deduction_seconds > 0:
+                total_seconds -= deduction_seconds
+                if total_seconds < 0: total_seconds = 0
+                
+        except Exception as e:
+            print(f"Error in unpaid deduction logic: {e}")
 
     # Clean up sessions for output
     final_sessions = []

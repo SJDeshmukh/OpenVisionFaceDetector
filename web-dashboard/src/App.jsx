@@ -9,6 +9,7 @@ import Settings from './pages/Settings';
 import AuditLogs from './pages/AuditLogs';
 import Login from './pages/Login';
 import Timetable from './pages/Timetable';
+import Wages from './pages/Wages';
 import { AuthProvider, useAuth } from './context/AuthContext';
 
 // Protected Route Component
@@ -45,6 +46,7 @@ function App() {
               <Route path="/settings" element={<Settings />} />
               <Route path="/audit-logs" element={<AuditLogs />} />
               <Route path="/timetable" element={<Timetable />} />
+              <Route path="/wages" element={<Wages />} />
             </Route>
 
             {/* Shared/User Routes */}

@@ -1,0 +1,254 @@
+import React, { useState, useEffect } from 'react';
+import { API_BASE_URL } from '../config';
+
+const Wages = () => {
+  const [payrollData, setPayrollData] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [startDate, setStartDate] = useState(new Date().toISOString().split('T')[0]);
+  const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0]);
+  const [hasChanges, setHasChanges] = useState(false);
+  const [saveLoading, setSaveLoading] = useState(false);
+
+  // Helper to get first and last day of current month
+  useEffect(() => {
+    const date = new Date();
+    const firstDay = new Date(date.getFullYear(), date.getMonth(), 1).toISOString().split('T')[0];
+    const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0).toISOString().split('T')[0];
+    setStartDate(firstDay);
+    setEndDate(lastDay);
+  }, []);
+
+  const fetchPayroll = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/reports/payroll?start_date=${startDate}&end_date=${endDate}`);
+      const data = await res.json();
+      if (data.payroll) {
+        setPayrollData(data.payroll);
+      }
+    } catch (error) {
+      console.error("Error fetching payroll:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (startDate && endDate) {
+      fetchPayroll();
+    }
+  }, [startDate, endDate]);
+
+  const handleWageChange = (index, value) => {
+    const newData = [...payrollData];
+    newData[index].daily_wage = parseFloat(value) || 0;
+    
+    // Recalculate cost immediately
+    // Assumption: Daily Wage is for 8 hours. Hourly Rate = Daily / 8.
+    const hourlyRate = newData[index].daily_wage / 8.0; 
+    newData[index].total_cost = (newData[index].total_hours * hourlyRate).toFixed(2);
+    
+    setPayrollData(newData);
+    setHasChanges(true);
+  };
+
+  const saveWages = async () => {
+    setSaveLoading(true);
+    try {
+      const updates = payrollData.map(p => ({
+        name: p.name,
+        daily_wage: p.daily_wage
+      }));
+
+      const res = await fetch(`${API_BASE_URL}/persons/wages`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ updates })
+      });
+
+      if (res.ok) {
+        setHasChanges(false);
+        alert("Wages saved successfully!");
+      } else {
+        alert("Failed to save wages");
+      }
+    } catch (error) {
+      console.error("Error saving wages:", error);
+      alert("Error saving wages");
+    } finally {
+      setSaveLoading(false);
+    }
+  };
+
+  return (
+    <div className="p-6 max-w-7xl mx-auto">
+      <div className="flex justify-between items-center mb-6">
+        <div>
+            <h1 className="text-2xl font-bold text-slate-800">Wages & Payroll</h1>
+            <p className="text-sm text-slate-500 mt-1">Manage employee daily wages and calculate estimated costs.</p>
+        </div>
+        
+        {hasChanges && (
+            <button 
+              onClick={saveWages}
+              disabled={saveLoading}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2 shadow-sm transition-all"
+            >
+              {saveLoading ? (
+                  <>
+                    <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    Saving...
+                  </>
+              ) : (
+                  <>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+                    Save Changes
+                  </>
+              )}
+            </button>
+        )}
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 mb-6">
+        <div className="flex flex-col sm:flex-row sm:items-end gap-4 mb-6">
+          <div>
+            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Start Date</label>
+            <input 
+              type="date" 
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              className="w-full sm:w-auto px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">End Date</label>
+            <input 
+              type="date" 
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              className="w-full sm:w-auto px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+            />
+          </div>
+          <button 
+            onClick={fetchPayroll}
+            className="px-4 py-2 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 hover:text-slate-900 transition-colors text-sm font-medium"
+          >
+            Refresh Data
+          </button>
+          
+          <div className="sm:ml-auto flex items-center gap-2 text-xs text-amber-600 bg-amber-50 px-3 py-2 rounded-lg border border-amber-100">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+            Cost is calculated based on an 8-hour workday standard.
+          </div>
+        </div>
+
+        <div className="overflow-x-auto rounded-lg border border-slate-200">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-slate-50 border-b border-slate-200">
+                <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Employee</th>
+                <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Role</th>
+                <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Contact</th>
+                <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-center">Days Present</th>
+                <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-center">Total Hours</th>
+                <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Daily Wage</th>
+                <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Estimated Cost</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {loading ? (
+                <tr>
+                  <td colSpan="7" className="py-12 text-center text-slate-500">
+                    <div className="flex flex-col items-center justify-center">
+                        <svg className="animate-spin h-8 w-8 text-slate-400 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        <p>Loading payroll data...</p>
+                    </div>
+                  </td>
+                </tr>
+              ) : payrollData.length === 0 ? (
+                <tr>
+                  <td colSpan="7" className="py-12 text-center text-slate-500">
+                    <p className="text-lg font-medium text-slate-900">No records found</p>
+                    <p>Try selecting a different date range.</p>
+                  </td>
+                </tr>
+              ) : (
+                payrollData.map((person, index) => (
+                  <tr key={person.name} className="hover:bg-slate-50 transition-colors">
+                    <td className="py-3 px-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full bg-slate-200 overflow-hidden flex-shrink-0 border border-slate-300">
+                          {person.face_image ? (
+                            <img src={`data:image/jpeg;base64,${person.face_image}`} alt={person.name} className="w-full h-full object-cover" />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-slate-400 font-bold text-xs">
+                              {person.name.substring(0,2).toUpperCase()}
+                            </div>
+                          )}
+                        </div>
+                        <div>
+                          <p className="font-medium text-slate-900 text-sm">{person.name}</p>
+                          <p className="text-xs text-slate-500">{person.department || 'No Dept'}</p>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="py-3 px-4 text-sm text-slate-600">{person.designation || '-'}</td>
+                    <td className="py-3 px-4 text-sm text-slate-600">{person.phone || '-'}</td>
+                    <td className="py-3 px-4 text-sm text-slate-600 text-center font-medium">{person.days_present}</td>
+                    <td className="py-3 px-4 text-sm text-slate-600 text-center">
+                        <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded text-xs font-semibold">
+                            {person.total_hours} hrs
+                        </span>
+                    </td>
+                    <td className="py-3 px-4 text-right">
+                      <div className="flex items-center justify-end gap-2 relative group">
+                        <span className="text-slate-400 text-sm">$</span>
+                        <input 
+                          type="number" 
+                          min="0"
+                          step="0.01"
+                          value={person.daily_wage}
+                          onChange={(e) => handleWageChange(index, e.target.value)}
+                          className="w-24 px-2 py-1 border border-slate-200 rounded text-right text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-medium text-slate-700 bg-slate-50 focus:bg-white transition-all"
+                          placeholder="0.00"
+                        />
+                      </div>
+                    </td>
+                    <td className="py-3 px-4 text-right">
+                        <span className="text-sm font-bold text-slate-900 block">
+                            ${person.total_cost}
+                        </span>
+                        {person.total_hours > 0 && person.daily_wage > 0 && (
+                            <span className="text-xs text-slate-400">
+                                ${(person.daily_wage/8).toFixed(2)}/hr
+                            </span>
+                        )}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+            {payrollData.length > 0 && (
+                <tfoot className="bg-slate-50 font-semibold text-slate-900 border-t border-slate-300">
+                    <tr>
+                        <td colSpan="6" className="py-3 px-4 text-right text-sm uppercase tracking-wider">Total Estimated Cost</td>
+                        <td className="py-3 px-4 text-right text-base text-blue-700">
+                            ${payrollData.reduce((acc, curr) => acc + parseFloat(curr.total_cost || 0), 0).toFixed(2)}
+                        </td>
+                    </tr>
+                </tfoot>
+            )}
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default Wages;

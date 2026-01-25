@@ -16,9 +16,12 @@ public class PersonEventRequest {
     private String imageBase64;
 
     private boolean is_attendance;
+    
+    @SerializedName("timestamp")
+    private String timestamp;
 
-    // Constructor with is_attendance
-    public PersonEventRequest(boolean detected, boolean recognized, String personId, String name, float confidence, String imageBase64, boolean is_attendance) {
+    // Constructor with is_attendance and timestamp
+    public PersonEventRequest(boolean detected, boolean recognized, String personId, String name, float confidence, String imageBase64, boolean is_attendance, String timestamp) {
         this.detected = detected;
         this.recognized = recognized;
         this.personId = personId;
@@ -26,12 +29,19 @@ public class PersonEventRequest {
         this.confidence = confidence;
         this.imageBase64 = imageBase64;
         this.is_attendance = is_attendance;
+        this.timestamp = timestamp;
     }
 
-    // Constructor without is_attendance (defaults to true for backward compatibility/CameraActivity)
-    public PersonEventRequest(boolean detected, boolean recognized, String personId, String name, float confidence, String imageBase64) {
-        this(detected, recognized, personId, name, confidence, imageBase64, true);
+    // Constructor without timestamp (for backward compatibility, though we should avoid using it)
+    public PersonEventRequest(boolean detected, boolean recognized, String personId, String name, float confidence, String imageBase64, boolean is_attendance) {
+        this(detected, recognized, personId, name, confidence, imageBase64, is_attendance, null);
     }
+
+    // Constructor without is_attendance (defaults to true)
+    public PersonEventRequest(boolean detected, boolean recognized, String personId, String name, float confidence, String imageBase64) {
+        this(detected, recognized, personId, name, confidence, imageBase64, true, null);
+    }
+
 
     // Getters and Setters
     public boolean isDetected() {
@@ -88,5 +98,13 @@ public class PersonEventRequest {
 
     public void setAttendance(boolean attendance) {
         is_attendance = attendance;
+    }
+
+    public String getTimestamp() {
+        return timestamp;
+    }
+
+    public void setTimestamp(String timestamp) {
+        this.timestamp = timestamp;
     }
 }

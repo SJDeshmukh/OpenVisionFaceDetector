@@ -200,9 +200,13 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
         // Resize image to max 320px width to ensure successful upload and save bandwidth
         Bitmap resizedBitmap = Utils.resizeBitmap(image, 320);
         String imageBase64 = Utils.bitmapToBase64(resizedBitmap);
+
+        // Generate timestamp from mobile
+        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US);
+        String timestamp = sdf.format(new Date());
         
-        // Use constructor with is_attendance=true explicitly
-        PersonEventRequest request = new PersonEventRequest(detected, recognized, personId, name, confidence, imageBase64, true);
+        // Use constructor with is_attendance=true explicitly and include timestamp
+        PersonEventRequest request = new PersonEventRequest(detected, recognized, personId, name, confidence, imageBase64, true, timestamp);
         
         service.sendPersonEvent(request).enqueue(new Callback<GreetingResponse>() {
             @Override

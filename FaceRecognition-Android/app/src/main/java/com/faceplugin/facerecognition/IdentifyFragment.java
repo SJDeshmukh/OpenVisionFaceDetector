@@ -44,6 +44,8 @@ import com.ocp.facesdk.FaceSDK;
 import java.nio.ByteBuffer;
 import java.util.List;
 import java.util.Locale;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -201,7 +203,11 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         String role = prefs.getString("role", "user");
         boolean isAttendance = !"admin".equalsIgnoreCase(role);
 
-        PersonEventRequest request = new PersonEventRequest(detected, recognized, personId, name, confidence, imageBase64, isAttendance);
+        // Generate timestamp from mobile
+        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US);
+        String timestamp = sdf.format(new Date());
+
+        PersonEventRequest request = new PersonEventRequest(detected, recognized, personId, name, confidence, imageBase64, isAttendance, timestamp);
 
         service.sendPersonEvent(request).enqueue(new Callback<GreetingResponse>() {
             @Override
