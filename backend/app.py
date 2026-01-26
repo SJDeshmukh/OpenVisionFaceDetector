@@ -2400,7 +2400,7 @@ def person_event():
         print(f"Admin Identification Check: {name}")
         return jsonify({
             "speak": True,
-            "text": f"Identified: {name}"
+            "text": f"Identified: {name} (Admin Mode)"
         })
 
     # --- Check-in / Check-out Logic ---

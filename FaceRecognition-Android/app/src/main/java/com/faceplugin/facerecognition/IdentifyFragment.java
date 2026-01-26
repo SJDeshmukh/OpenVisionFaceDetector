@@ -198,11 +198,11 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         String imageBase64 = Utils.bitmapToBase64(image);
 
         // Determine attendance flag based on User Role
-        // If Admin -> is_attendance = false (Testing Mode: No Cooldown, No DB Record)
+        // If Admin/Vendor -> is_attendance = false (Testing Mode: No Cooldown, No DB Record)
         // If User/Kiosk -> is_attendance = true (Production Mode: Cooldown, DB Record)
         android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
         String role = prefs.getString("role", "user");
-        boolean isAttendance = !"admin".equalsIgnoreCase(role);
+        boolean isAttendance = "user".equalsIgnoreCase(role);
 
         // Generate timestamp from mobile
         SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US);
@@ -224,8 +224,11 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
 
                         // Play Sound based on Status (Check-In vs Check-Out)
                         String status = greeting.getStatus();
-                        if (status == null) status = "CHECK_IN"; // Fallback
-                        playAttendanceSound(status); 
+                        if (status != null) {
+                             playAttendanceSound(status);
+                        } else {
+                             // Admin/Vendor Identification - No Sound
+                        } 
                     }
                 } else {
                     // Handle API Errors (e.g., 403 Suspended)
