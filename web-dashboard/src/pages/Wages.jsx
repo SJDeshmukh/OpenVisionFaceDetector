@@ -1,7 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { API_BASE_URL } from '../config';
+import { useAuth } from '../context/AuthContext';
 
 const Wages = () => {
+  const { user } = useAuth();
+  
   // Helper to format date as YYYY-MM-DD in local time
   const formatDate = (date) => {
     const year = date.getFullYear();
@@ -26,12 +29,19 @@ const Wages = () => {
   const [workingHoursChanged, setWorkingHoursChanged] = useState(false);
 
   useEffect(() => {
-    fetchWorkingHours();
-  }, []);
+    if (user) {
+      fetchWorkingHours();
+    }
+  }, [user]);
 
   const fetchWorkingHours = async () => {
       try {
-          const res = await fetch(`${API_BASE_URL}/companies/1`);
+          const companyId = user?.company_id || 1;
+          const res = await fetch(`${API_BASE_URL}/companies/${companyId}`, {
+            headers: {
+              'Authorization': `Bearer ${user?.token}`
+            }
+          });
           const data = await res.json();
           if (data.working_hours) {
               setWorkingHours(parseFloat(data.working_hours));
@@ -43,9 +53,13 @@ const Wages = () => {
 
   const saveWorkingHours = async () => {
       try {
-          const res = await fetch(`${API_BASE_URL}/companies/1`, {
+          const companyId = user?.company_id || 1;
+          const res = await fetch(`${API_BASE_URL}/companies/${companyId}`, {
               method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${user?.token}`
+              },
               body: JSON.stringify({ working_hours: parseFloat(workingHours) })
           });
           if (res.status === 403) {
@@ -63,8 +77,8 @@ const Wages = () => {
   };
 
 
-  const fetchPayroll = async () => {
-    setLoading(true);
+  const fetchPayroll = async (isBackground = false) => {
+    if (!isBackground) setLoading(true);
     setError(null);
     try {
       const res = await fetch(`${API_BASE_URL}/reports/payroll?start_date=${startDate}&end_date=${endDate}`);
@@ -80,15 +94,21 @@ const Wages = () => {
     } catch (error) {
       console.error("Error fetching payroll:", error);
     } finally {
-      setLoading(false);
+      if (!isBackground) setLoading(false);
     }
   };
 
   useEffect(() => {
     if (startDate && endDate) {
       fetchPayroll();
+      
+      // Poll for updates
+      const interval = setInterval(() => {
+          if (!hasChanges) fetchPayroll(true);
+      }, 5000);
+      return () => clearInterval(interval);
     }
-  }, [startDate, endDate]);
+  }, [startDate, endDate, hasChanges]);
 
   const handleWageChange = (index, value) => {
     const newData = [...payrollData];
@@ -113,7 +133,10 @@ const Wages = () => {
 
       const res = await fetch(`${API_BASE_URL}/persons/wages`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user?.token}`
+        },
         body: JSON.stringify({ updates })
       });
 

@@ -35,7 +35,7 @@ public class DBManager extends SQLiteOpenHelper {
         onCreate(db);
     }
 
-    public void insertPerson (String name, Bitmap face, byte[] templates, String phone, String department, String designation, boolean synced) {
+    public void insertPerson (String name, Bitmap face, byte[] templates, String phone, String department, String designation, String shift, boolean synced) {
 
         // Check if person already exists
         boolean exists = false;
@@ -60,6 +60,7 @@ public class DBManager extends SQLiteOpenHelper {
         contentValues.put("phone", phone);
         contentValues.put("department", department);
         contentValues.put("designation", designation);
+        contentValues.put("shift", shift);
         contentValues.put("synced", synced ? 1 : 0);
 
         if (exists) {
@@ -68,9 +69,13 @@ public class DBManager extends SQLiteOpenHelper {
             db.insert("person", null, contentValues);
         }
 
-        Person p = new Person(name, face, templates, phone, department, designation);
+        Person p = new Person(name, face, templates, phone, department, designation, shift);
         p.synced = synced;
         personList.add(p);
+    }
+
+    public void insertPerson (String name, Bitmap face, byte[] templates, String phone, String department, String designation, boolean synced) {
+        insertPerson(name, face, templates, phone, department, designation, "", synced);
     }
     
     // Overload for backward compatibility (defaults to synced=true)
@@ -160,13 +165,17 @@ public class DBManager extends SQLiteOpenHelper {
             int desigIdx = res.getColumnIndex("designation");
             if (desigIdx != -1) designation = res.getString(desigIdx);
             
+            String shift = "";
+            int shiftIdx = res.getColumnIndex("shift");
+            if (shiftIdx != -1) shift = res.getString(shiftIdx);
+            
             boolean synced = true;
             int syncedIdx = res.getColumnIndex("synced");
             if (syncedIdx != -1) synced = res.getInt(syncedIdx) == 1;
 
             Bitmap face = BitmapFactory.decodeByteArray(faceJpg, 0, faceJpg.length);
 
-            Person person = new Person(name, face, templates, phone, department, designation);
+            Person person = new Person(name, face, templates, phone, department, designation, shift);
             person.synced = synced;
             
             // Deduplicate: If name exists, replace it (keep latest)

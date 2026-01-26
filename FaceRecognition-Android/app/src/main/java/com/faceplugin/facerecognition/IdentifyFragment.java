@@ -81,6 +81,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
 
     private String lastProcessedPersonName = null;
     private long lastStreamTime = 0;
+    private long resumeTime = 0;
 
     @Nullable
     @Override
@@ -364,11 +365,17 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
 
             // --- Streaming Logic ---
             long currentTime = System.currentTimeMillis();
-            if (currentTime - lastStreamTime > 500) { // 2 FPS
+            if (currentTime - lastStreamTime > 1000) { // 1 FPS
                 lastStreamTime = currentTime;
                 sendStreamFrame(bitmap);
             }
             // -----------------------
+
+            // Grace period check (e.g. 3 seconds after resume)
+            if (currentTime - resumeTime < 3000) {
+                 imageProxy.close();
+                 return;
+            }
 
             FaceDetectionParam faceDetectionParam = new FaceDetectionParam();
             faceDetectionParam.check_liveness = true;

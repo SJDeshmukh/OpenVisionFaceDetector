@@ -306,7 +306,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
 
             // --- Streaming Logic ---
             long currentTime = System.currentTimeMillis();
-            if (currentTime - lastStreamTime > 500) { // 2 FPS
+            if (currentTime - lastStreamTime > 1000) { // 1 FPS to avoid overloading
                 lastStreamTime = currentTime;
                 sendStreamFrame(bitmap);
             }

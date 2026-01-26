@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
+import { useAuth } from '../context/AuthContext';
 import { 
   Search, 
   Filter, 
@@ -94,6 +95,9 @@ const Attendance = () => {
     if (filters.endDate) params.append('end_date', filters.endDate);
     if (filters.department) params.append('department', filters.department);
     if (filters.designation) params.append('designation', filters.designation);
+    
+    // Add token for auth
+    if (user?.token) params.append('token', user.token);
     
     window.location.href = `${API_URL}/reports/export?${params.toString()}`;
   };

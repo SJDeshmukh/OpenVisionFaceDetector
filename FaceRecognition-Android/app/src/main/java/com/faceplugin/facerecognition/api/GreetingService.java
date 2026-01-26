@@ -31,4 +31,7 @@ public interface GreetingService {
 
     @GET("api/companies/{id}")
     Call<com.google.gson.JsonObject> getCompany(@Path("id") int id);
+
+    @GET("api/companies")
+    Call<com.google.gson.JsonObject> getCompanies();
 }

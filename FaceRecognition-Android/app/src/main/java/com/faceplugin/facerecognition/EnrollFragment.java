@@ -174,7 +174,7 @@ public class EnrollFragment extends Fragment {
             // Save to Local DB (Optimistic UI - marked as not synced)
             // Note: Local DB schema update for 'shift' is pending, so we might lose it locally if we don't update DBManager.
             // But requirement is backend sync. We will send it to backend regardless.
-            dbManager.insertPerson(name, faceImage, templates, phone, department, designation, false);
+            dbManager.insertPerson(name, faceImage, templates, phone, department, designation, shift, false);
             
             if (exists) {
                 Toast.makeText(getContext(), "Updated existing user: " + name, Toast.LENGTH_SHORT).show();
@@ -195,13 +195,49 @@ public class EnrollFragment extends Fragment {
     }
 
     private void fetchShifts() {
-        // Fetch company details
-        int companyId = 1; // Default
+        // First try to fetch list of companies for this vendor
+        RetrofitClient.getService().getCompanies().enqueue(new Callback<JsonObject>() {
+            @Override
+            public void onResponse(Call<JsonObject> call, Response<JsonObject> response) {
+                if (response.isSuccessful() && response.body() != null) {
+                    try {
+                        JsonObject root = response.body();
+                        if (root.has("companies")) {
+                            JsonArray companies = root.getAsJsonArray("companies");
+                            if (companies.size() > 0) {
+                                // Use the first company found
+                                JsonObject firstCompany = companies.get(0).getAsJsonObject();
+                                int companyId = firstCompany.get("id").getAsInt();
+                                fetchCompanyShifts(companyId);
+                                return;
+                            }
+                        }
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }
+                }
+                // Fallback to default if failed
+                fetchCompanyShifts(getDefaultCompanyId());
+            }
+
+            @Override
+            public void onFailure(Call<JsonObject> call, Throwable t) {
+                t.printStackTrace();
+                fetchCompanyShifts(getDefaultCompanyId());
+            }
+        });
+    }
+
+    private int getDefaultCompanyId() {
+        int companyId = 1;
         if (getContext() != null) {
             android.content.SharedPreferences prefs = getContext().getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE);
             companyId = prefs.getInt("company_id", 1);
         }
+        return companyId;
+    }
 
+    private void fetchCompanyShifts(int companyId) {
         RetrofitClient.getService().getCompany(companyId).enqueue(new Callback<JsonObject>() {
             @Override
             public void onResponse(Call<JsonObject> call, Response<JsonObject> response) {

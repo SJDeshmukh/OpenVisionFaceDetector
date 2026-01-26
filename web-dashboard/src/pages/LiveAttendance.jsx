@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
+import { useAuth } from '../context/AuthContext';
 import { API_URL } from '../config';
 import { 
   Video, 
@@ -13,6 +14,7 @@ import {
 } from 'lucide-react';
 
 const LiveAttendance = () => {
+  const { user } = useAuth();
   const [liveImage, setLiveImage] = useState(null);
   const [logs, setLogs] = useState([]);
   const [isConnected, setIsConnected] = useState(false);
@@ -26,9 +28,14 @@ const LiveAttendance = () => {
 
   // Poll Stream
   useEffect(() => {
+    if (!user) return;
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`${API_URL}/stream/view`);
+        const res = await fetch(`${API_URL}/stream/view`, {
+          headers: {
+            'Authorization': `Bearer ${user.token}`
+          }
+        });
         const data = await res.json();
         if (data.status === 'online' && data.image) {
             setLiveImage(data.image.startsWith('data:') ? data.image : `data:image/jpeg;base64,${data.image}`);
@@ -41,14 +48,16 @@ const LiveAttendance = () => {
       }
     }, 1000); // 1 FPS
     return () => clearInterval(interval);
-  }, []);
+  }, [user]);
 
   // Poll Logs
   useEffect(() => {
+    if (!user) return;
     const fetchLogs = async () => {
       try {
         // Fetch logs (assuming API returns all, we slice top 50)
         // Ideally API should support limit
+        // API call includes Authorization header automatically via AuthContext global axios defaults
         const res = await axios.get(`${API_URL}/attendance`);
         const allLogs = res.data.attendance || [];
         // Sort by timestamp desc

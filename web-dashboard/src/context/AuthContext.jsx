@@ -32,7 +32,9 @@ export const AuthProvider = ({ children }) => {
         const userData = {
           username: response.data.username,
           role: response.data.role,
-          token: response.data.token
+          token: response.data.token,
+          vendor_id: response.data.vendor_id,
+          company_id: response.data.company_id
         };
         setUser(userData);
         localStorage.setItem('user', JSON.stringify(userData));

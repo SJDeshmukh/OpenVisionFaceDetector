@@ -147,6 +147,17 @@ def authenticate_vendor_access():
             except:
                 pass
         
+        # Fallback: Check for token in query params (for file downloads/exports)
+        if not username and request.args.get('token'):
+            try:
+                token = request.args.get('token')
+                user_data = verify_token(token)
+                if user_data:
+                    username = user_data['username']
+                    role = user_data['role']
+            except:
+                pass
+
         if not username:
             # Fallback for "no auth" mode
             username = 'admin' # Default admin
@@ -2830,7 +2841,7 @@ def get_attendance():
     params = []
 
     if vendor_id:
-        query += " AND f.vendor_id = ?"
+        query += " AND a.vendor_id = ?"
         params.append(vendor_id)
 
     if start_date:

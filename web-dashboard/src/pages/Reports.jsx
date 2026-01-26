@@ -1,5 +1,6 @@
   import { useState, useEffect } from 'react';
 import axios from 'axios';
+import { useAuth } from '../context/AuthContext';
 import { 
   FileText, 
   Download, 
@@ -83,7 +84,11 @@ const Reports = () => {
     const endDate = new Date().toISOString().split('T')[0];
     const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     
-    window.location.href = `${API_URL}/reports/export?start_date=${startDate}&end_date=${endDate}`;
+    let url = `${API_URL}/reports/export?start_date=${startDate}&end_date=${endDate}`;
+    if (user?.token) {
+      url += `&token=${user.token}`;
+    }
+    window.location.href = url;
   };
 
   const handleCustomExport = () => {
@@ -93,6 +98,10 @@ const Reports = () => {
     if (filters.department) params.append('department', filters.department);
     if (filters.designation) params.append('designation', filters.designation);
     params.append('type', filters.type);
+    
+    if (user?.token) {
+      params.append('token', user.token);
+    }
     
     window.location.href = `${API_URL}/reports/export?${params.toString()}`;
   };

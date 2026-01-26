@@ -17,6 +17,7 @@ import {
 import { API_URL } from '../config';
 
 const People = () => {
+  const { user } = useAuth();
   const [users, setUsers] = useState([]);
   const [shifts, setShifts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -35,12 +36,21 @@ const People = () => {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    fetchUsers();
-    fetchShifts();
-  }, []);
+    if (user) {
+      fetchUsers();
+      fetchShifts();
+      
+      // Poll for updates (Real-time data)
+      const interval = setInterval(() => {
+        if (!isModalOpen) fetchUsers(); 
+      }, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [user, isModalOpen]);
 
   const fetchUsers = async () => {
     try {
+      // API call includes Authorization header automatically via AuthContext global axios defaults
       const response = await axios.get(`${API_URL}/sync/download`);
       setUsers(response.data.faces || []);
       setLoading(false);
@@ -52,8 +62,8 @@ const People = () => {
 
   const fetchShifts = async () => {
     try {
-      // Assuming company ID 1 for now as per other parts of the app
-      const response = await axios.get(`${API_URL}/companies/1`);
+      const companyId = user?.company_id || 1;
+      const response = await axios.get(`${API_URL}/companies/${companyId}`);
       if (response.data && response.data.shifts) {
         setShifts(response.data.shifts);
       }

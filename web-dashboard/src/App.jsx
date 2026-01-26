@@ -69,7 +69,7 @@ function App() {
             </Route>
 
             {/* Shared/User Routes */}
-            <Route element={<ProtectedRoute allowedRoles={['admin', 'user']} />}>
+            <Route element={<ProtectedRoute allowedRoles={['admin', 'user', 'vendor_admin']} />}>
                {/* User lands on Attendance/Identify page */}
                <Route path="/attendance" element={<Attendance />} />
                {/* Allow users to access People page? Maybe restrict based on role if needed, but for now keeping as is */}
