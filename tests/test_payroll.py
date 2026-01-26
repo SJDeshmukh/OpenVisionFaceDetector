@@ -49,10 +49,9 @@ class TestPayrollLogic(unittest.TestCase):
         ]
         stats = calculate_daily_hours(records, self.timetable)
         # 9 hours total.
-        # However, Lunch is Unpaid (13:00-14:00).
-        # Logic in calculate_daily_hours (lines 2598+) DEDUCTS unpaid overlaps.
-        # So 9 hours - 1 hour (Lunch) = 8 hours.
-        self.assertEqual(stats['total_hours'], 8.0)
+        # Strict Check-In/Check-Out Logic: No automatic deductions for missing breaks.
+        # If user didn't check out for lunch, they worked through it.
+        self.assertEqual(stats['total_hours'], 9.0)
 
     def test_work_day_with_unpaid_gap(self):
         # Check In 9:00
@@ -71,10 +70,6 @@ class TestPayrollLogic(unittest.TestCase):
         # Gap: 13-14 (1 hour). Last activity "Lunch Break". is_payable=False. Not added.
         # Session 2: 14-18 (4 hours)
         # Total: 8 hours.
-        # Overlap Deduction: 
-        # Session 1 (9-13) overlaps Lunch (13-14)? No.
-        # Session 2 (14-18) overlaps Lunch? No.
-        # Deduction = 0.
         self.assertEqual(stats['total_hours'], 8.0)
 
     def test_work_day_with_paid_gap(self):
@@ -95,14 +90,8 @@ class TestPayrollLogic(unittest.TestCase):
         # Gap: 16:00-16:15 (0.25 hours). Last activity "Tea Break". is_payable=True. Added!
         # Session 2: 16:15-18:00 (1.75 hours)
         # Total Raw: 7 + 0.25 + 1.75 = 9.0 hours.
-        
-        # Overlap Deduction:
-        # Lunch (13-14) is unpaid.
-        # Session 1 (9-16) overlaps Lunch (13-14) by 1 hour.
-        # Deduction = 1 hour.
-        # Net Total: 9.0 - 1.0 = 8.0 hours.
-        
-        self.assertEqual(stats['total_hours'], 8.0)
+        # Strict Logic: No deduction for skipped Lunch.
+        self.assertEqual(stats['total_hours'], 9.0)
         
         # Wait, if Tea Break is paid, shouldn't it be included?
         # Yes, it is included in the raw total (via Gap logic).

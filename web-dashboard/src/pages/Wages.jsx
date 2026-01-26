@@ -69,7 +69,21 @@ const Wages = () => {
           }
           if (res.ok) {
               setWorkingHoursChanged(false);
-              fetchPayroll(); // Refresh calculation
+              // Do NOT fetchPayroll() immediately if it causes a UI jump, 
+              // but we need to recalculate costs locally or refresh.
+              // fetchPayroll(); 
+              
+              // Better: Update local payroll data with new hourly rate immediately
+              const newData = payrollData.map(p => {
+                  const newRate = p.daily_wage / parseFloat(workingHours);
+                  return {
+                      ...p,
+                      company_working_hours: parseFloat(workingHours),
+                      total_cost: (p.total_hours * newRate).toFixed(2)
+                  };
+              });
+              setPayrollData(newData);
+              alert("Working hours updated successfully!");
           }
       } catch (e) {
           console.error("Error saving working hours", e);
@@ -104,15 +118,18 @@ const Wages = () => {
 
   useEffect(() => {
     if (startDate && endDate) {
-      fetchPayroll();
+      // Only fetch if NOT already editing (to prevent overwrite)
+      if (!hasChanges) {
+          fetchPayroll();
+      }
       
-      // Poll for updates
+      // Poll for updates (Disable polling if editing)
       const interval = setInterval(() => {
-          if (!hasChanges) fetchPayroll(true);
+          if (!hasChanges && !workingHoursChanged) fetchPayroll(true);
       }, 5000);
       return () => clearInterval(interval);
     }
-  }, [startDate, endDate, hasChanges]);
+  }, [startDate, endDate, hasChanges, workingHoursChanged]);
 
   const handleWageChange = (index, value) => {
     const newData = [...payrollData];

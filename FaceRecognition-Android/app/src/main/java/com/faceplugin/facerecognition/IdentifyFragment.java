@@ -119,6 +119,9 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         if (statusText != null) {
             statusText.setText("Looking for a registered face...");
         }
+        
+        // Try to sync offline queue
+        syncOfflineQueue();
     }
 
     @Override
@@ -270,6 +273,19 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             @Override
             public void onFailure(Call<GreetingResponse> call, Throwable t) {
                 Log.e(TAG, "API Error", t);
+                
+                // Offline Fallback
+                if (getActivity() != null) {
+                    getActivity().runOnUiThread(() -> {
+                        if (isAttendance) {
+                            dbManager.insertAttendanceQueue(name, timestamp, "pending", image, false);
+                            Toast.makeText(getContext(), "Offline: Attendance Saved", Toast.LENGTH_SHORT).show();
+                            playAttendanceSound("CHECK_IN"); // Generic success sound
+                        } else {
+                            Toast.makeText(getContext(), "Offline: API Error", Toast.LENGTH_SHORT).show();
+                        }
+                    });
+                }
             }
         });
     }
@@ -287,6 +303,54 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         } catch (Exception e) {
             e.printStackTrace();
         }
+    }
+
+    private void syncOfflineQueue() {
+        if (dbManager == null) return;
+        
+        new Thread(() -> {
+            List<DBManager.QueueItem> queue = dbManager.getAttendanceQueue();
+            if (queue.isEmpty()) return;
+
+            Log.d(TAG, "Syncing " + queue.size() + " offline records...");
+            
+            for (DBManager.QueueItem item : queue) {
+                // Create Request
+                // Note: image in QueueItem is Base64 string, but might need formatting
+                String base64Image = item.image; 
+                // If stored as raw bytes, DBManager converts it. If stored as Base64, fine.
+                // In DBManager.java, we encoded it: android.util.Base64.encodeToString(img, android.util.Base64.NO_WRAP);
+                
+                // We need to ensure it has the prefix if backend expects it? 
+                // Utils.bitmapToBase64 usually adds nothing or ?
+                // Let's check Utils.bitmapToBase64. 
+                // Assuming Utils.bitmapToBase64 returns pure Base64.
+                
+                PersonEventRequest request = new PersonEventRequest(
+                    true, // detected
+                    true, // recognized
+                    item.name, // personId
+                    item.name, // name
+                    0.99f, // confidence (dummy)
+                    base64Image,
+                    true, // isAttendance (always true for offline queue?)
+                    item.timestamp
+                );
+                
+                try {
+                    // Synchronous call since we are in a Thread
+                    Response<GreetingResponse> response = RetrofitClient.getService().sendPersonEvent(request).execute();
+                    if (response.isSuccessful()) {
+                        Log.d(TAG, "Synced: " + item.name);
+                        dbManager.deleteQueueItem(item.id);
+                    } else {
+                        Log.e(TAG, "Sync Failed for " + item.name + ": " + response.code());
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "Sync Exception", e);
+                }
+            }
+        }).start();
     }
 
     @Override

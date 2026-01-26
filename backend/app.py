@@ -1471,8 +1471,8 @@ def export_report():
     c = conn.cursor()
     
     # Filters
-    start_date = request.args.get('start_date', (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d'))
-    end_date = request.args.get('end_date', datetime.now().strftime('%Y-%m-%d'))
+    start_date_str = request.args.get('start_date', (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d'))
+    end_date_str = request.args.get('end_date', datetime.now().strftime('%Y-%m-%d'))
     department = request.args.get('department')
     designation = request.args.get('designation')
     report_type = request.args.get('type', 'detailed') # detailed or summary
@@ -1519,8 +1519,14 @@ def export_report():
         c.execute(faces_query, faces_params)
         persons = {row['name']: dict(row) for row in c.fetchall()}
         
-        # 3. Fetch Attendance for the period
-        # We need attendance for ALL filtered users
+        # 3. Fetch Attendance for the period (BUFFERED for Overnight Shifts)
+        # We fetch Start-1 to End+1 to capture cross-midnight shifts
+        start_dt = datetime.strptime(start_date_str, '%Y-%m-%d')
+        end_dt = datetime.strptime(end_date_str, '%Y-%m-%d')
+        
+        buffer_start = (start_dt - timedelta(days=1)).strftime('%Y-%m-%d')
+        buffer_end = (end_dt + timedelta(days=1)).strftime('%Y-%m-%d')
+
         placeholders = ','.join(['?'] * len(persons))
         if not persons:
             rows = []
@@ -1531,33 +1537,63 @@ def export_report():
                 AND name IN ({placeholders})
                 ORDER BY timestamp ASC
             """
-            params = [start_date, end_date] + list(persons.keys())
+            params = [buffer_start, buffer_end] + list(persons.keys())
             c.execute(query, params)
             rows = c.fetchall()
             
         conn.close()
         
-        # Group records
+        # Group records with Smart Logic (Continuous Stream)
         user_date_records = defaultdict(list)
+        user_pending_date = {} # Track "Active Day" for each user {name: date_str}
+
+        # First, organize by name to process streams
+        user_streams = defaultdict(list)
         for row in rows:
-            ts = row['timestamp']
-            try:
-                if '.' in ts:
-                    dt_obj = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S.%f')
-                else:
-                    dt_obj = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S')
-                
-                # Shift Day Logic: If time is < 06:00, assign to previous day
-                # This ensures night shifts (e.g. ending at 1am) are grouped with the start day
-                if dt_obj.hour < 6:
-                    adjusted_date = dt_obj.date() - timedelta(days=1)
-                else:
-                    adjusted_date = dt_obj.date()
+            user_streams[row['name']].append(dict(row))
+            
+        for name, records in user_streams.items():
+            current_logical_date = None
+            
+            for row in records:
+                status = row['status']
+                ts = row['timestamp']
+                try:
+                    if '.' in ts:
+                        dt_obj = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S.%f')
+                    else:
+                        dt_obj = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S')
+                except:
+                    continue
+
+                if status == 'CHECK_IN':
+                    # Determine Logical Date for this Shift Start
+                    # Heuristic: If < 6 AM, assign to Previous Day (Night Shift continuation?)
+                    # OR: Just use the Date. 
+                    # Better: Use the date. If I start at 1 AM, it is that day's shift.
+                    # EXCEPT if I am late for a 10 PM shift? 
+                    # Existing logic used < 6 check. Let's keep it consistent.
+                    if dt_obj.hour < 6:
+                         logical_date = (dt_obj.date() - timedelta(days=1)).strftime('%Y-%m-%d')
+                    else:
+                         logical_date = dt_obj.date().strftime('%Y-%m-%d')
                     
-                date_str = adjusted_date.strftime('%Y-%m-%d')
-                user_date_records[(row['name'], date_str)].append(dict(row))
-            except:
-                continue
+                    current_logical_date = logical_date
+                    user_date_records[(name, logical_date)].append(row)
+                    
+                elif status == 'CHECK_OUT':
+                    # Assign to current logical date if exists (pair with Check-In)
+                    if current_logical_date:
+                        user_date_records[(name, current_logical_date)].append(row)
+                        current_logical_date = None # Session closed
+                    else:
+                        # Orphan Check-Out (maybe from before buffer?)
+                        # Use same heuristic
+                        if dt_obj.hour < 6:
+                             logical_date = (dt_obj.date() - timedelta(days=1)).strftime('%Y-%m-%d')
+                        else:
+                             logical_date = dt_obj.date().strftime('%Y-%m-%d')
+                        user_date_records[(name, logical_date)].append(row)
 
         # Create CSV
         output = io.StringIO()
@@ -1572,9 +1608,8 @@ def export_report():
             total_hours = 0
             days_present = 0
             
-            # Iterate through date range
-            current_date = datetime.strptime(start_date, '%Y-%m-%d')
-            end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+            # Iterate through REQUESTED date range (not buffer)
+            current_date = start_dt
             
             while current_date <= end_dt:
                 d_str = current_date.strftime('%Y-%m-%d')
@@ -1613,7 +1648,7 @@ def export_report():
         return Response(
             output.getvalue(),
             mimetype="text/csv",
-            headers={"Content-disposition": f"attachment; filename=payroll_summary_{start_date}_to_{end_date}.csv"}
+            headers={"Content-disposition": f"attachment; filename=payroll_summary_{start_date_str}_to_{end_date_str}.csv"}
         )
 
     # --- Default Detailed Log Report ---
@@ -1623,7 +1658,7 @@ def export_report():
         LEFT JOIN faces f ON a.name = f.name
         WHERE date(a.timestamp) BETWEEN ? AND ?
     """
-    params = [start_date, end_date]
+    params = [start_date_str, end_date_str]
     
     if vendor_id:
         query += " AND a.vendor_id = ?"
@@ -1675,7 +1710,7 @@ def export_report():
     return Response(
         output.getvalue(),
         mimetype="text/csv",
-        headers={"Content-disposition": f"attachment; filename=attendance_log_{start_date}_to_{end_date}.csv"}
+        headers={"Content-disposition": f"attachment; filename=attendance_log_{start_date_str}_to_{end_date_str}.csv"}
     )
 
 @greeting_bp.route("/reports/filters", methods=["GET"])
@@ -2292,6 +2327,36 @@ def delete_face(name):
     finally:
         conn.close()
 
+
+@greeting_bp.route("/persons/wages", methods=["PUT"])
+def update_wages():
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+
+    data = request.json
+    updates = data.get("updates", []) # List of {name, daily_wage}
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    try:
+        for u in updates:
+            name = u.get('name')
+            wage = u.get('daily_wage')
+            
+            # Verify person belongs to vendor
+            if vendor_id:
+                c.execute("UPDATE faces SET daily_wage = ? WHERE name = ? AND vendor_id = ?", 
+                          (wage, name, vendor_id))
+            else:
+                 c.execute("UPDATE faces SET daily_wage = ? WHERE name = ?", (wage, name))
+                 
+        conn.commit()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
 @greeting_bp.route("/person-event", methods=["POST"])
 def person_event():
@@ -2998,21 +3063,20 @@ def calculate_daily_hours(records, timetable=None, date_str=None):
                         
                         is_gap_payable = False
                         if last_checkout_activity:
-                             # Find activity in timetable
+                             # Find activity in timetable (Case Insensitive)
+                             last_act_lower = last_checkout_activity.lower().strip()
                              for act in timetable:
-                                if act.get('name') == last_checkout_activity:
+                                if act.get('name', '').lower().strip() == last_act_lower:
                                     # Default is_payable to True for Work, False for others if not specified?
                                     # User said: "if it is off, then the activity is not payable".
                                     # In our JSON, we defaulted is_payable to True in UI, but existing data might miss it.
                                     # Let's assume default True for 'Work' type, False for others if missing.
                                     act_type = act.get('type', 'Work')
                                     
-                                    # LOGIC FIX: Gaps AFTER 'Work' should NOT be payable (this implies off-duty).
-                                    # Only gaps after 'Break' or specific payable activities should be paid.
-                                    if act_type == 'Work':
-                                        is_gap_payable = False
-                                    else:
-                                        is_gap_payable = act.get('is_payable', False)
+                                    # STRICT: Rely entirely on user configuration for gaps too.
+                                    # If user marks 'Work' as payable, and checks out 'Work', the gap is payable (up to cap).
+                                    # We trust the user knows what they are doing.
+                                    is_gap_payable = act.get('is_payable', False)
                                     
                                     # LOGIC FIX: Cap payable gap at the scheduled duration of the activity
                                     # Prevents massive overpayment if user checks out for 'Tea' and goes home overnight.
@@ -3067,23 +3131,30 @@ def calculate_daily_hours(records, timetable=None, date_str=None):
                 
                 # Check if this session's activity is PAYABLE
                 # User Requirement: "payable hours calculated only when we register an activity with shift"
+                # Strict Logic: Rely entirely on the timetable configuration.
                 is_session_payable = False
+                
+                # Normalize for matching
+                session_activity_lower = session_activity.lower().strip() if session_activity else ""
+                
                 if timetable:
                     found_act = None
                     for act in timetable:
-                        if act.get('name') == session_activity:
+                        act_name = act.get('name', '').lower().strip()
+                        if act_name == session_activity_lower:
                             found_act = act
                             break
                     
                     if found_act:
-                        # Use is_payable flag, default to True for 'Work' type if missing
-                        act_type = found_act.get('type', 'Work')
-                        is_session_payable = found_act.get('is_payable', act_type == 'Work')
+                        # STRICT: Use the is_payable flag from the DB. 
+                        # If missing, default to False (safe).
+                        is_session_payable = found_act.get('is_payable', False)
                     else:
-                        # Activity not found in timetable -> Not Payable (Strict)
+                        # Activity not found in timetable
+                        # Strict Fallback: If not defined by admin, it is NOT payable.
                         is_session_payable = False
                 else:
-                    # No timetable -> Not Payable (Strict)
+                    # No timetable -> No payable hours (Strict)
                     is_session_payable = False
 
                 if is_session_payable:
@@ -3294,8 +3365,13 @@ def calculate_arrival_status(expected_start, sessions, day_activities=None):
         # Get tolerance from the first scheduled activity
         tolerance_mins = 15 # Default
         if day_activities:
-             # Assuming the first activity determines the start time and tolerance
-             tolerance_mins = int(day_activities[0].get('tolerance', 15))
+             # Check rules for grace_period first, then legacy tolerance
+             first_act = day_activities[0]
+             rules = first_act.get('rules', {})
+             if 'grace_period' in rules:
+                 tolerance_mins = int(rules['grace_period'])
+             else:
+                 tolerance_mins = int(first_act.get('tolerance', 15))
 
         try:
             exp_dt = datetime.strptime(expected_start, '%H:%M')

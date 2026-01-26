@@ -16,7 +16,7 @@ public class DBManager extends SQLiteOpenHelper {
     public static ArrayList<Person> personList = new ArrayList<Person>();
 
     public DBManager(Context context) {
-        super(context, "mydb" , null, 3);
+        super(context, "mydb" , null, 4);
     }
 
     @Override
@@ -26,12 +26,17 @@ public class DBManager extends SQLiteOpenHelper {
                 "create table person " +
                         "(name text, face blob, templates blob, phone text, department text, designation text, synced integer default 1)"
         );
+        db.execSQL(
+                "create table attendance_queue " +
+                        "(id integer primary key autoincrement, name text, timestamp text, status text, image blob, is_late integer)"
+        );
     }
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
         // TODO Auto-generated method stub
         db.execSQL("DROP TABLE IF EXISTS person");
+        db.execSQL("DROP TABLE IF EXISTS attendance_queue");
         onCreate(db);
     }
 
@@ -201,5 +206,68 @@ public class DBManager extends SQLiteOpenHelper {
             if (p.name.equals(name)) return true;
         }
         return false;
+    }
+
+    // --- Offline Attendance Queue Methods ---
+
+    public void insertAttendanceQueue(String name, String timestamp, String status, Bitmap image, boolean isLate) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues contentValues = new ContentValues();
+        contentValues.put("name", name);
+        contentValues.put("timestamp", timestamp);
+        contentValues.put("status", status);
+        contentValues.put("is_late", isLate ? 1 : 0);
+
+        if (image != null) {
+            ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+            image.compress(Bitmap.CompressFormat.JPEG, 60, byteArrayOutputStream);
+            contentValues.put("image", byteArrayOutputStream.toByteArray());
+        }
+
+        db.insert("attendance_queue", null, contentValues);
+    }
+
+    public ArrayList<QueueItem> getAttendanceQueue() {
+        ArrayList<QueueItem> list = new ArrayList<>();
+        SQLiteDatabase db = this.getReadableDatabase();
+        try {
+            Cursor res = db.rawQuery("select * from attendance_queue", null);
+            res.moveToFirst();
+
+            while (!res.isAfterLast()) {
+                QueueItem item = new QueueItem();
+                item.id = res.getInt(res.getColumnIndexOrThrow("id"));
+                item.name = res.getString(res.getColumnIndexOrThrow("name"));
+                item.timestamp = res.getString(res.getColumnIndexOrThrow("timestamp"));
+                item.status = res.getString(res.getColumnIndexOrThrow("status"));
+                item.isLate = res.getInt(res.getColumnIndexOrThrow("is_late")) == 1;
+                
+                byte[] img = res.getBlob(res.getColumnIndexOrThrow("image"));
+                if (img != null) {
+                    item.image = android.util.Base64.encodeToString(img, android.util.Base64.NO_WRAP);
+                }
+                
+                list.add(item);
+                res.moveToNext();
+            }
+            res.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return list;
+    }
+
+    public void deleteQueueItem(int id) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        db.delete("attendance_queue", "id = ?", new String[]{String.valueOf(id)});
+    }
+
+    public static class QueueItem {
+        public int id;
+        public String name;
+        public String timestamp;
+        public String status;
+        public boolean isLate;
+        public String image; // Base64
     }
 }
