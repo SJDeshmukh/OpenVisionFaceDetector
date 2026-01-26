@@ -2966,8 +2966,6 @@ def calculate_daily_hours(records, timetable=None, date_str=None):
         status = record['status']
         activity_name = record.get('activity', 'Work')
         
-        # print(f"DEBUG LOOP: Status={status}, Activity={activity_name}") # DEBUG
-
         try:
             ts = datetime.strptime(record['timestamp'], '%Y-%m-%d %H:%M:%S.%f')
         except ValueError:
@@ -3001,7 +2999,7 @@ def calculate_daily_hours(records, timetable=None, date_str=None):
                         is_gap_payable = False
                         if last_checkout_activity:
                              # Find activity in timetable
-                              for act in timetable:
+                             for act in timetable:
                                 if act.get('name') == last_checkout_activity:
                                     # Default is_payable to True for Work, False for others if not specified?
                                     # User said: "if it is off, then the activity is not payable".
@@ -3052,6 +3050,9 @@ def calculate_daily_hours(records, timetable=None, date_str=None):
                             sessions.append({
                                 "type": "Payable Gap",
                                 "activity": last_checkout_activity,
+                                "is_payable": True,
+                                "start_ts": last_session['end_ts'],
+                                "end_ts": ts,
                                 "start": last_session['end_ts'].strftime('%H:%M'),
                                 "end": ts.strftime('%H:%M'),
                                 "duration_mins": round(gap_seconds / 60)

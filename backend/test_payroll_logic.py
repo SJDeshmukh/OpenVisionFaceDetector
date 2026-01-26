@@ -161,63 +161,165 @@ class PayrollEndpointTest(unittest.TestCase):
                 self.assertEqual(john['total_hours'], 0.0) # Should be 0, as the shift belongs to Day 1
 
     def test_payable_gap_logic(self):
-        """
-        Scenario:
-        User takes a PAID break.
-        09:00 CHECK_IN (Work)
-        11:00 CHECK_OUT (Coffee Break - Paid)
-        11:30 CHECK_IN (Work)
-        13:00 CHECK_OUT (Lunch - Unpaid)
-        14:00 CHECK_IN (Work)
-        18:00 CHECK_OUT
-        
-        Total Work: (09-11) 2h + (11:30-13) 1.5h + (14-18) 4h = 7.5h
-        Paid Break: (11-11:30) 0.5h
-        Unpaid Break: (13-14) 1h (Excluded)
-        
-        Total Payable: 7.5 + 0.5 = 8.0 hours
-        """
+        """Test that payable gaps (e.g., Coffee Break) are included in daily hours."""
         self.conn = sqlite3.connect(self.test_db)
-        # Coffee Break is already in live_timetable from populate_data
         c = self.conn.cursor()
         
-        c.execute("DELETE FROM attendance")
+        # Setup: 
+        # Shift: 09:00 - 18:00
+        # Coffee Break: 11:00 - 11:30 (Payable)
+        # Lunch Break: 13:00 - 14:00 (Not Payable)
         
-        # Sequence
-        events = [
-            ("09:00:00", "CHECK_IN", "Morning Shift"),
-            ("11:00:00", "CHECK_OUT", "Coffee Break"), # User selects Coffee Break on exit
-            ("11:30:00", "CHECK_IN", "Morning Shift"),
-            ("13:00:00", "CHECK_OUT", "Lunch Break"),  # User selects Lunch on exit (Unpaid)
-            ("14:00:00", "CHECK_IN", "Morning Shift"),
-            ("18:00:00", "CHECK_OUT", "Morning Shift")
-        ]
+        user_name = "User Two"
+        vendor_id = 1
+        today_str = datetime.now().strftime("%Y-%m-%d")
         
-        for time_str, status, activity in events:
-            c.execute("INSERT INTO attendance (name, timestamp, status, vendor_id, activity) VALUES (?, ?, ?, ?, ?)",
-                      ("John Doe", f"2023-10-27 {time_str}", status, 1, activity))
-        self.conn.commit()
+        # Create user
+        c.execute("INSERT INTO faces (name, vendor_id, daily_wage, department, designation) VALUES (?, ?, ?, ?, ?)",
+                  (user_name, vendor_id, 800.0, "IT", "Dev"))
 
-        original_connect = sqlite3.connect
-        with mock.patch('sqlite3.connect', side_effect=lambda *args, **kwargs: original_connect(self.test_db)):
-            with app.test_client() as client:
-                token = generate_token("admin", "admin")
-                headers = {"Authorization": f"Bearer {token}"}
-                
-                resp = client.get('/api/reports/payroll?start_date=2023-10-27&end_date=2023-10-27', headers=headers)
-                data = resp.json['payroll']
-                john = next((p for p in data if p['name'] == "John Doe"), None)
-                
-                print(f"\n[Gap Logic Check] Total Hours: {john['total_hours']}")
-                # Calculation:
-                # 09:00-11:00 (Work): 2h
-                # 11:00-11:30 (Coffee): 0.5h (Payable Gap)
-                # 11:30-13:00 (Work): 1.5h
-                # 13:00-14:00 (Lunch): 1h (Unpaid Gap - Excluded)
-                # 14:00-18:00 (Work): 4h
-                # Total: 2 + 0.5 + 1.5 + 4 = 8.0 hours
-                
-                self.assertEqual(john['total_hours'], 8.0)
+        # 1. Check IN at 09:00 for "Morning Shift"
+        c.execute("INSERT INTO attendance (name, timestamp, status, vendor_id, activity) VALUES (?, ?, ?, ?, ?)",
+                  (user_name, f"{today_str} 09:00:00", 'CHECK_IN', vendor_id, "Morning Shift"))
+        
+        # 2. Check OUT at 11:00 for "Coffee Break"
+        c.execute("INSERT INTO attendance (name, timestamp, status, vendor_id, activity) VALUES (?, ?, ?, ?, ?)",
+                  (user_name, f"{today_str} 11:00:00", 'CHECK_OUT', vendor_id, "Coffee Break"))
+        
+        # 3. Check IN at 11:30 for "Morning Shift"
+        c.execute("INSERT INTO attendance (name, timestamp, status, vendor_id, activity) VALUES (?, ?, ?, ?, ?)",
+                  (user_name, f"{today_str} 11:30:00", 'CHECK_IN', vendor_id, "Morning Shift"))
+                  
+        # 4. Check OUT at 17:00 for "Morning Shift"
+        c.execute("INSERT INTO attendance (name, timestamp, status, vendor_id, activity) VALUES (?, ?, ?, ?, ?)",
+                  (user_name, f"{today_str} 17:00:00", 'CHECK_OUT', vendor_id, "Morning Shift"))
+                  
+        self.conn.commit()
+        
+        # Define FakeDatetime to handle isinstance checks
+        real_datetime = datetime
+        class FakeDatetime(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls.strptime(f"{today_str} 18:00:00", "%Y-%m-%d %H:%M:%S")
+            
+            @classmethod
+            def strptime(cls, date_string, format):
+                dt = real_datetime.strptime(date_string, format)
+                return cls(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, dt.microsecond)
+
+            @classmethod
+            def fromisoformat(cls, date_string):
+                dt = real_datetime.fromisoformat(date_string)
+                return cls(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, dt.microsecond)
+
+        # Mock datetime
+        with mock.patch('app.datetime', FakeDatetime):
+            # Mock sqlite3 connect
+            original_connect = sqlite3.connect
+            def side_effect(db_name, *args, **kwargs):
+                if db_name == 'face_detection.db' or db_name == DB_PATH:
+                    return original_connect(self.test_db, *args, **kwargs)
+                return original_connect(db_name, *args, **kwargs)
+
+            with mock.patch('app.sqlite3.connect', side_effect=side_effect):
+                with app.test_client() as client:
+                    token = generate_token("admin", "admin")
+                    headers = {"Authorization": f"Bearer {token}"}
+                    
+                    # Request Report
+                    resp = client.get(f'/api/reports/payroll?start_date={today_str}&end_date={today_str}', headers=headers)
+                    self.assertEqual(resp.status_code, 200)
+                    data = resp.json['payroll']
+                    
+                    user_entry = next((r for r in data if r['name'] == user_name), None)
+                    self.assertIsNotNone(user_entry)
+                    
+                    # Expected:
+                    # 09:00 - 11:00 = 2.0 hours
+                    # Gap 11:00 - 11:30 (Coffee Break, Payable) = 0.5 hours
+                    # 11:30 - 17:00 = 5.5 hours
+                    # Total = 8.0 hours
+                    
+                    self.assertEqual(user_entry['total_hours'], 8.0)
+
+    def test_unpaid_gap_logic(self):
+        """Test that unpaid gaps (e.g., Lunch Break) are NOT included in daily hours."""
+        self.conn = sqlite3.connect(self.test_db)
+        c = self.conn.cursor()
+        
+        user_name = "User Three"
+        vendor_id = 1
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        
+        # Create user
+        c.execute("INSERT INTO faces (name, vendor_id, daily_wage, department, designation) VALUES (?, ?, ?, ?, ?)",
+                  (user_name, vendor_id, 800.0, "HR", "Admin"))
+        
+        # 1. Check IN at 09:00 for "Morning Shift"
+        c.execute("INSERT INTO attendance (name, timestamp, status, vendor_id, activity) VALUES (?, ?, ?, ?, ?)",
+                  (user_name, f"{today_str} 09:00:00", 'CHECK_IN', vendor_id, "Morning Shift"))
+        
+        # 2. Check OUT at 13:00 for "Lunch Break" (Not Payable)
+        c.execute("INSERT INTO attendance (name, timestamp, status, vendor_id, activity) VALUES (?, ?, ?, ?, ?)",
+                  (user_name, f"{today_str} 13:00:00", 'CHECK_OUT', vendor_id, "Lunch Break"))
+        
+        # 3. Check IN at 14:00 for "Morning Shift"
+        c.execute("INSERT INTO attendance (name, timestamp, status, vendor_id, activity) VALUES (?, ?, ?, ?, ?)",
+                  (user_name, f"{today_str} 14:00:00", 'CHECK_IN', vendor_id, "Morning Shift"))
+                  
+        # 4. Check OUT at 18:00 for "Morning Shift"
+        c.execute("INSERT INTO attendance (name, timestamp, status, vendor_id, activity) VALUES (?, ?, ?, ?, ?)",
+                  (user_name, f"{today_str} 18:00:00", 'CHECK_OUT', vendor_id, "Morning Shift"))
+                  
+        self.conn.commit()
+        
+        # Define FakeDatetime
+        real_datetime = datetime
+        class FakeDatetime(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls.strptime(f"{today_str} 19:00:00", "%Y-%m-%d %H:%M:%S")
+            
+            @classmethod
+            def strptime(cls, date_string, format):
+                dt = real_datetime.strptime(date_string, format)
+                return cls(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, dt.microsecond)
+
+            @classmethod
+            def fromisoformat(cls, date_string):
+                dt = real_datetime.fromisoformat(date_string)
+                return cls(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, dt.microsecond)
+
+        # Mock datetime
+        with mock.patch('app.datetime', FakeDatetime):
+            # Mock sqlite3
+            original_connect = sqlite3.connect
+            def side_effect(db_name, *args, **kwargs):
+                if db_name == 'face_detection.db' or db_name == DB_PATH:
+                    return original_connect(self.test_db, *args, **kwargs)
+                return original_connect(db_name, *args, **kwargs)
+
+            with mock.patch('app.sqlite3.connect', side_effect=side_effect):
+                with app.test_client() as client:
+                    token = generate_token("admin", "admin")
+                    headers = {"Authorization": f"Bearer {token}"}
+                    
+                    # Request Report
+                    resp = client.get(f'/api/reports/payroll?start_date={today_str}&end_date={today_str}', headers=headers)
+                    self.assertEqual(resp.status_code, 200)
+                    data = resp.json['payroll']
+                    
+                    user_entry = next((r for r in data if r['name'] == user_name), None)
+                    self.assertIsNotNone(user_entry)
+                    
+                    # Expected:
+                    # 09:00 - 13:00 = 4.0 hours
+                    # Gap 13:00 - 14:00 (Lunch, Not Payable) = 0.0 hours
+                    # 14:00 - 18:00 = 4.0 hours
+                    # Total = 8.0 hours
+                    
+                    self.assertEqual(user_entry['total_hours'], 8.0)
 
 if __name__ == '__main__':
     unittest.main()
