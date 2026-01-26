@@ -7,8 +7,8 @@ PORT="${PORT:-10000}"
 echo "Starting deployment on port $PORT..."
 
 # 1. Update Nginx Configuration to listen on the correct PORT
-# We replace 'listen 80;' with 'listen $PORT;' in the default config
-sed -i "s/listen 80;/listen $PORT;/g" /etc/nginx/sites-available/default
+# We replace 'listen 80 default_server;' with 'listen $PORT default_server;' in the default config
+sed -i "s/listen 80 default_server;/listen $PORT default_server;/g" /etc/nginx/sites-available/default
 
 # 2. Start Backend (Gunicorn) in the background
 # We bind to 127.0.0.1:5001 because Nginx will proxy to it locally

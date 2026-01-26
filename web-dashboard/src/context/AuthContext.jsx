@@ -33,6 +33,9 @@ export const AuthProvider = ({ children }) => {
         setUser(userData);
         localStorage.setItem('user', JSON.stringify(userData));
         return { success: true, role: userData.role };
+      } else {
+        // Handle case where status is not success but no error was thrown
+        return { success: false, error: response.data.error || "Unexpected response from server" };
       }
     } catch (error) {
       console.error("Login failed:", error);

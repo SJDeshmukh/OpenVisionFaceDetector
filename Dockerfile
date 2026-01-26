@@ -1,5 +1,5 @@
 # Stage 1: Build Frontend
-FROM node:18-alpine AS frontend-builder
+FROM node:20-alpine AS frontend-builder
 WORKDIR /app/frontend
 COPY web-dashboard/package*.json ./
 RUN npm install
@@ -34,11 +34,11 @@ COPY entrypoint.sh ./
 RUN chmod +x entrypoint.sh
 
 # Environment Defaults
-ENV PORT=5001
+ENV PORT=10000
 ENV HOST=0.0.0.0
 
 # Expose ports
-EXPOSE 80 5001
+EXPOSE 10000 5001
 
 # Start via entrypoint
 CMD ["./entrypoint.sh"]

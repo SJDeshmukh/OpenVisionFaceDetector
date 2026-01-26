@@ -1601,6 +1601,13 @@ def register_user():
     caller_vendor_id, error = authenticate_vendor_access()
     if error: return error
 
+    # Enforce Admin Role (Security Fix)
+    auth_header = request.headers.get('Authorization')
+    token = auth_header.split(" ")[1]
+    user_data = verify_token(token)
+    if user_data['role'] not in ['super_admin', 'vendor_admin']:
+        return jsonify({"error": "Access Denied: Admin privileges required"}), 403
+
     data = request.json
     username = data.get("username")
     password = data.get("password")
