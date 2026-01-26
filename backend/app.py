@@ -2636,12 +2636,28 @@ def person_event():
                 if is_match:
                     # Filter by Shift ID if activity has one
                     act_shift_id = act.get('shift_id')
-                    # If activity has a shift_id, it MUST match the user's shift_id
-                    # If activity has NO shift_id, it is global (matches everyone)
-                    if act_shift_id:
-                        if user_shift_id and int(act_shift_id) == int(user_shift_id):
-                            matching_acts.append(act)
+                    is_shift_match = False
+                    
+                    if not act_shift_id:
+                        is_shift_match = True
                     else:
+                        if not user_shift_id:
+                             is_shift_match = True
+                        else:
+                             try:
+                                 if int(act_shift_id) == int(user_shift_id):
+                                     is_shift_match = True
+                             except:
+                                 pass
+                             
+                             if not is_shift_match and 'shifts_data' in locals() and shifts_data:
+                                 for s in shifts_data:
+                                     if str(s.get('id')) == str(act_shift_id):
+                                         if s.get('name') == user_shift_id:
+                                             is_shift_match = True
+                                         break
+                    
+                    if is_shift_match:
                         matching_acts.append(act)
             
             # --- Fallback Logic for Very Late/Early Arrivals ---
@@ -2659,11 +2675,29 @@ def person_event():
                      # Check Shift Match
                      act_shift_id = act.get('shift_id')
                      is_shift_match = False
-                     if act_shift_id:
-                         if user_shift_id and int(act_shift_id) == int(user_shift_id):
-                             is_shift_match = True
+                     
+                     if not act_shift_id:
+                         is_shift_match = True # Global activity
                      else:
-                         is_shift_match = True # Global activity matches everyone
+                         # Activity has shift
+                         if not user_shift_id:
+                              # User has NO shift -> Allow match (Open Shift mode) to ensure detection
+                              is_shift_match = True
+                         else:
+                              # Try to match IDs or Names
+                              try:
+                                  if int(act_shift_id) == int(user_shift_id):
+                                      is_shift_match = True
+                              except:
+                                  pass
+                              
+                              # If ID match failed (or error), try Name match
+                              if not is_shift_match and 'shifts_data' in locals() and shifts_data:
+                                  for s in shifts_data:
+                                      if str(s.get('id')) == str(act_shift_id):
+                                          if s.get('name') == user_shift_id:
+                                              is_shift_match = True
+                                          break
                      
                      if is_shift_match:
                          potential_acts.append(act)
@@ -2820,7 +2854,10 @@ def person_event():
             
             # Use activity-specific grace period
             act_rules = best_match.get('rules', {})
-            act_grace = int(act_rules.get('grace_period', grace_period))
+            try:
+                act_grace = int(act_rules.get('grace_period', grace_period))
+            except:
+                act_grace = 15
             
             # --- STRICT LATE CHECK ---
             # User requirement: If check-in is not in [start, start + grace], mark as Late.
