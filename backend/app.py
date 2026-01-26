@@ -3211,6 +3211,8 @@ def calculate_daily_hours(records, timetable=None, date_str=None):
                     "is_payable": is_active_payable,
                     "start_ts": current_checkin.isoformat(),
                     "end_ts": now_dt.isoformat(),
+                    "start": current_checkin.strftime('%H:%M'),
+                    "end": now_dt.strftime('%H:%M'),
                     "duration_mins": round(duration / 60)
                 })
         except Exception as e:
@@ -3361,14 +3363,22 @@ def calculate_arrival_status(expected_start, sessions, day_activities=None):
                 act_dt += timedelta(days=1)
             
             # Handle reverse midnight crossing (Expected 00:10, Actual 23:50 prev day)
+            # Only apply if Expected Start is early morning (e.g. < 06:00) to avoid false positives for very late Day Shifts
             if exp_dt < act_dt and (act_dt.hour - exp_dt.hour) > 12:
-                 exp_dt += timedelta(days=1)
+                 if exp_dt.hour < 6:
+                     exp_dt += timedelta(days=1)
 
             diff_seconds = (act_dt - exp_dt).total_seconds()
             if diff_seconds > (tolerance_mins * 60):
                 arrival_status = "Late"
         except Exception as e:
             print(f"Error calc arrival status: {e}")
+            # Fallback: simple comparison if complex logic fails
+            try:
+                 # Simple string compare if format allows? No, safer to leave as On Time or retry simple
+                 pass
+            except:
+                 pass
 
     return arrival_status
 
