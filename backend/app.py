@@ -899,6 +899,11 @@ def create_vendor():
             print(f"User Username {user_username} already exists.")
             pass
         
+        # 5. Create Default Company
+        print(f"Creating Default Company: {company_name} for Vendor {vendor_id}")
+        c.execute("INSERT INTO companies (name, shifts, draft_timetable, live_timetable, vendor_id) VALUES (?, ?, ?, ?, ?)", 
+                  (company_name, '[]', '[]', '[]', vendor_id))
+        
         conn.commit()
         print("Vendor Creation Committed Successfully")
         return jsonify({

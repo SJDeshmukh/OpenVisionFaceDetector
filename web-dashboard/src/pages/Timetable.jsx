@@ -396,6 +396,7 @@ const Timetable = () => {
                 onChange={(e) => setSelectedCompanyId(Number(e.target.value))}
                 className="appearance-none bg-white border border-slate-200 rounded-lg pl-4 pr-10 py-2.5 text-slate-800 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 w-64 shadow-sm"
               >
+                {companies.length === 0 && <option value="">No Companies</option>}
                 {companies.map(c => (
                   <option key={c.id} value={c.id} className="bg-white text-slate-900">{c.name}</option>
                 ))}
