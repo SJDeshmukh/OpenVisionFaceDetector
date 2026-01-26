@@ -2818,23 +2818,45 @@ def person_event():
             start_hm = best_match.get('start_time', '09:00')
             start_mins = to_mins(start_hm)
             
-            # Night Shift Support
+            # Use activity-specific grace period
+            act_rules = best_match.get('rules', {})
+            act_grace = int(act_rules.get('grace_period', grace_period))
+            
+            # --- STRICT LATE CHECK ---
+            # User requirement: If check-in is not in [start, start + grace], mark as Late.
+            # Even if it is within the activity duration.
+            
+            # Handle Overnight Shifts for comparison
+            # If start > end, and we are in the "next day" part (early morning), we add 1440 to check_mins
+            # But we must compare against start_mins (which is previous day).
+            # So if check_mins is early morning (e.g. 01:00 = 60), and start is 22:00 (1320),
+            # check_mins becomes 1500. 1500 > 1320 + grace.
+            
+            check_mins = curr_mins
+            effective_start_mins = start_mins
+            
+            # Detect if we are in the "next day" part of an overnight shift
             end_hm = best_match.get('end_time', '17:00')
             end_mins = to_mins(end_hm)
             
-            threshold_mins = start_mins + grace_period
-            check_mins = curr_mins
-            
             if start_mins > end_mins:
-                 # Night shift: If current time is in the "next day" window (e.g. 00:00 to end_time + buffer)
-                 # We treat it as belonging to the shift started previous day.
-                 # Buffer: 6 hours (360 mins) to catch very late arrivals
-                 if curr_mins <= (end_mins + 360):
+                 # Night shift
+                 # If current time is early morning (less than end time + buffer), assume next day
+                 if curr_mins <= (end_mins + 360) and start_mins > 360:
                      check_mins += 1440
             
-            if check_mins > threshold_mins:
+            # Calculate Threshold
+            late_threshold = effective_start_mins + act_grace
+            
+            if check_mins > late_threshold:
                 is_late = 1
-                print(f"Late Detected: {name} (Time: {check_mins}, Start: {start_mins}, Grace: {grace_period})")
+                print(f"Late Detected (Strict): {name} (Time: {check_mins}, Start: {effective_start_mins}, Grace: {act_grace})")
+            else:
+                # Also check if check_mins is BEFORE start_mins (Early Arrival is On Time)
+                # But what if it's WAY before? e.g. 10 hours before?
+                # Usually that would be a different shift. But here we assume best_match is correct.
+                pass
+
         except Exception as e:
             print(f"Late Calculation Error: {e}")
 
