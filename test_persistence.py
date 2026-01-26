@@ -1,8 +1,15 @@
 
 import requests
 import json
+import sys
+import os
 
-BASE_URL = "http://localhost:5001/api"
+# Add backend to path to import config
+sys.path.append(os.path.join(os.getcwd(), 'backend'))
+from config import BASE_URL
+
+# BASE_URL is now imported from config
+
 
 def test_shift_persistence():
     print("Testing Shift Persistence...")
@@ -18,7 +25,7 @@ def test_shift_persistence():
     
     # 3. Save Shifts
     print(f"Saving shifts to /companies/{company_id}/shifts...")
-    res = requests.put(f"{BASE_URL}/companies/{company_id}/shifts", json={"shifts": shifts})
+    res = requests.put(f"{BASE_URL}/api/companies/{company_id}/shifts", json={"shifts": shifts})
     if res.status_code != 200:
         print(f"Failed to save shifts: {res.text}")
         return
@@ -26,7 +33,7 @@ def test_shift_persistence():
     
     # 4. Fetch Company Details to verify
     print(f"Fetching company details...")
-    res = requests.get(f"{BASE_URL}/companies/{company_id}")
+    res = requests.get(f"{BASE_URL}/api/companies/{company_id}")
     data = res.json()
     
     fetched_shifts = data.get("shifts")
@@ -54,14 +61,14 @@ def test_draft_persistence():
     ]
     
     print(f"Saving draft to /companies/{company_id}/draft...")
-    res = requests.put(f"{BASE_URL}/companies/{company_id}/draft", json={"draft_timetable": activities, "modified_by": "test_script"})
+    res = requests.put(f"{BASE_URL}/api/companies/{company_id}/draft", json={"draft_timetable": activities, "modified_by": "test_script"})
     if res.status_code != 200:
         print(f"Failed to save draft: {res.text}")
         return
     print("Draft saved.")
     
     print(f"Fetching company details...")
-    res = requests.get(f"{BASE_URL}/companies/{company_id}")
+    res = requests.get(f"{BASE_URL}/api/companies/{company_id}")
     data = res.json()
     
     fetched_draft = data.get("draft_timetable")

@@ -12,7 +12,9 @@ import {
   Trash2,
   Edit2,
   Plus,
-  X
+  X,
+  CreditCard,
+  FileText
 } from 'lucide-react';
 import { API_URL } from '../config';
 
@@ -34,12 +36,32 @@ const Settings = () => {
   const [editingUser, setEditingUser] = useState(null);
   const [userForm, setUserForm] = useState({ username: '', password: '', role: 'user' });
 
+  // Subscription State
+  const [subscription, setSubscription] = useState(null);
+  const [invoices, setInvoices] = useState([]);
+
   useEffect(() => {
     fetchSettings();
     if (user?.role === 'admin') {
       fetchSystemUsers();
+      fetchSubscription();
     }
   }, [user]);
+
+  const fetchSubscription = async () => {
+    try {
+      const res = await axios.get(`${API_URL}/vendor/subscription`, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      if (res.data) {
+        const { invoices, ...sub } = res.data;
+        setSubscription(sub);
+        setInvoices(invoices || []);
+      }
+    } catch (error) {
+      console.error("Error fetching subscription:", error);
+    }
+  };
 
   const fetchSettings = async () => {
     try {
@@ -161,6 +183,89 @@ const Settings = () => {
           <span>Save Changes</span>
         </button>
       </div>
+
+      {user?.role === 'admin' && subscription && (
+        <Section title="Subscription & Billing" icon={CreditCard}>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="bg-blue-50 p-4 rounded-lg border border-blue-100">
+              <h4 className="font-semibold text-blue-900 mb-2">Current Plan</h4>
+              <div className="space-y-2 text-sm text-blue-800">
+                <div className="flex justify-between">
+                  <span>Start Date:</span>
+                  <span className="font-medium">{subscription.start_date}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>End Date:</span>
+                  <span className="font-medium">{subscription.end_date}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Max Users:</span>
+                  <span className="font-medium">{subscription.max_users}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Cost Per User:</span>
+                  <span className="font-medium">₹{subscription.cost_per_user}/mo</span>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <h4 className="font-semibold text-slate-800 mb-3 flex items-center gap-2">
+                <FileText size={16} className="text-slate-500" /> Invoices
+              </h4>
+              <div className="max-h-40 overflow-y-auto">
+                <table className="w-full text-sm text-left">
+                  <thead className="bg-slate-50 text-slate-500 sticky top-0">
+                    <tr>
+                      <th className="p-2 font-medium">Date</th>
+                      <th className="p-2 font-medium">Amount</th>
+                      <th className="p-2 font-medium">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {invoices.length === 0 ? (
+                      <tr><td colSpan="3" className="p-2 text-center text-slate-400">No invoices found</td></tr>
+                    ) : (
+                      invoices.map(inv => (
+                        <tr key={inv.id}>
+                          <td className="p-2 text-slate-700">{inv.invoice_date}</td>
+                          <td className="p-2 text-slate-700">
+                            <div className="font-medium">₹{inv.amount}</div>
+                            {inv.details && (
+                              <div className="text-[10px] text-slate-500 leading-tight">
+                                {(() => {
+                                  try {
+                                    const d = JSON.parse(inv.details);
+                                    return (
+                                      <>
+                                        <div>{d.active_users} users</div>
+                                        {d.setup_fee > 0 && <div>+ Setup</div>}
+                                      </>
+                                    );
+                                  } catch (e) { return null; }
+                                })()}
+                              </div>
+                            )}
+                          </td>
+                          <td className="p-2">
+                            <span className={`px-1.5 py-0.5 rounded text-xs font-bold ${
+                              inv.status === 'paid' ? 'bg-green-100 text-green-700' :
+                              inv.status === 'overdue' ? 'bg-red-100 text-red-700' :
+                              'bg-yellow-100 text-yellow-700'
+                            }`}>
+                              {inv.status.toUpperCase()}
+                            </span>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </Section>
+      )}
 
       {user?.role === 'admin' && (
         <Section 

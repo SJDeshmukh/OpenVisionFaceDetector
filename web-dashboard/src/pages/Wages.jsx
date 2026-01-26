@@ -17,6 +17,7 @@ const Wages = () => {
 
   const [payrollData, setPayrollData] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
   const [startDate, setStartDate] = useState(formatDate(firstDay));
   const [endDate, setEndDate] = useState(formatDate(lastDay));
   const [hasChanges, setHasChanges] = useState(false);
@@ -47,6 +48,11 @@ const Wages = () => {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ working_hours: parseFloat(workingHours) })
           });
+          if (res.status === 403) {
+             const data = await res.json();
+             setError(data.error || "Access Denied");
+             return;
+          }
           if (res.ok) {
               setWorkingHoursChanged(false);
               fetchPayroll(); // Refresh calculation
@@ -59,8 +65,14 @@ const Wages = () => {
 
   const fetchPayroll = async () => {
     setLoading(true);
+    setError(null);
     try {
       const res = await fetch(`${API_BASE_URL}/reports/payroll?start_date=${startDate}&end_date=${endDate}`);
+      if (res.status === 403) {
+          const data = await res.json();
+          setError(data.error || "Access Denied");
+          return;
+      }
       const data = await res.json();
       if (data.payroll) {
         setPayrollData(data.payroll);
@@ -104,6 +116,13 @@ const Wages = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ updates })
       });
+
+      if (res.status === 403) {
+          const data = await res.json();
+          setError(data.error || "Access Denied");
+          alert(data.error || "Access Denied");
+          return;
+      }
 
       if (res.ok) {
         setHasChanges(false);
@@ -150,6 +169,15 @@ const Wages = () => {
             </button>
         )}
       </div>
+
+      {error && (
+        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg flex items-center gap-2 mb-6">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+            </svg>
+            <span className="font-medium">{error}</span>
+        </div>
+      )}
 
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 mb-6">
         <div className="flex flex-col sm:flex-row sm:items-end gap-4 mb-6">

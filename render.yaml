@@ -1,19 +1,16 @@
 services:
+  # Unified Docker Service (Frontend + Backend + Nginx)
+  # This matches the EC2 setup and allows custom Nginx configuration
   - type: web
-    name: face-detection-backend
-    env: python
+    name: face-detection-unified
+    env: docker
     region: ohio
-    buildCommand: cd backend && pip install -r requirements.txt
-    startCommand: cd backend && gunicorn app:app
     plan: free
     autoDeploy: true
-
-  - type: web
-    name: face-detection-frontend
-    env: static
-    buildCommand: cd web-dashboard && npm install && npm run build
-    staticPublishPath: web-dashboard/dist
-    routes:
-      - type: rewrite
-        source: /**
-        destination: /index.html
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DOMAIN_NAME
+        value: openvisionx.in
+      - key: PROTOCOL
+        value: https

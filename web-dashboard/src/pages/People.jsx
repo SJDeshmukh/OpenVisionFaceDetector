@@ -125,6 +125,11 @@ const People = () => {
     
     setSubmitting(true);
     try {
+      // Add vendor_id to payload (assuming user context is available or handled by backend auth)
+      // Since we don't have auth context here explicitly passing it, backend should infer from token if possible
+      // or we pass it if we have it.
+      // For now, let's assume backend will handle it or we update the API to accept it.
+
       const payload = {
         name: formData.name,
         phone: formData.phone,

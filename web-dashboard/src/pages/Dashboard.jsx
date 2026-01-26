@@ -34,6 +34,7 @@ const Dashboard = () => {
   const [recentActivity, setRecentActivity] = useState([]);
   const [chartData, setChartData] = useState([]);
   const [deptData, setDeptData] = useState([]);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -43,6 +44,7 @@ const Dashboard = () => {
           axios.get(`${API_URL}/attendance`)
         ]);
         
+        setError(null);
         const { summary, bar_data, dept_data } = analyticsRes.data;
         const attendance = attendanceRes.data.attendance || [];
         
@@ -60,6 +62,9 @@ const Dashboard = () => {
 
       } catch (error) {
         console.error("Error fetching data:", error);
+        if (error.response && error.response.status === 403) {
+           setError(error.response.data.error || "Access Denied");
+        }
       }
     };
 
@@ -94,6 +99,15 @@ const Dashboard = () => {
         <h1 className="text-2xl font-bold text-slate-800">Dashboard Overview</h1>
         <p className="text-slate-500">Welcome back, here's what's happening today.</p>
       </div>
+
+      {error && (
+        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg flex items-center gap-2">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+            </svg>
+            <span className="font-medium">{error}</span>
+        </div>
+      )}
 
       {/* KPI Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">

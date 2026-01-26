@@ -11,6 +11,8 @@ import Login from './pages/Login';
 import Timetable from './pages/Timetable';
 import Wages from './pages/Wages';
 import LiveAttendance from './pages/LiveAttendance';
+import SuperAdminDashboard from './pages/SuperAdminDashboard'; // New
+import SuperAdminLogin from './pages/SuperAdminLogin';
 import { AuthProvider, useAuth } from './context/AuthContext';
 
 // Protected Route Component
@@ -18,11 +20,14 @@ const ProtectedRoute = ({ allowedRoles }) => {
   const { user } = useAuth();
   
   if (!user) {
+    // Redirect logic based on where they are trying to go?
+    // For now, default to /login. SuperAdminLogin handles its own auth.
     return <Navigate to="/login" replace />;
   }
 
   if (allowedRoles && !allowedRoles.includes(user.role)) {
     // If role not allowed, redirect to home or authorized page
+    if (user.role === 'super_admin') return <Navigate to="/admin/vendors" replace />;
     return <Navigate to="/attendance" replace />;
   }
 
@@ -35,10 +40,16 @@ function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
+          <Route path="/super_admin" element={<SuperAdminLogin />} />
           
           <Route element={<Layout />}>
+            {/* SuperAdmin Routes */}
+            <Route element={<ProtectedRoute allowedRoles={['super_admin']} />}>
+               <Route path="/admin/vendors" element={<SuperAdminDashboard />} />
+            </Route>
+
             {/* Admin Routes */}
-            <Route element={<ProtectedRoute allowedRoles={['admin']} />}>
+            <Route element={<ProtectedRoute allowedRoles={['admin', 'vendor_admin']} />}>
               <Route path="/" element={<Navigate to="/dashboard" replace />} />
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/people" element={<People />} />

@@ -28,10 +28,12 @@ BLUE_DOT_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkY
 RED_DOT = "data:image/png;base64," + RED_DOT_BASE64
 BLUE_DOT = "data:image/png;base64," + BLUE_DOT_BASE64
 
+from config import BASE_URL
+
 print("Starting Camera Stream Simulation...")
 print("Press Ctrl+C to stop.")
 
-url = "http://localhost:5001/api/stream/upload"
+url = f"{BASE_URL}/api/stream/upload"
 
 try:
     while True:

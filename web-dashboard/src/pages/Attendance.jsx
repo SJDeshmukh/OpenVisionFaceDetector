@@ -17,6 +17,7 @@ import { API_URL } from '../config';
 const Attendance = () => {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [expandedRow, setExpandedRow] = useState(null);
 
@@ -70,8 +71,12 @@ const Attendance = () => {
 
       const response = await axios.get(`${API_URL}/attendance?${params.toString()}`);
       setLogs(response.data?.attendance || []);
+      setError(null);
     } catch (error) {
       console.error("Error fetching logs:", error);
+      if (error.response && error.response.status === 403) {
+        setError(error.response.data.error || "Access Denied");
+      }
     } finally {
       // Always turn off blocking loader (for initial load) and refreshing spinner
       setLoading(false);
@@ -173,8 +178,24 @@ const Attendance = () => {
              <RefreshCw size={18} className={isRefreshing ? "animate-spin" : ""} />
              <span>Refresh</span>
            </button>
+           <button 
+             onClick={handleExport}
+             className="flex items-center space-x-2 px-4 py-2 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 font-medium transition-colors"
+           >
+             <Download size={18} />
+             <span>Export</span>
+           </button>
         </div>
       </div>
+
+      {error && (
+        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg flex items-center gap-2">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+            </svg>
+            <span className="font-medium">{error}</span>
+        </div>
+      )}
 
       {/* Filters */}
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col md:flex-row gap-4 items-end md:items-center flex-wrap">

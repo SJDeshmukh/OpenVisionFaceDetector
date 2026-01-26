@@ -6,12 +6,142 @@ from flask_cors import CORS
 from services.llm_service import generate_greeting
 from datetime import datetime, timedelta
 from collections import defaultdict
+from datetime import date
+from functools import wraps
+from itsdangerous import URLSafeTimedSerializer
+from config import BASE_URL, FRONTEND_URL # Import Config
 
 app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY', 'super_secret_key_change_this_in_prod')
+serializer = URLSafeTimedSerializer(app.secret_key)
+
 CORS(app, resources={r"/*": {"origins": "*"}})
+
+# Expose Config to Frontend
+@app.route('/api/config', methods=['GET'])
+def get_config():
+    return jsonify({
+        "backend_url": BASE_URL,
+        "frontend_url": FRONTEND_URL
+    })
 
 # Ensure database is always accessed from the same location (backend directory)
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'faces.db')
+
+# --- Middleware for SaaS Enforcement ---
+def check_vendor_status(vendor_id):
+    """
+    Checks if a vendor is allowed to access the system.
+    Returns: (is_allowed, reason)
+    """
+    if not vendor_id:
+        return True, "SuperAdmin"
+        
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    # Check Vendor Status
+    c.execute("SELECT status FROM vendors WHERE id = ?", (vendor_id,))
+    vendor = c.fetchone()
+    if not vendor:
+        conn.close()
+        return False, "Vendor not found"
+        
+    if vendor['status'] != 'active':
+        conn.close()
+        return False, "Account Suspended"
+        
+    # Check Subscription Expiry
+    c.execute("SELECT end_date, grace_period_days FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+    sub = c.fetchone()
+    
+    # Check Overdue Invoices
+    # Count invoices that are explicitly 'overdue' OR 'generated' but past their due date
+    today = date.today().isoformat()
+    c.execute("""
+        SELECT COUNT(*) FROM invoices 
+        WHERE vendor_id = ? 
+        AND (status = 'overdue' OR (status = 'generated' AND due_date < ?))
+    """, (vendor_id, today))
+    overdue_count = c.fetchone()[0]
+    
+    conn.close()
+    
+    if overdue_count > 0:
+        return False, "Unpaid Invoices"
+    
+    if sub and sub['end_date']:
+        end_date = datetime.strptime(sub['end_date'], '%Y-%m-%d').date()
+        grace = sub['grace_period_days'] or 0
+        limit_date = end_date + timedelta(days=grace)
+        
+        if date.today() > limit_date:
+            return False, "Subscription Expired"
+            
+    return True, "Active"
+
+def authenticate_vendor_access():
+    """
+    Helper to authenticate a vendor admin/user and verify subscription status.
+    Returns: (vendor_id, error_response)
+    If error_response is not None, return it immediately.
+    """
+    auth_header = request.headers.get('Authorization')
+    if not auth_header:
+        return None, (jsonify({"error": "Missing Authorization Header"}), 401)
+    
+    try:
+        token = auth_header.split(" ")[1]
+        user_data = verify_token(token)
+        if not user_data:
+            return None, (jsonify({"error": "Invalid Token"}), 401)
+            
+        username = user_data['username']
+        role = user_data['role']
+        
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute("SELECT vendor_id, role FROM system_users WHERE username = ?", (username,))
+        user = c.fetchone()
+        conn.close()
+        
+        if not user:
+             return None, (jsonify({"error": "User not found"}), 401)
+
+        vendor_id = user['vendor_id']
+        
+        # SuperAdmin Bypass / Impersonation
+        if role == 'super_admin':
+            # 1. Check for Explicit Impersonation Header
+            impersonate_id = request.headers.get('X-Vendor-ID')
+            # 2. Check for Query Param (for GET requests)
+            if not impersonate_id:
+                impersonate_id = request.args.get('vendor_id')
+                
+            if impersonate_id:
+                try:
+                    vendor_id = int(impersonate_id)
+                except:
+                    pass
+            
+            # If still no vendor_id, return None (Global Context)
+            if not vendor_id:
+                return None, None
+            
+        if not vendor_id:
+             return None, (jsonify({"error": "Not associated with a vendor"}), 403)
+             
+        is_allowed, reason = check_vendor_status(vendor_id)
+        if not is_allowed:
+            return None, (jsonify({"error": f"Access Denied: {reason}"}), 403)
+            
+        return vendor_id, None
+        
+    except Exception as e:
+        return None, (jsonify({"error": str(e)}), 500)
+
 
 # --- Web Dashboard ---
 @app.route("/")
@@ -54,6 +184,23 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS system_users
                  (username TEXT PRIMARY KEY, password TEXT, role TEXT)''')
     
+    # Check for vendor_id in faces table
+    c.execute("PRAGMA table_info(faces)")
+    faces_cols = [info[1] for info in c.fetchall()]
+    if 'vendor_id' not in faces_cols:
+        print("Migrating: Adding vendor_id to faces table")
+        c.execute("ALTER TABLE faces ADD COLUMN vendor_id INTEGER")
+
+    # Check for vendor_id in attendance table
+    c.execute("PRAGMA table_info(attendance)")
+    attendance_columns = [info[1] for info in c.fetchall()]
+    if 'vendor_id' not in attendance_columns:
+        print("Migrating: Adding vendor_id column to attendance table")
+        c.execute("ALTER TABLE attendance ADD COLUMN vendor_id INTEGER")
+        # Backfill vendor_id from faces table
+        print("Migrating: Backfilling vendor_id in attendance table")
+        c.execute("UPDATE attendance SET vendor_id = (SELECT vendor_id FROM faces WHERE faces.name = attendance.name)")
+
     # Check for captured_image column in attendance table and add if missing
     c.execute("PRAGMA table_info(attendance)")
     attendance_columns = [info[1] for info in c.fetchall()]
@@ -115,6 +262,12 @@ def init_db():
         c.execute("INSERT INTO system_users (username, password, role) VALUES (?, ?, ?)", 
                   ('kiosk', 'kiosk123', 'user'))
 
+    # Create default superadmin if not exists
+    c.execute("SELECT * FROM system_users WHERE username = 'superadmin'")
+    if not c.fetchone():
+        c.execute("INSERT INTO system_users (username, password, role) VALUES (?, ?, ?)", 
+                  ('superadmin', 'super123', 'super_admin'))
+
     # --- New Table for Companies & Timetables ---
     c.execute('''CREATE TABLE IF NOT EXISTS companies
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -140,7 +293,14 @@ def init_db():
     if 'shifts' not in companies_columns:
         print("Migrating: Adding shifts column to companies table")
         c.execute("ALTER TABLE companies ADD COLUMN shifts TEXT DEFAULT '[]'")
-    
+
+    if 'vendor_id' not in companies_columns:
+        print("Migrating: Adding vendor_id column to companies table")
+        c.execute("ALTER TABLE companies ADD COLUMN vendor_id INTEGER")
+        # Link existing company (id=1) to first vendor (id=1) if exists, or just leave null
+        # For simplicity, let's assume legacy company is vendor 1 if we are migrating
+        # c.execute("UPDATE companies SET vendor_id = 1 WHERE id = 1") 
+
     # --- New Table for System Settings ---
     c.execute('''CREATE TABLE IF NOT EXISTS system_settings
                  (key TEXT PRIMARY KEY, value TEXT)''')
@@ -161,10 +321,93 @@ def init_db():
     for key, val in default_settings.items():
         c.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)", (key, val))
 
+    # --- SaaS Tables ---
+    # Vendors Table
+    c.execute('''CREATE TABLE IF NOT EXISTS vendors
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                  company_name TEXT NOT NULL UNIQUE, 
+                  contact_person TEXT, 
+                  phone TEXT, 
+                  email TEXT,
+                  status TEXT DEFAULT 'active', -- active, suspended, expired
+                  created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+
+    # Subscriptions Table
+    c.execute('''CREATE TABLE IF NOT EXISTS subscriptions
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                  vendor_id INTEGER, 
+                  plan_type TEXT DEFAULT 'basic',
+                  start_date DATE, 
+                  end_date DATE, 
+                  grace_period_days INTEGER DEFAULT 7,
+                  max_users INTEGER DEFAULT 10,
+                  cost_per_user REAL DEFAULT 199.0,
+                  setup_fee REAL DEFAULT 0.0,
+                  setup_fee_paid BOOLEAN DEFAULT 0,
+                  FOREIGN KEY(vendor_id) REFERENCES vendors(id))''')
+
+    # Invoices Table
+    c.execute('''CREATE TABLE IF NOT EXISTS invoices
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                  vendor_id INTEGER, 
+                  invoice_date DATE, 
+                  due_date DATE,
+                  amount REAL,
+                  status TEXT DEFAULT 'generated', -- generated, paid, overdue
+                  details TEXT, -- JSON breakdown
+                  FOREIGN KEY(vendor_id) REFERENCES vendors(id))''')
+
+    # Update system_users for multi-tenancy
+    c.execute("PRAGMA table_info(system_users)")
+    user_cols = [info[1] for info in c.fetchall()]
+    if 'vendor_id' not in user_cols:
+        print("Migrating: Adding vendor_id to system_users")
+        c.execute("ALTER TABLE system_users ADD COLUMN vendor_id INTEGER")
+    
+    # Create SuperAdmin User
+    c.execute("SELECT * FROM system_users WHERE role = 'super_admin'")
+    if not c.fetchone():
+        # Default SuperAdmin: admin@trae.com / admin123
+        c.execute("INSERT INTO system_users (username, password, role, vendor_id) VALUES (?, ?, ?, ?)", 
+                  ('superadmin', 'admin123', 'super_admin', None))
+
     conn.commit()
     conn.close()
 
 init_db()
+
+# --- Auth Helper & Decorators ---
+def generate_token(username, role):
+    return serializer.dumps({'username': username, 'role': role})
+
+def verify_token(token):
+    try:
+        data = serializer.loads(token, max_age=86400) # Valid for 1 day
+        return data
+    except:
+        return None
+
+def super_admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        auth_header = request.headers.get('Authorization')
+        if not auth_header:
+            return jsonify({"error": "Missing Authorization Header"}), 401
+        
+        try:
+            token = auth_header.split(" ")[1]
+            data = verify_token(token)
+            if not data:
+                return jsonify({"error": "Invalid or Expired Token"}), 401
+            
+            if data['role'] != 'super_admin':
+                return jsonify({"error": "Super Admin Access Required"}), 403
+                
+        except IndexError:
+             return jsonify({"error": "Invalid Token Format"}), 401
+             
+        return f(*args, **kwargs)
+    return decorated_function
 
 greeting_bp = Blueprint("greeting", __name__, url_prefix="/api")
 
@@ -172,16 +415,30 @@ greeting_bp = Blueprint("greeting", __name__, url_prefix="/api")
 
 @greeting_bp.route("/companies", methods=["GET"])
 def get_companies():
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    c.execute("SELECT id, name FROM companies")
+    
+    query = "SELECT id, name FROM companies"
+    params = []
+    
+    if vendor_id:
+        query += " WHERE vendor_id = ?"
+        params.append(vendor_id)
+        
+    c.execute(query, params)
     companies = [dict(row) for row in c.fetchall()]
     conn.close()
     return jsonify({"companies": companies})
 
 @greeting_bp.route("/companies", methods=["POST"])
 def create_company():
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+    
     data = request.json
     name = data.get("name")
     if not name:
@@ -190,8 +447,16 @@ def create_company():
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("INSERT INTO companies (name, shifts, draft_timetable, live_timetable) VALUES (?, ?, ?, ?)", 
-                  (name, '[]', '[]', '[]'))
+        
+        # Check if vendor already has a company
+        if vendor_id:
+            c.execute("SELECT id FROM companies WHERE vendor_id = ?", (vendor_id,))
+            if c.fetchone():
+                conn.close()
+                return jsonify({"error": "Vendor already has a company"}), 400
+        
+        c.execute("INSERT INTO companies (name, shifts, draft_timetable, live_timetable, vendor_id) VALUES (?, ?, ?, ?, ?)", 
+                  (name, '[]', '[]', '[]', vendor_id))
         conn.commit()
         company_id = c.lastrowid
         conn.close()
@@ -203,12 +468,23 @@ def create_company():
 
 @greeting_bp.route("/companies/<int:company_id>", methods=["PUT"])
 def update_company_settings(company_id):
-    data = request.json
-    shifts = data.get("shifts") 
-    working_hours = data.get("working_hours")
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    
+    # Verify Ownership
+    if vendor_id:
+        c.execute("SELECT vendor_id FROM companies WHERE id = ?", (company_id,))
+        row = c.fetchone()
+        if not row or (row[0] and row[0] != vendor_id):
+             conn.close()
+             return jsonify({"error": "Access Denied"}), 403
+
+    data = request.json
+    shifts = data.get("shifts") 
+    working_hours = data.get("working_hours")
 
     if shifts is not None:
         import json
@@ -225,41 +501,65 @@ def update_company_settings(company_id):
 
 @greeting_bp.route("/companies/<int:company_id>", methods=["GET"])
 def get_company_details(company_id):
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
+    
     c.execute("SELECT * FROM companies WHERE id = ?", (company_id,))
     row = c.fetchone()
+    
+    if not row:
+        conn.close()
+        return jsonify({"error": "Company not found"}), 404
+        
+    # Verify Ownership
+    if vendor_id and row['vendor_id'] and row['vendor_id'] != vendor_id:
+        conn.close()
+        return jsonify({"error": "Access Denied"}), 403
+        
     conn.close()
     
-    if row:
-        data = dict(row)
-        import json
-        for key in ['shifts', 'draft_timetable', 'live_timetable']:
-            if data.get(key):
-                try:
-                    data[key] = json.loads(data[key])
-                except:
-                    data[key] = []
-        return jsonify(data)
-    else:
-        return jsonify({"error": "Company not found"}), 404
+    data = dict(row)
+    import json
+    for key in ['shifts', 'draft_timetable', 'live_timetable']:
+        if data.get(key):
+            try:
+                data[key] = json.loads(data[key])
+            except:
+                data[key] = []
+    return jsonify(data)
 
 @greeting_bp.route("/companies/<int:company_id>/draft", methods=["PUT"])
 def update_draft_timetable(company_id):
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    # Verify Ownership
+    if vendor_id:
+        c.execute("SELECT vendor_id FROM companies WHERE id = ?", (company_id,))
+        row = c.fetchone()
+        if not row or (row[0] and row[0] != vendor_id):
+             conn.close()
+             return jsonify({"error": "Access Denied"}), 403
+
     data = request.json
     draft_timetable = data.get("draft_timetable") # Expecting JSON string or object
     modified_by = data.get("modified_by", "unknown")
     
     if draft_timetable is None:
+        conn.close()
         return jsonify({"error": "draft_timetable is required"}), 400
 
     import json
     if isinstance(draft_timetable, list):
         draft_timetable = json.dumps(draft_timetable)
 
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
     c.execute("""UPDATE companies 
                  SET draft_timetable = ?, last_modified_by = ?, last_modified_at = ? 
                  WHERE id = ?""", 
@@ -270,11 +570,23 @@ def update_draft_timetable(company_id):
 
 @greeting_bp.route("/companies/<int:company_id>/publish", methods=["POST"])
 def publish_timetable(company_id):
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    # Verify Ownership
+    if vendor_id:
+        c.execute("SELECT vendor_id FROM companies WHERE id = ?", (company_id,))
+        row = c.fetchone()
+        if not row or (row[0] and row[0] != vendor_id):
+             conn.close()
+             return jsonify({"error": "Access Denied"}), 403
+
     data = request.json
     published_by = data.get("published_by", "unknown")
     
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
     # Copy draft to live
     c.execute("""UPDATE companies 
                  SET live_timetable = draft_timetable, published_by = ?, published_at = ? 
@@ -284,16 +596,361 @@ def publish_timetable(company_id):
     conn.close()
     return jsonify({"success": True})
 
+@greeting_bp.route("/admin/users/password", methods=["PUT"])
+@super_admin_required
+def reset_user_password():
+    # TODO: Add SuperAdmin Auth Check
+    data = request.json
+    target_username = data.get("username")
+    new_password = data.get("new_password")
+    
+    if not target_username or not new_password:
+        return jsonify({"error": "Username and New Password are required"}), 400
+        
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    try:
+        # Check if user exists
+        c.execute("SELECT role FROM system_users WHERE username = ?", (target_username,))
+        user = c.fetchone()
+        
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+            
+        # Update Password
+        c.execute("UPDATE system_users SET password = ? WHERE username = ?", (new_password, target_username))
+        conn.commit()
+        
+        return jsonify({"success": True, "message": f"Password for {target_username} updated."})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+# --- SuperAdmin Endpoints ---
+
+@greeting_bp.route("/admin/vendors", methods=["GET"])
+@super_admin_required
+def get_vendors():
+    # TODO: Add Auth Check (SuperAdmin only)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    # Get Vendors with Subscription Details
+    c.execute("""
+        SELECT v.*, 
+               s.plan_type, s.start_date, s.end_date, s.max_users, s.cost_per_user, s.setup_fee, s.setup_fee_paid,
+               (SELECT username FROM system_users WHERE vendor_id = v.id AND role = 'vendor_admin' LIMIT 1) as admin_username,
+               (SELECT COUNT(*) FROM system_users WHERE vendor_id = v.id) as admin_count
+        FROM vendors v
+        LEFT JOIN subscriptions s ON v.id = s.vendor_id
+        ORDER BY v.created_at DESC
+    """)
+    
+    vendors = []
+    for row in c.fetchall():
+        v = dict(row)
+        # Calculate status based on subscription
+        if v['end_date']:
+            end_date = datetime.strptime(v['end_date'], '%Y-%m-%d').date()
+            if date.today() > end_date:
+                v['subscription_status'] = 'Expired'
+            else:
+                v['subscription_status'] = 'Active'
+        else:
+            v['subscription_status'] = 'No Plan'
+            
+        vendors.append(v)
+        
+    conn.close()
+    return jsonify({"vendors": vendors})
+
+@greeting_bp.route("/admin/vendors", methods=["POST"])
+@super_admin_required
+def create_vendor():
+    # TODO: Add Auth Check
+    data = request.json
+    company_name = data.get("company_name")
+    
+    if not company_name:
+        return jsonify({"error": "Company Name is required"}), 400
+        
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    try:
+        # 1. Create Vendor
+        c.execute("""INSERT INTO vendors (company_name, contact_person, phone, email) 
+                     VALUES (?, ?, ?, ?)""",
+                  (company_name, data.get("contact_person"), data.get("phone"), data.get("email")))
+        vendor_id = c.lastrowid
+        
+        # 2. Create Default Subscription (Trial)
+        start_date = date.today()
+        end_date = start_date + timedelta(days=14) # 14 Day Trial
+        
+        c.execute("""INSERT INTO subscriptions (vendor_id, plan_type, start_date, end_date, max_users, cost_per_user, setup_fee)
+                     VALUES (?, 'trial', ?, ?, 5, 0, 0)""",
+                  (vendor_id, start_date, end_date))
+                  
+        # 3. Create Default Admin User for Vendor
+        # Username: admin_vendorID (e.g. admin_1)
+        # Password: default123
+        username = f"admin_{vendor_id}"
+        c.execute("""INSERT INTO system_users (username, password, role, vendor_id)
+                     VALUES (?, ?, 'vendor_admin', ?)""",
+                  (username, 'default123', vendor_id))
+        
+        conn.commit()
+        return jsonify({
+            "success": True, 
+            "vendor_id": vendor_id,
+            "admin_credentials": {"username": username, "password": "default123"}
+        })
+        
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "Company Name already exists"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+@greeting_bp.route("/admin/vendors/<int:vendor_id>/subscription", methods=["PUT"])
+@super_admin_required
+def update_subscription(vendor_id):
+    # TODO: Add Auth Check
+    data = request.json
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    try:
+        # Check if subscription exists
+        c.execute("SELECT id FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+        sub = c.fetchone()
+        
+        if sub:
+            # Update
+            query = "UPDATE subscriptions SET "
+            params = []
+            
+            fields = ['plan_type', 'start_date', 'end_date', 'max_users', 'cost_per_user', 'setup_fee', 'setup_fee_paid']
+            for field in fields:
+                if field in data:
+                    query += f"{field} = ?, "
+                    params.append(data[field])
+            
+            query = query.rstrip(", ") + " WHERE vendor_id = ?"
+            params.append(vendor_id)
+            
+            c.execute(query, params)
+        else:
+            # Create (Edge case)
+            pass 
+            
+        conn.commit()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+@greeting_bp.route("/admin/vendors/<int:vendor_id>/suspend", methods=["POST"])
+@super_admin_required
+def suspend_vendor(vendor_id):
+    data = request.json
+    action = data.get("action", "suspend") # suspend or activate
+    status = 'suspended' if action == 'suspend' else 'active'
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE vendors SET status = ? WHERE id = ?", (status, vendor_id))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({"success": True, "status": status})
+
+# --- Billing & Invoices ---
+@greeting_bp.route("/admin/vendors/<int:vendor_id>/invoices", methods=["GET"])
+@super_admin_required
+def get_vendor_invoices(vendor_id):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    # Auto-update overdue status
+    today = date.today().isoformat()
+    c.execute("UPDATE invoices SET status = 'overdue' WHERE vendor_id = ? AND status = 'generated' AND due_date < ?", (vendor_id, today))
+    conn.commit()
+    
+    c.execute("SELECT * FROM invoices WHERE vendor_id = ? ORDER BY invoice_date DESC", (vendor_id,))
+    invoices = [dict(row) for row in c.fetchall()]
+    conn.close()
+    return jsonify({"invoices": invoices})
+
+@greeting_bp.route("/admin/vendors/<int:vendor_id>/invoices/generate", methods=["POST"])
+@super_admin_required
+def generate_invoice(vendor_id):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    # Get Subscription Details
+    c.execute("SELECT * FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+    sub = c.fetchone()
+    if not sub:
+        conn.close()
+        return jsonify({"error": "No subscription found"}), 404
+        
+    # Get Active User Count
+    c.execute("SELECT COUNT(*) FROM faces WHERE vendor_id = ?", (vendor_id,))
+    active_users = c.fetchone()[0]
+    
+    # Calculate Amount
+    cost_per_user = sub['cost_per_user'] or 199.0
+    monthly_cost = active_users * cost_per_user
+    
+    # Check for Setup Fee
+    setup_fee = 0
+    if sub['setup_fee'] and not sub['setup_fee_paid']:
+        setup_fee = sub['setup_fee']
+        
+    total_amount = monthly_cost + setup_fee
+    
+    import json
+    details = {
+        "active_users": active_users,
+        "cost_per_user": cost_per_user,
+        "monthly_charge": monthly_cost,
+        "setup_fee": setup_fee
+    }
+    
+    # Create Invoice
+    invoice_date = date.today().isoformat()
+    due_date = (date.today() + timedelta(days=7)).isoformat()
+    
+    c.execute("""INSERT INTO invoices (vendor_id, invoice_date, due_date, amount, status, details)
+                 VALUES (?, ?, ?, ?, ?, ?)""",
+              (vendor_id, invoice_date, due_date, total_amount, 'generated', json.dumps(details)))
+              
+    # If setup fee was included, mark it as paid (or maybe only after invoice is paid? Let's keep it simple for now)
+    # Actually, better to mark setup_fee_paid ONLY when invoice is paid.
+    
+    conn.commit()
+    conn.close()
+    
+    return jsonify({"success": True, "message": "Invoice Generated", "amount": total_amount})
+
+@greeting_bp.route("/admin/invoices/<int:invoice_id>/status", methods=["PUT"])
+@super_admin_required
+def update_invoice_status(invoice_id):
+    data = request.json
+    status = data.get("status") # paid, overdue, generated
+    
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    c.execute("UPDATE invoices SET status = ? WHERE id = ?", (status, invoice_id))
+    
+    # If paid, check if it included setup fee and update subscription
+    if status == 'paid':
+        c.execute("SELECT details, vendor_id FROM invoices WHERE id = ?", (invoice_id,))
+        invoice = c.fetchone()
+        if invoice:
+            import json
+            details = json.loads(invoice['details'])
+            if details.get('setup_fee', 0) > 0:
+                c.execute("UPDATE subscriptions SET setup_fee_paid = 1 WHERE vendor_id = ?", (invoice['vendor_id'],))
+    
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True})
+
+
+# --- Vendor Portal Endpoints ---
+@greeting_bp.route("/vendor/subscription", methods=["GET"])
+def get_my_subscription():
+    auth_header = request.headers.get('Authorization')
+    if not auth_header:
+        return jsonify({"error": "Missing Authorization Header"}), 401
+    
+    try:
+        token = auth_header.split(" ")[1]
+        user_data = verify_token(token)
+        if not user_data:
+            return jsonify({"error": "Invalid Token"}), 401
+            
+        username = user_data['username']
+        
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        
+        # Get User's Vendor ID
+        c.execute("SELECT vendor_id FROM system_users WHERE username = ?", (username,))
+        user = c.fetchone()
+        
+        if not user or not user['vendor_id']:
+            conn.close()
+            return jsonify({"error": "Not associated with a vendor"}), 403
+            
+        vendor_id = user['vendor_id']
+        
+        # Get Subscription
+        c.execute("SELECT * FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+        sub = c.fetchone()
+        
+        # Auto-update overdue status
+        today = date.today().isoformat()
+        c.execute("UPDATE invoices SET status = 'overdue' WHERE vendor_id = ? AND status = 'generated' AND due_date < ?", (vendor_id, today))
+        conn.commit()
+        
+        # Get Invoices
+        c.execute("SELECT * FROM invoices WHERE vendor_id = ? ORDER BY invoice_date DESC", (vendor_id,))
+        invoices = [dict(row) for row in c.fetchall()]
+        
+        data = {}
+        if sub:
+            data = dict(sub)
+            
+        data['invoices'] = invoices
+        
+        conn.close()
+        return jsonify(data)
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @greeting_bp.route("/reports/analytics", methods=["GET"])
 def get_analytics():
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+    if not vendor_id: return jsonify({"error": "Vendor context required"}), 400
+
     import json
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
-    # Fetch Timetable
-    c.execute("SELECT live_timetable FROM companies WHERE id = 1")
+    # Fetch Timetable (Multi-tenant)
+    c.execute("SELECT live_timetable FROM companies WHERE vendor_id = ?", (vendor_id,))
     company_row = c.fetchone()
+    
+    # Fallback to legacy company if not found (e.g. for initial migration)
+    if not company_row:
+         # Force Vendor ID check if we are in multi-tenant mode
+         if vendor_id:
+             c.execute("SELECT live_timetable FROM companies WHERE vendor_id = ?", (vendor_id,))
+             company_row = c.fetchone()
+         else:
+             # If no vendor_id (SuperAdmin without context), we do NOT fallback to Company 1.
+             # Strict multi-tenancy: No data shown without explicit vendor context.
+             pass
+
     timetable = []
     if company_row and company_row['live_timetable']:
         try:
@@ -309,29 +966,38 @@ def get_analytics():
     def get_late_users(target_date_str):
         # 1. Try to use is_late column (New Logic)
         try:
-            c.execute("SELECT COUNT(DISTINCT name) as count FROM attendance WHERE date(timestamp) = ? AND is_late = 1", (target_date_str,))
+            # Join with faces to filter by vendor
+            c.execute("""
+                SELECT COUNT(DISTINCT a.name) as count 
+                FROM attendance a
+                JOIN faces f ON a.name = f.name
+                WHERE date(a.timestamp) = ? AND a.is_late = 1 AND f.vendor_id = ?
+            """, (target_date_str, vendor_id))
             db_late_count = c.fetchone()['count']
+            
             if db_late_count > 0:
-                # If we found explicit late records, return the list of names (need to fetch names)
-                c.execute("SELECT DISTINCT name FROM attendance WHERE date(timestamp) = ? AND is_late = 1", (target_date_str,))
+                c.execute("""
+                    SELECT DISTINCT a.name 
+                    FROM attendance a
+                    JOIN faces f ON a.name = f.name
+                    WHERE date(a.timestamp) = ? AND a.is_late = 1 AND f.vendor_id = ?
+                """, (target_date_str, vendor_id))
                 return [r['name'] for r in c.fetchall()]
         except Exception as e:
             print(f"Error checking is_late column: {e}")
 
-        # 2. Fallback to calculation (Legacy Logic or if count is 0)
-        # Note: If count is 0, it might be that nobody is late, or it's old data.
-        # Running calculation is safe (should return 0 if nobody is late).
-        
+        # 2. Fallback to calculation
         day_name = datetime.strptime(target_date_str, '%Y-%m-%d').strftime('%a')
         
         # Fetch all Check-Ins for the date with User Shift (First Check-in per user)
+        # Filter by vendor_id
         c.execute("""
             SELECT a.name, MIN(a.timestamp) as timestamp, f.shift
             FROM attendance a
-            LEFT JOIN faces f ON a.name = f.name
-            WHERE date(a.timestamp) = ? AND a.status = 'CHECK_IN'
+            JOIN faces f ON a.name = f.name
+            WHERE date(a.timestamp) = ? AND a.status = 'CHECK_IN' AND f.vendor_id = ?
             GROUP BY a.name
-        """, (target_date_str,))
+        """, (target_date_str, vendor_id))
         
         records = c.fetchall()
         late_users = []
@@ -383,10 +1049,15 @@ def get_analytics():
     late_users_today = get_late_users(today_str)
     late_today = len(late_users_today)
 
-    c.execute("SELECT COUNT(DISTINCT name) as count FROM attendance WHERE date(timestamp) = ?", (today_str,))
+    c.execute("""
+        SELECT COUNT(DISTINCT a.name) as count 
+        FROM attendance a
+        JOIN faces f ON a.name = f.name
+        WHERE date(a.timestamp) = ? AND f.vendor_id = ?
+    """, (today_str, vendor_id))
     present_today = c.fetchone()['count']
     
-    c.execute("SELECT COUNT(*) as count FROM faces")
+    c.execute("SELECT COUNT(*) as count FROM faces WHERE vendor_id = ?", (vendor_id,))
     total_users = c.fetchone()['count']
     
     absent_today = max(0, total_users - present_today)
@@ -399,7 +1070,12 @@ def get_analytics():
     for d_obj in dates:
         d_str = d_obj.strftime('%Y-%m-%d')
         
-        c.execute("SELECT COUNT(DISTINCT name) as count FROM attendance WHERE date(timestamp) = ?", (d_str,))
+        c.execute("""
+            SELECT COUNT(DISTINCT a.name) as count 
+            FROM attendance a
+            JOIN faces f ON a.name = f.name
+            WHERE date(a.timestamp) = ? AND f.vendor_id = ?
+        """, (d_str, vendor_id))
         present = c.fetchone()['count']
         absent = max(0, total_users - present)
         
@@ -418,13 +1094,15 @@ def get_analytics():
     dept_data = []
     if late_users_today:
         placeholders = ','.join(['?'] * len(late_users_today))
+        # Also ensure we only select from our vendor (redundant but safe)
         c.execute(f"""
             SELECT department, COUNT(*) as count
             FROM faces 
             WHERE name IN ({placeholders})
             AND department IS NOT NULL AND department != ''
+            AND vendor_id = ?
             GROUP BY department
-        """, late_users_today)
+        """, late_users_today + [vendor_id])
         dept_rows = c.fetchall()
         dept_data = [{"name": row['department'], "late": row['count']} for row in dept_rows]
 
@@ -448,6 +1126,9 @@ def get_analytics():
 
 @greeting_bp.route("/reports/export", methods=["GET"])
 def export_report():
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+
     import csv
     import io
     from flask import Response
@@ -468,8 +1149,13 @@ def export_report():
         # --- Summary / Payroll Report ---
         
         # 1. Fetch Company Settings (Working Hours & Timetable)
-        c.execute("SELECT live_timetable, working_hours FROM companies WHERE id = 1")
-        company_row = c.fetchone()
+        if vendor_id:
+            c.execute("SELECT live_timetable, working_hours FROM companies WHERE vendor_id = ?", (vendor_id,))
+            company_row = c.fetchone()
+        else:
+            # Require Vendor Context for safety
+            return jsonify({"error": "Vendor context required for export"}), 400
+
         timetable = []
         company_working_hours = 8.0 # Default
         if company_row:
@@ -485,6 +1171,11 @@ def export_report():
         # Apply filters to faces query
         faces_query = "SELECT name, daily_wage, department, designation, phone FROM faces WHERE 1=1"
         faces_params = []
+        
+        if vendor_id:
+            faces_query += " AND vendor_id = ?"
+            faces_params.append(vendor_id)
+
         if department:
             faces_query += " AND department = ?"
             faces_params.append(department)
@@ -595,6 +1286,10 @@ def export_report():
     """
     params = [start_date, end_date]
     
+    if vendor_id:
+        query += " AND a.vendor_id = ?"
+        params.append(vendor_id)
+
     if department:
         query += " AND f.department = ?"
         params.append(department)
@@ -646,15 +1341,27 @@ def export_report():
 
 @greeting_bp.route("/reports/filters", methods=["GET"])
 def get_report_filters():
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
+    query_dept = "SELECT DISTINCT department FROM faces WHERE department IS NOT NULL AND department != ''"
+    query_desig = "SELECT DISTINCT designation FROM faces WHERE designation IS NOT NULL AND designation != ''"
+    params = []
+
+    if vendor_id:
+        query_dept += " AND vendor_id = ?"
+        query_desig += " AND vendor_id = ?"
+        params.append(vendor_id)
+
     # Get unique departments and designations
-    c.execute("SELECT DISTINCT department FROM faces WHERE department IS NOT NULL AND department != ''")
+    c.execute(query_dept, params)
     departments = [row['department'] for row in c.fetchall()]
     
-    c.execute("SELECT DISTINCT designation FROM faces WHERE designation IS NOT NULL AND designation != ''")
+    c.execute(query_desig, params)
     designations = [row['designation'] for row in c.fetchall()]
     
     conn.close()
@@ -666,10 +1373,21 @@ def get_report_filters():
 
 @greeting_bp.route("/persons", methods=["GET"])
 def get_persons():
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    c.execute("SELECT name, department, designation, shift, daily_wage, face_image, phone FROM faces")
+    
+    query = "SELECT name, department, designation, shift, daily_wage, face_image, phone FROM faces"
+    params = []
+    
+    if vendor_id:
+        query += " WHERE vendor_id = ?"
+        params.append(vendor_id)
+        
+    c.execute(query, params)
     rows = c.fetchall()
     conn.close()
     
@@ -680,6 +1398,9 @@ def get_persons():
 
 @greeting_bp.route("/persons/wages", methods=["PUT"])
 def update_wages():
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+
     data = request.json
     updates = data.get("updates") # List of {name: "John", daily_wage: 100}
     
@@ -694,7 +1415,10 @@ def update_wages():
             name = item.get("name")
             wage = item.get("daily_wage")
             if name and wage is not None:
-                c.execute("UPDATE faces SET daily_wage = ? WHERE name = ?", (wage, name))
+                if vendor_id:
+                     c.execute("UPDATE faces SET daily_wage = ? WHERE name = ? AND vendor_id = ?", (wage, name, vendor_id))
+                else:
+                     c.execute("UPDATE faces SET daily_wage = ? WHERE name = ?", (wage, name))
         conn.commit()
         return jsonify({"success": True})
     except Exception as e:
@@ -704,6 +1428,9 @@ def update_wages():
 
 @greeting_bp.route("/reports/payroll", methods=["GET"])
 def get_payroll_report():
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+
     import json
     start_date = request.args.get('start_date')
     end_date = request.args.get('end_date')
@@ -716,8 +1443,12 @@ def get_payroll_report():
     c = conn.cursor()
     
     # 1. Fetch Timetable and Working Hours
-    c.execute("SELECT live_timetable, working_hours FROM companies WHERE id = 1")
-    company_row = c.fetchone()
+    if vendor_id:
+        c.execute("SELECT live_timetable, working_hours FROM companies WHERE vendor_id = ?", (vendor_id,))
+        company_row = c.fetchone()
+    else:
+        return jsonify({"error": "Vendor context required"}), 400
+
     timetable = []
     company_working_hours = 8.0 # Default
 
@@ -731,15 +1462,27 @@ def get_payroll_report():
             company_working_hours = float(company_row['working_hours'])
 
     # 2. Fetch Persons (to get wages)
-    c.execute("SELECT name, daily_wage, department, designation, face_image, phone FROM faces")
+    if vendor_id:
+        c.execute("SELECT name, daily_wage, department, designation, face_image, phone FROM faces WHERE vendor_id = ?", (vendor_id,))
+    else:
+        c.execute("SELECT name, daily_wage, department, designation, face_image, phone FROM faces")
+    
     persons = {row['name']: dict(row) for row in c.fetchall()}
     
     # 3. Fetch Attendance
-    c.execute("""
+    query = """
         SELECT * FROM attendance 
         WHERE date(timestamp) BETWEEN ? AND ? 
-        ORDER BY timestamp ASC
-    """, (start_date, end_date))
+    """
+    params = [start_date, end_date]
+    
+    if vendor_id:
+        query += " AND vendor_id = ?"
+        params.append(vendor_id)
+        
+    query += " ORDER BY timestamp ASC"
+    
+    c.execute(query, params)
     rows = c.fetchall()
     conn.close()
     
@@ -833,11 +1576,20 @@ def login():
     conn.close()
 
     if user:
+        # Check Vendor Subscription Status (if applicable)
+        if user['vendor_id']:
+            is_allowed, reason = check_vendor_status(user['vendor_id'])
+            if not is_allowed:
+                print(f"Login Blocked: {reason}")
+                return jsonify({"error": f"Access Denied: {reason}"}), 403
+
         print(f"Login Success: Role={user['role']}") # DEBUG LOG
+        token = generate_token(user['username'], user['role'])
         return jsonify({
             "status": "success",
             "role": user["role"],
-            "username": user["username"]
+            "username": user["username"],
+            "token": token
         })
     else:
         print("Login Failed: Invalid credentials") # DEBUG LOG
@@ -845,16 +1597,25 @@ def login():
 
 @greeting_bp.route("/auth/register", methods=["POST"])
 def register_user():
+    # Auth Check
+    caller_vendor_id, error = authenticate_vendor_access()
+    if error: return error
+
     data = request.json
     username = data.get("username")
     password = data.get("password")
     role = data.get("role", "user") # admin or user
+    
+    # Determine Vendor ID for new user
+    target_vendor_id = caller_vendor_id
+    if not target_vendor_id: # SuperAdmin
+        target_vendor_id = data.get("vendor_id")
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
-        c.execute("INSERT INTO system_users (username, password, role) VALUES (?, ?, ?)", 
-                  (username, password, role))
+        c.execute("INSERT INTO system_users (username, password, role, vendor_id) VALUES (?, ?, ?, ?)", 
+                  (username, password, role, target_vendor_id))
         conn.commit()
         return jsonify({"status": "success", "message": "User created"})
     except sqlite3.IntegrityError:
@@ -868,6 +1629,12 @@ def register_user():
 
 @greeting_bp.route("/settings", methods=["GET"])
 def get_settings():
+    # Settings might be needed for login page (e.g. voice greeting enabled?), so maybe public?
+    # But let's check auth if present, or allow public read?
+    # For now, keep public read as it was, or protect?
+    # User asked to "Protect... endpoints". Settings is borderline.
+    # Let's leave GET public for now (kiosk might need it before login), 
+    # but PROTECT POST.
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -879,6 +1646,7 @@ def get_settings():
     return jsonify(settings)
 
 @greeting_bp.route("/settings", methods=["POST"])
+@super_admin_required
 def update_settings():
     data = request.json
     conn = sqlite3.connect(DB_PATH)
@@ -898,10 +1666,21 @@ def update_settings():
 # --- User Management Endpoints ---
 @greeting_bp.route("/users", methods=["GET"])
 def get_users():
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    c.execute("SELECT username, role FROM system_users")
+    
+    query = "SELECT username, role FROM system_users"
+    params = []
+    
+    if vendor_id:
+        query += " WHERE vendor_id = ?"
+        params.append(vendor_id)
+        
+    c.execute(query, params)
     rows = c.fetchall()
     conn.close()
 
@@ -914,6 +1693,9 @@ def create_user():
 
 @greeting_bp.route("/users/<username>", methods=["PUT"])
 def update_user(username):
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+
     data = request.json
     password = data.get("password")
     role = data.get("role")
@@ -924,18 +1706,33 @@ def update_user(username):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
-        if password and role:
-            c.execute("UPDATE system_users SET password = ?, role = ? WHERE username = ?", (password, role, username))
-        elif password:
-            c.execute("UPDATE system_users SET password = ? WHERE username = ?", (password, username))
-        elif role:
-            c.execute("UPDATE system_users SET role = ? WHERE username = ?", (role, username))
+        # Construct Query
+        query = "UPDATE system_users SET "
+        params = []
+        updates = []
         
+        if password:
+            updates.append("password = ?")
+            params.append(password)
+        if role:
+            updates.append("role = ?")
+            params.append(role)
+            
+        query += ", ".join(updates)
+        query += " WHERE username = ?"
+        params.append(username)
+        
+        if vendor_id:
+            query += " AND vendor_id = ?"
+            params.append(vendor_id)
+            
+        c.execute(query, params)
         conn.commit()
+        
         if c.rowcount > 0:
             return jsonify({"status": "success", "message": f"User {username} updated"})
         else:
-            return jsonify({"error": "User not found"}), 404
+            return jsonify({"error": "User not found or access denied"}), 404
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
@@ -943,18 +1740,25 @@ def update_user(username):
 
 @greeting_bp.route("/users/<username>", methods=["DELETE"])
 def delete_user(username):
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+
     if username == "admin": # Prevent deleting the main admin
         return jsonify({"error": "Cannot delete default admin"}), 403
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
-        c.execute("DELETE FROM system_users WHERE username = ?", (username,))
+        if vendor_id:
+            c.execute("DELETE FROM system_users WHERE username = ? AND vendor_id = ?", (username, vendor_id))
+        else:
+            c.execute("DELETE FROM system_users WHERE username = ?", (username,))
+            
         conn.commit()
         if c.rowcount > 0:
             return jsonify({"status": "success", "message": f"User {username} deleted"})
         else:
-            return jsonify({"error": "User not found"}), 404
+            return jsonify({"error": "User not found or access denied"}), 404
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
@@ -965,6 +1769,10 @@ def delete_user(username):
 
 @greeting_bp.route("/sync/upload", methods=["POST"])
 def upload_face():
+    # Auth Check
+    caller_vendor_id, error = authenticate_vendor_access()
+    if error: return error
+
     data = request.json
     name = data.get("name")
     templates = data.get("templates", "") # Base64 string, optional
@@ -973,15 +1781,48 @@ def upload_face():
     department = data.get("department", "")
     designation = data.get("designation", "")
     shift = data.get("shift", "")
+    
+    # Use caller's vendor_id. If SuperAdmin, allow overriding via payload.
+    vendor_id = caller_vendor_id
+    if not vendor_id:
+        vendor_id = data.get("vendor_id")
 
     if not name:
         return jsonify({"error": "Missing name"}), 400
 
+    # 1. Vendor Status Check
+    if vendor_id:
+        allowed, reason = check_vendor_status(vendor_id)
+        if not allowed:
+            return jsonify({"error": f"Access Denied: {reason}"}), 403
+
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    
     try:
-        c.execute("INSERT OR REPLACE INTO faces (name, templates, face_image, phone, department, designation, shift) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                  (name, templates, face_image, phone, department, designation, shift))
+        # 2. User Limit Check (Only if adding new user)
+        # Check if user exists
+        if vendor_id:
+             c.execute("SELECT name FROM faces WHERE name = ? AND vendor_id = ?", (name, vendor_id))
+        else:
+             c.execute("SELECT name FROM faces WHERE name = ?", (name,))
+        exists = c.fetchone()
+        
+        if not exists and vendor_id:
+            # Check limit
+            c.execute("SELECT max_users FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+            sub = c.fetchone()
+            max_users = sub[0] if sub else 10 # Default limit
+            
+            c.execute("SELECT COUNT(*) FROM faces WHERE vendor_id = ?", (vendor_id,))
+            current_users = c.fetchone()[0]
+            
+            if current_users >= max_users:
+                conn.close()
+                return jsonify({"error": f"User Limit Reached ({max_users}). Upgrade your plan."}), 403
+
+        c.execute("INSERT OR REPLACE INTO faces (name, templates, face_image, phone, department, designation, shift, vendor_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                  (name, templates, face_image, phone, department, designation, shift, vendor_id))
         conn.commit()
         return jsonify({"status": "success", "message": f"Face for {name} saved."})
     except Exception as e:
@@ -991,10 +1832,21 @@ def upload_face():
 
 @greeting_bp.route("/sync/download", methods=["GET"])
 def download_faces():
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    c.execute("SELECT * FROM faces")
+    
+    query = "SELECT * FROM faces"
+    params = []
+    
+    if vendor_id:
+        query += " WHERE vendor_id = ?"
+        params.append(vendor_id)
+        
+    c.execute(query, params)
     rows = c.fetchall()
     conn.close()
 
@@ -1014,13 +1866,20 @@ def download_faces():
 
 @greeting_bp.route("/sync/delete/<name>", methods=["DELETE"])
 def delete_face(name):
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+
     if not name:
         return jsonify({"error": "Missing name"}), 400
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
-        c.execute("DELETE FROM faces WHERE name = ?", (name,))
+        if vendor_id:
+            c.execute("DELETE FROM faces WHERE name = ? AND vendor_id = ?", (name, vendor_id))
+        else:
+            c.execute("DELETE FROM faces WHERE name = ?", (name,))
+            
         conn.commit()
         if c.rowcount > 0:
             return jsonify({"status": "success", "message": f"Face for {name} deleted."})
@@ -1042,7 +1901,64 @@ def person_event():
     detected = data.get("detected", False)
     recognized = data.get("recognized", False)
     name = data.get("name")
+    
+    # --- SaaS Subscription Enforcement & Multi-tenancy ---
+    # Check if the associated vendor is active/paid AND if person belongs to the kiosk's vendor
+    
+    kiosk_vendor_id = None
+    person_vendor_id = None
+    
+    # 1. Identify Kiosk Vendor from Auth Token
+    auth_header = request.headers.get('Authorization')
+    if auth_header:
+        try:
+            token = auth_header.split(" ")[1]
+            user_data = verify_token(token)
+            if user_data:
+                conn_auth = sqlite3.connect(DB_PATH)
+                c_auth = conn_auth.cursor()
+                c_auth.execute("SELECT vendor_id FROM system_users WHERE username = ?", (user_data['username'],))
+                u_row = c_auth.fetchone()
+                conn_auth.close()
+                if u_row:
+                    kiosk_vendor_id = u_row[0]
+        except:
+            pass
+
+    # 2. Identify Person Vendor
+    if recognized and name:
+         conn_check = sqlite3.connect(DB_PATH)
+         c_check = conn_check.cursor()
+         c_check.execute("SELECT vendor_id FROM faces WHERE name = ?", (name,))
+         f_row = c_check.fetchone()
+         conn_check.close()
+         if f_row:
+             person_vendor_id = f_row[0]
+
+    # 3. Cross Check: Prevent Kiosk (Vendor A) from recording Person (Vendor B)
+    if kiosk_vendor_id and person_vendor_id:
+        if kiosk_vendor_id != person_vendor_id:
+             return jsonify({
+                "speak": True,
+                "text": "Access Denied: Person belongs to another organization."
+            })
+
+    # 4. Determine which vendor to check for subscription
+    # Prefer Kiosk Vendor, fallback to Person Vendor (for unauth kiosks)
+    vendor_id_to_check = kiosk_vendor_id if kiosk_vendor_id else person_vendor_id
+
+    # 5. Enforce Status
+    if vendor_id_to_check:
+        is_allowed, reason = check_vendor_status(vendor_id_to_check)
+        if not is_allowed:
+            return jsonify({
+                "speak": True,
+                "text": f"Service Suspended: {reason}. Attendance not recorded."
+            })
+    # -------------------------------------
+
     person_id = data.get("person_id")
+    # ... rest of function ...
     confidence = data.get("confidence", 0)
     captured_image = data.get("image") # Base64 string of the frame
     is_attendance = data.get("is_attendance", True) # Default to True for backward compatibility
@@ -1137,8 +2053,13 @@ def person_event():
     
     try:
         # Fetch Timetable and Shifts
-        c.execute("SELECT live_timetable, shifts FROM companies WHERE id = 1")
-        company_row = c.fetchone()
+        if vendor_id_to_check:
+            c.execute("SELECT live_timetable, shifts FROM companies WHERE vendor_id = ?", (vendor_id_to_check,))
+            company_row = c.fetchone()
+        else:
+            # No vendor context identified (Legacy data issue or Unrecognized Person + Unauth Kiosk)
+            # Cannot determine timetable. Proceed with defaults.
+            company_row = None
         
         # Fetch User Shift
         c.execute("SELECT shift FROM faces WHERE name = ?", (name,))
@@ -1444,8 +2365,8 @@ def person_event():
     
     current_time = current_time_obj
     try:
-        c.execute("INSERT INTO attendance (name, timestamp, status, captured_image, activity, is_late) VALUES (?, ?, ?, ?, ?, ?)", 
-                  (name, current_time, new_status, captured_image, activity_name, is_late))
+        c.execute("INSERT INTO attendance (name, timestamp, status, captured_image, activity, is_late, vendor_id) VALUES (?, ?, ?, ?, ?, ?, ?)", 
+                  (name, current_time, new_status, captured_image, activity_name, is_late, vendor_id_to_check))
         conn.commit()
         print(f"Attendance Recorded: {name} - {new_status} ({activity_name}) Late={is_late} at {current_time}")
     except Exception as e:
@@ -1496,6 +2417,9 @@ def person_event():
 
 @greeting_bp.route("/attendance", methods=["GET"])
 def get_attendance():
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -1515,6 +2439,10 @@ def get_attendance():
         WHERE 1=1
     """
     params = []
+
+    if vendor_id:
+        query += " AND f.vendor_id = ?"
+        params.append(vendor_id)
 
     if start_date:
         query += " AND date(a.timestamp) >= ?"
@@ -1645,6 +2573,34 @@ def calculate_daily_hours(records, timetable=None):
                                         is_gap_payable = False
                                     else:
                                         is_gap_payable = act.get('is_payable', False)
+                                    
+                                    # LOGIC FIX: Cap payable gap at the scheduled duration of the activity
+                                    # Prevents massive overpayment if user checks out for 'Tea' and goes home overnight.
+                                    if is_gap_payable:
+                                        try:
+                                            s_str = act.get('start_time', '00:00')
+                                            e_str = act.get('end_time', '00:00')
+                                            
+                                            # Simple parsing
+                                            def parse_hm(t):
+                                                h, m = map(int, t.split(':'))
+                                                return h * 60 + m
+                                            
+                                            s_min = parse_hm(s_str)
+                                            e_min = parse_hm(e_str)
+                                            
+                                            duration_min = e_min - s_min
+                                            if duration_min < 0: duration_min += 24 * 60 # Overnight activity?
+                                            
+                                            # Allow a small buffer? Say 1.5x duration?
+                                            # Or strict cap? Let's use strict cap + 5 mins grace?
+                                            # User didn't specify, but strict cap is safer for "overnight" bug.
+                                            max_seconds = duration_min * 60
+                                            
+                                            if gap_seconds > max_seconds:
+                                                gap_seconds = max_seconds
+                                        except:
+                                            pass # Fallback to full gap if parsing fails (risky but rare)
                                     break
                         
                         if is_gap_payable:
@@ -1749,26 +2705,42 @@ def calculate_daily_hours(records, timetable=None):
 
 # --- Live Camera Stream Endpoints ---
 
-# In-memory storage for the latest frame (single device support for now)
-latest_frame = {
-    "data": None,
-    "timestamp": None,
-    "source_ip": None
-}
+# In-memory storage for the latest frames, keyed by vendor_id
+latest_frames = {}
 
 @greeting_bp.route("/stream/upload", methods=["POST"])
 def upload_stream_frame():
     try:
+        # 1. Identify Vendor from Auth Token
+        vendor_id = 1 # Default to Vendor 1 (Legacy/Unauth)
+        
+        auth_header = request.headers.get('Authorization')
+        if auth_header:
+            try:
+                token = auth_header.split(" ")[1]
+                user_data = verify_token(token)
+                if user_data:
+                    conn_auth = sqlite3.connect(DB_PATH)
+                    c_auth = conn_auth.cursor()
+                    c_auth.execute("SELECT vendor_id FROM system_users WHERE username = ?", (user_data['username'],))
+                    u_row = c_auth.fetchone()
+                    conn_auth.close()
+                    if u_row and u_row[0]:
+                        vendor_id = u_row[0]
+            except:
+                pass
+
         data = request.json
         image_data = data.get("image") # Base64 string
         
         if not image_data:
             return jsonify({"error": "No image data"}), 400
             
-        latest_frame["data"] = image_data
-        latest_frame["timestamp"] = datetime.now()
-        # Capture Real IP (Render uses X-Forwarded-For)
-        latest_frame["source_ip"] = request.headers.get('X-Forwarded-For', request.remote_addr)
+        latest_frames[vendor_id] = {
+            "data": image_data,
+            "timestamp": datetime.now(),
+            "source_ip": request.headers.get('X-Forwarded-For', request.remote_addr)
+        }
         
         return jsonify({"status": "success"})
     except Exception as e:
@@ -1777,35 +2749,58 @@ def upload_stream_frame():
 
 @greeting_bp.route("/stream/view", methods=["GET"])
 def view_stream_frame():
+    auth_vendor_id, error = authenticate_vendor_access()
+    if error: return error
+
+    # Determine which vendor stream to view
+    target_vendor_id = auth_vendor_id
+    
+    # If SuperAdmin, allow selecting vendor (default to 1)
+    if not target_vendor_id:
+        try:
+            target_vendor_id = int(request.args.get('vendor_id', 1))
+        except:
+            target_vendor_id = 1
+            
+    frame_data = latest_frames.get(target_vendor_id)
+
     # Check if frame is stale (older than 10 seconds)
-    if latest_frame["timestamp"]:
-        delta = datetime.now() - latest_frame["timestamp"]
+    if frame_data and frame_data.get("timestamp"):
+        delta = datetime.now() - frame_data["timestamp"]
         if delta.total_seconds() > 10:
             return jsonify({"status": "offline", "image": None})
             
-    if latest_frame["data"]:
+    if frame_data and frame_data.get("data"):
         return jsonify({
             "status": "online", 
-            "image": latest_frame["data"],
-            "source_ip": latest_frame.get("source_ip", "Unknown")
+            "image": frame_data["data"],
+            "source_ip": frame_data.get("source_ip", "Unknown")
         })
     else:
         return jsonify({"status": "offline", "image": None})
 
 @greeting_bp.route("/attendance/summary", methods=["GET"])
 def get_attendance_summary():
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
 
     date_str = request.args.get('date', datetime.now().strftime('%Y-%m-%d'))
-    company_id = request.args.get('company_id', 1) # Default to company ID 1
+    # company_id = request.args.get('company_id', 1) # Legacy default
 
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
     # 1. Fetch Timetable
-    c.execute("SELECT live_timetable FROM companies WHERE id = ?", (company_id,))
-    company_row = c.fetchone()
     timetable = []
+    
+    if vendor_id:
+        c.execute("SELECT live_timetable FROM companies WHERE vendor_id = ?", (vendor_id,))
+    else:
+        return jsonify({"error": "Vendor context required"}), 400
+        
+    company_row = c.fetchone()
+    
     if company_row and company_row['live_timetable']:
         import json
         try:
@@ -1842,7 +2837,16 @@ def get_attendance_summary():
         expected_end = day_activities[-1]['end_time']
 
     # 3. Get all records for the day
-    c.execute("SELECT * FROM attendance WHERE date(timestamp) = ? ORDER BY timestamp ASC", (date_str,))
+    query = "SELECT * FROM attendance WHERE date(timestamp) = ?"
+    params = [date_str]
+    
+    if vendor_id:
+        query += " AND vendor_id = ?"
+        params.append(vendor_id)
+        
+    query += " ORDER BY timestamp ASC"
+    
+    c.execute(query, params)
     rows = c.fetchall()
     conn.close()
 
