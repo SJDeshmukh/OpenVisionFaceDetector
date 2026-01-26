@@ -43,6 +43,25 @@ def get_config():
 # Ensure database is always accessed from the same location (backend directory)
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'faces.db')
 
+def add_missing_columns():
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Add is_late to attendance if missing
+        try:
+            c.execute("ALTER TABLE attendance ADD COLUMN is_late INTEGER DEFAULT 0")
+            print("Added column 'is_late' to attendance table.")
+        except sqlite3.OperationalError:
+            pass # Already exists
+
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Schema Update Error: {e}")
+
+add_missing_columns()
+
 # --- Middleware for SaaS Enforcement ---
 def check_vendor_status(vendor_id):
     """
@@ -2487,17 +2506,21 @@ def person_event():
     def to_mins(hm):
         try:
             hm_str = str(hm).strip().lower()
-            is_pm = 'pm' in hm_str
-            is_am = 'am' in hm_str
+            is_pm = 'pm' in hm_str or 'p.m.' in hm_str
+            is_am = 'am' in hm_str or 'a.m.' in hm_str
             
             # Remove am/pm for parsing
-            clean_str = hm_str.replace(' am', '').replace(' pm', '').replace('am', '').replace('pm', '').strip()
+            clean_str = hm_str.replace(' am', '').replace(' pm', '').replace('am', '').replace('pm', '')
+            clean_str = clean_str.replace(' a.m.', '').replace(' p.m.', '').replace('a.m.', '').replace('p.m.', '').strip()
             
             if ':' in clean_str:
                 parts = clean_str.split(':')
             elif '.' in clean_str:
                 parts = clean_str.split('.')
             else:
+                # Handle plain integer hours if necessary, though unlikely
+                if clean_str.isdigit():
+                    return int(clean_str) * 60
                 return 0
             
             h = int(parts[0])
@@ -2855,7 +2878,18 @@ def person_event():
             # Use activity-specific grace period
             act_rules = best_match.get('rules', {})
             try:
-                act_grace = int(act_rules.get('grace_period', grace_period))
+                # Robust parsing for grace period (handle "15 min", "15", etc.)
+                raw_grace = act_rules.get('grace_period', grace_period)
+                if isinstance(raw_grace, str):
+                    # Extract digits
+                    import re
+                    digits = re.findall(r'\d+', raw_grace)
+                    if digits:
+                        act_grace = int(digits[0])
+                    else:
+                        act_grace = 15
+                else:
+                    act_grace = int(raw_grace)
             except:
                 act_grace = 15
             
