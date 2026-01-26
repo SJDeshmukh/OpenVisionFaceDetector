@@ -23,6 +23,12 @@ const Login = () => {
         setError('Please use the Super Admin Portal to login.');
         return;
       }
+      
+      if (result.redirect_url) {
+        navigate(result.redirect_url);
+        return;
+      }
+
       navigate('/dashboard');
     } else {
       setError(result.error);

@@ -101,30 +101,67 @@ def authenticate_vendor_access():
     Returns: (vendor_id, error_response)
     If error_response is not None, return it immediately.
     """
-    auth_header = request.headers.get('Authorization')
-    if not auth_header:
-        return None, (jsonify({"error": "Missing Authorization Header"}), 401)
+    # auth_header = request.headers.get('Authorization')
+    # if not auth_header:
+    #     return None, (jsonify({"error": "Missing Authorization Header"}), 401)
     
     try:
-        token = auth_header.split(" ")[1]
-        user_data = verify_token(token)
-        if not user_data:
-            return None, (jsonify({"error": "Invalid Token"}), 401)
+        # token = auth_header.split(" ")[1]
+        # user_data = verify_token(token)
+        # if not user_data:
+        #     return None, (jsonify({"error": "Invalid Token"}), 401)
             
-        username = user_data['username']
-        role = user_data['role']
+        # username = user_data['username']
+        # role = user_data['role']
         
+        # TEMPORARY BYPASS: Assume admin/superadmin for now
+        # We'll just fetch the first admin user found to get a valid vendor_id
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
+        
+        # Try to find a logged in user from header if possible, else default
+        # But user said "don't use any authentication", so we default to a safe valid state.
+        # We need a vendor_id. Let's assume vendor_id=1 (Open Vision) if we can't find one.
+        # Or better: check if there is an Authorization header and try to use it, if it fails, fallback to default.
+        
+        auth_header = request.headers.get('Authorization')
+        username = None
+        role = None
+        
+        if auth_header:
+            try:
+                token = auth_header.split(" ")[1]
+                user_data = verify_token(token)
+                if user_data:
+                    username = user_data['username']
+                    role = user_data['role']
+            except:
+                pass
+        
+        if not username:
+            # Fallback for "no auth" mode
+            username = 'admin' # Default admin
+            role = 'admin'
+
         c.execute("SELECT vendor_id, role FROM system_users WHERE username = ?", (username,))
         user = c.fetchone()
+        
+        # If fallback admin doesn't exist, try superadmin
+        if not user:
+             c.execute("SELECT vendor_id, role FROM system_users WHERE username = 'superadmin'")
+             user = c.fetchone()
+             
         conn.close()
         
         if not user:
-             return None, (jsonify({"error": "User not found"}), 401)
+             # Should not happen if init_db ran, but just in case
+             return 1, None # Default to vendor 1
 
         vendor_id = user['vendor_id']
+        if not vendor_id and user['role'] == 'super_admin':
+             # SuperAdmin default context
+             vendor_id = 1 
         
         # SuperAdmin Bypass / Impersonation
         if role == 'super_admin':
@@ -145,11 +182,13 @@ def authenticate_vendor_access():
                 return None, None
             
         if not vendor_id:
-             return None, (jsonify({"error": "Not associated with a vendor"}), 403)
+             # Fallback
+             return 1, None
              
+        # Skip status checks for now
         is_allowed, reason = check_vendor_status(vendor_id)
         if not is_allowed:
-            return None, (jsonify({"error": f"Access Denied: {reason}"}), 403)
+           return None, (jsonify({"error": f"Access Denied: {reason}"}), 403)
             
         return vendor_id, None
         
@@ -417,6 +456,10 @@ def init_db():
         print("Migrating: Adding contact_person to vendors")
         c.execute("ALTER TABLE vendors ADD COLUMN contact_person TEXT")
 
+    if 'web_login_enabled' not in vendor_cols:
+        print("Migrating: Adding web_login_enabled to vendors")
+        c.execute("ALTER TABLE vendors ADD COLUMN web_login_enabled INTEGER DEFAULT 1")
+
     # Update system_users for multi-tenancy
     c.execute("PRAGMA table_info(system_users)")
     user_cols = [info[1] for info in c.fetchall()]
@@ -450,21 +493,22 @@ def verify_token(token):
 def super_admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        auth_header = request.headers.get('Authorization')
-        if not auth_header:
-            return jsonify({"error": "Missing Authorization Header"}), 401
+        # TEMPORARY BYPASS: Always allow super admin actions
+        # auth_header = request.headers.get('Authorization')
+        # if not auth_header:
+        #     return jsonify({"error": "Missing Authorization Header"}), 401
         
-        try:
-            token = auth_header.split(" ")[1]
-            data = verify_token(token)
-            if not data:
-                return jsonify({"error": "Invalid or Expired Token"}), 401
+        # try:
+        #     token = auth_header.split(" ")[1]
+        #     data = verify_token(token)
+        #     if not data:
+        #         return jsonify({"error": "Invalid or Expired Token"}), 401
             
-            if data['role'] != 'super_admin':
-                return jsonify({"error": "Super Admin Access Required"}), 403
+        #     if data['role'] != 'super_admin':
+        #         return jsonify({"error": "Super Admin Access Required"}), 403
                 
-        except IndexError:
-             return jsonify({"error": "Invalid Token Format"}), 401
+        # except IndexError:
+        #      return jsonify({"error": "Invalid Token Format"}), 401
              
         return f(*args, **kwargs)
     return decorated_function
@@ -472,6 +516,49 @@ def super_admin_required(f):
 greeting_bp = Blueprint("greeting", __name__, url_prefix="/api")
 
 # --- Company & Timetable Endpoints ---
+
+@greeting_bp.route("/vendor/subscription", methods=["GET"])
+def get_vendor_subscription():
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+    
+    if not vendor_id:
+         return jsonify({"error": "No vendor context"}), 400
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    c.execute("""
+        SELECT s.*, v.company_name, v.status as vendor_status 
+        FROM subscriptions s 
+        JOIN vendors v ON s.vendor_id = v.id 
+        WHERE s.vendor_id = ?
+    """, (vendor_id,))
+    
+    sub = c.fetchone()
+    conn.close()
+    
+    if not sub:
+        return jsonify({"error": "No subscription found"}), 404
+        
+    sub_dict = dict(sub)
+    
+    # Calculate days left
+    days_left = 0
+    if sub_dict['end_date']:
+        try:
+            # Handle potential time component if present
+            end_date_str = sub_dict['end_date'].split(' ')[0]
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+            today = date.today()
+            days_left = (end_date - today).days
+        except ValueError:
+            days_left = 0
+        
+    sub_dict['days_left'] = days_left
+    
+    return jsonify(sub_dict)
 
 @greeting_bp.route("/companies", methods=["GET"])
 def get_companies():
@@ -703,6 +790,7 @@ def get_vendors():
         SELECT v.*, 
                s.plan_type, s.start_date, s.end_date, s.max_users, s.cost_per_user, s.setup_fee, s.setup_fee_paid,
                (SELECT username FROM system_users WHERE vendor_id = v.id AND role = 'vendor_admin' LIMIT 1) as admin_username,
+               (SELECT username FROM system_users WHERE vendor_id = v.id AND role = 'user' LIMIT 1) as user_username,
                (SELECT COUNT(*) FROM system_users WHERE vendor_id = v.id) as admin_count
         FROM vendors v
         LEFT JOIN subscriptions s ON v.id = s.vendor_id
@@ -754,31 +842,41 @@ def create_vendor():
                   (company_name, data.get("contact_person"), data.get("phone"), data.get("email")))
         vendor_id = c.lastrowid
         
-        # 2. Create Default Subscription (Trial)
-        start_date = date.today()
-        end_date = start_date + timedelta(days=14) # 14 Day Trial
+        # 2. Create Subscription (Custom Plan)
+        start_date = data.get("start_date") or date.today().isoformat()
+        end_date = data.get("end_date") or (date.today() + timedelta(days=14)).isoformat()
+        cost = data.get("cost") or 0
         
         c.execute("""INSERT INTO subscriptions (vendor_id, plan_type, start_date, end_date, max_users, cost_per_user, setup_fee)
-                     VALUES (?, 'trial', ?, ?, 5, 0, 0)""",
-                  (vendor_id, start_date, end_date))
+                     VALUES (?, 'custom', ?, ?, 100, ?, 0)""",
+                  (vendor_id, start_date, end_date, cost))
                   
-        # 3. Create Default Admin User for Vendor
-        # Username: admin_vendorID (e.g. admin_1)
-        # Password: default123
-        username = f"admin_{vendor_id}"
+        # 3. Create Admin User for Vendor
+        admin_username = data.get("admin_username") or f"admin_{vendor_id}"
+        admin_password = data.get("admin_password") or "default123"
+        
         c.execute("""INSERT INTO system_users (username, password, role, vendor_id)
                      VALUES (?, ?, 'vendor_admin', ?)""",
-                  (username, 'default123', vendor_id))
+                  (admin_username, admin_password, vendor_id))
+                  
+        # 4. Create Kiosk/User for Vendor
+        user_username = data.get("user_username") or f"user_{vendor_id}"
+        user_password = data.get("user_password") or "user123"
+        
+        c.execute("""INSERT INTO system_users (username, password, role, vendor_id)
+                     VALUES (?, ?, 'user', ?)""",
+                  (user_username, user_password, vendor_id))
         
         conn.commit()
         return jsonify({
             "success": True, 
             "vendor_id": vendor_id,
-            "admin_credentials": {"username": username, "password": "default123"}
+            "admin_credentials": {"username": admin_username, "password": admin_password},
+            "user_credentials": {"username": user_username, "password": user_password}
         })
         
-    except sqlite3.IntegrityError:
-        return jsonify({"error": "Company Name already exists"}), 400
+    except sqlite3.IntegrityError as e:
+        return jsonify({"error": f"Database Error: {str(e)}"}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
@@ -838,6 +936,21 @@ def suspend_vendor(vendor_id):
     conn.close()
     
     return jsonify({"success": True, "status": status})
+
+@greeting_bp.route("/admin/vendors/<int:vendor_id>/toggle_web_login", methods=["POST"])
+@super_admin_required
+def toggle_web_login(vendor_id):
+    data = request.json
+    enabled = data.get("enabled", True) # boolean
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE vendors SET web_login_enabled = ? WHERE id = ?", (1 if enabled else 0, vendor_id))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({"success": True, "enabled": enabled})
+
 
 @greeting_bp.route("/admin/vendors/<int:vendor_id>", methods=["PUT"])
 @super_admin_required
@@ -1715,9 +1828,39 @@ def login():
         # Check Vendor Subscription Status (if applicable)
         if user['vendor_id']:
             is_allowed, reason = check_vendor_status(user['vendor_id'])
+            
+            # Check Web Login Flag first (needed for both active and expired logic)
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT web_login_enabled FROM vendors WHERE id = ?", (user['vendor_id'],))
+            row = c.fetchone()
+            conn.close()
+            web_login_enabled = row[0] if row else 1 # Default to True
+
             if not is_allowed:
                 print(f"Login Blocked: {reason}")
-                return jsonify({"error": f"Access Denied: {reason}"}), 403
+                
+                # Special Case: Expired Subscription + Web Login Enabled -> Allow Login with Redirect
+                if reason == "Subscription Expired" and web_login_enabled:
+                     print("Subscription Expired but Web Login Enabled -> Redirecting to Recharge")
+                     token = generate_token(user['username'], user['role'])
+                     return jsonify({
+                        "status": "success",
+                        "role": user["role"],
+                        "username": user["username"],
+                        "token": token,
+                        "redirect_url": "/recharge", # Frontend instruction
+                        "warning": "Subscription Expired"
+                    })
+
+                error_msg = f"Access Denied: {reason}"
+                if reason == "Subscription Expired":
+                    error_msg = "Access Denied: Recharge the plan"
+                return jsonify({"error": error_msg}), 403
+            
+            # Check Web Login Flag for Vendor Admins (Active Account)
+            if user['role'] == 'vendor_admin' and not web_login_enabled:
+                 return jsonify({"error": "Access Denied: Web Login Disabled"}), 403
 
         print(f"Login Success: Role={user['role']}") # DEBUG LOG
         token = generate_token(user['username'], user['role'])

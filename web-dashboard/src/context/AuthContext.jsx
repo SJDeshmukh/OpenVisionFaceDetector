@@ -37,7 +37,7 @@ export const AuthProvider = ({ children }) => {
         setUser(userData);
         localStorage.setItem('user', JSON.stringify(userData));
         axios.defaults.headers.common['Authorization'] = `Bearer ${userData.token}`;
-        return { success: true, role: userData.role };
+        return { success: true, role: userData.role, redirect_url: response.data.redirect_url };
       } else {
         // Handle case where status is not success but no error was thrown
         return { success: false, error: response.data.error || "Unexpected response from server" };

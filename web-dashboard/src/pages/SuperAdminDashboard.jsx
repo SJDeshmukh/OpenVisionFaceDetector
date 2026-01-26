@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Plus, Check, X, AlertTriangle, Shield, User, Lock, FileText, DollarSign } from 'lucide-react';
+import { Plus, Check, X, AlertTriangle, Shield, User, Lock, FileText, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { API_URL } from '../config';
 
@@ -12,7 +12,13 @@ const SuperAdminDashboard = () => {
   const [passwordModal, setPasswordModal] = useState({ show: false, username: '' });
   const [invoiceModal, setInvoiceModal] = useState({ show: false, vendor: null, invoices: [] });
   const [newPassword, setNewPassword] = useState('');
-  const [newVendor, setNewVendor] = useState({ company_name: '', contact_person: '', phone: '', email: '' });
+  const [newVendor, setNewVendor] = useState({ 
+    company_name: '', contact_person: '', phone: '', email: '',
+    start_date: '', end_date: '', cost: '', max_users: '',
+    admin_username: '', admin_password: '',
+    user_username: '', user_password: ''
+  });
+  const [editingVendor, setEditingVendor] = useState(null);
 
   useEffect(() => {
     fetchVendors();
@@ -33,17 +39,77 @@ const SuperAdminDashboard = () => {
 
   const handleCreateVendor = async (e) => {
     e.preventDefault();
+    
+    // Validation
+    if (newVendor.start_date && newVendor.end_date) {
+      if (new Date(newVendor.end_date) < new Date(newVendor.start_date)) {
+        alert("End Date cannot be before Start Date");
+        return;
+      }
+    }
+
     try {
-      await axios.post('http://127.0.0.1:5001/api/admin/vendors', newVendor, {
-        headers: { Authorization: `Bearer ${user?.token}` }
-      });
+      if (editingVendor) {
+        // Update Mode
+        await axios.put(`${API_URL}/admin/vendors/${editingVendor.id}`, {
+            company_name: newVendor.company_name,
+            contact_person: newVendor.contact_person,
+            phone: newVendor.phone,
+            email: newVendor.email
+        }, {
+            headers: { Authorization: `Bearer ${user?.token}` }
+        });
+
+        await axios.put(`${API_URL}/admin/vendors/${editingVendor.id}/subscription`, {
+            start_date: newVendor.start_date,
+            end_date: newVendor.end_date,
+            cost_per_user: newVendor.cost,
+            max_users: newVendor.max_users,
+            plan_type: 'custom'
+        }, {
+            headers: { Authorization: `Bearer ${user?.token}` }
+        });
+
+        alert("Vendor Updated Successfully!");
+      } else {
+        // Create Mode
+        const response = await axios.post(`${API_URL}/admin/vendors`, { ...newVendor, max_users: newVendor.max_users || 100 }, {
+          headers: { Authorization: `Bearer ${user?.token}` }
+        });
+        alert(`Vendor Created!\nAdmin: ${response.data.admin_credentials.username}\nUser: ${response.data.user_credentials.username}`);
+      }
+
       setShowModal(false);
-      setNewVendor({ company_name: '', contact_person: '', phone: '', email: '' });
+      setEditingVendor(null);
+      setNewVendor({ 
+        company_name: '', contact_person: '', phone: '', email: '',
+        start_date: '', end_date: '', cost: '', max_users: '',
+        admin_username: '', admin_password: '',
+        user_username: '', user_password: ''
+      });
       fetchVendors();
-      alert("Vendor Created Successfully!");
     } catch (error) {
       alert("Error: " + (error.response?.data?.error || error.message));
     }
+  };
+
+  const handleEditClick = (vendor) => {
+    setEditingVendor(vendor);
+    setNewVendor({
+      company_name: vendor.company_name || '',
+      contact_person: vendor.contact_person || '',
+      phone: vendor.phone || '',
+      email: vendor.email || '',
+      start_date: vendor.start_date || '',
+      end_date: vendor.end_date ? vendor.end_date.split(' ')[0] : '',
+      cost: vendor.cost_per_user || '',
+      max_users: vendor.max_users || '',
+      admin_username: vendor.admin_username || '',
+      admin_password: '', // Keep blank
+      user_username: vendor.user_username || '',
+      user_password: ''   // Keep blank
+    });
+    setShowModal(true);
   };
 
   const handlePasswordReset = async (e) => {
@@ -68,7 +134,7 @@ const SuperAdminDashboard = () => {
     if (!window.confirm(`Are you sure you want to ${action} this vendor?`)) return;
     
     try {
-      await axios.post(`http://127.0.0.1:5001/api/admin/vendors/${id}/suspend`, { action }, {
+      await axios.post(`${API_URL}/admin/vendors/${id}/suspend`, { action }, {
         headers: { Authorization: `Bearer ${user?.token}` }
       });
       fetchVendors();
@@ -77,9 +143,22 @@ const SuperAdminDashboard = () => {
     }
   };
 
+  const handleToggleWebLogin = async (vendor) => {
+    const newStatus = vendor.web_login_enabled === 0; // Toggle
+    try {
+      await axios.post(`${API_URL}/admin/vendors/${vendor.id}/toggle_web_login`, { enabled: newStatus }, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      // Optimistic update or refetch
+      setVendors(vendors.map(v => v.id === vendor.id ? { ...v, web_login_enabled: newStatus ? 1 : 0 } : v));
+    } catch (error) {
+      alert("Error updating web login status");
+    }
+  };
+
   const handleViewInvoices = async (vendor) => {
     try {
-      const response = await axios.get(`http://127.0.0.1:5001/api/admin/vendors/${vendor.id}/invoices`, {
+      const response = await axios.get(`${API_URL}/admin/vendors/${vendor.id}/invoices`, {
         headers: { Authorization: `Bearer ${user?.token}` }
       });
       setInvoiceModal({ show: true, vendor: vendor, invoices: response.data.invoices });
@@ -91,7 +170,7 @@ const SuperAdminDashboard = () => {
   const handleGenerateInvoice = async () => {
     if (!invoiceModal.vendor) return;
     try {
-      const response = await axios.post(`http://127.0.0.1:5001/api/admin/vendors/${invoiceModal.vendor.id}/invoices/generate`, {}, {
+      const response = await axios.post(`${API_URL}/admin/vendors/${invoiceModal.vendor.id}/invoices/generate`, {}, {
         headers: { Authorization: `Bearer ${user?.token}` }
       });
       alert(`Invoice Generated! Amount: ₹${response.data.amount}`);
@@ -103,13 +182,24 @@ const SuperAdminDashboard = () => {
 
   const handleMarkPaid = async (invoiceId) => {
     try {
-      await axios.put(`http://127.0.0.1:5001/api/admin/invoices/${invoiceId}/status`, { status: 'paid' }, {
+      await axios.put(`${API_URL}/admin/invoices/${invoiceId}/status`, { status: 'paid' }, {
         headers: { Authorization: `Bearer ${user?.token}` }
       });
       handleViewInvoices(invoiceModal.vendor); // Refresh
     } catch (error) {
       alert("Error updating status");
     }
+  };
+
+  const calculateDaysLeft = (endDate) => {
+    if (!endDate) return null;
+    const end = new Date(endDate);
+    const today = new Date();
+    today.setHours(0,0,0,0);
+    end.setHours(0,0,0,0);
+    const diffTime = end - today;
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+    return diffDays;
   };
 
   if (loading) return <div className="p-8">Loading...</div>;
@@ -151,9 +241,9 @@ const SuperAdminDashboard = () => {
               <th className="p-4 font-semibold text-slate-600">Company</th>
               <th className="p-4 font-semibold text-slate-600">Contact</th>
               <th className="p-4 font-semibold text-slate-600">Status</th>
-              <th className="p-4 font-semibold text-slate-600">Plan</th>
-              <th className="p-4 font-semibold text-slate-600">Expiry</th>
-              <th className="p-4 font-semibold text-slate-600">Users</th>
+              <th className="p-4 font-semibold text-slate-600">Plan & Cost</th>
+              <th className="p-4 font-semibold text-slate-600">Duration</th>
+              <th className="p-4 font-semibold text-slate-600">Logins (Admin/User)</th>
               <th className="p-4 font-semibold text-slate-600">Actions</th>
             </tr>
           </thead>
@@ -169,21 +259,58 @@ const SuperAdminDashboard = () => {
                   <StatusBadge status={vendor.status} />
                 </td>
                 <td className="p-4">
-                  <span className="capitalize px-2 py-1 bg-blue-50 text-blue-700 rounded text-xs font-medium border border-blue-100">
-                    {vendor.plan_type || 'None'}
-                  </span>
+                  <div className="flex flex-col items-start gap-1">
+                    <span className="capitalize px-2 py-1 bg-blue-50 text-blue-700 rounded text-xs font-medium border border-blue-100">
+                      {vendor.plan_type || 'None'}
+                    </span>
+                    <div className="flex flex-col">
+                        <span className="text-sm font-bold text-slate-700">₹{vendor.cost_per_user || 0}<span className="text-xs font-normal text-slate-400">/user</span></span>
+                        <span className="text-xs text-slate-500">Total: ₹{(vendor.cost_per_user || 0) * (vendor.max_users || 0)}</span>
+                    </div>
+                  </div>
+                </td>
+                <td className="p-4 text-slate-600 text-sm">
+                   <div className="flex flex-col">
+                     <span className="text-xs text-slate-500">From: {vendor.start_date || '?'}</span>
+                     <span className={`text-xs ${vendor.subscription_status === 'Expired' ? 'text-red-600 font-bold' : 'text-slate-500'}`}>
+                        {vendor.subscription_status === 'Expired' ? 'Expired: ' : 'Next Bill: '}{vendor.end_date || '-'}
+                     </span>
+                     {vendor.end_date && (
+                        <span className={`text-xs font-medium mt-1 ${calculateDaysLeft(vendor.end_date) < 7 ? 'text-red-600' : 'text-blue-600'}`}>
+                          {calculateDaysLeft(vendor.end_date)} Days Left
+                        </span>
+                     )}
+                  </div>
                 </td>
                 <td className="p-4 text-slate-600">
-                  {vendor.end_date || '-'}
-                  {vendor.subscription_status === 'Expired' && (
-                    <span className="ml-2 text-xs text-red-500 font-bold">(Exp)</span>
-                  )}
-                </td>
-                <td className="p-4 text-slate-600">
-                  {vendor.admin_count || 0} / {vendor.max_users || 0}
+                   <div className="flex flex-col gap-1">
+                      {vendor.admin_username && (
+                        <div className="flex items-center gap-1 text-xs bg-indigo-50 text-indigo-700 px-2 py-1 rounded border border-indigo-100 w-fit" title="Admin Username">
+                           <Shield size={12} />
+                           <span className="font-mono">{vendor.admin_username}</span>
+                        </div>
+                      )}
+                      {vendor.user_username && (
+                        <div className="flex items-center gap-1 text-xs bg-green-50 text-green-700 px-2 py-1 rounded border border-green-100 w-fit" title="User Username">
+                           <User size={12} />
+                           <span className="font-mono">{vendor.user_username}</span>
+                        </div>
+                      )}
+                      <div className="flex items-center gap-2 mt-1 cursor-pointer hover:opacity-80" onClick={() => handleToggleWebLogin(vendor)} title="Toggle Web Dashboard Access">
+                         <span className="text-xs text-slate-500">Web Access:</span>
+                         {vendor.web_login_enabled !== 0 ? <ToggleRight className="text-green-500" size={20}/> : <ToggleLeft className="text-slate-400" size={20}/>}
+                      </div>
+                   </div>
                 </td>
                 <td className="p-4">
                   <div className="flex gap-2">
+                    <button 
+                      onClick={() => handleEditClick(vendor)}
+                      className="p-1.5 rounded hover:bg-slate-200 text-slate-600"
+                      title="Edit Vendor Details"
+                    >
+                      <Pencil size={16} />
+                    </button>
                     <button 
                       onClick={() => handleSuspend(vendor.id, vendor.status)}
                       className={`p-1.5 rounded hover:bg-slate-200 ${vendor.status === 'suspended' ? 'text-green-600' : 'text-red-600'}`}
@@ -343,50 +470,164 @@ const SuperAdminDashboard = () => {
 
       {/* Create Modal */}
       {showModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-lg p-6 w-full max-w-md">
-            <h2 className="text-xl font-bold mb-4">Onboard New Vendor</h2>
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            <h2 className="text-xl font-bold mb-6">{editingVendor ? 'Edit Vendor Details' : 'Onboard New Vendor'}</h2>
             <form onSubmit={handleCreateVendor}>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Company Name</label>
-                  <input 
-                    type="text" 
-                    required
-                    className="w-full p-2 border rounded"
-                    value={newVendor.company_name}
-                    onChange={e => setNewVendor({...newVendor, company_name: e.target.value})}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Contact Person</label>
-                  <input 
-                    type="text" 
-                    className="w-full p-2 border rounded"
-                    value={newVendor.contact_person}
-                    onChange={e => setNewVendor({...newVendor, contact_person: e.target.value})}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Phone</label>
-                  <input 
-                    type="text" 
-                    className="w-full p-2 border rounded"
-                    value={newVendor.phone}
-                    onChange={e => setNewVendor({...newVendor, phone: e.target.value})}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Email</label>
-                  <input 
-                    type="email" 
-                    className="w-full p-2 border rounded"
-                    value={newVendor.email}
-                    onChange={e => setNewVendor({...newVendor, email: e.target.value})}
-                  />
+              
+              {/* Section 1: Company Details */}
+              <div className="mb-6">
+                <h3 className="text-sm uppercase tracking-wide text-slate-500 font-bold mb-3 flex items-center gap-2">
+                  <Shield size={16} /> Company Details
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Company Name *</label>
+                    <input 
+                      type="text" 
+                      required
+                      className="w-full p-2 border rounded focus:ring-2 focus:ring-indigo-500 outline-none"
+                      value={newVendor.company_name}
+                      onChange={e => setNewVendor({...newVendor, company_name: e.target.value})}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Contact Person</label>
+                    <input 
+                      type="text" 
+                      className="w-full p-2 border rounded focus:ring-2 focus:ring-indigo-500 outline-none"
+                      value={newVendor.contact_person}
+                      onChange={e => setNewVendor({...newVendor, contact_person: e.target.value})}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Phone</label>
+                    <input 
+                      type="text" 
+                      className="w-full p-2 border rounded focus:ring-2 focus:ring-indigo-500 outline-none"
+                      value={newVendor.phone}
+                      onChange={e => setNewVendor({...newVendor, phone: e.target.value})}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Email</label>
+                    <input 
+                      type="email" 
+                      className="w-full p-2 border rounded focus:ring-2 focus:ring-indigo-500 outline-none"
+                      value={newVendor.email}
+                      onChange={e => setNewVendor({...newVendor, email: e.target.value})}
+                    />
+                  </div>
                 </div>
               </div>
-              <div className="mt-6 flex justify-end gap-3">
+
+              {/* Section 2: Plan Configuration */}
+              <div className="mb-6 bg-blue-50 p-4 rounded-lg border border-blue-100">
+                <h3 className="text-sm uppercase tracking-wide text-blue-700 font-bold mb-3 flex items-center gap-2">
+                  <Calendar size={16} /> Subscription Plan
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Start Date</label>
+                    <input 
+                      type="date" 
+                      className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none bg-white"
+                      value={newVendor.start_date}
+                      onChange={e => setNewVendor({...newVendor, start_date: e.target.value})}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">End Date</label>
+                    <input 
+                      type="date" 
+                      className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none bg-white"
+                      value={newVendor.end_date}
+                      onChange={e => setNewVendor({...newVendor, end_date: e.target.value})}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Plan Cost (₹)</label>
+                    <input 
+                      type="number" 
+                      className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none bg-white"
+                      value={newVendor.cost}
+                      onChange={e => setNewVendor({...newVendor, cost: e.target.value})}
+                      placeholder="e.g. 5000"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Max Users</label>
+                    <input 
+                      type="number" 
+                      className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none bg-white"
+                      value={newVendor.max_users}
+                      onChange={e => setNewVendor({...newVendor, max_users: e.target.value})}
+                      placeholder="Default: 100"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Section 3: Login Credentials */}
+              <div className="mb-6">
+                <h3 className="text-sm uppercase tracking-wide text-slate-500 font-bold mb-3 flex items-center gap-2">
+                  <Lock size={16} /> Login Credentials
+                </h3>
+                {editingVendor && (
+                  <div className="mb-2 p-2 bg-yellow-50 text-yellow-700 text-xs rounded border border-yellow-100 flex items-center gap-2">
+                     <AlertTriangle size={12} />
+                     <span>Usernames cannot be changed. Use the "Reset Password" button in the list to update passwords.</span>
+                  </div>
+                )}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="border p-3 rounded-lg bg-slate-50">
+                    <div className="text-xs font-bold text-slate-500 mb-2 uppercase">Admin Login</div>
+                    <div className="space-y-2">
+                      <input 
+                        type="text" 
+                        placeholder="Username (Default: admin_ID)"
+                        className={`w-full p-2 border rounded text-sm ${editingVendor ? 'bg-slate-200 text-slate-500 cursor-not-allowed' : ''}`}
+                        value={newVendor.admin_username}
+                        onChange={e => setNewVendor({...newVendor, admin_username: e.target.value})}
+                        disabled={!!editingVendor}
+                      />
+                      {!editingVendor && (
+                        <input 
+                          type="text" 
+                          placeholder="Password (Default: default123)"
+                          className="w-full p-2 border rounded text-sm"
+                          value={newVendor.admin_password}
+                          onChange={e => setNewVendor({...newVendor, admin_password: e.target.value})}
+                        />
+                      )}
+                    </div>
+                  </div>
+                  <div className="border p-3 rounded-lg bg-slate-50">
+                    <div className="text-xs font-bold text-slate-500 mb-2 uppercase">User/Kiosk Login</div>
+                    <div className="space-y-2">
+                      <input 
+                        type="text" 
+                        placeholder="Username (Default: user_ID)"
+                        className={`w-full p-2 border rounded text-sm ${editingVendor ? 'bg-slate-200 text-slate-500 cursor-not-allowed' : ''}`}
+                        value={newVendor.user_username}
+                        onChange={e => setNewVendor({...newVendor, user_username: e.target.value})}
+                        disabled={!!editingVendor}
+                      />
+                      {!editingVendor && (
+                        <input 
+                          type="text" 
+                          placeholder="Password (Default: user123)"
+                          className="w-full p-2 border rounded text-sm"
+                          value={newVendor.user_password}
+                          onChange={e => setNewVendor({...newVendor, user_password: e.target.value})}
+                        />
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-3 pt-4 border-t">
                 <button 
                   type="button" 
                   onClick={() => setShowModal(false)}
@@ -396,9 +637,9 @@ const SuperAdminDashboard = () => {
                 </button>
                 <button 
                   type="submit" 
-                  className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700"
+                  className="px-6 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 font-medium"
                 >
-                  Create & Start Trial
+                  {editingVendor ? 'Update Vendor' : 'Create Vendor'}
                 </button>
               </div>
             </form>

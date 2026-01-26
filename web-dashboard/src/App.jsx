@@ -8,6 +8,7 @@ import Reports from './pages/Reports';
 import Settings from './pages/Settings';
 import AuditLogs from './pages/AuditLogs';
 import Login from './pages/Login';
+import Recharge from './pages/Recharge';
 import Timetable from './pages/Timetable';
 import Wages from './pages/Wages';
 import LiveAttendance from './pages/LiveAttendance';
@@ -42,6 +43,11 @@ function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/super_admin" element={<SuperAdminLogin />} />
           
+          {/* Standalone Protected Routes */}
+          <Route element={<ProtectedRoute allowedRoles={['vendor_admin', 'admin']} />}>
+            <Route path="/recharge" element={<Recharge />} />
+          </Route>
+
           <Route element={<Layout />}>
             {/* SuperAdmin Routes */}
             <Route element={<ProtectedRoute allowedRoles={['super_admin']} />}>
