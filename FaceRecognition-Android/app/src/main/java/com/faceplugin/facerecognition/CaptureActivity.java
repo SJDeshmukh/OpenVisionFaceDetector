@@ -515,7 +515,12 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
                 String encoded = Base64.encodeToString(byteArray, Base64.NO_WRAP);
                 String base64Image = "data:image/jpeg;base64," + encoded;
 
-                StreamRequest request = new StreamRequest(base64Image);
+                // Get Vendor ID
+                android.content.SharedPreferences prefs = context.getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE);
+                int vendorId = prefs.getInt("vendor_id", -1);
+                Integer vendorIdObj = (vendorId != -1) ? vendorId : null;
+
+                StreamRequest request = new StreamRequest(base64Image, vendorIdObj);
                 RetrofitClient.getService().uploadStreamFrame(request).enqueue(new Callback<Void>() {
                     @Override
                     public void onResponse(Call<Void> call, Response<Void> response) {}

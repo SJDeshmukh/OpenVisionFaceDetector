@@ -2448,18 +2448,22 @@ def person_event():
         face_row = c.fetchone()
         user_shift_name = face_row['shift'] if face_row and 'shift' in face_row.keys() else None
 
-        if company_row and company_row['live_timetable']:
-            import json
-            timetable = json.loads(company_row['live_timetable'])
-            shifts_data = json.loads(company_row['shifts']) if company_row['shifts'] else []
-            
-            # Resolve User Shift ID
-            user_shift_id = None
-            if user_shift_name:
+        # Initialize shifts_data and user_shift_id
+        shifts_data = []
+        user_shift_id = None
+        
+        if company_row:
+             shifts_data = json.loads(company_row['shifts']) if company_row['shifts'] else []
+             # Resolve User Shift ID
+             if user_shift_name:
                 for s in shifts_data:
                     if s.get('name') == user_shift_name:
                         user_shift_id = s.get('id')
                         break
+
+        if company_row and company_row['live_timetable']:
+            import json
+            timetable = json.loads(company_row['live_timetable'])
             
             now = current_time_obj
             current_hm = now.strftime('%H:%M')
@@ -2485,25 +2489,38 @@ def person_event():
             for act in yesterday_acts:
                 s = to_mins(act.get('start_time', '00:00'))
                 e = to_mins(act.get('end_time', '00:00'))
-                if s > e: # Night Shift from Yesterday
-                    act_rules = act.get('rules', {})
-                    act_grace = int(act_rules.get('grace_period', tolerance))
-                    
+                
+                act_rules = act.get('rules', {})
+                act_grace = int(act_rules.get('grace_period', tolerance))
+                
+                is_yesterday_match = False
+                
+                if s > e: # Night Shift from Yesterday (e.g. 9 PM - 2 AM)
                     # Check if current time is within the end window (morning of today)
                     # e.g. End 01:00. Curr 00:15. Matches.
                     if curr_mins <= (e + act_grace):
-                        # Verify Shift ID Match
-                        act_shift_id = act.get('shift_id')
-                        is_match = False
-                        if act_shift_id:
-                            if user_shift_id and int(act_shift_id) == int(user_shift_id):
-                                is_match = True
-                        else:
+                        is_yesterday_match = True
+                else:
+                    # Standard Shift from Yesterday (e.g. 4 PM - 11 PM)
+                    # Check if current time (Today) is within the grace period of yesterday's end.
+                    # Logic: (Current Time + 24h) <= (End Time + Grace)
+                    if (curr_mins + 1440) <= (e + act_grace): 
+                        is_yesterday_match = True
+                        print(f"Matched Yesterday's Standard Shift: {act.get('name')} (Grace Period)")
+
+                if is_yesterday_match:
+                    # Verify Shift ID Match
+                    act_shift_id = act.get('shift_id')
+                    is_match = False
+                    if act_shift_id:
+                        if user_shift_id and int(act_shift_id) == int(user_shift_id):
                             is_match = True
-                            
-                        if is_match:
-                            matching_acts.append(act)
-                            print(f"Matched Yesterday's Night Shift: {act.get('name')}")
+                    else:
+                        is_match = True
+                        
+                    if is_match:
+                        matching_acts.append(act)
+                        print(f"Matched Yesterday's Shift: {act.get('name')}")
             
             for act in today_acts:
                 start_mins = to_mins(act.get('start_time', '00:00'))
@@ -2568,16 +2585,15 @@ def person_event():
                  
                  if potential_acts:
                      # If multiple work activities, which one to pick?
-                     # 1. Sort by start time
-                     potential_acts.sort(key=lambda x: to_mins(x.get('start_time', '00:00')))
+                     # 1. Sort by PROXIMITY to current time (Loophole Fix for Multi-Shift / Late Night)
+                     # If curr_mins is 22:00 (1320), we prefer Shift B (22:00) over Shift A (09:00).
+                     # Calculate circular distance (24h clock) to handle midnight wrapping.
+                     def circular_dist(act_start, now_mins):
+                         diff = abs(act_start - now_mins)
+                         return min(diff, 1440 - diff)
+                         
+                     potential_acts.sort(key=lambda x: circular_dist(to_mins(x.get('start_time', '00:00')), curr_mins))
                      
-                     # 2. Pick the one that is "closest" or just the first/last?
-                     # Common case: One main shift (9-5). Pick it.
-                     # Complex case: Shift A (9-1), Shift B (2-6).
-                     # If user comes at 7pm. They missed BOTH. 
-                     # Should we check them in for Shift A or Shift B?
-                     # Probably Shift A (Start of day). 
-                     # Let's pick the FIRST work activity of the day.
                      best_fallback = potential_acts[0]
                      
                      print(f"Fallback Activity Match: {best_fallback.get('name')} (Strict window missed)")
@@ -3000,9 +3016,35 @@ def calculate_daily_hours(records, timetable=None):
         elif status == 'CHECK_OUT':
             if current_checkin:
                 duration = (ts - current_checkin).total_seconds()
-                total_seconds += duration
+                
+                # Check if this session's activity is PAYABLE
+                # User Requirement: "payable hours calculated only when we register an activity with shift"
+                is_session_payable = False
+                if timetable:
+                    found_act = None
+                    for act in timetable:
+                        if act.get('name') == activity_name:
+                            found_act = act
+                            break
+                    
+                    if found_act:
+                        # Use is_payable flag, default to True for 'Work' type if missing
+                        act_type = found_act.get('type', 'Work')
+                        is_session_payable = found_act.get('is_payable', act_type == 'Work')
+                    else:
+                        # Activity not found in timetable -> Not Payable (Strict)
+                        is_session_payable = False
+                else:
+                    # No timetable -> Not Payable (Strict)
+                    is_session_payable = False
+
+                if is_session_payable:
+                    total_seconds += duration
+                    
                 sessions.append({
                     "type": "Work", # Standard session
+                    "activity": activity_name,
+                    "is_payable": is_session_payable,
                     "start_ts": current_checkin, # Correct start
                     "end_ts": ts,
                     "start": current_checkin.strftime('%H:%M'),
@@ -3114,6 +3156,13 @@ def upload_stream_frame():
 
         data = request.json
         image_data = data.get("image") # Base64 string
+        
+        # 2. Check for explicit vendor_id in body (Override)
+        if data.get("vendor_id"):
+            try:
+                vendor_id = int(data.get("vendor_id"))
+            except:
+                pass
         
         if not image_data:
             return jsonify({"error": "No image data"}), 400
