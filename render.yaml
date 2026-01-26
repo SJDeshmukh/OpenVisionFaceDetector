@@ -1,16 +1,28 @@
 services:
-  # Unified Docker Service (Frontend + Backend + Nginx)
-  # This matches the EC2 setup and allows custom Nginx configuration
+  # Backend Service (Python/Flask)
   - type: web
-    name: face-detection-unified
-    env: docker
+    name: face-detection-backend
+    env: python
     region: ohio
     plan: free
-    autoDeploy: true
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.9.0
       - key: SECRET_KEY
         generateValue: true
-      - key: DOMAIN_NAME
-        value: openvisionx.in
-      - key: PROTOCOL
-        value: https
+
+  # Frontend Service (React/Vite)
+  - type: static
+    name: face-detection-frontend
+    env: static
+    region: ohio
+    plan: free
+    rootDir: web-dashboard
+    buildCommand: npm install && npm run build
+    publishDir: dist
+    envVars:
+      - key: VITE_API_URL
+        value: https://face-detection-backend.onrender.com
