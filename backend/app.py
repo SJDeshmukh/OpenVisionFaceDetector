@@ -1770,36 +1770,6 @@ def get_persons():
         persons.append(dict(row))
     return jsonify({"persons": persons})
 
-@greeting_bp.route("/persons/wages", methods=["PUT"])
-def update_wages():
-    vendor_id, error = authenticate_vendor_access()
-    if error: return error
-
-    data = request.json
-    updates = data.get("updates") # List of {name: "John", daily_wage: 100}
-    
-    if not updates:
-        return jsonify({"error": "No updates provided"}), 400
-        
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    try:
-        for item in updates:
-            name = item.get("name")
-            wage = item.get("daily_wage")
-            if name and wage is not None:
-                if vendor_id:
-                     c.execute("UPDATE faces SET daily_wage = ? WHERE name = ? AND vendor_id = ?", (wage, name, vendor_id))
-                else:
-                     c.execute("UPDATE faces SET daily_wage = ? WHERE name = ?", (wage, name))
-        conn.commit()
-        return jsonify({"success": True})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        conn.close()
-
 @greeting_bp.route("/reports/payroll", methods=["GET"])
 def get_payroll_report():
     vendor_id, error = authenticate_vendor_access()
@@ -2344,12 +2314,13 @@ def update_wages():
             name = u.get('name')
             wage = u.get('daily_wage')
             
-            # Verify person belongs to vendor
-            if vendor_id:
-                c.execute("UPDATE faces SET daily_wage = ? WHERE name = ? AND vendor_id = ?", 
-                          (wage, name, vendor_id))
-            else:
-                 c.execute("UPDATE faces SET daily_wage = ? WHERE name = ?", (wage, name))
+            if name and wage is not None:
+                # Verify person belongs to vendor
+                if vendor_id:
+                    c.execute("UPDATE faces SET daily_wage = ? WHERE name = ? AND vendor_id = ?", 
+                              (wage, name, vendor_id))
+                else:
+                     c.execute("UPDATE faces SET daily_wage = ? WHERE name = ?", (wage, name))
                  
         conn.commit()
         return jsonify({"success": True})
