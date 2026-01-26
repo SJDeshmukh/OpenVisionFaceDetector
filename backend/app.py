@@ -2445,10 +2445,18 @@ def person_event():
                 # Fallback for format without milliseconds
                 current_time_obj = datetime.strptime(timestamp_str, "%Y-%m-%dT%H:%M:%S")
             except ValueError:
-                print(f"Invalid timestamp format: {timestamp_str}. Using server time.")
-                current_time_obj = datetime.now()
+                print(f"Invalid timestamp format: {timestamp_str}. Using server time (adjusted for UTC).")
+                # Render is UTC. We assume User is IST (UTC+5:30) for fallback if no timestamp
+                # Ideally this should be configurable.
+                current_time_obj = datetime.utcnow() + timedelta(hours=5, minutes=30)
     else:
-        current_time_obj = datetime.now()
+        # No timestamp provided.
+        # Render is UTC. We need to shift it to match the Timetable (which is likely Local/IST).
+        # Adding fixed offset for IST (UTC+5:30) as a safe default for this user.
+        print("No timestamp provided. Using server time (adjusted for UTC+5:30).")
+        current_time_obj = datetime.utcnow() + timedelta(hours=5, minutes=30)
+
+    print(f"DEBUG TIME: Server saw {current_time_obj} (Original TS: {timestamp_str})")
 
     # Case 1: No person detected
     if not detected:
@@ -2920,20 +2928,29 @@ def person_event():
                  if curr_mins <= (end_mins + 360) and start_mins > 360:
                      check_mins += 1440
             
+            # --- Smart Rollover Safety Net ---
+            # If check_mins is still < start_mins (Early), but the difference is huge (e.g. > 12 hours),
+            # it likely means we crossed a day boundary but missed the night shift check (or end_time was wrong).
+            # e.g. Start 21:00 (1260), Check 00:20 (20). Diff 1240 > 720. Treat as Late.
+            if check_mins < effective_start_mins:
+                diff = effective_start_mins - check_mins
+                if diff > 720: # 12 hours
+                    print(f"Smart Rollover Triggered: Diff {diff}m > 12h. Assuming Next Day.")
+                    check_mins += 1440
+
             # Calculate Threshold
             late_threshold = effective_start_mins + act_grace
             
             if check_mins > late_threshold:
                 is_late = 1
-                print(f"Late Detected (Strict): {name} (Time: {check_mins}, Start: {effective_start_mins}, Grace: {act_grace})")
+                print(f"Late Detected (Strict): {name} (Time: {check_mins}, Start: {effective_start_mins}, Grace: {act_grace}, Diff: {check_mins - effective_start_mins})")
             else:
                 # Debugging info
                 print(f"On Time Detected: {name} (Time: {check_mins}, Start: {effective_start_mins}, Grace: {act_grace}, Threshold: {late_threshold})")
                 
                 # Also check if check_mins is BEFORE start_mins (Early Arrival is On Time)
-                # But what if it's WAY before? e.g. 10 hours before?
-                # Usually that would be a different shift. But here we assume best_match is correct.
-                pass
+                if check_mins < effective_start_mins:
+                    print(f"Early Arrival: {effective_start_mins - check_mins} mins early.")
 
         except Exception as e:
             print(f"Late Calculation Error: {e}")
