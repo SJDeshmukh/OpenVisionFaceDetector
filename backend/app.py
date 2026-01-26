@@ -2907,11 +2907,12 @@ def get_attendance():
     
     return jsonify({"attendance": attendance})
 
-def calculate_daily_hours(records, timetable=None):
+def calculate_daily_hours(records, timetable=None, date_str=None):
     """
     Calculate work hours from a list of attendance records for a single user.
     Records must be sorted by timestamp ASC.
     timetable: List of activity objects (from company live_timetable) to determine payability of gaps.
+    date_str: Optional date string to enable real-time calculation for active sessions.
     """
     total_seconds = 0
     current_checkin = None
@@ -3120,9 +3121,54 @@ def calculate_daily_hours(records, timetable=None):
 
     is_active = current_checkin is not None
     
+    # Real-time Calculation: If active and today, add duration from last checkin to NOW
+    if is_active and date_str:
+        try:
+            today_str = datetime.now().strftime('%Y-%m-%d')
+            if date_str == today_str:
+                now_dt = datetime.now()
+                duration = (now_dt - current_checkin).total_seconds()
+                
+                # Check payability of current active session
+                # We need the activity name for the current session.
+                # Assuming the LAST Check-In established the activity.
+                # Find the last Check-In record
+                last_in_record = None
+                for r in reversed(sorted_records):
+                    if r['status'] == 'CHECK_IN':
+                        last_in_record = r
+                        break
+                
+                active_activity_name = last_in_record.get('activity', 'Work') if last_in_record else "Unknown"
+                
+                is_active_payable = False
+                if timetable:
+                     found_act = None
+                     for act in timetable:
+                         if act.get('name') == active_activity_name:
+                             found_act = act
+                             break
+                     if found_act:
+                         act_type = found_act.get('type', 'Work')
+                         is_active_payable = found_act.get('is_payable', act_type == 'Work')
+                
+                if is_active_payable:
+                    total_seconds += duration
+                
+                sessions.append({
+                    "type": "Active",
+                    "activity": active_activity_name,
+                    "is_payable": is_active_payable,
+                    "start": current_checkin.strftime('%H:%M'),
+                    "end": "Now",
+                    "duration_mins": round(duration / 60)
+                })
+        except Exception as e:
+            print(f"Real-time calc error: {e}")
+
     return {
         "total_hours": round(total_seconds / 3600, 2),
-        "sessions": final_sessions,
+        "sessions": final_sessions + ([sessions[-1]] if (is_active and sessions and sessions[-1]['type']=='Active') else []),
         "is_active": is_active,
         "last_checkin": current_checkin.strftime('%H:%M') if current_checkin else None
     }
@@ -3210,6 +3256,53 @@ def view_stream_frame():
     else:
         return jsonify({"status": "offline", "image": None})
 
+def calculate_arrival_status(expected_start, sessions, day_activities=None):
+    """
+    Determines if the user arrived late based on their first 'Work' session.
+    """
+    arrival_status = "On Time"
+    if not expected_start or not sessions:
+        return arrival_status
+
+    # Find the first 'Work' or relevant session
+    first_checkin = None
+    for s in sessions:
+        if s.get('type') == 'Work' or s.get('type') == 'Active':
+             # Prefer 'Work' but 'Active' works if it's the first one
+             first_checkin = s['start']
+             break
+    
+    if not first_checkin:
+        # Fallback to first session if no Work session found yet
+        first_checkin = sessions[0]['start']
+
+    if first_checkin:
+        # Get tolerance from the first scheduled activity
+        tolerance_mins = 15 # Default
+        if day_activities:
+             # Assuming the first activity determines the start time and tolerance
+             tolerance_mins = int(day_activities[0].get('tolerance', 15))
+
+        try:
+            exp_dt = datetime.strptime(expected_start, '%H:%M')
+            act_dt = datetime.strptime(first_checkin, '%H:%M')
+            
+            # Handle midnight crossing (e.g. Expected 23:00, Actual 00:10 next day)
+            if act_dt < exp_dt and (exp_dt.hour - act_dt.hour) > 12:
+                act_dt += timedelta(days=1)
+            
+            # Handle reverse midnight crossing (Expected 00:10, Actual 23:50 prev day)
+            if exp_dt < act_dt and (act_dt.hour - exp_dt.hour) > 12:
+                 exp_dt += timedelta(days=1)
+
+            diff_seconds = (act_dt - exp_dt).total_seconds()
+            if diff_seconds > (tolerance_mins * 60):
+                arrival_status = "Late"
+        except Exception as e:
+            print(f"Error calc arrival status: {e}")
+
+    return arrival_status
+
 @greeting_bp.route("/attendance/summary", methods=["GET"])
 def get_attendance_summary():
     vendor_id, error = authenticate_vendor_access()
@@ -3287,8 +3380,10 @@ def get_attendance_summary():
         user_records[row['name']].append(dict(row))
 
     summary = []
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    
     for user, records in user_records.items():
-        stats = calculate_daily_hours(records, timetable)
+        stats = calculate_daily_hours(records, timetable, date_str=date_str)
         
         # 4. Compare with Schedule
         status = "Present"
@@ -3303,16 +3398,7 @@ def get_attendance_summary():
                 status = "On Track"
         
         # Check Late Arrival
-        arrival_status = "On Time"
-        if expected_start and stats['sessions']:
-            first_checkin = stats['sessions'][0]['start']
-            # Simple string comparison works for HH:MM 24h format
-            if first_checkin > expected_start: 
-                # Add grace period check (e.g. 15 mins)
-                exp_dt = datetime.strptime(expected_start, '%H:%M')
-                act_dt = datetime.strptime(first_checkin, '%H:%M')
-                if (act_dt - exp_dt).total_seconds() > 900: # 15 mins
-                    arrival_status = "Late"
+        arrival_status = calculate_arrival_status(expected_start, stats['sessions'], day_activities)
 
         summary.append({
             "name": user,

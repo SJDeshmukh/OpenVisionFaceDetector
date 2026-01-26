@@ -30,6 +30,12 @@ class LoginActivity : AppCompatActivity() {
         val etPassword = findViewById<EditText>(R.id.et_password)
         val btnLogin = findViewById<Button>(R.id.btn_login)
         val btnRegister = findViewById<TextView>(R.id.btn_register)
+        val tvServerUrl = findViewById<TextView>(R.id.tv_server_url)
+        
+        tvServerUrl.text = "Server: " + RetrofitClient.getBaseUrl()
+        tvServerUrl.setOnClickListener {
+            showServerUrlDialog()
+        }
 
         btnLogin.setOnClickListener {
             val username = etUsername.text.toString().trim()
@@ -119,5 +125,31 @@ class LoginActivity : AppCompatActivity() {
                 }
             })
         }
+    }
+
+    private fun showServerUrlDialog() {
+        val builder = androidx.appcompat.app.AlertDialog.Builder(this)
+        builder.setTitle("Set Server URL")
+
+        val input = EditText(this)
+        input.setText(RetrofitClient.getBaseUrl())
+        builder.setView(input)
+
+        builder.setPositiveButton("Save") { dialog, which ->
+            var url = input.text.toString().trim()
+            if (url.isNotEmpty()) {
+                if (!url.endsWith("/")) url += "/"
+                RetrofitClient.setBaseUrl(url)
+                
+                val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+                prefs.edit().putString("server_url", url).apply()
+                
+                findViewById<TextView>(R.id.tv_server_url).text = "Server: $url"
+                Toast.makeText(this, "Server URL updated", Toast.LENGTH_SHORT).show()
+            }
+        }
+        builder.setNegativeButton("Cancel") { dialog, which -> dialog.cancel() }
+
+        builder.show()
     }
 }
