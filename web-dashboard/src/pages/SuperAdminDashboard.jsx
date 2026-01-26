@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Plus, Check, X, AlertTriangle, Shield, User, Lock, FileText, DollarSign } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { API_URL } from '../config';
 
 const SuperAdminDashboard = () => {
   const { user } = useAuth();
@@ -19,7 +20,7 @@ const SuperAdminDashboard = () => {
 
   const fetchVendors = async () => {
     try {
-      const response = await axios.get('http://127.0.0.1:5001/api/admin/vendors', {
+      const response = await axios.get(`${API_URL}/admin/vendors`, {
         headers: { Authorization: `Bearer ${user?.token}` }
       });
       setVendors(response.data.vendors);
@@ -48,7 +49,7 @@ const SuperAdminDashboard = () => {
   const handlePasswordReset = async (e) => {
     e.preventDefault();
     try {
-      await axios.put('http://127.0.0.1:5001/api/admin/users/password', {
+      await axios.put(`${API_URL}/admin/users/password`, {
         username: passwordModal.username,
         new_password: newPassword
       }, {
