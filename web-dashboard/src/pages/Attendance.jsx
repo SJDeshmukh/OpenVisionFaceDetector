@@ -104,7 +104,8 @@ const Attendance = () => {
 
   const getStatus = (log) => {
     // Backend provided late flag
-    if (log.is_late === 1) {
+    // Handle both integer 1/0 and boolean true/false or string "1"
+    if (log.is_late === 1 || log.is_late === true || log.is_late === '1') {
       return { label: 'Late', color: 'bg-amber-100 text-amber-700' };
     }
     

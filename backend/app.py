@@ -2889,6 +2889,9 @@ def person_event():
                 is_late = 1
                 print(f"Late Detected (Strict): {name} (Time: {check_mins}, Start: {effective_start_mins}, Grace: {act_grace})")
             else:
+                # Debugging info
+                print(f"On Time Detected: {name} (Time: {check_mins}, Start: {effective_start_mins}, Grace: {act_grace}, Threshold: {late_threshold})")
+                
                 # Also check if check_mins is BEFORE start_mins (Early Arrival is On Time)
                 # But what if it's WAY before? e.g. 10 hours before?
                 # Usually that would be a different shift. But here we assume best_match is correct.
