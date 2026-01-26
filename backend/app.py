@@ -513,6 +513,16 @@ def super_admin_required(f):
             if not data:
                 return jsonify({"error": "Invalid or Expired Token"}), 401
             
+            # Verify User Exists in DB (Auto-Logout if deleted)
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT role FROM system_users WHERE username = ?", (data['username'],))
+            user_row = c.fetchone()
+            conn.close()
+
+            if not user_row:
+                return jsonify({"error": "User Not Found"}), 401
+
             if data['role'] != 'super_admin':
                 return jsonify({"error": "Super Admin Access Required"}), 403
                 
