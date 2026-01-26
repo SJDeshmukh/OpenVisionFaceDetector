@@ -9,11 +9,17 @@ from collections import defaultdict
 from datetime import date
 from functools import wraps
 from itsdangerous import URLSafeTimedSerializer
-from config import BASE_URL, FRONTEND_URL # Import Config
+# from config import BASE_URL, FRONTEND_URL # Removed config.py per user request
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'super_secret_key_change_this_in_prod')
 serializer = URLSafeTimedSerializer(app.secret_key)
+
+# Configuration (Simplified for Render)
+# Priority: Env Var > Default
+BACKEND_URL = os.environ.get("BACKEND_URL", "http://127.0.0.1:5001")
+BASE_URL = BACKEND_URL # Alias for compatibility
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
 
 
 # Allow specific origins for CORS with credentials

@@ -6,7 +6,8 @@ import os
 
 # Add backend to path to import config
 sys.path.append(os.path.join(os.getcwd(), 'backend'))
-from config import BASE_URL
+# from config import BASE_URL
+BASE_URL = os.environ.get("BACKEND_URL", "http://127.0.0.1:5001")
 
 # BASE_URL is now imported from config
 

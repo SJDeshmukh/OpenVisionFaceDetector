@@ -27,8 +27,8 @@ BLUE_DOT_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkY
 
 RED_DOT = "data:image/png;base64," + RED_DOT_BASE64
 BLUE_DOT = "data:image/png;base64," + BLUE_DOT_BASE64
-
-from config import BASE_URL
+# from config import BASE_URL
+BASE_URL = os.environ.get("BACKEND_URL", "http://127.0.0.1:5001")
 
 print("Starting Camera Stream Simulation...")
 print("Press Ctrl+C to stop.")
