@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Plus, Check, X, AlertTriangle, Shield, User, Lock, FileText, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight } from 'lucide-react';
+import { Plus, Check, X, AlertTriangle, Shield, User, Lock, FileText, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight, Search, Filter } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { API_URL } from '../config';
 
@@ -19,10 +19,33 @@ const SuperAdminDashboard = () => {
     user_username: '', user_password: ''
   });
   const [editingVendor, setEditingVendor] = useState(null);
+  
+  // Filter States
+  const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [subscriptionFilter, setSubscriptionFilter] = useState('all');
 
   useEffect(() => {
     fetchVendors();
   }, []);
+
+  const filteredVendors = vendors.filter(vendor => {
+    const matchesSearch = 
+      (vendor.company_name?.toLowerCase() || '').includes(searchTerm.toLowerCase()) ||
+      (vendor.contact_person?.toLowerCase() || '').includes(searchTerm.toLowerCase()) ||
+      (vendor.email?.toLowerCase() || '').includes(searchTerm.toLowerCase()) ||
+      (vendor.phone?.toLowerCase() || '').includes(searchTerm.toLowerCase()) ||
+      (vendor.admin_username?.toLowerCase() || '').includes(searchTerm.toLowerCase()) ||
+      (vendor.user_username?.toLowerCase() || '').includes(searchTerm.toLowerCase());
+
+    const matchesStatus = statusFilter === 'all' || vendor.status === statusFilter;
+    
+    const matchesSubscription = subscriptionFilter === 'all' || 
+      (subscriptionFilter === 'Active' && vendor.subscription_status === 'Active') ||
+      (subscriptionFilter === 'Expired' && vendor.subscription_status === 'Expired');
+
+    return matchesSearch && matchesStatus && matchesSubscription;
+  });
 
   const fetchVendors = async () => {
     try {
@@ -219,7 +242,16 @@ const SuperAdminDashboard = () => {
             <Lock size={18} /> Change My Password
           </button>
           <button 
-            onClick={() => setShowModal(true)}
+            onClick={() => {
+              setEditingVendor(null);
+              setNewVendor({ 
+                company_name: '', contact_person: '', phone: '', email: '',
+                start_date: '', end_date: '', cost: '', max_users: '',
+                admin_username: '', admin_password: '',
+                user_username: '', user_password: ''
+              });
+              setShowModal(true);
+            }}
             className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg flex items-center gap-2"
           >
             <Plus size={18} /> Add New Vendor
@@ -232,6 +264,47 @@ const SuperAdminDashboard = () => {
         <StatCard label="Active Subscriptions" value={vendors.filter(v => v.subscription_status === 'Active').length} icon={<Check className="text-green-500" />} />
         <StatCard label="Suspended" value={vendors.filter(v => v.status === 'suspended').length} icon={<X className="text-red-500" />} />
         <StatCard label="Total MRR" value={`₹${vendors.reduce((sum, v) => sum + (v.cost_per_user || 0) * (v.max_users || 0), 0)}`} icon={<span className="text-xl font-bold text-slate-600">₹</span>} />
+      </div>
+
+      {/* Filters Section */}
+      <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 mb-6 flex flex-wrap gap-4 items-center">
+        <div className="flex-1 min-w-[200px] relative">
+          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400" size={18} />
+          <input 
+            type="text" 
+            placeholder="Search vendors, contacts, emails..." 
+            className="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+          />
+        </div>
+        
+        <div className="flex items-center gap-2">
+          <Filter size={18} className="text-slate-500" />
+          <select 
+            className="p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-slate-600 bg-white"
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+          >
+            <option value="all">All Status</option>
+            <option value="active">Active</option>
+            <option value="suspended">Suspended</option>
+          </select>
+
+          <select 
+            className="p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-slate-600 bg-white"
+            value={subscriptionFilter}
+            onChange={(e) => setSubscriptionFilter(e.target.value)}
+          >
+            <option value="all">All Subscriptions</option>
+            <option value="Active">Active</option>
+            <option value="Expired">Expired</option>
+          </select>
+        </div>
+        
+        <div className="text-sm text-slate-500 ml-auto">
+          Showing {filteredVendors.length} of {vendors.length} vendors
+        </div>
       </div>
 
       <div className="bg-white rounded-xl shadow-sm overflow-hidden border border-slate-200">
@@ -248,7 +321,14 @@ const SuperAdminDashboard = () => {
             </tr>
           </thead>
           <tbody>
-            {vendors.map(vendor => (
+            {filteredVendors.length === 0 ? (
+              <tr>
+                <td colSpan="7" className="p-8 text-center text-slate-500">
+                  No vendors found matching your filters.
+                </td>
+              </tr>
+            ) : (
+              filteredVendors.map(vendor => (
               <tr key={vendor.id} className="border-b border-slate-100 hover:bg-slate-50">
                 <td className="p-4 font-medium text-slate-800">{vendor.company_name}</td>
                 <td className="p-4 text-slate-600">
@@ -337,7 +417,7 @@ const SuperAdminDashboard = () => {
                   </div>
                 </td>
               </tr>
-            ))}
+            )))}
           </tbody>
         </table>
       </div>
@@ -630,7 +710,16 @@ const SuperAdminDashboard = () => {
               <div className="flex justify-end gap-3 pt-4 border-t">
                 <button 
                   type="button" 
-                  onClick={() => setShowModal(false)}
+                  onClick={() => {
+                    setShowModal(false);
+                    setEditingVendor(null);
+                    setNewVendor({ 
+                      company_name: '', contact_person: '', phone: '', email: '',
+                      start_date: '', end_date: '', cost: '', max_users: '',
+                      admin_username: '', admin_password: '',
+                      user_username: '', user_password: ''
+                    });
+                  }}
                   className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded"
                 >
                   Cancel
