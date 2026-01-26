@@ -3113,54 +3113,25 @@ def calculate_daily_hours(records, timetable=None, date_str=None):
                                     # Let's assume default True for 'Work' type, False for others if missing.
                                     act_type = act.get('type', 'Work')
                                     
-                                    # STRICT: Rely entirely on user configuration for gaps too.
-                                    # If user marks 'Work' as payable, and checks out 'Work', the gap is payable (up to cap).
-                                    # We trust the user knows what they are doing.
-                                    is_gap_payable = act.get('is_payable', False)
+                                    # STRICT PAYROLL RULE: 
+                                    # Gaps are NEVER payable automatically. 
+                                    # User Instruction: "only those tiem when the emplyee had check in and check out that time needs to be saved"
+                                    # Users must Check-In to a "Paid Break" activity to get paid for it.
+                                    # Checking Out stops the wage counter immediately.
+                                    is_gap_payable = False 
                                     
-                                    # LOGIC FIX: Cap payable gap at the scheduled duration of the activity
-                                    # Prevents massive overpayment if user checks out for 'Tea' and goes home overnight.
-                                    if is_gap_payable:
-                                        try:
-                                            s_str = act.get('start_time', '00:00')
-                                            e_str = act.get('end_time', '00:00')
-                                            
-                                            # Simple parsing
-                                            def parse_hm(t):
-                                                h, m = map(int, t.split(':'))
-                                                return h * 60 + m
-                                            
-                                            s_min = parse_hm(s_str)
-                                            e_min = parse_hm(e_str)
-                                            
-                                            duration_min = e_min - s_min
-                                            if duration_min < 0: duration_min += 24 * 60 # Overnight activity?
-                                            
-                                            # Allow a small buffer? Say 1.5x duration?
-                                            # Or strict cap? Let's use strict cap + 5 mins grace?
-                                            # User didn't specify, but strict cap is safer for "overnight" bug.
-                                            max_seconds = duration_min * 60
-                                            
-                                            if gap_seconds > max_seconds:
-                                                gap_seconds = max_seconds
-                                        except:
-                                            pass # Fallback to full gap if parsing fails (risky but rare)
+                                    # Legacy Logic Disabled:
+                                    # is_gap_payable = act.get('is_payable', False)
+                                    
+                                    # if is_gap_payable:
+                                    #    ... (Logic removed)
+                                    pass
                                     break
                         
                         if is_gap_payable:
-                            total_seconds += gap_seconds
-                            # We can mark this gap as a "Payable Break" session if needed, or just add to total.
-                            # For session list, maybe append a "Gap" session?
-                            sessions.append({
-                                "type": "Payable Gap",
-                                "activity": last_checkout_activity,
-                                "is_payable": True,
-                                "start_ts": last_session['end_ts'],
-                                "end_ts": ts,
-                                "start": last_session['end_ts'].strftime('%H:%M'),
-                                "end": ts.strftime('%H:%M'),
-                                "duration_mins": round(gap_seconds / 60)
-                            })
+                             # This block is now effectively unreachable or always False
+                             pass
+
 
         elif status == 'CHECK_OUT':
             if current_checkin:
