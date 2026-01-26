@@ -114,25 +114,6 @@ def authenticate_vendor_access():
     #     return None, (jsonify({"error": "Missing Authorization Header"}), 401)
     
     try:
-        # token = auth_header.split(" ")[1]
-        # user_data = verify_token(token)
-        # if not user_data:
-        #     return None, (jsonify({"error": "Invalid Token"}), 401)
-            
-        # username = user_data['username']
-        # role = user_data['role']
-        
-        # TEMPORARY BYPASS: Assume admin/superadmin for now
-        # We'll just fetch the first admin user found to get a valid vendor_id
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
-        
-        # Try to find a logged in user from header if possible, else default
-        # But user said "don't use any authentication", so we default to a safe valid state.
-        # We need a vendor_id. Let's assume vendor_id=1 (Open Vision) if we can't find one.
-        # Or better: check if there is an Authorization header and try to use it, if it fails, fallback to default.
-        
         auth_header = request.headers.get('Authorization')
         username = None
         role = None
@@ -144,8 +125,11 @@ def authenticate_vendor_access():
                 if user_data:
                     username = user_data['username']
                     role = user_data['role']
+                else:
+                    # Token present but invalid/expired -> Explicit Error
+                    return None, (jsonify({"error": "Invalid or Expired Token"}), 401)
             except:
-                pass
+                return None, (jsonify({"error": "Invalid Token Format"}), 401)
         
         # Fallback: Check for token in query params (for file downloads/exports)
         if not username and request.args.get('token'):
@@ -155,27 +139,26 @@ def authenticate_vendor_access():
                 if user_data:
                     username = user_data['username']
                     role = user_data['role']
+                else:
+                    return None, (jsonify({"error": "Invalid or Expired Token"}), 401)
             except:
                 pass
 
         if not username:
-            # Fallback for "no auth" mode
-            username = 'admin' # Default admin
-            role = 'admin'
+            # STRICT MODE: No fallback to 'admin'. Require authentication.
+            return None, (jsonify({"error": "Authentication Required"}), 401)
 
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        
         c.execute("SELECT vendor_id, role FROM system_users WHERE username = ?", (username,))
         user = c.fetchone()
         
-        # If fallback admin doesn't exist, try superadmin
-        if not user:
-             c.execute("SELECT vendor_id, role FROM system_users WHERE username = 'superadmin'")
-             user = c.fetchone()
-             
         conn.close()
         
         if not user:
-             # Should not happen if init_db ran, but just in case
-             return 1, None # Default to vendor 1
+             return None, (jsonify({"error": "User Not Found"}), 401)
 
         vendor_id = user['vendor_id']
         if not vendor_id and user['role'] == 'super_admin':
@@ -201,8 +184,7 @@ def authenticate_vendor_access():
                 return None, None
             
         if not vendor_id:
-             # Fallback
-             return 1, None
+             return None, (jsonify({"error": "Vendor Context Required"}), 400)
              
         # Skip status checks for now
         is_allowed, reason = check_vendor_status(vendor_id)

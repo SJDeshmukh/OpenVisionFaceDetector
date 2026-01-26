@@ -28,6 +28,7 @@ import { API_URL } from '../config';
 const COLORS = ['#22c55e', '#f59e0b', '#ef4444'];
 
 const Reports = () => {
+  const { user } = useAuth();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [analytics, setAnalytics] = useState({

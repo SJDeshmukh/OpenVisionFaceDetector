@@ -92,7 +92,9 @@ const Settings = () => {
         voice_greeting: voiceGreeting,
         admin_alerts: adminAlerts
       };
-      await axios.post(`${API_URL}/settings`, payload);
+      await axios.post(`${API_URL}/settings`, payload, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
       alert("Settings saved successfully!");
     } catch (error) {
       console.error("Error saving settings:", error);
@@ -117,10 +119,14 @@ const Settings = () => {
         if (userForm.password) payload.password = userForm.password;
         payload.role = userForm.role;
 
-        await axios.put(`${API_URL}/users/${editingUser.username}`, payload);
+        await axios.put(`${API_URL}/users/${editingUser.username}`, payload, {
+          headers: { Authorization: `Bearer ${user?.token}` }
+        });
       } else {
         // Create new user
-        await axios.post(`${API_URL}/users`, userForm);
+        await axios.post(`${API_URL}/users`, userForm, {
+          headers: { Authorization: `Bearer ${user?.token}` }
+        });
       }
       setShowUserModal(false);
       setEditingUser(null);
@@ -134,7 +140,9 @@ const Settings = () => {
   const handleDeleteUser = async (username) => {
     if (!confirm(`Are you sure you want to delete user ${username}?`)) return;
     try {
-      await axios.delete(`${API_URL}/users/${username}`);
+      await axios.delete(`${API_URL}/users/${username}`, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
       fetchSystemUsers();
     } catch (error) {
       alert(error.response?.data?.error || "Delete failed");
@@ -370,38 +378,7 @@ const Settings = () => {
         </div>
       </Section>
 
-      <Section title="Attendance Rules" icon={Database}>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-           <div>
-             <label className="block text-sm font-semibold text-slate-700 mb-2">Work Start Time</label>
-             <input 
-               type="time" 
-               value={workStartTime}
-               onChange={(e) => setWorkStartTime(e.target.value)}
-               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20" 
-             />
-           </div>
-           <div>
-             <label className="block text-sm font-semibold text-slate-700 mb-2">Late Mark Threshold</label>
-             <input 
-               type="time" 
-               value={lateThreshold}
-               onChange={(e) => setLateThreshold(e.target.value)}
-               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20" 
-             />
-           </div>
-        </div>
-        <div className="flex items-center space-x-3 pt-4 border-t border-slate-100">
-          <input 
-            type="checkbox" 
-            id="auto_checkout" 
-            checked={autoCheckout}
-            onChange={(e) => setAutoCheckout(e.target.checked)}
-            className="w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500" 
-          />
-          <label htmlFor="auto_checkout" className="text-sm text-slate-700">Auto check-out employees at midnight if no exit recorded</label>
-        </div>
-      </Section>
+
 
       <Section title="Notifications & Interface" icon={Bell}>
         <div className="space-y-4">

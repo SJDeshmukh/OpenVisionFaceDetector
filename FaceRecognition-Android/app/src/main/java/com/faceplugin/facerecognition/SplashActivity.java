@@ -30,6 +30,8 @@ public class SplashActivity extends AppCompatActivity {
     private TextView tvStatus;
     private AtomicBoolean isServerFound = new AtomicBoolean(false);
 
+    private static final String RENDER_URL = "https://face-detection-backend-69o7.onrender.com/";
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -45,7 +47,6 @@ public class SplashActivity extends AppCompatActivity {
         // Check for saved server URL first
         SharedPreferences prefs = getSharedPreferences("app_prefs", MODE_PRIVATE);
         String savedUrl = prefs.getString("server_url", null);
-        String RENDER_URL = "https://face-detection-backend-69o7.onrender.com/";
 
         tvStatus.setText("Connecting to Server...");
 
@@ -65,23 +66,13 @@ public class SplashActivity extends AppCompatActivity {
             }
 
             if (!savedConnected) {
-                // Priority 2: Check Cloud URL
-                runOnUiThread(() -> tvStatus.setText("Connecting to cloud server..."));
-                if (pingServer(RENDER_URL, 5000)) {
-                    runOnUiThread(() -> {
-                        tvStatus.setText("Connected to Cloud Server");
-                        RetrofitClient.setBaseUrl(RENDER_URL);
-                        proceedToNextScreen();
-                    });
-                } else {
-                    // Priority 3: Scan Local Network
-                    runOnUiThread(() -> startNetworkScan());
-                }
+                // Priority 2: Scan Local Network (Preferred for Development to find local DB)
+                runOnUiThread(() -> startNetworkScan(RENDER_URL));
             }
         }).start();
     }
 
-    private void startNetworkScan() {
+    private void startNetworkScan(String fallbackUrl) {
         runOnUiThread(() -> tvStatus.setText("Searching for local server..."));
         
         new Thread(() -> {
@@ -123,10 +114,24 @@ public class SplashActivity extends AppCompatActivity {
             }
 
             if (!isServerFound.get()) {
+                // Priority 3: Check Cloud URL (Fallback)
                 runOnUiThread(() -> {
-                    tvStatus.setText("Server not found. Using default.");
-                    // Use default hardcoded in RetrofitClient
-                    new Handler().postDelayed(this::proceedToNextScreen, 1000);
+                    tvStatus.setText("Checking cloud server...");
+                    new Thread(() -> {
+                        if (pingServer(fallbackUrl, 5000)) {
+                             runOnUiThread(() -> {
+                                 tvStatus.setText("Connected to Cloud Server");
+                                 RetrofitClient.setBaseUrl(fallbackUrl);
+                                 proceedToNextScreen();
+                             });
+                        } else {
+                             runOnUiThread(() -> {
+                                 tvStatus.setText("Server not found. Using default.");
+                                 // Use default hardcoded in RetrofitClient
+                                 new Handler().postDelayed(this::proceedToNextScreen, 1000);
+                             });
+                        }
+                    }).start();
                 });
             }
         }).start();
