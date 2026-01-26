@@ -17,7 +17,12 @@ serializer = URLSafeTimedSerializer(app.secret_key)
 
 
 # Allow specific origins for CORS with credentials
-allowed_origins = [FRONTEND_URL, "http://localhost:5173", "http://127.0.0.1:5173"]
+allowed_origins = [
+    FRONTEND_URL, 
+    "http://localhost:5173", 
+    "http://127.0.0.1:5173",
+    "https://face-detection-frontend-kepx.onrender.com"
+]
 CORS(app, resources={r"/*": {"origins": allowed_origins}}, supports_credentials=True)
 
 # Expose Config to Frontend
