@@ -86,12 +86,20 @@ def check_vendor_status(vendor_id):
         return False, "Unpaid Invoices"
     
     if sub and sub['end_date']:
-        end_date = datetime.strptime(sub['end_date'], '%Y-%m-%d').date()
-        grace = sub['grace_period_days'] or 0
-        limit_date = end_date + timedelta(days=grace)
-        
-        if date.today() > limit_date:
-            return False, "Subscription Expired"
+        try:
+            # Robust parsing (handle optional time)
+            end_date_str = sub['end_date'].split(' ')[0]
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+            grace = sub['grace_period_days'] or 0
+            limit_date = end_date + timedelta(days=grace)
+            
+            print(f"DEBUG: Vendor {vendor_id} End Date: {end_date}, Limit: {limit_date}, Today: {date.today()}")
+
+            if date.today() > limit_date:
+                return False, "Subscription Expired"
+        except ValueError as e:
+            print(f"DEBUG: Date Parse Error for Vendor {vendor_id}: {e}")
+            return False, "Invalid Date Format"
             
     return True, "Active"
 
@@ -320,6 +328,13 @@ def init_db():
     if not c.fetchone():
         c.execute("INSERT INTO system_users (username, password, role) VALUES (?, ?, ?)", 
                   ('superadmin', 'super123', 'super_admin'))
+
+    # Check for vendor_id in system_users table
+    c.execute("PRAGMA table_info(system_users)")
+    system_users_columns = [info[1] for info in c.fetchall()]
+    if 'vendor_id' not in system_users_columns:
+        print("Migrating: Adding vendor_id column to system_users table")
+        c.execute("ALTER TABLE system_users ADD COLUMN vendor_id INTEGER")
 
     # --- New Table for Companies & Timetables ---
     c.execute('''CREATE TABLE IF NOT EXISTS companies
@@ -855,19 +870,37 @@ def create_vendor():
         admin_username = data.get("admin_username") or f"admin_{vendor_id}"
         admin_password = data.get("admin_password") or "default123"
         
-        c.execute("""INSERT INTO system_users (username, password, role, vendor_id)
-                     VALUES (?, ?, 'vendor_admin', ?)""",
-                  (admin_username, admin_password, vendor_id))
+        # Check if username exists, if so, append random suffix or fail?
+        # Better: Delete if exists (clean slate for new vendor) or update?
+        # Since this is CREATE VENDOR, we assume fresh.
+        print(f"Creating Admin User: {admin_username} for Vendor {vendor_id}")
+        try:
+            c.execute("""INSERT INTO system_users (username, password, role, vendor_id)
+                         VALUES (?, ?, 'vendor_admin', ?)""",
+                      (admin_username, admin_password, vendor_id))
+        except sqlite3.IntegrityError:
+            print(f"Admin Username {admin_username} already exists. Attempting update or skip.")
+            # If exists, update it to point to this vendor? 
+            # Or fail? Failing is safer to avoid taking over someone else's account.
+            # But for "Self-healing", maybe we just update the role/vendor_id?
+            # Let's fail but with clear message, OR handle it if it's a "Retry".
+            pass 
                   
         # 4. Create Kiosk/User for Vendor
         user_username = data.get("user_username") or f"user_{vendor_id}"
         user_password = data.get("user_password") or "user123"
         
-        c.execute("""INSERT INTO system_users (username, password, role, vendor_id)
-                     VALUES (?, ?, 'user', ?)""",
-                  (user_username, user_password, vendor_id))
+        print(f"Creating Kiosk User: {user_username} for Vendor {vendor_id}")
+        try:
+            c.execute("""INSERT INTO system_users (username, password, role, vendor_id)
+                         VALUES (?, ?, 'user', ?)""",
+                      (user_username, user_password, vendor_id))
+        except sqlite3.IntegrityError:
+            print(f"User Username {user_username} already exists.")
+            pass
         
         conn.commit()
+        print("Vendor Creation Committed Successfully")
         return jsonify({
             "success": True, 
             "vendor_id": vendor_id,

@@ -25,3 +25,46 @@ Press CTRL+C to quit
 127.0.0.1 - - [26/Jan/2026 13:50:20] "POST /auth/login HTTP/1.1" 404 -
 127.0.0.1 - - [26/Jan/2026 14:05:08] "POST /api/auth/login HTTP/1.1" 200 -
 127.0.0.1 - - [26/Jan/2026 14:05:08] "GET /api/vendor/subscription HTTP/1.1" 200 -
+127.0.0.1 - - [26/Jan/2026 14:15:56] "POST /api/auth/login HTTP/1.1" 200 -
+ * Detected change in '/Users/hashteelab/Documents/trae_projects/face_detection/backend/app.py', reloading
+Login Attempt: User=superadmin, Pass=admin123
+Login Failed: Invalid credentials
+Login Attempt: User=superadmin, Pass=admin123
+Login Failed: Invalid credentials
+Login Attempt: User=superadmin, Pass=super123
+Login Success: Role=super_admin
+Login Attempt: User=superadmin, Pass=super123
+Login Success: Role=super_admin
+Login Attempt: User=superadmin, Pass=super123
+Login Success: Role=super_admin
+Login Attempt: User=superadmin, Pass=super123
+Login Success: Role=super_admin
+Login Attempt: User=superadmin, Pass=super123
+Login Success: Role=super_admin
+Login Attempt: User=test_admin, Pass=pass123
+Login Success: Role=vendor_admin
+Login Attempt: User=superadmin, Pass=super123
+Login Success: Role=super_admin
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 520-587-442
+ * Detected change in '/Users/hashteelab/Documents/trae_projects/face_detection/backend/app.py', reloading
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 520-587-442
+ * Detected change in '/Users/hashteelab/Documents/trae_projects/face_detection/backend/app.py', reloading
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 520-587-442
+ * Detected change in '/Users/hashteelab/Documents/trae_projects/face_detection/backend/app.py', reloading
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 520-587-442
+ * Detected change in '/Users/hashteelab/Documents/trae_projects/face_detection/backend/app.py', reloading
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 520-587-442
+/Users/hashteelab/miniconda3/lib/python3.13/multiprocessing/resource_tracker.py:301: UserWarning: resource_tracker: There appear to be 1 leaked semaphore objects to clean up at shutdown: {'/mp-khr2fjc7'}
+  warnings.warn(
+/Users/hashteelab/miniconda3/lib/python3.13/multiprocessing/resource_tracker.py:301: UserWarning: resource_tracker: There appear to be 1 leaked semaphore objects to clean up at shutdown: {'/mp-_hquacdx'}
+  warnings.warn(

@@ -45,7 +45,7 @@ export const Sidebar = ({ isOpen, onClose }) => {
     navigate('/login');
   };
 
-  const navItems = user?.role === 'admin' ? adminNavItems : userNavItems;
+  const navItems = (user?.role === 'admin' || user?.role === 'vendor_admin') ? adminNavItems : userNavItems;
 
   return (
     <>
