@@ -257,7 +257,7 @@ const Dashboard = () => {
                       </div>
                       <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
                         <div 
-                          className={`h-full rounded-full ${subscription.days_left < 7 ? 'bg-red-500' : 'bg-blue-500'}`} 
+                          className={`h-full rounded-full ${subscription.days_left <= 0 ? 'bg-red-500' : 'bg-blue-500'}`} 
                           style={{ width: `${Math.min(100, Math.max(0, (subscription.days_left / 30) * 100))}%` }}
                         ></div>
                       </div>
@@ -314,9 +314,13 @@ const Dashboard = () => {
                         <span className="font-bold text-slate-800 text-lg">{subscription.max_users} Users</span>
                      </div>
                      
-                     <div className="bg-amber-50 text-amber-800 p-4 rounded-lg text-sm flex gap-3 items-start">
+                     <div className={`${subscription.days_left <= 0 ? 'bg-amber-50 text-amber-800' : 'bg-blue-50 text-blue-800'} p-4 rounded-lg text-sm flex gap-3 items-start`}>
                         <Shield size={20} className="shrink-0 mt-0.5" />
-                        <p>Your subscription includes access to Face Recognition, Attendance Tracking, and Basic Reports. Contact support to upgrade your plan.</p>
+                        <p>
+                           {subscription.days_left <= 0 
+                              ? "Your subscription is expiring or has expired. Contact support to renew your plan."
+                              : "Your subscription includes access to Face Recognition, Attendance Tracking, and Basic Reports."}
+                        </p>
                      </div>
                   </div>
                </div>

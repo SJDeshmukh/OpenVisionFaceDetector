@@ -20,3 +20,8 @@ Press CTRL+C to quit
 127.0.0.1 - - [26/Jan/2026 12:47:55] "PUT /api/admin/vendors/22 HTTP/1.1" 400 -
 127.0.0.1 - - [26/Jan/2026 12:48:19] "POST /api/auth/login HTTP/1.1" 200 -
 127.0.0.1 - - [26/Jan/2026 12:48:19] "PUT /api/admin/vendors/22 HTTP/1.1" 200 -
+127.0.0.1 - - [26/Jan/2026 13:37:02] "POST /api/auth/login HTTP/1.1" 200 -
+127.0.0.1 - - [26/Jan/2026 13:37:02] "PUT /api/admin/vendors/25 HTTP/1.1" 200 -
+127.0.0.1 - - [26/Jan/2026 13:50:20] "POST /auth/login HTTP/1.1" 404 -
+127.0.0.1 - - [26/Jan/2026 14:05:08] "POST /api/auth/login HTTP/1.1" 200 -
+127.0.0.1 - - [26/Jan/2026 14:05:08] "GET /api/vendor/subscription HTTP/1.1" 200 -
