@@ -237,11 +237,11 @@ class PayrollEndpointTest(unittest.TestCase):
                     
                     # Expected:
                     # 09:00 - 11:00 = 2.0 hours
-                    # Gap 11:00 - 11:30 (Coffee Break, Payable) = 0.5 hours
+                    # Gap 11:00 - 11:30 (Coffee Break) = 0.0 hours (Strict Rule: Gaps are UNPAID. Must Check-In for Break to be paid.)
                     # 11:30 - 17:00 = 5.5 hours
-                    # Total = 8.0 hours
+                    # Total = 7.5 hours
                     
-                    self.assertEqual(user_entry['total_hours'], 8.0)
+                    self.assertEqual(user_entry['total_hours'], 7.5)
 
     def test_unpaid_gap_logic(self):
         """Test that unpaid gaps (e.g., Lunch Break) are NOT included in daily hours."""

@@ -148,6 +148,7 @@ class MainActivity : AppCompatActivity() {
             override fun onResponse(call: Call<SyncResponse>, response: Response<SyncResponse>) {
                 if (response.isSuccessful) {
                     val faces = response.body()?.faces ?: emptyList()
+                    val serverIds = faces.mapNotNull { it.id }.toSet()
                     val serverNames = faces.map { it.name }.toSet()
                     
                     // 1. Delete faces that are not on the server (BUT protect unsynced local faces)
@@ -155,11 +156,23 @@ class MainActivity : AppCompatActivity() {
                     var deletedCount = 0
                     
                     localPersons.forEach { person ->
-                        if (!serverNames.contains(person.name)) {
+                        var isOnServer = false
+                        if (!person.id.isNullOrEmpty()) {
+                            if (serverIds.contains(person.id)) isOnServer = true
+                        } else {
+                             // Legacy/Migration check
+                             if (serverNames.contains(person.name)) isOnServer = true
+                        }
+
+                        if (!isOnServer) {
                             // Only delete if it was previously synced.
                             // If synced == false, it means it's a new local user waiting for upload.
                             if (person.synced) {
-                                dbManager.deletePerson(person.name)
+                                if (!person.id.isNullOrEmpty()) {
+                                    dbManager.deletePersonById(person.id)
+                                } else {
+                                    dbManager.deletePerson(person.name)
+                                }
                                 deletedCount++
                             }
                         }
@@ -171,11 +184,27 @@ class MainActivity : AppCompatActivity() {
                     
                     faces.forEach { faceData ->
                         // Check if exists
-                        val existingPerson = DBManager.personList.find { it.name == faceData.name }
+                        var existingPerson: com.faceplugin.facerecognition.Person? = null
+                        
+                        // Try matching by ID first
+                        if (!faceData.id.isNullOrEmpty()) {
+                             existingPerson = DBManager.personList.find { it.id == faceData.id }
+                        }
+                        
+                        // Fallback to Name matching if ID match failed
+                        if (existingPerson == null) {
+                             // Only match by name if one of the IDs is missing
+                             existingPerson = DBManager.personList.find { 
+                                 it.name == faceData.name && 
+                                 (it.id.isNullOrEmpty() || faceData.id.isNullOrEmpty())
+                             }
+                        }
                         
                         val phone = faceData.phone ?: ""
                         val dept = faceData.department ?: ""
                         val desig = faceData.designation ?: ""
+                        val shift = faceData.shift ?: ""
+                        val id = faceData.id ?: ""
 
                         if (existingPerson == null) {
                             try {
@@ -185,7 +214,7 @@ class MainActivity : AppCompatActivity() {
 
                                 // Insert into DB and memory
                                 if (faceBitmap != null) {
-                                    dbManager.insertPerson(faceData.name, faceBitmap, templates, phone, dept, desig)
+                                    dbManager.insertPerson(id, faceData.name, faceBitmap, templates, phone, dept, desig, shift, true)
                                     newFacesCount++
                                 }
                             } catch (e: Exception) {
@@ -196,7 +225,9 @@ class MainActivity : AppCompatActivity() {
                             var needsMetadataUpdate = false
                             if (existingPerson.phone != phone || 
                                 existingPerson.department != dept || 
-                                existingPerson.designation != desig) {
+                                existingPerson.designation != desig ||
+                                existingPerson.shift != shift ||
+                                (existingPerson.id != id && !id.isNullOrEmpty())) { // Also update ID if missing locally
                                 needsMetadataUpdate = true
                             }
                             
@@ -214,11 +245,15 @@ class MainActivity : AppCompatActivity() {
                             
                             // If it was marked as not synced but now it is on server, mark it as synced
                             if (!existingPerson.synced) {
-                                dbManager.updatePersonStatus(faceData.name, true)
+                                if (!existingPerson.id.isNullOrEmpty()) {
+                                    dbManager.updatePersonStatusById(existingPerson.id, true)
+                                } else {
+                                    dbManager.updatePersonStatus(existingPerson.name, true)
+                                }
                                 // No toast needed, silent update
                             }
 
-                            if (needsFaceUpdate) {
+                            if (needsFaceUpdate || needsMetadataUpdate) {
                                 // Perform Full Update
                                 try {
                                     val templates = Base64.decode(faceData.templates, Base64.NO_WRAP)
@@ -226,15 +261,12 @@ class MainActivity : AppCompatActivity() {
                                     val faceBitmap = BitmapFactory.decodeByteArray(faceImageBytes, 0, faceImageBytes.size)
                                     
                                     if (faceBitmap != null) {
-                                        dbManager.insertPerson(faceData.name, faceBitmap, templates, phone, dept, desig)
+                                        dbManager.insertPerson(id, faceData.name, faceBitmap, templates, phone, dept, desig, shift, true)
                                         updatedFacesCount++
                                     }
                                 } catch (e: Exception) {
                                     e.printStackTrace()
                                 }
-                            } else if (needsMetadataUpdate) {
-                                dbManager.updatePerson(faceData.name, phone, dept, desig)
-                                updatedFacesCount++
                             }
                         }
                     }

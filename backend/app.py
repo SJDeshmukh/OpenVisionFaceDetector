@@ -41,7 +41,7 @@ def get_config():
     })
 
 # Ensure database is always accessed from the same location (backend directory)
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'faces.db')
+DB_PATH = os.environ.get('DB_PATH') or os.path.join(os.path.dirname(os.path.abspath(__file__)), 'faces.db')
 
 def add_missing_columns():
     try:
@@ -228,6 +228,69 @@ def home():
     })
 
 # --- Database Setup ---
+def migrate_faces_pk():
+    """
+    Migrates the faces table to use an Integer ID as Primary Key instead of Name.
+    This supports multiple users with the same name.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    try:
+        # Check if 'id' column exists
+        c.execute("PRAGMA table_info(faces)")
+        cols = [info[1] for info in c.fetchall()]
+        
+        if 'id' not in cols:
+            print("MIGRATION: Converting faces table to use ID as Primary Key...")
+            
+            # 1. Rename old table
+            c.execute("ALTER TABLE faces RENAME TO faces_old")
+            
+            # 2. Create new table with ID
+            c.execute('''CREATE TABLE faces
+                         (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          name TEXT, 
+                          templates TEXT, 
+                          face_image TEXT,
+                          department TEXT,
+                          designation TEXT,
+                          phone TEXT,
+                          shift TEXT,
+                          daily_wage REAL DEFAULT 0,
+                          vendor_id INTEGER)''')
+                          
+            # 3. Copy data
+            # We rely on AUTOINCREMENT to generate IDs for existing users
+            c.execute("""INSERT INTO faces (name, templates, face_image, department, designation, phone, shift, daily_wage, vendor_id)
+                         SELECT name, templates, face_image, department, designation, phone, shift, daily_wage, vendor_id 
+                         FROM faces_old""")
+            
+            print(f"Copied {c.rowcount} rows to new faces table.")
+            
+            # 4. Backfill person_id in attendance table
+            print("Backfilling person_id in attendance table...")
+            c.execute("""UPDATE attendance 
+                         SET person_id = (SELECT id FROM faces WHERE faces.name = attendance.name AND faces.vendor_id = attendance.vendor_id)
+                         WHERE person_id IS NULL""")
+                         
+            # Fallback for records without vendor_id or legacy
+            c.execute("""UPDATE attendance 
+                         SET person_id = (SELECT id FROM faces WHERE faces.name = attendance.name LIMIT 1)
+                         WHERE person_id IS NULL""")
+            
+            # 5. Drop old table (Optional: Comment out if you want to keep backup)
+            # c.execute("DROP TABLE faces_old")
+            
+            conn.commit()
+            print("MIGRATION: Faces table updated successfully.")
+            
+    except Exception as e:
+        print(f"MIGRATION ERROR: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
+
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -277,6 +340,12 @@ def init_db():
         print("Migrating: Backfilling vendor_id in attendance table")
         c.execute("UPDATE attendance SET vendor_id = (SELECT vendor_id FROM faces WHERE faces.name = attendance.name)")
 
+    # Check for person_id in attendance table
+    if 'person_id' not in attendance_columns:
+        print("Migrating: Adding person_id column to attendance table")
+        c.execute("ALTER TABLE attendance ADD COLUMN person_id INTEGER")
+
+
     # Check for captured_image column in attendance table and add if missing
     c.execute("PRAGMA table_info(attendance)")
     attendance_columns = [info[1] for info in c.fetchall()]
@@ -319,6 +388,18 @@ def init_db():
         print("Migrating: Adding is_late column to attendance table")
         c.execute("ALTER TABLE attendance ADD COLUMN is_late INTEGER DEFAULT 0")
 
+    # --- New Table for Companies & Timetables ---
+    c.execute('''CREATE TABLE IF NOT EXISTS companies
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                  name TEXT UNIQUE, 
+                  shifts TEXT,
+                  draft_timetable TEXT, 
+                  live_timetable TEXT,
+                  last_modified_by TEXT,
+                  last_modified_at DATETIME,
+                  published_by TEXT,
+                  published_at DATETIME)''')
+
     # Check for working_hours in companies table
     c.execute("PRAGMA table_info(companies)")
     companies_columns = [info[1] for info in c.fetchall()]
@@ -350,18 +431,6 @@ def init_db():
     if 'vendor_id' not in system_users_columns:
         print("Migrating: Adding vendor_id column to system_users table")
         c.execute("ALTER TABLE system_users ADD COLUMN vendor_id INTEGER")
-
-    # --- New Table for Companies & Timetables ---
-    c.execute('''CREATE TABLE IF NOT EXISTS companies
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                  name TEXT UNIQUE, 
-                  shifts TEXT,
-                  draft_timetable TEXT, 
-                  live_timetable TEXT,
-                  last_modified_by TEXT,
-                  last_modified_at DATETIME,
-                  published_by TEXT,
-                  published_at DATETIME)''')
 
     # Create default company if not exists
     c.execute("SELECT * FROM companies WHERE name = 'Open Vision'")
@@ -508,6 +577,7 @@ def init_db():
     conn.close()
 
 init_db()
+migrate_faces_pk()
 
 # --- Auth Helper & Decorators ---
 def generate_token(username, role):
@@ -627,6 +697,7 @@ def create_company():
     if error: return error
     
     data = request.json
+    person_id = data.get("id") or data.get("person_id")
     name = data.get("name")
     if not name:
         return jsonify({"error": "Name is required"}), 400
@@ -2212,6 +2283,7 @@ def upload_face():
     if error: return error
 
     data = request.json
+    person_id = data.get("person_id")
     name = data.get("name")
     templates = data.get("templates", "") # Base64 string, optional
     face_image = data.get("face_image") # Base64 string
@@ -2238,16 +2310,9 @@ def upload_face():
     c = conn.cursor()
     
     try:
-        # 2. User Limit Check (Only if adding new user)
-        # Check if user exists
-        if vendor_id:
-             c.execute("SELECT name FROM faces WHERE name = ? AND vendor_id = ?", (name, vendor_id))
-        else:
-             c.execute("SELECT name FROM faces WHERE name = ?", (name,))
-        exists = c.fetchone()
-        
-        if not exists and vendor_id:
-            # Check limit
+        # 2. User Limit Check & Operation
+        if not person_id and vendor_id:
+            # Check limit (only for new users)
             c.execute("SELECT max_users FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
             sub = c.fetchone()
             max_users = sub[0] if sub else 10 # Default limit
@@ -2259,10 +2324,19 @@ def upload_face():
                 conn.close()
                 return jsonify({"error": f"User Limit Reached ({max_users}). Upgrade your plan."}), 403
 
-        c.execute("INSERT OR REPLACE INTO faces (name, templates, face_image, phone, department, designation, shift, vendor_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                  (name, templates, face_image, phone, department, designation, shift, vendor_id))
+        if person_id:
+            # Update Existing
+            c.execute("UPDATE faces SET name=?, templates=?, face_image=?, phone=?, department=?, designation=?, shift=?, vendor_id=? WHERE id=?",
+                      (name, templates, face_image, phone, department, designation, shift, vendor_id, person_id))
+            new_id = person_id
+        else:
+            # Insert New
+            c.execute("INSERT INTO faces (name, templates, face_image, phone, department, designation, shift, vendor_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                      (name, templates, face_image, phone, department, designation, shift, vendor_id))
+            new_id = c.lastrowid
+
         conn.commit()
-        return jsonify({"status": "success", "message": f"Face for {name} saved."})
+        return jsonify({"status": "success", "message": f"Face for {name} saved.", "person_id": new_id})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
@@ -2291,6 +2365,7 @@ def download_faces():
     faces = []
     for row in rows:
         faces.append({
+            "id": row["id"],
             "name": row["name"],
             "templates": row["templates"],
             "face_image": row["face_image"],
@@ -2370,6 +2445,7 @@ def person_event():
     detected = data.get("detected", False)
     recognized = data.get("recognized", False)
     name = data.get("name")
+    person_id = data.get("person_id")
     
     # --- SaaS Subscription Enforcement & Multi-tenancy ---
     # Check if the associated vendor is active/paid AND if person belongs to the kiosk's vendor
@@ -2395,11 +2471,19 @@ def person_event():
             pass
 
     # 2. Identify Person Vendor
-    if recognized and name:
+    if recognized:
          conn_check = sqlite3.connect(DB_PATH)
          c_check = conn_check.cursor()
-         c_check.execute("SELECT vendor_id FROM faces WHERE name = ?", (name,))
-         f_row = c_check.fetchone()
+         f_row = None
+         
+         if person_id:
+             c_check.execute("SELECT vendor_id FROM faces WHERE id = ?", (person_id,))
+             f_row = c_check.fetchone()
+         
+         if not f_row and name:
+             c_check.execute("SELECT vendor_id FROM faces WHERE name = ?", (name,))
+             f_row = c_check.fetchone()
+
          conn_check.close()
          if f_row:
              person_vendor_id = f_row[0]
@@ -2426,7 +2510,7 @@ def person_event():
             })
     # -------------------------------------
 
-    person_id = data.get("person_id")
+    # person_id extracted earlier
     # ... rest of function ...
     confidence = data.get("confidence", 0)
     captured_image = data.get("image") # Base64 string of the frame
@@ -2483,7 +2567,10 @@ def person_event():
     c = conn.cursor()
 
     # Determine Expected Status EARLY (for better activity matching)
-    c.execute("SELECT * FROM attendance WHERE name = ? ORDER BY timestamp DESC LIMIT 1", (name,))
+    if person_id:
+        c.execute("SELECT * FROM attendance WHERE person_id = ? ORDER BY timestamp DESC LIMIT 1", (person_id,))
+    else:
+        c.execute("SELECT * FROM attendance WHERE name = ? ORDER BY timestamp DESC LIMIT 1", (name,))
     last_record = c.fetchone()
     
     expected_status = 'CHECK_IN'
@@ -2561,7 +2648,10 @@ def person_event():
             company_row = None
         
         # Fetch User Shift
-        c.execute("SELECT shift FROM faces WHERE name = ?", (name,))
+        if person_id:
+            c.execute("SELECT shift FROM faces WHERE id = ?", (person_id,))
+        else:
+            c.execute("SELECT shift FROM faces WHERE name = ?", (name,))
         face_row = c.fetchone()
         user_shift_name = face_row['shift'] if face_row and 'shift' in face_row.keys() else None
 
@@ -2588,7 +2678,6 @@ def person_event():
         
         filtered_timetable = []
         if company_row and company_row['live_timetable']:
-            import json
             full_timetable = json.loads(company_row['live_timetable'])
             
             if user_shift_id:
@@ -2997,10 +3086,10 @@ def person_event():
             
             if check_mins > late_threshold:
                 is_late = 1
-                print(f"Late Detected (Strict): {name} (Time: {check_mins}, Start: {effective_start_mins}, Grace: {act_grace}, Diff: {check_mins - effective_start_mins})")
+                print(f"Late Detected (Strict): {name} [ID={person_id}] (Time: {check_mins}, Start: {effective_start_mins}, Grace: {act_grace}, Diff: {check_mins - effective_start_mins})")
             else:
                 # Debugging info
-                print(f"On Time Detected: {name} (Time: {check_mins}, Start: {effective_start_mins}, Grace: {act_grace}, Threshold: {late_threshold})")
+                print(f"On Time Detected: {name} [ID={person_id}] (Time: {check_mins}, Start: {effective_start_mins}, Grace: {act_grace}, Threshold: {late_threshold})")
                 
                 # Also check if check_mins is BEFORE start_mins (Early Arrival is On Time)
                 if check_mins < effective_start_mins:
@@ -3019,8 +3108,8 @@ def person_event():
     
     current_time = current_time_obj
     try:
-        c.execute("INSERT INTO attendance (name, timestamp, status, captured_image, activity, is_late, vendor_id) VALUES (?, ?, ?, ?, ?, ?, ?)", 
-                  (name, current_time, new_status, captured_image, activity_name, is_late, vendor_id_to_check))
+        c.execute("INSERT INTO attendance (name, timestamp, status, captured_image, activity, is_late, vendor_id, person_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", 
+                  (name, current_time, new_status, captured_image, activity_name, is_late, vendor_id_to_check, person_id))
         conn.commit()
         print(f"Attendance Recorded: {name} - {new_status} ({activity_name}) Late={is_late} at {current_time}")
     except Exception as e:
@@ -3089,7 +3178,7 @@ def get_attendance():
     query = """
         SELECT a.*, f.department, f.designation, f.shift
         FROM attendance a
-        LEFT JOIN faces f ON a.name = f.name
+        LEFT JOIN faces f ON (a.person_id IS NOT NULL AND a.person_id = f.id) OR (a.person_id IS NULL AND a.name = f.name)
         WHERE 1=1
     """
     params = []
@@ -3150,6 +3239,7 @@ def get_attendance():
             
         attendance.append({
             "id": row["id"],
+            "person_id": row["person_id"] if "person_id" in row.keys() else None,
             "name": row["name"],
             "timestamp": row["timestamp"],
             "status": row["status"],

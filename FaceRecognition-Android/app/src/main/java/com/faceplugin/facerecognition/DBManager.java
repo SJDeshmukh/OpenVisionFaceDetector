@@ -16,7 +16,7 @@ public class DBManager extends SQLiteOpenHelper {
     public static ArrayList<Person> personList = new ArrayList<Person>();
 
     public DBManager(Context context) {
-        super(context, "mydb" , null, 4);
+        super(context, "mydb" , null, 6);
     }
 
     @Override
@@ -24,11 +24,11 @@ public class DBManager extends SQLiteOpenHelper {
         // TODO Auto-generated method stub
         db.execSQL(
                 "create table person " +
-                        "(name text, face blob, templates blob, phone text, department text, designation text, synced integer default 1)"
+                        "(id text, name text, face blob, templates blob, phone text, department text, designation text, shift text, synced integer default 1)"
         );
         db.execSQL(
                 "create table attendance_queue " +
-                        "(id integer primary key autoincrement, name text, timestamp text, status text, image blob, is_late integer)"
+                        "(id integer primary key autoincrement, person_id text, name text, timestamp text, status text, image blob, is_late integer)"
         );
     }
 
@@ -40,16 +40,27 @@ public class DBManager extends SQLiteOpenHelper {
         onCreate(db);
     }
 
-    public void insertPerson (String name, Bitmap face, byte[] templates, String phone, String department, String designation, String shift, boolean synced) {
+    public void insertPerson (String id, String name, Bitmap face, byte[] templates, String phone, String department, String designation, String shift, boolean synced) {
 
+        String existingId = null;
         // Check if person already exists
         boolean exists = false;
         for (int i = 0; i < personList.size(); i++) {
-            if (personList.get(i).name.equals(name)) {
+            Person p = personList.get(i);
+            if (id != null && !id.isEmpty() && p.id != null && p.id.equals(id)) {
                 exists = true;
-                // Remove from memory to replace later
+                existingId = p.id;
                 personList.remove(i);
                 break;
+            } else if (p.name.equals(name)) {
+                // Only merge if local ID is missing OR incoming ID is missing
+                // If both have IDs and they differ, do not merge (it's a name collision, which is allowed now)
+                if ((p.id == null || p.id.isEmpty()) || (id == null || id.isEmpty())) {
+                    exists = true;
+                    existingId = p.id;
+                    personList.remove(i);
+                    break;
+                }
             }
         }
 
@@ -57,8 +68,14 @@ public class DBManager extends SQLiteOpenHelper {
         face.compress(Bitmap.CompressFormat.PNG, 100, byteArrayOutputStream);
         byte[] faceJpg = byteArrayOutputStream.toByteArray();
 
+        // Preserve existing ID if incoming ID is missing
+        if ((id == null || id.isEmpty()) && (existingId != null && !existingId.isEmpty())) {
+            id = existingId;
+        }
+
         SQLiteDatabase db = this.getWritableDatabase();
         ContentValues contentValues = new ContentValues();
+        contentValues.put("id", id);
         contentValues.put("name", name);
         contentValues.put("face", faceJpg);
         contentValues.put("templates", templates);
@@ -69,14 +86,22 @@ public class DBManager extends SQLiteOpenHelper {
         contentValues.put("synced", synced ? 1 : 0);
 
         if (exists) {
-            db.update("person", contentValues, "name = ?", new String[]{name});
+            if (id != null && !id.isEmpty()) {
+                db.update("person", contentValues, "id = ?", new String[]{id});
+            } else {
+                db.update("person", contentValues, "name = ?", new String[]{name});
+            }
         } else {
             db.insert("person", null, contentValues);
         }
 
-        Person p = new Person(name, face, templates, phone, department, designation, shift);
+        Person p = new Person(id, name, face, templates, phone, department, designation, shift);
         p.synced = synced;
         personList.add(p);
+    }
+
+    public void insertPerson (String name, Bitmap face, byte[] templates, String phone, String department, String designation, String shift, boolean synced) {
+        insertPerson("", name, face, templates, phone, department, designation, shift, synced);
     }
 
     public void insertPerson (String name, Bitmap face, byte[] templates, String phone, String department, String designation, boolean synced) {
@@ -96,6 +121,20 @@ public class DBManager extends SQLiteOpenHelper {
         
         for (Person p : personList) {
             if (p.name.equals(name)) {
+                p.synced = synced;
+                break;
+            }
+        }
+    }
+
+    public void updatePersonStatusById(String id, boolean synced) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues contentValues = new ContentValues();
+        contentValues.put("synced", synced ? 1 : 0);
+        db.update("person", contentValues, "id = ?", new String[]{id});
+
+        for (Person p : personList) {
+            if (p.id != null && p.id.equals(id)) {
                 p.synced = synced;
                 break;
             }
@@ -136,6 +175,20 @@ public class DBManager extends SQLiteOpenHelper {
                 new String[] { name });
     }
 
+    public Integer deletePersonById (String id) {
+        for(int i = 0; i < personList.size(); i ++) {
+            if(personList.get(i).id != null && personList.get(i).id.equals(id)) {
+                personList.remove(i);
+                i --;
+            }
+        }
+
+        SQLiteDatabase db = this.getWritableDatabase();
+        return db.delete("person",
+                "id = ? ",
+                new String[] { id });
+    }
+
     public Integer clearDB () {
         personList.clear();
 
@@ -155,6 +208,10 @@ public class DBManager extends SQLiteOpenHelper {
             String name = res.getString(res.getColumnIndexOrThrow("name"));
             byte[] faceJpg = res.getBlob(res.getColumnIndexOrThrow("face"));
             byte[] templates = res.getBlob(res.getColumnIndexOrThrow("templates"));
+            
+            String id = "";
+            int idIdx = res.getColumnIndex("id");
+            if (idIdx != -1) id = res.getString(idIdx);
             
             // Handle potentially missing columns if something went wrong with upgrade, though unlikely
             String phone = "";
@@ -180,13 +237,18 @@ public class DBManager extends SQLiteOpenHelper {
 
             Bitmap face = BitmapFactory.decodeByteArray(faceJpg, 0, faceJpg.length);
 
-            Person person = new Person(name, face, templates, phone, department, designation, shift);
+            Person person = new Person(id, name, face, templates, phone, department, designation, shift);
             person.synced = synced;
             
-            // Deduplicate: If name exists, replace it (keep latest)
+            // Deduplicate
             boolean found = false;
             for (int i = 0; i < personList.size(); i++) {
-                if (personList.get(i).name.equals(name)) {
+                Person p = personList.get(i);
+                if (id != null && !id.isEmpty() && p.id != null && p.id.equals(id)) {
+                    personList.set(i, person);
+                    found = true;
+                    break;
+                } else if ((id == null || id.isEmpty()) && p.name.equals(name)) {
                     personList.set(i, person);
                     found = true;
                     break;
@@ -210,9 +272,10 @@ public class DBManager extends SQLiteOpenHelper {
 
     // --- Offline Attendance Queue Methods ---
 
-    public void insertAttendanceQueue(String name, String timestamp, String status, Bitmap image, boolean isLate) {
+    public void insertAttendanceQueue(String personId, String name, String timestamp, String status, Bitmap image, boolean isLate) {
         SQLiteDatabase db = this.getWritableDatabase();
         ContentValues contentValues = new ContentValues();
+        contentValues.put("person_id", personId);
         contentValues.put("name", name);
         contentValues.put("timestamp", timestamp);
         contentValues.put("status", status);
@@ -237,6 +300,10 @@ public class DBManager extends SQLiteOpenHelper {
             while (!res.isAfterLast()) {
                 QueueItem item = new QueueItem();
                 item.id = res.getInt(res.getColumnIndexOrThrow("id"));
+                
+                int pIdIdx = res.getColumnIndex("person_id");
+                if (pIdIdx != -1) item.personId = res.getString(pIdIdx);
+                
                 item.name = res.getString(res.getColumnIndexOrThrow("name"));
                 item.timestamp = res.getString(res.getColumnIndexOrThrow("timestamp"));
                 item.status = res.getString(res.getColumnIndexOrThrow("status"));
@@ -264,6 +331,7 @@ public class DBManager extends SQLiteOpenHelper {
 
     public static class QueueItem {
         public int id;
+        public String personId;
         public String name;
         public String timestamp;
         public String status;

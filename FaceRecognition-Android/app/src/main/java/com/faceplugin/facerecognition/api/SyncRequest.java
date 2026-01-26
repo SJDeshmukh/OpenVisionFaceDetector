@@ -3,6 +3,9 @@ package com.faceplugin.facerecognition.api;
 import com.google.gson.annotations.SerializedName;
 
 public class SyncRequest {
+    @SerializedName("id")
+    private String id;
+
     @SerializedName("name")
     private String name;
 
@@ -24,7 +27,8 @@ public class SyncRequest {
     @SerializedName("shift")
     private String shift;
 
-    public SyncRequest(String name, String templates, String faceImage, String phone, String department, String designation, String shift) {
+    public SyncRequest(String id, String name, String templates, String faceImage, String phone, String department, String designation, String shift) {
+        this.id = id;
         this.name = name;
         this.templates = templates;
         this.faceImage = faceImage;
@@ -34,6 +38,11 @@ public class SyncRequest {
         this.shift = shift;
     }
 
+    public SyncRequest(String name, String templates, String faceImage, String phone, String department, String designation, String shift) {
+        this("", name, templates, faceImage, phone, department, designation, shift);
+    }
+
+    public String getId() { return id; }
     public String getName() { return name; }
     public String getTemplates() { return templates; }
     public String getFaceImage() { return faceImage; }

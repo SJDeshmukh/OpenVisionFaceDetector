@@ -278,7 +278,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 if (getActivity() != null) {
                     getActivity().runOnUiThread(() -> {
                         if (isAttendance) {
-                            dbManager.insertAttendanceQueue(name, timestamp, "pending", image, false);
+                            dbManager.insertAttendanceQueue(personId, name, timestamp, "pending", image, false);
                             Toast.makeText(getContext(), "Offline: Attendance Saved", Toast.LENGTH_SHORT).show();
                             playAttendanceSound("CHECK_IN"); // Generic success sound
                         } else {
@@ -329,7 +329,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 PersonEventRequest request = new PersonEventRequest(
                     true, // detected
                     true, // recognized
-                    item.name, // personId
+                    item.personId, // personId
                     item.name, // name
                     0.99f, // confidence (dummy)
                     base64Image,
@@ -501,7 +501,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                             }
 
                             // Send to Backend
-                            sendPersonEvent(true, true, identifiedPerson.name, identifiedPerson.name, maxSimiarlity, bitmap);
+                            sendPersonEvent(true, true, identifiedPerson.id, identifiedPerson.name, maxSimiarlity, bitmap);
                         }
 
                     } else {

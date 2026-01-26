@@ -4,6 +4,7 @@ import android.graphics.Bitmap;
 
 public class Person {
 
+    public String id; // Backend ID
     public String name;
     public Bitmap face;
     public byte[] templates;
@@ -17,7 +18,8 @@ public class Person {
 
     }
 
-    public Person(String name, Bitmap face, byte[] templates, String phone, String department, String designation, String shift) {
+    public Person(String id, String name, Bitmap face, byte[] templates, String phone, String department, String designation, String shift) {
+        this.id = id;
         this.name = name;
         this.face = face;
         this.templates = templates;
@@ -25,6 +27,11 @@ public class Person {
         this.department = department;
         this.designation = designation;
         this.shift = shift;
+    }
+
+    // Backward compatibility constructors
+    public Person(String name, Bitmap face, byte[] templates, String phone, String department, String designation, String shift) {
+        this("", name, face, templates, phone, department, designation, shift);
     }
 
     // Constructor for backward compatibility if needed, though we should migrate all usages
