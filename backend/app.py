@@ -371,6 +371,52 @@ def init_db():
                   details TEXT, -- JSON breakdown
                   FOREIGN KEY(vendor_id) REFERENCES vendors(id))''')
 
+    # --- Migrations for SaaS Tables (Ensure columns exist if table was created previously) ---
+    
+    # Subscriptions Migration
+    c.execute("PRAGMA table_info(subscriptions)")
+    sub_cols = [info[1] for info in c.fetchall()]
+    
+    if 'plan_type' not in sub_cols:
+         print("Migrating: Adding plan_type to subscriptions")
+         c.execute("ALTER TABLE subscriptions ADD COLUMN plan_type TEXT DEFAULT 'basic'")
+    if 'start_date' not in sub_cols:
+         print("Migrating: Adding start_date to subscriptions")
+         c.execute("ALTER TABLE subscriptions ADD COLUMN start_date DATE")
+    if 'end_date' not in sub_cols:
+         print("Migrating: Adding end_date to subscriptions")
+         c.execute("ALTER TABLE subscriptions ADD COLUMN end_date DATE")
+    if 'grace_period_days' not in sub_cols:
+         print("Migrating: Adding grace_period_days to subscriptions")
+         c.execute("ALTER TABLE subscriptions ADD COLUMN grace_period_days INTEGER DEFAULT 7")
+    if 'max_users' not in sub_cols:
+         print("Migrating: Adding max_users to subscriptions")
+         c.execute("ALTER TABLE subscriptions ADD COLUMN max_users INTEGER DEFAULT 10")
+    if 'cost_per_user' not in sub_cols:
+         print("Migrating: Adding cost_per_user to subscriptions")
+         c.execute("ALTER TABLE subscriptions ADD COLUMN cost_per_user REAL DEFAULT 199.0")
+    if 'setup_fee' not in sub_cols:
+         print("Migrating: Adding setup_fee to subscriptions")
+         c.execute("ALTER TABLE subscriptions ADD COLUMN setup_fee REAL DEFAULT 0.0")
+    if 'setup_fee_paid' not in sub_cols:
+         print("Migrating: Adding setup_fee_paid to subscriptions")
+         c.execute("ALTER TABLE subscriptions ADD COLUMN setup_fee_paid BOOLEAN DEFAULT 0")
+
+    # Vendors Migration
+    c.execute("PRAGMA table_info(vendors)")
+    vendor_cols = [info[1] for info in c.fetchall()]
+    
+    if 'name' in vendor_cols and 'company_name' not in vendor_cols:
+        print("Migrating: Renaming vendors.name to vendors.company_name")
+        try:
+            c.execute("ALTER TABLE vendors RENAME COLUMN name TO company_name")
+        except Exception as e:
+            print(f"Migration Error (Rename): {e}")
+            
+    if 'contact_person' not in vendor_cols:
+        print("Migrating: Adding contact_person to vendors")
+        c.execute("ALTER TABLE vendors ADD COLUMN contact_person TEXT")
+
     # Update system_users for multi-tenancy
     c.execute("PRAGMA table_info(system_users)")
     user_cols = [info[1] for info in c.fetchall()]
@@ -668,11 +714,18 @@ def get_vendors():
         v = dict(row)
         # Calculate status based on subscription
         if v['end_date']:
-            end_date = datetime.strptime(v['end_date'], '%Y-%m-%d').date()
-            if date.today() > end_date:
-                v['subscription_status'] = 'Expired'
-            else:
-                v['subscription_status'] = 'Active'
+            try:
+                # Handle both 'YYYY-MM-DD' and 'YYYY-MM-DD HH:MM:SS'
+                date_str = v['end_date'].split(' ')[0]
+                end_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+                
+                if date.today() > end_date:
+                    v['subscription_status'] = 'Expired'
+                else:
+                    v['subscription_status'] = 'Active'
+            except Exception as e:
+                print(f"Date Parsing Error for Vendor {v.get('id')}: {e}")
+                v['subscription_status'] = 'Error'
         else:
             v['subscription_status'] = 'No Plan'
             
@@ -785,6 +838,75 @@ def suspend_vendor(vendor_id):
     conn.close()
     
     return jsonify({"success": True, "status": status})
+
+@greeting_bp.route("/admin/vendors/<int:vendor_id>", methods=["PUT"])
+@super_admin_required
+def update_vendor_details(vendor_id):
+    data = request.json
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    try:
+        # Check if vendor exists
+        c.execute("SELECT id FROM vendors WHERE id = ?", (vendor_id,))
+        if not c.fetchone():
+            return jsonify({"error": "Vendor not found"}), 404
+
+        query = "UPDATE vendors SET "
+        params = []
+        
+        fields = ['company_name', 'contact_person', 'phone', 'email']
+        for field in fields:
+            if field in data:
+                query += f"{field} = ?, "
+                params.append(data[field])
+        
+        if not params:
+            return jsonify({"success": True, "message": "No changes made"})
+            
+        query = query.rstrip(", ") + " WHERE id = ?"
+        params.append(vendor_id)
+        
+        c.execute(query, params)
+        conn.commit()
+        return jsonify({"success": True})
+        
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "Company Name already exists"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+@greeting_bp.route("/admin/vendors/<int:vendor_id>", methods=["DELETE"])
+@super_admin_required
+def delete_vendor(vendor_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    try:
+        # Check if vendor exists
+        c.execute("SELECT id FROM vendors WHERE id = ?", (vendor_id,))
+        if not c.fetchone():
+            return jsonify({"error": "Vendor not found"}), 404
+            
+        # Delete related data (Cascade manually if not set in DB)
+        c.execute("DELETE FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+        c.execute("DELETE FROM invoices WHERE vendor_id = ?", (vendor_id,))
+        c.execute("DELETE FROM system_users WHERE vendor_id = ?", (vendor_id,))
+        c.execute("DELETE FROM companies WHERE vendor_id = ?", (vendor_id,))
+        c.execute("DELETE FROM faces WHERE vendor_id = ?", (vendor_id,))
+        c.execute("DELETE FROM attendance WHERE vendor_id = ?", (vendor_id,))
+        # Delete Vendor
+        c.execute("DELETE FROM vendors WHERE id = ?", (vendor_id,))
+        
+        conn.commit()
+        return jsonify({"success": True, "message": "Vendor and related data deleted"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
 # --- Billing & Invoices ---
 @greeting_bp.route("/admin/vendors/<int:vendor_id>/invoices", methods=["GET"])
