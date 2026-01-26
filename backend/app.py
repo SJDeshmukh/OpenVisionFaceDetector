@@ -252,7 +252,9 @@ def init_db():
                   timestamp DATETIME, 
                   status TEXT,
                   captured_image TEXT,
-                  activity TEXT)''') 
+                  activity TEXT,
+                  is_late INTEGER DEFAULT 0,
+                  vendor_id INTEGER)''') 
 
     # Table for System Users (Admin/Standard)
     c.execute('''CREATE TABLE IF NOT EXISTS system_users
@@ -2503,9 +2505,11 @@ def person_event():
             print(f"Error checking stale status: {e}")
 
     # Helper function for time conversion
+    # Define to_mins ONLY ONCE if not already in scope, but here it is local.
     def to_mins(hm):
         try:
             hm_str = str(hm).strip().lower()
+            # Robust AM/PM handling
             is_pm = 'pm' in hm_str or 'p.m.' in hm_str
             is_am = 'am' in hm_str or 'a.m.' in hm_str
             
@@ -2518,7 +2522,7 @@ def person_event():
             elif '.' in clean_str:
                 parts = clean_str.split('.')
             else:
-                # Handle plain integer hours if necessary, though unlikely
+                # Handle plain integer hours
                 if clean_str.isdigit():
                     return int(clean_str) * 60
                 return 0
@@ -3424,7 +3428,16 @@ def calculate_arrival_status(expected_start, sessions, day_activities=None):
              gp = rules.get('grace_period')
              if gp is not None:
                  try:
-                     tolerance_mins = int(gp)
+                     # Robust parsing for grace period (handle "15 min", "15", etc.)
+                     if isinstance(gp, str):
+                         import re
+                         digits = re.findall(r'\d+', gp)
+                         if digits:
+                             tolerance_mins = int(digits[0])
+                         else:
+                             tolerance_mins = 0
+                     else:
+                         tolerance_mins = int(gp)
                  except:
                      tolerance_mins = 0
              else:
