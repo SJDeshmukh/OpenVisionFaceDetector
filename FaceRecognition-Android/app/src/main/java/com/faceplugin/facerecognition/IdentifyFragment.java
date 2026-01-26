@@ -79,6 +79,10 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     private TextView statusText;
     private DBManager dbManager;
 
+    // Debounce for Unknown state to prevent flickering
+    private int consecutiveUnknownFrames = 0;
+    private static final int UNKNOWN_THRESHOLD = 3;
+
     private String lastProcessedPersonName = null;
     private long lastStreamTime = 0;
     private long resumeTime = 0;
@@ -418,6 +422,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                     }
 
                     if (maxSimiarlity > SettingsActivity.getIdentifyThreshold(requireContext())) {
+                        consecutiveUnknownFrames = 0;
                         final Person identifiedPerson = maximiarlityPerson;
                         
                         // Check if this is a new person or re-entry
@@ -437,9 +442,21 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
 
                     } else {
                         // Not Recognized
+                        consecutiveUnknownFrames++;
+                        
                         if (getActivity() != null) {
                             getActivity().runOnUiThread(() -> {
-                                faceView.setRecognizedName("Unknown");
+                                if (lastProcessedPersonName != null) {
+                                    // If we were verifying someone, don't switch to Unknown immediately
+                                    if (consecutiveUnknownFrames > UNKNOWN_THRESHOLD) {
+                                        lastProcessedPersonName = null;
+                                        faceView.setRecognizedName("Unknown");
+                                        statusText.setText("Face not recognized");
+                                    }
+                                } else {
+                                    // No previous lock, show Unknown immediately
+                                    faceView.setRecognizedName("Unknown");
+                                }
                             });
                         }
                     }

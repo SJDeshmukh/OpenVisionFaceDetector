@@ -329,7 +329,7 @@ const Wages = () => {
                     <td className="py-3 px-4 text-sm text-slate-600 text-center font-medium">{person.days_present}</td>
                     <td className="py-3 px-4 text-sm text-slate-600 text-center">
                         <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded text-xs font-semibold">
-                            {person.total_hours} hrs
+                            {person.total_hours_str || `${person.total_hours} hrs`}
                         </span>
                     </td>
                     <td className="py-3 px-4 text-right">
@@ -352,7 +352,7 @@ const Wages = () => {
                         </div>
                         {parseFloat(person.total_hours || 0) > 0 && parseFloat(person.daily_wage || 0) > 0 && (
                             <span className="text-[10px] text-slate-400 block mt-1">
-                                {person.total_hours}h × RS {(parseFloat(person.daily_wage)/workingHours).toFixed(2)}/hr
+                                {person.total_hours_str || `${person.total_hours}h`} × RS {(parseFloat(person.daily_wage)/workingHours).toFixed(2)}/hr
                             </span>
                         )}
                     </td>

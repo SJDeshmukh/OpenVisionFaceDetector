@@ -1,6 +1,7 @@
 import sqlite3
 import base64
 import os
+import json
 from flask import Flask, Blueprint, request, jsonify, render_template
 from flask_cors import CORS
 from services.llm_service import generate_greeting
@@ -1498,6 +1499,7 @@ def export_report():
             if company_row['working_hours']:
                 company_working_hours = float(company_row['working_hours'])
 
+
         # 2. Fetch Persons (with filters applied if needed, but usually we want all for payroll)
         # Apply filters to faces query
         faces_query = "SELECT name, daily_wage, department, designation, phone FROM faces WHERE 1=1"
@@ -1562,7 +1564,7 @@ def export_report():
         writer = csv.writer(output)
         writer.writerow([
             'Employee Name', 'Department', 'Designation', 'Phone',
-            'Days Present', 'Total Payable Hours', 
+            'Days Present', 'Total Hours (Formatted)', 'Total Payable Hours', 
             'Standard Daily Hours', 'Daily Wage', 'Hourly Rate', 'Total Estimated Wage'
         ])
         
@@ -1578,7 +1580,7 @@ def export_report():
                 d_str = current_date.strftime('%Y-%m-%d')
                 records = user_date_records.get((name, d_str), [])
                 if records:
-                    stats = calculate_daily_hours(records, timetable)
+                    stats = calculate_daily_hours(records, timetable, date_str=d_str)
                     total_hours += stats['total_hours']
                     if stats['total_hours'] > 0:
                         days_present += 1
@@ -1588,12 +1590,18 @@ def export_report():
             hourly_rate = daily_wage / company_working_hours if daily_wage and company_working_hours > 0 else 0
             total_wage = round(total_hours * hourly_rate, 2)
             
+            # Format Time String
+            h = int(total_hours)
+            m = int(round((total_hours - h) * 60))
+            total_hours_str = f"{h}h {m}m"
+            
             writer.writerow([
                 name,
                 person_info['department'] or '',
                 person_info['designation'] or '',
                 person_info['phone'] or '',
                 days_present,
+                total_hours_str, # Add Formatted String
                 round(total_hours, 2),
                 company_working_hours,
                 daily_wage,
@@ -1857,7 +1865,8 @@ def get_payroll_report():
             if records:
                 # Use the helper function directly which returns hours float
                 # NOTE: calculate_daily_hours helper returns DICT
-                stats = calculate_daily_hours(records, timetable)
+                # Pass date_str to enable real-time calculation for "Today"
+                stats = calculate_daily_hours(records, timetable, date_str=d_str)
                 total_hours += stats['total_hours']
                 if stats['total_hours'] > 0:
                     days_present += 1
@@ -1871,6 +1880,11 @@ def get_payroll_report():
         hourly_rate = daily_wage / company_working_hours if daily_wage and company_working_hours > 0 else 0
         total_cost = round(total_hours * hourly_rate, 2)
         
+        # Format Total Hours String
+        h = int(total_hours)
+        m = int(round((total_hours - h) * 60))
+        total_hours_str = f"{h}h {m}m"
+        
         payroll_data.append({
             "name": name,
             "department": person_info['department'],
@@ -1879,6 +1893,7 @@ def get_payroll_report():
             "phone": person_info['phone'],
             "daily_wage": daily_wage,
             "total_hours": round(total_hours, 2),
+            "total_hours_str": total_hours_str,
             "days_present": days_present,
             "total_cost": total_cost,
             "company_working_hours": company_working_hours # Pass back to UI for display
@@ -2916,6 +2931,7 @@ def calculate_daily_hours(records, timetable=None, date_str=None):
     """
     total_seconds = 0
     current_checkin = None
+    current_checkin_activity = None # Track activity started at Check-In
     last_checkout_activity = None # Track activity of last checkout to determine gap payability
     sessions = []
     
@@ -2926,6 +2942,8 @@ def calculate_daily_hours(records, timetable=None, date_str=None):
         status = record['status']
         activity_name = record.get('activity', 'Work')
         
+        # print(f"DEBUG LOOP: Status={status}, Activity={activity_name}") # DEBUG
+
         try:
             ts = datetime.strptime(record['timestamp'], '%Y-%m-%d %H:%M:%S.%f')
         except ValueError:
@@ -2938,6 +2956,7 @@ def calculate_daily_hours(records, timetable=None, date_str=None):
         if status == 'CHECK_IN':
             if current_checkin is None:
                 current_checkin = ts
+                current_checkin_activity = activity_name # Store activity from Check-In
                 
                 # Check if the GAP before this Check-In is payable
                 # Logic: If we had a previous session that ended (last_checkout_activity), 
@@ -3018,13 +3037,16 @@ def calculate_daily_hours(records, timetable=None, date_str=None):
             if current_checkin:
                 duration = (ts - current_checkin).total_seconds()
                 
+                # Determine Session Activity: Use the one from Check-In, fallback to current record if missing
+                session_activity = current_checkin_activity if current_checkin_activity else activity_name
+                
                 # Check if this session's activity is PAYABLE
                 # User Requirement: "payable hours calculated only when we register an activity with shift"
                 is_session_payable = False
                 if timetable:
                     found_act = None
                     for act in timetable:
-                        if act.get('name') == activity_name:
+                        if act.get('name') == session_activity:
                             found_act = act
                             break
                     
@@ -3041,10 +3063,12 @@ def calculate_daily_hours(records, timetable=None, date_str=None):
 
                 if is_session_payable:
                     total_seconds += duration
+                else:
+                    pass
                     
                 sessions.append({
                     "type": "Work", # Standard session
-                    "activity": activity_name,
+                    "activity": session_activity,
                     "is_payable": is_session_payable,
                     "start_ts": current_checkin, # Correct start
                     "end_ts": ts,
@@ -3053,64 +3077,18 @@ def calculate_daily_hours(records, timetable=None, date_str=None):
                     "duration_mins": round(duration / 60)
                 })
                 current_checkin = None
-                last_checkout_activity = activity_name
+                current_checkin_activity = None
+                last_checkout_activity = activity_name # Use Check-Out reason for gap logic (e.g. Lunch/TeaBreak)
     
-    # --- Deduct Unpaid Overlaps (e.g. working through unpaid lunch) ---
-    if timetable and records and total_seconds > 0:
-        try:
-            # 1. Determine Date/Day
-            # records are sorted, take first
-            ts_str = sorted_records[0]['timestamp']
-            if '.' in ts_str:
-                ref_dt = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S.%f')
-            else:
-                ref_dt = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S')
-            
-            day_name = ref_dt.strftime('%a')
-            date_str = ref_dt.strftime('%Y-%m-%d')
-            
-            # 2. Find Unpaid Activities for this day
-            unpaid_acts = []
-            for act in timetable:
-                if day_name in act.get('days', []):
-                    act_type = act.get('type', 'Work')
-                    # Default is_payable: True for Work, False for others
-                    is_payable = act.get('is_payable', act_type == 'Work')
-                    if not is_payable:
-                        unpaid_acts.append(act)
-            
-            # 3. Calculate Overlap
-            deduction_seconds = 0
-            for act in unpaid_acts:
-                try:
-                    s_str = act.get('start_time')
-                    e_str = act.get('end_time')
-                    if not s_str or not e_str: continue
-                    
-                    act_start = datetime.strptime(f"{date_str} {s_str}", '%Y-%m-%d %H:%M')
-                    act_end = datetime.strptime(f"{date_str} {e_str}", '%Y-%m-%d %H:%M')
-                    
-                    for session in sessions:
-                        if session.get('type') == 'Work' and 'start_ts' in session and 'end_ts' in session:
-                            s_start = session['start_ts']
-                            s_end = session['end_ts']
-                            
-                            # Overlap Logic
-                            overlap_start = max(s_start, act_start)
-                            overlap_end = min(s_end, act_end)
-                            
-                            if overlap_end > overlap_start:
-                                overlap = (overlap_end - overlap_start).total_seconds()
-                                deduction_seconds += overlap
-                except Exception as e:
-                    print(f"Error parsing activity times for deduction: {e}")
-
-            if deduction_seconds > 0:
-                total_seconds -= deduction_seconds
-                if total_seconds < 0: total_seconds = 0
-                
-        except Exception as e:
-            print(f"Error in unpaid deduction logic: {e}")
+    # --- Deduct Unpaid Overlaps (REMOVED based on user request for strict Check-In/Out calculation) ---
+    # User instruction: "wage counting is very important based on payble check in and check out times gap only"
+    # This implies no auto-deductions for scheduled breaks if the user didn't actually check out.
+    # if timetable and records and total_seconds > 0:
+    #     try:
+    #         # ... (Logic removed to prevent auto-deduction)
+    #         pass
+    #     except Exception as e:
+    #         print(f"Error in unpaid deduction logic: {e}")
 
     # Clean up sessions for output
     final_sessions = []
@@ -3166,8 +3144,14 @@ def calculate_daily_hours(records, timetable=None, date_str=None):
         except Exception as e:
             print(f"Real-time calc error: {e}")
 
+    # Calculate string format (e.g. "2h 30m")
+    h = int(total_seconds // 3600)
+    m = int((total_seconds % 3600) // 60)
+    total_hours_str = f"{h}h {m}m"
+
     return {
         "total_hours": round(total_seconds / 3600, 2),
+        "total_hours_str": total_hours_str,
         "sessions": final_sessions + ([sessions[-1]] if (is_active and sessions and sessions[-1]['type']=='Active') else []),
         "is_active": is_active,
         "last_checkin": current_checkin.strftime('%H:%M') if current_checkin else None
