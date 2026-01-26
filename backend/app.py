@@ -1808,12 +1808,19 @@ def get_payroll_report():
     
     persons = {row['name']: dict(row) for row in c.fetchall()}
     
-    # 3. Fetch Attendance
+    # 3. Fetch Attendance (With Buffer for Cross-Day Shifts)
+    try:
+        s_dt = datetime.strptime(start_date, '%Y-%m-%d') - timedelta(days=1)
+        e_dt = datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)
+    except ValueError:
+        conn.close()
+        return jsonify({"error": "Invalid date format"}), 400
+
     query = """
         SELECT * FROM attendance 
         WHERE date(timestamp) BETWEEN ? AND ? 
     """
-    params = [start_date, end_date]
+    params = [s_dt.strftime('%Y-%m-%d'), e_dt.strftime('%Y-%m-%d')]
     
     if vendor_id:
         query += " AND vendor_id = ?"
@@ -1825,27 +1832,10 @@ def get_payroll_report():
     rows = c.fetchall()
     conn.close()
     
-    # Group by User and Date
-    user_date_records = defaultdict(list)
+    # Group by User ONLY (Continuous Stream)
+    user_records = defaultdict(list)
     for row in rows:
-        ts = row['timestamp']
-        # Handle various timestamp formats safely
-        try:
-            if '.' in ts:
-                dt_obj = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S.%f')
-            else:
-                dt_obj = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S')
-            
-            # Shift Day Logic: If time is < 06:00, assign to previous day
-            if dt_obj.hour < 6:
-                adjusted_date = dt_obj.date() - timedelta(days=1)
-            else:
-                adjusted_date = dt_obj.date()
-                
-            date_str = adjusted_date.strftime('%Y-%m-%d')
-            user_date_records[(row['name'], date_str)].append(dict(row))
-        except:
-            continue
+        user_records[row['name']].append(dict(row))
         
     # Calculate Totals
     payroll_data = []
@@ -1853,30 +1843,41 @@ def get_payroll_report():
     # Iterate over all known persons
     for name, person_info in persons.items():
         total_hours = 0
-        days_present = 0
+        present_dates = set()
         
-        current_date = datetime.strptime(start_date, '%Y-%m-%d')
-        end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+        records = user_records.get(name, [])
         
-        while current_date <= end_dt:
-            d_str = current_date.strftime('%Y-%m-%d')
-            records = user_date_records.get((name, d_str), [])
-            
-            if records:
-                # Use the helper function directly which returns hours float
-                # NOTE: calculate_daily_hours helper returns DICT
-                # Pass date_str to enable real-time calculation for "Today"
-                stats = calculate_daily_hours(records, timetable, date_str=d_str)
-                total_hours += stats['total_hours']
-                if stats['total_hours'] > 0:
-                    days_present += 1
-            
-            current_date += timedelta(days=1)
+        # Calculate continuous sessions
+        # Pass today_str to capture real-time active session
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        stats = calculate_daily_hours(records, timetable, date_str=today_str)
+        
+        start_dt_req = datetime.strptime(start_date, '%Y-%m-%d').date()
+        end_dt_req = datetime.strptime(end_date, '%Y-%m-%d').date()
+        
+        for session in stats.get('sessions', []):
+            if session.get('start_ts'):
+                try:
+                    # Parse ISO format
+                    sess_start = datetime.fromisoformat(session['start_ts'])
+                    sess_date = sess_start.date()
+                    
+                    # Filter by requested date range
+                    # Logic: Shift belongs to the date it STARTED
+                    if start_dt_req <= sess_date <= end_dt_req:
+                        # Only sum PAYABLE sessions
+                        if session.get('is_payable', False):
+                            mins = session.get('duration_mins', 0)
+                            total_hours += (mins / 60.0)
+                            present_dates.add(sess_date)
+                except ValueError:
+                    continue
+
+        days_present = len(present_dates)
             
         daily_wage = person_info['daily_wage'] or 0
         
         # Cost Calculation: (Total Hours / Working Hours) * Daily Wage
-        # This calculates EXACT cost based on Payable Hours
         hourly_rate = daily_wage / company_working_hours if daily_wage and company_working_hours > 0 else 0
         total_cost = round(total_hours * hourly_rate, 2)
         
@@ -1909,10 +1910,14 @@ def ping():
 @greeting_bp.route("/auth/login", methods=["POST"])
 def login():
     data = request.json
-    username = data.get("username")
-    password = data.get("password")
+    # Robustness: Handle missing keys and strip whitespace
+    username = str(data.get("username", "")).strip()
+    password = str(data.get("password", "")).strip()
 
-    print(f"Login Attempt: User={username}, Pass={password}") # DEBUG LOG
+    if not username or not password:
+        return jsonify({"error": "Username and password are required"}), 400
+
+    print(f"Login Attempt: User='{username}', Pass='{password}'") # DEBUG LOG
 
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -2412,6 +2417,25 @@ def person_event():
     expected_status = 'CHECK_IN'
     if last_record and last_record['status'] == 'CHECK_IN':
         expected_status = 'CHECK_OUT'
+        
+        # Check for Stale Check-In (e.g. forgot to check out yesterday)
+        try:
+            ts_str = last_record['timestamp']
+            last_ts = None
+            if '.' in ts_str:
+                last_ts = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S.%f')
+            else:
+                last_ts = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S')
+                
+            # Calculate duration since last check-in
+            # If > 16 hours, assume stale and reset to CHECK_IN
+            duration_hours = (current_time_obj - last_ts).total_seconds() / 3600
+            
+            if duration_hours > 16:
+                print(f"Stale Check-In detected for {name} ({duration_hours:.1f}h ago). Resetting to CHECK_IN.")
+                expected_status = 'CHECK_IN'
+        except Exception as e:
+            print(f"Error checking stale status: {e}")
 
     # Helper function for time conversion
     def to_mins(hm):
@@ -2729,9 +2753,9 @@ def person_event():
     except Exception as e:
         print(f"Cooldown Error: {e}" )
 
-    new_status = 'CHECK_IN'
-    if last_record and last_record['status'] == 'CHECK_IN':
-        new_status = 'CHECK_OUT'
+    new_status = expected_status
+    # if last_record and last_record['status'] == 'CHECK_IN':
+    #     new_status = 'CHECK_OUT'
     
     # Calculate Late Status
     is_late = 0
@@ -3093,8 +3117,11 @@ def calculate_daily_hours(records, timetable=None, date_str=None):
     # Clean up sessions for output
     final_sessions = []
     for s in sessions:
-        if "start_ts" in s: del s["start_ts"]
-        if "end_ts" in s: del s["end_ts"]
+        # Keep timestamps as ISO strings for reporting
+        if "start_ts" in s and isinstance(s["start_ts"], datetime):
+             s["start_ts"] = s["start_ts"].isoformat()
+        if "end_ts" in s and isinstance(s["end_ts"], datetime):
+             s["end_ts"] = s["end_ts"].isoformat()
         final_sessions.append(s)
 
     is_active = current_checkin is not None
@@ -3103,7 +3130,8 @@ def calculate_daily_hours(records, timetable=None, date_str=None):
     if is_active and date_str:
         try:
             today_str = datetime.now().strftime('%Y-%m-%d')
-            if date_str == today_str:
+            # Allow active calculation if it's today OR if we are processing a continuous stream
+            if True: # Always check active if date_str is present (it implies "Live" context)
                 now_dt = datetime.now()
                 duration = (now_dt - current_checkin).total_seconds()
                 
@@ -3120,8 +3148,8 @@ def calculate_daily_hours(records, timetable=None, date_str=None):
                 active_activity_name = last_in_record.get('activity', 'Work') if last_in_record else "Unknown"
                 
                 is_active_payable = False
+                found_act = None
                 if timetable:
-                     found_act = None
                      for act in timetable:
                          if act.get('name') == active_activity_name:
                              found_act = act
@@ -3133,12 +3161,13 @@ def calculate_daily_hours(records, timetable=None, date_str=None):
                 if is_active_payable:
                     total_seconds += duration
                 
-                sessions.append({
-                    "type": "Active",
+                # Add Active Session to FINAL sessions directly
+                final_sessions.append({
+                    "type": "Work (Active)",
                     "activity": active_activity_name,
                     "is_payable": is_active_payable,
-                    "start": current_checkin.strftime('%H:%M'),
-                    "end": "Now",
+                    "start_ts": current_checkin.isoformat(),
+                    "end_ts": now_dt.isoformat(),
                     "duration_mins": round(duration / 60)
                 })
         except Exception as e:
@@ -3152,7 +3181,7 @@ def calculate_daily_hours(records, timetable=None, date_str=None):
     return {
         "total_hours": round(total_seconds / 3600, 2),
         "total_hours_str": total_hours_str,
-        "sessions": final_sessions + ([sessions[-1]] if (is_active and sessions and sessions[-1]['type']=='Active') else []),
+        "sessions": final_sessions,
         "is_active": is_active,
         "last_checkin": current_checkin.strftime('%H:%M') if current_checkin else None
     }
