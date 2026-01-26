@@ -81,7 +81,11 @@ const Wages = () => {
     if (!isBackground) setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE_URL}/reports/payroll?start_date=${startDate}&end_date=${endDate}`);
+      const res = await fetch(`${API_BASE_URL}/reports/payroll?start_date=${startDate}&end_date=${endDate}`, {
+          headers: {
+              'Authorization': `Bearer ${user?.token}`
+          }
+      });
       if (res.status === 403) {
           const data = await res.json();
           setError(data.error || "Access Denied");
