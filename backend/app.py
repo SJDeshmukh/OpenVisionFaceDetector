@@ -3323,7 +3323,8 @@ def calculate_arrival_status(expected_start, sessions, day_activities=None):
     # Find the first 'Work' or relevant session
     first_checkin = None
     for s in sessions:
-        if s.get('type') == 'Work' or s.get('type') == 'Active':
+        s_type = s.get('type', '')
+        if s_type == 'Work' or 'Active' in s_type:
              # Prefer 'Work' but 'Active' works if it's the first one
              first_checkin = s['start']
              break
@@ -3334,15 +3335,22 @@ def calculate_arrival_status(expected_start, sessions, day_activities=None):
 
     if first_checkin:
         # Get tolerance from the first scheduled activity
-        tolerance_mins = 15 # Default
+        tolerance_mins = 0 # Default Strict
         if day_activities:
-             # Check rules for grace_period first, then legacy tolerance
+             # Check rules for grace_period ONLY (Strict User Request)
              first_act = day_activities[0]
-             rules = first_act.get('rules', {})
-             if 'grace_period' in rules:
-                 tolerance_mins = int(rules['grace_period'])
+             rules = first_act.get('rules', {}) or {}
+             
+             # Handle grace_period
+             gp = rules.get('grace_period')
+             if gp is not None:
+                 try:
+                     tolerance_mins = int(gp)
+                 except:
+                     tolerance_mins = 0
              else:
-                 tolerance_mins = int(first_act.get('tolerance', 15))
+                 # No grace period defined -> 0 tolerance
+                 tolerance_mins = 0
 
         try:
             exp_dt = datetime.strptime(expected_start, '%H:%M')
