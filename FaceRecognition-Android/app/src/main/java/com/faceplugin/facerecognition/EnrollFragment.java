@@ -195,8 +195,14 @@ public class EnrollFragment extends Fragment {
     }
 
     private void fetchShifts() {
-        // Fetch company details (assuming ID 1 for now)
-        RetrofitClient.getService().getCompany(1).enqueue(new Callback<JsonObject>() {
+        // Fetch company details
+        int companyId = 1; // Default
+        if (getContext() != null) {
+            android.content.SharedPreferences prefs = getContext().getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE);
+            companyId = prefs.getInt("company_id", 1);
+        }
+
+        RetrofitClient.getService().getCompany(companyId).enqueue(new Callback<JsonObject>() {
             @Override
             public void onResponse(Call<JsonObject> call, Response<JsonObject> response) {
                 if (response.isSuccessful() && response.body() != null) {

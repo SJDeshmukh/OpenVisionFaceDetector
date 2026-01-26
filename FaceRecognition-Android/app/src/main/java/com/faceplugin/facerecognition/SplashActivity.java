@@ -150,6 +150,11 @@ public class SplashActivity extends AppCompatActivity {
     private void proceedToNextScreen() {
         SharedPreferences prefs = getSharedPreferences("app_prefs", MODE_PRIVATE);
         String role = prefs.getString("role", null);
+        String token = prefs.getString("token", null);
+
+        if (token != null) {
+            RetrofitClient.setAuthToken(token);
+        }
 
         Intent intent;
         if (role != null) {

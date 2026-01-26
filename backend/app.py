@@ -1864,11 +1864,25 @@ def login():
 
         print(f"Login Success: Role={user['role']}") # DEBUG LOG
         token = generate_token(user['username'], user['role'])
+        
+        # Get Company ID for this vendor (if any)
+        company_id = None
+        if user['vendor_id']:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT id FROM companies WHERE vendor_id = ? LIMIT 1", (user['vendor_id'],))
+            row = c.fetchone()
+            conn.close()
+            if row:
+                company_id = row[0]
+
         return jsonify({
             "status": "success",
             "role": user["role"],
             "username": user["username"],
-            "token": token
+            "token": token,
+            "vendor_id": user["vendor_id"],
+            "company_id": company_id
         })
     else:
         print("Login Failed: Invalid credentials") # DEBUG LOG

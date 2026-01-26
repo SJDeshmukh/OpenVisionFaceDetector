@@ -78,6 +78,8 @@ class MainActivity : AppCompatActivity() {
             val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
             prefs.edit().clear().apply()
             
+            RetrofitClient.setAuthToken(null) // Clear token
+            
             val intent = Intent(this, LoginActivity::class.java)
             intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
             startActivity(intent)
@@ -244,6 +246,29 @@ class MainActivity : AppCompatActivity() {
                         if (currentFragment is UsersFragment) {
                             currentFragment.refreshList()
                         }
+                    }
+                } else {
+                    // Handle 403 Suspended
+                     try {
+                        val errorBody = response.errorBody()?.string()
+                        if (response.code() == 403 || (errorBody != null && errorBody.contains("Access Denied"))) {
+                             handler.removeCallbacks(syncRunnable) // Stop syncing
+                             
+                             Toast.makeText(this@MainActivity, "Access Denied: Vendor Suspended. Logging out...", Toast.LENGTH_LONG).show()
+                             
+                             // Logout
+                             val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+                             prefs.edit().clear().apply()
+
+                             RetrofitClient.setAuthToken(null) // Clear token
+                             
+                             val intent = Intent(this@MainActivity, LoginActivity::class.java)
+                             intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+                             startActivity(intent)
+                             finish()
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
                     }
                 }
             }

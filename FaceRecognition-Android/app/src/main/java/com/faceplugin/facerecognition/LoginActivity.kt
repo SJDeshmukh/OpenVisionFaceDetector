@@ -42,17 +42,47 @@ class LoginActivity : AppCompatActivity() {
                 override fun onResponse(call: Call<LoginResponse>, response: Response<LoginResponse>) {
                     if (response.isSuccessful && response.body()?.status == "success") {
                         val role = response.body()?.role ?: "user"
+                        val token = response.body()?.token
+                        val vendorId = response.body()?.vendorId
+                        val companyId = response.body()?.companyId
                         
                         // Save login state
                         val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
-                        prefs.edit().putString("role", role).putString("username", username).apply()
+                        val editor = prefs.edit()
+                        editor.putString("role", role)
+                        editor.putString("username", username)
+                        if (token != null) editor.putString("token", token)
+                        if (vendorId != null) editor.putInt("vendor_id", vendorId)
+                        if (companyId != null) editor.putInt("company_id", companyId)
+                        editor.apply()
+
+                        // Set token in RetrofitClient
+                        if (token != null) {
+                            RetrofitClient.setAuthToken(token)
+                        }
 
                         // Go to MainActivity
                         val intent = Intent(this@LoginActivity, MainActivity::class.java)
                         startActivity(intent)
                         finish()
                     } else {
-                        Toast.makeText(this@LoginActivity, "Login failed: ${response.body()?.error ?: "Invalid credentials"}", Toast.LENGTH_SHORT).show()
+                        var errorMsg = "Login failed"
+                        try {
+                            val errorBody = response.errorBody()?.string()
+                            if (!errorBody.isNullOrEmpty() && errorBody.contains("error")) {
+                                // Manual JSON parsing since we don't have a Gson helper ready here for error body
+                                val start = errorBody.indexOf("\"error\"") + 9
+                                val end = errorBody.indexOf("\"", start)
+                                if (start > 8 && end > start) {
+                                    errorMsg = errorBody.substring(start, end).replace("\\", "")
+                                }
+                            } else {
+                                errorMsg = response.body()?.error ?: "Invalid credentials"
+                            }
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        }
+                        Toast.makeText(this@LoginActivity, errorMsg, Toast.LENGTH_SHORT).show()
                     }
                 }
 

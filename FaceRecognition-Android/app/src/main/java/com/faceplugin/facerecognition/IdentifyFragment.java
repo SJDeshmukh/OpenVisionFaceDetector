@@ -226,6 +226,36 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                         if (status == null) status = "CHECK_IN"; // Fallback
                         playAttendanceSound(status); 
                     }
+                } else {
+                    // Handle API Errors (e.g., 403 Suspended)
+                    if (getActivity() != null) {
+                        getActivity().runOnUiThread(() -> {
+                            String errorMsg = "Attendance Failed";
+                            try {
+                                if (response.errorBody() != null) {
+                                    // Simple parsing of JSON error {"error": "..."}
+                                    String errorBody = response.errorBody().string();
+                                    if (errorBody.contains("error")) {
+                                        // Extract value after "error": "
+                                        int start = errorBody.indexOf("\"error\"") + 9;
+                                        int end = errorBody.indexOf("\"", start);
+                                        // Adjust parsing if needed, or just show generic if complex
+                                        if (start > 8 && end > start) {
+                                            errorMsg = errorBody.substring(start, end);
+                                            // Cleanup escaped chars if any
+                                            errorMsg = errorMsg.replace("\\", "");
+                                        }
+                                    }
+                                }
+                            } catch (Exception e) {
+                                e.printStackTrace();
+                            }
+                            
+                            Toast.makeText(getContext(), errorMsg, Toast.LENGTH_LONG).show();
+                            // Optional: Play error sound
+                            // playAttendanceSound("ERROR"); 
+                        });
+                    }
                 }
             }
 
