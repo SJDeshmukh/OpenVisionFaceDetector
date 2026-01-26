@@ -78,7 +78,11 @@ const SuperAdminDashboard = () => {
             company_name: newVendor.company_name,
             contact_person: newVendor.contact_person,
             phone: newVendor.phone,
-            email: newVendor.email
+            email: newVendor.email,
+            admin_username: newVendor.admin_username,
+            admin_password: newVendor.admin_password,
+            user_username: newVendor.user_username,
+            user_password: newVendor.user_password
         }, {
             headers: { Authorization: `Bearer ${user?.token}` }
         });
@@ -653,12 +657,7 @@ const SuperAdminDashboard = () => {
                 <h3 className="text-sm uppercase tracking-wide text-slate-500 font-bold mb-3 flex items-center gap-2">
                   <Lock size={16} /> Login Credentials
                 </h3>
-                {editingVendor && (
-                  <div className="mb-2 p-2 bg-yellow-50 text-yellow-700 text-xs rounded border border-yellow-100 flex items-center gap-2">
-                     <AlertTriangle size={12} />
-                     <span>Usernames cannot be changed. Use the "Reset Password" button in the list to update passwords.</span>
-                  </div>
-                )}
+                
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div className="border p-3 rounded-lg bg-slate-50">
                     <div className="text-xs font-bold text-slate-500 mb-2 uppercase">Admin Login</div>
@@ -666,20 +665,17 @@ const SuperAdminDashboard = () => {
                       <input 
                         type="text" 
                         placeholder="Username (Default: admin_ID)"
-                        className={`w-full p-2 border rounded text-sm ${editingVendor ? 'bg-slate-200 text-slate-500 cursor-not-allowed' : ''}`}
+                        className="w-full p-2 border rounded text-sm"
                         value={newVendor.admin_username}
                         onChange={e => setNewVendor({...newVendor, admin_username: e.target.value})}
-                        disabled={!!editingVendor}
                       />
-                      {!editingVendor && (
-                        <input 
-                          type="text" 
-                          placeholder="Password (Default: default123)"
-                          className="w-full p-2 border rounded text-sm"
-                          value={newVendor.admin_password}
-                          onChange={e => setNewVendor({...newVendor, admin_password: e.target.value})}
-                        />
-                      )}
+                      <input 
+                        type="text" 
+                        placeholder={editingVendor ? "New Password (Leave blank to keep)" : "Password (Default: default123)"}
+                        className="w-full p-2 border rounded text-sm"
+                        value={newVendor.admin_password}
+                        onChange={e => setNewVendor({...newVendor, admin_password: e.target.value})}
+                      />
                     </div>
                   </div>
                   <div className="border p-3 rounded-lg bg-slate-50">
@@ -688,20 +684,17 @@ const SuperAdminDashboard = () => {
                       <input 
                         type="text" 
                         placeholder="Username (Default: user_ID)"
-                        className={`w-full p-2 border rounded text-sm ${editingVendor ? 'bg-slate-200 text-slate-500 cursor-not-allowed' : ''}`}
+                        className="w-full p-2 border rounded text-sm"
                         value={newVendor.user_username}
                         onChange={e => setNewVendor({...newVendor, user_username: e.target.value})}
-                        disabled={!!editingVendor}
                       />
-                      {!editingVendor && (
-                        <input 
-                          type="text" 
-                          placeholder="Password (Default: user123)"
-                          className="w-full p-2 border rounded text-sm"
-                          value={newVendor.user_password}
-                          onChange={e => setNewVendor({...newVendor, user_password: e.target.value})}
-                        />
-                      )}
+                      <input 
+                        type="text" 
+                        placeholder={editingVendor ? "New Password (Leave blank to keep)" : "Password (Default: user123)"}
+                        className="w-full p-2 border rounded text-sm"
+                        value={newVendor.user_password}
+                        onChange={e => setNewVendor({...newVendor, user_password: e.target.value})}
+                      />
                     </div>
                   </div>
                 </div>

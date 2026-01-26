@@ -493,22 +493,22 @@ def verify_token(token):
 def super_admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        # TEMPORARY BYPASS: Always allow super admin actions
-        # auth_header = request.headers.get('Authorization')
-        # if not auth_header:
-        #     return jsonify({"error": "Missing Authorization Header"}), 401
+        # Enable Auth Check
+        auth_header = request.headers.get('Authorization')
+        if not auth_header:
+            return jsonify({"error": "Missing Authorization Header"}), 401
         
-        # try:
-        #     token = auth_header.split(" ")[1]
-        #     data = verify_token(token)
-        #     if not data:
-        #         return jsonify({"error": "Invalid or Expired Token"}), 401
+        try:
+            token = auth_header.split(" ")[1]
+            data = verify_token(token)
+            if not data:
+                return jsonify({"error": "Invalid or Expired Token"}), 401
             
-        #     if data['role'] != 'super_admin':
-        #         return jsonify({"error": "Super Admin Access Required"}), 403
+            if data['role'] != 'super_admin':
+                return jsonify({"error": "Super Admin Access Required"}), 403
                 
-        # except IndexError:
-        #      return jsonify({"error": "Invalid Token Format"}), 401
+        except IndexError:
+             return jsonify({"error": "Invalid Token Format"}), 401
              
         return f(*args, **kwargs)
     return decorated_function
@@ -966,6 +966,7 @@ def update_vendor_details(vendor_id):
         if not c.fetchone():
             return jsonify({"error": "Vendor not found"}), 404
 
+        # 1. Update Vendor Details
         query = "UPDATE vendors SET "
         params = []
         
@@ -975,18 +976,68 @@ def update_vendor_details(vendor_id):
                 query += f"{field} = ?, "
                 params.append(data[field])
         
-        if not params:
-            return jsonify({"success": True, "message": "No changes made"})
+        if params:
+            query = query.rstrip(", ") + " WHERE id = ?"
+            params.append(vendor_id)
+            c.execute(query, params)
             
-        query = query.rstrip(", ") + " WHERE id = ?"
-        params.append(vendor_id)
-        
-        c.execute(query, params)
+        # 2. Update Admin Credentials
+        admin_username = data.get('admin_username')
+        admin_password = data.get('admin_password')
+        if admin_username or admin_password:
+            # Check if admin user exists for this vendor
+            c.execute("SELECT rowid FROM system_users WHERE vendor_id = ? AND role = 'vendor_admin'", (vendor_id,))
+            admin_user = c.fetchone()
+            
+            if admin_user:
+                update_query = "UPDATE system_users SET "
+                update_params = []
+                if admin_username:
+                    update_query += "username = ?, "
+                    update_params.append(admin_username)
+                if admin_password:
+                    update_query += "password = ?, "
+                    update_params.append(admin_password)
+                
+                update_query = update_query.rstrip(", ") + " WHERE rowid = ?"
+                update_params.append(admin_user[0])
+                c.execute(update_query, update_params)
+            else:
+                # Create if missing (Self-healing)
+                c.execute("INSERT INTO system_users (username, password, role, vendor_id) VALUES (?, ?, 'vendor_admin', ?)",
+                          (admin_username or f"admin_{vendor_id}", admin_password or "default123", vendor_id))
+
+        # 3. Update User/Kiosk Credentials
+        user_username = data.get('user_username')
+        user_password = data.get('user_password')
+        if user_username or user_password:
+            # Check if kiosk user exists for this vendor
+            c.execute("SELECT rowid FROM system_users WHERE vendor_id = ? AND role = 'user'", (vendor_id,))
+            kiosk_user = c.fetchone()
+            
+            if kiosk_user:
+                update_query = "UPDATE system_users SET "
+                update_params = []
+                if user_username:
+                    update_query += "username = ?, "
+                    update_params.append(user_username)
+                if user_password:
+                    update_query += "password = ?, "
+                    update_params.append(user_password)
+                
+                update_query = update_query.rstrip(", ") + " WHERE rowid = ?"
+                update_params.append(kiosk_user[0])
+                c.execute(update_query, update_params)
+            else:
+                # Create if missing
+                c.execute("INSERT INTO system_users (username, password, role, vendor_id) VALUES (?, ?, 'user', ?)",
+                          (user_username or f"user_{vendor_id}", user_password or "user123", vendor_id))
+
         conn.commit()
         return jsonify({"success": True})
         
     except sqlite3.IntegrityError:
-        return jsonify({"error": "Company Name already exists"}), 400
+        return jsonify({"error": "Username or Company Name already exists"}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
