@@ -15,7 +15,10 @@ app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'super_secret_key_change_this_in_prod')
 serializer = URLSafeTimedSerializer(app.secret_key)
 
-CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+
+# Allow specific origins for CORS with credentials
+allowed_origins = [FRONTEND_URL, "http://localhost:5173", "http://127.0.0.1:5173"]
+CORS(app, resources={r"/*": {"origins": allowed_origins}}, supports_credentials=True)
 
 # Expose Config to Frontend
 @app.route('/api/config', methods=['GET'])
