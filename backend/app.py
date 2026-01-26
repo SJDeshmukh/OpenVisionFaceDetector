@@ -2445,16 +2445,13 @@ def person_event():
                 # Fallback for format without milliseconds
                 current_time_obj = datetime.strptime(timestamp_str, "%Y-%m-%dT%H:%M:%S")
             except ValueError:
-                print(f"Invalid timestamp format: {timestamp_str}. Using server time (adjusted for UTC).")
-                # Render is UTC. We assume User is IST (UTC+5:30) for fallback if no timestamp
-                # Ideally this should be configurable.
-                current_time_obj = datetime.utcnow() + timedelta(hours=5, minutes=30)
+                print(f"Invalid timestamp format: {timestamp_str}. Using server time.")
+                current_time_obj = datetime.now()
     else:
-        # No timestamp provided.
-        # Render is UTC. We need to shift it to match the Timetable (which is likely Local/IST).
-        # Adding fixed offset for IST (UTC+5:30) as a safe default for this user.
-        print("No timestamp provided. Using server time (adjusted for UTC+5:30).")
-        current_time_obj = datetime.utcnow() + timedelta(hours=5, minutes=30)
+        # User requested no assumptions about Timezone.
+        # We use strict Server Time (which is UTC on Render).
+        # If user wants local time, they MUST send timestamp from client or configure server TZ.
+        current_time_obj = datetime.now()
 
     print(f"DEBUG TIME: Server saw {current_time_obj} (Original TS: {timestamp_str})")
 
@@ -2576,14 +2573,58 @@ def person_event():
              shifts_data = json.loads(company_row['shifts']) if company_row['shifts'] else []
              # Resolve User Shift ID
              if user_shift_name:
+                print(f"User Shift Name: {user_shift_name}")
                 for s in shifts_data:
-                    if s.get('name') == user_shift_name:
+                    # Loose matching for robustness (case-insensitive, trim)
+                    if s.get('name', '').strip().lower() == user_shift_name.strip().lower():
                         user_shift_id = s.get('id')
+                        print(f"Resolved User Shift ID: {user_shift_id}")
                         break
-
+        
+        # --- STRICT SHIFT FILTERING (User Request) ---
+        # If the user has an assigned shift, we MUST filter the timetable to ONLY include:
+        # 1. Activities explicitly assigned to this shift (shift_id match)
+        # 2. Global activities (shift_id is None/Empty) - BUT only if they don't conflict with specific ones.
+        
+        filtered_timetable = []
         if company_row and company_row['live_timetable']:
             import json
-            timetable = json.loads(company_row['live_timetable'])
+            full_timetable = json.loads(company_row['live_timetable'])
+            
+            if user_shift_id:
+                # 1. Collect Specific Matches
+                specific_acts = [a for a in full_timetable if str(a.get('shift_id', '')) == str(user_shift_id)]
+                
+                # 2. Collect Global Matches (No shift_id)
+                # But be careful: If we have a specific "Work" activity, ignore global "Work".
+                global_acts = [a for a in full_timetable if not a.get('shift_id')]
+                
+                # Filter Globals: Exclude if a specific activity of same type exists?
+                # Actually, simpler rule: If user has a shift, ONLY trust that shift's structure.
+                # But "Lunch" might be global.
+                # Strategy: Add all specific acts. Add global acts ONLY if their 'type' is NOT in specific acts?
+                # No, that's risky.
+                # Better Strategy: Just add both, but when selecting "Work", specific overrides global.
+                # Actually, if I am assigned "Night Shift", I should NOT match "Day Shift" (Global 9-5).
+                # So if I have a specific "Work", I should definitely ignore global "Work".
+                
+                specific_types = {a.get('type', 'Work').lower() for a in specific_acts}
+                
+                filtered_timetable.extend(specific_acts)
+                
+                for ga in global_acts:
+                    # If we already have a specific activity of this type (e.g. Work), skip the global one.
+                    # This prevents "Global 9-5" from polluting "Night Shift 21-05".
+                    if ga.get('type', 'Work').lower() in specific_types:
+                        continue
+                    filtered_timetable.append(ga)
+                    
+                print(f"Shift Filter Applied: {len(full_timetable)} -> {len(filtered_timetable)} activities.")
+            else:
+                # No shift assigned to user? Use everything (Open Mode)
+                filtered_timetable = full_timetable
+
+            timetable = filtered_timetable
             
             now = current_time_obj
             current_hm = now.strftime('%H:%M')
@@ -2639,6 +2680,9 @@ def person_event():
                         is_match = True
                         
                     if is_match:
+                        # CRITICAL FIX: Tag this activity as belonging to YESTERDAY.
+                        # This allows downstream logic to know we need to apply overnight calculations.
+                        act['_is_yesterday'] = True
                         matching_acts.append(act)
                         print(f"Matched Yesterday's Shift: {act.get('name')}")
             
@@ -2769,12 +2813,21 @@ def person_event():
                     d = e - s
                     if d < 0: d += 24*60 # Handle overnight
                     return d
+                
+                # Sort Priority:
+                # 1. Matches from Yesterday (Continuing Shift) - HIGHEST PRIORITY
+                # 2. Longest Duration (Work)
+                # 3. Others
+                
+                matching_acts.sort(key=lambda x: (
+                    1 if x.get('_is_yesterday') else 0, # Priority 1: Yesterday's Shift
+                    get_duration(x) # Priority 2: Duration
+                ), reverse=True)
 
                 if expected_status == 'CHECK_IN':
-                    # Prioritize Longest Duration (Work)
-                    matching_acts.sort(key=get_duration, reverse=True)
+                    # Prioritize Longest Duration (Work) but respect Yesterday First
                     best_match = matching_acts[0]
-                    print(f"Check-In Priority: Picked Longest Duration ({best_match.get('name')})")
+                    print(f"Check-In Priority: Picked {best_match.get('name')} (Yesterday={best_match.get('_is_yesterday', False)})")
                 else:
                     # Check-Out Logic: Prioritize Breaks?
                     # Original logic prioritized Breaks over Work. Let's keep that for Check-Out to allow "Going to Lunch"
@@ -2922,21 +2975,22 @@ def person_event():
             end_hm = best_match.get('end_time', '17:00')
             end_mins = to_mins(end_hm)
             
-            if start_mins > end_mins:
-                 # Night shift
+            # STRICT LOGIC: If matched activity is from Yesterday, we MUST treat current time as Next Day (+1440)
+            if best_match.get('_is_yesterday'):
+                print("Strict Logic: Activity is from Yesterday. Adding 1440 to check_mins.")
+                check_mins += 1440
+            elif start_mins > end_mins:
+                 # Night shift (Today)
                  # If current time is early morning (less than end time + buffer), assume next day
                  if curr_mins <= (end_mins + 360) and start_mins > 360:
                      check_mins += 1440
             
             # --- Smart Rollover Safety Net ---
-            # If check_mins is still < start_mins (Early), but the difference is huge (e.g. > 12 hours),
-            # it likely means we crossed a day boundary but missed the night shift check (or end_time was wrong).
-            # e.g. Start 21:00 (1260), Check 00:20 (20). Diff 1240 > 720. Treat as Late.
-            if check_mins < effective_start_mins:
-                diff = effective_start_mins - check_mins
-                if diff > 720: # 12 hours
-                    print(f"Smart Rollover Triggered: Diff {diff}m > 12h. Assuming Next Day.")
-                    check_mins += 1440
+            # REMOVED: User requested no assumptions.
+            # We strictly rely on Shift Matching to pick the correct shift (Yesterday vs Today).
+            
+            # Debug Log
+            print(f"LATE CHECK: Act={activity_name}, Start={effective_start_mins}, Check={check_mins}, Grace={act_grace}")
 
             # Calculate Threshold
             late_threshold = effective_start_mins + act_grace
