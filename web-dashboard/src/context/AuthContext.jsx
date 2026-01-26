@@ -12,7 +12,11 @@ export const AuthProvider = ({ children }) => {
     // Check local storage for session
     const storedUser = localStorage.getItem('user');
     if (storedUser) {
-      setUser(JSON.parse(storedUser));
+      const parsedUser = JSON.parse(storedUser);
+      setUser(parsedUser);
+      if (parsedUser.token) {
+        axios.defaults.headers.common['Authorization'] = `Bearer ${parsedUser.token}`;
+      }
     }
     setLoading(false);
   }, []);
@@ -32,6 +36,7 @@ export const AuthProvider = ({ children }) => {
         };
         setUser(userData);
         localStorage.setItem('user', JSON.stringify(userData));
+        axios.defaults.headers.common['Authorization'] = `Bearer ${userData.token}`;
         return { success: true, role: userData.role };
       } else {
         // Handle case where status is not success but no error was thrown
@@ -47,6 +52,7 @@ export const AuthProvider = ({ children }) => {
   const logout = () => {
     setUser(null);
     localStorage.removeItem('user');
+    delete axios.defaults.headers.common['Authorization'];
   };
 
   return (
