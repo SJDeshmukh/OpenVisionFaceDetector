@@ -48,12 +48,36 @@ def add_missing_columns():
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         
-        # Add is_late to attendance if missing
+        # 1. Add is_late to attendance if missing
         try:
             c.execute("ALTER TABLE attendance ADD COLUMN is_late INTEGER DEFAULT 0")
             print("Added column 'is_late' to attendance table.")
         except sqlite3.OperationalError:
             pass # Already exists
+
+        # 2. Add Late Deduction Columns to faces table
+        c.execute("PRAGMA table_info(faces)")
+        cols = [info[1] for info in c.fetchall()]
+        
+        if 'late_allowance_days' not in cols:
+            print("MIGRATION: Adding late_allowance_days to faces table...")
+            c.execute("ALTER TABLE faces ADD COLUMN late_allowance_days INTEGER DEFAULT NULL")
+            
+        if 'late_deduction_amount' not in cols:
+            print("MIGRATION: Adding late_deduction_amount to faces table...")
+            c.execute("ALTER TABLE faces ADD COLUMN late_deduction_amount REAL DEFAULT NULL")
+
+        # 3. Add Global Defaults to system_settings
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='system_settings'")
+        if c.fetchone():
+            c.execute("SELECT key FROM system_settings WHERE key IN ('global_late_allowance', 'global_late_deduction')")
+            existing_keys = {row[0] for row in c.fetchall()}
+            
+            if 'global_late_allowance' not in existing_keys:
+                c.execute("INSERT INTO system_settings (key, value) VALUES (?, ?)", ('global_late_allowance', '7'))
+                
+            if 'global_late_deduction' not in existing_keys:
+                c.execute("INSERT INTO system_settings (key, value) VALUES (?, ?)", ('global_late_deduction', '0.0'))
 
         conn.commit()
         conn.close()
@@ -1907,15 +1931,21 @@ def get_payroll_report():
         if company_row['working_hours']:
             company_working_hours = float(company_row['working_hours'])
 
-    # 2. Fetch Persons (to get wages)
+    # 2. Fetch Persons (to get wages and late config)
     if vendor_id:
-        c.execute("SELECT name, daily_wage, department, designation, face_image, phone FROM faces WHERE vendor_id = ?", (vendor_id,))
+        c.execute("SELECT name, daily_wage, department, designation, face_image, phone, late_allowance_days, late_deduction_amount FROM faces WHERE vendor_id = ?", (vendor_id,))
     else:
-        c.execute("SELECT name, daily_wage, department, designation, face_image, phone FROM faces")
+        c.execute("SELECT name, daily_wage, department, designation, face_image, phone, late_allowance_days, late_deduction_amount FROM faces")
     
     persons = {row['name']: dict(row) for row in c.fetchall()}
+
+    # 3. Fetch Global Settings
+    c.execute("SELECT key, value FROM system_settings WHERE key IN ('global_late_allowance', 'global_late_deduction')")
+    settings = {row['key']: row['value'] for row in c.fetchall()}
+    global_allowance = int(settings.get('global_late_allowance', 7))
+    global_deduction = float(settings.get('global_late_deduction', 0.0))
     
-    # 3. Fetch Attendance (With Buffer for Cross-Day Shifts)
+    # 4. Fetch Attendance (With Buffer for Cross-Day Shifts)
     try:
         s_dt = datetime.strptime(start_date, '%Y-%m-%d') - timedelta(days=1)
         e_dt = datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)
@@ -1951,6 +1981,7 @@ def get_payroll_report():
     for name, person_info in persons.items():
         total_hours = 0
         present_dates = set()
+        late_marks_count = 0
         
         records = user_records.get(name, [])
         
@@ -1962,6 +1993,30 @@ def get_payroll_report():
         start_dt_req = datetime.strptime(start_date, '%Y-%m-%d').date()
         end_dt_req = datetime.strptime(end_date, '%Y-%m-%d').date()
         
+        # Calculate Late Marks Count for the requested period
+        # We need to iterate over sessions or unique days?
+        # Late mark is per day (usually on first check-in).
+        # We can count distinct days where is_late=1
+        
+        late_dates = set()
+        
+        # Scan raw records for is_late=1 in the requested range
+        for r in records:
+            if r.get('is_late') == 1:
+                try:
+                    r_ts = r['timestamp']
+                    if '.' in r_ts:
+                         r_dt = datetime.strptime(r_ts, '%Y-%m-%d %H:%M:%S.%f').date()
+                    else:
+                         r_dt = datetime.strptime(r_ts, '%Y-%m-%d %H:%M:%S').date()
+                    
+                    if start_dt_req <= r_dt <= end_dt_req:
+                        late_dates.add(r_dt)
+                except:
+                    pass
+        
+        late_marks_count = len(late_dates)
+
         for session in stats.get('sessions', []):
             if session.get('start_ts'):
                 try:
@@ -1986,7 +2041,21 @@ def get_payroll_report():
         
         # Cost Calculation: (Total Hours / Working Hours) * Daily Wage
         hourly_rate = daily_wage / company_working_hours if daily_wage and company_working_hours > 0 else 0
-        total_cost = round(total_hours * hourly_rate, 2)
+        base_cost = round(total_hours * hourly_rate, 2)
+        
+        # Late Deduction Logic
+        p_allowance = person_info.get('late_allowance_days')
+        p_deduction_amt = person_info.get('late_deduction_amount')
+        
+        # Use Individual if set (not None), else Global
+        allowance = p_allowance if p_allowance is not None else global_allowance
+        deduction_amt = p_deduction_amt if p_deduction_amt is not None else global_deduction
+        
+        deductable_lates = max(0, late_marks_count - allowance)
+        total_deduction = round(deductable_lates * deduction_amt, 2)
+        
+        final_payout = round(base_cost - total_deduction, 2)
+        if final_payout < 0: final_payout = 0.0
         
         # Format Total Hours String
         h = int(total_hours)
@@ -2003,11 +2072,55 @@ def get_payroll_report():
             "total_hours": round(total_hours, 2),
             "total_hours_str": total_hours_str,
             "days_present": days_present,
-            "total_cost": total_cost,
-            "company_working_hours": company_working_hours # Pass back to UI for display
+            "base_cost": base_cost,
+            "late_marks_count": late_marks_count,
+            "late_deduction": total_deduction,
+            "final_payout": final_payout,
+            "total_cost": final_payout, # Keep for backward compatibility, but UI should likely show breakdown
+            "company_working_hours": company_working_hours
         })
+    
+    return jsonify({
+        "payroll": payroll_data,
+        "global_settings": {
+            "allowance": global_allowance,
+            "deduction": global_deduction
+        }
+    })
+
+@greeting_bp.route("/settings/late-config", methods=["PUT"])
+def update_global_late_config():
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+    
+    # Only allow Admin (implicit via authenticate_vendor_access usually, but good to check role if needed)
+    # Assuming authenticate_vendor_access checks for valid token.
+    
+    data = request.json
+    allowance = data.get('allowance')
+    deduction = data.get('deduction')
+    
+    if allowance is None and deduction is None:
+        return jsonify({"error": "No settings provided"}), 400
         
-    return jsonify({"payroll": payroll_data})
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    try:
+        if allowance is not None:
+            c.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)", 
+                      ('global_late_allowance', str(allowance)))
+            
+        if deduction is not None:
+            c.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)", 
+                      ('global_late_deduction', str(deduction)))
+                      
+        conn.commit()
+        return jsonify({"status": "success", "message": "Global late settings updated"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
 @greeting_bp.route("/ping", methods=["GET"])
 def ping():
@@ -2410,7 +2523,7 @@ def update_wages():
     if error: return error
 
     data = request.json
-    updates = data.get("updates", []) # List of {name, daily_wage}
+    updates = data.get("updates", []) # List of {name, daily_wage, late_allowance_days, late_deduction_amount}
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -2419,14 +2532,32 @@ def update_wages():
         for u in updates:
             name = u.get('name')
             wage = u.get('daily_wage')
+            allowance = u.get('late_allowance_days')
+            deduction = u.get('late_deduction_amount')
             
-            if name and wage is not None:
-                # Verify person belongs to vendor
-                if vendor_id:
-                    c.execute("UPDATE faces SET daily_wage = ? WHERE name = ? AND vendor_id = ?", 
-                              (wage, name, vendor_id))
-                else:
-                     c.execute("UPDATE faces SET daily_wage = ? WHERE name = ?", (wage, name))
+            if name:
+                query_parts = []
+                params = []
+                
+                if 'daily_wage' in u:
+                    query_parts.append("daily_wage = ?")
+                    params.append(u['daily_wage'])
+                if 'late_allowance_days' in u:
+                    query_parts.append("late_allowance_days = ?")
+                    params.append(u['late_allowance_days'])
+                if 'late_deduction_amount' in u:
+                    query_parts.append("late_deduction_amount = ?")
+                    params.append(u['late_deduction_amount'])
+                
+                if query_parts:
+                    query_str = f"UPDATE faces SET {', '.join(query_parts)} WHERE name = ?"
+                    params.append(name)
+                    
+                    if vendor_id:
+                        query_str += " AND vendor_id = ?"
+                        params.append(vendor_id)
+                        
+                    c.execute(query_str, params)
                  
         conn.commit()
         return jsonify({"success": True})
@@ -2536,6 +2667,13 @@ def person_event():
         # We use strict Server Time (which is UTC on Render).
         # If user wants local time, they MUST send timestamp from client or configure server TZ.
         current_time_obj = datetime.now()
+        
+        # NOTE: Previous versions applied a hardcoded or configured offset here.
+        # Per user request: "why to give any value when the time itself is coming from the mobile phone?"
+        # We now rely STRICTLY on the mobile timestamp.
+        # If timestamp_str is missing, we use Server Time (UTC) as a raw fallback.
+        # If this causes negative durations, the root cause is the Client not sending the timestamp.
+        print(f"WARNING: No timestamp received from client. Falling back to Server Time (UTC): {current_time_obj}")
 
     print(f"DEBUG TIME: Server saw {current_time_obj} (Original TS: {timestamp_str})")
 
@@ -3339,6 +3477,11 @@ def calculate_daily_hours(records, timetable=None, date_str=None):
             if current_checkin:
                 duration = (ts - current_checkin).total_seconds()
                 
+                # STRICT FIX: Prevent Negative Duration
+                # If Check-Out is before Check-In (e.g. Timezone mismatch or bad data), clamp to 0.
+                if duration < 0:
+                    duration = 0
+
                 # Determine Session Activity: Use the one from Check-In, fallback to current record if missing
                 session_activity = current_checkin_activity if current_checkin_activity else activity_name
                 
@@ -3419,6 +3562,8 @@ def calculate_daily_hours(records, timetable=None, date_str=None):
             if True: # Always check active if date_str is present (it implies "Live" context)
                 now_dt = datetime.now()
                 duration = (now_dt - current_checkin).total_seconds()
+                if duration < 0:
+                    duration = 0
                 
                 # Check payability of current active session
                 # We need the activity name for the current session.
@@ -3684,6 +3829,11 @@ def get_attendance_summary():
             if is_payable:
                 s = datetime.strptime(act['start_time'], '%H:%M')
                 e = datetime.strptime(act['end_time'], '%H:%M')
+                
+                # Handle overnight shifts (end < start)
+                if e < s:
+                    e += timedelta(days=1)
+                    
                 duration = (e - s).total_seconds() / 3600
                 expected_work_hours += duration
         

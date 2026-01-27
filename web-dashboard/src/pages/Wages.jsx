@@ -27,6 +27,8 @@ const Wages = () => {
   const [saveLoading, setSaveLoading] = useState(false);
   const [workingHours, setWorkingHours] = useState(8.0);
   const [workingHoursChanged, setWorkingHoursChanged] = useState(false);
+  const [globalSettings, setGlobalSettings] = useState({ allowance: 7, deduction: 0 });
+  const [globalSettingsChanged, setGlobalSettingsChanged] = useState(false);
 
   useEffect(() => {
     if (user) {
@@ -109,6 +111,12 @@ const Wages = () => {
       if (data.payroll) {
         setPayrollData(data.payroll);
       }
+      if (data.global_settings) {
+        setGlobalSettings({
+            allowance: parseInt(data.global_settings.allowance),
+            deduction: parseFloat(data.global_settings.deduction)
+        });
+      }
     } catch (error) {
       console.error("Error fetching payroll:", error);
     } finally {
@@ -131,17 +139,61 @@ const Wages = () => {
     }
   }, [startDate, endDate, hasChanges, workingHoursChanged]);
 
-  const handleWageChange = (index, value) => {
+  const handleWageChange = (index, field, value) => {
     const newData = [...payrollData];
-    newData[index].daily_wage = parseFloat(value) || 0;
     
-    // Recalculate cost immediately
-    // Assumption: Daily Wage is for 'workingHours'. Hourly Rate = Daily / workingHours.
-    const hourlyRate = newData[index].daily_wage / workingHours; 
-    newData[index].total_cost = (newData[index].total_hours * hourlyRate).toFixed(2);
+    if (field === 'daily_wage') {
+        newData[index].daily_wage = parseFloat(value) || 0;
+    } else if (field === 'late_allowance_days') {
+        newData[index].late_allowance_days = value === '' ? null : parseInt(value);
+    } else if (field === 'late_deduction_amount') {
+        newData[index].late_deduction_amount = value === '' ? null : parseFloat(value);
+    }
+
+    // Recalculate
+    const hourlyRate = (newData[index].daily_wage || 0) / workingHours;
+    const baseCost = (newData[index].total_hours || 0) * hourlyRate;
+    
+    // Late Deduction
+    const allowance = newData[index].late_allowance_days ?? globalSettings.allowance;
+    const deduction = newData[index].late_deduction_amount ?? globalSettings.deduction;
+    const lateMarks = newData[index].late_marks_count || 0;
+    
+    const deductableLates = Math.max(0, lateMarks - allowance);
+    const totalDeduction = deductableLates * deduction;
+    
+    const finalPayout = Math.max(0, baseCost - totalDeduction);
+    
+    newData[index].base_cost = baseCost.toFixed(2);
+    newData[index].late_deduction = totalDeduction.toFixed(2);
+    newData[index].final_payout = finalPayout.toFixed(2);
+    newData[index].total_cost = finalPayout.toFixed(2); 
     
     setPayrollData(newData);
     setHasChanges(true);
+  };
+
+  const saveGlobalSettings = async () => {
+      try {
+          const res = await fetch(`${API_BASE_URL}/settings/late-config`, {
+              method: 'PUT',
+              headers: { 
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${user?.token}`
+              },
+              body: JSON.stringify(globalSettings)
+          });
+          if (res.ok) {
+              alert("Global settings updated!");
+              setGlobalSettingsChanged(false);
+              fetchPayroll(); 
+          } else {
+              alert("Failed to update settings");
+          }
+      } catch (e) {
+          console.error(e);
+          alert("Error updating settings");
+      }
   };
 
   const saveWages = async () => {
@@ -149,7 +201,9 @@ const Wages = () => {
     try {
       const updates = payrollData.map(p => ({
         name: p.name,
-        daily_wage: p.daily_wage
+        daily_wage: p.daily_wage,
+        late_allowance_days: p.late_allowance_days,
+        late_deduction_amount: p.late_deduction_amount
       }));
 
       const res = await fetch(`${API_BASE_URL}/persons/wages`, {
@@ -256,32 +310,97 @@ const Wages = () => {
           </div>
         </div>
 
-        {/* Working Hours Setting */}
-        <div className="bg-slate-50 border-b border-slate-200 p-4 rounded-t-lg flex flex-col sm:flex-row sm:items-center gap-4 mb-4">
-            <div className="flex items-center gap-2">
-                <label className="text-sm font-semibold text-slate-700 whitespace-nowrap">Standard Daily Working Hours:</label>
-                <input 
-                    type="number" 
-                    step="0.5"
-                    min="1"
-                    max="24"
-                    value={workingHours}
-                    onChange={(e) => {
-                        setWorkingHours(e.target.value);
-                        setWorkingHoursChanged(true);
-                    }}
-                    className="w-20 px-2 py-1 border border-slate-300 rounded text-sm focus:ring-2 focus:ring-blue-500"
-                />
-                <span className="text-xs text-slate-500 whitespace-nowrap">hours/day</span>
+        {/* Settings Block: Working Hours & Late Config */}
+        <div className="bg-slate-50 border-b border-slate-200 p-4 rounded-t-lg flex flex-col gap-4 mb-4">
+            
+            {/* Row 1: Working Hours */}
+            <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+                <div className="flex items-center gap-2">
+                    <label className="text-sm font-semibold text-slate-700 whitespace-nowrap">Standard Daily Working Hours:</label>
+                    <input 
+                        type="number" 
+                        step="0.5"
+                        min="1"
+                        max="24"
+                        value={workingHours}
+                        onChange={(e) => {
+                            setWorkingHours(e.target.value);
+                            setWorkingHoursChanged(true);
+                        }}
+                        className="w-20 px-2 py-1 border border-slate-300 rounded text-sm focus:ring-2 focus:ring-blue-500"
+                    />
+                    <span className="text-xs text-slate-500 whitespace-nowrap">hours/day</span>
+                </div>
+                {workingHoursChanged && (
+                    <button 
+                        onClick={saveWorkingHours}
+                        className="text-xs bg-blue-600 text-white px-3 py-2 sm:py-1 rounded hover:bg-blue-700 transition-colors"
+                    >
+                        Update Calculation
+                    </button>
+                )}
             </div>
-            {workingHoursChanged && (
-                <button 
-                    onClick={saveWorkingHours}
-                    className="text-xs bg-blue-600 text-white px-3 py-2 sm:py-1 rounded hover:bg-blue-700 transition-colors w-full sm:w-auto"
-                >
-                    Update Calculation
-                </button>
-            )}
+
+            {/* Row 2: Global Late Config */}
+            <div className="flex flex-col sm:flex-row sm:items-center gap-4 pt-4 border-t border-slate-200">
+                <div className="flex items-center gap-2">
+                    <label className="text-sm font-semibold text-slate-700 whitespace-nowrap">Global Late Allowance:</label>
+                    <input 
+                        type="number" 
+                        min="0"
+                        value={globalSettings.allowance}
+                        onChange={(e) => {
+                            setGlobalSettings({...globalSettings, allowance: parseInt(e.target.value) || 0});
+                            setGlobalSettingsChanged(true);
+                        }}
+                        className="w-16 px-2 py-1 border border-slate-300 rounded text-sm focus:ring-2 focus:ring-blue-500"
+                    />
+                    <span className="text-xs text-slate-500">days</span>
+                </div>
+                
+                <div className="flex items-center gap-2">
+                    <label className="text-sm font-semibold text-slate-700 whitespace-nowrap">Global Late Deduction:</label>
+                    <div className="relative">
+                        <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs">₹</span>
+                        <input 
+                            type="number" 
+                            min="0"
+                            step="0.01"
+                            value={globalSettings.deduction}
+                            onChange={(e) => {
+                                setGlobalSettings({...globalSettings, deduction: parseFloat(e.target.value) || 0});
+                                setGlobalSettingsChanged(true);
+                            }}
+                            className="w-20 pl-5 pr-2 py-1 border border-slate-300 rounded text-sm focus:ring-2 focus:ring-blue-500"
+                        />
+                    </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                    <label className="text-sm font-semibold text-slate-700 whitespace-nowrap">Server Timezone Offset:</label>
+                    <input 
+                        type="number" 
+                        step="0.5"
+                        value={globalSettings.timezone_offset || 0}
+                        onChange={(e) => {
+                            setGlobalSettings({...globalSettings, timezone_offset: parseFloat(e.target.value) || 0});
+                            setGlobalSettingsChanged(true);
+                        }}
+                        className="w-20 px-2 py-1 border border-slate-300 rounded text-sm focus:ring-2 focus:ring-blue-500"
+                    />
+                    <span className="text-xs text-slate-500">hours (e.g., 5.5 for IST)</span>
+                </div>
+
+                {globalSettingsChanged && (
+                    <button 
+                        onClick={saveGlobalSettings}
+                        className="text-xs bg-blue-600 text-white px-3 py-2 sm:py-1 rounded hover:bg-blue-700 transition-colors ml-auto"
+                    >
+                        Save Global Settings
+                    </button>
+                )}
+            </div>
+
         </div>
 
         <div className="overflow-x-auto rounded-lg border border-slate-200">
@@ -289,12 +408,12 @@ const Wages = () => {
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200">
                 <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Employee</th>
-                <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Role</th>
-                <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Contact</th>
                 <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-center">Days Present</th>
                 <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-center">Total Hours</th>
+                <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-center">Late Marks</th>
                 <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Daily Wage</th>
-                <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Estimated Cost</th>
+                <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-center">Allowance / Deduction</th>
+                <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Est. Cost</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -337,39 +456,69 @@ const Wages = () => {
                         </div>
                         <div>
                           <p className="font-medium text-slate-900 text-sm">{person.name}</p>
-                          <p className="text-xs text-slate-500">{person.department || 'No Dept'}</p>
+                          <p className="text-xs text-slate-500">{person.designation || person.department || 'No Dept'}</p>
                         </div>
                       </div>
                     </td>
-                    <td className="py-3 px-4 text-sm text-slate-600">{person.designation || '-'}</td>
-                    <td className="py-3 px-4 text-sm text-slate-600">{person.phone || '-'}</td>
                     <td className="py-3 px-4 text-sm text-slate-600 text-center font-medium">{person.days_present}</td>
                     <td className="py-3 px-4 text-sm text-slate-600 text-center">
                         <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded text-xs font-semibold">
                             {person.total_hours_str || `${person.total_hours} hrs`}
                         </span>
                     </td>
+                    <td className="py-3 px-4 text-sm text-slate-600 text-center">
+                        <span className={`px-2 py-1 rounded text-xs font-semibold ${person.late_marks_count > (person.late_allowance_days ?? globalSettings.allowance) ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-600'}`}>
+                            {person.late_marks_count}
+                        </span>
+                    </td>
                     <td className="py-3 px-4 text-right">
-                      <div className="flex items-center justify-end gap-2 relative group">
-                        <span className="text-slate-400 text-sm">RS</span>
+                      <div className="flex items-center justify-end gap-2">
+                        <span className="text-slate-400 text-sm">₹</span>
                         <input 
                           type="number" 
                           min="0"
                           step="0.01"
                           value={person.daily_wage}
-                          onChange={(e) => handleWageChange(index, e.target.value)}
-                          className="w-24 px-2 py-1 border border-slate-200 rounded text-right text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-medium text-slate-700 bg-slate-50 focus:bg-white transition-all"
+                          onChange={(e) => handleWageChange(index, 'daily_wage', e.target.value)}
+                          className="w-20 px-2 py-1 border border-slate-200 rounded text-right text-sm focus:ring-2 focus:ring-blue-500 font-medium text-slate-700 bg-slate-50 focus:bg-white"
                           placeholder="0.00"
                         />
                       </div>
                     </td>
+                    <td className="py-3 px-4">
+                        <div className="flex flex-col gap-1 items-center">
+                            <div className="flex items-center gap-1 text-xs">
+                                <span className="text-slate-500">Allow:</span>
+                                <input 
+                                    type="number" 
+                                    min="0"
+                                    placeholder={globalSettings.allowance}
+                                    value={person.late_allowance_days ?? ''}
+                                    onChange={(e) => handleWageChange(index, 'late_allowance_days', e.target.value)}
+                                    className="w-12 px-1 py-0.5 border border-slate-200 rounded text-center text-xs"
+                                />
+                            </div>
+                            <div className="flex items-center gap-1 text-xs">
+                                <span className="text-slate-500">Deduct:</span>
+                                <input 
+                                    type="number" 
+                                    min="0"
+                                    step="0.01"
+                                    placeholder={globalSettings.deduction}
+                                    value={person.late_deduction_amount ?? ''}
+                                    onChange={(e) => handleWageChange(index, 'late_deduction_amount', e.target.value)}
+                                    className="w-12 px-1 py-0.5 border border-slate-200 rounded text-center text-xs"
+                                />
+                            </div>
+                        </div>
+                    </td>
                     <td className="py-3 px-4 text-right">
                         <div className="text-sm font-bold text-slate-900 block">
-                            RS {parseFloat(person.total_cost || 0).toFixed(2)}
+                            ₹ {parseFloat(person.final_payout || person.total_cost || 0).toFixed(2)}
                         </div>
-                        {parseFloat(person.total_hours || 0) > 0 && parseFloat(person.daily_wage || 0) > 0 && (
-                            <span className="text-[10px] text-slate-400 block mt-1">
-                                {person.total_hours_str || `${person.total_hours}h`} × RS {(parseFloat(person.daily_wage)/workingHours).toFixed(2)}/hr
+                        {parseFloat(person.late_deduction || 0) > 0 && (
+                            <span className="text-[10px] text-red-500 block mt-1">
+                                - ₹{person.late_deduction} (Late Fee)
                             </span>
                         )}
                     </td>
