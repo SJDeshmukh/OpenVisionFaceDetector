@@ -25,6 +25,7 @@ const People = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [formData, setFormData] = useState({ 
+    id: null,
     name: '', 
     phone: '', 
     department: '', 
@@ -87,6 +88,7 @@ const People = () => {
   const openAddModal = () => {
     setIsEditing(false);
     setFormData({ 
+      id: null,
       name: '', 
       phone: '', 
       department: '', 
@@ -102,6 +104,7 @@ const People = () => {
   const handleEdit = (user) => {
     setIsEditing(true);
     setFormData({
+      id: user.id,
       name: user.name,
       phone: user.phone || '',
       department: user.department || '',
@@ -142,6 +145,7 @@ const People = () => {
       // For now, let's assume backend will handle it or we update the API to accept it.
 
       const payload = {
+        person_id: formData.id,
         name: formData.name,
         phone: formData.phone,
         department: formData.department,
@@ -155,6 +159,7 @@ const People = () => {
       if (response.data.status === 'success') {
         setIsModalOpen(false);
         setFormData({ 
+            id: null,
             name: '', 
             phone: '', 
             department: '', 
@@ -186,7 +191,7 @@ const People = () => {
   // Mock data augmentation (minimized now that we have real data)
   const augmentedUsers = users.map((u, i) => ({
     ...u,
-    id: `EMP-${1000 + i}`,
+    id: u.id || `EMP-${1000 + i}`,
     // Use real data if available, fallback to defaults
     department: u.department || 'Unassigned',
     designation: u.designation || 'Employee',

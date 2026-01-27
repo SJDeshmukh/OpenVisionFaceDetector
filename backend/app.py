@@ -1880,7 +1880,7 @@ def get_persons():
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
-    query = "SELECT name, department, designation, shift, daily_wage, face_image, phone FROM faces"
+    query = "SELECT id, name, department, designation, shift, daily_wage, face_image, phone FROM faces"
     params = []
     
     if vendor_id:
