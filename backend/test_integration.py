@@ -12,6 +12,7 @@ class TestIntegration(unittest.TestCase):
     
     def setUp(self):
         self.conn = sqlite3.connect(TEST_DB)
+        self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.row_factory = sqlite3.Row
         self.c = self.conn.cursor()
         

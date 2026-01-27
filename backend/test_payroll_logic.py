@@ -24,6 +24,7 @@ class PayrollEndpointTest(unittest.TestCase):
         # Given the complexity of patching globals, I will use `unittest.mock.patch` for sqlite3.connect.
         
         self.conn = sqlite3.connect(self.test_db)
+        self.conn.execute("PRAGMA journal_mode=WAL")
         self.create_tables()
         self.populate_data()
         self.conn.close()

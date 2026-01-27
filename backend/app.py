@@ -90,6 +90,10 @@ def add_missing_columns():
         if 'max_mobile_devices' not in sub_cols:
             print("MIGRATION: Adding max_mobile_devices to subscriptions...")
             c.execute("ALTER TABLE subscriptions ADD COLUMN max_mobile_devices INTEGER DEFAULT 1")
+            
+        if 'max_employees' not in sub_cols:
+            print("MIGRATION: Adding max_employees to subscriptions...")
+            c.execute("ALTER TABLE subscriptions ADD COLUMN max_employees INTEGER DEFAULT 50")
 
         # 5. Create active_sessions table
         c.execute('''CREATE TABLE IF NOT EXISTS active_sessions
@@ -650,6 +654,9 @@ def verify_token(token):
 def super_admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
+        if request.method == 'OPTIONS':
+            return jsonify({}), 200
+
         # Enable Auth Check
         auth_header = request.headers.get('Authorization')
         if not auth_header:
@@ -956,10 +963,12 @@ def get_vendors():
     # Get Vendors with Subscription Details
     c.execute("""
         SELECT v.*, 
-               s.plan_type, s.start_date, s.end_date, s.max_users, s.cost_per_user, s.setup_fee, s.setup_fee_paid,
+               s.plan_type, s.start_date, s.end_date, s.max_users, s.max_employees, s.max_mobile_devices, s.cost_per_user, s.setup_fee, s.setup_fee_paid,
                (SELECT username FROM system_users WHERE vendor_id = v.id AND role = 'vendor_admin' LIMIT 1) as admin_username,
                (SELECT username FROM system_users WHERE vendor_id = v.id AND role = 'user' LIMIT 1) as user_username,
-               (SELECT COUNT(*) FROM system_users WHERE vendor_id = v.id) as admin_count
+               (SELECT COUNT(*) FROM system_users WHERE vendor_id = v.id AND role = 'vendor_admin') as admin_count,
+               (SELECT COUNT(*) FROM system_users WHERE vendor_id = v.id AND role = 'user') as device_count,
+               (SELECT COUNT(*) FROM faces WHERE vendor_id = v.id) as employee_count
         FROM vendors v
         LEFT JOIN subscriptions s ON v.id = s.vendor_id
         ORDER BY v.created_at DESC
@@ -1015,9 +1024,14 @@ def create_vendor():
         end_date = data.get("end_date") or (date.today() + timedelta(days=14)).isoformat()
         cost = data.get("cost") or 0
         
-        c.execute("""INSERT INTO subscriptions (vendor_id, plan_type, start_date, end_date, max_users, cost_per_user, setup_fee)
-                     VALUES (?, 'custom', ?, ?, 100, ?, 0)""",
-                  (vendor_id, start_date, end_date, cost))
+        # Get limits from request, default to 5 phones and 50 employees if not provided
+        max_users = data.get("max_users") or 5
+        max_employees = data.get("max_employees") or 50
+        max_mobile_devices = max_users # Sync them for now as per user request
+        
+        c.execute("""INSERT INTO subscriptions (vendor_id, plan_type, start_date, end_date, max_users, max_employees, max_mobile_devices, cost_per_user, setup_fee)
+                     VALUES (?, 'custom', ?, ?, ?, ?, ?, ?, 0)""",
+                  (vendor_id, start_date, end_date, max_users, max_employees, max_mobile_devices, cost))
                   
         # 3. Create Admin User for Vendor
         admin_username = data.get("admin_username") or f"admin_{vendor_id}"
@@ -1101,6 +1115,77 @@ def toggle_web_login(vendor_id):
     conn.close()
     
     return jsonify({"success": True, "enabled": enabled})
+
+
+@greeting_bp.route("/admin/vendors/<int:vendor_id>/subscription", methods=["GET"])
+@super_admin_required
+def get_vendor_subscription_admin(vendor_id):
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    try:
+        c.execute("SELECT * FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+        sub = c.fetchone()
+        if not sub:
+             return jsonify({"error": "No subscription found"}), 404
+        
+        # Convert row to dict
+        sub_dict = dict(sub)
+        return jsonify(sub_dict)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+@greeting_bp.route("/admin/vendors/<int:vendor_id>/subscription", methods=["PUT"])
+@super_admin_required
+def update_vendor_subscription(vendor_id):
+    data = request.json
+    
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        # Check if subscription exists
+        c.execute("SELECT rowid FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+        if not c.fetchone():
+            return jsonify({"error": "Subscription not found"}), 404
+            
+        # Build Update Query
+        query = "UPDATE subscriptions SET "
+        params = []
+        
+        fields = ['start_date', 'end_date', 'plan_type', 'max_users', 'max_employees', 'max_mobile_devices', 'cost_per_user', 'setup_fee', 'setup_fee_paid']
+        
+        # Handle aliases or logic
+        if 'max_users' in data:
+            # Sync max_users and max_mobile_devices if only one is provided?
+            # Or trust the input. The frontend sends max_users for phones.
+            # We should update both if they are meant to be the same.
+            # But let's stick to updating what is sent.
+            pass
+            
+        for field in fields:
+            if field in data:
+                query += f"{field} = ?, "
+                params.append(data[field])
+        
+        # Special case: if max_users is updated but max_mobile_devices isn't, sync them?
+        # User said "number of users which will be number of phones".
+        if 'max_users' in data and 'max_mobile_devices' not in data:
+             query += "max_mobile_devices = ?, "
+             params.append(data['max_users'])
+             
+        if params:
+            query = query.rstrip(", ") + " WHERE vendor_id = ?"
+            params.append(vendor_id)
+            c.execute(query, params)
+            conn.commit()
+            
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
 
 @greeting_bp.route("/admin/vendors/<int:vendor_id>", methods=["PUT"])

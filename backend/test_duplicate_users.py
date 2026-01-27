@@ -25,6 +25,7 @@ class TestDuplicateUsers(unittest.TestCase):
             
             # Setup Vendor & Subscription (required for upload_face)
             conn = sqlite3.connect(TEST_DB)
+            conn.execute("PRAGMA journal_mode=WAL")
             c = conn.cursor()
             # Create vendor (No password column)
             c.execute("INSERT OR IGNORE INTO vendors (email, company_name) VALUES (?, ?)",

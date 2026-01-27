@@ -36,6 +36,7 @@ class TestAuthFlow(unittest.TestCase):
     def _init_test_db(self):
         # Manually run init_db logic but on test_db
         conn = sqlite3.connect(self.test_db)
+        conn.execute("PRAGMA journal_mode=WAL")
         c = conn.cursor()
         
         # Core Tables

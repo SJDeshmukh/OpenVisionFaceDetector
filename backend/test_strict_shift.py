@@ -26,6 +26,7 @@ class TestStrictShift(unittest.TestCase):
             migrate_faces_pk()
             
             conn = sqlite3.connect(TEST_DB)
+            conn.execute("PRAGMA journal_mode=WAL")
             c = conn.cursor()
             
             # 1. Setup Vendor & Company

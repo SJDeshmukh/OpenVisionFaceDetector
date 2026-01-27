@@ -14,7 +14,7 @@ const SuperAdminDashboard = () => {
   const [newPassword, setNewPassword] = useState('');
   const [newVendor, setNewVendor] = useState({ 
     company_name: '', contact_person: '', phone: '', email: '',
-    start_date: '', end_date: '', cost: '', max_users: '',
+    start_date: '', end_date: '', cost: '', max_users: '', max_employees: '',
     admin_username: '', admin_password: '',
     user_username: '', user_password: ''
   });
@@ -92,6 +92,7 @@ const SuperAdminDashboard = () => {
             end_date: newVendor.end_date,
             cost_per_user: newVendor.cost,
             max_users: newVendor.max_users,
+            max_employees: newVendor.max_employees,
             plan_type: 'custom'
         }, {
             headers: { Authorization: `Bearer ${user?.token}` }
@@ -100,7 +101,11 @@ const SuperAdminDashboard = () => {
         alert("Vendor Updated Successfully!");
       } else {
         // Create Mode
-        const response = await axios.post(`${API_URL}/admin/vendors`, { ...newVendor, max_users: newVendor.max_users || 100 }, {
+        const response = await axios.post(`${API_URL}/admin/vendors`, { 
+            ...newVendor, 
+            max_users: newVendor.max_users || 5,
+            max_employees: newVendor.max_employees || 50
+        }, {
           headers: { Authorization: `Bearer ${user?.token}` }
         });
         alert(`Vendor Created!\nAdmin: ${response.data.admin_credentials.username}\nUser: ${response.data.user_credentials.username}`);
@@ -131,6 +136,7 @@ const SuperAdminDashboard = () => {
       end_date: vendor.end_date ? vendor.end_date.split(' ')[0] : '',
       cost: vendor.cost_per_user || '',
       max_users: vendor.max_users || '',
+      max_employees: vendor.max_employees || '',
       admin_username: vendor.admin_username || '',
       admin_password: '', // Keep blank
       user_username: vendor.user_username || '',
@@ -319,6 +325,7 @@ const SuperAdminDashboard = () => {
               <th className="p-4 font-semibold text-slate-600">Contact</th>
               <th className="p-4 font-semibold text-slate-600">Status</th>
               <th className="p-4 font-semibold text-slate-600">Plan & Cost</th>
+              <th className="p-4 font-semibold text-slate-600">Usage / Limits</th>
               <th className="p-4 font-semibold text-slate-600">Duration</th>
               <th className="p-4 font-semibold text-slate-600">Logins (Admin/User)</th>
               <th className="p-4 font-semibold text-slate-600">Actions</th>
@@ -352,6 +359,22 @@ const SuperAdminDashboard = () => {
                         <span className="text-xs text-slate-500">Total: ₹{(vendor.cost_per_user || 0) * (vendor.max_users || 0)}</span>
                     </div>
                   </div>
+                </td>
+                <td className="p-4">
+                    <div className="flex flex-col gap-2 text-sm">
+                        <div className="flex justify-between items-center min-w-[120px]">
+                            <span className="text-slate-500">Employees:</span>
+                            <span className={`font-mono font-bold ${(vendor.employee_count || 0) > (vendor.max_employees || 0) ? 'text-red-600' : 'text-slate-700'}`}>
+                                {vendor.employee_count || 0} / {vendor.max_employees || '∞'}
+                            </span>
+                        </div>
+                        <div className="flex justify-between items-center min-w-[120px]">
+                            <span className="text-slate-500">Phones:</span>
+                            <span className={`font-mono font-bold ${(vendor.device_count || 0) > (vendor.max_users || 0) ? 'text-red-600' : 'text-slate-700'}`}>
+                                {vendor.device_count || 0} / {vendor.max_users || '∞'}
+                            </span>
+                        </div>
+                    </div>
                 </td>
                 <td className="p-4 text-slate-600 text-sm">
                    <div className="flex flex-col">
@@ -640,13 +663,23 @@ const SuperAdminDashboard = () => {
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Max Users</label>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Max Phones (Devices)</label>
                     <input 
                       type="number" 
                       className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none bg-white"
                       value={newVendor.max_users}
                       onChange={e => setNewVendor({...newVendor, max_users: e.target.value})}
-                      placeholder="Default: 100"
+                      placeholder="Default: 5"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Max Employees</label>
+                    <input 
+                      type="number" 
+                      className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none bg-white"
+                      value={newVendor.max_employees}
+                      onChange={e => setNewVendor({...newVendor, max_employees: e.target.value})}
+                      placeholder="Default: 50"
                     />
                   </div>
                 </div>
