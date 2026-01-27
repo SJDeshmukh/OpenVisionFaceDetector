@@ -3701,6 +3701,32 @@ def view_stream_frame():
     else:
         return jsonify({"status": "offline", "image": None})
 
+def calculate_expected_hours(day_activities):
+    """
+    Helper to calculate total expected work hours from a list of activities.
+    Handles overnight shifts correctly.
+    """
+    expected_hours = 0
+    for act in day_activities:
+        # Check is_payable, default to True if Work, False otherwise
+        is_payable = act.get('is_payable', act.get('type') == 'Work')
+        
+        if is_payable:
+            try:
+                s = datetime.strptime(act['start_time'], '%H:%M')
+                e = datetime.strptime(act['end_time'], '%H:%M')
+                
+                # Handle overnight shifts (end < start)
+                if e < s:
+                    e += timedelta(days=1)
+                    
+                duration = (e - s).total_seconds() / 3600
+                expected_hours += duration
+            except Exception as e:
+                print(f"Error calculating expected hours for activity {act}: {e}")
+                pass
+    return expected_hours
+
 def calculate_arrival_status(expected_start, sessions, day_activities=None):
     """
     Determines if the user arrived late based on their first 'Work' session.
@@ -3822,20 +3848,7 @@ def get_attendance_summary():
     
     if day_activities:
         # Calculate expected hours (Payable activities only)
-        for act in day_activities:
-            # Check is_payable, default to True if Work, False otherwise
-            is_payable = act.get('is_payable', act.get('type') == 'Work')
-            
-            if is_payable:
-                s = datetime.strptime(act['start_time'], '%H:%M')
-                e = datetime.strptime(act['end_time'], '%H:%M')
-                
-                # Handle overnight shifts (end < start)
-                if e < s:
-                    e += timedelta(days=1)
-                    
-                duration = (e - s).total_seconds() / 3600
-                expected_work_hours += duration
+        expected_work_hours = calculate_expected_hours(day_activities)
         
         expected_start = day_activities[0]['start_time']
         expected_end = day_activities[-1]['end_time']
