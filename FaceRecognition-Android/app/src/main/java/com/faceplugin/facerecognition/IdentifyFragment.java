@@ -15,8 +15,12 @@ import android.util.Size;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.FrameLayout;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.os.Handler;
+import android.os.Looper;
+import android.view.WindowManager;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -77,7 +81,21 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
 
     private FaceView faceView;
     private TextView statusText;
+    private FrameLayout screenSaverView;
     private DBManager dbManager;
+
+    // Power Saving / Screen Saver
+    private Handler powerSaveHandler = new Handler(Looper.getMainLooper());
+    private boolean isPowerSaveTimerRunning = false;
+    private boolean isScreenSaverActive = false;
+    private static final long POWER_SAVE_DELAY = 5000; // 5 seconds
+    
+    private Runnable powerSaveRunnable = new Runnable() {
+        @Override
+        public void run() {
+            showScreenSaver();
+        }
+    };
 
     // Debounce for Unknown state to prevent flickering
     private int consecutiveUnknownFrames = 0;
@@ -98,6 +116,12 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         viewFinder = view.findViewById(R.id.preview);
         faceView = view.findViewById(R.id.faceView);
         statusText = view.findViewById(R.id.statusText);
+        screenSaverView = view.findViewById(R.id.screenSaverView);
+
+        // Keep screen on
+        if (getActivity() != null) {
+            getActivity().getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        }
 
         cameraExecutorService = Executors.newFixedThreadPool(1);
         tts = new TextToSpeech(requireContext(), this);
@@ -116,6 +140,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     public void onResume() {
         super.onResume();
         lastProcessedPersonName = null;
+        hideScreenSaver(); // Start with screen active
         if (statusText != null) {
             statusText.setText("Looking for a registered face...");
         }
@@ -133,6 +158,10 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         if (tts != null) {
             tts.stop();
         }
+        if (powerSaveHandler != null) {
+            powerSaveHandler.removeCallbacks(powerSaveRunnable);
+            isPowerSaveTimerRunning = false;
+        }
     }
 
     @Override
@@ -143,6 +172,12 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         }
         if (cameraExecutorService != null) {
             cameraExecutorService.shutdown();
+        }
+        if (powerSaveHandler != null) {
+            powerSaveHandler.removeCallbacks(powerSaveRunnable);
+        }
+        if (getActivity() != null) {
+            getActivity().getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         }
     }
 
@@ -353,6 +388,23 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         }).start();
     }
 
+    private void showScreenSaver() {
+        if (!isScreenSaverActive && screenSaverView != null) {
+            screenSaverView.setVisibility(View.VISIBLE);
+            isScreenSaverActive = true;
+            isPowerSaveTimerRunning = false; // Timer finished
+        }
+    }
+
+    private void hideScreenSaver() {
+        if (isScreenSaverActive && screenSaverView != null) {
+            screenSaverView.setVisibility(View.GONE);
+            isScreenSaverActive = false;
+        }
+        // Always ensure timer is reset when hiding (or trying to hide)
+        // logic handled in caller
+    }
+
     @Override
     public void onInit(int status) {
         if (status == TextToSpeech.SUCCESS) {
@@ -458,13 +510,29 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                     faceView.setFrameSize(new Size(bitmap.getWidth(), bitmap.getHeight()));
                     faceView.setFaceBoxes(faceBoxes);
                     
-                    if (faceBoxes.isEmpty()) {
-                        // Reset if no face detected
-                        if (lastProcessedPersonName != null) {
-                            lastProcessedPersonName = null;
-                            statusText.setText("Looking for a registered face...");
-                            statusText.setTextColor(getResources().getColor(R.color.primary_soft_blue));
-                            faceView.setRecognizedName(null);
+                    if (faceBoxes.size() > 0) {
+                        // Face Detected - Reset Power Save Timer
+                        hideScreenSaver();
+                        if (isPowerSaveTimerRunning) {
+                            powerSaveHandler.removeCallbacks(powerSaveRunnable);
+                            isPowerSaveTimerRunning = false;
+                        }
+                    } else {
+                        // No Face Detected
+                        if (faceBoxes.isEmpty()) {
+                            // Reset if no face detected (existing logic)
+                            if (lastProcessedPersonName != null) {
+                                lastProcessedPersonName = null;
+                                statusText.setText("Looking for a registered face...");
+                                statusText.setTextColor(getResources().getColor(R.color.primary_soft_blue));
+                                faceView.setRecognizedName(null);
+                            }
+                            
+                            // Start Power Save Timer if not running and screen not already black
+                            if (!isScreenSaverActive && !isPowerSaveTimerRunning) {
+                                powerSaveHandler.postDelayed(powerSaveRunnable, POWER_SAVE_DELAY);
+                                isPowerSaveTimerRunning = true;
+                            }
                         }
                     }
                 });

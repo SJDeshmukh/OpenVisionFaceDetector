@@ -43,9 +43,14 @@ def get_config():
 # Ensure database is always accessed from the same location (backend directory)
 DB_PATH = os.environ.get('DB_PATH') or os.path.join(os.path.dirname(os.path.abspath(__file__)), 'faces.db')
 
+def get_db_connection(timeout=30):
+    conn = sqlite3.connect(DB_PATH, timeout=timeout)
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
 def add_missing_columns():
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         c = conn.cursor()
         
         # 1. Add is_late to attendance if missing
@@ -79,6 +84,23 @@ def add_missing_columns():
             if 'global_late_deduction' not in existing_keys:
                 c.execute("INSERT INTO system_settings (key, value) VALUES (?, ?)", ('global_late_deduction', '0.0'))
 
+        # 4. Add max_mobile_devices to subscriptions
+        c.execute("PRAGMA table_info(subscriptions)")
+        sub_cols = [info[1] for info in c.fetchall()]
+        if 'max_mobile_devices' not in sub_cols:
+            print("MIGRATION: Adding max_mobile_devices to subscriptions...")
+            c.execute("ALTER TABLE subscriptions ADD COLUMN max_mobile_devices INTEGER DEFAULT 1")
+
+        # 5. Create active_sessions table
+        c.execute('''CREATE TABLE IF NOT EXISTS active_sessions
+                     (token TEXT PRIMARY KEY,
+                      username TEXT,
+                      vendor_id INTEGER,
+                      device_id TEXT,
+                      platform TEXT, -- 'web' or 'mobile'
+                      last_active DATETIME,
+                      created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+
         conn.commit()
         conn.close()
     except Exception as e:
@@ -95,7 +117,7 @@ def check_vendor_status(vendor_id):
     if not vendor_id:
         return True, "SuperAdmin"
         
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
@@ -192,7 +214,7 @@ def authenticate_vendor_access():
             # STRICT MODE: No fallback to 'admin'. Require authentication.
             return None, (jsonify({"error": "Authentication Required"}), 401)
 
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         
@@ -205,9 +227,9 @@ def authenticate_vendor_access():
              return None, (jsonify({"error": "User Not Found"}), 401)
 
         vendor_id = user['vendor_id']
-        if not vendor_id and user['role'] == 'super_admin':
-             # SuperAdmin default context
-             vendor_id = 1 
+        # if not vendor_id and user['role'] == 'super_admin':
+        #      # SuperAdmin default context
+        #      vendor_id = 1 
         
         # SuperAdmin Bypass / Impersonation
         if role == 'super_admin':
@@ -225,9 +247,9 @@ def authenticate_vendor_access():
             
             # If still no vendor_id, return None (Global Context)
             if not vendor_id:
-                return None, None
+                pass # Allow Global Context
             
-        if not vendor_id:
+        if not vendor_id and role != 'super_admin':
              return None, (jsonify({"error": "Vendor Context Required"}), 400)
              
         # Skip status checks for now
@@ -257,8 +279,9 @@ def migrate_faces_pk():
     Migrates the faces table to use an Integer ID as Primary Key instead of Name.
     This supports multiple users with the same name.
     """
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
+    c.execute("PRAGMA journal_mode=WAL")
     
     try:
         # Check if 'id' column exists
@@ -316,8 +339,9 @@ def migrate_faces_pk():
         conn.close()
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
+    c.execute("PRAGMA journal_mode=WAL")
     c.execute('''CREATE TABLE IF NOT EXISTS faces
                  (name TEXT PRIMARY KEY, 
                   templates TEXT, 
@@ -554,6 +578,12 @@ def init_db():
     if 'max_users' not in sub_cols:
          print("Migrating: Adding max_users to subscriptions")
          c.execute("ALTER TABLE subscriptions ADD COLUMN max_users INTEGER DEFAULT 10")
+    if 'max_employees' not in sub_cols:
+         print("Migrating: Adding max_employees to subscriptions")
+         c.execute("ALTER TABLE subscriptions ADD COLUMN max_employees INTEGER DEFAULT 50")
+    if 'max_mobile_devices' not in sub_cols:
+         print("Migrating: Adding max_mobile_devices to subscriptions")
+         c.execute("ALTER TABLE subscriptions ADD COLUMN max_mobile_devices INTEGER DEFAULT 1")
     if 'cost_per_user' not in sub_cols:
          print("Migrating: Adding cost_per_user to subscriptions")
          c.execute("ALTER TABLE subscriptions ADD COLUMN cost_per_user REAL DEFAULT 199.0")
@@ -604,8 +634,11 @@ init_db()
 migrate_faces_pk()
 
 # --- Auth Helper & Decorators ---
+import uuid
+
 def generate_token(username, role):
-    return serializer.dumps({'username': username, 'role': role})
+    # Add a random nonce to ensure uniqueness even within the same second
+    return serializer.dumps({'username': username, 'role': role, 'nonce': str(uuid.uuid4())})
 
 def verify_token(token):
     try:
@@ -629,7 +662,7 @@ def super_admin_required(f):
                 return jsonify({"error": "Invalid or Expired Token"}), 401
             
             # Verify User Exists in DB (Auto-Logout if deleted)
-            conn = sqlite3.connect(DB_PATH)
+            conn = get_db_connection()
             c = conn.cursor()
             c.execute("SELECT role FROM system_users WHERE username = ?", (data['username'],))
             user_row = c.fetchone()
@@ -659,7 +692,7 @@ def get_vendor_subscription():
     if not vendor_id:
          return jsonify({"error": "No vendor context"}), 400
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
@@ -699,7 +732,7 @@ def get_companies():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
@@ -727,7 +760,7 @@ def create_company():
         return jsonify({"error": "Name is required"}), 400
         
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         c = conn.cursor()
         
         # Check if vendor already has a company
@@ -753,7 +786,7 @@ def update_company_settings(company_id):
     vendor_id, error = authenticate_vendor_access()
     if error: return error
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     
     # Verify Ownership
@@ -786,7 +819,7 @@ def get_company_details(company_id):
     vendor_id, error = authenticate_vendor_access()
     if error: return error
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
@@ -819,7 +852,7 @@ def update_draft_timetable(company_id):
     vendor_id, error = authenticate_vendor_access()
     if error: return error
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     
     # Verify Ownership
@@ -855,7 +888,7 @@ def publish_timetable(company_id):
     vendor_id, error = authenticate_vendor_access()
     if error: return error
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     
     # Verify Ownership
@@ -889,7 +922,7 @@ def reset_user_password():
     if not target_username or not new_password:
         return jsonify({"error": "Username and New Password are required"}), 400
         
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     
     try:
@@ -916,7 +949,7 @@ def reset_user_password():
 @super_admin_required
 def get_vendors():
     # TODO: Add Auth Check (SuperAdmin only)
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
@@ -967,7 +1000,7 @@ def create_vendor():
     if not company_name:
         return jsonify({"error": "Company Name is required"}), 400
         
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     
     try:
@@ -1040,46 +1073,6 @@ def create_vendor():
     finally:
         conn.close()
 
-@greeting_bp.route("/admin/vendors/<int:vendor_id>/subscription", methods=["PUT"])
-@super_admin_required
-def update_subscription(vendor_id):
-    # TODO: Add Auth Check
-    data = request.json
-    
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    try:
-        # Check if subscription exists
-        c.execute("SELECT id FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
-        sub = c.fetchone()
-        
-        if sub:
-            # Update
-            query = "UPDATE subscriptions SET "
-            params = []
-            
-            fields = ['plan_type', 'start_date', 'end_date', 'max_users', 'cost_per_user', 'setup_fee', 'setup_fee_paid']
-            for field in fields:
-                if field in data:
-                    query += f"{field} = ?, "
-                    params.append(data[field])
-            
-            query = query.rstrip(", ") + " WHERE vendor_id = ?"
-            params.append(vendor_id)
-            
-            c.execute(query, params)
-        else:
-            # Create (Edge case)
-            pass 
-            
-        conn.commit()
-        return jsonify({"success": True})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        conn.close()
-
 @greeting_bp.route("/admin/vendors/<int:vendor_id>/suspend", methods=["POST"])
 @super_admin_required
 def suspend_vendor(vendor_id):
@@ -1087,7 +1080,7 @@ def suspend_vendor(vendor_id):
     action = data.get("action", "suspend") # suspend or activate
     status = 'suspended' if action == 'suspend' else 'active'
     
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute("UPDATE vendors SET status = ? WHERE id = ?", (status, vendor_id))
     conn.commit()
@@ -1101,7 +1094,7 @@ def toggle_web_login(vendor_id):
     data = request.json
     enabled = data.get("enabled", True) # boolean
     
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute("UPDATE vendors SET web_login_enabled = ? WHERE id = ?", (1 if enabled else 0, vendor_id))
     conn.commit()
@@ -1115,7 +1108,7 @@ def toggle_web_login(vendor_id):
 def update_vendor_details(vendor_id):
     data = request.json
     
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     
     try:
@@ -1204,7 +1197,7 @@ def update_vendor_details(vendor_id):
 @greeting_bp.route("/admin/vendors/<int:vendor_id>", methods=["DELETE"])
 @super_admin_required
 def delete_vendor(vendor_id):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     
     try:
@@ -1234,7 +1227,7 @@ def delete_vendor(vendor_id):
 @greeting_bp.route("/admin/vendors/<int:vendor_id>/invoices", methods=["GET"])
 @super_admin_required
 def get_vendor_invoices(vendor_id):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
@@ -1251,7 +1244,7 @@ def get_vendor_invoices(vendor_id):
 @greeting_bp.route("/admin/vendors/<int:vendor_id>/invoices/generate", methods=["POST"])
 @super_admin_required
 def generate_invoice(vendor_id):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
@@ -1307,7 +1300,7 @@ def update_invoice_status(invoice_id):
     data = request.json
     status = data.get("status") # paid, overdue, generated
     
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
@@ -1343,7 +1336,7 @@ def get_my_subscription():
             
         username = user_data['username']
         
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         
@@ -1390,7 +1383,7 @@ def get_analytics():
     if not vendor_id: return jsonify({"error": "Vendor context required"}), 400
 
     import json
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
@@ -1592,7 +1585,7 @@ def export_report():
     from flask import Response
     from collections import defaultdict
     
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
@@ -1844,7 +1837,7 @@ def get_report_filters():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
@@ -1876,7 +1869,7 @@ def get_persons():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
@@ -1908,7 +1901,7 @@ def get_payroll_report():
     if not start_date or not end_date:
         return jsonify({"error": "start_date and end_date are required"}), 400
         
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
@@ -2103,7 +2096,7 @@ def update_global_late_config():
     if allowance is None and deduction is None:
         return jsonify({"error": "No settings provided"}), 400
         
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     
     try:
@@ -2133,13 +2126,15 @@ def login():
     # Robustness: Handle missing keys and strip whitespace
     username = str(data.get("username", "")).strip()
     password = str(data.get("password", "")).strip()
+    device_id = data.get("device_id")
+    platform = data.get("platform", "web") # 'web' or 'mobile'
 
     if not username or not password:
         return jsonify({"error": "Username and password are required"}), 400
 
-    print(f"Login Attempt: User='{username}', Pass='{password}'") # DEBUG LOG
+    print(f"Login Attempt: User='{username}', Pass='{password}', Device='{device_id}', Platform='{platform}'") # DEBUG LOG
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute("SELECT * FROM system_users WHERE username = ? AND password = ?", (username, password))
@@ -2152,12 +2147,48 @@ def login():
             is_allowed, reason = check_vendor_status(user['vendor_id'])
             
             # Check Web Login Flag first (needed for both active and expired logic)
-            conn = sqlite3.connect(DB_PATH)
+            conn = get_db_connection()
             c = conn.cursor()
             c.execute("SELECT web_login_enabled FROM vendors WHERE id = ?", (user['vendor_id'],))
             row = c.fetchone()
-            conn.close()
             web_login_enabled = row[0] if row else 1 # Default to True
+            
+            # --- Session Limit Checks ---
+            
+            # 1. Web: Single Device Enforcement
+            if platform == 'web':
+                c.execute("SELECT device_id FROM active_sessions WHERE username = ? AND platform = 'web'", (username,))
+                rows = c.fetchall()
+                for r in rows:
+                    existing_dev = r[0]
+                    # If device_id is provided and differs from existing session
+                    if device_id and existing_dev and existing_dev != device_id:
+                        conn.close()
+                        return jsonify({"error": "You are signed in on another device. Please sign out there first."}), 403
+            
+            # 2. Mobile: Max Device Enforcement
+            elif platform == 'mobile':
+                # Get Limit
+                c.execute("SELECT max_mobile_devices FROM subscriptions WHERE vendor_id = ?", (user['vendor_id'],))
+                sub = c.fetchone()
+                max_devs = sub[0] if sub else 1
+                
+                # Count Active Devices (excluding current if re-logging in)
+                query = "SELECT COUNT(DISTINCT device_id) FROM active_sessions WHERE vendor_id = ? AND platform = 'mobile'"
+                params = [user['vendor_id']]
+                
+                if device_id:
+                    query += " AND device_id != ?"
+                    params.append(device_id)
+                
+                c.execute(query, params)
+                active_count = c.fetchone()[0]
+                
+                if active_count >= max_devs:
+                    conn.close()
+                    return jsonify({"error": f"Mobile device limit reached ({max_devs}). Contact Admin."}), 403
+
+            conn.close()
 
             if not is_allowed:
                 print(f"Login Blocked: {reason}")
@@ -2190,13 +2221,22 @@ def login():
         # Get Company ID for this vendor (if any)
         company_id = None
         if user['vendor_id']:
-            conn = sqlite3.connect(DB_PATH)
+            conn = get_db_connection()
             c = conn.cursor()
             c.execute("SELECT id FROM companies WHERE vendor_id = ? LIMIT 1", (user['vendor_id'],))
             row = c.fetchone()
-            conn.close()
             if row:
                 company_id = row[0]
+            
+            # --- Record Session ---
+            # Remove old session for this specific device/user combo to prevent duplicates
+            c.execute("DELETE FROM active_sessions WHERE username = ? AND device_id = ?", (username, device_id))
+            
+            # Insert new session
+            c.execute("INSERT INTO active_sessions (token, username, vendor_id, device_id, platform, last_active) VALUES (?, ?, ?, ?, ?, ?)",
+                      (token, username, user['vendor_id'], device_id, platform, datetime.now()))
+            conn.commit()
+            conn.close()
 
         return jsonify({
             "status": "success",
@@ -2233,9 +2273,22 @@ def register_user():
     if not target_vendor_id: # SuperAdmin
         target_vendor_id = data.get("vendor_id")
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     try:
+        # Check User Limit
+        if target_vendor_id:
+             c.execute("SELECT max_users FROM subscriptions WHERE vendor_id = ?", (target_vendor_id,))
+             sub = c.fetchone()
+             max_users = sub[0] if sub else 5 # Default limit
+             
+             c.execute("SELECT COUNT(*) FROM system_users WHERE vendor_id = ?", (target_vendor_id,))
+             current_count = c.fetchone()[0]
+             
+             if current_count >= max_users:
+                 conn.close()
+                 return jsonify({"error": f"User limit reached ({max_users}). Contact SuperAdmin."}), 403
+
         c.execute("INSERT INTO system_users (username, password, role, vendor_id) VALUES (?, ?, ?, ?)", 
                   (username, password, role, target_vendor_id))
         conn.commit()
@@ -2257,7 +2310,7 @@ def get_settings():
     # User asked to "Protect... endpoints". Settings is borderline.
     # Let's leave GET public for now (kiosk might need it before login), 
     # but PROTECT POST.
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute("SELECT key, value FROM system_settings")
@@ -2271,7 +2324,7 @@ def get_settings():
 @super_admin_required
 def update_settings():
     data = request.json
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     try:
         for key, value in data.items():
@@ -2291,7 +2344,7 @@ def get_users():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
@@ -2325,7 +2378,7 @@ def update_user(username):
     if not password and not role:
         return jsonify({"error": "Nothing to update"}), 400
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     try:
         # Construct Query
@@ -2368,7 +2421,7 @@ def delete_user(username):
     if username == "admin": # Prevent deleting the main admin
         return jsonify({"error": "Cannot delete default admin"}), 403
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     try:
         if vendor_id:
@@ -2419,23 +2472,23 @@ def upload_face():
         if not allowed:
             return jsonify({"error": f"Access Denied: {reason}"}), 403
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     
     try:
-        # 2. User Limit Check & Operation
+        # 2. Employee Limit Check & Operation
         if not person_id and vendor_id:
             # Check limit (only for new users)
-            c.execute("SELECT max_users FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+            c.execute("SELECT max_employees FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
             sub = c.fetchone()
-            max_users = sub[0] if sub else 10 # Default limit
+            max_employees = sub[0] if sub else 50 # Default limit
             
             c.execute("SELECT COUNT(*) FROM faces WHERE vendor_id = ?", (vendor_id,))
-            current_users = c.fetchone()[0]
+            current_count = c.fetchone()[0]
             
-            if current_users >= max_users:
+            if current_count >= max_employees:
                 conn.close()
-                return jsonify({"error": f"User Limit Reached ({max_users}). Upgrade your plan."}), 403
+                return jsonify({"error": f"Employee Limit Reached ({max_employees}). Upgrade your plan."}), 403
 
         if person_id:
             # Update Existing
@@ -2460,7 +2513,7 @@ def download_faces():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
@@ -2498,7 +2551,7 @@ def delete_face(name):
     if not name:
         return jsonify({"error": "Missing name"}), 400
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     try:
         if vendor_id:
@@ -2525,7 +2578,7 @@ def update_wages():
     data = request.json
     updates = data.get("updates", []) # List of {name, daily_wage, late_allowance_days, late_deduction_amount}
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     
     try:
@@ -2591,7 +2644,7 @@ def person_event():
             token = auth_header.split(" ")[1]
             user_data = verify_token(token)
             if user_data:
-                conn_auth = sqlite3.connect(DB_PATH)
+                conn_auth = get_db_connection()
                 c_auth = conn_auth.cursor()
                 c_auth.execute("SELECT vendor_id FROM system_users WHERE username = ?", (user_data['username'],))
                 u_row = c_auth.fetchone()
@@ -2603,7 +2656,7 @@ def person_event():
 
     # 2. Identify Person Vendor
     if recognized:
-         conn_check = sqlite3.connect(DB_PATH)
+         conn_check = get_db_connection()
          c_check = conn_check.cursor()
          f_row = None
          
@@ -2700,7 +2753,7 @@ def person_event():
         })
 
     # --- Check-in / Check-out Logic ---
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
 
@@ -3301,7 +3354,7 @@ def get_attendance():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
 
@@ -3635,7 +3688,7 @@ def upload_stream_frame():
                 token = auth_header.split(" ")[1]
                 user_data = verify_token(token)
                 if user_data:
-                    conn_auth = sqlite3.connect(DB_PATH)
+                    conn_auth = get_db_connection()
                     c_auth = conn_auth.cursor()
                     c_auth.execute("SELECT vendor_id FROM system_users WHERE username = ?", (user_data['username'],))
                     u_row = c_auth.fetchone()
@@ -3812,7 +3865,7 @@ def get_attendance_summary():
     date_str = request.args.get('date', datetime.now().strftime('%Y-%m-%d'))
     # company_id = request.args.get('company_id', 1) # Legacy default
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
@@ -3908,7 +3961,134 @@ def get_attendance_summary():
 
     return jsonify({"summary": summary})
 
+# --- SuperAdmin Subscription Management ---
+
+@greeting_bp.route("/superadmin/subscription", methods=["POST", "PUT"])
+@super_admin_required
+def update_subscription():
+    data = request.json
+    vendor_id = data.get("vendor_id")
+    
+    if not vendor_id:
+        return jsonify({"error": "Vendor ID required"}), 400
+        
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        # Check if subscription exists
+        c.execute("SELECT id FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+        exists = c.fetchone()
+        
+        fields = ["plan_type", "max_users", "max_employees", "max_mobile_devices", "start_date", "end_date", "grace_period_days", "status", "cost_per_user", "setup_fee", "setup_fee_paid"]
+        updates = []
+        params = []
+        
+        for field in fields:
+            if field in data:
+                updates.append(f"{field} = ?")
+                params.append(data[field])
+                
+        if not updates:
+             return jsonify({"error": "No fields to update"}), 400
+             
+        params.append(vendor_id)
+        
+        if exists:
+            query = f"UPDATE subscriptions SET {', '.join(updates)} WHERE vendor_id = ?"
+            c.execute(query, params)
+        else:
+            return jsonify({"error": "Subscription not found for vendor"}), 404
+            
+        conn.commit()
+        return jsonify({"status": "success", "message": "Subscription updated"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+@greeting_bp.route("/superadmin/employees", methods=["GET"])
+@super_admin_required
+def get_all_employees():
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    # Join Faces with Vendors and Attendance
+    # We want latest attendance status
+    query = """
+        SELECT f.*, v.company_name,
+               (SELECT status FROM attendance a WHERE a.person_id = f.id ORDER BY timestamp DESC LIMIT 1) as last_status,
+               (SELECT timestamp FROM attendance a WHERE a.person_id = f.id ORDER BY timestamp DESC LIMIT 1) as last_seen
+        FROM faces f
+        LEFT JOIN vendors v ON f.vendor_id = v.id
+    """
+    
+    # Filter by vendor if requested
+    vendor_id = request.args.get("vendor_id")
+    params = []
+    if vendor_id:
+        query += " WHERE f.vendor_id = ?"
+        params.append(vendor_id)
+        
+    c.execute(query, params)
+    rows = c.fetchall()
+    conn.close()
+    
+    employees = []
+    for row in rows:
+        employees.append({
+            "id": row["id"],
+            "name": row["name"],
+            "vendor_id": row["vendor_id"],
+            "company_name": row["company_name"],
+            "department": row["department"],
+            "designation": row["designation"],
+            "face_image": row["face_image"],
+            "last_status": row["last_status"],
+            "last_seen": row["last_seen"]
+        })
+        
+    return jsonify({"employees": employees})
+
+@greeting_bp.route("/auth/logout", methods=["POST"])
+def logout():
+    # Attempt to get token
+    auth_header = request.headers.get('Authorization')
+    token = None
+    if auth_header:
+        try:
+            token = auth_header.split(" ")[1]
+        except:
+            pass
+            
+    data = request.json or {}
+    username = data.get("username")
+    device_id = data.get("device_id")
+    
+    if not token and not (username and device_id):
+        return jsonify({"error": "Token or credentials required"}), 400
+        
+    conn = get_db_connection()
+    c = conn.cursor()
+    
+    try:
+        if token:
+            c.execute("DELETE FROM active_sessions WHERE token = ?", (token,))
+        
+        if username and device_id:
+            c.execute("DELETE FROM active_sessions WHERE username = ? AND device_id = ?", (username, device_id))
+            
+        conn.commit()
+        return jsonify({"status": "success", "message": "Logged out"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
 app.register_blueprint(greeting_bp)
 
 if __name__ == "__main__":
+    init_db()
+    add_missing_columns()
+    migrate_faces_pk()
     app.run(host="0.0.0.0", port=5001, debug=True)
