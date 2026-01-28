@@ -48,6 +48,26 @@ def get_db_connection(timeout=30):
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
+def add_vendor_devices_table():
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("PRAGMA journal_mode=WAL")
+    
+    # Check if table exists
+    c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='vendor_devices'")
+    if not c.fetchone():
+        print("MIGRATION: Creating vendor_devices table...")
+        c.execute('''CREATE TABLE vendor_devices
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      vendor_id INTEGER,
+                      device_id TEXT,
+                      device_name TEXT,
+                      registered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                      last_login_at DATETIME,
+                      UNIQUE(vendor_id, device_id))''')
+        conn.commit()
+    conn.close()
+
 def add_missing_columns():
     try:
         conn = get_db_connection()
@@ -94,6 +114,10 @@ def add_missing_columns():
         if 'max_employees' not in sub_cols:
             print("MIGRATION: Adding max_employees to subscriptions...")
             c.execute("ALTER TABLE subscriptions ADD COLUMN max_employees INTEGER DEFAULT 50")
+
+        if 'cost_per_employee' not in sub_cols:
+            print("MIGRATION: Adding cost_per_employee to subscriptions...")
+            c.execute("ALTER TABLE subscriptions ADD COLUMN cost_per_employee REAL DEFAULT 0")
 
         # 5. Create active_sessions table
         c.execute('''CREATE TABLE IF NOT EXISTS active_sessions
@@ -967,7 +991,7 @@ def get_vendors():
                (SELECT username FROM system_users WHERE vendor_id = v.id AND role = 'vendor_admin' LIMIT 1) as admin_username,
                (SELECT username FROM system_users WHERE vendor_id = v.id AND role = 'user' LIMIT 1) as user_username,
                (SELECT COUNT(*) FROM system_users WHERE vendor_id = v.id AND role = 'vendor_admin') as admin_count,
-               (SELECT COUNT(*) FROM system_users WHERE vendor_id = v.id AND role = 'user') as device_count,
+               (SELECT COUNT(*) FROM vendor_devices WHERE vendor_id = v.id) as device_count,
                (SELECT COUNT(*) FROM faces WHERE vendor_id = v.id) as employee_count
         FROM vendors v
         LEFT JOIN subscriptions s ON v.id = s.vendor_id
@@ -1029,9 +1053,13 @@ def create_vendor():
         max_employees = data.get("max_employees") or 50
         max_mobile_devices = max_users # Sync them for now as per user request
         
-        c.execute("""INSERT INTO subscriptions (vendor_id, plan_type, start_date, end_date, max_users, max_employees, max_mobile_devices, cost_per_user, setup_fee)
-                     VALUES (?, 'custom', ?, ?, ?, ?, ?, ?, 0)""",
-                  (vendor_id, start_date, end_date, max_users, max_employees, max_mobile_devices, cost))
+        # Costs
+        cost_per_user = data.get("cost_per_user") or 0
+        cost_per_employee = data.get("cost_per_employee") or 0
+        
+        c.execute("""INSERT INTO subscriptions (vendor_id, plan_type, start_date, end_date, max_users, max_employees, max_mobile_devices, cost_per_user, cost_per_employee, setup_fee)
+                     VALUES (?, 'custom', ?, ?, ?, ?, ?, ?, ?, 0)""",
+                  (vendor_id, start_date, end_date, max_users, max_employees, max_mobile_devices, cost_per_user, cost_per_employee))
                   
         # 3. Create Admin User for Vendor
         admin_username = data.get("admin_username") or f"admin_{vendor_id}"
@@ -1154,7 +1182,7 @@ def update_vendor_subscription(vendor_id):
         query = "UPDATE subscriptions SET "
         params = []
         
-        fields = ['start_date', 'end_date', 'plan_type', 'max_users', 'max_employees', 'max_mobile_devices', 'cost_per_user', 'setup_fee', 'setup_fee_paid']
+        fields = ['start_date', 'end_date', 'plan_type', 'max_users', 'max_employees', 'max_mobile_devices', 'cost_per_user', 'cost_per_employee', 'setup_fee', 'setup_fee_paid']
         
         # Handle aliases or logic
         if 'max_users' in data:
@@ -1340,13 +1368,23 @@ def generate_invoice(vendor_id):
         conn.close()
         return jsonify({"error": "No subscription found"}), 404
         
-    # Get Active User Count
-    c.execute("SELECT COUNT(*) FROM faces WHERE vendor_id = ?", (vendor_id,))
-    active_users = c.fetchone()[0]
+    # Get Billable Unit Count (Phones/Users) - Matching Dashboard Logic
+    # User requested: "amount should be number of users multiplied by the amount per employee"
+    # Interpreted as: Number of Phones (Users) * Cost per Unit
+    billed_count = sub['max_users'] or 5
     
     # Calculate Amount
-    cost_per_user = sub['cost_per_user'] or 199.0
-    monthly_cost = active_users * cost_per_user
+    cost_per_user = sub['cost_per_user'] or 0 # Now means Cost Per Device
+    cost_per_employee = sub['cost_per_employee'] or 0 # New Cost Per Employee
+    
+    # Formula: (Max Employees * Cost Per Employee) + (Max Devices * Cost Per Device)
+    max_employees_count = sub['max_employees'] or 50
+    billed_device_count = sub['max_users'] or 5 # Using max_users as max_devices
+    
+    employee_cost_total = max_employees_count * cost_per_employee
+    device_cost_total = billed_device_count * cost_per_user
+    
+    monthly_cost = employee_cost_total + device_cost_total
     
     # Check for Setup Fee
     setup_fee = 0
@@ -1357,8 +1395,12 @@ def generate_invoice(vendor_id):
     
     import json
     details = {
-        "active_users": active_users,
-        "cost_per_user": cost_per_user,
+        "max_employees": max_employees_count,
+        "cost_per_employee": cost_per_employee,
+        "max_devices": billed_device_count,
+        "cost_per_device": cost_per_user,
+        "employee_cost_total": employee_cost_total,
+        "device_cost_total": device_cost_total,
         "monthly_charge": monthly_cost,
         "setup_fee": setup_fee
     }
@@ -2251,27 +2293,44 @@ def login():
                         conn.close()
                         return jsonify({"error": "You are signed in on another device. Please sign out there first."}), 403
             
-            # 2. Mobile: Max Device Enforcement
+            # 2. Mobile: Max Device Enforcement (Persistent Registration)
             elif platform == 'mobile':
                 # Get Limit
                 c.execute("SELECT max_mobile_devices FROM subscriptions WHERE vendor_id = ?", (user['vendor_id'],))
                 sub = c.fetchone()
                 max_devs = sub[0] if sub else 1
                 
-                # Count Active Devices (excluding current if re-logging in)
-                query = "SELECT COUNT(DISTINCT device_id) FROM active_sessions WHERE vendor_id = ? AND platform = 'mobile'"
-                params = [user['vendor_id']]
-                
                 if device_id:
-                    query += " AND device_id != ?"
-                    params.append(device_id)
-                
-                c.execute(query, params)
-                active_count = c.fetchone()[0]
-                
-                if active_count >= max_devs:
+                    # Check if device is already registered
+                    c.execute("SELECT id FROM vendor_devices WHERE vendor_id = ? AND device_id = ?", (user['vendor_id'], device_id))
+                    existing_device = c.fetchone()
+                    
+                    if existing_device:
+                        # Already registered -> Update Last Login
+                        c.execute("UPDATE vendor_devices SET last_login_at = ? WHERE id = ?", (datetime.now(), existing_device[0]))
+                        conn.commit()
+                    else:
+                        # New Device -> Check Limit
+                        c.execute("SELECT COUNT(*) FROM vendor_devices WHERE vendor_id = ?", (user['vendor_id'],))
+                        registered_count = c.fetchone()[0]
+                        
+                        if registered_count >= max_devs:
+                            conn.close()
+                            return jsonify({"error": f"Mobile device limit reached ({max_devs}). Contact Admin to register new device."}), 403
+                        
+                        # Register New Device
+                        try:
+                            c.execute("INSERT INTO vendor_devices (vendor_id, device_id, device_name, last_login_at) VALUES (?, ?, ?, ?)",
+                                      (user['vendor_id'], device_id, f"Device {device_id[:8]}", datetime.now()))
+                            conn.commit()
+                        except sqlite3.IntegrityError:
+                            # Race condition or duplicate
+                            pass
+                else:
+                    # No device_id provided for mobile login? 
+                    # Strict mode: Require device_id
                     conn.close()
-                    return jsonify({"error": f"Mobile device limit reached ({max_devs}). Contact Admin."}), 403
+                    return jsonify({"error": "Device ID required for mobile login"}), 400
 
             conn.close()
 
@@ -2362,18 +2421,9 @@ def register_user():
     c = conn.cursor()
     try:
         # Check User Limit
-        if target_vendor_id:
-             c.execute("SELECT max_users FROM subscriptions WHERE vendor_id = ?", (target_vendor_id,))
-             sub = c.fetchone()
-             max_users = sub[0] if sub else 5 # Default limit
-             
-             c.execute("SELECT COUNT(*) FROM system_users WHERE vendor_id = ?", (target_vendor_id,))
-             current_count = c.fetchone()[0]
-             
-             if current_count >= max_users:
-                 conn.close()
-                 return jsonify({"error": f"User limit reached ({max_users}). Contact SuperAdmin."}), 403
-
+        # (Removed strict check on system_users count since we now support Shared Credentials 
+        # where one user account can be used on multiple devices, enforced via vendor_devices table)
+        
         c.execute("INSERT INTO system_users (username, password, role, vendor_id) VALUES (?, ?, ?, ?)", 
                   (username, password, role, target_vendor_id))
         conn.commit()
@@ -4064,7 +4114,7 @@ def update_subscription():
         c.execute("SELECT id FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
         exists = c.fetchone()
         
-        fields = ["plan_type", "max_users", "max_employees", "max_mobile_devices", "start_date", "end_date", "grace_period_days", "status", "cost_per_user", "setup_fee", "setup_fee_paid"]
+        fields = ["plan_type", "max_users", "max_employees", "max_mobile_devices", "start_date", "end_date", "grace_period_days", "status", "cost_per_user", "cost_per_employee", "setup_fee", "setup_fee_paid"]
         updates = []
         params = []
         
@@ -4175,5 +4225,6 @@ app.register_blueprint(greeting_bp)
 if __name__ == "__main__":
     init_db()
     add_missing_columns()
+    add_vendor_devices_table()
     migrate_faces_pk()
     app.run(host="0.0.0.0", port=5001, debug=True)

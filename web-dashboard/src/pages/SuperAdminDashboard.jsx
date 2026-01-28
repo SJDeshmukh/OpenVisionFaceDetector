@@ -14,11 +14,21 @@ const SuperAdminDashboard = () => {
   const [newPassword, setNewPassword] = useState('');
   const [newVendor, setNewVendor] = useState({ 
     company_name: '', contact_person: '', phone: '', email: '',
-    start_date: '', end_date: '', cost: '', max_users: '', max_employees: '',
+    start_date: '', end_date: '', 
+    cost_per_user: '', cost_per_employee: '', // Explicit costs
+    max_users: '', max_employees: '',
     admin_username: '', admin_password: '',
     user_username: '', user_password: ''
   });
   const [editingVendor, setEditingVendor] = useState(null);
+  const [editingSub, setEditingSub] = useState({
+    max_users: '',
+    max_employees: '',
+    max_mobile_devices: '',
+    end_date: '',
+    cost_per_user: '',
+    cost_per_employee: ''
+  });
   
   // Filter States
   const [searchTerm, setSearchTerm] = useState('');
@@ -90,7 +100,8 @@ const SuperAdminDashboard = () => {
         await axios.put(`${API_URL}/admin/vendors/${editingVendor.id}/subscription`, {
             start_date: newVendor.start_date,
             end_date: newVendor.end_date,
-            cost_per_user: newVendor.cost,
+            cost_per_user: newVendor.cost_per_user,
+            cost_per_employee: newVendor.cost_per_employee,
             max_users: newVendor.max_users,
             max_employees: newVendor.max_employees,
             plan_type: 'custom'
@@ -115,7 +126,9 @@ const SuperAdminDashboard = () => {
       setEditingVendor(null);
       setNewVendor({ 
         company_name: '', contact_person: '', phone: '', email: '',
-        start_date: '', end_date: '', cost: '', max_users: '',
+        start_date: '', end_date: '', 
+        cost_per_user: '', cost_per_employee: '',
+        max_users: '', max_employees: '',
         admin_username: '', admin_password: '',
         user_username: '', user_password: ''
       });
@@ -134,7 +147,8 @@ const SuperAdminDashboard = () => {
       email: vendor.email || '',
       start_date: vendor.start_date || '',
       end_date: vendor.end_date ? vendor.end_date.split(' ')[0] : '',
-      cost: vendor.cost_per_user || '',
+      cost_per_user: vendor.cost_per_user || '',
+      cost_per_employee: vendor.cost_per_employee || '',
       max_users: vendor.max_users || '',
       max_employees: vendor.max_employees || '',
       admin_username: vendor.admin_username || '',
@@ -273,7 +287,7 @@ const SuperAdminDashboard = () => {
         <StatCard label="Total Vendors" value={vendors.length} icon={<Shield className="text-blue-500" />} />
         <StatCard label="Active Subscriptions" value={vendors.filter(v => v.subscription_status === 'Active').length} icon={<Check className="text-green-500" />} />
         <StatCard label="Suspended" value={vendors.filter(v => v.status === 'suspended').length} icon={<X className="text-red-500" />} />
-        <StatCard label="Total MRR" value={`₹${vendors.reduce((sum, v) => sum + (v.cost_per_user || 0) * (v.max_users || 0), 0)}`} icon={<span className="text-xl font-bold text-slate-600">₹</span>} />
+        <StatCard label="Total MRR" value={`₹${vendors.reduce((sum, v) => sum + ((v.cost_per_user || 0) * (v.max_users || 0)) + ((v.cost_per_employee || 0) * (v.max_employees || 0)), 0).toLocaleString()}`} icon={<span className="text-xl font-bold text-slate-600">₹</span>} />
       </div>
 
       {/* Filters Section */}
@@ -522,18 +536,29 @@ const SuperAdminDashboard = () => {
                         <td className="p-3">
                           <div className="font-medium">₹{inv.amount}</div>
                           {inv.details && (
-                            <div className="text-xs text-slate-500 mt-1">
-                              {(() => {
-                                try {
-                                  const d = JSON.parse(inv.details);
-                                  return (
-                                    <div className="flex flex-col gap-0.5">
-                                      <span>Users: {d.active_users} × ₹{d.cost_per_user}</span>
-                                      {d.setup_fee > 0 && <span className="text-orange-600">+ Setup: ₹{d.setup_fee}</span>}
-                                    </div>
-                                  );
-                                } catch (e) { return null; }
-                              })()}
+                            <div className="mt-1">
+                              <div className="text-xs text-slate-500">Breakdown</div>
+                              <div className="text-xs">
+                                {(() => {
+                                  try {
+                                    const details = typeof inv.details === 'string' ? JSON.parse(inv.details) : inv.details;
+                                    return (
+                                      <div className="flex flex-col gap-1 mt-1">
+                                        {(details.active_users > 0 || details.max_devices > 0) && (
+                                          <span className="bg-slate-100 px-1 rounded">
+                                            Devs: {details.active_users || details.max_devices} x ₹{details.cost_per_user || details.cost_per_device}
+                                          </span>
+                                        )}
+                                        {details.max_employees > 0 && (
+                                          <span className="bg-slate-100 px-1 rounded">
+                                            Emps: {details.max_employees} x ₹{details.cost_per_employee}
+                                          </span>
+                                        )}
+                                      </div>
+                                    );
+                                  } catch (e) { return '-'; }
+                                })()}
+                              </div>
                             </div>
                           )}
                         </td>
@@ -652,15 +677,32 @@ const SuperAdminDashboard = () => {
                       onChange={e => setNewVendor({...newVendor, end_date: e.target.value})}
                     />
                   </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Plan Cost (₹)</label>
-                    <input 
-                      type="number" 
-                      className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none bg-white"
-                      value={newVendor.cost}
-                      onChange={e => setNewVendor({...newVendor, cost: e.target.value})}
-                      placeholder="e.g. 5000"
-                    />
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Cost Per Device (₹)</label>
+                        <input 
+                            name="cost_per_user" 
+                            value={newVendor.cost_per_user} 
+                            onChange={e => setNewVendor({...newVendor, cost_per_user: e.target.value})} 
+                            placeholder="e.g. 200" 
+                            className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none bg-white" 
+                            type="number" 
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Cost Per Employee (₹)</label>
+                        <input 
+                            name="cost_per_employee" 
+                            value={newVendor.cost_per_employee} 
+                            onChange={e => setNewVendor({...newVendor, cost_per_employee: e.target.value})} 
+                            placeholder="e.g. 120" 
+                            className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none bg-white" 
+                            type="number" 
+                        />
+                    </div>
+                  </div>
+                  <div className="text-xs text-slate-500 mt-1 mb-2 italic">
+                    * Recommended Pricing: ₹120/Employee, ₹200/Device
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">Max Phones (Devices)</label>
