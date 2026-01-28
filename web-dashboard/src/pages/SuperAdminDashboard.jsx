@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Plus, Check, X, AlertTriangle, Shield, User, Lock, FileText, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight, Search, Filter } from 'lucide-react';
+import { Plus, Check, X, Shield, User, Lock, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight, Search, Filter, ArrowLeft, ArrowRight, Eye } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { API_URL } from '../config';
 
@@ -21,19 +21,23 @@ const SuperAdminDashboard = () => {
     user_username: '', user_password: ''
   });
   const [editingVendor, setEditingVendor] = useState(null);
-  const [editingSub, setEditingSub] = useState({
-    max_users: '',
-    max_employees: '',
-    max_mobile_devices: '',
-    end_date: '',
-    cost_per_user: '',
-    cost_per_employee: ''
-  });
   
   // Filter States
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [subscriptionFilter, setSubscriptionFilter] = useState('all');
+
+  // --- New Tab & Details State ---
+  const [activeTab, setActiveTab] = useState('overview'); // 'overview' | 'vendor_details'
+  const [detailViewMode, setDetailViewMode] = useState('list'); // 'list' | 'vendor' | 'employee'
+  const [selectedVendorForDetail, setSelectedVendorForDetail] = useState(null);
+  const [vendorEmployees, setVendorEmployees] = useState([]);
+  const [selectedEmployeeForDetail, setSelectedEmployeeForDetail] = useState(null);
+  const [employeeReport, setEmployeeReport] = useState(null);
+  const [reportDateRange, setReportDateRange] = useState({
+    start: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0],
+    end: new Date().toISOString().split('T')[0]
+  });
 
   useEffect(() => {
     fetchVendors();
@@ -249,11 +253,56 @@ const SuperAdminDashboard = () => {
     return diffDays;
   };
 
+  // --- New Helper Functions for Vendor Details Tab ---
+  const fetchVendorEmployees = async (vendorId) => {
+    setLoading(true);
+    try {
+      const response = await axios.get(`${API_URL}/persons`, {
+        headers: { 
+            Authorization: `Bearer ${user?.token}`,
+            'X-Vendor-ID': vendorId
+        }
+      });
+      setVendorEmployees(response.data.persons);
+      setDetailViewMode('vendor');
+    } catch (error) {
+      alert("Error fetching employees: " + (error.response?.data?.error || error.message));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchEmployeeReport = async (vendorId, employee) => {
+    setLoading(true);
+    try {
+      const response = await axios.get(`${API_URL}/reports/payroll`, {
+        params: {
+            start_date: reportDateRange.start,
+            end_date: reportDateRange.end
+        },
+        headers: { 
+            Authorization: `Bearer ${user?.token}`,
+            'X-Vendor-ID': vendorId
+        }
+      });
+      
+      const report = response.data.payroll.find(p => p.name === employee.name);
+      setEmployeeReport(report);
+      setSelectedEmployeeForDetail(employee);
+      setDetailViewMode('employee');
+    } catch (error) {
+       console.error(error);
+       alert("Error fetching report");
+    } finally {
+       setLoading(false);
+    }
+  };
+
   if (loading) return <div className="p-8">Loading...</div>;
 
   return (
     <div className="p-6 bg-slate-50 min-h-screen">
-      <div className="flex justify-between items-center mb-8">
+      <div className="flex justify-between items-center mb-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-800">Super Admin Dashboard</h1>
           <p className="text-slate-500">Manage Vendors & Subscriptions</p>
@@ -283,7 +332,29 @@ const SuperAdminDashboard = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+      {/* Tabs */}
+      <div className="flex gap-6 mb-6 border-b border-slate-200">
+        <button 
+          className={`pb-3 px-2 font-medium transition-colors ${activeTab === 'overview' ? 'border-b-2 border-indigo-600 text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+          onClick={() => setActiveTab('overview')}
+        >
+          Attendance / Overview
+        </button>
+        <button 
+          className={`pb-3 px-2 font-medium transition-colors ${activeTab === 'vendor_details' ? 'border-b-2 border-indigo-600 text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+          onClick={() => {
+            setActiveTab('vendor_details');
+            setDetailViewMode('list');
+            setSelectedVendorForDetail(null);
+          }}
+        >
+          Details of Vendors
+        </button>
+      </div>
+
+      {activeTab === 'overview' && (
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
         <StatCard label="Total Vendors" value={vendors.length} icon={<Shield className="text-blue-500" />} />
         <StatCard label="Active Subscriptions" value={vendors.filter(v => v.subscription_status === 'Active').length} icon={<Check className="text-green-500" />} />
         <StatCard label="Suspended" value={vendors.filter(v => v.status === 'suspended').length} icon={<X className="text-red-500" />} />
@@ -462,6 +533,219 @@ const SuperAdminDashboard = () => {
           </tbody>
         </table>
       </div>
+      </>
+      )}
+
+      {activeTab === 'vendor_details' && (
+        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+          {detailViewMode === 'list' && (
+            <div>
+               <h2 className="text-xl font-bold mb-6 text-slate-800">Select a Vendor to View Details</h2>
+               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                 {vendors.map(vendor => (
+                   <div key={vendor.id} 
+                        onClick={() => { setSelectedVendorForDetail(vendor); fetchVendorEmployees(vendor.id); }}
+                        className="p-5 border border-slate-200 rounded-xl cursor-pointer hover:border-indigo-500 hover:shadow-md transition-all group bg-white"
+                   >
+                     <div className="flex items-start gap-4 mb-3">
+                        <div className="w-12 h-12 rounded-full bg-indigo-50 flex items-center justify-center text-indigo-600 font-bold text-lg border border-indigo-100">
+                            {vendor.company_name.substring(0,2).toUpperCase()}
+                        </div>
+                        <div>
+                            <h3 className="font-bold text-slate-800 text-lg group-hover:text-indigo-600 transition-colors">{vendor.company_name}</h3>
+                            <p className="text-sm text-slate-500">{vendor.contact_person}</p>
+                        </div>
+                     </div>
+                     <div className="pt-3 border-t border-slate-100 flex justify-between items-center">
+                        <span className="text-sm text-slate-500">Employees: <span className="font-semibold text-slate-700">{vendor.employee_count || 0}</span></span>
+                        <span className="flex items-center gap-1 text-indigo-600 font-medium text-sm group-hover:translate-x-1 transition-transform">View Details <ArrowRight size={16}/></span>
+                     </div>
+                   </div>
+                 ))}
+               </div>
+            </div>
+          )}
+
+          {detailViewMode === 'vendor' && selectedVendorForDetail && (
+            <div>
+                <button onClick={() => setDetailViewMode('list')} className="mb-6 flex items-center gap-2 text-slate-500 hover:text-slate-800 font-medium transition-colors">
+                    <ArrowLeft size={18} /> Back to Vendor List
+                </button>
+                <div className="flex justify-between items-center mb-8 pb-4 border-b border-slate-100">
+                    <div>
+                        <h2 className="text-2xl font-bold text-slate-800">{selectedVendorForDetail.company_name}</h2>
+                        <p className="text-slate-500">Employee Directory</p>
+                    </div>
+                    <div className="bg-indigo-50 text-indigo-700 px-4 py-2 rounded-lg font-mono text-sm">
+                        Vendor ID: {selectedVendorForDetail.id}
+                    </div>
+                </div>
+                
+                {vendorEmployees.length === 0 ? (
+                    <div className="text-center py-12 text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                        No employees found for this vendor.
+                    </div>
+                ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-6">
+                        {vendorEmployees.map(emp => (
+                            <div key={emp.id} 
+                                onClick={() => fetchEmployeeReport(selectedVendorForDetail.id, emp)}
+                                className="bg-white rounded-xl overflow-hidden border border-slate-200 cursor-pointer hover:shadow-lg hover:border-indigo-300 transition-all group"
+                            >
+                                <div className="h-48 bg-slate-100 w-full overflow-hidden relative">
+                                    {emp.face_image ? (
+                                        <img src={emp.face_image.startsWith('data:') ? emp.face_image : `data:image/jpeg;base64,${emp.face_image}`} alt={emp.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"/>
+                                    ) : (
+                                        <div className="w-full h-full flex flex-col items-center justify-center text-slate-400">
+                                            <User size={48} className="mb-2 opacity-20"/>
+                                            <span className="text-xs uppercase tracking-wide">No Photo</span>
+                                        </div>
+                                    )}
+                                    <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end justify-center pb-4">
+                                        <span className="text-white font-medium text-sm flex items-center gap-2"><Eye size={14}/> View Report</span>
+                                    </div>
+                                </div>
+                                <div className="p-4">
+                                    <h3 className="font-bold text-lg text-slate-800 mb-1">{emp.name}</h3>
+                                    <p className="text-sm text-slate-500 mb-2">{emp.designation || 'No Designation'}</p>
+                                    <span className="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded-full border border-slate-200">{emp.department || 'General'}</span>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+          )}
+
+          {detailViewMode === 'employee' && selectedEmployeeForDetail && (
+            <div>
+                <button onClick={() => setDetailViewMode('vendor')} className="mb-6 flex items-center gap-2 text-slate-500 hover:text-slate-800 font-medium transition-colors">
+                    <ArrowLeft size={18} /> Back to {selectedVendorForDetail.company_name}
+                </button>
+                
+                <div className="flex flex-col lg:flex-row gap-6">
+                    {/* Employee Profile Card */}
+                    <div className="w-full lg:w-1/3 bg-white border border-slate-200 rounded-xl p-6 h-fit shadow-sm">
+                        <div className="aspect-square rounded-xl overflow-hidden bg-slate-100 mb-6 border border-slate-100">
+                             {selectedEmployeeForDetail.face_image ? (
+                                <img src={selectedEmployeeForDetail.face_image.startsWith('data:') ? selectedEmployeeForDetail.face_image : `data:image/jpeg;base64,${selectedEmployeeForDetail.face_image}`} alt={selectedEmployeeForDetail.name} className="w-full h-full object-cover"/>
+                             ) : (
+                                <div className="flex items-center justify-center h-full text-slate-400 bg-slate-50">
+                                    <User size={64} className="opacity-20"/>
+                                </div>
+                             )}
+                        </div>
+                        <h2 className="text-2xl font-bold text-slate-800 mb-1">{selectedEmployeeForDetail.name}</h2>
+                        <p className="text-slate-500 mb-6 font-medium">{selectedEmployeeForDetail.designation}</p>
+                        
+                        <div className="space-y-4">
+                            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+                                <span className="text-slate-500 text-sm">Department</span>
+                                <span className="font-semibold text-slate-700">{selectedEmployeeForDetail.department}</span>
+                            </div>
+                            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+                                <span className="text-slate-500 text-sm">Phone</span>
+                                <span className="font-semibold text-slate-700">{selectedEmployeeForDetail.phone || 'N/A'}</span>
+                            </div>
+                            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+                                <span className="text-slate-500 text-sm">Daily Wage</span>
+                                <span className="font-semibold text-slate-700">₹{selectedEmployeeForDetail.daily_wage || 0}</span>
+                            </div>
+                            <div className="flex justify-between items-center pb-1">
+                                <span className="text-slate-500 text-sm">Vendor</span>
+                                <span className="font-semibold text-slate-700">{selectedVendorForDetail.company_name}</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    {/* Report Section */}
+                    <div className="flex-1">
+                        <div className="bg-slate-800 text-white rounded-xl p-6 mb-6">
+                            <h3 className="text-lg font-bold mb-4 flex justify-between items-center">
+                                Performance Report 
+                            </h3>
+                            <div className="flex items-center gap-4 bg-slate-700/50 p-3 rounded-lg border border-slate-600">
+                                <div className="flex items-center gap-2">
+                                    <Calendar size={16} className="text-slate-400"/>
+                                    <input 
+                                        type="date" 
+                                        value={reportDateRange.start}
+                                        onChange={(e) => {
+                                            setReportDateRange(prev => ({ ...prev, start: e.target.value }));
+                                            // Trigger refetch if needed or let user click a button. 
+                                            // For better UX, we can add a "Update" button or use useEffect.
+                                            // Since fetch is manual, we'll add an update button.
+                                        }}
+                                        className="bg-transparent text-sm text-white focus:outline-none [&::-webkit-calendar-picker-indicator]:invert"
+                                    />
+                                </div>
+                                <span className="text-slate-500">-</span>
+                                <div className="flex items-center gap-2">
+                                    <input 
+                                        type="date" 
+                                        value={reportDateRange.end}
+                                        onChange={(e) => setReportDateRange(prev => ({ ...prev, end: e.target.value }))}
+                                        className="bg-transparent text-sm text-white focus:outline-none [&::-webkit-calendar-picker-indicator]:invert"
+                                    />
+                                </div>
+                                <button 
+                                    onClick={() => fetchEmployeeReport(selectedVendorForDetail.id, selectedEmployeeForDetail)}
+                                    className="ml-auto bg-indigo-500 hover:bg-indigo-600 text-white text-xs px-3 py-1.5 rounded-md transition-colors font-medium"
+                                >
+                                    Update Report
+                                </button>
+                            </div>
+                        </div>
+                        
+                        {employeeReport ? (
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                                    <div className="text-slate-500 text-sm mb-1">Total Hours Worked</div>
+                                    <div className="text-3xl font-bold text-indigo-600">{employeeReport.total_hours_str}</div>
+                                    <div className="text-xs text-slate-400 mt-2">Recorded duration</div>
+                                </div>
+                                <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                                    <div className="text-slate-500 text-sm mb-1">Days Present</div>
+                                    <div className="text-3xl font-bold text-green-600">{employeeReport.days_present}</div>
+                                    <div className="text-xs text-slate-400 mt-2">Days with activity</div>
+                                </div>
+                                <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                                    <div className="text-slate-500 text-sm mb-1">Late Marks</div>
+                                    <div className="text-3xl font-bold text-orange-500">{employeeReport.late_marks_count}</div>
+                                    <div className="text-xs text-slate-400 mt-2">Check-ins after grace period</div>
+                                </div>
+                                <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                                    <div className="text-slate-500 text-sm mb-1">Estimated Payout</div>
+                                    <div className="text-3xl font-bold text-slate-800">₹{employeeReport.final_payout}</div>
+                                    <div className="text-xs text-slate-400 mt-2">Based on daily wage</div>
+                                </div>
+                                
+                                <div className="col-span-2 bg-blue-50 p-4 rounded-xl border border-blue-100 mt-2">
+                                    <div className="flex gap-2 items-start">
+                                        <div className="p-1 bg-blue-100 rounded text-blue-600 mt-0.5">
+                                            <Shield size={16} />
+                                        </div>
+                                        <div>
+                                            <h4 className="font-bold text-blue-800 text-sm">Super Admin View</h4>
+                                            <p className="text-blue-600 text-xs mt-1">
+                                                This report is generated using the vendor's context. You are seeing exactly what the vendor sees in their dashboard.
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-12 text-center">
+                                <div className="animate-spin w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full mx-auto mb-4"></div>
+                                <p className="text-slate-500">Generating Report...</p>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Password Reset Modal */}
       {passwordModal.show && (
