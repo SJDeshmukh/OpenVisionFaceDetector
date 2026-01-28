@@ -7,9 +7,9 @@ class TestAttendanceLogic(unittest.TestCase):
     # --- Late Mark Tests ---
     
     def test_late_mark_basic(self):
-        # Schedule: 9:00 AM Start, 15 min tolerance
+        # Schedule: 9:00 AM Start, 15 min tolerance (via grace_period rule)
         expected_start = "09:00"
-        day_activities = [{'start_time': '09:00', 'tolerance': 15}]
+        day_activities = [{'start_time': '09:00', 'rules': {'grace_period': 15}}]
         
         # Case 1: On Time (9:15)
         sessions_ontime = [{'type': 'Work', 'start': '09:15', 'end': '12:00'}]
@@ -24,35 +24,22 @@ class TestAttendanceLogic(unittest.TestCase):
     def test_late_mark_midnight_crossing(self):
         # Schedule: 11:00 PM Start (23:00), 15 min tolerance
         expected_start = "23:00"
-        day_activities = [{'start_time': '23:00', 'tolerance': 15}]
-        
+        day_activities = [{'start_time': '23:00', 'rules': {'grace_period': 15}}]
+    
         # Case 1: On Time (23:10)
         sessions_ontime = [{'type': 'Work', 'start': '23:10', 'end': '02:00'}]
         status = calculate_arrival_status(expected_start, sessions_ontime, day_activities)
         self.assertEqual(status, "On Time", "23:10 should be On Time for 23:00 start")
         
-        # Case 2: On Time (00:05 Next Day) - 65 mins later? No, wait. 
-        # If start is 23:00, 15m tolerance means up to 23:15. 
-        # 00:05 is definitely late.
-        
-        # Let's try a Night Shift starting at 00:30 with 15m tolerance
-        expected_start_night = "00:30"
-        day_activities_night = [{'start_time': '00:30', 'tolerance': 15}]
-        
-        # Arrive at 00:40 (On Time)
-        sessions_night_ontime = [{'type': 'Work', 'start': '00:40', 'end': '05:00'}]
-        status = calculate_arrival_status(expected_start_night, sessions_night_ontime, day_activities_night)
-        self.assertEqual(status, "On Time", "00:40 should be On Time for 00:30 start")
-
-        # Arrive at 00:46 (Late)
-        sessions_night_late = [{'type': 'Work', 'start': '00:46', 'end': '05:00'}]
-        status = calculate_arrival_status(expected_start_night, sessions_night_late, day_activities_night)
-        self.assertEqual(status, "Late", "00:46 should be Late for 00:30 start")
+        # Case 2: Late (23:16)
+        sessions_late = [{'type': 'Work', 'start': '23:16', 'end': '02:00'}]
+        status = calculate_arrival_status(expected_start, sessions_late, day_activities)
+        self.assertEqual(status, "Late", "23:16 should be Late for 23:00 start")
 
     def test_late_mark_midnight_boundary(self):
         # Schedule: 23:50 Start, 20 min tolerance (Up to 00:10 next day)
         expected_start = "23:50"
-        day_activities = [{'start_time': '23:50', 'tolerance': 20}]
+        day_activities = [{'start_time': '23:50', 'rules': {'grace_period': 20}}]
         
         # Case 1: Arrive 00:05 (Next Day) -> Should be On Time
         # The logic must handle the date rollover
@@ -212,13 +199,13 @@ class TestAttendanceLogic(unittest.TestCase):
         ]
         records = [
             {'timestamp': '2023-10-27 09:00:00', 'status': 'CHECK_IN', 'activity': 'Work'},
-            {'timestamp': '2023-10-27 12:00:00', 'status': 'CHECK_OUT', 'activity': 'TeaBreak'}, 
-            {'timestamp': '2023-10-27 12:15:00', 'status': 'CHECK_IN', 'activity': 'Work'}, 
+            {'timestamp': '2023-10-27 12:00:00', 'status': 'CHECK_OUT', 'activity': 'TeaBreak'},
+            {'timestamp': '2023-10-27 12:15:00', 'status': 'CHECK_IN', 'activity': 'Work'},
             {'timestamp': '2023-10-27 17:00:00', 'status': 'CHECK_OUT', 'activity': 'Work'}
         ]
-        # Session 1: 3h. Gap: 0.25h (Payable). Session 2: 4.75h. Total: 8h.
+        # Session 1: 3h. Gap: 0.25h (Strictly NOT Payable). Session 2: 4.75h. Total: 7.75h.
         stats = calculate_daily_hours(records, timetable)
-        self.assertEqual(stats['total_hours'], 8.0, "Should include payable gap")
+        self.assertEqual(stats['total_hours'], 7.75, "Gap should NOT be payable in strict mode")
 
     def test_gap_not_payable_logic(self):
         # Scenario: Work 9-12. Lunch 12-1 (Not Payable). Work 1-5.

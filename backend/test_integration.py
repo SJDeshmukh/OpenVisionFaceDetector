@@ -38,7 +38,9 @@ class TestIntegration(unittest.TestCase):
             phone TEXT,
             daily_wage REAL,
             face_image TEXT,
-            shift TEXT
+            shift TEXT,
+            late_allowance_days INTEGER DEFAULT 0,
+            late_deduction_amount REAL DEFAULT 0
         )''')
         
         self.c.execute('''CREATE TABLE IF NOT EXISTS attendance (
@@ -54,7 +56,29 @@ class TestIntegration(unittest.TestCase):
             designation TEXT,
             shift TEXT
         )''')
+
+        self.c.execute('''CREATE TABLE IF NOT EXISTS system_users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE,
+            password TEXT,
+            role TEXT,
+            vendor_id TEXT,
+            frontend_bundle_id TEXT
+        )''')
         
+        self.c.execute('''CREATE TABLE IF NOT EXISTS system_settings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            vendor_id TEXT,
+            key TEXT,
+            value TEXT
+        )''')
+        
+        self.c.execute('''CREATE TABLE IF NOT EXISTS subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            vendor_id TEXT,
+            features TEXT DEFAULT '[]'
+        )''')
+
         # Insert Dummy Company with Timetable
         timetable = [
             {'name': 'Work', 'type': 'Work', 'is_payable': True},
@@ -64,6 +88,9 @@ class TestIntegration(unittest.TestCase):
         self.c.execute("INSERT INTO companies (vendor_id, name, working_hours, live_timetable) VALUES (?, ?, ?, ?)",
                        (self.vendor_id, "Test Corp", 8.0, json.dumps(timetable)))
         
+        self.c.execute("INSERT INTO subscriptions (vendor_id, features) VALUES (?, ?)",
+                       (self.vendor_id, '["payroll", "reports"]'))
+
         # Insert Dummy Person
         self.person_name = "John Doe"
         self.c.execute("INSERT INTO faces (vendor_id, name, daily_wage) VALUES (?, ?, ?)",
@@ -89,57 +116,57 @@ class TestIntegration(unittest.TestCase):
             os.remove(TEST_DB)
 
     def test_payroll_report_integration(self):
-        # Scenario: 
-        # Day 1: 9:00 - 17:00 (8h Work).
-        # Day 2: 9:00 - 11:00 (2h Work), 11:00 - 11:15 (Tea, Payable), 11:15 - 12:15 (1h Work). Total 3.25h.
-        # Total: 11.25 Hours.
-        # Wage: 800/8 = 100/hr. Total Wage = 1125.
-        
-        # Insert Attendance
-        # Day 1
-        self.c.execute("INSERT INTO attendance (vendor_id, name, timestamp, status, activity) VALUES (?, ?, ?, ?, ?)",
-                       (self.vendor_id, self.person_name, "2023-10-27 09:00:00", "CHECK_IN", "Work"))
-        self.c.execute("INSERT INTO attendance (vendor_id, name, timestamp, status, activity) VALUES (?, ?, ?, ?, ?)",
-                       (self.vendor_id, self.person_name, "2023-10-27 17:00:00", "CHECK_OUT", "Work"))
-        
-        # Day 2
-        self.c.execute("INSERT INTO attendance (vendor_id, name, timestamp, status, activity) VALUES (?, ?, ?, ?, ?)",
-                       (self.vendor_id, self.person_name, "2023-10-28 09:00:00", "CHECK_IN", "Work"))
-        self.c.execute("INSERT INTO attendance (vendor_id, name, timestamp, status, activity) VALUES (?, ?, ?, ?, ?)",
-                       (self.vendor_id, self.person_name, "2023-10-28 11:00:00", "CHECK_OUT", "TeaBreak"))
-        self.c.execute("INSERT INTO attendance (vendor_id, name, timestamp, status, activity) VALUES (?, ?, ?, ?, ?)",
-                       (self.vendor_id, self.person_name, "2023-10-28 11:15:00", "CHECK_IN", "Work"))
-        self.c.execute("INSERT INTO attendance (vendor_id, name, timestamp, status, activity) VALUES (?, ?, ?, ?, ?)",
-                       (self.vendor_id, self.person_name, "2023-10-28 12:15:00", "CHECK_OUT", "Work"))
-        
-        self.conn.commit()
-        
-        # Mock Auth (Since authenticate_vendor_access checks Headers/DB)
-        # We will use `unittest.mock` to patch it
-        from unittest.mock import patch
-        
-        with patch('app.authenticate_vendor_access', return_value=(self.vendor_id, None)):
-            with app.test_client() as client:
-                # Test JSON Report
-                response = client.get(f'/api/reports/payroll?start_date=2023-10-27&end_date=2023-10-28')
-                self.assertEqual(response.status_code, 200)
-                data = response.get_json()
+                # Scenario: 
+                # Day 1: 9:00 - 17:00 (8h Work).
+                # Day 2: 9:00 - 11:00 (2h Work), 11:00 - 11:15 (Tea, GAP - Strictly Unpaid), 11:15 - 12:15 (1h Work). Total 3.0h.
+                # Total: 11.0 Hours.
+                # Wage: 800/8 = 100/hr. Total Wage = 1100.
                 
-                person_data = data['payroll'][0]
-                self.assertEqual(person_data['name'], self.person_name)
-                self.assertEqual(person_data['total_hours'], 11.25)
-                self.assertEqual(person_data['total_hours_str'], "11h 15m")
-                self.assertEqual(person_data['total_cost'], 1125.0)
+                # Insert Attendance
+                # Day 1
+                self.c.execute("INSERT INTO attendance (vendor_id, name, timestamp, status, activity) VALUES (?, ?, ?, ?, ?)",
+                               (self.vendor_id, self.person_name, "2023-10-27 09:00:00", "CHECK_IN", "Work"))
+                self.c.execute("INSERT INTO attendance (vendor_id, name, timestamp, status, activity) VALUES (?, ?, ?, ?, ?)",
+                               (self.vendor_id, self.person_name, "2023-10-27 17:00:00", "CHECK_OUT", "Work"))
                 
-                # Test CSV Export
-                response_csv = client.get(f'/api/reports/export?type=summary&start_date=2023-10-27&end_date=2023-10-28')
-                self.assertEqual(response_csv.status_code, 200)
-                csv_content = response_csv.data.decode('utf-8')
+                # Day 2
+                self.c.execute("INSERT INTO attendance (vendor_id, name, timestamp, status, activity) VALUES (?, ?, ?, ?, ?)",
+                               (self.vendor_id, self.person_name, "2023-10-28 09:00:00", "CHECK_IN", "Work"))
+                self.c.execute("INSERT INTO attendance (vendor_id, name, timestamp, status, activity) VALUES (?, ?, ?, ?, ?)",
+                               (self.vendor_id, self.person_name, "2023-10-28 11:00:00", "CHECK_OUT", "TeaBreak"))
+                self.c.execute("INSERT INTO attendance (vendor_id, name, timestamp, status, activity) VALUES (?, ?, ?, ?, ?)",
+                               (self.vendor_id, self.person_name, "2023-10-28 11:15:00", "CHECK_IN", "Work"))
+                self.c.execute("INSERT INTO attendance (vendor_id, name, timestamp, status, activity) VALUES (?, ?, ?, ?, ?)",
+                               (self.vendor_id, self.person_name, "2023-10-28 12:15:00", "CHECK_OUT", "Work"))
                 
-                # Verify CSV Content
-                self.assertIn("John Doe", csv_content)
-                self.assertIn("11h 15m", csv_content) # Formatted Hours
-                self.assertIn("11.25", csv_content)   # Raw Hours
+                self.conn.commit()
+                
+                # Mock Auth (Since authenticate_vendor_access checks Headers/DB)
+                # We will use `unittest.mock` to patch it
+                from unittest.mock import patch
+                
+                with patch('app.authenticate_vendor_access', return_value=(self.vendor_id, None)):
+                    with app.test_client() as client:
+                        # Test JSON Report
+                        response = client.get(f'/api/reports/payroll?start_date=2023-10-27&end_date=2023-10-28')
+                        self.assertEqual(response.status_code, 200)
+                        data = response.get_json()
+                        
+                        person_data = data['payroll'][0]
+                        self.assertEqual(person_data['name'], self.person_name)
+                        self.assertEqual(person_data['total_hours'], 11.0)
+                        self.assertEqual(person_data['total_hours_str'], "11h 0m")
+                        self.assertEqual(person_data['total_cost'], 1100.0)
+                        
+                        # Test CSV Export
+                        response_csv = client.get(f'/api/reports/export?type=summary&start_date=2023-10-27&end_date=2023-10-28')
+                        self.assertEqual(response_csv.status_code, 200)
+                        csv_content = response_csv.data.decode('utf-8')
+                        
+                        # Verify CSV Content
+                        self.assertIn("John Doe", csv_content)
+                        self.assertIn("11h 0m", csv_content) # Formatted Hours
+                        self.assertIn("11.0", csv_content)   # Raw Hours
 
 if __name__ == '__main__':
     unittest.main()

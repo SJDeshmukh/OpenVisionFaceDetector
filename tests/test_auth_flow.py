@@ -50,7 +50,11 @@ class TestAuthFlow(unittest.TestCase):
                       phone TEXT,
                       email TEXT,
                       status TEXT DEFAULT 'active',
-                      created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+                      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                      web_login_enabled BOOLEAN DEFAULT 1,
+                      frontend_bundle_id TEXT DEFAULT 'default_attendance',
+                      backend_service_id TEXT DEFAULT 'default_api',
+                      config TEXT DEFAULT '{}')''')
 
         c.execute('''CREATE TABLE IF NOT EXISTS subscriptions
                      (id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -60,7 +64,10 @@ class TestAuthFlow(unittest.TestCase):
                       end_date DATE,
                       grace_period_days INTEGER DEFAULT 7,
                       max_users INTEGER DEFAULT 10,
+                      max_employees INTEGER DEFAULT 50,
+                      max_mobile_devices INTEGER DEFAULT 5,
                       cost_per_user REAL DEFAULT 199.0,
+                      cost_per_employee REAL DEFAULT 0.0,
                       setup_fee REAL DEFAULT 0.0,
                       setup_fee_paid BOOLEAN DEFAULT 0,
                       status TEXT DEFAULT 'active')''')
@@ -70,6 +77,37 @@ class TestAuthFlow(unittest.TestCase):
                       vendor_id INTEGER, 
                       status TEXT,
                       due_date DATE)''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS companies
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                      name TEXT UNIQUE, 
+                      shifts TEXT DEFAULT '[]',
+                      draft_timetable TEXT, 
+                      live_timetable TEXT,
+                      last_modified_by TEXT,
+                      last_modified_at DATETIME,
+                      published_by TEXT,
+                      published_at DATETIME,
+                      working_hours REAL DEFAULT 8.0,
+                      vendor_id INTEGER)''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS active_sessions
+                     (token TEXT PRIMARY KEY,
+                      username TEXT,
+                      vendor_id INTEGER,
+                      device_id TEXT,
+                      platform TEXT,
+                      last_active DATETIME,
+                      created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS vendor_devices
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      vendor_id INTEGER,
+                      device_id TEXT,
+                      device_name TEXT,
+                      registered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                      last_login_at DATETIME,
+                      UNIQUE(vendor_id, device_id))''')
 
         # Create Default SuperAdmin
         c.execute("INSERT INTO system_users (username, password, role, vendor_id) VALUES (?, ?, ?, ?)", 

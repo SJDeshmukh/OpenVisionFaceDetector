@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Plus, Check, X, Shield, User, Lock, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight, Search, Filter, ArrowLeft, ArrowRight, Eye } from 'lucide-react';
+import { Plus, Check, X, Shield, User, Lock, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight, Search, Filter, ArrowLeft, ArrowRight, Eye, Settings } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { API_URL } from '../config';
+import { API_URL, FRONTEND_BUNDLES } from '../config';
 
 const SuperAdminDashboard = () => {
   const { user } = useAuth();
@@ -18,7 +18,9 @@ const SuperAdminDashboard = () => {
     cost_per_user: '', cost_per_employee: '', // Explicit costs
     max_users: '', max_employees: '',
     admin_username: '', admin_password: '',
-    user_username: '', user_password: ''
+    user_username: '', user_password: '',
+    frontend_bundle_id: 'default_attendance',
+    backend_service_id: 'default_api'
   });
   const [editingVendor, setEditingVendor] = useState(null);
   
@@ -158,7 +160,9 @@ const SuperAdminDashboard = () => {
       admin_username: vendor.admin_username || '',
       admin_password: '', // Keep blank
       user_username: vendor.user_username || '',
-      user_password: ''   // Keep blank
+      user_password: '',   // Keep blank
+      frontend_bundle_id: vendor.frontend_bundle_id || 'default_attendance',
+      backend_service_id: vendor.backend_service_id || 'default_api'
     });
     setShowModal(true);
   };
@@ -407,6 +411,7 @@ const SuperAdminDashboard = () => {
           <thead className="bg-slate-50 border-b border-slate-200">
             <tr>
               <th className="p-4 font-semibold text-slate-600">Company</th>
+              <th className="p-4 font-semibold text-slate-600">Architecture</th>
               <th className="p-4 font-semibold text-slate-600">Contact</th>
               <th className="p-4 font-semibold text-slate-600">Status</th>
               <th className="p-4 font-semibold text-slate-600">Plan & Cost</th>
@@ -419,7 +424,7 @@ const SuperAdminDashboard = () => {
           <tbody>
             {filteredVendors.length === 0 ? (
               <tr>
-                <td colSpan="7" className="p-8 text-center text-slate-500">
+                <td colSpan="9" className="p-8 text-center text-slate-500">
                   No vendors found matching your filters.
                 </td>
               </tr>
@@ -427,6 +432,16 @@ const SuperAdminDashboard = () => {
               filteredVendors.map(vendor => (
               <tr key={vendor.id} className="border-b border-slate-100 hover:bg-slate-50">
                 <td className="p-4 font-medium text-slate-800">{vendor.company_name}</td>
+                <td className="p-4 text-xs">
+                  <div className="flex flex-col gap-1">
+                    <span className="bg-purple-50 text-purple-700 px-2 py-1 rounded border border-purple-100 whitespace-nowrap" title="Frontend Bundle">
+                       UI: {vendor.frontend_bundle_id?.replace('_', ' ') || 'Default'}
+                    </span>
+                    <span className="bg-orange-50 text-orange-700 px-2 py-1 rounded border border-orange-100 whitespace-nowrap" title="Backend Service">
+                       API: {vendor.backend_service_id?.replace('_', ' ') || 'Default'}
+                    </span>
+                  </div>
+                </td>
                 <td className="p-4 text-slate-600">
                   <div>{vendor.contact_person}</div>
                   <div className="text-xs text-slate-400">{vendor.phone}</div>
@@ -1007,6 +1022,41 @@ const SuperAdminDashboard = () => {
                       onChange={e => setNewVendor({...newVendor, max_employees: e.target.value})}
                       placeholder="Default: 50"
                     />
+                  </div>
+                </div>
+              </div>
+
+              {/* Section: Architecture Config */}
+              <div className="mb-6">
+                <h3 className="text-sm uppercase tracking-wide text-slate-500 font-bold mb-3 flex items-center gap-2">
+                  <Settings size={16} /> Architecture Config
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Frontend Bundle</label>
+                    <select 
+                      className="w-full p-2 border rounded focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                      value={newVendor.frontend_bundle_id}
+                      onChange={e => setNewVendor({...newVendor, frontend_bundle_id: e.target.value})}
+                    >
+                      {Object.keys(FRONTEND_BUNDLES).map(bundleId => (
+                        <option key={bundleId} value={bundleId}>
+                          {bundleId.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ')}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Backend Service</label>
+                    <select 
+                      className="w-full p-2 border rounded focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                      value={newVendor.backend_service_id}
+                      onChange={e => setNewVendor({...newVendor, backend_service_id: e.target.value})}
+                    >
+                      <option value="default_api">Default API Service</option>
+                      <option value="high_performance_api">High Performance API</option>
+                      <option value="dedicated_db_api">Dedicated DB API</option>
+                    </select>
                   </div>
                 </div>
               </div>

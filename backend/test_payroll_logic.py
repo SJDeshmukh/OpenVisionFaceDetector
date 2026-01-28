@@ -39,7 +39,8 @@ class PayrollEndpointTest(unittest.TestCase):
         c.execute('''CREATE TABLE IF NOT EXISTS faces 
                      (id INTEGER PRIMARY KEY, name TEXT, vendor_id INTEGER, 
                       daily_wage REAL, department TEXT, designation TEXT, 
-                      face_image TEXT, phone TEXT)''')
+                      face_image TEXT, phone TEXT,
+                      late_allowance_days INTEGER, late_deduction_amount REAL)''')
         
         c.execute('''CREATE TABLE IF NOT EXISTS attendance 
                      (id INTEGER PRIMARY KEY, name TEXT, timestamp TEXT, 
@@ -62,7 +63,7 @@ class PayrollEndpointTest(unittest.TestCase):
         c.execute('''CREATE TABLE IF NOT EXISTS vendors 
                      (id INTEGER PRIMARY KEY, status TEXT, web_login_enabled INTEGER)''')
         c.execute('''CREATE TABLE IF NOT EXISTS subscriptions 
-                     (id INTEGER PRIMARY KEY, vendor_id INTEGER, end_date TEXT, grace_period_days INTEGER)''')
+                     (id INTEGER PRIMARY KEY, vendor_id INTEGER, end_date TEXT, grace_period_days INTEGER, features TEXT DEFAULT '[]')''')
         c.execute('''CREATE TABLE IF NOT EXISTS invoices 
                      (id INTEGER PRIMARY KEY, vendor_id INTEGER, status TEXT, due_date TEXT)''')
                      
@@ -100,8 +101,8 @@ class PayrollEndpointTest(unittest.TestCase):
         
         # 5. Vendor & Subscription
         c.execute("INSERT INTO vendors (id, status, web_login_enabled) VALUES (?, ?, ?)", (vendor_id, 'active', 1))
-        c.execute("INSERT INTO subscriptions (vendor_id, end_date, grace_period_days) VALUES (?, ?, ?)", 
-                  (vendor_id, '2099-12-31', 0))
+        c.execute("INSERT INTO subscriptions (vendor_id, end_date, grace_period_days, features) VALUES (?, ?, ?, ?)", 
+                  (vendor_id, '2099-12-31', 0, '["payroll"]'))
                   
         self.conn.commit()
 
@@ -219,9 +220,11 @@ class PayrollEndpointTest(unittest.TestCase):
             # Mock sqlite3 connect
             original_connect = sqlite3.connect
             def side_effect(db_name, *args, **kwargs):
-                if db_name == 'face_detection.db' or db_name == DB_PATH:
-                    return original_connect(self.test_db, *args, **kwargs)
-                return original_connect(db_name, *args, **kwargs)
+                # If it's the test DB, let it pass
+                if str(db_name) == self.test_db or str(db_name).endswith(self.test_db):
+                    return original_connect(db_name, *args, **kwargs)
+                # Otherwise redirect
+                return original_connect(self.test_db, *args, **kwargs)
 
             with mock.patch('app.sqlite3.connect', side_effect=side_effect):
                 with app.test_client() as client:
@@ -297,9 +300,11 @@ class PayrollEndpointTest(unittest.TestCase):
             # Mock sqlite3
             original_connect = sqlite3.connect
             def side_effect(db_name, *args, **kwargs):
-                if db_name == 'face_detection.db' or db_name == DB_PATH:
-                    return original_connect(self.test_db, *args, **kwargs)
-                return original_connect(db_name, *args, **kwargs)
+                # If it's the test DB, let it pass
+                if str(db_name) == self.test_db or str(db_name).endswith(self.test_db):
+                    return original_connect(db_name, *args, **kwargs)
+                # Otherwise redirect
+                return original_connect(self.test_db, *args, **kwargs)
 
             with mock.patch('app.sqlite3.connect', side_effect=side_effect):
                 with app.test_client() as client:

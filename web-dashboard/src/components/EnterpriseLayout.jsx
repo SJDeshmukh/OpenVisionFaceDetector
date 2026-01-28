@@ -1,5 +1,6 @@
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { FRONTEND_BUNDLES } from '../config';
 import logo from '../assets/logo_openvision.png';
 import { 
   LayoutDashboard, 
@@ -45,7 +46,15 @@ export const Sidebar = ({ isOpen, onClose }) => {
     navigate('/login');
   };
 
-  const navItems = (user?.role === 'admin' || user?.role === 'vendor_admin') ? adminNavItems : userNavItems;
+  let navItems = (user?.role === 'admin' || user?.role === 'vendor_admin') ? adminNavItems : userNavItems;
+
+  // Dynamic Frontend Loading Logic
+  const bundleId = user?.frontend_bundle_id || 'default_attendance';
+  const allowedItems = FRONTEND_BUNDLES[bundleId] || FRONTEND_BUNDLES['default_attendance'];
+
+  if (allowedItems !== 'ALL') {
+      navItems = navItems.filter(item => allowedItems.includes(item.name));
+  }
 
   return (
     <>

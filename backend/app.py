@@ -41,7 +41,7 @@ def get_config():
     })
 
 # Ensure database is always accessed from the same location (backend directory)
-DB_PATH = os.environ.get('DB_PATH') or os.path.join(os.path.dirname(os.path.abspath(__file__)), 'faces.db')
+DB_PATH = os.environ.get('DB_PATH') or os.path.join(os.path.dirname(os.path.abspath(__file__)), 'face_db.sqlite')
 
 def get_db_connection(timeout=30):
     conn = sqlite3.connect(DB_PATH, timeout=timeout)
@@ -333,12 +333,16 @@ def migrate_faces_pk():
                           phone TEXT,
                           shift TEXT,
                           daily_wage REAL DEFAULT 0,
+                          late_allowance_days INTEGER DEFAULT NULL,
+                          late_deduction_amount REAL DEFAULT 0,
                           vendor_id INTEGER)''')
                           
             # 3. Copy data
             # We rely on AUTOINCREMENT to generate IDs for existing users
-            c.execute("""INSERT INTO faces (name, templates, face_image, department, designation, phone, shift, daily_wage, vendor_id)
-                         SELECT name, templates, face_image, department, designation, phone, shift, daily_wage, vendor_id 
+            # Note: We must ensure columns exist in faces_old before selecting them. 
+            # init_db() runs before this and ensures columns exist.
+            c.execute("""INSERT INTO faces (name, templates, face_image, department, designation, phone, shift, daily_wage, late_allowance_days, late_deduction_amount, vendor_id)
+                         SELECT name, templates, face_image, department, designation, phone, shift, daily_wage, late_allowance_days, late_deduction_amount, vendor_id 
                          FROM faces_old""")
             
             print(f"Copied {c.rowcount} rows to new faces table.")
@@ -452,6 +456,14 @@ def init_db():
     if 'daily_wage' not in faces_columns:
         print("Migrating: Adding daily_wage column to faces table")
         c.execute("ALTER TABLE faces ADD COLUMN daily_wage REAL DEFAULT 0")
+
+    if 'late_allowance_days' not in faces_columns:
+        print("Migrating: Adding late_allowance_days column to faces table")
+        c.execute("ALTER TABLE faces ADD COLUMN late_allowance_days INTEGER DEFAULT NULL")
+
+    if 'late_deduction_amount' not in faces_columns:
+        print("Migrating: Adding late_deduction_amount column to faces table")
+        c.execute("ALTER TABLE faces ADD COLUMN late_deduction_amount REAL DEFAULT 0")
 
     # Check for activity column in attendance table and add if missing
     c.execute("PRAGMA table_info(attendance)")
@@ -569,10 +581,32 @@ def init_db():
                   end_date DATE, 
                   grace_period_days INTEGER DEFAULT 7,
                   max_users INTEGER DEFAULT 10,
+                  max_employees INTEGER DEFAULT 50,
+                  max_mobile_devices INTEGER DEFAULT 5,
                   cost_per_user REAL DEFAULT 199.0,
+                  cost_per_employee REAL DEFAULT 50.0,
                   setup_fee REAL DEFAULT 0.0,
                   setup_fee_paid BOOLEAN DEFAULT 0,
+                  features TEXT DEFAULT '[]',
                   FOREIGN KEY(vendor_id) REFERENCES vendors(id))''')
+
+    # Check for features column in subscriptions table (Migration)
+    c.execute("PRAGMA table_info(subscriptions)")
+    subs_columns = [info[1] for info in c.fetchall()]
+    if 'features' not in subs_columns:
+        print("Migrating: Adding features column to subscriptions table")
+        c.execute("ALTER TABLE subscriptions ADD COLUMN features TEXT DEFAULT '[]'")
+
+    # Check for max_employees and max_mobile_devices (Migration)
+    if 'max_employees' not in subs_columns:
+        print("Migrating: Adding max_employees column to subscriptions table")
+        c.execute("ALTER TABLE subscriptions ADD COLUMN max_employees INTEGER DEFAULT 50")
+    if 'max_mobile_devices' not in subs_columns:
+        print("Migrating: Adding max_mobile_devices column to subscriptions table")
+        c.execute("ALTER TABLE subscriptions ADD COLUMN max_mobile_devices INTEGER DEFAULT 5")
+    if 'cost_per_employee' not in subs_columns:
+        print("Migrating: Adding cost_per_employee column to subscriptions table")
+        c.execute("ALTER TABLE subscriptions ADD COLUMN cost_per_employee REAL DEFAULT 50.0")
 
     # Invoices Table
     c.execute('''CREATE TABLE IF NOT EXISTS invoices
@@ -640,6 +674,18 @@ def init_db():
     if 'web_login_enabled' not in vendor_cols:
         print("Migrating: Adding web_login_enabled to vendors")
         c.execute("ALTER TABLE vendors ADD COLUMN web_login_enabled INTEGER DEFAULT 1")
+
+    if 'frontend_bundle_id' not in vendor_cols:
+        print("Migrating: Adding frontend_bundle_id to vendors")
+        c.execute("ALTER TABLE vendors ADD COLUMN frontend_bundle_id TEXT DEFAULT 'default_attendance'")
+
+    if 'backend_service_id' not in vendor_cols:
+        print("Migrating: Adding backend_service_id to vendors")
+        c.execute("ALTER TABLE vendors ADD COLUMN backend_service_id TEXT DEFAULT 'default_api'")
+
+    if 'config' not in vendor_cols:
+        print("Migrating: Adding config to vendors")
+        c.execute("ALTER TABLE vendors ADD COLUMN config TEXT DEFAULT '{}'")
 
     # Update system_users for multi-tenancy
     c.execute("PRAGMA table_info(system_users)")
@@ -710,6 +756,42 @@ def super_admin_required(f):
              
         return f(*args, **kwargs)
     return decorated_function
+
+def require_feature(feature_name):
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            if request.method == 'OPTIONS':
+                return jsonify({}), 200
+
+            # 1. Authenticate & Get Vendor ID
+            vendor_id, error = authenticate_vendor_access()
+            if error: return error
+            
+            # 2. Check Feature (Only for Vendor Context)
+            if vendor_id:
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+                row = c.fetchone()
+                conn.close()
+                
+                has_feature = False
+                if row and row[0]:
+                    try:
+                        import json
+                        features = json.loads(row[0])
+                        if feature_name in features:
+                            has_feature = True
+                    except:
+                        pass
+                
+                if not has_feature:
+                     return jsonify({"error": f"Feature '{feature_name}' is not enabled for your plan."}), 403
+
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
 
 greeting_bp = Blueprint("greeting", __name__, url_prefix="/api")
 
@@ -833,6 +915,29 @@ def update_company_settings(company_id):
     working_hours = data.get("working_hours")
 
     if shifts is not None:
+        # Check Feature 'shifts' if we are updating shifts
+        if vendor_id:
+            # Re-check feature manually because this endpoint updates multiple things
+            conn_check = get_db_connection()
+            c_check = conn_check.cursor()
+            c_check.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+            sub_row = c_check.fetchone()
+            conn_check.close()
+            
+            has_shifts = False
+            if sub_row and sub_row[0]:
+                try:
+                    import json
+                    feats = json.loads(sub_row[0])
+                    if "shifts" in feats:
+                        has_shifts = True
+                except:
+                    pass
+            
+            if not has_shifts:
+                conn.close()
+                return jsonify({"error": "Feature 'shifts' is not enabled for your plan."}), 403
+
         import json
         if isinstance(shifts, list):
             shifts = json.dumps(shifts)
@@ -879,6 +984,7 @@ def get_company_details(company_id):
     return jsonify(data)
 
 @greeting_bp.route("/companies/<int:company_id>/draft", methods=["PUT"])
+@require_feature("shifts")
 def update_draft_timetable(company_id):
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -915,6 +1021,7 @@ def update_draft_timetable(company_id):
     return jsonify({"success": True})
 
 @greeting_bp.route("/companies/<int:company_id>/publish", methods=["POST"])
+@require_feature("shifts")
 def publish_timetable(company_id):
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -1038,9 +1145,12 @@ def create_vendor():
     
     try:
         # 1. Create Vendor
-        c.execute("""INSERT INTO vendors (company_name, contact_person, phone, email) 
-                     VALUES (?, ?, ?, ?)""",
-                  (company_name, data.get("contact_person"), data.get("phone"), data.get("email")))
+        frontend_bundle_id = data.get("frontend_bundle_id", "default_attendance")
+        backend_service_id = data.get("backend_service_id", "default_api")
+
+        c.execute("""INSERT INTO vendors (company_name, contact_person, phone, email, frontend_bundle_id, backend_service_id) 
+                     VALUES (?, ?, ?, ?, ?, ?)""",
+                  (company_name, data.get("contact_person"), data.get("phone"), data.get("email"), frontend_bundle_id, backend_service_id))
         vendor_id = c.lastrowid
         
         # 2. Create Subscription (Custom Plan)
@@ -1057,9 +1167,14 @@ def create_vendor():
         cost_per_user = data.get("cost_per_user") or 0
         cost_per_employee = data.get("cost_per_employee") or 0
         
-        c.execute("""INSERT INTO subscriptions (vendor_id, plan_type, start_date, end_date, max_users, max_employees, max_mobile_devices, cost_per_user, cost_per_employee, setup_fee)
-                     VALUES (?, 'custom', ?, ?, ?, ?, ?, ?, ?, 0)""",
-                  (vendor_id, start_date, end_date, max_users, max_employees, max_mobile_devices, cost_per_user, cost_per_employee))
+        # Features (Plug and Play)
+        features = data.get("features") or [] # List of strings e.g. ["payroll", "reports"]
+        import json
+        features_json = json.dumps(features)
+
+        c.execute("""INSERT INTO subscriptions (vendor_id, plan_type, start_date, end_date, max_users, max_employees, max_mobile_devices, cost_per_user, cost_per_employee, setup_fee, features)
+                     VALUES (?, 'custom', ?, ?, ?, ?, ?, ?, ?, 0, ?)""",
+                  (vendor_id, start_date, end_date, max_users, max_employees, max_mobile_devices, cost_per_user, cost_per_employee, features_json))
                   
         # 3. Create Admin User for Vendor
         admin_username = data.get("admin_username") or f"admin_{vendor_id}"
@@ -1185,6 +1300,14 @@ def update_vendor_subscription(vendor_id):
         fields = ['start_date', 'end_date', 'plan_type', 'max_users', 'max_employees', 'max_mobile_devices', 'cost_per_user', 'cost_per_employee', 'setup_fee', 'setup_fee_paid']
         
         # Handle aliases or logic
+        if 'features' in data:
+            import json
+            query += "features = ?, "
+            features_val = data['features']
+            if isinstance(features_val, list):
+                features_val = json.dumps(features_val)
+            params.append(features_val)
+
         if 'max_users' in data:
             # Sync max_users and max_mobile_devices if only one is provided?
             # Or trust the input. The frontend sends max_users for phones.
@@ -1234,11 +1357,18 @@ def update_vendor_details(vendor_id):
         query = "UPDATE vendors SET "
         params = []
         
-        fields = ['company_name', 'contact_person', 'phone', 'email']
+        fields = ['company_name', 'contact_person', 'phone', 'email', 'frontend_bundle_id', 'backend_service_id']
         for field in fields:
             if field in data:
                 query += f"{field} = ?, "
                 params.append(data[field])
+        
+        if 'config' in data:
+            config = data['config']
+            if isinstance(config, dict):
+                config = json.dumps(config)
+            query += "config = ?, "
+            params.append(config)
         
         if params:
             query = query.rstrip(", ") + " WHERE id = ?"
@@ -1504,6 +1634,7 @@ def get_my_subscription():
 
 
 @greeting_bp.route("/reports/analytics", methods=["GET"])
+@require_feature("reports")
 def get_analytics():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -1703,6 +1834,7 @@ def get_analytics():
     })
 
 @greeting_bp.route("/reports/export", methods=["GET"])
+@require_feature("reports")
 def export_report():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -1960,6 +2092,7 @@ def export_report():
     )
 
 @greeting_bp.route("/reports/filters", methods=["GET"])
+@require_feature("reports")
 def get_report_filters():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -2017,6 +2150,7 @@ def get_persons():
     return jsonify({"persons": persons})
 
 @greeting_bp.route("/reports/payroll", methods=["GET"])
+@require_feature("payroll")
 def get_payroll_report():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -2209,6 +2343,7 @@ def get_payroll_report():
     })
 
 @greeting_bp.route("/settings/late-config", methods=["PUT"])
+@require_feature("payroll")
 def update_global_late_config():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -2273,12 +2408,15 @@ def login():
         if user['vendor_id']:
             is_allowed, reason = check_vendor_status(user['vendor_id'])
             
-            # Check Web Login Flag first (needed for both active and expired logic)
+            # Check Web Login Flag and Architecture Config
             conn = get_db_connection()
             c = conn.cursor()
-            c.execute("SELECT web_login_enabled FROM vendors WHERE id = ?", (user['vendor_id'],))
+            c.execute("SELECT web_login_enabled, frontend_bundle_id, backend_service_id, config FROM vendors WHERE id = ?", (user['vendor_id'],))
             row = c.fetchone()
             web_login_enabled = row[0] if row else 1 # Default to True
+            frontend_bundle_id = row[1] if row and len(row) > 1 and row[1] else 'default_attendance'
+            backend_service_id = row[2] if row and len(row) > 2 and row[2] else 'default_api'
+            vendor_config = json.loads(row[3]) if row and len(row) > 3 and row[3] else {}
             
             # --- Session Limit Checks ---
             
@@ -2347,7 +2485,10 @@ def login():
                         "username": user["username"],
                         "token": token,
                         "redirect_url": "/recharge", # Frontend instruction
-                        "warning": "Subscription Expired"
+                        "warning": "Subscription Expired",
+                        "frontend_bundle_id": frontend_bundle_id,
+                        "backend_service_id": backend_service_id,
+                        "vendor_config": vendor_config
                     })
 
                 error_msg = f"Access Denied: {reason}"
@@ -2358,6 +2499,12 @@ def login():
             # Check Web Login Flag for Vendor Admins (Active Account)
             if user['role'] == 'vendor_admin' and not web_login_enabled:
                  return jsonify({"error": "Access Denied: Web Login Disabled"}), 403
+
+        else:
+            # SuperAdmin or non-vendor user
+            frontend_bundle_id = 'enterprise_custom_ui'
+            backend_service_id = 'default_api'
+            vendor_config = {}
 
         print(f"Login Success: Role={user['role']}") # DEBUG LOG
         token = generate_token(user['username'], user['role'])
@@ -2388,7 +2535,10 @@ def login():
             "username": user["username"],
             "token": token,
             "vendor_id": user["vendor_id"],
-            "company_id": company_id
+            "company_id": company_id,
+            "frontend_bundle_id": frontend_bundle_id,
+            "backend_service_id": backend_service_id,
+            "vendor_config": vendor_config
         })
     else:
         print("Login Failed: Invalid credentials") # DEBUG LOG
@@ -2578,6 +2728,7 @@ def delete_user(username):
 # --- Sync Endpoints ---
 
 @greeting_bp.route("/sync/upload", methods=["POST"])
+@require_feature("mobile_app")
 def upload_face():
     # Auth Check
     caller_vendor_id, error = authenticate_vendor_access()
@@ -2644,6 +2795,7 @@ def upload_face():
         conn.close()
 
 @greeting_bp.route("/sync/download", methods=["GET"])
+@require_feature("mobile_app")
 def download_faces():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -2679,6 +2831,7 @@ def download_faces():
     return jsonify({"faces": faces})
 
 @greeting_bp.route("/sync/delete/<name>", methods=["DELETE"])
+@require_feature("mobile_app")
 def delete_face(name):
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -2706,6 +2859,7 @@ def delete_face(name):
 
 
 @greeting_bp.route("/persons/wages", methods=["PUT"])
+@require_feature("payroll")
 def update_wages():
     vendor_id, error = authenticate_vendor_access()
     if error: return error

@@ -16,3 +16,10 @@ const BASE_URL = ENV_API_URL || (isLocal ? LOCAL_BACKEND : 'https://face-detecti
 
 export const API_URL = `${BASE_URL}/api`;
 export const API_BASE_URL = API_URL;
+
+export const FRONTEND_BUNDLES = {
+  'attendance_ui': ['Dashboard', 'Attendance', 'Live Attendance', 'Settings', 'Reports', 'People', 'Cameras', 'Audit Logs'],
+  'attendance_payroll_ui': ['Dashboard', 'Attendance', 'Live Attendance', 'Wages', 'Settings', 'Reports', 'People', 'Cameras', 'Audit Logs', 'Timetable'],
+  'enterprise_custom_ui': 'ALL',
+  'default_attendance': 'ALL' 
+};

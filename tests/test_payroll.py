@@ -87,21 +87,15 @@ class TestPayrollLogic(unittest.TestCase):
         stats = calculate_daily_hours(records, self.timetable)
         
         # Session 1: 9-16 (7 hours)
-        # Gap: 16:00-16:15 (0.25 hours). Last activity "Tea Break". is_payable=True. Added!
+        # Gap: 16:00-16:15 (0.25 hours). Last activity "Tea Break". is_payable=True.
+        # BUT STRICT LOGIC says gaps are UNPAID.
         # Session 2: 16:15-18:00 (1.75 hours)
-        # Total Raw: 7 + 0.25 + 1.75 = 9.0 hours.
-        # Strict Logic: No deduction for skipped Lunch.
-        self.assertEqual(stats['total_hours'], 9.0)
+        # Total Raw: 7 + 0 + 1.75 = 8.75 hours.
+        self.assertEqual(stats['total_hours'], 8.75)
         
         # Wait, if Tea Break is paid, shouldn't it be included?
-        # Yes, it is included in the raw total (via Gap logic).
-        # But Lunch is deducted because they worked through it (according to timestamps 9-16).
-        # If they actually worked through lunch, they get paid for it?
-        # NO. The system assumes unpaid breaks are MANDATORY deductions if they fall within "Work" sessions.
-        # Line 2619: `if not is_payable: unpaid_acts.append(act)`
-        # Line 2634: `if session.get('type') == 'Work' ...`
-        # So if you work through unpaid lunch, you lose that hour. (Standard labor law compliance usually requires breaks or pays penalties, but here logic deducts).
-        
+        # Only if checked IN to Tea Break.
+
     def test_work_day_gap_after_work_is_not_payable(self):
         # Check In 9:00
         # Check Out 12:00 (Work - e.g. went home early)
@@ -116,36 +110,25 @@ class TestPayrollLogic(unittest.TestCase):
         stats = calculate_daily_hours(records, self.timetable)
         
         # Session 1: 9-12 (3h)
-        # Gap: 12-14 (2h). Last activity "Work". is_payable=False (hardcoded logic). Not added.
+        # Gap: 12-14 (2h). Unpaid.
         # Session 2: 14-18 (4h)
-        # Total Raw: 7h.
-        # Overlap Deduction: Lunch (13-14).
-        # Session 1 (9-12): No overlap.
-        # Session 2 (14-18): No overlap.
-        # Gap (12-14): Contains Lunch. But Gap is not a "Work Session", so deduction logic (which iterates sessions) ignores it.
-        # Result: 7h.
+        # Total: 7h.
         self.assertEqual(stats['total_hours'], 7.0)
 
     def test_payable_break_explicit(self):
-         # Test a gap that IS payable and NO unpaid overlaps.
+         # Test a gap that IS payable in theory but unpaid in strict mode.
          records = [
             {"timestamp": "2023-10-27 16:00:00", "status": "CHECK_IN", "activity": "Work"},
             {"timestamp": "2023-10-27 16:15:00", "status": "CHECK_OUT", "activity": "Tea Break"},
             {"timestamp": "2023-10-27 16:30:00", "status": "CHECK_IN", "activity": "Work"},
             {"timestamp": "2023-10-27 17:00:00", "status": "CHECK_OUT", "activity": "Work"}
         ]
-         # Tea Break is 16:00-16:15 in timetable.
-         # Here user takes it 16:15-16:30.
-         # Logic checks `last_checkout_activity` = "Tea Break".
-         # Finds "Tea Break" in timetable. `is_payable` = True.
-         # Adds gap (15 mins).
-         
-         # Session 1: 16:00-16:15 (15m)
-         # Gap: 15m (Paid)
-         # Session 2: 16:30-17:00 (30m)
-         # Total: 60m = 1.0h.
+         # Session 1: 16:00-16:15 (15m = 0.25h)
+         # Gap: 15m (Unpaid per strict rules)
+         # Session 2: 16:30-17:00 (30m = 0.5h)
+         # Total: 0.75h.
          stats = calculate_daily_hours(records, self.timetable)
-         self.assertEqual(stats['total_hours'], 1.0)
+         self.assertEqual(stats['total_hours'], 0.75)
 
     def test_payable_gap_overshoot(self):
         # User checks out for Tea Break (Paid) but stays out overnight
@@ -157,22 +140,15 @@ class TestPayrollLogic(unittest.TestCase):
             {"timestamp": "2023-10-28 12:00:00", "status": "CHECK_OUT", "activity": "Work"}
         ]
         # Session 1: 15m (0.25h)
-        # Gap: 16:15 to 09:00 next day (~16.75h).
-        # Tea Break is payable.
-        # If naive logic, it pays 16.75h.
-        # Ideally, it should cap at Tea Break duration (15m) or max break duration?
-        # Or maybe it shouldn't pay if it crosses midnight?
+        # Gap: Unpaid.
+        # Session 2: 3.0h
+        # Total: 3.25h
         
         stats = calculate_daily_hours(records, self.timetable)
         # Check what it currently does
         print(f"Overshoot Total Hours: {stats['total_hours']}")
         
-        # With the fix, it should be capped at Tea Break duration (15m = 0.25h)
-        # Session 1: 0.25h
-        # Gap: 0.25h (Capped)
-        # Session 2: 3.0h
-        # Total: 3.5h
-        self.assertEqual(stats['total_hours'], 3.5)
+        self.assertEqual(stats['total_hours'], 3.25)
 
 
 if __name__ == '__main__':

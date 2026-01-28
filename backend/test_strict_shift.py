@@ -14,6 +14,7 @@ os.environ['DB_PATH'] = TEST_DB
 class TestStrictShift(unittest.TestCase):
     def setUp(self):
         import app as app_module
+        self.original_db_path = app_module.DB_PATH
         app_module.DB_PATH = TEST_DB
         print(f"DEBUG: app.DB_PATH is {app_module.DB_PATH}")
         
@@ -76,6 +77,8 @@ class TestStrictShift(unittest.TestCase):
             self.headers = {'Authorization': f'Bearer {self.token}'}
 
     def tearDown(self):
+        import app as app_module
+        app_module.DB_PATH = self.original_db_path
         if os.path.exists(TEST_DB):
             os.remove(TEST_DB)
 

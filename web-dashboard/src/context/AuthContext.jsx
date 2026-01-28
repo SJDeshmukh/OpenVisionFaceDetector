@@ -34,7 +34,10 @@ export const AuthProvider = ({ children }) => {
           role: response.data.role,
           token: response.data.token,
           vendor_id: response.data.vendor_id,
-          company_id: response.data.company_id
+          company_id: response.data.company_id,
+          frontend_bundle_id: response.data.frontend_bundle_id,
+          backend_service_id: response.data.backend_service_id,
+          vendor_config: response.data.vendor_config
         };
         setUser(userData);
         localStorage.setItem('user', JSON.stringify(userData));
