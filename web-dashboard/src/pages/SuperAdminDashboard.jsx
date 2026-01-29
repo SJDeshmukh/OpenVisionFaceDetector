@@ -3,6 +3,7 @@ import axios from 'axios';
 import { Plus, Check, X, Shield, User, Lock, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight, Search, Filter, ArrowLeft, ArrowRight, Eye, Settings } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { API_URL, FRONTEND_BUNDLES } from '../config';
+import RegistrationConfigEditor from '../components/RegistrationConfigEditor';
 
 const SuperAdminDashboard = () => {
   const { user } = useAuth();
@@ -23,6 +24,7 @@ const SuperAdminDashboard = () => {
     backend_service_id: 'default_api',
     features: []
   });
+  const [registrationConfig, setRegistrationConfig] = useState([]);
   const [editingVendor, setEditingVendor] = useState(null);
   
   // Features Config
@@ -157,6 +159,13 @@ const SuperAdminDashboard = () => {
             headers: { Authorization: `Bearer ${user?.token}` }
         });
 
+        // Save Registration Config
+        await axios.put(`${API_URL}/admin/vendors/${editingVendor.id}/registration-config`, {
+            config: registrationConfig
+        }, {
+            headers: { Authorization: `Bearer ${user?.token}` }
+        });
+
         alert("Vendor Updated Successfully!");
       } else {
         // Create Mode
@@ -167,6 +176,18 @@ const SuperAdminDashboard = () => {
         }, {
           headers: { Authorization: `Bearer ${user?.token}` }
         });
+
+        const newVendorId = response.data.vendor_id;
+        
+        // Save Registration Config for new vendor
+        if (registrationConfig.length > 0) {
+            await axios.put(`${API_URL}/admin/vendors/${newVendorId}/registration-config`, {
+                config: registrationConfig
+            }, {
+                headers: { Authorization: `Bearer ${user?.token}` }
+            });
+        }
+
         alert(`Vendor Created!\nAdmin: ${response.data.admin_credentials.username}\nUser: ${response.data.user_credentials.username}`);
       }
 
@@ -181,13 +202,14 @@ const SuperAdminDashboard = () => {
         user_username: '', user_password: '',
         features: []
       });
+      setRegistrationConfig([]);
       fetchVendors();
     } catch (error) {
       alert("Error: " + (error.response?.data?.error || error.message));
     }
   };
 
-  const handleEditClick = (vendor) => {
+  const handleEditClick = async (vendor) => {
     setEditingVendor(vendor);
     setNewVendor({
       company_name: vendor.company_name || '',
@@ -208,6 +230,17 @@ const SuperAdminDashboard = () => {
       backend_service_id: vendor.backend_service_id || 'default_api',
       features: vendor.features || []
     });
+
+    try {
+      const response = await axios.get(`${API_URL}/admin/vendors/${vendor.id}/registration-config`, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      setRegistrationConfig(response.data.config || []);
+    } catch (error) {
+      console.error("Error fetching registration config:", error);
+      setRegistrationConfig([]);
+    }
+
     setShowModal(true);
   };
 
@@ -371,6 +404,7 @@ const SuperAdminDashboard = () => {
                 admin_username: '', admin_password: '',
                 user_username: '', user_password: ''
               });
+              setRegistrationConfig([]);
               setShowModal(true);
             }}
             className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg flex items-center gap-2"
@@ -1169,6 +1203,14 @@ const SuperAdminDashboard = () => {
                     </div>
                 </div>
               </div>
+
+              {/* Registration Configuration */}
+              <RegistrationConfigEditor 
+                config={registrationConfig} 
+                onChange={setRegistrationConfig} 
+              />
+              
+              <div className="h-6"></div>
 
               {/* Section 3: Login Credentials */}
               <div className="mb-6">
