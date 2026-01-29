@@ -596,6 +596,12 @@ def init_db():
     if 'features' not in subs_columns:
         print("Migrating: Adding features column to subscriptions table")
         c.execute("ALTER TABLE subscriptions ADD COLUMN features TEXT DEFAULT '[]'")
+    
+    # Backfill legacy features (Fix for Access Denied issue)
+    # NOTE: This runs on every startup to ensure legacy vendors don't get locked out.
+    # In a future version, once all data is migrated, this should be removed or moved to a proper migration script.
+    c.execute("UPDATE subscriptions SET features = ? WHERE features IS NULL OR features = '[]' OR features = ''", 
+              (json.dumps(['reports', 'mobile_app', 'payroll', 'shifts']),))
 
     # Check for max_employees and max_mobile_devices (Migration)
     if 'max_employees' not in subs_columns:
@@ -1052,7 +1058,6 @@ def publish_timetable(company_id):
 @greeting_bp.route("/admin/users/password", methods=["PUT"])
 @super_admin_required
 def reset_user_password():
-    # TODO: Add SuperAdmin Auth Check
     data = request.json
     target_username = data.get("username")
     new_password = data.get("new_password")
@@ -1086,7 +1091,6 @@ def reset_user_password():
 @greeting_bp.route("/admin/vendors", methods=["GET"])
 @super_admin_required
 def get_vendors():
-    # TODO: Add Auth Check (SuperAdmin only)
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -1130,10 +1134,17 @@ def get_vendors():
     conn.close()
     return jsonify({"vendors": vendors})
 
+# Feature Mapping based on Frontend Bundles
+BUNDLE_FEATURES = {
+    'attendance_ui': ['reports', 'mobile_app'],
+    'attendance_payroll_ui': ['reports', 'mobile_app', 'payroll', 'shifts'],
+    'enterprise_custom_ui': ['reports', 'mobile_app', 'payroll', 'shifts'],
+    'default_attendance': ['reports', 'mobile_app', 'payroll', 'shifts']
+}
+
 @greeting_bp.route("/admin/vendors", methods=["POST"])
 @super_admin_required
 def create_vendor():
-    # TODO: Add Auth Check
     data = request.json
     company_name = data.get("company_name")
     
@@ -1168,7 +1179,11 @@ def create_vendor():
         cost_per_employee = data.get("cost_per_employee") or 0
         
         # Features (Plug and Play)
-        features = data.get("features") or [] # List of strings e.g. ["payroll", "reports"]
+        features = data.get("features")
+        if features is None:
+            # Derive features from frontend_bundle_id
+            features = BUNDLE_FEATURES.get(frontend_bundle_id, [])
+            
         import json
         features_json = json.dumps(features)
 
@@ -1362,6 +1377,21 @@ def update_vendor_details(vendor_id):
             if field in data:
                 query += f"{field} = ?, "
                 params.append(data[field])
+        
+        # Sync Features if frontend_bundle_id is updated
+        if 'frontend_bundle_id' in data:
+            new_bundle_id = data['frontend_bundle_id']
+            new_features = BUNDLE_FEATURES.get(new_bundle_id, [])
+            import json
+            features_json = json.dumps(new_features)
+            
+            # Check if subscription exists
+            c.execute("SELECT rowid FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+            if c.fetchone():
+                c.execute("UPDATE subscriptions SET features = ? WHERE vendor_id = ?", (features_json, vendor_id))
+            else:
+                # Should create one? Maybe not here.
+                pass
         
         if 'config' in data:
             config = data['config']

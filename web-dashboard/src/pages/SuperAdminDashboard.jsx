@@ -98,7 +98,9 @@ const SuperAdminDashboard = () => {
             admin_username: newVendor.admin_username,
             admin_password: newVendor.admin_password,
             user_username: newVendor.user_username,
-            user_password: newVendor.user_password
+            user_password: newVendor.user_password,
+            frontend_bundle_id: newVendor.frontend_bundle_id,
+            backend_service_id: newVendor.backend_service_id
         }, {
             headers: { Authorization: `Bearer ${user?.token}` }
         });

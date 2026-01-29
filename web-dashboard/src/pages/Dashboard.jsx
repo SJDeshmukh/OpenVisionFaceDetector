@@ -69,7 +69,8 @@ const Dashboard = () => {
       } catch (error) {
         console.error("Error fetching data:", error);
         if (error.response && error.response.status === 403) {
-           setError("Access Denied: Account Suspended");
+           const msg = error.response.data?.error || "Access Denied: Account Suspended";
+           setError(msg);
            setTimeout(() => logout(), 3000); // Auto logout after 3s
         }
       }
