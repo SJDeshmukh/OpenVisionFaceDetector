@@ -33,6 +33,11 @@ const adminNavItems = [
   { name: 'Audit Logs', path: '/audit-logs', icon: Shield },
 ];
 
+const superAdminNavItems = [
+  { name: 'Vendors', path: '/admin/vendors', icon: Users },
+  { name: 'Audit Logs', path: '/admin/audit-logs', icon: Shield },
+];
+
 const userNavItems = [
   { name: 'Attendance', path: '/attendance', icon: ClipboardList },
 ];
@@ -46,14 +51,23 @@ export const Sidebar = ({ isOpen, onClose }) => {
     navigate('/login');
   };
 
-  let navItems = (user?.role === 'admin' || user?.role === 'vendor_admin') ? adminNavItems : userNavItems;
+  let navItems;
+  if (user?.role === 'super_admin') {
+      navItems = superAdminNavItems;
+  } else if (user?.role === 'admin' || user?.role === 'vendor_admin') {
+      navItems = adminNavItems;
+  } else {
+      navItems = userNavItems;
+  }
 
   // Dynamic Frontend Loading Logic
-  const bundleId = user?.frontend_bundle_id || 'default_attendance';
-  const allowedItems = FRONTEND_BUNDLES[bundleId] || FRONTEND_BUNDLES['default_attendance'];
+  if (user?.role !== 'super_admin') {
+      const bundleId = user?.frontend_bundle_id || 'default_attendance';
+      const allowedItems = FRONTEND_BUNDLES[bundleId] || FRONTEND_BUNDLES['default_attendance'];
 
-  if (allowedItems !== 'ALL') {
-      navItems = navItems.filter(item => allowedItems.includes(item.name));
+      if (allowedItems !== 'ALL') {
+          navItems = navItems.filter(item => allowedItems.includes(item.name));
+      }
   }
 
   return (

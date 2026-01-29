@@ -140,6 +140,15 @@ def add_missing_columns():
                       paid_at DATETIME,
                       FOREIGN KEY(vendor_id) REFERENCES vendors(id))''')
 
+        # 7. Create audit_logs table
+        c.execute('''CREATE TABLE IF NOT EXISTS audit_logs
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      actor_username TEXT,
+                      action TEXT,
+                      target_vendor_id INTEGER,
+                      details TEXT, -- JSON string
+                      timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+
         conn.commit()
         conn.close()
     except Exception as e:
@@ -812,6 +821,109 @@ def require_feature(feature_name):
 
 greeting_bp = Blueprint("greeting", __name__, url_prefix="/api")
 
+def log_audit(actor_username, action, target_vendor_id=None, details=None):
+    """
+    Helper to log system events.
+    """
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        import json
+        details_json = json.dumps(details) if details else None
+        c.execute("INSERT INTO audit_logs (actor_username, action, target_vendor_id, details) VALUES (?, ?, ?, ?)",
+                  (actor_username, action, target_vendor_id, details_json))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Audit Log Error: {e}")
+
+def get_current_actor():
+    try:
+        auth_header = request.headers.get('Authorization')
+        if auth_header:
+            token = auth_header.split(" ")[1]
+            data = verify_token(token)
+            return data['username']
+    except:
+        pass
+    return 'system'
+
+@greeting_bp.route("/admin/audit-logs", methods=["GET"])
+@super_admin_required
+def get_audit_logs():
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    # Optional filtering
+    vendor_id = request.args.get('vendor_id')
+    limit = request.args.get('limit', 100)
+    
+    query = "SELECT * FROM audit_logs"
+    params = []
+    
+    if vendor_id:
+        query += " WHERE target_vendor_id = ?"
+        params.append(vendor_id)
+        
+    query += " ORDER BY timestamp DESC LIMIT ?"
+    params.append(limit)
+    
+    c.execute(query, params)
+    logs = [dict(row) for row in c.fetchall()]
+    conn.close()
+    
+    return jsonify({"logs": logs})
+
+@greeting_bp.route("/admin/impersonate", methods=["POST"])
+@super_admin_required
+def impersonate_vendor():
+    data = request.json
+    vendor_id = data.get('vendor_id')
+    
+    if not vendor_id:
+        return jsonify({"error": "Vendor ID required"}), 400
+        
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    # Find the admin user for this vendor
+    c.execute("SELECT username, role FROM system_users WHERE vendor_id = ? AND role = 'admin' LIMIT 1", (vendor_id,))
+    user = c.fetchone()
+    
+    if not user:
+        # Fallback to any user if no admin found (unlikely)
+        c.execute("SELECT username, role FROM system_users WHERE vendor_id = ? LIMIT 1", (vendor_id,))
+        user = c.fetchone()
+        
+    conn.close()
+    
+    if not user:
+        return jsonify({"error": "No users found for this vendor"}), 404
+        
+    # Generate Token
+    token = generate_token(user['username'], user['role'])
+    
+    try:
+        auth_header = request.headers.get('Authorization')
+        if auth_header:
+            token = auth_header.split(" ")[1]
+            current_user = verify_token(token)
+            actor = current_user['username'] if current_user else 'unknown'
+        else:
+            actor = 'system'
+    except:
+        actor = 'system'
+        
+    log_audit(actor, 'impersonate_vendor', vendor_id, {'impersonated_user': user['username']})
+    
+    return jsonify({
+        "token": token,
+        "username": user['username'],
+        "role": user['role']
+    })
+
 # --- Company & Timetable Endpoints ---
 
 @greeting_bp.route("/vendor/subscription", methods=["GET"])
@@ -1302,6 +1414,10 @@ def create_vendor():
         
         conn.commit()
         print("Vendor Creation Committed Successfully")
+        
+        # Audit Log
+        log_audit(get_current_actor(), 'create_vendor', vendor_id, {'company_name': company_name})
+        
         return jsonify({
             "success": True, 
             "vendor_id": vendor_id,
@@ -1329,6 +1445,8 @@ def suspend_vendor(vendor_id):
     conn.commit()
     conn.close()
     
+    log_audit(get_current_actor(), 'suspend_vendor' if action == 'suspend' else 'activate_vendor', vendor_id, {'new_status': status})
+    
     return jsonify({"success": True, "status": status})
 
 @greeting_bp.route("/admin/vendors/<int:vendor_id>/toggle_web_login", methods=["POST"])
@@ -1342,6 +1460,8 @@ def toggle_web_login(vendor_id):
     c.execute("UPDATE vendors SET web_login_enabled = ? WHERE id = ?", (1 if enabled else 0, vendor_id))
     conn.commit()
     conn.close()
+    
+    log_audit(get_current_actor(), 'toggle_web_login', vendor_id, {'enabled': enabled})
     
     return jsonify({"success": True, "enabled": enabled})
 
@@ -1417,6 +1537,9 @@ def update_vendor_subscription(vendor_id):
             params.append(vendor_id)
             c.execute(query, params)
             conn.commit()
+            
+            # Log Audit
+            log_audit(get_current_actor(), 'update_subscription', vendor_id, data)
             
         return jsonify({"success": True})
     except Exception as e:

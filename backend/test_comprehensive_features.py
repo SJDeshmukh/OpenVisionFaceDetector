@@ -1,4 +1,3 @@
-
 import unittest
 import json
 import os
@@ -142,6 +141,15 @@ class TestComprehensiveFeatures(unittest.TestCase):
         c.execute('''CREATE TABLE IF NOT EXISTS system_settings (
             key TEXT PRIMARY KEY,
             value TEXT
+        )''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS audit_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            actor_username TEXT,
+            action TEXT,
+            target_vendor_id INTEGER,
+            details TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
         
         # Create SuperAdmin
@@ -352,20 +360,91 @@ class TestComprehensiveFeatures(unittest.TestCase):
         """Test Super Admin Stats Endpoint."""
         print("\n--- Test 6: Super Admin Stats ---")
         
-        # Use existing superadmin session from setUp
+        # 1. Setup Data: Create Vendor, Employees, Devices
+        # Create Vendor
+        self.client.post('/api/admin/vendors', json={
+            "company_name": "Stats Co",
+            "max_users": 5,
+            "max_employees": 10,
+            "cost_per_user": 100,
+            "cost_per_employee": 10,
+            "start_date": "2024-01-01",
+            "end_date": "2030-12-31" # Active
+        }, headers=self.headers)
+        
+        # Get Vendor ID (should be 1)
+        conn = self.app_module.get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT id FROM vendors WHERE company_name = 'Stats Co'")
+        vendor_id = c.fetchone()[0]
+        
+        # Add Employees (Faces)
+        c.execute("INSERT INTO faces (vendor_id, name) VALUES (?, ?)", (vendor_id, "Emp 1"))
+        c.execute("INSERT INTO faces (vendor_id, name) VALUES (?, ?)", (vendor_id, "Emp 2"))
+        
+        # Add Devices
+        c.execute("INSERT INTO vendor_devices (vendor_id, device_name, device_id) VALUES (?, ?, ?)", (vendor_id, "Device 1", "D1"))
+        c.execute("INSERT INTO vendor_devices (vendor_id, device_name, device_id) VALUES (?, ?, ?)", (vendor_id, "Device 2", "D2"))
+        c.execute("INSERT INTO vendor_devices (vendor_id, device_name, device_id) VALUES (?, ?, ?)", (vendor_id, "Device 3", "D3"))
+        
+        conn.commit()
+        conn.close()
+        
+        # 2. Call Stats Endpoint
         response = self.client.get('/api/admin/stats', headers=self.headers)
         
         if response.status_code == 200:
             stats = response.json
             print(f"Stats received: {stats}")
-            self.assertIn("total_vendors", stats)
-            self.assertIn("active_vendors", stats)
-            self.assertIn("total_employees", stats)
-            self.assertIn("monthly_recurring_revenue", stats)
+            
+            # 3. Verify Counts
+            self.assertEqual(stats["total_vendors"], 1)
+            self.assertEqual(stats["active_vendors"], 1)
+            self.assertEqual(stats["total_employees"], 2)
+            self.assertEqual(stats["total_devices"], 3)
+            
+            # Revenue Calculation: (5 users * 100) + (10 employees * 10) = 500 + 100 = 600
+            self.assertEqual(stats["monthly_recurring_revenue"], 600.0)
+            
             print("✅ Admin Stats verification passed")
         else:
              print(f"❌ Failed to get stats: {response.status_code} - {response.data.decode()}")
              self.fail("Could not retrieve admin stats")
+
+    def test_7_audit_logs(self):
+        """Test Audit Logging for SuperAdmin actions."""
+        print("\n--- Test 7: Audit Logs ---")
+        
+        # 1. Perform Actions that should be logged
+        # Action A: Create Vendor
+        self.client.post('/api/admin/vendors', json={
+            "company_name": "Audit Co"
+        }, headers=self.headers)
+        
+        # Action B: Update Subscription
+        self.client.put('/api/admin/vendors/1/subscription', json={
+            "max_users": 20
+        }, headers=self.headers)
+        
+        # 2. Fetch Audit Logs
+        resp = self.client.get('/api/admin/audit-logs', headers=self.headers)
+        self.assertEqual(resp.status_code, 200)
+        logs = resp.json['logs']
+        
+        print(f"Logs retrieved: {len(logs)}")
+        for log in logs:
+            print(f"- [{log['timestamp']}] {log['actor_username']} performed {log['action']} on vendor {log['target_vendor_id']}")
+            
+        # 3. Verify Specific Log Entries
+        # Check for create_vendor
+        create_logs = [l for l in logs if l['action'] == 'create_vendor']
+        self.assertTrue(len(create_logs) >= 1)
+        self.assertEqual(create_logs[0]['actor_username'], 'superadmin')
+        
+        # Check for update_subscription
+        update_logs = [l for l in logs if l['action'] == 'update_subscription']
+        self.assertTrue(len(update_logs) >= 1)
+        self.assertIn('"max_users": 20', update_logs[0]['details'])
 
 if __name__ == '__main__':
     unittest.main()

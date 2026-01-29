@@ -52,6 +52,7 @@ function App() {
             {/* SuperAdmin Routes */}
             <Route element={<ProtectedRoute allowedRoles={['super_admin']} />}>
                <Route path="/admin/vendors" element={<SuperAdminDashboard />} />
+               <Route path="/admin/audit-logs" element={<AuditLogs />} />
             </Route>
 
             {/* Admin Routes */}
@@ -62,7 +63,6 @@ function App() {
               <Route path="/cameras" element={<Cameras />} />
               <Route path="/reports" element={<Reports />} />
               <Route path="/settings" element={<Settings />} />
-              <Route path="/audit-logs" element={<AuditLogs />} />
               <Route path="/timetable" element={<Timetable />} />
               <Route path="/wages" element={<Wages />} />
               <Route path="/live-attendance" element={<LiveAttendance />} />
