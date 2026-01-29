@@ -12,13 +12,14 @@ public class Person {
     public String department;
     public String designation;
     public String shift;
+    public String customData;
     public boolean synced = true;
 
     public Person() {
 
     }
 
-    public Person(String id, String name, Bitmap face, byte[] templates, String phone, String department, String designation, String shift) {
+    public Person(String id, String name, Bitmap face, byte[] templates, String phone, String department, String designation, String shift, String customData) {
         this.id = id;
         this.name = name;
         this.face = face;
@@ -27,6 +28,11 @@ public class Person {
         this.department = department;
         this.designation = designation;
         this.shift = shift;
+        this.customData = customData;
+    }
+
+    public Person(String id, String name, Bitmap face, byte[] templates, String phone, String department, String designation, String shift) {
+        this(id, name, face, templates, phone, department, designation, shift, "");
     }
 
     // Backward compatibility constructors

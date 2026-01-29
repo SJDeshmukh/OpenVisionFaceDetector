@@ -27,6 +27,9 @@ public class SyncRequest {
     @SerializedName("shift")
     private String shift;
 
+    @SerializedName("custom_data")
+    private com.google.gson.JsonObject customData;
+
     public SyncRequest(String id, String name, String templates, String faceImage, String phone, String department, String designation, String shift) {
         this.id = id;
         this.name = name;
@@ -50,4 +53,5 @@ public class SyncRequest {
     public String getDepartment() { return department; }
     public String getDesignation() { return designation; }
     public String getShift() { return shift; }
+    public com.google.gson.JsonObject getCustomData() { return customData; }
 }

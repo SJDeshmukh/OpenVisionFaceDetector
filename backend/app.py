@@ -12,7 +12,7 @@ from functools import wraps
 from itsdangerous import URLSafeTimedSerializer
 # from config import BASE_URL, FRONTEND_URL # Removed config.py per user request
 
-app = Flask(__name__)
+app = Flask(__name__) 
 app.secret_key = os.environ.get('SECRET_KEY', 'super_secret_key_change_this_in_prod')
 serializer = URLSafeTimedSerializer(app.secret_key)
 
@@ -1277,7 +1277,7 @@ def get_vendors():
     # Get Vendors with Subscription Details
     c.execute("""
         SELECT v.*, 
-               s.plan_type, s.start_date, s.end_date, s.max_users, s.max_employees, s.max_mobile_devices, s.cost_per_user, s.setup_fee, s.setup_fee_paid, s.features,
+               s.plan_type, s.start_date, s.end_date, s.max_users, s.max_employees, s.max_mobile_devices, s.cost_per_user, s.cost_per_employee, s.setup_fee, s.setup_fee_paid, s.features,
                (SELECT username FROM system_users WHERE vendor_id = v.id AND role = 'vendor_admin' LIMIT 1) as admin_username,
                (SELECT username FROM system_users WHERE vendor_id = v.id AND role = 'user' LIMIT 1) as user_username,
                (SELECT COUNT(*) FROM system_users WHERE vendor_id = v.id AND role = 'vendor_admin') as admin_count,
@@ -1367,7 +1367,9 @@ def create_vendor():
         # Get limits from request, default to 5 phones and 50 employees if not provided
         max_users = data.get("max_users") or 5
         max_employees = data.get("max_employees") or 50
-        max_mobile_devices = max_users # Sync them for now as per user request
+        max_mobile_devices = data.get("max_mobile_devices")
+        if max_mobile_devices is None:
+            max_mobile_devices = max_users # Default to max_users if not specified
         
         # Costs
         cost_per_user = data.get("cost_per_user") or 0
@@ -3129,8 +3131,8 @@ def download_faces():
         faces.append({
             "id": row["id"],
             "name": row["name"],
-            "templates": row["templates"],
-            "face_image": row["face_image"],
+            "templates": base64.b64encode(row["templates"]).decode('utf-8') if row["templates"] else None,
+            "face_image": base64.b64encode(row["face_image"]).decode('utf-8') if row["face_image"] else None,
             "phone": row["phone"] if "phone" in row.keys() else "",
             "department": row["department"] if "department" in row.keys() else "",
             "designation": row["designation"] if "designation" in row.keys() else "",

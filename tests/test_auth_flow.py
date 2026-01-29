@@ -70,7 +70,8 @@ class TestAuthFlow(unittest.TestCase):
                       cost_per_employee REAL DEFAULT 0.0,
                       setup_fee REAL DEFAULT 0.0,
                       setup_fee_paid BOOLEAN DEFAULT 0,
-                      status TEXT DEFAULT 'active')''')
+                      status TEXT DEFAULT 'active',
+                      features TEXT DEFAULT '[]')''')
                       
         c.execute('''CREATE TABLE IF NOT EXISTS invoices
                      (id INTEGER PRIMARY KEY AUTOINCREMENT, 
