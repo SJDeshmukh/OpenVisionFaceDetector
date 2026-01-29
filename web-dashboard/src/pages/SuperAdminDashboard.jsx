@@ -20,10 +20,15 @@ const SuperAdminDashboard = () => {
     admin_username: '', admin_password: '',
     user_username: '', user_password: '',
     frontend_bundle_id: 'default_attendance',
-    backend_service_id: 'default_api'
+    backend_service_id: 'default_api',
+    features: []
   });
   const [editingVendor, setEditingVendor] = useState(null);
   
+  // Features Config
+  const [availableFeatures, setAvailableFeatures] = useState([]);
+  const [bundleConfig, setBundleConfig] = useState({});
+
   // Filter States
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -43,7 +48,20 @@ const SuperAdminDashboard = () => {
 
   useEffect(() => {
     fetchVendors();
+    fetchFeatures();
   }, []);
+  
+  const fetchFeatures = async () => {
+    try {
+        const response = await axios.get(`${API_URL}/admin/features`, {
+            headers: { Authorization: `Bearer ${user?.token}` }
+        });
+        setAvailableFeatures(response.data.features || []);
+        setBundleConfig(response.data.bundles || {});
+    } catch (error) {
+        console.error("Error fetching features:", error);
+    }
+  };
 
   const filteredVendors = vendors.filter(vendor => {
     const matchesSearch = 
@@ -112,7 +130,8 @@ const SuperAdminDashboard = () => {
             cost_per_employee: newVendor.cost_per_employee,
             max_users: newVendor.max_users,
             max_employees: newVendor.max_employees,
-            plan_type: 'custom'
+            plan_type: 'custom',
+            features: newVendor.features
         }, {
             headers: { Authorization: `Bearer ${user?.token}` }
         });
@@ -138,7 +157,8 @@ const SuperAdminDashboard = () => {
         cost_per_user: '', cost_per_employee: '',
         max_users: '', max_employees: '',
         admin_username: '', admin_password: '',
-        user_username: '', user_password: ''
+        user_username: '', user_password: '',
+        features: []
       });
       fetchVendors();
     } catch (error) {
@@ -164,7 +184,8 @@ const SuperAdminDashboard = () => {
       user_username: vendor.user_username || '',
       user_password: '',   // Keep blank
       frontend_bundle_id: vendor.frontend_bundle_id || 'default_attendance',
-      backend_service_id: vendor.backend_service_id || 'default_api'
+      backend_service_id: vendor.backend_service_id || 'default_api',
+      features: vendor.features || []
     });
     setShowModal(true);
   };
@@ -1039,7 +1060,14 @@ const SuperAdminDashboard = () => {
                     <select 
                       className="w-full p-2 border rounded focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
                       value={newVendor.frontend_bundle_id}
-                      onChange={e => setNewVendor({...newVendor, frontend_bundle_id: e.target.value})}
+                      onChange={e => {
+                        const bundleId = e.target.value;
+                        setNewVendor({
+                            ...newVendor, 
+                            frontend_bundle_id: bundleId,
+                            features: bundleConfig[bundleId] || [] 
+                        });
+                      }}
                     >
                       {Object.keys(FRONTEND_BUNDLES).map(bundleId => (
                         <option key={bundleId} value={bundleId}>
@@ -1060,6 +1088,43 @@ const SuperAdminDashboard = () => {
                       <option value="dedicated_db_api">Dedicated DB API</option>
                     </select>
                   </div>
+                </div>
+
+                {/* Features Selection */}
+                <div className="mt-4 border-t pt-4">
+                    <label className="block text-sm font-medium text-slate-700 mb-2">Enabled Features (Multi-Select)</label>
+                    <div className="grid grid-cols-2 gap-2">
+                        {availableFeatures.map(feature => (
+                            <label key={feature} className="flex items-center space-x-2 p-2 border rounded cursor-pointer hover:bg-slate-50">
+                                <input 
+                                    type="checkbox"
+                                    checked={newVendor.features?.includes(feature)}
+                                    onChange={e => {
+                                        const checked = e.target.checked;
+                                        setNewVendor(prev => {
+                                            let newFeatures = checked 
+                                                ? [...(prev.features || []), feature]
+                                                : (prev.features || []).filter(f => f !== feature);
+
+                                            // Auto-enable dependencies
+                                            if (checked) {
+                                                if (feature === 'payroll') {
+                                                        if (!newFeatures.includes('report_payroll')) newFeatures.push('report_payroll');
+                                                        if (!newFeatures.includes('reports')) newFeatures.push('reports');
+                                                }
+                                                if (feature === 'report_payroll' || feature === 'report_detailed') {
+                                                        if (!newFeatures.includes('reports')) newFeatures.push('reports');
+                                                }
+                                            }
+                                            return { ...prev, features: newFeatures };
+                                        });
+                                    }}
+                                    className="rounded text-indigo-600 focus:ring-indigo-500"
+                                />
+                                <span className="text-sm capitalize">{feature.replace('_', ' ')}</span>
+                            </label>
+                        ))}
+                    </div>
                 </div>
               </div>
 

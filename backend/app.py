@@ -1098,7 +1098,7 @@ def get_vendors():
     # Get Vendors with Subscription Details
     c.execute("""
         SELECT v.*, 
-               s.plan_type, s.start_date, s.end_date, s.max_users, s.max_employees, s.max_mobile_devices, s.cost_per_user, s.setup_fee, s.setup_fee_paid,
+               s.plan_type, s.start_date, s.end_date, s.max_users, s.max_employees, s.max_mobile_devices, s.cost_per_user, s.setup_fee, s.setup_fee_paid, s.features,
                (SELECT username FROM system_users WHERE vendor_id = v.id AND role = 'vendor_admin' LIMIT 1) as admin_username,
                (SELECT username FROM system_users WHERE vendor_id = v.id AND role = 'user' LIMIT 1) as user_username,
                (SELECT COUNT(*) FROM system_users WHERE vendor_id = v.id AND role = 'vendor_admin') as admin_count,
@@ -1113,6 +1113,15 @@ def get_vendors():
     for row in c.fetchall():
         v = dict(row)
         # Calculate status based on subscription
+        if v.get('features'):
+            try:
+                import json
+                v['features'] = json.loads(v['features'])
+            except:
+                v['features'] = []
+        else:
+            v['features'] = []
+
         if v['end_date']:
             try:
                 # Handle both 'YYYY-MM-DD' and 'YYYY-MM-DD HH:MM:SS'
@@ -1136,11 +1145,18 @@ def get_vendors():
 
 # Feature Mapping based on Frontend Bundles
 BUNDLE_FEATURES = {
-    'attendance_ui': ['reports', 'mobile_app'],
-    'attendance_payroll_ui': ['reports', 'mobile_app', 'payroll', 'shifts'],
-    'enterprise_custom_ui': ['reports', 'mobile_app', 'payroll', 'shifts'],
-    'default_attendance': ['reports', 'mobile_app', 'payroll', 'shifts']
+    'attendance_ui': ['reports', 'report_detailed', 'mobile_app'],
+    'attendance_payroll_ui': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts'],
+    'enterprise_custom_ui': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts'],
+    'default_attendance': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts']
 }
+
+ALL_FEATURES = ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts']
+
+@greeting_bp.route("/admin/features", methods=["GET"])
+@super_admin_required
+def get_available_features():
+    return jsonify({"features": ALL_FEATURES, "bundles": BUNDLE_FEATURES})
 
 @greeting_bp.route("/admin/vendors", methods=["POST"])
 @super_admin_required
@@ -2447,6 +2463,17 @@ def login():
             frontend_bundle_id = row[1] if row and len(row) > 1 and row[1] else 'default_attendance'
             backend_service_id = row[2] if row and len(row) > 2 and row[2] else 'default_api'
             vendor_config = json.loads(row[3]) if row and len(row) > 3 and row[3] else {}
+
+            # Fetch Features
+            c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (user['vendor_id'],))
+            sub_row = c.fetchone()
+            if sub_row and sub_row[0]:
+                try:
+                    features = json.loads(sub_row[0])
+                except json.JSONDecodeError:
+                    features = []
+            else:
+                features = []
             
             # --- Session Limit Checks ---
             
@@ -2535,6 +2562,7 @@ def login():
             frontend_bundle_id = 'enterprise_custom_ui'
             backend_service_id = 'default_api'
             vendor_config = {}
+            features = ALL_FEATURES
 
         print(f"Login Success: Role={user['role']}") # DEBUG LOG
         token = generate_token(user['username'], user['role'])
@@ -2568,7 +2596,8 @@ def login():
             "company_id": company_id,
             "frontend_bundle_id": frontend_bundle_id,
             "backend_service_id": backend_service_id,
-            "vendor_config": vendor_config
+            "vendor_config": vendor_config,
+            "features": features
         })
     else:
         print("Login Failed: Invalid credentials") # DEBUG LOG

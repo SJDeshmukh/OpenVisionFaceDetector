@@ -281,8 +281,12 @@ const Reports = () => {
                   onChange={(e) => setFilters({...filters, type: e.target.value})}
                   className="w-full rounded-lg border-slate-200 text-sm focus:ring-blue-500 focus:border-blue-500"
                 >
-                  <option value="detailed">Detailed Attendance Log</option>
-                  <option value="summary">Payroll & Hours Summary</option>
+                  {(user?.features?.includes('report_detailed') || !user?.features) && (
+                    <option value="detailed">Detailed Attendance Log</option>
+                  )}
+                  {(user?.features?.includes('report_payroll')) && (
+                    <option value="summary">Payroll & Hours Summary</option>
+                  )}
                 </select>
               </div>
               
