@@ -29,6 +29,15 @@ const SuperAdminDashboard = () => {
   const [availableFeatures, setAvailableFeatures] = useState([]);
   const [bundleConfig, setBundleConfig] = useState({});
 
+  // Stats State
+  const [stats, setStats] = useState({
+      total_vendors: 0,
+      active_vendors: 0,
+      total_employees: 0,
+      total_devices: 0,
+      monthly_recurring_revenue: 0
+  });
+
   // Filter States
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -49,7 +58,19 @@ const SuperAdminDashboard = () => {
   useEffect(() => {
     fetchVendors();
     fetchFeatures();
+    fetchStats();
   }, []);
+  
+  const fetchStats = async () => {
+    try {
+        const response = await axios.get(`${API_URL}/admin/stats`, {
+            headers: { Authorization: `Bearer ${user?.token}` }
+        });
+        setStats(response.data);
+    } catch (error) {
+        console.error("Error fetching stats:", error);
+    }
+  };
   
   const fetchFeatures = async () => {
     try {
@@ -381,12 +402,13 @@ const SuperAdminDashboard = () => {
 
       {activeTab === 'overview' && (
         <>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-        <StatCard label="Total Vendors" value={vendors.length} icon={<Shield className="text-blue-500" />} />
-        <StatCard label="Active Subscriptions" value={vendors.filter(v => v.subscription_status === 'Active').length} icon={<Check className="text-green-500" />} />
-        <StatCard label="Suspended" value={vendors.filter(v => v.status === 'suspended').length} icon={<X className="text-red-500" />} />
-        <StatCard label="Total MRR" value={`₹${vendors.reduce((sum, v) => sum + ((v.cost_per_user || 0) * (v.max_users || 0)) + ((v.cost_per_employee || 0) * (v.max_employees || 0)), 0).toLocaleString()}`} icon={<span className="text-xl font-bold text-slate-600">₹</span>} />
-      </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
+            <StatCard label="Total Vendors" value={stats.total_vendors} icon={<Shield className="text-blue-600" size={24} />} />
+            <StatCard label="Active Vendors" value={stats.active_vendors} icon={<Check className="text-green-600" size={24} />} />
+            <StatCard label="Total Employees" value={stats.total_employees} icon={<User className="text-purple-600" size={24} />} />
+            <StatCard label="Active Devices" value={stats.total_devices} icon={<ToggleLeft className="text-orange-600" size={24} />} />
+            <StatCard label="Monthly Revenue" value={`₹${(stats.monthly_recurring_revenue || 0).toLocaleString()}`} icon={<DollarSign className="text-emerald-600" size={24} />} />
+          </div>
 
       {/* Filters Section */}
       <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 mb-6 flex flex-wrap gap-4 items-center">
@@ -1114,6 +1136,26 @@ const SuperAdminDashboard = () => {
                                                 }
                                                 if (feature === 'report_payroll' || feature === 'report_detailed') {
                                                         if (!newFeatures.includes('reports')) newFeatures.push('reports');
+                                                }
+                                                
+                                                // New Feature Dependencies
+                                                if (feature === 'payable_hours') {
+                                                    if (!newFeatures.includes('payroll')) newFeatures.push('payroll');
+                                                    if (!newFeatures.includes('report_payroll')) newFeatures.push('report_payroll');
+                                                    if (!newFeatures.includes('reports')) newFeatures.push('reports');
+                                                }
+                                                
+                                                if (feature === 'night_shift_logic' || feature === 'add_shift') {
+                                                    if (!newFeatures.includes('shifts')) newFeatures.push('shifts');
+                                                }
+                                                
+                                                // Additional Feature Dependencies
+                                                if (feature === 'geofencing') {
+                                                    if (!newFeatures.includes('mobile_app')) newFeatures.push('mobile_app');
+                                                }
+                                                
+                                                if (feature === 'whatsapp_alerts') {
+                                                    if (!newFeatures.includes('reports')) newFeatures.push('reports');
                                                 }
                                             }
                                             return { ...prev, features: newFeatures };

@@ -129,6 +129,17 @@ def add_missing_columns():
                       last_active DATETIME,
                       created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
 
+        # 6. Create invoices table if not exists
+        c.execute('''CREATE TABLE IF NOT EXISTS invoices
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      vendor_id INTEGER,
+                      amount REAL,
+                      status TEXT DEFAULT 'generated', -- generated, paid, overdue, cancelled
+                      due_date DATE,
+                      generated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                      paid_at DATETIME,
+                      FOREIGN KEY(vendor_id) REFERENCES vendors(id))''')
+
         conn.commit()
         conn.close()
     except Exception as e:
@@ -1088,6 +1099,50 @@ def reset_user_password():
 
 # --- SuperAdmin Endpoints ---
 
+@greeting_bp.route("/admin/stats", methods=["GET"])
+@super_admin_required
+def get_admin_stats():
+    conn = get_db_connection()
+    c = conn.cursor()
+    
+    # 1. Total Vendors
+    c.execute("SELECT COUNT(*) FROM vendors")
+    total_vendors = c.fetchone()[0]
+    
+    # 2. Active Vendors
+    c.execute("SELECT COUNT(*) FROM vendors WHERE status = 'active'")
+    active_vendors = c.fetchone()[0]
+    
+    # 3. Total Employees Managed
+    c.execute("SELECT COUNT(*) FROM faces")
+    total_employees = c.fetchone()[0]
+    
+    # 4. Total Devices Registered
+    c.execute("SELECT COUNT(*) FROM vendor_devices")
+    total_devices = c.fetchone()[0]
+    
+    # 5. Revenue (Simple Sum of monthly costs for active subscriptions)
+    # This is an estimate based on active plans
+    c.execute("""
+        SELECT SUM(
+            (IFNULL(cost_per_user, 0) * IFNULL(max_users, 0)) + 
+            (IFNULL(cost_per_employee, 0) * IFNULL(max_employees, 0))
+        ) 
+        FROM subscriptions 
+        WHERE end_date >= DATE('now')
+    """)
+    monthly_revenue = c.fetchone()[0] or 0
+    
+    conn.close()
+    
+    return jsonify({
+        "total_vendors": total_vendors,
+        "active_vendors": active_vendors,
+        "total_employees": total_employees,
+        "total_devices": total_devices,
+        "monthly_recurring_revenue": monthly_revenue
+    })
+
 @greeting_bp.route("/admin/vendors", methods=["GET"])
 @super_admin_required
 def get_vendors():
@@ -1145,13 +1200,13 @@ def get_vendors():
 
 # Feature Mapping based on Frontend Bundles
 BUNDLE_FEATURES = {
-    'attendance_ui': ['reports', 'report_detailed', 'mobile_app'],
-    'attendance_payroll_ui': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts'],
-    'enterprise_custom_ui': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts'],
-    'default_attendance': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts']
+    'attendance_ui': ['reports', 'report_detailed', 'mobile_app', 'live_attendance', 'cameras', 'enable_attendance', 'geofencing'],
+    'attendance_payroll_ui': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'whatsapp_alerts'],
+    'enterprise_custom_ui': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'api_access', 'white_labeling'],
+    'default_attendance': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing']
 }
 
-ALL_FEATURES = ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts']
+ALL_FEATURES = ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'api_access', 'white_labeling']
 
 @greeting_bp.route("/admin/features", methods=["GET"])
 @super_admin_required
