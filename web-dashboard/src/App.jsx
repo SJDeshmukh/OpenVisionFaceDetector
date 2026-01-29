@@ -14,6 +14,7 @@ import Wages from './pages/Wages';
 import LiveAttendance from './pages/LiveAttendance';
 import SuperAdminDashboard from './pages/SuperAdminDashboard'; // New
 import SuperAdminLogin from './pages/SuperAdminLogin';
+import LiveFeed from './pages/LiveFeed';
 import { AuthProvider, useAuth } from './context/AuthContext';
 
 // Protected Route Component
@@ -53,6 +54,7 @@ function App() {
             <Route element={<ProtectedRoute allowedRoles={['super_admin']} />}>
                <Route path="/admin/vendors" element={<SuperAdminDashboard />} />
                <Route path="/admin/audit-logs" element={<AuditLogs />} />
+               <Route path="/admin/live-feed" element={<LiveFeed />} />
             </Route>
 
             {/* Admin Routes */}

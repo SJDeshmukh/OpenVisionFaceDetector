@@ -23,3 +23,21 @@ export const FRONTEND_BUNDLES = {
   'enterprise_custom_ui': 'ALL',
   'default_attendance': 'ALL' 
 };
+
+// Map Backend Feature Keys (from subscriptions table) to Frontend Sidebar Item Names
+export const FEATURE_TO_SIDEBAR_MAP = {
+    'reports': 'Reports',
+    'report_detailed': 'Reports',
+    'report_payroll': 'Reports',
+    'payroll': 'Wages',
+    'shifts': 'Timetable',
+    'live_attendance': 'Live Attendance',
+    'cameras': 'Cameras',
+    'mobile_app': 'Dashboard', // Dashboard is usually base, but mobile_app might unlock it? Assume Dashboard is always there unless restricted
+    'geofencing': 'Settings', // Settings usually contains geofencing
+    'api_access': 'Settings',
+    'audit_logs': 'Audit Logs'
+};
+
+// Items that are ALWAYS visible regardless of features (Base System)
+export const ALWAYS_VISIBLE_ITEMS = ['Dashboard', 'People', 'Settings', 'Attendance'];

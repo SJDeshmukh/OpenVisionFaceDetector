@@ -1,6 +1,6 @@
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { FRONTEND_BUNDLES } from '../config';
+import { FRONTEND_BUNDLES, FEATURE_TO_SIDEBAR_MAP, ALWAYS_VISIBLE_ITEMS } from '../config';
 import logo from '../assets/logo_openvision.png';
 import { 
   LayoutDashboard, 
@@ -35,6 +35,7 @@ const adminNavItems = [
 
 const superAdminNavItems = [
   { name: 'Vendors', path: '/admin/vendors', icon: Users },
+  { name: 'Live Feed', path: '/admin/live-feed', icon: Video },
   { name: 'Audit Logs', path: '/admin/audit-logs', icon: Shield },
 ];
 
@@ -63,10 +64,28 @@ export const Sidebar = ({ isOpen, onClose }) => {
   // Dynamic Frontend Loading Logic
   if (user?.role !== 'super_admin') {
       const bundleId = user?.frontend_bundle_id || 'default_attendance';
-      const allowedItems = FRONTEND_BUNDLES[bundleId] || FRONTEND_BUNDLES['default_attendance'];
+      
+      // PRIORITY: Check if we have explicit 'features' list from backend (granular control)
+      if (user?.features && Array.isArray(user.features)) {
+          // 1. Start with Always Visible Items
+          const allowedNames = new Set(ALWAYS_VISIBLE_ITEMS);
 
-      if (allowedItems !== 'ALL') {
-          navItems = navItems.filter(item => allowedItems.includes(item.name));
+          // 2. Add items based on enabled features
+          user.features.forEach(featureKey => {
+              const sidebarName = FEATURE_TO_SIDEBAR_MAP[featureKey];
+              if (sidebarName) {
+                  allowedNames.add(sidebarName);
+              }
+          });
+          
+          navItems = navItems.filter(item => allowedNames.has(item.name));
+      } 
+      // FALLBACK: Use legacy Bundle ID system
+      else {
+          const allowedItems = FRONTEND_BUNDLES[bundleId] || FRONTEND_BUNDLES['default_attendance'];
+          if (allowedItems !== 'ALL') {
+              navItems = navItems.filter(item => allowedItems.includes(item.name));
+          }
       }
   }
 

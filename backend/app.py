@@ -149,14 +149,26 @@ def add_missing_columns():
                       details TEXT, -- JSON string
                       timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)''')
 
+        # 8. Add registration_config to vendors
+        c.execute("PRAGMA table_info(vendors)")
+        vendor_cols = [info[1] for info in c.fetchall()]
+        if 'registration_config' not in vendor_cols:
+            print("MIGRATION: Adding registration_config to vendors table...")
+            c.execute("ALTER TABLE vendors ADD COLUMN registration_config TEXT DEFAULT NULL") # JSON Schema
+
+        # 9. Add custom_data to faces
+        c.execute("PRAGMA table_info(faces)")
+        faces_cols = [info[1] for info in c.fetchall()]
+        if 'custom_data' not in faces_cols:
+            print("MIGRATION: Adding custom_data to faces table...")
+            c.execute("ALTER TABLE faces ADD COLUMN custom_data TEXT DEFAULT NULL") # JSON Values
+
         conn.commit()
         conn.close()
     except Exception as e:
         print(f"Schema Update Error: {e}")
 
 add_missing_columns()
-
-# --- Middleware for SaaS Enforcement ---
 def check_vendor_status(vendor_id):
     """
     Checks if a vendor is allowed to access the system.
@@ -1547,6 +1559,60 @@ def update_vendor_subscription(vendor_id):
     finally:
         conn.close()
 
+@greeting_bp.route("/admin/vendors/<int:vendor_id>/registration-config", methods=["GET"])
+def get_vendor_registration_config(vendor_id):
+    # Auth Check (SuperAdmin or Vendor Admin of same vendor)
+    caller_vendor_id, error = authenticate_vendor_access()
+    if error: return error
+    
+    # Check permission
+    # If caller_vendor_id is None, it means SuperAdmin (in global context).
+    # If caller_vendor_id matches vendor_id, it is the vendor admin.
+    if caller_vendor_id and caller_vendor_id != vendor_id:
+         return jsonify({"error": "Access Denied"}), 403
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute("SELECT registration_config FROM vendors WHERE id = ?", (vendor_id,))
+        row = c.fetchone()
+        if not row:
+            return jsonify({"error": "Vendor not found"}), 404
+        
+        config = row[0]
+        if config:
+            return jsonify({"config": json.loads(config)})
+        else:
+            return jsonify({"config": None})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+@greeting_bp.route("/admin/vendors/<int:vendor_id>/registration-config", methods=["PUT"])
+@super_admin_required
+def update_vendor_registration_config(vendor_id):
+    data = request.json
+    config = data.get('config') # Expecting a list/object
+    
+    if config is None:
+        return jsonify({"error": "Missing config"}), 400
+        
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute("UPDATE vendors SET registration_config = ? WHERE id = ?", (json.dumps(config), vendor_id))
+        conn.commit()
+        
+        # Log Audit
+        log_audit(get_current_actor(), 'update_registration_config', vendor_id, data)
+        
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
 
 @greeting_bp.route("/admin/vendors/<int:vendor_id>", methods=["PUT"])
 @super_admin_required
@@ -2723,7 +2789,8 @@ def login():
                         "warning": "Subscription Expired",
                         "frontend_bundle_id": frontend_bundle_id,
                         "backend_service_id": backend_service_id,
-                        "vendor_config": vendor_config
+                        "vendor_config": vendor_config,
+                        "features": features
                     })
 
                 error_msg = f"Access Denied: {reason}"
@@ -2981,6 +3048,11 @@ def upload_face():
     designation = data.get("designation", "")
     shift = data.get("shift", "")
     
+    # Extract Custom Data (Dynamic Fields)
+    standard_fields = {'person_id', 'name', 'templates', 'face_image', 'phone', 'department', 'designation', 'shift', 'vendor_id'}
+    custom_dict = {k: v for k, v in data.items() if k not in standard_fields}
+    custom_data = json.dumps(custom_dict) if custom_dict else None
+
     # Use caller's vendor_id. If SuperAdmin, allow overriding via payload.
     vendor_id = caller_vendor_id
     if not vendor_id:
@@ -3015,13 +3087,13 @@ def upload_face():
 
         if person_id:
             # Update Existing
-            c.execute("UPDATE faces SET name=?, templates=?, face_image=?, phone=?, department=?, designation=?, shift=?, vendor_id=? WHERE id=?",
-                      (name, templates, face_image, phone, department, designation, shift, vendor_id, person_id))
+            c.execute("UPDATE faces SET name=?, templates=?, face_image=?, phone=?, department=?, designation=?, shift=?, vendor_id=?, custom_data=? WHERE id=?",
+                      (name, templates, face_image, phone, department, designation, shift, vendor_id, custom_data, person_id))
             new_id = person_id
         else:
             # Insert New
-            c.execute("INSERT INTO faces (name, templates, face_image, phone, department, designation, shift, vendor_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                      (name, templates, face_image, phone, department, designation, shift, vendor_id))
+            c.execute("INSERT INTO faces (name, templates, face_image, phone, department, designation, shift, vendor_id, custom_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                      (name, templates, face_image, phone, department, designation, shift, vendor_id, custom_data))
             new_id = c.lastrowid
 
         conn.commit()
@@ -3062,7 +3134,8 @@ def download_faces():
             "phone": row["phone"] if "phone" in row.keys() else "",
             "department": row["department"] if "department" in row.keys() else "",
             "designation": row["designation"] if "designation" in row.keys() else "",
-            "shift": row["shift"] if "shift" in row.keys() else ""
+            "shift": row["shift"] if "shift" in row.keys() else "",
+            "custom_data": json.loads(row["custom_data"]) if "custom_data" in row.keys() and row["custom_data"] else {}
         })
     
     return jsonify({"faces": faces})
@@ -4199,7 +4272,8 @@ def calculate_daily_hours(records, timetable=None, date_str=None):
 
 # --- Live Camera Stream Endpoints ---
 
-# In-memory storage for the latest frames, keyed by vendor_id
+# In-memory storage for the latest frames
+# Structure: { vendor_id: { device_id: { "data": ..., "timestamp": ..., "source_ip": ... } } }
 latest_frames = {}
 
 @greeting_bp.route("/stream/upload", methods=["POST"])
@@ -4226,6 +4300,7 @@ def upload_stream_frame():
 
         data = request.json
         image_data = data.get("image") # Base64 string
+        device_id = data.get("device_id", "default")
         
         # 2. Check for explicit vendor_id in body (Override)
         if data.get("vendor_id"):
@@ -4237,10 +4312,14 @@ def upload_stream_frame():
         if not image_data:
             return jsonify({"error": "No image data"}), 400
             
-        latest_frames[vendor_id] = {
+        if vendor_id not in latest_frames:
+            latest_frames[vendor_id] = {}
+            
+        latest_frames[vendor_id][device_id] = {
             "data": image_data,
             "timestamp": datetime.now(),
-            "source_ip": request.headers.get('X-Forwarded-For', request.remote_addr)
+            "source_ip": request.headers.get('X-Forwarded-For', request.remote_addr),
+            "device_name": data.get("device_name", f"Device {device_id}")
         }
         
         return jsonify({"status": "success"})
@@ -4263,7 +4342,14 @@ def view_stream_frame():
         except:
             target_vendor_id = 1
             
-    frame_data = latest_frames.get(target_vendor_id)
+    target_device_id = request.args.get('device_id', 'default')
+
+    vendor_frames = latest_frames.get(target_vendor_id, {})
+    frame_data = vendor_frames.get(target_device_id)
+
+    # Legacy Fallback: If no device_id specified and 'default' missing, return first available
+    if not request.args.get('device_id') and not frame_data and vendor_frames:
+        frame_data = next(iter(vendor_frames.values()))
 
     # Check if frame is stale (older than 10 seconds)
     if frame_data and frame_data.get("timestamp"):
@@ -4275,10 +4361,44 @@ def view_stream_frame():
         return jsonify({
             "status": "online", 
             "image": frame_data["data"],
-            "source_ip": frame_data.get("source_ip", "Unknown")
+            "source_ip": frame_data.get("source_ip", "Unknown"),
+            "timestamp": frame_data.get("timestamp").isoformat()
         })
     else:
         return jsonify({"status": "offline", "image": None})
+
+@greeting_bp.route("/stream/active-devices", methods=["GET"])
+def list_active_devices():
+    """
+    Returns a list of active devices (streams) for the authenticated vendor 
+    or all vendors if SuperAdmin.
+    """
+    auth_vendor_id, error = authenticate_vendor_access()
+    if error: return error
+    
+    active_list = []
+    
+    # If SuperAdmin (auth_vendor_id is None), return all
+    # If Vendor Admin, return only theirs
+    
+    target_vendors = [auth_vendor_id] if auth_vendor_id else latest_frames.keys()
+    
+    for vid in target_vendors:
+        if vid in latest_frames:
+            devices = latest_frames[vid]
+            for did, data in devices.items():
+                # Filter out stale devices (> 30 seconds)
+                if (datetime.now() - data['timestamp']).total_seconds() < 30:
+                    active_list.append({
+                        "vendor_id": vid,
+                        "device_id": did,
+                        "device_name": data.get("device_name", f"Device {did}"),
+                        "last_seen": data['timestamp'].isoformat(),
+                        "source_ip": data.get("source_ip")
+                    })
+                    
+    return jsonify({"devices": active_list})
+
 
 def calculate_expected_hours(day_activities):
     """

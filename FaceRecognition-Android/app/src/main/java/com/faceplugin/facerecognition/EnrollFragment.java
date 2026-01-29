@@ -50,9 +50,12 @@ public class EnrollFragment extends Fragment {
     private TextInputEditText etDesignation;
     private Spinner spShift;
     private Button btnProceed;
+    private android.widget.LinearLayout containerDetails;
     private DBManager dbManager;
     private List<String> shiftNames = new ArrayList<>();
     private ArrayAdapter<String> shiftAdapter;
+    private java.util.Map<String, View> dynamicViews = new java.util.HashMap<>();
+    private java.util.Map<String, String> dynamicFieldConfig = new java.util.HashMap<>();
 
     private ActivityResultLauncher<Intent> cameraLauncher;
     private ActivityResultLauncher<Intent> galleryLauncher;
@@ -62,6 +65,7 @@ public class EnrollFragment extends Fragment {
     public View onCreateView(@NonNull LayoutInflater inflater, @Nullable ViewGroup container, @Nullable Bundle savedInstanceState) {
         View view = inflater.inflate(R.layout.fragment_enroll, container, false);
 
+        containerDetails = view.findViewById(R.id.containerDetails);
         etName = view.findViewById(R.id.etName);
         etMobile = view.findViewById(R.id.etMobile);
         etDepartment = view.findViewById(R.id.etDepartment);
@@ -78,6 +82,7 @@ public class EnrollFragment extends Fragment {
         spShift.setAdapter(shiftAdapter);
 
         fetchShifts();
+        fetchRegistrationConfig();
 
         // Initialize Launchers
         cameraLauncher = registerForActivityResult(
@@ -183,7 +188,26 @@ public class EnrollFragment extends Fragment {
             }
 
             // Sync to Backend
-            syncToBackend(name, templates, faceImage, phone, department, designation, shift);
+            JsonObject dynamicData = new JsonObject();
+            for (java.util.Map.Entry<String, View> entry : dynamicViews.entrySet()) {
+                 View v = entry.getValue();
+                 String key = entry.getKey();
+                 String value = "";
+                 if (v instanceof android.widget.EditText) {
+                     value = ((android.widget.EditText) v).getText().toString();
+                 } else if (v instanceof Spinner) {
+                     Object selected = ((Spinner) v).getSelectedItem();
+                     if (selected != null) value = selected.toString();
+                 }
+                 
+                 if ("required".equals(dynamicFieldConfig.get(key)) && value.isEmpty()) {
+                      Toast.makeText(getContext(), key + " is required", Toast.LENGTH_SHORT).show();
+                      return;
+                 }
+                 dynamicData.addProperty(key, value);
+            }
+
+            syncToBackend(name, templates, faceImage, phone, department, designation, shift, dynamicData);
             
             // Clear inputs
             etName.setText("");
@@ -271,14 +295,115 @@ public class EnrollFragment extends Fragment {
         });
     }
 
-    private void syncToBackend(String name, byte[] templates, Bitmap faceImage, String phone, String department, String designation, String shift) {
+    private void fetchRegistrationConfig() {
+        android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE);
+        int vendorId = prefs.getInt("vendor_id", -1);
+        if (vendorId == -1) return;
+
+        RetrofitClient.getService().getRegistrationConfig(vendorId).enqueue(new Callback<JsonObject>() {
+            @Override
+            public void onResponse(Call<JsonObject> call, Response<JsonObject> response) {
+                if (response.isSuccessful() && response.body() != null) {
+                    JsonObject body = response.body();
+                    if (body.has("config") && !body.get("config").isJsonNull()) {
+                        JsonArray config = body.getAsJsonArray("config");
+                        if (getActivity() != null) {
+                            getActivity().runOnUiThread(() -> renderDynamicFields(config));
+                        }
+                    }
+                }
+            }
+
+            @Override
+            public void onFailure(Call<JsonObject> call, Throwable t) {
+                t.printStackTrace();
+            }
+        });
+    }
+
+    private void renderDynamicFields(JsonArray config) {
+        for (JsonElement el : config) {
+            JsonObject field = el.getAsJsonObject();
+            String key = field.get("field").getAsString();
+            String label = field.get("label").getAsString();
+            String type = field.get("type").getAsString();
+            boolean required = field.has("required") && field.get("required").getAsBoolean();
+
+            dynamicFieldConfig.put(key, required ? "required" : "optional");
+
+            if (dynamicViews.containsKey(key)) continue;
+
+            if (type.equals("text") || type.equals("number")) {
+                com.google.android.material.textfield.TextInputLayout til = new com.google.android.material.textfield.TextInputLayout(requireContext());
+                til.setLayoutParams(new android.widget.LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT));
+                til.setHint(label);
+                til.setBoxBackgroundMode(com.google.android.material.textfield.TextInputLayout.BOX_BACKGROUND_OUTLINE);
+                // Note: Using hardcoded colors for simplicity as accessing R.color from context requires more verbose code or ensure imports
+                // But we are in Fragment, so requireContext() works.
+                // Assuming R.color.vision_blue exists as per existing XML.
+                
+                android.widget.LinearLayout.LayoutParams params = (android.widget.LinearLayout.LayoutParams) til.getLayoutParams();
+                params.setMargins(0, 0, 0, (int)(16 * getResources().getDisplayMetrics().density));
+                til.setLayoutParams(params);
+
+                com.google.android.material.textfield.TextInputEditText et = new com.google.android.material.textfield.TextInputEditText(til.getContext());
+                et.setLayoutParams(new ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT));
+                et.setInputType(type.equals("number") ? android.text.InputType.TYPE_CLASS_NUMBER : android.text.InputType.TYPE_CLASS_TEXT);
+
+                til.addView(et);
+                containerDetails.addView(til);
+                dynamicViews.put(key, et);
+            } else if (type.equals("select")) {
+                android.widget.TextView tv = new android.widget.TextView(requireContext());
+                tv.setText(label);
+                containerDetails.addView(tv);
+
+                Spinner spinner = new Spinner(requireContext());
+                List<String> options = new ArrayList<>();
+                JsonArray opts = field.getAsJsonArray("options");
+                for (JsonElement o : opts) options.add(o.getAsString());
+                
+                ArrayAdapter<String> adapter = new ArrayAdapter<>(requireContext(), android.R.layout.simple_spinner_item, options);
+                adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+                spinner.setAdapter(adapter);
+                
+                android.widget.LinearLayout.LayoutParams params = new android.widget.LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        (int)(48 * getResources().getDisplayMetrics().density));
+                params.setMargins(0, 8, 0, 32);
+                spinner.setLayoutParams(params);
+
+                containerDetails.addView(spinner);
+                dynamicViews.put(key, spinner);
+            }
+        }
+    }
+
+    private void syncToBackend(String name, byte[] templates, Bitmap faceImage, String phone, String department, String designation, String shift, JsonObject dynamicData) {
         String templatesBase64 = Base64.encodeToString(templates, Base64.NO_WRAP);
         ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
         faceImage.compress(Bitmap.CompressFormat.JPEG, 100, byteArrayOutputStream);
         String faceImageBase64 = Base64.encodeToString(byteArrayOutputStream.toByteArray(), Base64.NO_WRAP);
 
-        SyncRequest syncRequest = new SyncRequest(name, templatesBase64, faceImageBase64, phone, department, designation, shift);
-        RetrofitClient.getService().uploadFace(syncRequest).enqueue(new Callback<Void>() {
+        JsonObject json = new JsonObject();
+        json.addProperty("name", name);
+        json.addProperty("templates", templatesBase64);
+        json.addProperty("face_image", faceImageBase64);
+        json.addProperty("phone", phone);
+        json.addProperty("department", department);
+        json.addProperty("designation", designation);
+        json.addProperty("shift", shift);
+        
+        // Add dynamic fields
+        for (String key : dynamicData.keySet()) {
+            json.add(key, dynamicData.get(key));
+        }
+
+        RetrofitClient.getService().uploadFace(json).enqueue(new Callback<Void>() {
             @Override
             public void onResponse(Call<Void> call, Response<Void> response) {
                 if (response.isSuccessful()) {

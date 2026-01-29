@@ -18,7 +18,10 @@ public interface GreetingService {
     Call<GreetingResponse> sendPersonEvent(@Body PersonEventRequest request);
 
     @POST("api/sync/upload")
-    Call<Void> uploadFace(@Body SyncRequest request);
+    Call<Void> uploadFace(@Body com.google.gson.JsonObject request);
+
+    @GET("api/admin/vendors/{vendor_id}/registration-config")
+    Call<com.google.gson.JsonObject> getRegistrationConfig(@Path("vendor_id") int vendorId);
 
     @GET("api/sync/download")
     Call<SyncResponse> downloadFaces();
