@@ -105,9 +105,9 @@ export const Sidebar = ({ isOpen, onClose }) => {
         <div className="h-16 flex items-center justify-between px-6 border-b border-slate-800">
           <div className="flex items-center">
             <div className="w-8 h-8 flex items-center justify-center mr-3">
-              <img src={logo} alt="VisionX" className="w-full h-full object-contain" />
+              <img src={logo} alt="TapInX" className="w-full h-full object-contain" />
             </div>
-            <span className="text-lg font-bold tracking-tight">VisionX</span>
+            <span className="text-lg font-bold tracking-tight">TapInX</span>
           </div>
           <button onClick={onClose} className="lg:hidden text-slate-400 hover:text-white">
             <X size={20} />

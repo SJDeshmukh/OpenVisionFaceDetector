@@ -40,10 +40,10 @@ const Login = () => {
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
         <div className="p-8 text-center bg-blue-600">
           <div className="w-20 h-20 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-4 backdrop-blur-sm p-3">
-            <img src={logo} alt="VisionX" className="w-full h-full object-contain" />
+            <img src={logo} alt="TapInX" className="w-full h-full object-contain" />
           </div>
-          <h1 className="text-2xl font-bold text-white">VisionX Admin</h1>
-          <p className="text-blue-100 mt-2 text-sm">Powered by OpenVision</p>
+          <h1 className="text-2xl font-bold text-white">TapInX Admin</h1>
+          <p className="text-blue-100 mt-2 text-sm">Powered by OpenVisionX</p>
         </div>
 
         <div className="p-8">
