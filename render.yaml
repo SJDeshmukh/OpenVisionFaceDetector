@@ -7,7 +7,8 @@ services:
     plan: free
     rootDir: backend
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    # Updated start command to use gunicorn_config.py for auto-migration
+    startCommand: gunicorn -c gunicorn_config.py app:app
     envVars:
       - key: PYTHON_VERSION
         value: 3.9.0
@@ -17,6 +18,11 @@ services:
         value: https://face-detection-frontend-kepx.onrender.com
       - key: BACKEND_URL
         value: https://face-detection-backend-69o7.onrender.com
+      # Link to the PostgreSQL database defined below
+      - key: DATABASE_URL
+        fromDatabase:
+          name: face_db
+          property: connectionString
 
   # Frontend Service (React/Vite)
   - type: static
@@ -30,3 +36,10 @@ services:
     envVars:
       - key: VITE_API_URL
         value: https://face-detection-backend-69o7.onrender.com
+
+databases:
+  - name: face_db
+    databaseName: face_db
+    user: face_user
+    region: ohio
+    plan: free

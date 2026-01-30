@@ -15,7 +15,8 @@ import {
   User,
   Camera
 } from 'lucide-react';
-import { API_URL } from '../config';
+import { io } from 'socket.io-client';
+import { API_URL, BASE_URL } from '../config';
 
 const People = () => {
   const { user } = useAuth();
@@ -42,13 +43,28 @@ const People = () => {
       fetchUsers();
       fetchShifts();
       
-      // Poll for updates (Real-time data)
-      const interval = setInterval(() => {
-        if (!isModalOpen) fetchUsers(); 
-      }, 5000);
-      return () => clearInterval(interval);
+      // Socket.IO for Real-time Updates
+      const socket = io(BASE_URL);
+      
+      socket.on('connect', () => {
+          console.log("People Socket Connected");
+          if (user.vendor_id) {
+              socket.emit('join_vendor', { vendor_id: user.vendor_id });
+          }
+      });
+
+      socket.on('persons_updated', (data) => {
+          if (String(data.vendor_id) === String(user.vendor_id)) {
+              console.log("Person updated, refreshing list...");
+              fetchUsers();
+          }
+      });
+
+      return () => {
+          socket.disconnect();
+      };
     }
-  }, [user, isModalOpen]);
+  }, [user]);
 
   const fetchUsers = async () => {
     try {
@@ -103,9 +119,11 @@ const People = () => {
 
   const handleEdit = (user) => {
     setIsEditing(true);
+    const dynamicFields = user.custom_data || {};
+    
     setFormData({
-      id: user.id,
-      name: user.name,
+      id: user.person_id || user.id,
+      name: user.name || '',
       phone: user.phone || '',
       department: user.department || '',
       designation: user.designation || '',
@@ -114,7 +132,8 @@ const People = () => {
       photoPreview: user.face_image && user.face_image.startsWith('data:') 
         ? user.face_image 
         : `data:image/jpeg;base64,${user.face_image}`,
-      templates: user.templates || ''
+      templates: user.templates || '',
+      ...dynamicFields
     });
     setIsModalOpen(true);
   };
@@ -122,10 +141,8 @@ const People = () => {
   const handleDelete = async (name) => {
     if (window.confirm(`Are you sure you want to delete ${name}?`)) {
       try {
-        const response = await axios.delete(`${API_URL}/sync/delete/${name}`);
-        if (response.data.status === 'success') {
-          fetchUsers();
-        }
+        await axios.delete(`${API_URL}/sync/delete/${name}`);
+        // Socket.IO will handle the refresh, but we can optimistically update or just wait
       } catch (error) {
         console.error("Error deleting user:", error);
         alert("Failed to delete user");
@@ -139,21 +156,18 @@ const People = () => {
     
     setSubmitting(true);
     try {
-      // Add vendor_id to payload (assuming user context is available or handled by backend auth)
-      // Since we don't have auth context here explicitly passing it, backend should infer from token if possible
-      // or we pass it if we have it.
-      // For now, let's assume backend will handle it or we update the API to accept it.
-
       const payload = {
         person_id: formData.id,
         name: formData.name,
-        phone: formData.phone,
-        department: formData.department,
-        designation: formData.designation,
-        shift: formData.shift,
         face_image: formData.photo,
-        templates: formData.templates 
+        templates: formData.templates,
+        ...formData // Spread all other dynamic fields
       };
+
+      // Cleanup
+      delete payload.photoPreview;
+      delete payload.photo; 
+      delete payload.id; 
 
       const response = await axios.post(`${API_URL}/sync/upload`, payload);
       if (response.data.status === 'success') {
@@ -179,29 +193,35 @@ const People = () => {
     }
   };
 
-  const getQualityColor = (quality) => {
-    switch (quality) {
-      case 'Good': return 'text-green-600';
-      case 'Average': return 'text-amber-600';
-      case 'Poor': return 'text-red-600';
-      default: return 'text-slate-600';
+  // Determine columns based on Vendor Config (SuperAdmin defined)
+  const getColumns = () => {
+    if (user?.vendor_config && Array.isArray(user.vendor_config) && user.vendor_config.length > 0) {
+      return user.vendor_config;
     }
+    // Fallback Defaults
+    return [
+      { field: 'department', label: 'Department' },
+      { field: 'shift', label: 'Shift' },
+      { field: 'designation', label: 'Designation' }
+    ];
   };
 
-  // Mock data augmentation (minimized now that we have real data)
-  const augmentedUsers = users.map((u, i) => ({
-    ...u,
-    id: u.id || `EMP-${1000 + i}`,
-    // Use real data if available, fallback to defaults
-    department: u.department || 'Unassigned',
-    designation: u.designation || 'Employee',
-    phone: u.phone || 'N/A',
-    quality: ['Good', 'Good', 'Average'][i % 3],
-    lastActive: '2 mins ago'
-  }));
+  const columns = getColumns();
+
+  const getCellValue = (person, field) => {
+    // 1. Check custom_data (Priority for dynamic fields)
+    if (person.custom_data && person.custom_data[field]) {
+      return person.custom_data[field];
+    }
+    // 2. Check root properties (Legacy/Fallback)
+    if (person[field]) {
+      return person[field];
+    }
+    return '-';
+  };
 
   return (
-    <div className="space-y-6">
+    <div className="p-6 max-w-7xl mx-auto">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-800">People Management</h1>
@@ -250,24 +270,25 @@ const People = () => {
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200">
                 <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Employee</th>
-                <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">ID</th>
-                <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Department</th>
-                <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Shift</th>
-                <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Face Quality</th>
+                {columns.map(col => (
+                  <th key={col.field} className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                    {col.label}
+                  </th>
+                ))}
                 <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {loading ? (
                 <tr>
-                  <td colSpan="7" className="px-6 py-8 text-center text-slate-500">Loading employees...</td>
+                  <td colSpan={columns.length + 2} className="px-6 py-8 text-center text-slate-500">Loading employees...</td>
                 </tr>
-              ) : augmentedUsers.length === 0 ? (
+              ) : users.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="px-6 py-8 text-center text-slate-500">No employees found.</td>
+                  <td colSpan={columns.length + 2} className="px-6 py-8 text-center text-slate-500">No employees found.</td>
                 </tr>
               ) : (
-                augmentedUsers.map((user, idx) => (
+                users.map((user, idx) => (
                   <tr key={idx} className="hover:bg-slate-50/80 transition-colors">
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="flex items-center">
@@ -284,27 +305,17 @@ const People = () => {
                         )}
                         <div>
                           <div className="text-sm font-medium text-slate-900">{user.name}</div>
-                          <div className="text-xs text-slate-500">{user.designation || 'Employee'}</div>
+                          <div className="text-xs text-slate-500 font-mono">{user.id}</div>
                         </div>
                       </div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600 font-mono">
-                      {user.id}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700">
-                        {user.department}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
-                      {user.shift || '-'}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm">
-                      <div className="flex items-center space-x-1">
-                        <div className={`w-2 h-2 rounded-full ${user.quality === 'Good' ? 'bg-green-500' : user.quality === 'Average' ? 'bg-amber-500' : 'bg-red-500'}`}></div>
-                        <span className={getQualityColor(user.quality)}>{user.quality}</span>
-                      </div>
-                    </td>
+                    
+                    {columns.map(col => (
+                      <td key={col.field} className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
+                        {getCellValue(user, col.field)}
+                      </td>
+                    ))}
+
                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                       <div className="flex justify-end space-x-2">
                         <button 
@@ -332,7 +343,7 @@ const People = () => {
         {/* Pagination */}
         <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-between">
           <div className="text-sm text-slate-500">
-            Showing <span className="font-medium">1</span> to <span className="font-medium">{augmentedUsers.length}</span> of <span className="font-medium">{augmentedUsers.length}</span> results
+            Showing <span className="font-medium">1</span> to <span className="font-medium">{users.length}</span> of <span className="font-medium">{users.length}</span> results
           </div>
           <div className="flex space-x-2">
             <button className="px-3 py-1 border border-slate-200 rounded text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50" disabled>Previous</button>
@@ -344,8 +355,8 @@ const People = () => {
       {/* Registration Modal */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
-            <div className="flex justify-between items-center p-6 border-b border-slate-100">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center p-6 border-b border-slate-100 sticky top-0 bg-white z-10">
               <h2 className="text-xl font-bold text-slate-800">{isEditing ? 'Edit Employee' : 'Add New Employee'}</h2>
               <button onClick={() => setIsModalOpen(false)} className="text-slate-400 hover:text-slate-600">
                 <X size={24} />
@@ -391,53 +402,56 @@ const People = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-700">Phone</label>
-                    <input 
-                        type="tel" 
-                        value={formData.phone}
-                        onChange={(e) => setFormData({...formData, phone: e.target.value})}
-                        placeholder="e.g. +1234567890"
-                        className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-700">Department</label>
-                    <input 
-                        type="text" 
-                        value={formData.department}
-                        onChange={(e) => setFormData({...formData, department: e.target.value})}
-                        placeholder="e.g. Engineering"
-                        className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                    />
-                  </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-700">Phone</label>
+                <input 
+                    type="tel" 
+                    value={formData.phone}
+                    onChange={(e) => setFormData({...formData, phone: e.target.value})}
+                    placeholder="e.g. +1234567890"
+                    className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                />
               </div>
-              
-              <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-700">Designation</label>
-                    <input 
-                        type="text" 
-                        value={formData.designation}
-                        onChange={(e) => setFormData({...formData, designation: e.target.value})}
-                        placeholder="e.g. Senior Developer"
-                        className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-700">Shift</label>
-                    <select 
-                        value={formData.shift}
-                        onChange={(e) => setFormData({...formData, shift: e.target.value})}
-                        className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                    >
-                        <option value="">Select Shift</option>
-                        {shifts.map((s, idx) => (
-                            <option key={idx} value={s.name}>{s.name} ({s.start_time} - {s.end_time})</option>
-                        ))}
-                    </select>
-                  </div>
+
+              {/* Dynamic Fields Rendering */}
+              <div className="space-y-4">
+                  {columns.map((col, idx) => {
+                      const fieldKey = col.key || col.field;
+                      // Skip name/phone as they are already handled above
+                      if (['name', 'phone'].includes(fieldKey)) return null;
+
+                      return (
+                          <div key={idx} className="space-y-2">
+                              <label className="text-sm font-medium text-slate-700">{col.label}</label>
+                              {col.type === 'select' || fieldKey === 'shift' ? (
+                                  <select 
+                                      value={formData[fieldKey] || ''}
+                                      onChange={(e) => setFormData({...formData, [fieldKey]: e.target.value})}
+                                      className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                                  >
+                                      <option value="">Select {col.label}</option>
+                                      {fieldKey === 'shift' ? (
+                                          shifts.map((s, sIdx) => (
+                                              <option key={sIdx} value={s.name}>{s.name} ({s.start_time} - {s.end_time})</option>
+                                          ))
+                                      ) : (
+                                          col.options && col.options.map((opt, oId) => (
+                                              <option key={oId} value={opt}>{opt}</option>
+                                          ))
+                                      )}
+                                  </select>
+                              ) : (
+                                  <input 
+                                      type={col.type || 'text'}
+                                      value={formData[fieldKey] || ''}
+                                      onChange={(e) => setFormData({...formData, [fieldKey]: e.target.value})}
+                                      placeholder={`Enter ${col.label}`}
+                                      className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                                  />
+                              )}
+                          </div>
+                      );
+                  })}
               </div>
 
               <div className="flex gap-3 pt-2">

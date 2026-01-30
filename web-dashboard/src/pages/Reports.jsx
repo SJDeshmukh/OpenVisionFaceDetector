@@ -48,7 +48,8 @@ const Reports = () => {
     endDate: new Date().toISOString().split('T')[0],
     department: '',
     designation: '',
-    type: 'detailed'
+    type: 'detailed',
+    dynamic: {}
   });
 
   useEffect(() => {
@@ -99,6 +100,11 @@ const Reports = () => {
     if (filters.department) params.append('department', filters.department);
     if (filters.designation) params.append('designation', filters.designation);
     params.append('type', filters.type);
+    Object.entries(filters.dynamic || {}).forEach(([key, value]) => {
+      if (value) {
+        params.append(`dynamic_${key}`, value);
+      }
+    });
     
     if (user?.token) {
       params.append('token', user.token);
@@ -273,6 +279,26 @@ const Reports = () => {
                   ))}
                 </select>
               </div>
+              
+              {/* Dynamic Filters */}
+              {Object.entries(filterOptions.dynamic_filters || {}).map(([key, config]) => (
+                <div key={key}>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">{config.label}</label>
+                  <select 
+                    value={filters.dynamic[key] || ''}
+                    onChange={(e) => setFilters({
+                      ...filters, 
+                      dynamic: { ...filters.dynamic, [key]: e.target.value }
+                    })}
+                    className="w-full rounded-lg border-slate-200 text-sm focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="">All {config.label}s</option>
+                    {config.options && config.options.map(opt => (
+                      <option key={opt} value={opt}>{opt}</option>
+                    ))}
+                  </select>
+                </div>
+              ))}
               
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Report Type</label>

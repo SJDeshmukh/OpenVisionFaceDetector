@@ -1,47 +1,42 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
-import { API_URL } from '../config';
+import { io } from 'socket.io-client';
+import { API_URL, BASE_URL } from '../config';
 import { useAuth } from '../context/AuthContext';
 import { Monitor, Wifi, WifiOff, RefreshCw, Maximize2, X, Search, Camera, ChevronRight, LayoutGrid, Building2 } from 'lucide-react';
 
-const DeviceMonitor = ({ vendorId, deviceId, deviceName }) => {
-  const { user } = useAuth();
+const DeviceMonitor = ({ vendorId, deviceId, deviceName, socket }) => {
   const [image, setImage] = useState(null);
   const [status, setStatus] = useState('connecting'); // connecting, online, offline
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [lastFrameTime, setLastFrameTime] = useState(Date.now());
 
   useEffect(() => {
-    let mounted = true;
-    
-    const fetchFrame = async () => {
-      try {
-        const response = await axios.get(`${API_URL}/stream/view`, {
-            params: { vendor_id: vendorId, device_id: deviceId },
-            headers: { Authorization: `Bearer ${user?.token}` }
-        });
-        
-        if (mounted) {
-            if (response.data.status === 'online' && response.data.image) {
-                setImage(response.data.image.startsWith('data:') ? response.data.image : `data:image/jpeg;base64,${response.data.image}`);
-                setStatus('online');
-            } else {
-                setStatus('offline');
-            }
+    if (!socket) return;
+
+    const handleFrame = (data) => {
+        // Filter for this specific device
+        if (String(data.device_id) === String(deviceId) && String(data.vendor_id) === String(vendorId)) {
+            setImage(data.image.startsWith('data:') ? data.image : `data:image/jpeg;base64,${data.image}`);
+            setStatus('online');
+            setLastFrameTime(Date.now());
         }
-      } catch (error) {
-        if (mounted) setStatus('error');
-      }
     };
 
-    fetchFrame();
-    // Poll faster (1s) if fullscreen, slower (10s) if thumbnail to save bandwidth
-    const interval = setInterval(fetchFrame, isFullscreen ? 1000 : 10000);
+    socket.on('frame_update', handleFrame);
+
+    // Check for stale connection (no frames for 10s)
+    const checkInterval = setInterval(() => {
+        if (Date.now() - lastFrameTime > 10000) {
+            setStatus('offline');
+        }
+    }, 2000);
 
     return () => {
-        mounted = false;
-        clearInterval(interval);
+        socket.off('frame_update', handleFrame);
+        clearInterval(checkInterval);
     };
-  }, [vendorId, deviceId, user, isFullscreen]);
+  }, [socket, vendorId, deviceId, lastFrameTime]);
 
   const toggleFullscreen = (e) => {
       e?.stopPropagation();
@@ -143,6 +138,36 @@ const LiveFeed = () => {
   // Selection State
   const [selectedVendorId, setSelectedVendorId] = useState(null);
   const [vendorSearch, setVendorSearch] = useState('');
+  
+  // Socket State
+  const [socket, setSocket] = useState(null);
+
+  // Initialize Socket
+  useEffect(() => {
+    const newSocket = io(BASE_URL, {
+        transports: ['websocket'],
+        reconnection: true,
+    });
+    setSocket(newSocket);
+
+    return () => {
+        newSocket.disconnect();
+    };
+  }, []);
+
+  // Manage Room Subscription
+  useEffect(() => {
+    if (!socket || !selectedVendorId) return;
+
+    // Join the vendor's room
+    socket.emit('join_stream', { vendor_id: selectedVendorId });
+    console.log(`Joined stream for vendor ${selectedVendorId}`);
+
+    return () => {
+        // Leave when switching
+        socket.emit('leave_stream', { vendor_id: selectedVendorId });
+    };
+  }, [socket, selectedVendorId]);
 
   // Fetch Vendors (for SuperAdmin mapping)
   const fetchVendors = async () => {
@@ -325,6 +350,7 @@ const LiveFeed = () => {
                                   vendorId={dev.vendor_id}
                                   deviceId={dev.device_id}
                                   deviceName={dev.device_name}
+                                  socket={socket}
                               />
                           ))}
                       </div>

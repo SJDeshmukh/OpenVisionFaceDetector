@@ -4,6 +4,7 @@ import os
 import json
 from flask import Flask, Blueprint, request, jsonify, render_template
 from flask_cors import CORS
+from flask_socketio import SocketIO, join_room, leave_room
 from services.llm_service import generate_greeting
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -31,6 +32,46 @@ allowed_origins = [
     "https://face-detection-frontend-kepx.onrender.com"
 ]
 CORS(app, resources={r"/*": {"origins": allowed_origins}}, supports_credentials=True)
+
+# Initialize SocketIO
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent')
+
+@socketio.on('join_super_admin')
+def handle_join_super_admin():
+    try:
+        join_room('super_admin')
+        return {'status': 'joined', 'room': 'super_admin'}
+    except Exception as e:
+        return {'error': str(e)}, 500
+
+@socketio.on('join_vendor')
+def handle_join_vendor(data=None):
+    try:
+        vendor_id = None
+        if data and isinstance(data, dict):
+            vendor_id = data.get('vendor_id')
+        if not vendor_id:
+            # Attempt to infer from auth token
+            auth_header = request.headers.get('Authorization')
+            if auth_header:
+                try:
+                    token = auth_header.split(" ")[1]
+                    user_data = verify_token(token)
+                    if user_data:
+                        conn = get_db_connection()
+                        c = conn.cursor()
+                        c.execute("SELECT vendor_id FROM system_users WHERE username = ?", (user_data['username'],))
+                        row = c.fetchone()
+                        conn.close()
+                        vendor_id = row[0] if row else None
+                except Exception:
+                    pass
+        if not vendor_id:
+            return {'error': 'vendor_id required'}, 400
+        join_room(f"vendor_{vendor_id}")
+        return {'status': 'joined', 'room': f'vendor_{vendor_id}'}
+    except Exception as e:
+        return {'error': str(e)}, 500
 
 @app.route('/auth/status', methods=['GET'])
 def auth_status():
@@ -1281,6 +1322,7 @@ def get_admin_stats():
         "active_vendors": active_vendors,
         "total_employees": total_employees,
         "total_devices": total_devices,
+        "active_streaming_devices": active_streaming_devices,
         "monthly_recurring_revenue": monthly_revenue
     })
 
@@ -1478,6 +1520,12 @@ def suspend_vendor(vendor_id):
     
     log_audit(get_current_actor(), 'suspend_vendor' if action == 'suspend' else 'activate_vendor', vendor_id, {'new_status': status})
     
+    # Real-time updates
+    socketio.emit('vendor_updated', {'vendor_id': vendor_id, 'status': status}) # For SuperAdmin list
+    
+    if status == 'suspended':
+        socketio.emit('force_logout', {'vendor_id': vendor_id}) # For Vendor Dashboard
+
     return jsonify({"success": True, "status": status})
 
 @greeting_bp.route("/admin/vendors/<int:vendor_id>/toggle_web_login", methods=["POST"])
@@ -1494,6 +1542,11 @@ def toggle_web_login(vendor_id):
     
     log_audit(get_current_actor(), 'toggle_web_login', vendor_id, {'enabled': enabled})
     
+    socketio.emit('vendor_updated', {'vendor_id': vendor_id, 'web_login_enabled': enabled})
+    
+    if not enabled:
+        socketio.emit('force_logout', {'vendor_id': vendor_id})
+
     return jsonify({"success": True, "enabled": enabled})
 
 
@@ -2156,6 +2209,23 @@ def export_report():
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
+
+    # Fetch Vendor Config for Dynamic Columns (Common for both report types)
+    dynamic_fields = []
+    if vendor_id:
+        c.execute("SELECT registration_config FROM vendors WHERE id = ?", (vendor_id,))
+        row = c.fetchone()
+        if row and row['registration_config']:
+            try:
+                import json
+                config = json.loads(row['registration_config'])
+                for field in config:
+                    key = field.get('key') or field.get('label')
+                    label = field.get('label')
+                    if key and label:
+                        dynamic_fields.append({"key": key, "label": label})
+            except:
+                pass
     
     # Filters
     start_date_str = request.args.get('start_date', (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d'))
@@ -2163,6 +2233,14 @@ def export_report():
     department = request.args.get('department')
     designation = request.args.get('designation')
     report_type = request.args.get('type', 'detailed') # detailed or summary
+    dynamic_filters = {}
+    try:
+        for k, v in request.args.items():
+            if k.startswith('dynamic_') and v:
+                dynamic_key = k[len('dynamic_'):]
+                dynamic_filters[dynamic_key] = v
+    except Exception:
+        dynamic_filters = {}
     
     if report_type == 'summary':
         # --- Summary / Payroll Report ---
@@ -2189,7 +2267,7 @@ def export_report():
 
         # 2. Fetch Persons (with filters applied if needed, but usually we want all for payroll)
         # Apply filters to faces query
-        faces_query = "SELECT name, daily_wage, department, designation, phone FROM faces WHERE 1=1"
+        faces_query = "SELECT name, daily_wage, department, designation, phone, custom_data FROM faces WHERE 1=1"
         faces_params = []
         
         if vendor_id:
@@ -2204,7 +2282,35 @@ def export_report():
             faces_params.append(designation)
             
         c.execute(faces_query, faces_params)
-        persons = {row['name']: dict(row) for row in c.fetchall()}
+        persons_raw = c.fetchall()
+        persons = {}
+        for row in persons_raw:
+            row_dict = dict(row)
+            if dynamic_filters:
+                match = True
+                custom_data = {}
+                if row_dict.get('custom_data'):
+                    try:
+                        import json
+                        custom_data = json.loads(row_dict['custom_data'])
+                    except Exception:
+                        custom_data = {}
+                for dk, dv in dynamic_filters.items():
+                    val = custom_data.get(dk)
+                    if val is None:
+                        fallback_key = None
+                        for f in dynamic_fields:
+                            if f['key'] == dk:
+                                fallback_key = f['label']
+                                break
+                        if fallback_key:
+                            val = custom_data.get(fallback_key)
+                    if str(val) != str(dv):
+                        match = False
+                        break
+                if not match:
+                    continue
+            persons[row['name']] = row_dict
         
         # 3. Fetch Attendance for the period (BUFFERED for Overnight Shifts)
         # We fetch Start-1 to End+1 to capture cross-midnight shifts
@@ -2285,11 +2391,17 @@ def export_report():
         # Create CSV
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow([
+        
+        # Headers: Standard + Dynamic
+        headers = [
             'Employee Name', 'Department', 'Designation', 'Phone',
             'Days Present', 'Total Hours (Formatted)', 'Total Payable Hours', 
             'Standard Daily Hours', 'Daily Wage', 'Hourly Rate', 'Total Estimated Wage'
-        ])
+        ]
+        for field in dynamic_fields:
+            headers.append(field['label'])
+            
+        writer.writerow(headers)
         
         for name, person_info in persons.items():
             total_hours = 0
@@ -2317,7 +2429,7 @@ def export_report():
             m = int(round((total_hours - h) * 60))
             total_hours_str = f"{h}h {m}m"
             
-            writer.writerow([
+            row_data = [
                 name,
                 person_info['department'] or '',
                 person_info['designation'] or '',
@@ -2329,7 +2441,22 @@ def export_report():
                 daily_wage,
                 round(hourly_rate, 2),
                 total_wage
-            ])
+            ]
+            
+            # Parse Custom Data for Dynamic Fields
+            custom_data = {}
+            if person_info.get('custom_data'):
+                try:
+                    import json
+                    custom_data = json.loads(person_info['custom_data'])
+                except:
+                    pass
+            
+            for field in dynamic_fields:
+                val = custom_data.get(field['key']) or custom_data.get(field['label']) or '-'
+                row_data.append(val)
+                
+            writer.writerow(row_data)
             
         output.seek(0)
         return Response(
@@ -2339,8 +2466,10 @@ def export_report():
         )
 
     # --- Default Detailed Log Report ---
+    # (dynamic_fields already fetched above)
+
     query = """
-        SELECT a.name, a.timestamp, a.status, f.department, f.designation
+        SELECT a.name, a.timestamp, a.status, f.department, f.designation, f.custom_data
         FROM attendance a
         LEFT JOIN faces f ON a.name = f.name
         WHERE date(a.timestamp) BETWEEN ? AND ?
@@ -2368,9 +2497,37 @@ def export_report():
     # Create CSV in memory
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(['Name', 'Date', 'Time', 'Status', 'Department', 'Designation'])
+    
+    # Headers: Standard + Dynamic
+    headers = ['Name', 'Date', 'Time', 'Status', 'Department', 'Designation']
+    for field in dynamic_fields:
+        headers.append(field['label'])
+    
+    writer.writerow(headers)
     
     for row in rows:
+        if dynamic_filters:
+            try:
+                import json
+                cd = json.loads(row['custom_data']) if row['custom_data'] else {}
+            except Exception:
+                cd = {}
+            should_skip = False
+            for dk, dv in dynamic_filters.items():
+                val = cd.get(dk)
+                if val is None:
+                    fallback_key = None
+                    for f in dynamic_fields:
+                        if f['key'] == dk:
+                            fallback_key = f['label']
+                            break
+                    if fallback_key:
+                        val = cd.get(fallback_key)
+                if str(val) != str(dv):
+                    should_skip = True
+                    break
+            if should_skip:
+                continue
         try:
             ts = datetime.strptime(row['timestamp'], '%Y-%m-%d %H:%M:%S.%f')
         except ValueError:
@@ -2383,14 +2540,29 @@ def export_report():
         if row['status'] == 'CHECK_IN' and 'is_late' in row.keys() and row['is_late'] == 1:
             status_str = 'Late'
             
-        writer.writerow([
+        row_data = [
             row['name'], 
             date_str, 
             time_str, 
             status_str, 
             row['department'] or 'N/A', 
             row['designation'] or 'N/A'
-        ])
+        ]
+        
+        # Parse Custom Data for Dynamic Fields
+        custom_data = {}
+        if row['custom_data']:
+            try:
+                import json
+                custom_data = json.loads(row['custom_data'])
+            except:
+                pass
+        
+        for field in dynamic_fields:
+            val = custom_data.get(field['key']) or custom_data.get(field['label']) or '-'
+            row_data.append(val)
+            
+        writer.writerow(row_data)
     
     output.seek(0)
     
@@ -2410,6 +2582,7 @@ def get_report_filters():
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
+    # 1. Standard Filters (Backward Compatibility)
     query_dept = "SELECT DISTINCT department FROM faces WHERE department IS NOT NULL AND department != ''"
     query_desig = "SELECT DISTINCT designation FROM faces WHERE designation IS NOT NULL AND designation != ''"
     params = []
@@ -2419,18 +2592,61 @@ def get_report_filters():
         query_desig += " AND vendor_id = ?"
         params.append(vendor_id)
 
-    # Get unique departments and designations
     c.execute(query_dept, params)
     departments = [row['department'] for row in c.fetchall()]
     
     c.execute(query_desig, params)
     designations = [row['designation'] for row in c.fetchall()]
     
+    # 2. Dynamic Filters from Registration Config
+    dynamic_filters = {}
+    
+    if vendor_id:
+        # Get Config
+        c.execute("SELECT registration_config FROM vendors WHERE id = ?", (vendor_id,))
+        row = c.fetchone()
+        
+        if row and row['registration_config']:
+            try:
+                import json
+                config = json.loads(row['registration_config'])
+                
+                # Fetch all custom_data to parse unique values
+                # Note: Parsing JSON in Python is safer than relying on SQLite json_extract for all versions
+                c.execute("SELECT custom_data FROM faces WHERE vendor_id = ? AND custom_data IS NOT NULL", (vendor_id,))
+                rows = c.fetchall()
+                
+                for field in config:
+                    field_key = field.get('key') or field.get('label') # Fallback
+                    field_label = field.get('label')
+                    
+                    if not field_key: continue
+                    
+                    unique_values = set()
+                    for r in rows:
+                        if r['custom_data']:
+                            try:
+                                data = json.loads(r['custom_data'])
+                                val = data.get(field_key) or data.get(field_label) # Try both
+                                if val:
+                                    unique_values.add(val)
+                            except:
+                                pass
+                                
+                    dynamic_filters[field_key] = {
+                        "label": field_label,
+                        "options": sorted(list(unique_values))
+                    }
+                    
+            except Exception as e:
+                print(f"Error processing dynamic filters: {e}")
+
     conn.close()
     
     return jsonify({
         "departments": departments,
-        "designations": designations
+        "designations": designations,
+        "dynamic_filters": dynamic_filters
     })
 
 @greeting_bp.route("/persons", methods=["GET"])
@@ -2442,7 +2658,7 @@ def get_persons():
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
-    query = "SELECT id, name, department, designation, shift, daily_wage, face_image, phone FROM faces"
+    query = "SELECT id, name, department, designation, shift, daily_wage, face_image, phone, custom_data FROM faces"
     params = []
     
     if vendor_id:
@@ -2720,12 +2936,13 @@ def login():
             # Check Web Login Flag and Architecture Config
             conn = get_db_connection()
             c = conn.cursor()
-            c.execute("SELECT web_login_enabled, frontend_bundle_id, backend_service_id, config FROM vendors WHERE id = ?", (user['vendor_id'],))
+            c.execute("SELECT web_login_enabled, frontend_bundle_id, backend_service_id, registration_config FROM vendors WHERE id = ?", (user['vendor_id'],))
             row = c.fetchone()
             web_login_enabled = row[0] if row else 1 # Default to True
             frontend_bundle_id = row[1] if row and len(row) > 1 and row[1] else 'default_attendance'
             backend_service_id = row[2] if row and len(row) > 2 and row[2] else 'default_api'
-            vendor_config = json.loads(row[3]) if row and len(row) > 3 and row[3] else {}
+            # Map registration_config to vendor_config for frontend compatibility
+            vendor_config = json.loads(row[3]) if row and len(row) > 3 and row[3] else []
 
             # Fetch Features
             c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (user['vendor_id'],))
@@ -3116,6 +3333,11 @@ def upload_face():
             new_id = c.lastrowid
 
         conn.commit()
+        
+        # Real-time update for Vendor Dashboard (People List) and SuperAdmin (Limits)
+        socketio.emit('persons_updated', {'vendor_id': vendor_id}, room=f"vendor_{vendor_id}")
+        socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
+        
         return jsonify({"status": "success", "message": f"Face for {name} saved.", "person_id": new_id})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -3178,6 +3400,11 @@ def delete_face(name):
             
         conn.commit()
         if c.rowcount > 0:
+            # Real-time update
+            if vendor_id:
+                socketio.emit('persons_updated', {'vendor_id': vendor_id}, room=f"vendor_{vendor_id}")
+                socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
+            
             return jsonify({"status": "success", "message": f"Face for {name} deleted."})
         else:
             return jsonify({"error": "User not found"}), 404
@@ -4294,6 +4521,56 @@ def calculate_daily_hours(records, timetable=None, date_str=None):
 # In-memory storage for the latest frames
 # Structure: { vendor_id: { device_id: { "data": ..., "timestamp": ..., "source_ip": ... } } }
 latest_frames = {}
+
+def cleanup_inactive_streams():
+    """Background task to remove stale streams and update stats."""
+    last_active_count = -1
+    while True:
+        socketio.sleep(5) # Sleep 5 seconds
+        
+        try:
+            current_time = datetime.now()
+            stale_threshold = timedelta(seconds=30)
+            
+            # 1. Cleanup Stale Devices
+            # We need to modify dictionary while iterating, so use list of keys
+            vendors_to_remove = []
+            
+            active_count = 0
+            
+            for v_id in list(latest_frames.keys()):
+                devices = latest_frames[v_id]
+                devices_to_remove = []
+                
+                for d_id, data in devices.items():
+                    if current_time - data['timestamp'] > stale_threshold:
+                        devices_to_remove.append(d_id)
+                    else:
+                        active_count += 1
+                
+                for d_id in devices_to_remove:
+                    del devices[d_id]
+                    
+                if not devices:
+                    vendors_to_remove.append(v_id)
+            
+            for v_id in vendors_to_remove:
+                del latest_frames[v_id]
+                
+            # 2. Emit Stats Update if changed
+            if active_count != last_active_count:
+                last_active_count = active_count
+                socketio.emit('active_devices_update', {'count': active_count}, room='super_admin')
+                
+        except Exception as e:
+            print(f"Error in cleanup task: {e}")
+
+# Start the background task
+try:
+    socketio.start_background_task(cleanup_inactive_streams)
+except Exception as e:
+    print(f"Failed to start background task: {e}")
+
 
 @greeting_bp.route("/stream/upload", methods=["POST"])
 def upload_stream_frame():

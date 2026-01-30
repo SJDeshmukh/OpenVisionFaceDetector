@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect } from 'react';
 import axios from 'axios';
-import { API_URL } from '../config';
+import { io } from 'socket.io-client';
+import { API_URL, BASE_URL } from '../config';
 
 const AuthContext = createContext();
 
@@ -19,7 +20,62 @@ export const AuthProvider = ({ children }) => {
       }
     }
     setLoading(false);
+
+    // Add Axios Interceptor for Auto-Logout
+    const interceptor = axios.interceptors.response.use(
+      (response) => response,
+      (error) => {
+        if (error.response && (error.response.status === 401 || error.response.status === 403)) {
+           // Check if it's an auth error (not just some permission error for a specific resource)
+           // However, for vendor suspension (403 Access Denied), we SHOULD logout.
+           const errorMessage = error.response.data?.error || "";
+           if (errorMessage.includes("Access Denied") || errorMessage.includes("Invalid or Expired Token") || errorMessage.includes("Authentication Required")) {
+               console.log("Auto-logout triggered due to auth error:", errorMessage);
+               logout();
+               window.location.href = '/login'; // Force redirect
+           }
+        }
+        return Promise.reject(error);
+      }
+    );
+
+    return () => {
+      axios.interceptors.response.eject(interceptor);
+    };
   }, []);
+
+  // Socket.IO for Force Logout (and other real-time auth events)
+  useEffect(() => {
+    let socket;
+    if (user && user.token) {
+        socket = io(BASE_URL);
+        
+        socket.on('connect', () => {
+            console.log("Auth Socket connected");
+            if (user.role === 'vendor' && user.vendor_id) {
+                // We don't necessarily need to join a room if the backend broadcasts to all clients
+                // But typically backend emits to specific rooms or namespaces.
+                // The current backend implementation emits 'force_logout' with {vendor_id} to all clients (broadcast=True by default in socketio.emit if no room specified)
+                // OR creates a room for the vendor.
+                // Let's check backend implementation of suspend_vendor:
+                // socketio.emit('force_logout', {'vendor_id': vendor_id}) -> Broadcasts to ALL.
+                // So we just need to filter on client side.
+            }
+        });
+
+        socket.on('force_logout', (data) => {
+            if (user.role === 'vendor' && String(data.vendor_id) === String(user.vendor_id)) {
+                 console.log("Force logout received via Socket.IO");
+                 logout();
+                 window.location.href = '/login';
+            }
+        });
+    }
+    return () => {
+        if (socket) socket.disconnect();
+    };
+  }, [user]);
+
 
   const login = async (username, password) => {
     try {

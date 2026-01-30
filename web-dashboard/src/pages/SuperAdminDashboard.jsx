@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Plus, Check, X, Shield, User, Lock, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight, Search, Filter, ArrowLeft, ArrowRight, Eye, Settings } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { API_URL, FRONTEND_BUNDLES } from '../config';
+import { API_URL, FRONTEND_BUNDLES, BASE_URL } from '../config';
+import { io } from 'socket.io-client';
 import RegistrationConfigEditor from '../components/RegistrationConfigEditor';
 
 const SuperAdminDashboard = () => {
@@ -37,6 +38,7 @@ const SuperAdminDashboard = () => {
       active_vendors: 0,
       total_employees: 0,
       total_devices: 0,
+      active_streaming_devices: 0,
       monthly_recurring_revenue: 0
   });
 
@@ -61,6 +63,37 @@ const SuperAdminDashboard = () => {
     fetchVendors();
     fetchFeatures();
     fetchStats();
+
+    // Socket.IO for Real-time Updates
+    const socket = io(BASE_URL);
+    
+    socket.on('connect', () => {
+        console.log("SuperAdmin Socket Connected");
+        socket.emit('join_super_admin');
+    });
+
+    socket.on('vendor_updated', (data) => {
+        console.log("Vendor Updated:", data);
+        fetchVendors(); // Refresh vendor list (limits, usage)
+        fetchStats(); // Refresh global stats
+    });
+
+    socket.on('active_devices_update', (data) => {
+        console.log("Active Devices Update:", data);
+        setStats(prev => ({
+            ...prev,
+            active_streaming_devices: data.count
+        }));
+    });
+
+    socket.on('device_heartbeat', (data) => {
+         // Optional: Toast notification or just rely on periodic stats update
+         // console.log("Device Heartbeat:", data);
+    });
+
+    return () => {
+        socket.disconnect();
+    };
   }, []);
   
   const fetchStats = async () => {
@@ -440,7 +473,7 @@ const SuperAdminDashboard = () => {
             <StatCard label="Total Vendors" value={stats.total_vendors} icon={<Shield className="text-blue-600" size={24} />} />
             <StatCard label="Active Vendors" value={stats.active_vendors} icon={<Check className="text-green-600" size={24} />} />
             <StatCard label="Total Employees" value={stats.total_employees} icon={<User className="text-purple-600" size={24} />} />
-            <StatCard label="Active Devices" value={stats.total_devices} icon={<ToggleLeft className="text-orange-600" size={24} />} />
+            <StatCard label="Active Devices" value={stats.active_streaming_devices} icon={<ToggleLeft className="text-orange-600" size={24} />} />
             <StatCard label="Monthly Revenue" value={`₹${(stats.monthly_recurring_revenue || 0).toLocaleString()}`} icon={<DollarSign className="text-emerald-600" size={24} />} />
           </div>
 
@@ -549,9 +582,17 @@ const SuperAdminDashboard = () => {
                         </div>
                         <div className="flex justify-between items-center min-w-[120px]">
                             <span className="text-slate-500">Phones:</span>
-                            <span className={`font-mono font-bold ${(vendor.device_count || 0) > (vendor.max_users || 0) ? 'text-red-600' : 'text-slate-700'}`}>
-                                {vendor.device_count || 0} / {vendor.max_users || '∞'}
-                            </span>
+                            <div className="flex flex-col items-end">
+                                <span className={`font-mono font-bold ${(vendor.device_count || 0) > (vendor.max_users || 0) ? 'text-red-600' : 'text-slate-700'}`}>
+                                    {vendor.device_count || 0} / {vendor.max_users || '∞'}
+                                </span>
+                                {(vendor.active_device_count || 0) > 0 && (
+                                    <span className="text-xs text-green-600 font-medium flex items-center gap-1">
+                                    <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+                                    {vendor.active_device_count} Active
+                                    </span>
+                                )}
+                            </div>
                         </div>
                     </div>
                 </td>
@@ -733,18 +774,46 @@ const SuperAdminDashboard = () => {
                         <p className="text-slate-500 mb-6 font-medium">{selectedEmployeeForDetail.designation}</p>
                         
                         <div className="space-y-4">
-                            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
-                                <span className="text-slate-500 text-sm">Department</span>
-                                <span className="font-semibold text-slate-700">{selectedEmployeeForDetail.department}</span>
-                            </div>
-                            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
-                                <span className="text-slate-500 text-sm">Phone</span>
-                                <span className="font-semibold text-slate-700">{selectedEmployeeForDetail.phone || 'N/A'}</span>
-                            </div>
-                            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
-                                <span className="text-slate-500 text-sm">Daily Wage</span>
-                                <span className="font-semibold text-slate-700">₹{selectedEmployeeForDetail.daily_wage || 0}</span>
-                            </div>
+                            {selectedVendorForDetail.registration_config && selectedVendorForDetail.registration_config.length > 0 ? (
+                                selectedVendorForDetail.registration_config
+                                    .filter(field => field.enabled !== false)
+                                    .map((field, index) => {
+                                         const val = (() => {
+                                             let custom = {};
+                                             try { 
+                                                 custom = typeof selectedEmployeeForDetail.custom_data === 'string' 
+                                                    ? JSON.parse(selectedEmployeeForDetail.custom_data) 
+                                                    : selectedEmployeeForDetail.custom_data || {}; 
+                                             } catch(e){}
+                                             
+                                             if (custom[field.field]) return custom[field.field];
+                                             if (selectedEmployeeForDetail[field.field]) return selectedEmployeeForDetail[field.field];
+                                             return '-';
+                                         })();
+                                         
+                                         return (
+                                            <div key={index} className="flex justify-between items-center border-b border-slate-100 pb-3">
+                                                <span className="text-slate-500 text-sm">{field.label || field.field}</span>
+                                                <span className="font-semibold text-slate-700">{val}</span>
+                                            </div>
+                                         );
+                                    })
+                            ) : (
+                                <>
+                                    <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+                                        <span className="text-slate-500 text-sm">Department</span>
+                                        <span className="font-semibold text-slate-700">{selectedEmployeeForDetail.department}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+                                        <span className="text-slate-500 text-sm">Phone</span>
+                                        <span className="font-semibold text-slate-700">{selectedEmployeeForDetail.phone || 'N/A'}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+                                        <span className="text-slate-500 text-sm">Daily Wage</span>
+                                        <span className="font-semibold text-slate-700">₹{selectedEmployeeForDetail.daily_wage || 0}</span>
+                                    </div>
+                                </>
+                            )}
                             <div className="flex justify-between items-center pb-1">
                                 <span className="text-slate-500 text-sm">Vendor</span>
                                 <span className="font-semibold text-slate-700">{selectedVendorForDetail.company_name}</span>

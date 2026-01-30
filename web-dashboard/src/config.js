@@ -12,7 +12,7 @@ const isLocal = window.location.hostname === 'localhost' || window.location.host
 
 // If no Env Var is set, and we are NOT local, we assume the API is reachable via the current origin
 // (This works if you proxy /api to the backend, or serve frontend from the backend)
-const BASE_URL = ENV_API_URL || (isLocal ? LOCAL_BACKEND : 'https://face-detection-backend-69o7.onrender.com');
+export const BASE_URL = ENV_API_URL || (isLocal ? LOCAL_BACKEND : 'https://face-detection-backend-69o7.onrender.com');
 
 export const API_URL = `${BASE_URL}/api`;
 export const API_BASE_URL = API_URL;
