@@ -3198,6 +3198,7 @@ def login():
     conn.close()
 
     if user:
+        vendor_vertical = None
         # Check Vendor Subscription Status (if applicable)
         user_keys = user.keys() if hasattr(user, "keys") else []
         user_vendor_id = user['vendor_id'] if ('vendor_id' in user_keys and user['vendor_id']) else None
