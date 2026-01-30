@@ -1,45 +1,58 @@
 services:
-  # Backend Service (Python/Flask)
   - type: web
     name: face-detection-backend
     env: python
-    region: ohio
-    plan: free
-    rootDir: backend
-    buildCommand: pip install -r requirements.txt
-    # Explicit eventlet worker to ensure WebSocket/polling compatibility
-    startCommand: gunicorn -k eventlet -c gunicorn_config.py app:app
+    autoDeploy: true
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: cd backend && gunicorn -k eventlet -w 2 app:app --bind 0.0.0.0:$PORT
+    healthCheckPath: /api/ping
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.9.0
       - key: SECRET_KEY
         generateValue: true
-      - key: FRONTEND_URL
-        value: https://face-detection-frontend-kepx.onrender.com
       - key: BACKEND_URL
-        value: https://face-detection-backend-69o7.onrender.com
-      # Link to the PostgreSQL database defined below
-      - key: DATABASE_URL
-        fromDatabase:
-          name: face_db
-          property: connectionString
-
-  # Frontend Service (React/Vite)
-  - type: static
+        value: https://face-detection-backend.onrender.com
+      - key: FRONTEND_URL
+        value: https://face-detection-frontend.onrender.com
+      - key: REDIS_URL
+        fromService:
+          name: face-detection-redis
+          type: redis
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: face-detection-redis
+          type: redis
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          name: face-detection-redis
+          type: redis
+      - key: AWS_ACCESS_KEY_ID
+        value:
+      - key: AWS_SECRET_ACCESS_KEY
+        value:
+      - key: AWS_REGION
+        value: us-east-1
+      - key: S3_BUCKET
+        value:
+  - type: web
     name: face-detection-frontend
     env: static
-    region: ohio
-    plan: free
-    rootDir: web-dashboard
-    buildCommand: npm install && npm run build
-    publishDir: dist
+    autoDeploy: true
+    buildCommand: cd web-dashboard && npm install && npm run build
+    staticPublishPath: web-dashboard/dist
+  - type: worker
+    name: face-detection-celery
+    env: python
+    autoDeploy: true
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: cd backend && celery -A celery_app.celery worker -l info
     envVars:
-      - key: VITE_API_URL
-        value: https://face-detection-backend-69o7.onrender.com
-
-databases:
-  - name: face_db
-    databaseName: face_db
-    user: face_user
-    region: ohio
-    plan: free
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: face-detection-redis
+          type: redis
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          name: face-detection-redis
+          type: redis
+  - type: redis
+    name: face-detection-redis

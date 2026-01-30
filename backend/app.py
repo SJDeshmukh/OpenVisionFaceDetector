@@ -2,6 +2,8 @@ import sqlite3
 import base64
 import os
 import json
+from dotenv import load_dotenv
+load_dotenv()
 from flask import Flask, Blueprint, request, jsonify, render_template
 from flask_cors import CORS
 from flask_socketio import SocketIO, join_room, leave_room
@@ -12,6 +14,7 @@ import uuid
 import time
 import redis
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from functools import wraps
 from storage import upload_base64_image, presigned_url_for_key, OBJECT_STORAGE_ENABLED
 from celery_app import celery
 from datetime import datetime, timedelta
@@ -28,6 +31,7 @@ app.secret_key = os.environ.get('SECRET_KEY', 'super_secret_key_change_this_in_p
 serializer = URLSafeTimedSerializer(app.secret_key)
 Compress(app)
 
+load_dotenv()
 # Configuration (Simplified for Render)
 # Priority: Env Var > Default
 BACKEND_URL = os.environ.get("BACKEND_URL", "http://127.0.0.1:5001")
@@ -68,6 +72,7 @@ REQUEST_LATENCY = Histogram("http_request_latency_seconds", "Request latency", [
 
 def track_metrics(endpoint):
     def wrapper(fn):
+        @wraps(fn)
         def inner(*args, **kwargs):
             start = time.time()
             resp = fn(*args, **kwargs)
@@ -84,6 +89,7 @@ def track_metrics(endpoint):
 
 def rate_limit(key_func=lambda: request.remote_addr, limit=100, window=60):
     def decorator(fn):
+        @wraps(fn)
         def inner(*args, **kwargs):
             if redis_client:
                 key = f"rl:{key_func()}"
@@ -1583,7 +1589,7 @@ ALL_FEATURES = ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'p
 def get_available_features():
     return jsonify({"features": ALL_FEATURES, "bundles": BUNDLE_FEATURES})
 
-@greeting_bp.route("/admin/vendors", methods=["POST"])
+@greeting_bp.route("/admin/vendors", methods=["POST"], endpoint="admin_create_vendor")
 @super_admin_required
 @track_metrics("admin_create_vendor")
 @rate_limit(limit=60, window=60)
@@ -3165,7 +3171,7 @@ def ping():
     return jsonify({"status": "ok", "message": "Server is running"})
 
 # --- Auth Endpoints ---
-@greeting_bp.route("/auth/login", methods=["POST"])
+@greeting_bp.route("/auth/login", methods=["POST"], endpoint="auth_login_route")
 @track_metrics("auth_login")
 @rate_limit(limit=300, window=60)
 def login():
@@ -3622,7 +3628,7 @@ def upload_face():
     finally:
         conn.close()
 
-@greeting_bp.route("/sync/download", methods=["GET"])
+@greeting_bp.route("/sync/download", methods=["GET"], endpoint="sync_download_route")
 @require_feature("mobile_app")
 @track_metrics("sync_download")
 @rate_limit(limit=120, window=60)
@@ -4506,7 +4512,7 @@ def person_event():
         "display_status": display_status
     })
 
-@greeting_bp.route("/attendance", methods=["GET"])
+@greeting_bp.route("/attendance", methods=["GET"], endpoint="attendance_list_route")
 @track_metrics("attendance_list")
 @rate_limit(limit=300, window=60)
 def get_attendance():
