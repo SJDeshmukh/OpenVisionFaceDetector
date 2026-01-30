@@ -414,8 +414,11 @@ def check_vendor_status(vendor_id):
         return True, "SuperAdmin"
         
     conn = get_db_connection()
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
+    if DATABASE_URL and DATABASE_URL.startswith(("postgres://", "postgresql://")):
+        c = _pg_cursor(conn)
+    else:
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
     
     # Check Vendor Status
     c.execute("SELECT status FROM vendors WHERE id = ?", (vendor_id,))
