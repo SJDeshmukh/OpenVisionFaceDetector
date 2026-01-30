@@ -54,7 +54,7 @@ const LiveAttendance = () => {
 // Poll Logs + Socket push
 useEffect(() => {
   if (!user) return;
-  const socket = io(BASE_URL, { transports: ['polling'], upgrade: false, withCredentials: true, path: '/socket.io' });
+  const socket = io(BASE_URL, { transports: ['polling'], upgrade: false, path: '/socket.io' });
   socket.on('connect', () => {
     if (user.vendor_id) socket.emit('join_vendor', { vendor_id: user.vendor_id });
   });

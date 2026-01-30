@@ -68,7 +68,6 @@ const SuperAdminDashboard = () => {
     const socket = io(BASE_URL, {
       transports: ['polling'],
       upgrade: false,
-      withCredentials: true,
       path: '/socket.io'
     });
     
