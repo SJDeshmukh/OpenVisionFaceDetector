@@ -3196,7 +3196,9 @@ def login():
 
     if user:
         # Check Vendor Subscription Status (if applicable)
-        if user['vendor_id']:
+        user_keys = user.keys() if hasattr(user, "keys") else []
+        user_vendor_id = user['vendor_id'] if ('vendor_id' in user_keys and user['vendor_id']) else None
+        if user_vendor_id:
             is_allowed, reason = check_vendor_status(user['vendor_id'])
             
             # Check Web Login Flag and Architecture Config
@@ -3324,10 +3326,10 @@ def login():
         
         # Get Company ID for this vendor (if any)
         company_id = None
-        if user['vendor_id']:
+        if user_vendor_id:
             conn = get_db_connection()
             c = conn.cursor()
-            c.execute("SELECT id FROM companies WHERE vendor_id = ? LIMIT 1", (user['vendor_id'],))
+            c.execute("SELECT id FROM companies WHERE vendor_id = ? LIMIT 1", (user_vendor_id,))
             row = c.fetchone()
             if row:
                 company_id = row[0]
@@ -3338,7 +3340,7 @@ def login():
             
             # Insert new session
             c.execute("INSERT INTO active_sessions (token, username, vendor_id, device_id, platform, last_active) VALUES (?, ?, ?, ?, ?, ?)",
-                      (token, username, user['vendor_id'], device_id, platform, datetime.now()))
+                      (token, username, user_vendor_id, device_id, platform, datetime.now()))
             conn.commit()
             conn.close()
 
@@ -3347,7 +3349,7 @@ def login():
             "role": user["role"],
             "username": user["username"],
             "token": token,
-            "vendor_id": user["vendor_id"],
+            "vendor_id": user_vendor_id,
             "company_id": company_id,
             "frontend_bundle_id": frontend_bundle_id,
             "backend_service_id": backend_service_id,
