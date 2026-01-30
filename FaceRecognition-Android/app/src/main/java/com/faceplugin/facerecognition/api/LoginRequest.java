@@ -9,8 +9,16 @@ public class LoginRequest {
     @SerializedName("password")
     private String password;
 
-    public LoginRequest(String username, String password) {
+    @SerializedName("device_id")
+    private String deviceId;
+
+    @SerializedName("platform")
+    private String platform;
+
+    public LoginRequest(String username, String password, String deviceId) {
         this.username = username;
         this.password = password;
+        this.deviceId = deviceId;
+        this.platform = "mobile";
     }
 }

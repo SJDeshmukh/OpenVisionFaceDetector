@@ -27,6 +27,8 @@ public class MyGlobal {
     public static String adminEmail="admin@recotech.com";
     public static String adminPwd="12345678";
 
+    public static final String ACTION_AUTH_FAILURE = "com.faceplugin.facerecognition.ACTION_AUTH_FAILURE";
+
 
     public static boolean lockStatus=false;
     public static boolean cameraStatus=false;

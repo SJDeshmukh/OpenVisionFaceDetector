@@ -62,6 +62,7 @@ import retrofit2.Response;
 
 import android.media.AudioManager;
 import android.media.ToneGenerator;
+import android.provider.Settings;
 
 public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitListener {
 
@@ -426,6 +427,9 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     }
 
     private void sendStreamFrame(Bitmap originalBitmap) {
+        Context context = getContext();
+        if (context == null) return;
+
         new Thread(() -> {
             try {
                 // Resize to reduce bandwidth (e.g., width 320px)
@@ -439,7 +443,11 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 String encoded = Base64.encodeToString(byteArray, Base64.NO_WRAP);
                 String base64Image = "data:image/jpeg;base64," + encoded;
 
-                StreamRequest request = new StreamRequest(base64Image);
+                String deviceId = Settings.Secure.getString(context.getContentResolver(), Settings.Secure.ANDROID_ID);
+                int vendorId = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE).getInt("vendor_id", 0);
+                String deviceName = "Mobile " + deviceId.substring(0, 8);
+
+                StreamRequest request = new StreamRequest(base64Image, vendorId, deviceId, deviceName);
                 RetrofitClient.getService().uploadStreamFrame(request).enqueue(new Callback<Void>() {
                     @Override
                     public void onResponse(Call<Void> call, Response<Void> response) {

@@ -51,6 +51,11 @@ public class EnrollFragment extends Fragment {
     private Spinner spShift;
     private Button btnProceed;
     private android.widget.LinearLayout containerDetails;
+    private com.google.android.material.textfield.TextInputLayout tilName;
+    private com.google.android.material.textfield.TextInputLayout tilMobile;
+    private com.google.android.material.textfield.TextInputLayout tilDepartment;
+    private com.google.android.material.textfield.TextInputLayout tilDesignation;
+    private android.widget.LinearLayout llShift;
     private DBManager dbManager;
     private List<String> shiftNames = new ArrayList<>();
     private ArrayAdapter<String> shiftAdapter;
@@ -71,6 +76,20 @@ public class EnrollFragment extends Fragment {
         etDepartment = view.findViewById(R.id.etDepartment);
         etDesignation = view.findViewById(R.id.etDesignation);
         spShift = view.findViewById(R.id.spShift);
+        
+        tilName = view.findViewById(R.id.tilName);
+        tilMobile = view.findViewById(R.id.tilMobile);
+        tilDepartment = view.findViewById(R.id.tilDepartment);
+        tilDesignation = view.findViewById(R.id.tilDesignation);
+        llShift = view.findViewById(R.id.llShift);
+        
+        // Hide all fields initially to ensure no default data is shown as per requirement
+        if (tilName != null) tilName.setVisibility(View.GONE);
+        if (tilMobile != null) tilMobile.setVisibility(View.GONE);
+        if (tilDepartment != null) tilDepartment.setVisibility(View.GONE);
+        if (tilDesignation != null) tilDesignation.setVisibility(View.GONE);
+        if (llShift != null) llShift.setVisibility(View.GONE);
+        
         btnProceed = view.findViewById(R.id.btnProceed);
         dbManager = new DBManager(requireContext());
         // dbManager.loadPerson(); // Removed to prevent redundant loading and race conditions with MainActivity
@@ -331,6 +350,8 @@ public class EnrollFragment extends Fragment {
         try {
             if (!isAdded() || getContext() == null) return;
             
+            // Standard fields are already hidden in onCreateView
+
             for (JsonElement el : config) {
                 if (!el.isJsonObject()) continue;
                 JsonObject field = el.getAsJsonObject();
@@ -343,6 +364,42 @@ public class EnrollFragment extends Fragment {
     
                 dynamicFieldConfig.put(key, required ? "required" : "optional");
     
+                // Map standard fields back to existing UI elements
+                if (key.equalsIgnoreCase("name") || key.equalsIgnoreCase("full_name")) {
+                    if (tilName != null) {
+                        tilName.setHint(label);
+                        tilName.setVisibility(View.VISIBLE);
+                    }
+                    continue; 
+                }
+                if (key.equalsIgnoreCase("phone") || key.equalsIgnoreCase("mobile") || key.equalsIgnoreCase("phone_number")) {
+                    if (tilMobile != null) {
+                        tilMobile.setHint(label);
+                        tilMobile.setVisibility(View.VISIBLE);
+                    }
+                    continue;
+                }
+                if (key.equalsIgnoreCase("department")) {
+                    if (tilDepartment != null) {
+                        tilDepartment.setHint(label);
+                        tilDepartment.setVisibility(View.VISIBLE);
+                    }
+                    continue;
+                }
+                if (key.equalsIgnoreCase("designation")) {
+                    if (tilDesignation != null) {
+                        tilDesignation.setHint(label);
+                        tilDesignation.setVisibility(View.VISIBLE);
+                    }
+                    continue;
+                }
+                if (key.equalsIgnoreCase("shift")) {
+                    if (llShift != null) {
+                        llShift.setVisibility(View.VISIBLE);
+                    }
+                    continue;
+                }
+
                 if (dynamicViews.containsKey(key)) continue;
     
                 if (type.equals("text") || type.equals("number")) {
@@ -359,13 +416,13 @@ public class EnrollFragment extends Fragment {
                     android.widget.LinearLayout.LayoutParams params = (android.widget.LinearLayout.LayoutParams) til.getLayoutParams();
                     params.setMargins(0, 0, 0, (int)(16 * getResources().getDisplayMetrics().density));
                     til.setLayoutParams(params);
-    
+
                     com.google.android.material.textfield.TextInputEditText et = new com.google.android.material.textfield.TextInputEditText(til.getContext());
-                    et.setLayoutParams(new ViewGroup.LayoutParams(
+                    et.setLayoutParams(new android.widget.LinearLayout.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.WRAP_CONTENT));
                     et.setInputType(type.equals("number") ? android.text.InputType.TYPE_CLASS_NUMBER : android.text.InputType.TYPE_CLASS_TEXT);
-    
+
                     til.addView(et);
                     containerDetails.addView(til);
                     dynamicViews.put(key, et);

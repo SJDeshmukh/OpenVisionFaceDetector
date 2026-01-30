@@ -5,6 +5,9 @@ import okhttp3.Request;
 import retrofit2.Retrofit;
 import retrofit2.converter.gson.GsonConverterFactory;
 
+import android.content.Intent;
+import com.faceplugin.facerecognition.MyGlobal;
+
 public class RetrofitClient {
     // Default to Render Cloud URL
     private static String BASE_URL = "https://face-detection-backend-69o7.onrender.com/";
@@ -41,8 +44,32 @@ public class RetrofitClient {
                     Request.Builder requestBuilder = original.newBuilder()
                             .header("Authorization", "Bearer " + authToken);
                     Request request = requestBuilder.build();
-                    return chain.proceed(request);
+                    okhttp3.Response response = chain.proceed(request);
+                    
+                    if (response.code() == 401 || response.code() == 403) {
+                         if (MyGlobal.context != null) {
+                             Intent intent = new Intent(MyGlobal.ACTION_AUTH_FAILURE);
+                             intent.setPackage(MyGlobal.context.getPackageName());
+                             MyGlobal.context.sendBroadcast(intent);
+                         }
+                    }
+                    return response;
                 });
+            } else {
+                 // Even without auth token, we might get 401/403 (e.g. login failed, but that's handled by Callback usually)
+                 // But for consistency, let's add the response check interceptor always?
+                 // No, usually unauth requests expect 401. Only add if we THINK we are auth'd.
+                 httpClient.addInterceptor(chain -> {
+                    okhttp3.Response response = chain.proceed(chain.request());
+                     if (response.code() == 403) { // 403 implies forbidden (subscription end), even if public endpoint?
+                         if (MyGlobal.context != null) {
+                             Intent intent = new Intent(MyGlobal.ACTION_AUTH_FAILURE);
+                             intent.setPackage(MyGlobal.context.getPackageName());
+                             MyGlobal.context.sendBroadcast(intent);
+                         }
+                     }
+                    return response;
+                 });
             }
 
             retrofit = new Retrofit.Builder()

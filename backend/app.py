@@ -32,6 +32,23 @@ allowed_origins = [
 ]
 CORS(app, resources={r"/*": {"origins": allowed_origins}}, supports_credentials=True)
 
+@app.route('/auth/status', methods=['GET'])
+def auth_status():
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+    
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT name FROM vendors WHERE id = ?", (vendor_id,))
+    vendor = c.fetchone()
+    conn.close()
+    
+    return jsonify({
+        "status": "active",
+        "vendor_id": vendor_id,
+        "vendor_name": vendor['name'] if vendor else "Unknown"
+    })
+
 # Expose Config to Frontend
 @app.route('/api/config', methods=['GET'])
 def get_config():

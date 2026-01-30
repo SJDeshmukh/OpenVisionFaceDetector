@@ -18,7 +18,19 @@ import retrofit2.Call
 import retrofit2.Callback
 import retrofit2.Response
 
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.IntentFilter
+
 class MainActivity : AppCompatActivity() {
+
+    private val authFailureReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (MyGlobal.ACTION_AUTH_FAILURE == intent.action) {
+                performLogout()
+            }
+        }
+    }
 
     private lateinit var dbManager: DBManager
     private val handler = Handler(Looper.getMainLooper())
@@ -38,6 +50,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        MyGlobal.context = getApplicationContext()
         android.util.Log.e("AppCrash", "MainActivity onCreate started")
         setContentView(R.layout.activity_main)
 
@@ -87,15 +100,7 @@ class MainActivity : AppCompatActivity() {
         // Logout
 
         btnLogout.setOnClickListener {
-            val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
-            prefs.edit().clear().apply()
-            
-            RetrofitClient.setAuthToken(null) // Clear token
-            
-            val intent = Intent(this, LoginActivity::class.java)
-            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
-            startActivity(intent)
-            finish()
+            performLogout()
         }
         
         // Role Based Access Control
@@ -148,13 +153,43 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+
+        // Register Auth Failure Receiver
+        val filter = IntentFilter(MyGlobal.ACTION_AUTH_FAILURE)
+        registerReceiver(authFailureReceiver, filter)
+
         handler.removeCallbacks(syncRunnable) // Prevent duplicates
         handler.post(syncRunnable) // Start sync immediately
     }
 
     override fun onPause() {
         super.onPause()
+
+        // Unregister Auth Failure Receiver
+        try {
+            unregisterReceiver(authFailureReceiver)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
         handler.removeCallbacks(syncRunnable) // Stop sync when backgrounded
+    }
+
+    private fun performLogout() {
+        // Prevent multiple calls
+        if (isFinishing) return
+
+        Toast.makeText(this, "Session Expired. Please Login Again.", Toast.LENGTH_LONG).show()
+
+        val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+        prefs.edit().clear().apply()
+        
+        RetrofitClient.setAuthToken(null) // Clear token
+        
+        val intent = Intent(this, LoginActivity::class.java)
+        intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        startActivity(intent)
+        finish()
     }
 
     private fun syncFacesFromBackend() {

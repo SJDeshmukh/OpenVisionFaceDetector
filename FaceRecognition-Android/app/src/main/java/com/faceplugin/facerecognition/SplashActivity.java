@@ -34,6 +34,7 @@ public class SplashActivity extends AppCompatActivity {
         Animation pulse = AnimationUtils.loadAnimation(this, R.anim.pulse);
         logo.startAnimation(pulse);
 
+        MyGlobal.context = getApplicationContext();
         tvStatus = findViewById(R.id.tvStatus);
 
         // Start Connection Process
@@ -44,15 +45,22 @@ public class SplashActivity extends AppCompatActivity {
         new Thread(() -> {
             runOnUiThread(() -> tvStatus.setText("Connecting to Cloud Server..."));
             
-            // STRICTLY use Cloud URL
-            RetrofitClient.setBaseUrl(RENDER_URL);
-            getSharedPreferences("app_prefs", MODE_PRIVATE).edit().putString("server_url", RENDER_URL).apply();
+            // Use saved URL if available, otherwise default to Cloud
+            SharedPreferences prefs = getSharedPreferences("app_prefs", MODE_PRIVATE);
+            String savedUrl = prefs.getString("server_url", null);
+            
+            String targetUrl = (savedUrl != null && !savedUrl.isEmpty()) ? savedUrl : RENDER_URL;
+            
+            RetrofitClient.setBaseUrl(targetUrl);
+            if (savedUrl == null) {
+                prefs.edit().putString("server_url", RENDER_URL).apply();
+            }
 
-            // Ping to ensure server is awake (Render free tier spin-up)
+            // Ping to ensure server is awake
             // Increased timeout to 30s as requested
-            if (pingServer(RENDER_URL, 30000)) { 
+            if (pingServer(targetUrl, 30000)) { 
                  runOnUiThread(() -> {
-                     tvStatus.setText("Connected to Cloud");
+                     tvStatus.setText("Connected to " + (targetUrl.equals(RENDER_URL) ? "Cloud" : "Server"));
                      proceedToNextScreen();
                  });
             } else {

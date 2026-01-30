@@ -15,6 +15,7 @@ import retrofit2.Response
 
 import android.widget.TextView
 import android.view.View
+import android.provider.Settings
 import com.faceplugin.facerecognition.api.RegisterRequest
 
 class LoginActivity : AppCompatActivity() {
@@ -46,7 +47,8 @@ class LoginActivity : AppCompatActivity() {
                 return@setOnClickListener
             }
 
-            val request = LoginRequest(username, password)
+            val deviceId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
+            val request = LoginRequest(username, password, deviceId)
             RetrofitClient.getService().login(request).enqueue(object : Callback<LoginResponse> {
                 override fun onResponse(call: Call<LoginResponse>, response: Response<LoginResponse>) {
                     if (response.isSuccessful && response.body()?.status == "success") {

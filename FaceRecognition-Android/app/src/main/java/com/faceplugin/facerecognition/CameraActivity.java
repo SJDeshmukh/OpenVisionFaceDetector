@@ -58,6 +58,7 @@ import java.text.SimpleDateFormat;
 
 import android.media.AudioManager;
 import android.media.ToneGenerator;
+import android.provider.Settings;
 
 public class CameraActivity extends AppCompatActivity implements TextToSpeech.OnInitListener {
 
@@ -292,7 +293,11 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
                 String encoded = Base64.encodeToString(byteArray, Base64.NO_WRAP);
                 String base64Image = "data:image/jpeg;base64," + encoded;
 
-                StreamRequest request = new StreamRequest(base64Image);
+                String deviceId = Settings.Secure.getString(context.getContentResolver(), Settings.Secure.ANDROID_ID);
+                int vendorId = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE).getInt("vendor_id", 0);
+                String deviceName = "Mobile " + deviceId.substring(0, 8);
+
+                StreamRequest request = new StreamRequest(base64Image, vendorId, deviceId, deviceName);
                 RetrofitClient.getService().uploadStreamFrame(request).enqueue(new Callback<Void>() {
                     @Override
                     public void onResponse(Call<Void> call, Response<Void> response) {
