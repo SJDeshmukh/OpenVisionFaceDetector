@@ -3,7 +3,7 @@ import axios from 'axios';
 import { Plus, Check, X, Shield, User, Lock, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight, Search, Filter, ArrowLeft, ArrowRight, Eye, Settings } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { API_URL, FRONTEND_BUNDLES, BASE_URL } from '../config';
-import { io } from 'socket.io-client';
+import { useSocket } from '../context/SocketContext';
 import RegistrationConfigEditor from '../components/RegistrationConfigEditor';
 
 const SuperAdminDashboard = () => {
@@ -59,21 +59,14 @@ const SuperAdminDashboard = () => {
     end: new Date().toISOString().split('T')[0]
   });
 
+  const { socket, joinSuperAdmin } = useSocket();
   useEffect(() => {
     fetchVendors();
     fetchFeatures();
     fetchStats();
 
-    // Socket.IO for Real-time Updates (force polling for Render compatibility)
-    const socket = io(BASE_URL, {
-      transports: ['polling'],
-      upgrade: false,
-      path: '/socket.io'
-    });
-    
     socket.on('connect', () => {
-        console.log("SuperAdmin Socket Connected");
-        socket.emit('join_super_admin');
+        joinSuperAdmin();
     });
 
     socket.on('vendor_updated', (data) => {
@@ -96,9 +89,11 @@ const SuperAdminDashboard = () => {
     });
 
     return () => {
-        socket.disconnect();
+        socket.off('vendor_updated');
+        socket.off('active_devices_update');
+        socket.off('device_heartbeat');
     };
-  }, []);
+  }, [socket]);
   
   const fetchStats = async () => {
     try {

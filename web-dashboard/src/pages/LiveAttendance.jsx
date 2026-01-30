@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
-import { API_URL, BASE_URL } from '../config';
-import { io } from 'socket.io-client';
+import { API_URL } from '../config';
+import { useSocket } from '../context/SocketContext';
 import { 
   Video, 
   User, 
@@ -52,11 +52,11 @@ const LiveAttendance = () => {
   }, [user]);
 
 // Poll Logs + Socket push
+const { socket, joinVendor } = useSocket();
 useEffect(() => {
   if (!user) return;
-  const socket = io(BASE_URL, { transports: ['polling'], upgrade: false, path: '/socket.io' });
   socket.on('connect', () => {
-    if (user.vendor_id) socket.emit('join_vendor', { vendor_id: user.vendor_id });
+    if (user.vendor_id) joinVendor(user.vendor_id);
   });
   socket.on('attendance_updated', (ev) => {
     if (String(ev.vendor_id) === String(user.vendor_id)) {
@@ -74,8 +74,8 @@ useEffect(() => {
   };
   fetchLogs();
   const interval = setInterval(fetchLogs, 2000);
-  return () => { clearInterval(interval); socket.disconnect(); };
-}, [user]);
+  return () => { clearInterval(interval); };
+}, [user, socket]);
 
   const getStatusColor = (status, isLate) => {
     if (status === 'CHECK_OUT') return 'text-slate-500 bg-slate-100 border-slate-200';

@@ -15,7 +15,7 @@ import {
   User,
   Camera
 } from 'lucide-react';
-import { io } from 'socket.io-client';
+import { useSocket } from '../context/SocketContext';
 import { API_URL, BASE_URL } from '../config';
 
 const People = () => {
@@ -37,23 +37,23 @@ const People = () => {
     templates: ''
   });
   const [submitting, setSubmitting] = useState(false);
+  const [vendorConfig, setVendorConfig] = useState([]);
 
+  const { socket, joinVendor } = useSocket();
   useEffect(() => {
     if (user) {
       fetchUsers();
       fetchShifts();
-      
-      // Socket.IO for Real-time Updates (force polling)
-      const socket = io(BASE_URL, {
-        transports: ['polling'],
-        upgrade: false,
-        path: '/socket.io'
-      });
+      // Fetch Vendor Registration Config to drive dynamic fields
+      if (user.vendor_id) {
+        axios.get(`${API_URL}/admin/vendors/${user.vendor_id}/registration-config`)
+          .then(res => setVendorConfig(res.data.config || []))
+          .catch(() => setVendorConfig([]));
+      }
       
       socket.on('connect', () => {
-          console.log("People Socket Connected");
           if (user.vendor_id) {
-              socket.emit('join_vendor', { vendor_id: user.vendor_id });
+              joinVendor(user.vendor_id);
           }
       });
 
@@ -64,11 +64,9 @@ const People = () => {
           }
       });
 
-      return () => {
-          socket.disconnect();
-      };
+      return () => {};
     }
-  }, [user]);
+  }, [user, socket]);
 
   const fetchUsers = async () => {
     try {
@@ -199,6 +197,9 @@ const People = () => {
 
   // Determine columns based on Vendor Config (SuperAdmin defined)
   const getColumns = () => {
+    if (vendorConfig && Array.isArray(vendorConfig) && vendorConfig.length > 0) {
+      return vendorConfig;
+    }
     if (user?.vendor_config && Array.isArray(user.vendor_config) && user.vendor_config.length > 0) {
       return user.vendor_config;
     }

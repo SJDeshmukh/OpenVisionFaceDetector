@@ -6,7 +6,10 @@ from flask import Flask, Blueprint, request, jsonify, render_template
 from flask_cors import CORS
 from flask_socketio import SocketIO, join_room, leave_room
 from flask_compress import Compress
+import eventlet
 from services.llm_service import generate_greeting
+import uuid
+import time
 from datetime import datetime, timedelta
 from collections import defaultdict
 from datetime import date
@@ -266,6 +269,28 @@ def cache_get(key):
     return v["v"]
 def cache_set(key, value, ttl):
     CACHE[key] = {"v": value, "e": time.time() + ttl}
+
+# Simple in-memory job registry for async responses
+JOBS = {}
+def create_job(content_type="application/json", ttl=600):
+    job_id = str(uuid.uuid4())
+    JOBS[job_id] = {"status": "processing", "result": None, "error": None, "content_type": content_type, "expires": time.time() + ttl}
+    return job_id
+def complete_job(job_id, result):
+    if job_id in JOBS:
+        JOBS[job_id]["status"] = "done"
+        JOBS[job_id]["result"] = result
+def fail_job(job_id, err):
+    if job_id in JOBS:
+        JOBS[job_id]["status"] = "error"
+        JOBS[job_id]["error"] = str(err)
+def get_job(job_id):
+    j = JOBS.get(job_id)
+    if not j:
+        return None
+    if j["expires"] < time.time():
+        return None
+    return j
 def add_performance_indexes():
     try:
         conn = get_db_connection()
@@ -1482,93 +1507,68 @@ def create_vendor():
     c = conn.cursor()
     
     try:
-        # 1. Create Vendor
         frontend_bundle_id = data.get("frontend_bundle_id", "default_attendance")
         backend_service_id = data.get("backend_service_id", "default_api")
-
         c.execute("""INSERT INTO vendors (company_name, contact_person, phone, email, frontend_bundle_id, backend_service_id) 
                      VALUES (?, ?, ?, ?, ?, ?)""",
                   (company_name, data.get("contact_person"), data.get("phone"), data.get("email"), frontend_bundle_id, backend_service_id))
         vendor_id = c.lastrowid
-        
-        # 2. Create Subscription (Custom Plan)
-        start_date = data.get("start_date") or date.today().isoformat()
-        end_date = data.get("end_date") or (date.today() + timedelta(days=14)).isoformat()
-        cost = data.get("cost") or 0
-        
-        # Get limits from request, default to 5 phones and 50 employees if not provided
-        max_users = data.get("max_users") or 5
-        max_employees = data.get("max_employees") or 50
-        max_mobile_devices = data.get("max_mobile_devices")
-        if max_mobile_devices is None:
-            max_mobile_devices = max_users # Default to max_users if not specified
-        
-        # Costs
-        cost_per_user = data.get("cost_per_user") or 0
-        cost_per_employee = data.get("cost_per_employee") or 0
-        
-        # Features (Plug and Play)
-        features = data.get("features")
-        if features is None:
-            # Derive features from frontend_bundle_id
-            features = BUNDLE_FEATURES.get(frontend_bundle_id, [])
-            
-        import json
-        features_json = json.dumps(features)
-
-        c.execute("""INSERT INTO subscriptions (vendor_id, plan_type, start_date, end_date, max_users, max_employees, max_mobile_devices, cost_per_user, cost_per_employee, setup_fee, features)
-                     VALUES (?, 'custom', ?, ?, ?, ?, ?, ?, ?, 0, ?)""",
-                  (vendor_id, start_date, end_date, max_users, max_employees, max_mobile_devices, cost_per_user, cost_per_employee, features_json))
-                  
-        # 3. Create Admin User for Vendor
+        conn.commit()
         admin_username = data.get("admin_username") or f"admin_{vendor_id}"
         admin_password = data.get("admin_password") or "default123"
-        
-        # Check if username exists, if so, append random suffix or fail?
-        # Better: Delete if exists (clean slate for new vendor) or update?
-        # Since this is CREATE VENDOR, we assume fresh.
-        print(f"Creating Admin User: {admin_username} for Vendor {vendor_id}")
-        try:
-            c.execute("""INSERT INTO system_users (username, password, role, vendor_id)
-                         VALUES (?, ?, 'vendor_admin', ?)""",
-                      (admin_username, admin_password, vendor_id))
-        except sqlite3.IntegrityError:
-            print(f"Admin Username {admin_username} already exists. Attempting update or skip.")
-            # If exists, update it to point to this vendor? 
-            # Or fail? Failing is safer to avoid taking over someone else's account.
-            # But for "Self-healing", maybe we just update the role/vendor_id?
-            # Let's fail but with clear message, OR handle it if it's a "Retry".
-            pass 
-                  
-        # 4. Create Kiosk/User for Vendor
         user_username = data.get("user_username") or f"user_{vendor_id}"
         user_password = data.get("user_password") or "user123"
-        
-        print(f"Creating Kiosk User: {user_username} for Vendor {vendor_id}")
-        try:
-            c.execute("""INSERT INTO system_users (username, password, role, vendor_id)
-                         VALUES (?, ?, 'user', ?)""",
-                      (user_username, user_password, vendor_id))
-        except sqlite3.IntegrityError:
-            print(f"User Username {user_username} already exists.")
-            pass
-        
-        # 5. Create Default Company
-        print(f"Creating Default Company: {company_name} for Vendor {vendor_id}")
-        c.execute("INSERT INTO companies (name, shifts, draft_timetable, live_timetable, vendor_id) VALUES (?, ?, ?, ?, ?)", 
-                  (company_name, '[]', '[]', '[]', vendor_id))
-        
-        conn.commit()
-        print("Vendor Creation Committed Successfully")
-        
-        # Audit Log
-        log_audit(get_current_actor(), 'create_vendor', vendor_id, {'company_name': company_name})
-        
+        def _process():
+            try:
+                conn2 = get_db_connection()
+                c2 = conn2.cursor()
+                start_date = data.get("start_date") or date.today().isoformat()
+                end_date = data.get("end_date") or (date.today() + timedelta(days=14)).isoformat()
+                max_users = data.get("max_users") or 5
+                max_employees = data.get("max_employees") or 50
+                max_mobile_devices = data.get("max_mobile_devices")
+                if max_mobile_devices is None:
+                    max_mobile_devices = max_users
+                cost_per_user = data.get("cost_per_user") or 0
+                cost_per_employee = data.get("cost_per_employee") or 0
+                features = data.get("features")
+                if features is None:
+                    features = BUNDLE_FEATURES.get(frontend_bundle_id, [])
+                import json
+                features_json = json.dumps(features)
+                c2.execute("""INSERT INTO subscriptions (vendor_id, plan_type, start_date, end_date, max_users, max_employees, max_mobile_devices, cost_per_user, cost_per_employee, setup_fee, features)
+                              VALUES (?, 'custom', ?, ?, ?, ?, ?, ?, ?, 0, ?)""",
+                           (vendor_id, start_date, end_date, max_users, max_employees, max_mobile_devices, cost_per_user, cost_per_employee, features_json))
+                try:
+                    c2.execute("""INSERT INTO system_users (username, password, role, vendor_id)
+                                  VALUES (?, ?, 'vendor_admin', ?)""",
+                               (admin_username, admin_password, vendor_id))
+                except sqlite3.IntegrityError:
+                    pass
+                try:
+                    c2.execute("""INSERT INTO system_users (username, password, role, vendor_id)
+                                  VALUES (?, ?, 'user', ?)""",
+                               (user_username, user_password, vendor_id))
+                except sqlite3.IntegrityError:
+                    pass
+                c2.execute("INSERT INTO companies (name, shifts, draft_timetable, live_timetable, vendor_id) VALUES (?, ?, ?, ?, ?)", 
+                           (company_name, '[]', '[]', '[]', vendor_id))
+                conn2.commit()
+                conn2.close()
+                log_audit(get_current_actor(), 'create_vendor', vendor_id, {'company_name': company_name})
+                socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
+            except Exception:
+                try:
+                    conn2.close()
+                except Exception:
+                    pass
+        eventlet.spawn_n(_process)
         return jsonify({
             "success": True, 
             "vendor_id": vendor_id,
             "admin_credentials": {"username": admin_username, "password": admin_password},
-            "user_credentials": {"username": user_username, "password": user_password}
+            "user_credentials": {"username": user_username, "password": user_password},
+            "processing": True
         })
         
     except sqlite3.IntegrityError as e:
@@ -1922,6 +1922,7 @@ def get_vendor_invoices(vendor_id):
 @greeting_bp.route("/admin/vendors/<int:vendor_id>/invoices/generate", methods=["POST"])
 @super_admin_required
 def generate_invoice(vendor_id):
+    is_async = request.args.get('async') == 'true'
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -1983,7 +1984,16 @@ def generate_invoice(vendor_id):
     
     conn.commit()
     conn.close()
-    
+    if is_async:
+        job_id = create_job(content_type="application/json", ttl=600)
+        def _bg():
+            try:
+                complete_job(job_id, json.dumps({"success": True, "message": "Invoice Generated", "amount": total_amount}))
+                socketio.emit('job_completed', {'job_id': job_id, 'type': 'invoice_generate', 'vendor_id': vendor_id})
+            except Exception as e:
+                fail_job(job_id, e)
+        eventlet.spawn_n(_bg)
+        return jsonify({"success": True, "job_id": job_id, "processing": True})
     return jsonify({"success": True, "message": "Invoice Generated", "amount": total_amount})
 
 @greeting_bp.route("/admin/invoices/<int:invoice_id>/status", methods=["PUT"])
@@ -2306,6 +2316,7 @@ def export_report():
     department = request.args.get('department')
     designation = request.args.get('designation')
     report_type = request.args.get('type', 'detailed') # detailed or summary
+    is_async = request.args.get('async') == 'true'
     dynamic_filters = {}
     try:
         for k, v in request.args.items():
@@ -2532,8 +2543,19 @@ def export_report():
             writer.writerow(row_data)
             
         output.seek(0)
+        csv_data = output.getvalue()
+        if is_async:
+            job_id = create_job(content_type="text/csv", ttl=600)
+            def _bg():
+                try:
+                    complete_job(job_id, csv_data)
+                    socketio.emit('job_completed', {'job_id': job_id, 'type': 'report_export', 'vendor_id': vendor_id})
+                except Exception as e:
+                    fail_job(job_id, e)
+            eventlet.spawn_n(_bg)
+            return jsonify({"success": True, "job_id": job_id, "processing": True})
         return Response(
-            output.getvalue(),
+            csv_data,
             mimetype="text/csv",
             headers={"Content-disposition": f"attachment; filename=payroll_summary_{start_date_str}_to_{end_date_str}.csv"}
         )
@@ -2638,12 +2660,39 @@ def export_report():
         writer.writerow(row_data)
     
     output.seek(0)
-    
+    csv_data2 = output.getvalue()
+    if is_async:
+        job_id = create_job(content_type="text/csv", ttl=600)
+        def _bg2():
+            try:
+                complete_job(job_id, csv_data2)
+                socketio.emit('job_completed', {'job_id': job_id, 'type': 'report_export', 'vendor_id': vendor_id})
+            except Exception as e:
+                fail_job(job_id, e)
+        eventlet.spawn_n(_bg2)
+        return jsonify({"success": True, "job_id": job_id, "processing": True})
     return Response(
-        output.getvalue(),
+        csv_data2,
         mimetype="text/csv",
         headers={"Content-disposition": f"attachment; filename=attendance_log_{start_date_str}_to_{end_date_str}.csv"}
     )
+
+@greeting_bp.route("/jobs/<job_id>/status", methods=["GET"])
+def job_status(job_id):
+    j = get_job(job_id)
+    if not j:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"status": j["status"], "error": j["error"]})
+
+@greeting_bp.route("/jobs/<job_id>/result", methods=["GET"])
+def job_result(job_id):
+    from flask import Response
+    j = get_job(job_id)
+    if not j:
+        return jsonify({"error": "Not found"}), 404
+    if j["status"] != "done":
+        return jsonify({"status": j["status"]}), 202
+    return Response(j["result"], mimetype=j["content_type"])
 
 @greeting_bp.route("/reports/filters", methods=["GET"])
 @require_feature("reports")

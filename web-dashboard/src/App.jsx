@@ -16,6 +16,7 @@ import SuperAdminDashboard from './pages/SuperAdminDashboard'; // New
 import SuperAdminLogin from './pages/SuperAdminLogin';
 import LiveFeed from './pages/LiveFeed';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { SocketProvider } from './context/SocketContext';
 
 // Protected Route Component
 const ProtectedRoute = ({ allowedRoles }) => {
@@ -39,8 +40,9 @@ const ProtectedRoute = ({ allowedRoles }) => {
 function App() {
   return (
     <AuthProvider>
-      <BrowserRouter>
-        <Routes>
+      <SocketProvider>
+        <BrowserRouter>
+          <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/super_admin" element={<SuperAdminLogin />} />
           
@@ -78,8 +80,9 @@ function App() {
                <Route path="/users" element={<People />} /> 
             </Route>
           </Route>
-        </Routes>
-      </BrowserRouter>
+          </Routes>
+        </BrowserRouter>
+      </SocketProvider>
     </AuthProvider>
   );
 }
