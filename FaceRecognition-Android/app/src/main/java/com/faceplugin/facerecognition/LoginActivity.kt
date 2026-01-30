@@ -127,6 +127,41 @@ class LoginActivity : AppCompatActivity() {
                 }
             })
         }
+
+        findViewById<TextView>(R.id.btn_parent_login).setOnClickListener {
+            val username = etUsername.text.toString().trim()
+            val password = etPassword.text.toString().trim()
+            if (username.isEmpty() || password.isEmpty()) {
+                Toast.makeText(this, "Enter username and password", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            val req = com.faceplugin.facerecognition.api.ParentLoginRequest(username, password)
+            RetrofitClient.getService().parentLogin(req).enqueue(object : Callback<LoginResponse> {
+                override fun onResponse(call: Call<LoginResponse>, response: Response<LoginResponse>) {
+                    if (response.isSuccessful && response.body()?.status == "success") {
+                        val token = response.body()?.token
+                        val parentId = response.body()?.vendorId
+                        val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+                        val editor = prefs.edit()
+                        editor.putString("role", "parent")
+                        editor.putString("username", username)
+                        if (token != null) editor.putString("token", token)
+                        editor.apply()
+                        if (token != null) {
+                            RetrofitClient.setAuthToken(token)
+                        }
+                        val intent = Intent(this@LoginActivity, ParentActivity::class.java)
+                        startActivity(intent)
+                        finish()
+                    } else {
+                        Toast.makeText(this@LoginActivity, "Parent login failed", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                override fun onFailure(call: Call<LoginResponse>, t: Throwable) {
+                    Toast.makeText(this@LoginActivity, "Network error: ${t.message}", Toast.LENGTH_SHORT).show()
+                }
+            })
+        }
     }
 
     private fun showServerUrlDialog() {
