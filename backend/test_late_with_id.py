@@ -13,8 +13,16 @@ os.environ['DB_PATH'] = TEST_DB
 
 class TestLateWithId(unittest.TestCase):
     def setUp(self):
+        import db_factory
         import app as app_module
-        app_module.DB_PATH = TEST_DB
+        
+        self.original_db_path = db_factory.DB_PATH
+        self.original_db_type = db_factory.DB_TYPE
+        self.original_app_db_type = app_module.DB_TYPE
+        
+        db_factory.DB_PATH = TEST_DB
+        db_factory.DB_TYPE = 'sqlite'
+        app_module.DB_TYPE = 'sqlite'
         
         self.app = app.test_client()
         self.app.testing = True
@@ -29,9 +37,13 @@ class TestLateWithId(unittest.TestCase):
             c = conn.cursor()
             
             # 1. Setup Vendor & Company
-            c.execute("INSERT OR IGNORE INTO vendors (email, company_name) VALUES (?, ?)", ('test@late.com', 'Late Corp'))
+            c.execute("INSERT OR IGNORE INTO vendors (email, company_name, status, web_login_enabled) VALUES (?, ?, ?, ?)", ('test@late.com', 'Late Corp', 'active', 1))
             self.vendor_id = c.lastrowid
             
+            # Add Subscription
+            c.execute("INSERT INTO subscriptions (vendor_id, plan_type, features, start_date, end_date, max_employees) VALUES (?, ?, ?, ?, ?, ?)",
+                      (self.vendor_id, 'Enterprise', '["shifts", "mobile_app"]', '2024-01-01', '2099-12-31', 100))
+
             c.execute("INSERT OR IGNORE INTO system_users (username, password, role, vendor_id) VALUES (?, ?, ?, ?)", ('test_admin', 'pass', 'admin', self.vendor_id))
             
             # 2. Define Timetable (Day Work 09:00 - 17:00) with Grace Period 15 mins
@@ -60,6 +72,9 @@ class TestLateWithId(unittest.TestCase):
             self.headers = {'Authorization': f'Bearer {self.token}'}
 
     def tearDown(self):
+        import db_factory
+        db_factory.DB_PATH = self.original_db_path
+        db_factory.DB_TYPE = self.original_db_type
         if os.path.exists(TEST_DB):
             os.remove(TEST_DB)
 
@@ -70,6 +85,8 @@ class TestLateWithId(unittest.TestCase):
             "name": "John Doe",
             "vendor_id": self.vendor_id
         }, headers=self.headers)
+        if res1.status_code != 200:
+            print(f"DEBUG: test_duplicate_name_late_logic failed. Status: {res1.status_code}, Data: {res1.data}")
         self.assertEqual(res1.status_code, 200)
         id1 = res1.json.get('person_id')
         
@@ -78,6 +95,8 @@ class TestLateWithId(unittest.TestCase):
             "name": "John Doe",
             "vendor_id": self.vendor_id
         }, headers=self.headers)
+        if res2.status_code != 200:
+            print(f"DEBUG: User 2 upload failed. Status: {res2.status_code}, Data: {res2.data}")
         self.assertEqual(res2.status_code, 200)
         id2 = res2.json.get('person_id')
         
@@ -97,6 +116,8 @@ class TestLateWithId(unittest.TestCase):
             "detected": True,
             "recognized": True
         })
+        if res_evt1.status_code != 200:
+            print(f"DEBUG: User 1 event failed. Status: {res_evt1.status_code}, Data: {res_evt1.data}")
         self.assertEqual(res_evt1.status_code, 200)
         
         # User 2: ON TIME (09:00)
@@ -109,6 +130,8 @@ class TestLateWithId(unittest.TestCase):
             "detected": True,
             "recognized": True
         })
+        if res_evt2.status_code != 200:
+            print(f"DEBUG: User 2 event failed. Status: {res_evt2.status_code}, Data: {res_evt2.data}")
         self.assertEqual(res_evt2.status_code, 200)
         
         # 3. Verify Attendance Table

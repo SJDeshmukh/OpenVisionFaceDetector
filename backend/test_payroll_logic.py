@@ -4,13 +4,16 @@ import sqlite3
 import json
 import os
 from datetime import datetime, timedelta
-from app import app, DB_PATH, generate_token
+from app import app, generate_token
+import db_factory
 
 class PayrollEndpointTest(unittest.TestCase):
     
     def setUp(self):
         # Use a temporary database
-        self.test_db = "test_payroll.db"
+        self.test_db = os.path.abspath("test_payroll.db")
+        self.original_db_path = db_factory.DB_PATH
+        db_factory.DB_PATH = self.test_db
         app.config['TESTING'] = True
         
         # Override the global DB_PATH in app.py logic (if possible) or just swap the file
@@ -30,6 +33,7 @@ class PayrollEndpointTest(unittest.TestCase):
         self.conn.close()
 
     def tearDown(self):
+        db_factory.DB_PATH = self.original_db_path
         if os.path.exists(self.test_db):
             os.remove(self.test_db)
 

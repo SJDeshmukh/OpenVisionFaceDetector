@@ -48,7 +48,12 @@ export const AuthProvider = ({ children }) => {
   useEffect(() => {
     let socket;
     if (user && user.token) {
-        socket = io(BASE_URL);
+        socket = io(BASE_URL, {
+          transports: ['polling'],
+          upgrade: false,
+          withCredentials: true,
+          path: '/socket.io'
+        });
         
         socket.on('connect', () => {
             console.log("Auth Socket connected");

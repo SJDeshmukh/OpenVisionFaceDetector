@@ -13,10 +13,26 @@ os.environ['DB_PATH'] = TEST_DB
 
 class TestStrictShift(unittest.TestCase):
     def setUp(self):
-        import app as app_module
-        self.original_db_path = app_module.DB_PATH
-        app_module.DB_PATH = TEST_DB
-        print(f"DEBUG: app.DB_PATH is {app_module.DB_PATH}")
+        import db_factory
+        import app as app_module  # Rename to avoid conflict with self.app
+        import importlib
+        
+        # Reload to reset state
+        importlib.reload(db_factory)
+        importlib.reload(app_module)
+        
+        # Re-import init_db from reloaded app
+        from app import init_db, migrate_faces_pk
+        
+        self.original_db_path = db_factory.DB_PATH
+        self.original_db_type = db_factory.DB_TYPE
+        self.original_app_db_type = app_module.DB_TYPE
+        
+        db_factory.DB_PATH = TEST_DB
+        db_factory.DB_TYPE = 'sqlite'
+        app_module.DB_TYPE = 'sqlite'
+        
+        print(f"DEBUG: db_factory.DB_PATH is {db_factory.DB_PATH}")
         
         self.app = app.test_client()
         self.app.testing = True
@@ -26,14 +42,32 @@ class TestStrictShift(unittest.TestCase):
             init_db()
             migrate_faces_pk()
             
+            # DEBUG: Check DB Status
+            if not os.path.exists(TEST_DB):
+                print(f"DEBUG: DB File {TEST_DB} DOES NOT EXIST!")
+                print(f"DEBUG: Directory listing for {os.path.dirname(TEST_DB)}: {os.listdir(os.path.dirname(TEST_DB))}")
+            else:
+                print(f"DEBUG: DB File {TEST_DB} exists. Size: {os.path.getsize(TEST_DB)}")
+            
             conn = sqlite3.connect(TEST_DB)
             conn.execute("PRAGMA journal_mode=WAL")
+            
+            # DEBUG: List Tables
+            cur = conn.cursor()
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = [row[0] for row in cur.fetchall()]
+            print(f"DEBUG: Tables in DB: {tables}")
+            
             c = conn.cursor()
             
             # 1. Setup Vendor & Company
-            c.execute("INSERT OR IGNORE INTO vendors (email, company_name) VALUES (?, ?)", ('test@shift.com', 'Shift Corp'))
+            c.execute("INSERT OR IGNORE INTO vendors (email, company_name, status, web_login_enabled) VALUES (?, ?, ?, ?)", ('test@shift.com', 'Shift Corp', 'active', 1))
             self.vendor_id = c.lastrowid
             
+            # Add Subscription
+            c.execute("INSERT INTO subscriptions (vendor_id, plan_type, features, start_date, end_date, max_employees) VALUES (?, ?, ?, ?, ?, ?)",
+                      (self.vendor_id, 'Enterprise', '["shifts", "mobile_app"]', '2024-01-01', '2099-12-31', 100))
+
             c.execute("INSERT OR IGNORE INTO system_users (username, password, role, vendor_id) VALUES (?, ?, ?, ?)", ('test_admin', 'pass', 'admin', self.vendor_id))
             
             # 2. Define Shifts
@@ -77,8 +111,13 @@ class TestStrictShift(unittest.TestCase):
             self.headers = {'Authorization': f'Bearer {self.token}'}
 
     def tearDown(self):
+        import db_factory
         import app as app_module
-        app_module.DB_PATH = self.original_db_path
+        
+        db_factory.DB_PATH = self.original_db_path
+        db_factory.DB_TYPE = self.original_db_type
+        app_module.DB_TYPE = self.original_app_db_type
+        
         if os.path.exists(TEST_DB):
             os.remove(TEST_DB)
 
@@ -89,6 +128,8 @@ class TestStrictShift(unittest.TestCase):
             "vendor_id": self.vendor_id,
             "shift": "Night Shift" # Must match shift name in DB
         }, headers=self.headers)
+        if res.status_code != 200:
+            print(f"DEBUG: /api/sync/upload failed. Status: {res.status_code}, Data: {res.data}")
         self.assertEqual(res.status_code, 200)
         night_user_id = res.json.get('person_id')
 
@@ -114,6 +155,9 @@ class TestStrictShift(unittest.TestCase):
             "detected": True,
             "recognized": True
         })
+        
+        if res_evt.status_code != 200:
+            print(f"DEBUG: /api/person-event failed. Status: {res_evt.status_code}, Data: {res_evt.data}")
         
         self.assertEqual(res_evt.status_code, 200)
         

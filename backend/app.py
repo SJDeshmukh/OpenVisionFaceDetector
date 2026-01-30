@@ -34,7 +34,14 @@ allowed_origins = [
 CORS(app, resources={r"/*": {"origins": allowed_origins}}, supports_credentials=True)
 
 # Initialize SocketIO
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent')
+socketio = SocketIO(
+    app,
+    cors_allowed_origins="*",
+    async_mode='eventlet',
+    ping_timeout=60,
+    ping_interval=25,
+    allow_upgrades=False
+)
 
 @socketio.on('join_super_admin')
 def handle_join_super_admin():
@@ -227,6 +234,25 @@ def add_missing_columns():
         print(f"Schema Update Error: {e}")
 
 add_missing_columns()
+def add_performance_indexes():
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("CREATE INDEX IF NOT EXISTS idx_system_users_vendor ON system_users(vendor_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_subscriptions_vendor ON subscriptions(vendor_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_vendors_status ON vendors(status)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_invoices_vendor ON invoices(vendor_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_invoices_overdue ON invoices(vendor_id, status, due_date)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_faces_vendor ON faces(vendor_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_faces_name ON faces(name)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_attendance_vendor ON attendance(vendor_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_attendance_timestamp ON attendance(timestamp)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_vendor_devices_vendor ON vendor_devices(vendor_id)")
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Index Setup Error: {e}")
+add_performance_indexes()
 def check_vendor_status(vendor_id):
     """
     Checks if a vendor is allowed to access the system.
@@ -1316,6 +1342,16 @@ def get_admin_stats():
     monthly_revenue = c.fetchone()[0] or 0
     
     conn.close()
+    
+    try:
+        active_streaming_devices = 0
+        now_ts = datetime.now()
+        for v in latest_frames.values():
+            for d in v.values():
+                if (now_ts - d.get("timestamp", now_ts)).total_seconds() < 30:
+                    active_streaming_devices += 1
+    except Exception:
+        active_streaming_devices = 0
     
     return jsonify({
         "total_vendors": total_vendors,

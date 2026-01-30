@@ -3,8 +3,8 @@ import os
 
 port = os.environ.get("PORT", "5001")
 bind = f"0.0.0.0:{port}"
-workers = 1 # Single worker with async threads for SocketIO
-worker_class = "gevent" # Required for WebSocket support
+workers = 1
+worker_class = "eventlet"
 threads = 100
 timeout = 120
 keepalive = 5
@@ -28,4 +28,3 @@ def on_starting(server):
             print("Running in SQLite mode.")
     except Exception as e:
         print(f"Startup migration failed: {e}")
-

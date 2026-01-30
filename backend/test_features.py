@@ -4,7 +4,7 @@ import sqlite3
 import json
 import os
 import time
-from app import app, DB_PATH, generate_token
+from app import app, generate_token
 
 class TestVendorFeatures(unittest.TestCase):
     

@@ -4,12 +4,15 @@ import sqlite3
 import json
 import os
 import time
-from app import app, DB_PATH, generate_token
+from app import app, generate_token
+import db_factory
 
 class TestSuperAdminLimits(unittest.TestCase):
     
     def setUp(self):
-        self.test_db = f"test_limits_{int(time.time())}.db"
+        self.test_db = os.path.abspath(f"test_limits_{int(time.time())}.db")
+        self.original_db_path = db_factory.DB_PATH
+        db_factory.DB_PATH = self.test_db
         app.config['TESTING'] = True
         
         # Create a fresh DB for this test
@@ -18,6 +21,7 @@ class TestSuperAdminLimits(unittest.TestCase):
         self.conn.close()
 
     def tearDown(self):
+        db_factory.DB_PATH = self.original_db_path
         if os.path.exists(self.test_db):
             os.remove(self.test_db)
 

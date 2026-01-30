@@ -4,12 +4,15 @@ import sqlite3
 import json
 import os
 import time
-from app import app, DB_PATH
+from app import app
+import db_factory
 
 class TestInvoiceGeneration(unittest.TestCase):
     
     def setUp(self):
-        self.test_db = f"test_invoice_{int(time.time())}.db"
+        self.test_db = os.path.abspath(f"test_invoice_{int(time.time())}.db")
+        self.original_db_path = db_factory.DB_PATH
+        db_factory.DB_PATH = self.test_db
         app.config['TESTING'] = True
         
         self.conn = sqlite3.connect(self.test_db)
@@ -17,6 +20,7 @@ class TestInvoiceGeneration(unittest.TestCase):
         self.conn.close()
 
     def tearDown(self):
+        db_factory.DB_PATH = self.original_db_path
         if os.path.exists(self.test_db):
             os.remove(self.test_db)
 

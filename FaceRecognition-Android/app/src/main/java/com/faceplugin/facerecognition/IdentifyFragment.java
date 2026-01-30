@@ -63,12 +63,19 @@ import retrofit2.Response;
 import android.media.AudioManager;
 import android.media.ToneGenerator;
 import android.provider.Settings;
+import io.socket.client.IO;
+import io.socket.client.Socket;
+import org.json.JSONObject;
+import java.net.URISyntaxException;
 
 public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitListener {
 
     static String TAG = IdentifyFragment.class.getSimpleName();
     static int PREVIEW_WIDTH = 720;
     static int PREVIEW_HEIGHT = 1280;
+
+    public static String BASE_URL = "http://192.168.106.111:5001"; // Default
+    private Socket mSocket;
 
     private TextToSpeech tts;
 
@@ -113,6 +120,21 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
 
         dbManager = new DBManager(requireContext());
         dbManager.loadPerson(); // Load faces when fragment is created
+
+        // --- Socket.IO Init ---
+        android.content.SharedPreferences sharedPref = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
+        String serverUrl = sharedPref.getString("server_url", BASE_URL);
+        if (serverUrl != null && !serverUrl.isEmpty()) {
+            try {
+                IO.Options options = new IO.Options();
+                options.reconnection = true;
+                mSocket = IO.socket(serverUrl, options);
+                mSocket.connect();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+        // ----------------------
 
         viewFinder = view.findViewById(R.id.preview);
         faceView = view.findViewById(R.id.faceView);
@@ -168,6 +190,10 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     @Override
     public void onDestroy() {
         super.onDestroy();
+        if (mSocket != null) {
+            mSocket.disconnect();
+            mSocket.off();
+        }
         if (tts != null) {
             tts.shutdown();
         }
@@ -428,7 +454,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
 
     private void sendStreamFrame(Bitmap originalBitmap) {
         Context context = getContext();
-        if (context == null) return;
+        if (context == null || mSocket == null || !mSocket.connected()) return;
 
         new Thread(() -> {
             try {
@@ -447,18 +473,13 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 int vendorId = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE).getInt("vendor_id", 0);
                 String deviceName = "Mobile " + deviceId.substring(0, 8);
 
-                StreamRequest request = new StreamRequest(base64Image, vendorId, deviceId, deviceName);
-                RetrofitClient.getService().uploadStreamFrame(request).enqueue(new Callback<Void>() {
-                    @Override
-                    public void onResponse(Call<Void> call, Response<Void> response) {
-                        // Ignore success to avoid log spam
-                    }
+                JSONObject data = new JSONObject();
+                data.put("image", base64Image);
+                data.put("vendor_id", vendorId);
+                data.put("device_id", deviceId);
+                data.put("device_name", deviceName);
+                mSocket.emit("stream_frame", data);
 
-                    @Override
-                    public void onFailure(Call<Void> call, Throwable t) {
-                        // Ignore failure to avoid log spam
-                    }
-                });
             } catch (Exception e) {
                 e.printStackTrace();
             }

@@ -7,8 +7,8 @@ services:
     plan: free
     rootDir: backend
     buildCommand: pip install -r requirements.txt
-    # Updated start command to use gunicorn_config.py for auto-migration
-    startCommand: gunicorn -c gunicorn_config.py app:app
+    # Explicit eventlet worker to ensure WebSocket/polling compatibility
+    startCommand: gunicorn -k eventlet -c gunicorn_config.py app:app
     envVars:
       - key: PYTHON_VERSION
         value: 3.9.0

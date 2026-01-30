@@ -64,8 +64,13 @@ const SuperAdminDashboard = () => {
     fetchFeatures();
     fetchStats();
 
-    // Socket.IO for Real-time Updates
-    const socket = io(BASE_URL);
+    // Socket.IO for Real-time Updates (force polling for Render compatibility)
+    const socket = io(BASE_URL, {
+      transports: ['polling'],
+      upgrade: false,
+      withCredentials: true,
+      path: '/socket.io'
+    });
     
     socket.on('connect', () => {
         console.log("SuperAdmin Socket Connected");

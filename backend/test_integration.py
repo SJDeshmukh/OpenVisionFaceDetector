@@ -11,6 +11,8 @@ TEST_DB = 'test_face_recognition.db'
 class TestIntegration(unittest.TestCase):
     
     def setUp(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
         self.conn = sqlite3.connect(TEST_DB)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.row_factory = sqlite3.Row
@@ -103,15 +105,15 @@ class TestIntegration(unittest.TestCase):
         # Since app.py imports DB_PATH from config or defines it globally, we can't easily switch it for the app instance 
         # without reloading. 
         # However, `get_payroll_report` opens `DB_PATH`. 
-        # We will patch `app.DB_PATH` for the test.
-        import app as backend_app
-        self.original_db_path = backend_app.DB_PATH
-        backend_app.DB_PATH = TEST_DB
+        # We will patch `db_factory.DB_PATH` for the test.
+        import db_factory
+        self.original_db_path = db_factory.DB_PATH
+        db_factory.DB_PATH = TEST_DB
 
     def tearDown(self):
         self.conn.close()
-        import app as backend_app
-        backend_app.DB_PATH = self.original_db_path
+        import db_factory
+        db_factory.DB_PATH = self.original_db_path
         if os.path.exists(TEST_DB):
             os.remove(TEST_DB)
 

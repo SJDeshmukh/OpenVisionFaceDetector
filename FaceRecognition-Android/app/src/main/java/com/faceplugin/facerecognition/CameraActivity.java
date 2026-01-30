@@ -59,8 +59,23 @@ import java.text.SimpleDateFormat;
 import android.media.AudioManager;
 import android.media.ToneGenerator;
 import android.provider.Settings;
+import io.socket.client.IO;
+import io.socket.client.Socket;
+import org.json.JSONObject;
+import java.net.URISyntaxException;
 
 public class CameraActivity extends AppCompatActivity implements TextToSpeech.OnInitListener {
+
+    public static String BASE_URL = "http://192.168.106.111:5001"; // Default
+    private Socket mSocket;
+    {
+        try {
+            // Need to get this from preferences ideally
+            mSocket = IO.socket(BASE_URL);
+        } catch (URISyntaxException e) {
+            e.printStackTrace();
+        }
+    }
 
     static String TAG = CameraActivity.class.getSimpleName();
     static int PREVIEW_WIDTH = 720;
@@ -90,6 +105,21 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_camera);
+
+        // --- Socket.IO Init ---
+        android.content.SharedPreferences sharedPref = getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
+        String serverUrl = sharedPref.getString("server_url", BASE_URL);
+        if (serverUrl != null && !serverUrl.isEmpty()) {
+            try {
+                IO.Options options = new IO.Options();
+                options.reconnection = true;
+                mSocket = IO.socket(serverUrl, options);
+                mSocket.connect();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+        // ----------------------
 
         context = this;
 
@@ -123,8 +153,16 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
         super.onPause();
 
         faceView.setFaceBoxes(null);
-        
-        if(tts != null){
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (mSocket != null) {
+            mSocket.disconnect();
+            mSocket.off();
+        }
+        if (tts != null) {
             tts.stop();
             tts.shutdown();
         }
@@ -280,9 +318,11 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
     }
 
     private void sendStreamFrame(Bitmap originalBitmap) {
+        if (mSocket == null || !mSocket.connected()) return;
+
         new Thread(() -> {
             try {
-                // Resize to reduce bandwidth (e.g., width 320px)
+                // Resize to reduce bandwidth
                 int width = 320;
                 int height = (int) (originalBitmap.getHeight() * ((float) width / originalBitmap.getWidth()));
                 Bitmap scaled = Bitmap.createScaledBitmap(originalBitmap, width, height, false);
@@ -297,18 +337,14 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
                 int vendorId = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE).getInt("vendor_id", 0);
                 String deviceName = "Mobile " + deviceId.substring(0, 8);
 
-                StreamRequest request = new StreamRequest(base64Image, vendorId, deviceId, deviceName);
-                RetrofitClient.getService().uploadStreamFrame(request).enqueue(new Callback<Void>() {
-                    @Override
-                    public void onResponse(Call<Void> call, Response<Void> response) {
-                        // Ignore success
-                    }
+                JSONObject data = new JSONObject();
+                data.put("image", base64Image);
+                data.put("vendor_id", vendorId);
+                data.put("device_id", deviceId);
+                data.put("device_name", deviceName);
 
-                    @Override
-                    public void onFailure(Call<Void> call, Throwable t) {
-                        // Ignore failure
-                    }
-                });
+                mSocket.emit("stream_frame", data);
+
             } catch (Exception e) {
                 e.printStackTrace();
             }
