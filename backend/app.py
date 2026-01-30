@@ -5355,6 +5355,16 @@ def logout():
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
+# Bootstrap DB in WSGI environments (Render/Gunicorn) to ensure base tables exist
+try:
+    init_db()
+    migrate_faces_pk()
+    add_missing_columns()
+except Exception as _e:
+    try:
+        print(f"Bootstrap Error: {_e}")
+    except Exception:
+        pass
 
 app.register_blueprint(greeting_bp)
 
