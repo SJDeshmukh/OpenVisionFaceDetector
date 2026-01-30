@@ -3251,13 +3251,13 @@ def login():
             # 2. Mobile: Max Device Enforcement (Persistent Registration)
             elif platform == 'mobile':
                 # Get Limit
-                c.execute("SELECT max_mobile_devices FROM subscriptions WHERE vendor_id = ?", (user['vendor_id'],))
+                c.execute("SELECT max_mobile_devices FROM subscriptions WHERE vendor_id = ?", (user_vendor_id,))
                 sub = c.fetchone()
                 max_devs = sub[0] if sub else 1
                 
                 if device_id:
                     # Check if device is already registered
-                    c.execute("SELECT id FROM vendor_devices WHERE vendor_id = ? AND device_id = ?", (user['vendor_id'], device_id))
+                    c.execute("SELECT id FROM vendor_devices WHERE vendor_id = ? AND device_id = ?", (user_vendor_id, device_id))
                     existing_device = c.fetchone()
                     
                     if existing_device:
@@ -3266,7 +3266,7 @@ def login():
                         conn.commit()
                     else:
                         # New Device -> Check Limit
-                        c.execute("SELECT COUNT(*) FROM vendor_devices WHERE vendor_id = ?", (user['vendor_id'],))
+                        c.execute("SELECT COUNT(*) FROM vendor_devices WHERE vendor_id = ?", (user_vendor_id,))
                         registered_count = c.fetchone()[0]
                         
                         if registered_count >= max_devs:
@@ -3276,7 +3276,7 @@ def login():
                         # Register New Device
                         try:
                             c.execute("INSERT INTO vendor_devices (vendor_id, device_id, device_name, last_login_at) VALUES (?, ?, ?, ?)",
-                                      (user['vendor_id'], device_id, f"Device {device_id[:8]}", datetime.now()))
+                                      (user_vendor_id, device_id, f"Device {device_id[:8]}", datetime.now()))
                             conn.commit()
                         except sqlite3.IntegrityError:
                             # Race condition or duplicate
@@ -5366,6 +5366,7 @@ try:
     init_db()
     migrate_faces_pk()
     add_missing_columns()
+    add_vendor_devices_table()
 except Exception as _e:
     try:
         print(f"Bootstrap Error: {_e}")
