@@ -73,7 +73,7 @@ const People = () => {
   const fetchUsers = async () => {
     try {
       // API call includes Authorization header automatically via AuthContext global axios defaults
-      const response = await axios.get(`${API_URL}/sync/download`);
+      const response = await axios.get(`${API_URL}/sync/download?limit=200`);
       setUsers(response.data.faces || []);
       setLoading(false);
     } catch (error) {

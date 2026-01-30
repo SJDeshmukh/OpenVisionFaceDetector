@@ -45,6 +45,25 @@ socketio = SocketIO(
     allow_upgrades=False
 )
 
+@app.after_request
+def add_cors_headers(resp):
+    try:
+        origin = request.headers.get('Origin')
+        if origin in allowed_origins or origin == '*':
+            resp.headers['Access-Control-Allow-Origin'] = origin
+        else:
+            resp.headers['Access-Control-Allow-Origin'] = FRONTEND_URL
+        resp.headers['Access-Control-Allow-Credentials'] = 'true'
+        resp.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+    except Exception:
+        pass
+    return resp
+
+@app.route('/socket.io/', methods=['OPTIONS'])
+def socketio_preflight():
+    return ('', 200)
+
 @socketio.on('join_super_admin')
 def handle_join_super_admin():
     try:
@@ -2725,6 +2744,15 @@ def get_persons():
         query += " WHERE vendor_id = ?"
         params.append(vendor_id)
         
+    # Optional pagination
+    try:
+        limit = int(request.args.get('limit', 500))
+        offset = int(request.args.get('offset', 0))
+        if limit > 0:
+            query += " LIMIT ? OFFSET ?"
+            params += [limit, offset]
+    except:
+        pass
     c.execute(query, params)
     rows = c.fetchall()
     conn.close()
@@ -3421,6 +3449,15 @@ def download_faces():
         query += " WHERE vendor_id = ?"
         params.append(vendor_id)
         
+    # Optional pagination
+    try:
+        limit = int(request.args.get('limit', 500))
+        offset = int(request.args.get('offset', 0))
+        if limit > 0:
+            query += " LIMIT ? OFFSET ?"
+            params += [limit, offset]
+    except:
+        pass
     c.execute(query, params)
     rows = c.fetchall()
     conn.close()
@@ -4335,6 +4372,15 @@ def get_attendance():
 
     query += " ORDER BY a.timestamp DESC"
 
+    # Optional pagination
+    try:
+        limit = int(request.args.get('limit', 500))
+        offset = int(request.args.get('offset', 0))
+        if limit > 0:
+            query += " LIMIT ? OFFSET ?"
+            params += [limit, offset]
+    except:
+        pass
     c.execute(query, params)
     rows = c.fetchall()
     conn.close()

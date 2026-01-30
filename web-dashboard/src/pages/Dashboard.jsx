@@ -78,7 +78,7 @@ const Dashboard = () => {
     };
 
     fetchData();
-    const interval = setInterval(fetchData, 5000);
+    const interval = setInterval(fetchData, 10000);
     const socket = io(BASE_URL, { transports: ['polling'], upgrade: false, path: '/socket.io' });
     socket.on('connect', () => {
       if (user?.vendor_id) socket.emit('join_vendor', { vendor_id: user.vendor_id });

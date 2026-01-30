@@ -65,7 +65,7 @@ useEffect(() => {
   });
   const fetchLogs = async () => {
     try {
-      const res = await axios.get(`${API_URL}/attendance`);
+      const res = await axios.get(`${API_URL}/attendance?limit=50`);
       const allLogs = res.data.attendance || [];
       const sorted = allLogs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)).slice(0, 50);
       setLogs(sorted);
