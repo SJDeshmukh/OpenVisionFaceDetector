@@ -65,6 +65,7 @@ const SuperAdminDashboard = () => {
     fetchFeatures();
     fetchStats();
 
+    if (!socket) return;
     socket.on('connect', () => {
         joinSuperAdmin();
     });

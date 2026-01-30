@@ -80,6 +80,9 @@ const Dashboard = () => {
 
     fetchData();
     const interval = setInterval(fetchData, 10000);
+    if (!socket) {
+      return () => { clearInterval(interval); };
+    }
     socket.on('connect', () => {
       if (user?.vendor_id) joinVendor(user.vendor_id);
     });
@@ -88,7 +91,11 @@ const Dashboard = () => {
         fetchData();
       }
     });
-    return () => { clearInterval(interval); };
+    return () => { 
+      clearInterval(interval); 
+      socket.off('attendance_updated'); 
+      socket.off('connect'); 
+    };
   }, [logout, user, socket]);
 
   useEffect(() => {

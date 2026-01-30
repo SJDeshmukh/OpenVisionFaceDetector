@@ -54,7 +54,7 @@ const LiveAttendance = () => {
 // Poll Logs + Socket push
 const { socket, joinVendor } = useSocket();
 useEffect(() => {
-  if (!user) return;
+  if (!user || !socket) return;
   socket.on('connect', () => {
     if (user.vendor_id) joinVendor(user.vendor_id);
   });
@@ -74,7 +74,11 @@ useEffect(() => {
   };
   fetchLogs();
   const interval = setInterval(fetchLogs, 2000);
-  return () => { clearInterval(interval); };
+  return () => { 
+    clearInterval(interval); 
+    socket.off('attendance_updated'); 
+    socket.off('connect'); 
+  };
 }, [user, socket]);
 
   const getStatusColor = (status, isLate) => {

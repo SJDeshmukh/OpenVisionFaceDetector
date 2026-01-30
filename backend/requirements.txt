@@ -9,3 +9,7 @@ python-dotenv
 itsdangerous
 eventlet # Optional alternative to gevent, but gevent is configured
 Flask-Compress
+redis
+celery
+prometheus-client
+boto3

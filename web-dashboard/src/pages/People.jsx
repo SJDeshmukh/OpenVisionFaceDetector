@@ -51,18 +51,20 @@ const People = () => {
           .catch(() => setVendorConfig([]));
       }
       
-      socket.on('connect', () => {
+      if (socket) {
+        socket.on('connect', () => {
           if (user.vendor_id) {
               joinVendor(user.vendor_id);
           }
-      });
+        });
 
-      socket.on('persons_updated', (data) => {
+        socket.on('persons_updated', (data) => {
           if (String(data.vendor_id) === String(user.vendor_id)) {
               console.log("Person updated, refreshing list...");
               fetchUsers();
           }
-      });
+        });
+      }
 
       return () => {};
     }
@@ -131,9 +133,11 @@ const People = () => {
       designation: user.designation || '',
       shift: user.shift || '',
       photo: user.face_image,
-      photoPreview: user.face_image && user.face_image.startsWith('data:') 
-        ? user.face_image 
-        : `data:image/jpeg;base64,${user.face_image}`,
+      photoPreview: user.image_url
+        ? user.image_url
+        : (user.face_image && (user.face_image.startsWith('http') || user.face_image.startsWith('data:'))
+            ? user.face_image
+            : (user.face_image ? `data:image/jpeg;base64,${user.face_image}` : null)),
       templates: user.templates || '',
       ...dynamicFields
     });
@@ -297,9 +301,17 @@ const People = () => {
                   <tr key={idx} className="hover:bg-slate-50/80 transition-colors">
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="flex items-center">
-                        {user.face_image ? (
+                        {user.face_image || user.image_url ? (
                           <img 
-                            src={user.face_image.startsWith('data:') ? user.face_image : `data:image/jpeg;base64,${user.face_image}`} 
+                            src={
+                              user.image_url
+                                ? user.image_url
+                                : (user.face_image.startsWith('http')
+                                  ? user.face_image
+                                  : (user.face_image.startsWith('data:')
+                                      ? user.face_image
+                                      : `data:image/jpeg;base64,${user.face_image}`))
+                            } 
                             alt={user.name} 
                             className="h-10 w-10 rounded-full object-cover mr-3 border border-slate-200"
                           />

@@ -181,7 +181,7 @@ const Reports = () => {
                  <h3 className="text-lg font-bold text-slate-800">Weekly Attendance Trend</h3>
               </div>
               <div className="h-80 w-full">
-                <ResponsiveContainer width="100%" height="100%">
+                <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={200}>
                   <BarChart data={analytics.bar_data} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} />
                     <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#64748b'}} />
@@ -200,8 +200,8 @@ const Reports = () => {
 
             <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
               <h3 className="text-lg font-bold text-slate-800 mb-6">Today's Punctuality</h3>
-              <div className="h-80 w-full flex justify-center">
-                <ResponsiveContainer width="100%" height="100%">
+              <div className="h-80 w-full">
+                <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={200}>
                   <PieChart>
                     <Pie
                       data={analytics.pie_data}

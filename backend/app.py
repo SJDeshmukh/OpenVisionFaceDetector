@@ -10,11 +10,17 @@ import eventlet
 from services.llm_service import generate_greeting
 import uuid
 import time
+import redis
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from storage import upload_base64_image, presigned_url_for_key, OBJECT_STORAGE_ENABLED
+from celery_app import celery
 from datetime import datetime, timedelta
 from collections import defaultdict
 from datetime import date
 from functools import wraps
 from itsdangerous import URLSafeTimedSerializer
+import psycopg2
+from psycopg2.extras import RealDictCursor
 # from config import BASE_URL, FRONTEND_URL # Removed config.py per user request
 
 app = Flask(__name__) 
@@ -48,6 +54,52 @@ socketio = SocketIO(
     allow_upgrades=False
 )
 
+redis_client = None
+try:
+    REDIS_URL = os.environ.get("REDIS_URL")
+    if REDIS_URL:
+        redis_client = redis.from_url(REDIS_URL)
+except Exception:
+    redis_client = None
+
+# Prometheus metrics
+REQUEST_COUNT = Counter("http_requests_total", "Total HTTP requests", ["endpoint", "method", "status"])
+REQUEST_LATENCY = Histogram("http_request_latency_seconds", "Request latency", ["endpoint", "method"])
+
+def track_metrics(endpoint):
+    def wrapper(fn):
+        def inner(*args, **kwargs):
+            start = time.time()
+            resp = fn(*args, **kwargs)
+            dur = time.time() - start
+            try:
+                status = resp[1] if isinstance(resp, tuple) else 200
+            except Exception:
+                status = 200
+            REQUEST_COUNT.labels(endpoint=endpoint, method=request.method, status=status).inc()
+            REQUEST_LATENCY.labels(endpoint=endpoint, method=request.method).observe(dur)
+            return resp
+        return inner
+    return wrapper
+
+def rate_limit(key_func=lambda: request.remote_addr, limit=100, window=60):
+    def decorator(fn):
+        def inner(*args, **kwargs):
+            if redis_client:
+                key = f"rl:{key_func()}"
+                try:
+                    pipe = redis_client.pipeline()
+                    pipe.incr(key, 1)
+                    pipe.expire(key, window)
+                    count, _ = pipe.execute()
+                    if count and int(count) > limit:
+                        return jsonify({"error": "Too Many Requests"}), 429
+                except Exception:
+                    pass
+            return fn(*args, **kwargs)
+        return inner
+    return decorator
+
 @app.after_request
 def add_cors_headers(resp):
     try:
@@ -67,6 +119,9 @@ def add_cors_headers(resp):
 def socketio_preflight():
     return ('', 200)
 
+@app.route("/metrics")
+def metrics():
+    return generate_latest(), 200, {"Content-Type": CONTENT_TYPE_LATEST}
 @socketio.on('join_super_admin')
 def handle_join_super_admin():
     try:
@@ -131,11 +186,29 @@ def get_config():
 
 # Ensure database is always accessed from the same location (backend directory)
 DB_PATH = os.environ.get('DB_PATH') or os.path.join(os.path.dirname(os.path.abspath(__file__)), 'face_db.sqlite')
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 def get_db_connection(timeout=30):
+    if DATABASE_URL and DATABASE_URL.startswith(("postgres://", "postgresql://")):
+        conn = psycopg2.connect(DATABASE_URL)
+        # allow attribute assignment like row_factory for compatibility
+        try:
+            conn.row_factory = None
+        except Exception:
+            pass
+        return conn
     conn = sqlite3.connect(DB_PATH, timeout=timeout)
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
+
+def _pg_cursor(conn):
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    return cur
+
+def _adapt_query_for_pg(sql):
+    # naive adapter: replace sqlite '?' placeholders with psycopg2 '%s'
+    # works for our usage since queries use '?' consistently
+    return sql.replace("?", "%s")
 
 def add_vendor_devices_table():
     conn = get_db_connection()
@@ -244,6 +317,9 @@ def add_missing_columns():
         if 'registration_config' not in vendor_cols:
             print("MIGRATION: Adding registration_config to vendors table...")
             c.execute("ALTER TABLE vendors ADD COLUMN registration_config TEXT DEFAULT NULL") # JSON Schema
+        if 'vertical' not in vendor_cols:
+            print("MIGRATION: Adding vertical to vendors table...")
+            c.execute("ALTER TABLE vendors ADD COLUMN vertical TEXT DEFAULT NULL") # Business vertical: school, industry, hospital
 
         # 9. Add custom_data to faces
         c.execute("PRAGMA table_info(faces)")
@@ -261,6 +337,13 @@ add_missing_columns()
 import time
 CACHE = {}
 def cache_get(key):
+    try:
+        if redis_client:
+            val = redis_client.get(f"cache:{key}")
+            if val is not None:
+                return json.loads(val)
+    except Exception:
+        pass
     v = CACHE.get(key)
     if not v:
         return None
@@ -268,6 +351,12 @@ def cache_get(key):
         return None
     return v["v"]
 def cache_set(key, value, ttl):
+    try:
+        if redis_client:
+            redis_client.setex(f"cache:{key}", ttl, json.dumps(value))
+            return
+    except Exception:
+        pass
     CACHE[key] = {"v": value, "e": time.time() + ttl}
 
 # Simple in-memory job registry for async responses
@@ -1496,6 +1585,8 @@ def get_available_features():
 
 @greeting_bp.route("/admin/vendors", methods=["POST"])
 @super_admin_required
+@track_metrics("admin_create_vendor")
+@rate_limit(limit=60, window=60)
 def create_vendor():
     data = request.json
     company_name = data.get("company_name")
@@ -1509,15 +1600,39 @@ def create_vendor():
     try:
         frontend_bundle_id = data.get("frontend_bundle_id", "default_attendance")
         backend_service_id = data.get("backend_service_id", "default_api")
+        vertical = data.get("vertical")
         c.execute("""INSERT INTO vendors (company_name, contact_person, phone, email, frontend_bundle_id, backend_service_id) 
                      VALUES (?, ?, ?, ?, ?, ?)""",
                   (company_name, data.get("contact_person"), data.get("phone"), data.get("email"), frontend_bundle_id, backend_service_id))
         vendor_id = c.lastrowid
+        if vertical:
+            try:
+                c.execute("UPDATE vendors SET vertical = ? WHERE id = ?", (vertical, vendor_id))
+                conn.commit()
+            except Exception:
+                pass
         conn.commit()
         admin_username = data.get("admin_username") or f"admin_{vendor_id}"
         admin_password = data.get("admin_password") or "default123"
         user_username = data.get("user_username") or f"user_{vendor_id}"
         user_password = data.get("user_password") or "user123"
+        payload = {
+            "vendor_id": vendor_id,
+            "company_name": company_name,
+            "frontend_bundle_id": frontend_bundle_id,
+            "admin_username": admin_username,
+            "admin_password": admin_password,
+            "user_username": user_username,
+            "user_password": user_password,
+            "start_date": data.get("start_date"),
+            "end_date": data.get("end_date"),
+            "max_users": data.get("max_users"),
+            "max_employees": data.get("max_employees"),
+            "max_mobile_devices": data.get("max_mobile_devices"),
+            "cost_per_user": data.get("cost_per_user"),
+            "cost_per_employee": data.get("cost_per_employee"),
+            "features": data.get("features")
+        }
         def _process():
             try:
                 conn2 = get_db_connection()
@@ -1562,7 +1677,13 @@ def create_vendor():
                     conn2.close()
                 except Exception:
                     pass
-        eventlet.spawn_n(_process)
+        if celery:
+            try:
+                celery.send_task("tasks.process_vendor_creation", args=[payload])
+            except Exception:
+                eventlet.spawn_n(_process)
+        else:
+            eventlet.spawn_n(_process)
         return jsonify({
             "success": True, 
             "vendor_id": vendor_id,
@@ -3045,6 +3166,8 @@ def ping():
 
 # --- Auth Endpoints ---
 @greeting_bp.route("/auth/login", methods=["POST"])
+@track_metrics("auth_login")
+@rate_limit(limit=300, window=60)
 def login():
     data = request.json
     # Robustness: Handle missing keys and strip whitespace
@@ -3080,6 +3203,14 @@ def login():
             backend_service_id = row[2] if row and len(row) > 2 and row[2] else 'default_api'
             # Map registration_config to vendor_config for frontend compatibility
             vendor_config = json.loads(row[3]) if row and len(row) > 3 and row[3] else []
+            # Fetch vertical
+            vendor_vertical = None
+            try:
+                c.execute("SELECT vertical FROM vendors WHERE id = ?", (user['vendor_id'],))
+                vrow = c.fetchone()
+                vendor_vertical = vrow[0] if vrow else None
+            except Exception:
+                vendor_vertical = None
 
             # Fetch Features
             c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (user['vendor_id'],))
@@ -3215,7 +3346,8 @@ def login():
             "frontend_bundle_id": frontend_bundle_id,
             "backend_service_id": backend_service_id,
             "vendor_config": vendor_config,
-            "features": features
+            "features": features,
+            "vertical": vendor_vertical
         })
     else:
         print("Login Failed: Invalid credentials") # DEBUG LOG
@@ -3415,7 +3547,7 @@ def upload_face():
     person_id = data.get("person_id")
     name = data.get("name")
     templates = data.get("templates", "") # Base64 string, optional
-    face_image = data.get("face_image") # Base64 string
+    face_image = data.get("face_image") # Base64 or URL
     phone = data.get("phone", "")
     department = data.get("department", "")
     designation = data.get("designation", "")
@@ -3458,6 +3590,15 @@ def upload_face():
                 conn.close()
                 return jsonify({"error": f"Employee Limit Reached ({max_employees}). Upgrade your plan."}), 403
 
+        image_url = None
+        if face_image and OBJECT_STORAGE_ENABLED:
+            try:
+                s3_url = upload_base64_image(name or f"face_{datetime.now().timestamp()}", face_image)
+                if s3_url:
+                    image_url = presigned_url_for_key(s3_url, expires_seconds=3600)
+                    face_image = image_url
+            except Exception:
+                pass
         if person_id:
             # Update Existing
             c.execute("UPDATE faces SET name=?, templates=?, face_image=?, phone=?, department=?, designation=?, shift=?, vendor_id=?, custom_data=? WHERE id=?",
@@ -3483,6 +3624,8 @@ def upload_face():
 
 @greeting_bp.route("/sync/download", methods=["GET"])
 @require_feature("mobile_app")
+@track_metrics("sync_download")
+@rate_limit(limit=120, window=60)
 def download_faces():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -3513,7 +3656,7 @@ def download_faces():
 
     faces = []
     for row in rows:
-        faces.append({
+        face_item = {
             "id": row["id"],
             "name": row["name"],
             "templates": row["templates"] if row["templates"] else None,
@@ -3523,7 +3666,17 @@ def download_faces():
             "designation": row["designation"] if "designation" in row.keys() else "",
             "shift": row["shift"] if "shift" in row.keys() else "",
             "custom_data": json.loads(row["custom_data"]) if "custom_data" in row.keys() and row["custom_data"] else {}
-        })
+        }
+        try:
+            if face_item["face_image"] and isinstance(face_item["face_image"], str) and face_item["face_image"].startswith("s3://"):
+                url = presigned_url_for_key(face_item["face_image"])
+                if url:
+                    face_item["image_url"] = url
+            elif face_item["face_image"] and isinstance(face_item["face_image"], str) and face_item["face_image"].startswith("http"):
+                face_item["image_url"] = face_item["face_image"]
+        except Exception:
+            pass
+        faces.append(face_item)
     
     return jsonify({"faces": faces})
 
@@ -4354,6 +4507,8 @@ def person_event():
     })
 
 @greeting_bp.route("/attendance", methods=["GET"])
+@track_metrics("attendance_list")
+@rate_limit(limit=300, window=60)
 def get_attendance():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
