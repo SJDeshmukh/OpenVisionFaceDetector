@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
-import { API_URL } from '../config';
+import { API_URL, BASE_URL } from '../config';
+import { io } from 'socket.io-client';
 import { 
   Video, 
   User, 
@@ -50,28 +51,31 @@ const LiveAttendance = () => {
     return () => clearInterval(interval);
   }, [user]);
 
-  // Poll Logs
-  useEffect(() => {
-    if (!user) return;
-    const fetchLogs = async () => {
-      try {
-        // Fetch logs (assuming API returns all, we slice top 50)
-        // Ideally API should support limit
-        // API call includes Authorization header automatically via AuthContext global axios defaults
-        const res = await axios.get(`${API_URL}/attendance`);
-        const allLogs = res.data.attendance || [];
-        // Sort by timestamp desc
-        const sorted = allLogs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)).slice(0, 50);
-        setLogs(sorted);
-      } catch (e) {
-        console.error("Error fetching logs:", e);
-      }
-    };
-
-    fetchLogs();
-    const interval = setInterval(fetchLogs, 2000); // 2 seconds poll for logs
-    return () => clearInterval(interval);
-  }, []);
+// Poll Logs + Socket push
+useEffect(() => {
+  if (!user) return;
+  const socket = io(BASE_URL, { transports: ['polling'], upgrade: false, withCredentials: true, path: '/socket.io' });
+  socket.on('connect', () => {
+    if (user.vendor_id) socket.emit('join_vendor', { vendor_id: user.vendor_id });
+  });
+  socket.on('attendance_updated', (ev) => {
+    if (String(ev.vendor_id) === String(user.vendor_id)) {
+      setLogs((prev) => [ev, ...prev].slice(0, 50));
+    }
+  });
+  const fetchLogs = async () => {
+    try {
+      const res = await axios.get(`${API_URL}/attendance`);
+      const allLogs = res.data.attendance || [];
+      const sorted = allLogs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)).slice(0, 50);
+      setLogs(sorted);
+    } catch (e) {
+    }
+  };
+  fetchLogs();
+  const interval = setInterval(fetchLogs, 2000);
+  return () => { clearInterval(interval); socket.disconnect(); };
+}, [user]);
 
   const getStatusColor = (status, isLate) => {
     if (status === 'CHECK_OUT') return 'text-slate-500 bg-slate-100 border-slate-200';

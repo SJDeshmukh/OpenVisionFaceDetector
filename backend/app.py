@@ -5,6 +5,7 @@ import json
 from flask import Flask, Blueprint, request, jsonify, render_template
 from flask_cors import CORS
 from flask_socketio import SocketIO, join_room, leave_room
+from flask_compress import Compress
 from services.llm_service import generate_greeting
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -16,6 +17,7 @@ from itsdangerous import URLSafeTimedSerializer
 app = Flask(__name__) 
 app.secret_key = os.environ.get('SECRET_KEY', 'super_secret_key_change_this_in_prod')
 serializer = URLSafeTimedSerializer(app.secret_key)
+Compress(app)
 
 # Configuration (Simplified for Render)
 # Priority: Env Var > Default
@@ -234,6 +236,17 @@ def add_missing_columns():
         print(f"Schema Update Error: {e}")
 
 add_missing_columns()
+import time
+CACHE = {}
+def cache_get(key):
+    v = CACHE.get(key)
+    if not v:
+        return None
+    if v["e"] < time.time():
+        return None
+    return v["v"]
+def cache_set(key, value, ttl):
+    CACHE[key] = {"v": value, "e": time.time() + ttl}
 def add_performance_indexes():
     try:
         conn = get_db_connection()
@@ -1310,6 +1323,9 @@ def reset_user_password():
 @greeting_bp.route("/admin/stats", methods=["GET"])
 @super_admin_required
 def get_admin_stats():
+    cached = cache_get("admin_stats")
+    if cached:
+        return jsonify(cached)
     conn = get_db_connection()
     c = conn.cursor()
     
@@ -1353,14 +1369,16 @@ def get_admin_stats():
     except Exception:
         active_streaming_devices = 0
     
-    return jsonify({
+    result = {
         "total_vendors": total_vendors,
         "active_vendors": active_vendors,
         "total_employees": total_employees,
         "total_devices": total_devices,
         "active_streaming_devices": active_streaming_devices,
         "monthly_recurring_revenue": monthly_revenue
-    })
+    }
+    cache_set("admin_stats", result, 2)
+    return jsonify(result)
 
 @greeting_bp.route("/admin/vendors", methods=["GET"])
 @super_admin_required
@@ -2613,6 +2631,10 @@ def export_report():
 def get_report_filters():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
+    cache_key = f"report_filters_{vendor_id or 'global'}"
+    cached = cache_get(cache_key)
+    if cached:
+        return jsonify(cached)
 
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
@@ -2679,11 +2701,13 @@ def get_report_filters():
 
     conn.close()
     
-    return jsonify({
+    result = {
         "departments": departments,
         "designations": designations,
         "dynamic_filters": dynamic_filters
-    })
+    }
+    cache_set(cache_key, result, 15)
+    return jsonify(result)
 
 @greeting_bp.route("/persons", methods=["GET"])
 def get_persons():
@@ -3406,8 +3430,8 @@ def download_faces():
         faces.append({
             "id": row["id"],
             "name": row["name"],
-            "templates": base64.b64encode(row["templates"]).decode('utf-8') if row["templates"] else None,
-            "face_image": base64.b64encode(row["face_image"]).decode('utf-8') if row["face_image"] else None,
+            "templates": row["templates"] if row["templates"] else None,
+            "face_image": row["face_image"] if row["face_image"] else None,
             "phone": row["phone"] if "phone" in row.keys() else "",
             "department": row["department"] if "department" in row.keys() else "",
             "designation": row["designation"] if "designation" in row.keys() else "",
@@ -4184,6 +4208,19 @@ def person_event():
                   (name, current_time, new_status, captured_image, activity_name, is_late, vendor_id_to_check, person_id))
         conn.commit()
         print(f"Attendance Recorded: {name} - {new_status} ({activity_name}) Late={is_late} at {current_time}")
+        try:
+            ev = {
+                "name": name,
+                "timestamp": current_time.strftime('%Y-%m-%d %H:%M:%S'),
+                "status": new_status,
+                "is_late": is_late,
+                "activity": activity_name,
+                "vendor_id": vendor_id_to_check
+            }
+            if vendor_id_to_check:
+                socketio.emit('attendance_updated', ev, room=f"vendor_{vendor_id_to_check}")
+        except Exception as _e:
+            pass
     except Exception as e:
         print(f"Insert Error: {e}")
         conn.close()

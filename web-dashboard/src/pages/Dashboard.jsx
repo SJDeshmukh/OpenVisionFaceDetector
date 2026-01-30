@@ -22,12 +22,13 @@ import {
 } from 'recharts';
 import { useState, useEffect } from 'react';
 import axios from 'axios';
-import { API_URL } from '../config';
+import { API_URL, BASE_URL } from '../config';
 import ActivityDashboard from '../components/ActivityDashboard';
 import { useAuth } from '../context/AuthContext';
+import { io } from 'socket.io-client';
 
 const Dashboard = () => {
-  const { logout } = useAuth();
+  const { user, logout } = useAuth();
   const [activeTab, setActiveTab] = useState('overview');
   const [stats, setStats] = useState({
     total: 0,
@@ -78,8 +79,17 @@ const Dashboard = () => {
 
     fetchData();
     const interval = setInterval(fetchData, 5000);
-    return () => clearInterval(interval);
-  }, [logout]);
+    const socket = io(BASE_URL, { transports: ['polling'], upgrade: false, withCredentials: true, path: '/socket.io' });
+    socket.on('connect', () => {
+      if (user?.vendor_id) socket.emit('join_vendor', { vendor_id: user.vendor_id });
+    });
+    socket.on('attendance_updated', (ev) => {
+      if (!user?.vendor_id || String(ev.vendor_id) === String(user.vendor_id)) {
+        fetchData();
+      }
+    });
+    return () => { clearInterval(interval); socket.disconnect(); };
+  }, [logout, user]);
 
   useEffect(() => {
     if (activeTab === 'plan') {
