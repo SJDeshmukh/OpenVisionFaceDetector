@@ -37,4 +37,19 @@ public interface GreetingService {
 
     @GET("api/companies")
     Call<com.google.gson.JsonObject> getCompanies();
+
+    @POST("api/parents/login")
+    Call<LoginResponse> parentLogin(@Body ParentLoginRequest request);
+
+    @GET("api/parents/attendance")
+    Call<com.google.gson.JsonObject> getParentAttendance();
+
+    @POST("api/parents/select-student")
+    Call<com.google.gson.JsonObject> selectStudent(@Body ParentSelectRequest request);
+
+    @GET("api/public/attendance-by-student")
+    Call<com.google.gson.JsonObject> attendanceByStudent(@retrofit2.http.Query("student_number") String studentNumber);
+    @GET("api/public/attendance-by-student")
+    Call<com.google.gson.JsonObject> attendanceByStudentWithDate(@retrofit2.http.Query("student_number") String studentNumber,
+                                                                 @retrofit2.http.Query("date") String date);
 }

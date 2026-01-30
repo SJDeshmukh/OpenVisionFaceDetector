@@ -23,7 +23,8 @@ const SuperAdminDashboard = () => {
     user_username: '', user_password: '',
     frontend_bundle_id: 'default_attendance',
     backend_service_id: 'default_api',
-    features: []
+    features: [],
+    vertical: ''
   });
   const [registrationConfig, setRegistrationConfig] = useState([]);
   const [editingVendor, setEditingVendor] = useState(null);
@@ -174,7 +175,8 @@ const SuperAdminDashboard = () => {
             user_username: newVendor.user_username,
             user_password: newVendor.user_password,
             frontend_bundle_id: newVendor.frontend_bundle_id,
-            backend_service_id: newVendor.backend_service_id
+            backend_service_id: newVendor.backend_service_id,
+            vertical: newVendor.vertical
         }, {
             headers: { Authorization: `Bearer ${user?.token}` }
         });
@@ -233,7 +235,10 @@ const SuperAdminDashboard = () => {
         max_users: '', max_employees: '',
         admin_username: '', admin_password: '',
         user_username: '', user_password: '',
-        features: []
+        features: [],
+        vertical: '',
+        frontend_bundle_id: 'default_attendance',
+        backend_service_id: 'default_api'
       });
       setRegistrationConfig([]);
       fetchVendors();
@@ -261,7 +266,8 @@ const SuperAdminDashboard = () => {
       user_password: '',   // Keep blank
       frontend_bundle_id: vendor.frontend_bundle_id || 'default_attendance',
       backend_service_id: vendor.backend_service_id || 'default_api',
-      features: vendor.features || []
+      features: vendor.features || [],
+      vertical: vendor.vertical || ''
     });
 
     try {
@@ -570,6 +576,11 @@ const SuperAdminDashboard = () => {
                         <span className="text-sm font-bold text-slate-700">₹{vendor.cost_per_user || 0}<span className="text-xs font-normal text-slate-400">/user</span></span>
                         <span className="text-xs text-slate-500">Total: ₹{(vendor.cost_per_user || 0) * (vendor.max_users || 0)}</span>
                     </div>
+                    {vendor.vertical && (
+                      <span className="mt-1 text-xs bg-purple-50 text-purple-700 px-2 py-1 rounded border border-purple-100">
+                        Business: {vendor.vertical}
+                      </span>
+                    )}
                   </div>
                 </td>
                 <td className="p-4">
@@ -1098,6 +1109,51 @@ const SuperAdminDashboard = () => {
                     />
                   </div>
                 </div>
+                <div className="mt-4">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Business Vertical *</label>
+                  <select
+                    className="w-full p-2 border rounded focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    value={newVendor.vertical}
+                    onChange={e => {
+                      const v = e.target.value;
+                      let bundleId = newVendor.frontend_bundle_id;
+                      // Preset bundles/features per vertical
+                      if (v === 'school') {
+                        bundleId = 'attendance_ui';
+                      } else if (v === 'wages') {
+                        bundleId = 'attendance_payroll_ui';
+                      } else {
+                        bundleId = 'default_attendance';
+                      }
+                      const presetFeatures = bundleConfig[bundleId] || [];
+                      // Preset registration config
+                      let presetReg = registrationConfig;
+                      if (v === 'school') {
+                        presetReg = [
+                          { field: 'student_number', label: 'Student Number', type: 'text', required: true, options: [] },
+                          { field: 'department', label: 'Class/Section', type: 'text', required: false, options: [] }
+                        ];
+                      } else if (v === 'wages') {
+                        presetReg = [
+                          { field: 'daily_wage', label: 'Daily Wage', type: 'text', required: false, options: [] },
+                          { field: 'department', label: 'Department', type: 'text', required: false, options: [] }
+                        ];
+                      }
+                      setRegistrationConfig(presetReg);
+                      setNewVendor({
+                        ...newVendor,
+                        vertical: v,
+                        frontend_bundle_id: bundleId,
+                        features: presetFeatures
+                      });
+                    }}
+                  >
+                    <option value="">Select Business</option>
+                    <option value="school">School / College</option>
+                    <option value="wages">Daily Wages / Workforce</option>
+                    <option value="enterprise">Enterprise (Custom)</option>
+                  </select>
+                </div>
               </div>
 
               {/* Section 2: Plan Configuration */}
@@ -1334,12 +1390,16 @@ const SuperAdminDashboard = () => {
                   type="button" 
                   onClick={() => {
                     setShowModal(false);
-                    setEditingVendor(null);
-                    setNewVendor({ 
+              setEditingVendor(null);
+              setNewVendor({ 
                       company_name: '', contact_person: '', phone: '', email: '',
                       start_date: '', end_date: '', cost: '', max_users: '',
                       admin_username: '', admin_password: '',
-                      user_username: '', user_password: ''
+                user_username: '', user_password: '',
+                vertical: '',
+                frontend_bundle_id: 'default_attendance',
+                backend_service_id: 'default_api',
+                features: []
                     });
                   }}
                   className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded"

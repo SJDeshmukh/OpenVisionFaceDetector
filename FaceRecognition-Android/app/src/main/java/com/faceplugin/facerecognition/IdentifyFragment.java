@@ -91,6 +91,8 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     private TextView statusText;
     private FrameLayout screenSaverView;
     private DBManager dbManager;
+    private android.widget.ImageView ivStatusOverlay;
+    private TextView tvStatusOverlay;
 
     // Power Saving / Screen Saver
     private Handler powerSaveHandler = new Handler(Looper.getMainLooper());
@@ -140,6 +142,8 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         faceView = view.findViewById(R.id.faceView);
         statusText = view.findViewById(R.id.statusText);
         screenSaverView = view.findViewById(R.id.screenSaverView);
+        ivStatusOverlay = view.findViewById(R.id.ivStatusOverlay);
+        tvStatusOverlay = view.findViewById(R.id.tvStatusOverlay);
 
         // Keep screen on
         if (getActivity() != null) {
@@ -295,8 +299,9 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                         String status = greeting.getStatus();
                         if (status != null) {
                              playAttendanceSound(status);
+                             showStatusOverlay(status);
                         } else {
-                             // Admin/Vendor Identification - No Sound
+                            
                         } 
                     }
                 } else {
@@ -365,6 +370,54 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         } catch (Exception e) {
             e.printStackTrace();
         }
+    }
+
+    private void showStatusOverlay(String status) {
+        if (getActivity() == null) return;
+        getActivity().runOnUiThread(() -> {
+            if ("CHECK_IN".equals(status)) {
+                if (ivStatusOverlay != null) {
+                    ivStatusOverlay.setImageResource(android.R.drawable.checkbox_on_background);
+                    ivStatusOverlay.setColorFilter(getResources().getColor(android.R.color.holo_green_light));
+                    statusText.setTextColor(getResources().getColor(android.R.color.holo_green_light));
+                    ivStatusOverlay.setVisibility(View.VISIBLE);
+                    ivStatusOverlay.setAlpha(1f);
+                    ivStatusOverlay.animate().alpha(0f).setDuration(800).withEndAction(() -> {
+                        ivStatusOverlay.setVisibility(View.GONE);
+                        statusText.setTextColor(getResources().getColor(R.color.primary_soft_blue));
+                    }).start();
+                }
+                if (tvStatusOverlay != null) {
+                    tvStatusOverlay.setVisibility(View.GONE);
+                }
+            } else {
+                if (ivStatusOverlay != null) {
+                    ivStatusOverlay.setVisibility(View.GONE);
+                }
+                if (tvStatusOverlay != null) {
+                    tvStatusOverlay.setText("👋");
+                    tvStatusOverlay.setTextColor(getResources().getColor(android.R.color.holo_blue_light));
+                    statusText.setTextColor(getResources().getColor(android.R.color.holo_blue_light));
+                    tvStatusOverlay.setVisibility(View.VISIBLE);
+                    tvStatusOverlay.setAlpha(1f);
+                    try {
+                        android.animation.ObjectAnimator swing1 = android.animation.ObjectAnimator.ofFloat(tvStatusOverlay, "rotation", -20f, 20f);
+                        swing1.setDuration(200);
+                        android.animation.ObjectAnimator swing2 = android.animation.ObjectAnimator.ofFloat(tvStatusOverlay, "rotation", -10f, 10f);
+                        swing2.setDuration(200);
+                        android.animation.ObjectAnimator settle = android.animation.ObjectAnimator.ofFloat(tvStatusOverlay, "rotation", 0f);
+                        settle.setDuration(150);
+                        android.animation.AnimatorSet set = new android.animation.AnimatorSet();
+                        set.playSequentially(swing1, swing2, settle);
+                        set.start();
+                    } catch (Exception ignored) {}
+                    tvStatusOverlay.animate().alpha(0f).setDuration(900).withEndAction(() -> {
+                        tvStatusOverlay.setVisibility(View.GONE);
+                        statusText.setTextColor(getResources().getColor(R.color.primary_soft_blue));
+                    }).start();
+                }
+            }
+        });
     }
 
     private void syncOfflineQueue() {

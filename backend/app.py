@@ -165,6 +165,84 @@ def handle_join_vendor(data=None):
     except Exception as e:
         return {'error': str(e)}, 500
 
+@socketio.on('join_parent')
+def handle_join_parent(data=None):
+    try:
+        parent_id = None
+        if data and isinstance(data, dict):
+            parent_id = data.get('parent_id')
+        if not parent_id:
+            auth_header = request.headers.get('Authorization')
+            if auth_header:
+                try:
+                    token = auth_header.split(" ")[1]
+                    user_data = verify_token(token)
+                    if user_data and user_data.get('role') == 'parent':
+                        conn = get_db_connection()
+                        c = conn.cursor()
+                        c.execute("SELECT id FROM parent_users WHERE username = ?", (user_data['username'],))
+                        row = c.fetchone()
+                        conn.close()
+                        parent_id = row[0] if row else None
+                except Exception:
+                    pass
+        if not parent_id:
+            return {'error': 'parent_id required'}, 400
+        join_room(f"parent_{parent_id}")
+        return {'status': 'joined', 'room': f'parent_{parent_id}'}
+    except Exception as e:
+        return {'error': str(e)}, 500
+
+@socketio.on('join_student_number')
+def handle_join_student_number(data=None):
+    try:
+        student_number = None
+        if data and isinstance(data, dict):
+            student_number = str(data.get('student_number') or '').strip()
+        if not student_number:
+            return {'error': 'student_number required'}, 400
+        join_room(f"student_{student_number}")
+        try:
+            fcm_token = None
+            vendor_id = None
+            if data and isinstance(data, dict):
+                fcm_token = str(data.get('fcm_token') or '').strip()
+                vendor_id = data.get('vendor_id')
+            if fcm_token:
+                conn = get_db_connection()
+                c = conn.cursor()
+                if not vendor_id:
+                    c.execute("SELECT vendor_id, custom_data FROM faces WHERE custom_data IS NOT NULL")
+                    rows = c.fetchall()
+                    import json
+                    for r in rows:
+                        try:
+                            cd = json.loads(r[1])
+                            sn = str(cd.get('student_number') or cd.get('roll_number') or cd.get('admission_number') or '').strip()
+                            if sn == student_number:
+                                vendor_id = r[0]
+                                break
+                        except Exception:
+                            pass
+                c.execute("""CREATE TABLE IF NOT EXISTS parent_tokens
+                             (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                              vendor_id INTEGER,
+                              student_number TEXT,
+                              token TEXT UNIQUE,
+                              created_at DATETIME DEFAULT CURRENT_TIMESTAMP)""")
+                if vendor_id:
+                    try:
+                        c.execute("INSERT OR IGNORE INTO parent_tokens (vendor_id, student_number, token) VALUES (?, ?, ?)", (vendor_id, student_number, fcm_token))
+                        conn.commit()
+                    except Exception:
+                        pass
+                conn.close()
+        except Exception:
+            pass
+        return {'status': 'joined', 'room': f'student_{student_number}'}
+    except Exception as e:
+        return {'error': str(e)}, 500
+
 @app.route('/auth/status', methods=['GET'])
 def auth_status():
     vendor_id, error = authenticate_vendor_access()
@@ -317,6 +395,23 @@ def add_missing_columns():
                       details TEXT, -- JSON string
                       timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)''')
 
+        # 7b. Create parent_users and student_parents tables
+        c.execute('''CREATE TABLE IF NOT EXISTS parent_users
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      vendor_id INTEGER,
+                      username TEXT UNIQUE,
+                      password TEXT,
+                      contact_email TEXT,
+                      contact_phone TEXT,
+                      student_number TEXT,
+                      selected_person_id INTEGER,
+                      created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS student_parents
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      vendor_id INTEGER,
+                      person_id INTEGER,
+                      parent_id INTEGER,
+                      UNIQUE(vendor_id, person_id, parent_id))''')
         # 8. Add registration_config to vendors
         c.execute("PRAGMA table_info(vendors)")
         vendor_cols = [info[1] for info in c.fetchall()]
@@ -3406,6 +3501,230 @@ def register_user():
     finally:
         conn.close()
 
+@greeting_bp.route("/parents/register", methods=["POST"])
+def register_parent():
+    caller_vendor_id, error = authenticate_vendor_access()
+    if error: return error
+    auth_header = request.headers.get('Authorization')
+    token = auth_header.split(" ")[1]
+    user_data = verify_token(token)
+    if user_data['role'] not in ['super_admin', 'vendor_admin']:
+        return jsonify({"error": "Access Denied: Admin privileges required"}), 403
+    data = request.json
+    username = data.get("username")
+    password = data.get("password")
+    contact_email = data.get("contact_email")
+    contact_phone = data.get("contact_phone")
+    target_vendor_id = caller_vendor_id or data.get("vendor_id")
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute("INSERT INTO parent_users (vendor_id, username, password, contact_email, contact_phone) VALUES (?, ?, ?, ?, ?)",
+                  (target_vendor_id, username, password, contact_email, contact_phone))
+        conn.commit()
+        return jsonify({"status": "success"})
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "Parent username already exists"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+@greeting_bp.route("/parents/login", methods=["POST"])
+def parent_login():
+    data = request.json
+    username = data.get("username")
+    password = data.get("password")
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute("SELECT * FROM parent_users WHERE username = ? AND password = ?", (username, password))
+    user = c.fetchone()
+    conn.close()
+    if not user:
+        return jsonify({"error": "Invalid credentials"}), 401
+    token = generate_token(user['username'], 'parent')
+    return jsonify({
+        "status": "success",
+        "role": "parent",
+        "username": user["username"],
+        "token": token,
+        "vendor_id": user["vendor_id"],
+        "parent_id": user["id"]
+    })
+
+@greeting_bp.route("/admin/students/assign-parent", methods=["POST"])
+def assign_parent():
+    caller_vendor_id, error = authenticate_vendor_access()
+    if error: return error
+    auth_header = request.headers.get('Authorization')
+    token = auth_header.split(" ")[1]
+    user_data = verify_token(token)
+    if user_data['role'] not in ['super_admin', 'vendor_admin']:
+        return jsonify({"error": "Access Denied: Admin privileges required"}), 403
+    data = request.json
+    person_id = data.get("person_id")
+    parent_id = data.get("parent_id")
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute("INSERT OR IGNORE INTO student_parents (vendor_id, person_id, parent_id) VALUES (?, ?, ?)",
+                  (caller_vendor_id, person_id, parent_id))
+        conn.commit()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+@greeting_bp.route("/parents/attendance", methods=["GET"])
+def get_parent_attendance():
+    auth_header = request.headers.get('Authorization')
+    if not auth_header:
+        return jsonify({"error": "Missing Authorization Header"}), 401
+    try:
+        token = auth_header.split(" ")[1]
+        data = verify_token(token)
+        if not data or data.get('role') != 'parent':
+            return jsonify({"error": "Invalid or Expired Token"}), 401
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute("SELECT id, vendor_id FROM parent_users WHERE username = ?", (data['username'],))
+        pu = c.fetchone()
+        if not pu:
+            conn.close()
+            return jsonify({"error": "Parent not found"}), 404
+        parent_id = pu['id']
+        vendor_id = pu['vendor_id']
+        limit = int(request.args.get('limit', 50))
+        c.execute("""
+            SELECT a.id, a.name, a.timestamp, a.status, a.activity, a.is_late, a.person_id 
+            FROM attendance a
+            JOIN student_parents sp ON sp.person_id = a.person_id
+            WHERE sp.parent_id = ? AND a.vendor_id = ?
+            ORDER BY a.timestamp DESC
+            LIMIT ?
+        """, (parent_id, vendor_id, limit))
+        rows = c.fetchall()
+        conn.close()
+        return jsonify({"attendance": [dict(r) for r in rows]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@greeting_bp.route("/public/attendance-by-student", methods=["GET"])
+def public_attendance_by_student():
+    student_number = request.args.get("student_number", "").strip()
+    if not student_number:
+        return jsonify({"error": "student_number required"}), 400
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    try:
+        c.execute("SELECT id, vendor_id, name, custom_data FROM faces WHERE custom_data IS NOT NULL")
+        rows = c.fetchall()
+        import json
+        person_id = None
+        vendor_id = None
+        for r in rows:
+            try:
+                cd = json.loads(r['custom_data'])
+                sn = str(cd.get('student_number') or cd.get('roll_number') or cd.get('admission_number') or '').strip()
+                if sn == student_number:
+                    person_id = r['id']
+                    vendor_id = r['vendor_id']
+                    break
+            except Exception:
+                pass
+        if not person_id:
+            conn.close()
+            return jsonify({"attendance": []})
+        limit = int(request.args.get('limit', 50))
+        date_filter = request.args.get('date')
+        date_from = request.args.get('from')
+        date_to = request.args.get('to')
+        if date_filter:
+            c.execute("""
+                SELECT id, name, timestamp, status, activity, is_late, person_id 
+                FROM attendance
+                WHERE person_id = ? AND date(timestamp) = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+            """, (person_id, date_filter, limit))
+        elif date_from and date_to:
+            c.execute("""
+                SELECT id, name, timestamp, status, activity, is_late, person_id 
+                FROM attendance
+                WHERE person_id = ? AND date(timestamp) BETWEEN ? AND ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+            """, (person_id, date_from, date_to, limit))
+        else:
+            c.execute("""
+                SELECT id, name, timestamp, status, activity, is_late, person_id 
+                FROM attendance
+                WHERE person_id = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+            """, (person_id, limit))
+        out_rows = [dict(x) for x in c.fetchall()]
+        conn.close()
+        return jsonify({"attendance": out_rows, "student_number": student_number})
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 500
+@greeting_bp.route("/parents/select-student", methods=["POST"])
+def parent_select_student():
+    auth_header = request.headers.get('Authorization')
+    if not auth_header:
+        return jsonify({"error": "Missing Authorization Header"}), 401
+    try:
+        token = auth_header.split(" ")[1]
+        data = verify_token(token)
+        if not data or data.get('role') != 'parent':
+            return jsonify({"error": "Invalid or Expired Token"}), 401
+        body = request.json or {}
+        student_number = body.get("student_number")
+        if not student_number:
+            return jsonify({"error": "student_number required"}), 400
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute("SELECT id, vendor_id FROM parent_users WHERE username = ?", (data['username'],))
+        pu = c.fetchone()
+        if not pu:
+            conn.close()
+            return jsonify({"error": "Parent not found"}), 404
+        parent_id = pu['id']
+        vendor_id = pu['vendor_id']
+        # Find student by custom_data->student_number under this vendor
+        c.execute("SELECT id, name, custom_data FROM faces WHERE vendor_id = ? AND custom_data IS NOT NULL", (vendor_id,))
+        rows = c.fetchall()
+        selected = None
+        import json
+        for r in rows:
+            try:
+                cd = json.loads(r['custom_data'])
+                if str(cd.get('student_number') or cd.get('roll_number') or cd.get('admission_number') or '').strip() == str(student_number).strip():
+                    selected = r
+                    break
+            except Exception:
+                pass
+        if not selected:
+            conn.close()
+            return jsonify({"error": "Student not found"}), 404
+        person_id = selected['id']
+        # Update parent preferred student and mapping
+        c.execute("UPDATE parent_users SET student_number = ?, selected_person_id = ? WHERE id = ?", (student_number, person_id, parent_id))
+        # Remove old mappings for this parent in vendor and insert new
+        c.execute("DELETE FROM student_parents WHERE parent_id = ? AND vendor_id = ?", (parent_id, vendor_id))
+        c.execute("INSERT OR IGNORE INTO student_parents (vendor_id, person_id, parent_id) VALUES (?, ?, ?)", (vendor_id, person_id, parent_id))
+        conn.commit()
+        conn.close()
+        return jsonify({"status": "success", "person_id": person_id, "name": selected['name'], "student_number": student_number})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 # --- System Settings Endpoints ---
 
 @greeting_bp.route("/settings", methods=["GET"])
@@ -4470,8 +4789,105 @@ def person_event():
             }
             if vendor_id_to_check:
                 socketio.emit('attendance_updated', ev, room=f"vendor_{vendor_id_to_check}")
+                pid_lookup = person_id
+                if not pid_lookup and name:
+                    try:
+                        c.execute("SELECT id FROM faces WHERE name = ?", (name,))
+                        r = c.fetchone()
+                        pid_lookup = r[0] if r else None
+                    except Exception:
+                        pid_lookup = None
+                if pid_lookup:
+                    c.execute("SELECT parent_id FROM student_parents WHERE vendor_id = ? AND person_id = ?", (vendor_id_to_check, pid_lookup))
+                    parent_rows = c.fetchall()
+                    for pr in parent_rows or []:
+                        try:
+                            socketio.emit('parent_attendance', ev, room=f"parent_{pr[0]}")
+                        except Exception:
+                            pass
+                    try:
+                        c.execute("SELECT custom_data FROM faces WHERE id = ?", (pid_lookup,))
+                        row_cd = c.fetchone()
+                        if row_cd and row_cd[0]:
+                            import json
+                            cd = json.loads(row_cd[0])
+                            sn = str(cd.get('student_number') or cd.get('roll_number') or cd.get('admission_number') or '').strip()
+                            if sn:
+                                socketio.emit('student_attendance', ev, room=f"student_{sn}")
+                            try:
+                                conn2 = get_db_connection()
+                                c2 = conn2.cursor()
+                                c2.execute("SELECT token FROM parent_tokens WHERE student_number = ? AND vendor_id = ?", (sn, vendor_id_to_check))
+                                token_rows = c2.fetchall()
+                                conn2.close()
+                                if token_rows:
+                                    tokens = [t[0] for t in token_rows]
+                                    try:
+                                        import requests, os, json
+                                        server_key = os.getenv("FCM_SERVER_KEY", "")
+                                        if server_key:
+                                            payload = {
+                                                "registration_ids": tokens,
+                                                "notification": {
+                                                    "title": f"{ev.get('name', '')} {ev.get('status', '')}",
+                                                    "body": f"{ev.get('timestamp', '')} {ev.get('activity', '')}"
+                                                },
+                                                "data": ev
+                                            }
+                                            headers = {"Content-Type": "application/json", "Authorization": "key=" + server_key}
+                                            try:
+                                                requests.post("https://fcm.googleapis.com/fcm/send", headers=headers, data=json.dumps(payload), timeout=5)
+                                            except Exception:
+                                                pass
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
         except Exception as _e:
             pass
+
+@greeting_bp.route("/public/register-token", methods=["POST"])
+def public_register_token():
+    data = request.json or {}
+    student_number = str(data.get("student_number") or "").strip()
+    token = str(data.get("token") or "").strip()
+    vendor_id = data.get("vendor_id")
+    if not student_number or not token:
+        return jsonify({"error": "student_number and token required"}), 400
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute("""CREATE TABLE IF NOT EXISTS parent_tokens
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      vendor_id INTEGER,
+                      student_number TEXT,
+                      token TEXT UNIQUE,
+                      created_at DATETIME DEFAULT CURRENT_TIMESTAMP)""")
+        if not vendor_id:
+            c.execute("SELECT vendor_id, custom_data FROM faces WHERE custom_data IS NOT NULL")
+            rows = c.fetchall()
+            import json
+            for r in rows:
+                try:
+                    cd = json.loads(r[1])
+                    sn = str(cd.get('student_number') or cd.get('roll_number') or cd.get('admission_number') or '').strip()
+                    if sn == student_number:
+                        vendor_id = r[0]
+                        break
+                except Exception:
+                    pass
+        if not vendor_id:
+            conn.close()
+            return jsonify({"error": "vendor not found"}), 404
+        c.execute("INSERT OR IGNORE INTO parent_tokens (vendor_id, student_number, token) VALUES (?, ?, ?)", (vendor_id, student_number, token))
+        conn.commit()
+        conn.close()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 500
     except Exception as e:
         print(f"Insert Error: {e}")
         conn.close()
