@@ -4847,6 +4847,8 @@ def person_event():
                         pass
         except Exception as _e:
             pass
+    except Exception as e:
+        print(f"Attendance insert error: {e}")
 
 @greeting_bp.route("/public/register-token", methods=["POST"])
 def public_register_token():
@@ -4888,51 +4890,6 @@ def public_register_token():
     except Exception as e:
         conn.close()
         return jsonify({"error": str(e)}), 500
-    except Exception as e:
-        print(f"Insert Error: {e}")
-        conn.close()
-        return jsonify({"error": "Database Insert Failed"}), 500
-    
-    # --- Context Determination Logic (Legacy / UI) ---
-    # We already determined activity_name/type above.
-    # Now we map it to the UI 'context' strings if needed.
-    
-    activity_context = None
-    if activity_type.lower() != 'work':
-        if 'lunch' in activity_name.lower():
-            activity_context = 'leaving_for_lunch' if new_status == 'CHECK_OUT' else 'returning_from_lunch'
-        elif 'tea' in activity_name.lower():
-            activity_context = 'leaving_for_tea' if new_status == 'CHECK_OUT' else 'returning_from_tea'
-    else:
-        # Work Logic
-        if new_status == 'CHECK_IN':
-             # Check Late
-             # We need start time of this activity
-             # We can reuse the best_match from above if we saved it
-             pass # Simplified for now, the UI logic below is still valid or can be simplified
-
-    conn.close()
-
-    # Generate Greeting with Context
-    greeting = generate_greeting(name, new_status, context=activity_context)
-    
-    if new_status == 'CHECK_IN':
-        display_status = f"Check In: {current_time.strftime('%I:%M %p')}"
-        if is_late:
-            display_status += " (Late)"
-        if activity_name != 'Work':
-             display_status += f" ({activity_name})"
-    else:
-        display_status = f"Check Out: {current_time.strftime('%I:%M %p')}"
-        if activity_name != 'Work':
-             display_status += f" ({activity_name})"
-
-    return jsonify({
-        "speak": True,
-        "text": greeting,
-        "status": new_status,
-        "display_status": display_status
-    })
 
 @greeting_bp.route("/attendance", methods=["GET"], endpoint="attendance_list_route")
 @track_metrics("attendance_list")
