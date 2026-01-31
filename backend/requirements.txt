@@ -1,0 +1,15 @@
+flask
+requests
+flask-cors
+flask-socketio
+gunicorn
+gevent
+psycopg2-binary
+python-dotenv
+itsdangerous
+eventlet # Optional alternative to gevent, but gevent is configured
+Flask-Compress
+redis
+celery
+prometheus-client
+boto3

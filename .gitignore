@@ -1,0 +1,21 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.db
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Node
+node_modules/
+dist/
+
+# Android
+*.apk
+*.aab
+.gradle/
+build/
+local.properties

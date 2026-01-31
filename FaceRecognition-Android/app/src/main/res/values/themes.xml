@@ -1,0 +1,93 @@
+<resources>
+    <style name="Theme.FaceAttribute" parent="Theme.Material3.Dark.NoActionBar">
+        <!-- Primary Brand Colors -->
+        <item name="colorPrimary">@color/vision_blue</item>
+        <item name="colorOnPrimary">@color/vision_text_primary</item>
+        <item name="colorPrimaryContainer">@color/vision_navy_800</item>
+        <item name="colorOnPrimaryContainer">@color/vision_blue</item>
+        
+        <!-- Secondary Colors -->
+        <item name="colorSecondary">@color/vision_cyan</item>
+        <item name="colorOnSecondary">@color/vision_text_primary</item>
+        <item name="colorSecondaryContainer">@color/vision_navy_700</item>
+        <item name="colorOnSecondaryContainer">@color/vision_text_primary</item>
+        
+        <!-- Background & Surface -->
+        <item name="android:colorBackground">@color/vision_navy_900</item>
+        <item name="colorOnBackground">@color/vision_text_primary</item>
+        <item name="colorSurface">@color/vision_navy_800</item>
+        <item name="colorOnSurface">@color/vision_text_primary</item>
+        
+        <!-- Status Bar -->
+        <item name="android:statusBarColor">@color/vision_navy_900</item>
+        <item name="android:windowLightStatusBar">false</item>
+        
+        <!-- Typography -->
+        <item name="android:fontFamily">sans-serif</item>
+    </style>
+    
+    <!-- Custom Button Style (Gradient) -->
+    <style name="ButtonStyle" parent="Widget.Material3.Button">
+        <item name="android:background">@drawable/bg_button_gradient_primary</item>
+        <item name="backgroundTint">@null</item> <!-- Required for gradient -->
+        <item name="android:textColor">@color/vision_text_primary</item>
+        <item name="cornerRadius">12dp</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:textSize">16sp</item>
+        <item name="android:minHeight">56dp</item>
+        <item name="android:elevation">4dp</item>
+    </style>
+
+    <!-- New Enterprise Button Styles -->
+    <style name="Widget.App.Button.Primary" parent="Widget.Material3.Button">
+        <item name="android:background">@drawable/bg_button_gradient_primary</item>
+        <item name="backgroundTint">@null</item>
+        <item name="android:textColor">@color/vision_text_primary</item>
+        <item name="cornerRadius">12dp</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:letterSpacing">0.05</item>
+        <item name="android:minHeight">48dp</item>
+        <item name="android:elevation">2dp</item>
+    </style>
+
+    <style name="Widget.App.Button.Secondary" parent="Widget.Material3.Button.OutlinedButton">
+        <item name="android:textColor">@color/vision_cyan</item>
+        <item name="strokeColor">@color/vision_cyan</item>
+        <item name="strokeWidth">1dp</item>
+        <item name="cornerRadius">12dp</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:letterSpacing">0.05</item>
+        <item name="android:minHeight">48dp</item>
+    </style>
+
+    <style name="Widget.App.Button.Danger" parent="Widget.Material3.Button">
+        <item name="android:backgroundTint">@color/vision_error</item>
+        <item name="android:textColor">@color/white</item>
+        <item name="cornerRadius">12dp</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:letterSpacing">0.05</item>
+        <item name="android:minHeight">48dp</item>
+    </style>
+
+    <!-- Glassmorphism Card Style -->
+    <style name="CardStyle">
+        <item name="android:background">@drawable/bg_glass_card</item>
+        <item name="android:elevation">0dp</item>
+    </style>
+
+    <style name="roundedImageView">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">20dp</item>
+    </style>
+
+    <style name="CustomBottomSheetDialogTheme" parent="Theme.Design.Light.BottomSheetDialog">
+        <item name="bottomSheetStyle">@style/CustomBottomSheetStyle</item>
+    </style>
+
+    <style name="CustomBottomSheetStyle" parent="Widget.Design.BottomSheet.Modal">
+        <item name="android:background">@android:color/transparent</item>
+    </style>
+</resources>

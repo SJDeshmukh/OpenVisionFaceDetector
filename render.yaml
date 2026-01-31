@@ -1,0 +1,60 @@
+services:
+  - type: web
+    name: face-detection-backend
+    env: python
+    autoDeploy: true
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: cd backend && gunicorn -k gevent --worker-connections 1000 -w 2 --timeout 120 app:app --bind 0.0.0.0:$PORT
+    healthCheckPath: /api/ping
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: BACKEND_URL
+        value: https://face-detection-backend.onrender.com
+      - key: FRONTEND_URL
+        value: https://face-detection-frontend.onrender.com
+      - key: REDIS_URL
+        fromService:
+          name: face-detection-redis
+          type: redis
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: face-detection-redis
+          type: redis
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          name: face-detection-redis
+          type: redis
+      - key: FCM_SERVER_KEY
+        value:
+      - key: AWS_ACCESS_KEY_ID
+        value:
+      - key: AWS_SECRET_ACCESS_KEY
+        value:
+      - key: AWS_REGION
+        value: us-east-1
+      - key: S3_BUCKET
+        value:
+  - type: web
+    name: face-detection-frontend
+    env: static
+    autoDeploy: true
+    buildCommand: cd web-dashboard && npm install && npm run build
+    staticPublishPath: web-dashboard/dist
+  - type: worker
+    name: face-detection-celery
+    env: python
+    autoDeploy: true
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: cd backend && celery -A celery_app.celery worker -l info
+    envVars:
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: face-detection-redis
+          type: redis
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          name: face-detection-redis
+          type: redis
+  - type: redis
+    name: face-detection-redis
