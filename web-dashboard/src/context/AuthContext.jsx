@@ -83,9 +83,16 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (username, password) => {
     try {
+      let deviceId = localStorage.getItem('web_device_id');
+      if (!deviceId) {
+        deviceId = `web-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+        localStorage.setItem('web_device_id', deviceId);
+      }
       const response = await axios.post(`${API_URL}/auth/login`, {
         username,
-        password
+        password,
+        device_id: deviceId,
+        platform: 'web'
       });
 
       if (response.data.status === 'success') {

@@ -46,7 +46,13 @@ allowed_origins = [
     "http://127.0.0.1:5173",
     "https://face-detection-frontend-kepx.onrender.com"
 ]
-CORS(app, resources={r"/*": {"origins": allowed_origins}}, supports_credentials=True)
+CORS(
+    app,
+    resources={r"/*": {"origins": allowed_origins}},
+    supports_credentials=True,
+    allow_headers=["Content-Type", "Authorization", "X-Vendor-ID", "x-vendor-id"],
+    expose_headers=["Authorization"]
+)
 
 # Initialize SocketIO
 socketio = SocketIO(
@@ -294,6 +300,36 @@ def _adapt_query_for_pg(sql):
     # works for our usage since queries use '?' consistently
     return sql.replace("?", "%s")
 
+def _run(cur, sql, params=None):
+    if params is None:
+        params = []
+    if DATABASE_URL and DATABASE_URL.startswith(("postgres://", "postgresql://")):
+        sql = _adapt_query_for_pg(sql)
+    cur.execute(sql, params)
+
+def ensure_archive_table():
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        # Generic archive storage to keep full row snapshots per table
+        _run(c, """
+            CREATE TABLE IF NOT EXISTS archive_objects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                vendor_id INTEGER,
+                table_name TEXT,
+                row_json TEXT,
+                archived_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                restored_at DATETIME
+            )
+        """)
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    finally:
+        conn.close()
 def add_vendor_devices_table():
     conn = get_db_connection()
     c = conn.cursor()
@@ -356,6 +392,9 @@ def add_missing_columns():
         if 'max_mobile_devices' not in sub_cols:
             print("MIGRATION: Adding max_mobile_devices to subscriptions...")
             c.execute("ALTER TABLE subscriptions ADD COLUMN max_mobile_devices INTEGER DEFAULT 1")
+        if 'max_web_sessions' not in sub_cols:
+            print("MIGRATION: Adding max_web_sessions to subscriptions...")
+            c.execute("ALTER TABLE subscriptions ADD COLUMN max_web_sessions INTEGER DEFAULT 1")
             
         if 'max_employees' not in sub_cols:
             print("MIGRATION: Adding max_employees to subscriptions...")
@@ -1879,13 +1918,39 @@ def update_vendor_subscription(vendor_id):
         # Check if subscription exists
         c.execute("SELECT rowid FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
         if not c.fetchone():
-            return jsonify({"error": "Subscription not found"}), 404
+            import json
+            start_date = data.get("start_date") or date.today().isoformat()
+            end_date = data.get("end_date") or (date.today() + timedelta(days=14)).isoformat()
+            max_users = data.get("max_users") or 5
+            max_employees = data.get("max_employees") or 50
+            max_mobile_devices = data.get("max_mobile_devices")
+            if max_mobile_devices is None and 'max_users' in data:
+                max_mobile_devices = data['max_users']
+            if max_mobile_devices is None:
+                max_mobile_devices = max_users
+            max_web_sessions = data.get("max_web_sessions") or 1
+            cost_per_user = data.get("cost_per_user") or 0
+            cost_per_employee = data.get("cost_per_employee") or 0
+            features_val = data.get("features")
+            if features_val is None:
+                c.execute("SELECT frontend_bundle_id FROM vendors WHERE id = ?", (vendor_id,))
+                r = c.fetchone()
+                bundle = r[0] if r else "default_attendance"
+                features_val = BUNDLE_FEATURES.get(bundle, [])
+            if isinstance(features_val, list):
+                features_val = json.dumps(features_val)
+            setup_fee = data.get("setup_fee") or 0
+            plan_type = data.get("plan_type") or "custom"
+            c.execute("""INSERT INTO subscriptions (vendor_id, plan_type, start_date, end_date, max_users, max_employees, max_mobile_devices, max_web_sessions, cost_per_user, cost_per_employee, setup_fee, features)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                      (vendor_id, plan_type, start_date, end_date, max_users, max_employees, max_mobile_devices, max_web_sessions, cost_per_user, cost_per_employee, setup_fee, features_val))
+            conn.commit()
             
         # Build Update Query
         query = "UPDATE subscriptions SET "
         params = []
         
-        fields = ['start_date', 'end_date', 'plan_type', 'max_users', 'max_employees', 'max_mobile_devices', 'cost_per_user', 'cost_per_employee', 'setup_fee', 'setup_fee_paid']
+        fields = ['start_date', 'end_date', 'plan_type', 'max_users', 'max_employees', 'max_mobile_devices', 'max_web_sessions', 'cost_per_user', 'cost_per_employee', 'setup_fee', 'setup_fee_paid']
         
         # Handle aliases or logic
         if 'features' in data:
@@ -2100,28 +2165,69 @@ def update_vendor_details(vendor_id):
 @greeting_bp.route("/admin/vendors/<int:vendor_id>", methods=["DELETE"])
 @super_admin_required
 def delete_vendor(vendor_id):
+    ensure_archive_table()
     conn = get_db_connection()
     c = conn.cursor()
-    
     try:
-        # Check if vendor exists
-        c.execute("SELECT id FROM vendors WHERE id = ?", (vendor_id,))
-        if not c.fetchone():
+        # Check vendor
+        _run(c, "SELECT * FROM vendors WHERE id = ?", (vendor_id,))
+        vendor_row = c.fetchone()
+        if not vendor_row:
             return jsonify({"error": "Vendor not found"}), 404
-            
-        # Delete related data (Cascade manually if not set in DB)
-        c.execute("DELETE FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
-        c.execute("DELETE FROM invoices WHERE vendor_id = ?", (vendor_id,))
-        c.execute("DELETE FROM system_users WHERE vendor_id = ?", (vendor_id,))
-        c.execute("DELETE FROM companies WHERE vendor_id = ?", (vendor_id,))
-        c.execute("DELETE FROM faces WHERE vendor_id = ?", (vendor_id,))
-        c.execute("DELETE FROM attendance WHERE vendor_id = ?", (vendor_id,))
-        # Delete Vendor
-        c.execute("DELETE FROM vendors WHERE id = ?", (vendor_id,))
-        
+        # Helper to archive rows from table by vendor_id
+        def archive_table(table, key="vendor_id"):
+            _run(c, f"SELECT * FROM {table} WHERE {key} = ?", (vendor_id,))
+            cols = None
+            rows = []
+            try:
+                if hasattr(c, "description") and c.description:
+                    cols = [d[0] for d in c.description]
+                fetched = c.fetchall()
+                for r in fetched:
+                    if isinstance(r, dict):
+                        rows.append(r)
+                    else:
+                        rows.append({cols[i]: r[i] for i in range(len(cols))})
+            except Exception:
+                return
+            for row in rows:
+                _run(c, "INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES (?, ?, ?)", (vendor_id, table, json.dumps(row)))
+        # Archive each related table
+        archive_table("subscriptions")
+        archive_table("invoices")
+        archive_table("system_users")
+        archive_table("companies")
+        archive_table("faces")
+        archive_table("attendance")
+        archive_table("active_sessions")
+        # Archive vendor itself
+        # Convert vendor_row to dict
+        vdict = None
+        if isinstance(vendor_row, dict):
+            vdict = vendor_row
+        else:
+            cols = [d[0] for d in c.description] if hasattr(c, "description") and c.description else []
+            try:
+                vdict = {cols[i]: vendor_row[i] for i in range(len(cols))}
+            except Exception:
+                vdict = {"id": vendor_id}
+        _run(c, "INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES (?, ?, ?)", (vendor_id, "vendors", json.dumps(vdict)))
+        # Hard delete live rows
+        _run(c, "DELETE FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+        _run(c, "DELETE FROM invoices WHERE vendor_id = ?", (vendor_id,))
+        _run(c, "DELETE FROM system_users WHERE vendor_id = ?", (vendor_id,))
+        _run(c, "DELETE FROM companies WHERE vendor_id = ?", (vendor_id,))
+        _run(c, "DELETE FROM faces WHERE vendor_id = ?", (vendor_id,))
+        _run(c, "DELETE FROM attendance WHERE vendor_id = ?", (vendor_id,))
+        _run(c, "DELETE FROM active_sessions WHERE vendor_id = ?", (vendor_id,))
+        _run(c, "DELETE FROM vendors WHERE id = ?", (vendor_id,))
         conn.commit()
-        return jsonify({"success": True, "message": "Vendor and related data deleted"})
+        return jsonify({"success": True, "message": "Vendor archived and deleted from live data"})
     except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
@@ -2143,6 +2249,44 @@ def get_vendor_invoices(vendor_id):
     invoices = [dict(row) for row in c.fetchall()]
     conn.close()
     return jsonify({"invoices": invoices})
+
+@greeting_bp.route("/admin/archive/vendors", methods=["GET"])
+@super_admin_required
+def list_archived_vendors():
+    ensure_archive_table()
+    company = request.args.get("company_name")
+    email = request.args.get("email")
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        _run(c, "SELECT vendor_id, row_json, archived_at, restored_at FROM archive_objects WHERE table_name = 'vendors'")
+        rows = c.fetchall()
+        results = []
+        for r in rows:
+            # r may be tuple or dict depending on DB driver
+            row_json = None
+            vid = None
+            if isinstance(r, dict):
+                vid = r.get("vendor_id")
+                row_json = r.get("row_json")
+            else:
+                # vendor_id at index 0, row_json at index 1 for our select order
+                vid = r[0]
+                row_json = r[1]
+            try:
+                data = json.loads(row_json)
+            except Exception:
+                continue
+            if company and data.get("company_name") != company:
+                continue
+            if email and data.get("email") != email:
+                continue
+            results.append({"vendor_id": vid, "data": data})
+        return jsonify({"archived_vendors": results})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
 @greeting_bp.route("/admin/vendors/<int:vendor_id>/invoices/generate", methods=["POST"])
 @super_admin_required
@@ -2247,6 +2391,96 @@ def update_invoice_status(invoice_id):
     conn.close()
     return jsonify({"success": True})
 
+@greeting_bp.route("/admin/vendors/restore", methods=["POST"])
+@super_admin_required
+def restore_vendor():
+    ensure_archive_table()
+    data = request.json or {}
+    company = data.get("company_name")
+    email = data.get("email")
+    if not company and not email:
+        return jsonify({"error": "Provide company_name or email"}), 400
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        _run(c, "SELECT vendor_id, row_json FROM archive_objects WHERE table_name='vendors'")
+        rows = c.fetchall()
+        target_vendor_id = None
+        vendor_snapshot = None
+        for r in rows:
+            vid = r[0] if not isinstance(r, dict) else r.get("vendor_id")
+            row_json = r[1] if not isinstance(r, dict) else r.get("row_json")
+            try:
+                vdata = json.loads(row_json)
+            except Exception:
+                continue
+            if company and vdata.get("company_name") != company:
+                continue
+            if email and vdata.get("email") != email:
+                continue
+            target_vendor_id = vid
+            vendor_snapshot = vdata
+            break
+        if not target_vendor_id:
+            return jsonify({"error": "No archived vendor match found"}), 404
+        # Create vendor
+        _run(c, """INSERT INTO vendors (company_name, contact_person, phone, email, frontend_bundle_id, backend_service_id) 
+                   VALUES (?, ?, ?, ?, ?, ?)""", (
+            vendor_snapshot.get("company_name"),
+            vendor_snapshot.get("contact_person"),
+            vendor_snapshot.get("phone"),
+            vendor_snapshot.get("email"),
+            vendor_snapshot.get("frontend_bundle_id") or "default_attendance",
+            vendor_snapshot.get("backend_service_id") or "default_api"
+        ))
+        new_vendor_id = None
+        try:
+            new_vendor_id = c.lastrowid
+        except Exception:
+            _run(c, "SELECT id FROM vendors WHERE email = ?", (vendor_snapshot.get("email"),))
+            r2 = c.fetchone()
+            new_vendor_id = r2[0] if r2 else None
+        if not new_vendor_id:
+            conn.rollback()
+            return jsonify({"error": "Failed to create vendor"}), 500
+        # Restore subscriptions
+        _run(c, "SELECT row_json FROM archive_objects WHERE table_name='subscriptions' AND vendor_id = ?", (target_vendor_id,))
+        for (row_json,) in c.fetchall():
+            obj = json.loads(row_json)
+            _run(c, """INSERT INTO subscriptions (vendor_id, plan_type, start_date, end_date, max_users, max_employees, max_mobile_devices, cost_per_user, cost_per_employee, setup_fee, features)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (
+                new_vendor_id, obj.get("plan_type") or "custom", obj.get("start_date"), obj.get("end_date"),
+                obj.get("max_users"), obj.get("max_employees"), obj.get("max_mobile_devices"),
+                obj.get("cost_per_user"), obj.get("cost_per_employee"), obj.get("setup_fee") or 0, obj.get("features")
+            ))
+        # Restore users
+        _run(c, "SELECT row_json FROM archive_objects WHERE table_name='system_users' AND vendor_id = ?", (target_vendor_id,))
+        for (row_json,) in c.fetchall():
+            u = json.loads(row_json)
+            _run(c, """INSERT INTO system_users (username, password, role, vendor_id) VALUES (?, ?, ?, ?)""",
+                 (u.get("username"), u.get("password"), u.get("role"), new_vendor_id))
+        # Restore companies
+        _run(c, "SELECT row_json FROM archive_objects WHERE table_name='companies' AND vendor_id = ?", (target_vendor_id,))
+        for (row_json,) in c.fetchall():
+            comp = json.loads(row_json)
+            _run(c, """INSERT INTO companies (name, shifts, draft_timetable, live_timetable, vendor_id) VALUES (?, ?, ?, ?, ?)""",
+                 (comp.get("name"), comp.get("shifts") or "[]", comp.get("draft_timetable") or "[]", comp.get("live_timetable") or "[]", new_vendor_id))
+        # Restore faces
+        _run(c, "SELECT row_json FROM archive_objects WHERE table_name='faces' AND vendor_id = ?", (target_vendor_id,))
+        for (row_json,) in c.fetchall():
+            f = json.loads(row_json)
+            _run(c, """INSERT INTO faces (name, templates, face_image, phone, department, designation, shift, vendor_id, custom_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 (f.get("name"), f.get("templates"), f.get("face_image"), f.get("phone"), f.get("department"), f.get("designation"), f.get("shift"), new_vendor_id, f.get("custom_data")))
+        conn.commit()
+        return jsonify({"success": True, "new_vendor_id": new_vendor_id})
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
 # --- Vendor Portal Endpoints ---
 @greeting_bp.route("/vendor/subscription", methods=["GET"])
@@ -3433,6 +3667,27 @@ def login():
             if row:
                 company_id = row[0]
             
+            # --- Web Session Limits ---
+            if platform == 'web' and user['role'] == 'vendor_admin':
+                try:
+                    c.execute("SELECT max_web_sessions FROM subscriptions WHERE vendor_id = ?", (user_vendor_id,))
+                    mw = c.fetchone()
+                    max_web = mw[0] if mw else 1
+                    c.execute("SELECT COUNT(*) FROM active_sessions WHERE username = ? AND platform = 'web'", (username,))
+                    existing_count = c.fetchone()[0]
+                    # If device_id provided and exists already, allow replacing; otherwise enforce limit
+                    if existing_count >= max_web:
+                        if device_id:
+                            c.execute("SELECT COUNT(*) FROM active_sessions WHERE username = ? AND platform = 'web' AND device_id = ?", (username, device_id))
+                            same = c.fetchone()[0]
+                            if same == 0:
+                                conn.close()
+                                return jsonify({"error": f"Web session limit reached ({max_web})."}), 403
+                        else:
+                            conn.close()
+                            return jsonify({"error": f"Web session limit reached ({max_web})."}), 403
+                except Exception:
+                    pass
             # --- Record Session ---
             # Remove old session for this specific device/user combo to prevent duplicates
             c.execute("DELETE FROM active_sessions WHERE username = ? AND device_id = ?", (username, device_id))
@@ -3877,12 +4132,12 @@ def upload_face():
     data = request.json
     person_id = data.get("person_id")
     name = data.get("name")
-    templates = data.get("templates", "") # Base64 string, optional
-    face_image = data.get("face_image") # Base64 or URL
-    phone = data.get("phone", "")
-    department = data.get("department", "")
-    designation = data.get("designation", "")
-    shift = data.get("shift", "")
+    templates = data.get("templates")
+    face_image = data.get("face_image")
+    phone = data.get("phone")
+    department = data.get("department")
+    designation = data.get("designation")
+    shift = data.get("shift")
     
     # Extract Custom Data (Dynamic Fields)
     standard_fields = {'person_id', 'name', 'templates', 'face_image', 'phone', 'department', 'designation', 'shift', 'vendor_id'}
@@ -3896,6 +4151,43 @@ def upload_face():
 
     if not name:
         return jsonify({"error": "Missing name"}), 400
+
+    try:
+        c = get_db_connection().cursor()
+    except Exception:
+        pass
+
+    try:
+        conn_check = get_db_connection()
+        cc = conn_check.cursor()
+        vertical = None
+        if vendor_id:
+            cc.execute("SELECT vertical FROM vendors WHERE id = ?", (vendor_id,))
+            r = cc.fetchone()
+            vertical = r[0] if r else None
+        student_number = None
+        try:
+            student_number = str(custom_dict.get('student_number') or custom_dict.get('roll_number') or custom_dict.get('admission_number') or '').strip()
+        except Exception:
+            student_number = None
+        if vertical == 'school' and student_number:
+            if person_id:
+                cc.execute("SELECT id, custom_data FROM faces WHERE vendor_id = ? AND id != ?", (vendor_id, person_id))
+            else:
+                cc.execute("SELECT id, custom_data FROM faces WHERE vendor_id = ?", (vendor_id,))
+            rows = cc.fetchall()
+            for r in rows:
+                try:
+                    cd = json.loads(r[1]) if r[1] else {}
+                    sn = str(cd.get('student_number') or cd.get('roll_number') or cd.get('admission_number') or '').strip()
+                    if sn and sn == student_number:
+                        conn_check.close()
+                        return jsonify({"error": "Duplicate student_number for this vendor"}), 409
+                except Exception:
+                    continue
+        conn_check.close()
+    except Exception:
+        pass
 
     # 1. Vendor Status Check
     if vendor_id:
@@ -3931,14 +4223,60 @@ def upload_face():
             except Exception:
                 pass
         if person_id:
-            # Update Existing
-            c.execute("UPDATE faces SET name=?, templates=?, face_image=?, phone=?, department=?, designation=?, shift=?, vendor_id=?, custom_data=? WHERE id=?",
-                      (name, templates, face_image, phone, department, designation, shift, vendor_id, custom_data, person_id))
-            new_id = person_id
+            c.execute("SELECT name, templates, face_image, phone, department, designation, shift, vendor_id, custom_data FROM faces WHERE id=?", (person_id,))
+            row = c.fetchone()
+            if not row:
+                return jsonify({"error": "Person not found"}), 404
+            existing = {
+                "name": row[0],
+                "templates": row[1],
+                "face_image": row[2],
+                "phone": row[3],
+                "department": row[4],
+                "designation": row[5],
+                "shift": row[6],
+                "vendor_id": row[7],
+                "custom_data": row[8]
+            }
+            if custom_data is None and existing["custom_data"]:
+                try:
+                    old = json.loads(existing["custom_data"])
+                    for k, v in custom_dict.items():
+                        old[k] = v
+                    custom_data = json.dumps(old)
+                except Exception:
+                    custom_data = existing["custom_data"]
+            fields = []
+            params = []
+            if name is not None:
+                fields.append("name=?"); params.append(name)
+            if templates is not None and templates != "":
+                fields.append("templates=?"); params.append(templates)
+            if face_image is not None and face_image != "":
+                fields.append("face_image=?"); params.append(face_image)
+            if phone is not None and phone != "":
+                fields.append("phone=?"); params.append(phone)
+            if department is not None and department != "":
+                fields.append("department=?"); params.append(department)
+            if designation is not None and designation != "":
+                fields.append("designation=?"); params.append(designation)
+            if shift is not None and shift != "":
+                fields.append("shift=?"); params.append(shift)
+            if vendor_id is not None:
+                fields.append("vendor_id=?"); params.append(vendor_id)
+            if custom_data is not None:
+                fields.append("custom_data=?"); params.append(custom_data)
+            if not fields:
+                new_id = person_id
+            else:
+                q = "UPDATE faces SET " + ", ".join(fields) + " WHERE id=?"
+                params.append(person_id)
+                c.execute(q, params)
+                new_id = person_id
         else:
             # Insert New
             c.execute("INSERT INTO faces (name, templates, face_image, phone, department, designation, shift, vendor_id, custom_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                      (name, templates, face_image, phone, department, designation, shift, vendor_id, custom_data))
+                      (name, templates or "", face_image, phone or "", department or "", designation or "", shift or "", vendor_id, custom_data))
             new_id = c.lastrowid
 
         conn.commit()
@@ -4043,6 +4381,40 @@ def delete_face(name):
     finally:
         conn.close()
 
+@greeting_bp.route("/sync/delete/id/<int:person_id>", methods=["DELETE"])
+@require_feature("mobile_app")
+def delete_face_by_id(person_id):
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        # Get name for message and scoping
+        if vendor_id:
+            c.execute("SELECT name FROM faces WHERE id = ? AND vendor_id = ?", (person_id, vendor_id))
+        else:
+            c.execute("SELECT name, vendor_id FROM faces WHERE id = ?", (person_id,))
+        row = c.fetchone()
+        if not row:
+            return jsonify({"error": "User not found"}), 404
+        name = row[0]
+        # Delete
+        if vendor_id:
+            c.execute("DELETE FROM faces WHERE id = ? AND vendor_id = ?", (person_id, vendor_id))
+        else:
+            c.execute("DELETE FROM faces WHERE id = ?", (person_id,))
+        conn.commit()
+        if c.rowcount > 0:
+            if vendor_id:
+                socketio.emit('persons_updated', {'vendor_id': vendor_id}, room=f"vendor_{vendor_id}")
+                socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
+            return jsonify({"status": "success", "message": f"Face for {name} deleted.", "person_id": person_id})
+        else:
+            return jsonify({"error": "User not found"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
 @greeting_bp.route("/persons/wages", methods=["PUT"])
 @require_feature("payroll")
@@ -4911,7 +5283,7 @@ def get_attendance():
     status = request.args.get('status')
 
     query = """
-        SELECT a.*, f.department, f.designation, f.shift
+        SELECT a.*, f.department, f.designation, f.shift, f.custom_data AS face_custom_data
         FROM attendance a
         LEFT JOIN faces f ON (a.person_id IS NOT NULL AND a.person_id = f.id) OR (a.person_id IS NULL AND a.name = f.name)
         WHERE 1=1
@@ -4975,12 +5347,35 @@ def get_attendance():
     conn.close()
 
     attendance = []
+    # Dynamic filters from registration fields: any query params not in the standard list
+    standard_keys = {'start_date','end_date','department','designation','name','status','limit','offset'}
+    extra_filters = {k: v for k, v in request.args.items() if k not in standard_keys and v is not None and str(v).strip() != ''}
     for row in rows:
         # Check if captured_image column exists in the row (for backward compatibility)
         img = None
         if 'captured_image' in row.keys():
             img = row['captured_image']
-            
+        # Decode face custom_data for dynamic filtering
+        face_custom = {}
+        try:
+            if 'face_custom_data' in row.keys() and row['face_custom_data']:
+                face_custom = json.loads(row['face_custom_data'])
+        except Exception:
+            face_custom = {}
+        # Apply extra filters: must match all provided keys
+        match = True
+        for k, v in extra_filters.items():
+            rv = None
+            # Try from custom_data; fallback to row fields if present
+            if k in face_custom:
+                rv = str(face_custom.get(k))
+            elif k in row.keys():
+                rv = str(row[k])
+            if rv is None or str(rv).strip() != str(v).strip():
+                match = False
+                break
+        if not match:
+            continue
         attendance.append({
             "id": row["id"],
             "person_id": row["person_id"] if "person_id" in row.keys() else None,
@@ -4992,7 +5387,8 @@ def get_attendance():
             "captured_image": img,
             "department": row["department"] if "department" in row.keys() else "",
             "designation": row["designation"] if "designation" in row.keys() else "",
-            "shift": row["shift"] if "shift" in row.keys() else ""
+            "shift": row["shift"] if "shift" in row.keys() else "",
+            "custom_data": face_custom
         })
     
     return jsonify({"attendance": attendance})
@@ -5752,4 +6148,4 @@ if __name__ == "__main__":
     add_missing_columns()
     add_vendor_devices_table()
     migrate_faces_pk()
-    app.run(host="0.0.0.0", port=5001, debug=True)
+    socketio.run(app, host="0.0.0.0", port=5001, debug=True)

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Plus, Check, X, Shield, User, Lock, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight, Search, Filter, ArrowLeft, ArrowRight, Eye, Settings } from 'lucide-react';
+import { Plus, Check, X, Shield, User, Lock, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight, Search, Filter, ArrowLeft, ArrowRight, Eye, Settings, Trash2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { API_URL, FRONTEND_BUNDLES, BASE_URL } from '../config';
 import { useSocket } from '../context/SocketContext';
@@ -19,6 +19,7 @@ const SuperAdminDashboard = () => {
     start_date: '', end_date: '', 
     cost_per_user: '', cost_per_employee: '', // Explicit costs
     max_users: '', max_employees: '',
+    max_web_sessions: '',
     admin_username: '', admin_password: '',
     user_username: '', user_password: '',
     frontend_bundle_id: 'default_attendance',
@@ -163,6 +164,25 @@ const SuperAdminDashboard = () => {
     }
 
     try {
+      // Offer restore path if archive has a match
+      if (!editingVendor) {
+        const check = await axios.get(`${API_URL}/admin/archive/vendors`, {
+          params: { company_name: newVendor.company_name, email: newVendor.email },
+          headers: { Authorization: `Bearer ${user?.token}` }
+        });
+        if ((check.data.archived_vendors || []).length > 0) {
+          if (window.confirm("Archived data found for this vendor. Do you want to restore instead of creating fresh?")) {
+            const restore = await axios.post(`${API_URL}/admin/vendors/restore`, {
+              company_name: newVendor.company_name,
+              email: newVendor.email
+            }, { headers: { Authorization: `Bearer ${user?.token}` } });
+            alert(`Vendor Restored. New Vendor ID: ${restore.data.new_vendor_id}`);
+            fetchVendors();
+            setShowModal(false);
+            return;
+          }
+        }
+      }
       if (editingVendor) {
         // Update Mode
         await axios.put(`${API_URL}/admin/vendors/${editingVendor.id}`, {
@@ -188,6 +208,7 @@ const SuperAdminDashboard = () => {
             cost_per_employee: newVendor.cost_per_employee,
             max_users: newVendor.max_users,
             max_employees: newVendor.max_employees,
+            max_web_sessions: newVendor.max_web_sessions || 1,
             plan_type: 'custom',
             features: newVendor.features
         }, {
@@ -233,6 +254,7 @@ const SuperAdminDashboard = () => {
         start_date: '', end_date: '', 
         cost_per_user: '', cost_per_employee: '',
         max_users: '', max_employees: '',
+        max_web_sessions: '',
         admin_username: '', admin_password: '',
         user_username: '', user_password: '',
         features: [],
@@ -327,6 +349,17 @@ const SuperAdminDashboard = () => {
     }
   };
 
+  const handleDeleteVendor = async (vendor) => {
+    if (!window.confirm(`Delete vendor "${vendor.company_name}" and all related data? This cannot be undone.`)) return;
+    try {
+      await axios.delete(`${API_URL}/admin/vendors/${vendor.id}`, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      setVendors(prev => prev.filter(v => v.id !== vendor.id));
+    } catch (error) {
+      alert("Error deleting vendor: " + (error.response?.data?.error || error.message));
+    }
+  };
   const handleViewInvoices = async (vendor) => {
     try {
       const response = await axios.get(`${API_URL}/admin/vendors/${vendor.id}/invoices`, {
@@ -373,15 +406,20 @@ const SuperAdminDashboard = () => {
     return diffDays;
   };
 
+  const resolveBusinessView = (vendor) => {
+    const features = Array.isArray(vendor?.features) ? vendor.features : [];
+    if (vendor?.vertical === 'school') return 'school';
+    if (features.includes('report_payroll') || features.includes('payroll')) return 'payroll';
+    return 'attendance';
+  };
+
   // --- New Helper Functions for Vendor Details Tab ---
   const fetchVendorEmployees = async (vendorId) => {
     setLoading(true);
     try {
       const response = await axios.get(`${API_URL}/persons`, {
-        headers: { 
-            Authorization: `Bearer ${user?.token}`,
-            'X-Vendor-ID': vendorId
-        }
+        params: { vendor_id: vendorId },
+        headers: { Authorization: `Bearer ${user?.token}` }
       });
       setVendorEmployees(response.data.persons);
       setDetailViewMode('vendor');
@@ -395,24 +433,55 @@ const SuperAdminDashboard = () => {
   const fetchEmployeeReport = async (vendorId, employee) => {
     setLoading(true);
     try {
+      const view = resolveBusinessView(selectedVendorForDetail);
+      if (view !== 'payroll') {
+        const att = await axios.get(`${API_URL}/attendance`, {
+          params: {
+            start_date: reportDateRange.start,
+            end_date: reportDateRange.end,
+            name: employee.name,
+            vendor_id: vendorId
+          },
+          headers: { Authorization: `Bearer ${user?.token}` }
+        });
+        setEmployeeReport({ name: employee.name, attendance: att.data.attendance || [] });
+        setSelectedEmployeeForDetail(employee);
+        setDetailViewMode('employee');
+        return;
+      }
       const response = await axios.get(`${API_URL}/reports/payroll`, {
         params: {
             start_date: reportDateRange.start,
-            end_date: reportDateRange.end
+            end_date: reportDateRange.end,
+            vendor_id: vendorId
         },
-        headers: { 
-            Authorization: `Bearer ${user?.token}`,
-            'X-Vendor-ID': vendorId
-        }
+        headers: { Authorization: `Bearer ${user?.token}` }
       });
-      
       const report = response.data.payroll.find(p => p.name === employee.name);
       setEmployeeReport(report);
       setSelectedEmployeeForDetail(employee);
       setDetailViewMode('employee');
     } catch (error) {
-       console.error(error);
-       alert("Error fetching report");
+       if (error.response && error.response.status === 403) {
+         try {
+           const att = await axios.get(`${API_URL}/attendance`, {
+             params: {
+               start_date: reportDateRange.start,
+               end_date: reportDateRange.end,
+               name: employee.name,
+               vendor_id: vendorId
+             },
+             headers: { Authorization: `Bearer ${user?.token}` }
+           });
+           setEmployeeReport({ name: employee.name, attendance: att.data.attendance || [] });
+           setSelectedEmployeeForDetail(employee);
+           setDetailViewMode('employee');
+         } catch (e2) {
+           alert("Error fetching report");
+         }
+       } else {
+         alert("Error fetching report");
+       }
     } finally {
        setLoading(false);
     }
@@ -672,6 +741,13 @@ const SuperAdminDashboard = () => {
                         <Lock size={16} />
                       </button>
                     )}
+                    <button 
+                      onClick={() => handleDeleteVendor(vendor)}
+                      className="p-1.5 rounded hover:bg-slate-200 text-red-600"
+                      title="Delete Vendor"
+                    >
+                      <Trash2 size={16} />
+                    </button>
                   </div>
                 </td>
               </tr>
@@ -785,8 +861,15 @@ const SuperAdminDashboard = () => {
                         <p className="text-slate-500 mb-6 font-medium">{selectedEmployeeForDetail.designation}</p>
                         
                         <div className="space-y-4">
-                            {selectedVendorForDetail.registration_config && selectedVendorForDetail.registration_config.length > 0 ? (
-                                selectedVendorForDetail.registration_config
+                            {(() => {
+                                let reg = [];
+                                try {
+                                    reg = Array.isArray(selectedVendorForDetail.registration_config)
+                                      ? selectedVendorForDetail.registration_config
+                                      : JSON.parse(selectedVendorForDetail.registration_config || '[]');
+                                } catch(e) { reg = []; }
+                                return reg && reg.length > 0 ? (
+                                    reg
                                     .filter(field => field.enabled !== false)
                                     .map((field, index) => {
                                          const val = (() => {
@@ -809,7 +892,7 @@ const SuperAdminDashboard = () => {
                                             </div>
                                          );
                                     })
-                            ) : (
+                                ) : (
                                 <>
                                     <div className="flex justify-between items-center border-b border-slate-100 pb-3">
                                         <span className="text-slate-500 text-sm">Department</span>
@@ -824,7 +907,8 @@ const SuperAdminDashboard = () => {
                                         <span className="font-semibold text-slate-700">₹{selectedEmployeeForDetail.daily_wage || 0}</span>
                                     </div>
                                 </>
-                            )}
+                                );
+                            })()}
                             <div className="flex justify-between items-center pb-1">
                                 <span className="text-slate-500 text-sm">Vendor</span>
                                 <span className="font-semibold text-slate-700">{selectedVendorForDetail.company_name}</span>
@@ -873,27 +957,54 @@ const SuperAdminDashboard = () => {
                         
                         {employeeReport ? (
                             <div className="grid grid-cols-2 gap-4">
-                                <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                                    <div className="text-slate-500 text-sm mb-1">Total Hours Worked</div>
-                                    <div className="text-3xl font-bold text-indigo-600">{employeeReport.total_hours_str}</div>
-                                    <div className="text-xs text-slate-400 mt-2">Recorded duration</div>
-                                </div>
-                                <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                                    <div className="text-slate-500 text-sm mb-1">Days Present</div>
-                                    <div className="text-3xl font-bold text-green-600">{employeeReport.days_present}</div>
-                                    <div className="text-xs text-slate-400 mt-2">Days with activity</div>
-                                </div>
-                                <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                                    <div className="text-slate-500 text-sm mb-1">Late Marks</div>
-                                    <div className="text-3xl font-bold text-orange-500">{employeeReport.late_marks_count}</div>
-                                    <div className="text-xs text-slate-400 mt-2">Check-ins after grace period</div>
-                                </div>
-                                <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                                    <div className="text-slate-500 text-sm mb-1">Estimated Payout</div>
-                                    <div className="text-3xl font-bold text-slate-800">₹{employeeReport.final_payout}</div>
-                                    <div className="text-xs text-slate-400 mt-2">Based on daily wage</div>
-                                </div>
-                                
+                                {selectedVendorForDetail?.vertical === 'school' ? (
+                                    <>
+                                        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                                            <div className="text-slate-500 text-sm mb-1">Days Present</div>
+                                            <div className="text-3xl font-bold text-green-600">
+                                                {(() => {
+                                                    const att = employeeReport.attendance || [];
+                                                    const days = new Set(att.map(l => new Date((l.timestamp || '').replace(' ', 'T')).toDateString()));
+                                                    return days.size;
+                                                })()}
+                                            </div>
+                                            <div className="text-xs text-slate-400 mt-2">Days with activity</div>
+                                        </div>
+                                        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                                            <div className="text-slate-500 text-sm mb-1">Late Marks</div>
+                                            <div className="text-3xl font-bold text-orange-500">
+                                                {(() => {
+                                                    const att = employeeReport.attendance || [];
+                                                    return att.filter(l => l.is_late === 1 || l.is_late === true || l.is_late === '1').length;
+                                                })()}
+                                            </div>
+                                            <div className="text-xs text-slate-400 mt-2">Check-ins after grace period</div>
+                                        </div>
+                                    </>
+                                ) : (
+                                    <>
+                                        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                                            <div className="text-slate-500 text-sm mb-1">Total Hours Worked</div>
+                                            <div className="text-3xl font-bold text-indigo-600">{employeeReport.total_hours_str}</div>
+                                            <div className="text-xs text-slate-400 mt-2">Recorded duration</div>
+                                        </div>
+                                        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                                            <div className="text-slate-500 text-sm mb-1">Days Present</div>
+                                            <div className="text-3xl font-bold text-green-600">{employeeReport.days_present}</div>
+                                            <div className="text-xs text-slate-400 mt-2">Days with activity</div>
+                                        </div>
+                                        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                                            <div className="text-slate-500 text-sm mb-1">Late Marks</div>
+                                            <div className="text-3xl font-bold text-orange-500">{employeeReport.late_marks_count}</div>
+                                            <div className="text-xs text-slate-400 mt-2">Check-ins after grace period</div>
+                                        </div>
+                                        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                                            <div className="text-slate-500 text-sm mb-1">Estimated Payout</div>
+                                            <div className="text-3xl font-bold text-slate-800">₹{employeeReport.final_payout}</div>
+                                            <div className="text-xs text-slate-400 mt-2">Based on daily wage</div>
+                                        </div>
+                                    </>
+                                )}
                                 <div className="col-span-2 bg-blue-50 p-4 rounded-xl border border-blue-100 mt-2">
                                     <div className="flex gap-2 items-start">
                                         <div className="p-1 bg-blue-100 rounded text-blue-600 mt-0.5">
@@ -1225,6 +1336,16 @@ const SuperAdminDashboard = () => {
                       value={newVendor.max_employees}
                       onChange={e => setNewVendor({...newVendor, max_employees: e.target.value})}
                       placeholder="Default: 50"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Max Admin Web Sessions</label>
+                    <input 
+                      type="number" 
+                      className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none bg-white"
+                      value={newVendor.max_web_sessions}
+                      onChange={e => setNewVendor({...newVendor, max_web_sessions: e.target.value})}
+                      placeholder="Default: 1"
                     />
                   </div>
                 </div>

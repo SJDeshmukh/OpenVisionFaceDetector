@@ -1,4 +1,4 @@
-# OpenVision Attendance Platform 🚀
+# OpenVisionX Attendance Platform 🚀
 
 Modern face-based attendance for two verticals:
 - 🎓 School/College (students + parents)
@@ -59,6 +59,40 @@ Socket rooms:
 - vendor_{id} → live attendance for vendor dashboards
 - parent_{id} → parent-linked streams (optional)
 - student_{student_number} → lightweight events for parent-mode
+
+## 🧭 Room Usage Diagram (Socket.IO)
+
+```mermaid
+sequenceDiagram
+  participant B as Backend (Flask + Socket.IO)
+  participant S as Super Admin (Web)
+  participant V as Vendor Dashboard (Web)
+  participant K as Kiosk/User (Android)
+  participant P as Parent App (Android)
+
+  S->>B: join_super_admin
+  B-->>S: ack room=super_admin
+
+  V->>B: join_vendor {vendor_id}
+  B-->>V: ack room=vendor_{id}
+
+  P->>B: join_parent {parent_id}
+  B-->>P: ack room=parent_{id}
+
+  P->>B: join_student_number {student_number}
+  B-->>P: ack room=student_{number}
+
+  Note over K,B: Attendance captured via /api/person-event
+  B-->>V: vendor_attendance → room vendor_{id}
+  B-->>P: parent_attendance → room parent_{id}
+  B-->>P: student_attendance → room student_{number}
+  B-->>S: vendor_updated / persons_updated / active_devices_update → super_admin
+```
+
+References:
+- Join endpoints: [APIs (selected)](#%EF%B8%8F-apis-selected) → join_super_admin, join_vendor, join_parent, join_student_number
+- Backend join logic: [app.py: join room (admin/vendor)](file:///Users/hashteelab/Documents/trae_projects/face_detection/backend/app.py#L134-L165), [app.py: join room (parent/student)](file:///Users/hashteelab/Documents/trae_projects/face_detection/backend/app.py#L191-L243)
+- Emissions to rooms: persons_updated/vendor_updated/attendance_* in [app.py](file:///Users/hashteelab/Documents/trae_projects/face_detection/backend/app.py#L3947-L3949), [app.py](file:///Users/hashteelab/Documents/trae_projects/face_detection/backend/app.py#L4791-L4817), [tasks.py](file:///Users/hashteelab/Documents/trae_projects/face_detection/backend/tasks.py#L48)
 
 ---
 
@@ -240,6 +274,20 @@ Notes:
 - Offline queue for attendance when API fails
 - Real-time socket streaming (throttled ~1 FPS, 320px JPEG)
 - Tick/wave overlays and tones for status feedback
+
+### Run Mobile on Local Network
+- Ensure phone/device and laptop are on the same Wi‑Fi.
+- Start backend locally:
+  - `cd backend && python app.py` → binds `0.0.0.0:5001` for LAN access ([app.py run](file:///Users/hashteelab/Documents/trae_projects/face_detection/backend/app.py#L5750-L5755)).
+- Find your laptop’s LAN IP (e.g. 192.168.x.y).
+- In the mobile app, set server URL to `http://<LAN_IP>:5001`:
+  - On login screen: tap server URL to edit; persists via SharedPreferences ([LoginActivity.kt](file:///Users/hashteelab/Documents/trae_projects/face_detection/FaceRecognition-Android/app/src/main/java/com/faceplugin/facerecognition/LoginActivity.kt#L167-L185)).
+  - Retrofit base URL updates at runtime ([RetrofitClient.java](file:///Users/hashteelab/Documents/trae_projects/face_detection/FaceRecognition-Android/app/src/main/java/com/faceplugin/facerecognition/api/RetrofitClient.java#L18-L25)).
+  - Socket.IO uses the same saved server_url in kiosk/identify flows ([IdentifyFragment.java](file:///Users/hashteelab/Documents/trae_projects/face_detection/FaceRecognition-Android/app/src/main/java/com/faceplugin/facerecognition/IdentifyFragment.java#L127-L135), [CameraActivity.java](file:///Users/hashteelab/Documents/trae_projects/face_detection/FaceRecognition-Android/app/src/main/java/com/faceplugin/facerecognition/CameraActivity.java#L109-L117)) and in parent mode ([ParentActivity.kt](file:///Users/hashteelab/Documents/trae_projects/face_detection/FaceRecognition-Android/app/src/main/java/com/faceplugin/facerecognition/ParentActivity.kt#L91-L99)).
+- Emulator tip: use `http://10.0.2.2:5001` instead of LAN IP.
+- macOS firewall: allow incoming connections for Python on port 5001 if prompted.
+- No HTTPS required for LAN: cleartext HTTP is allowed in the app manifest ([AndroidManifest.xml](file:///Users/hashteelab/Documents/trae_projects/face_detection/FaceRecognition-Android/app/src/main/AndroidManifest.xml#L12-L22)).
+- Do not set the mobile app to the frontend URL (`:5173`); use the backend URL (`:5001`).
 
 Build:
 ```

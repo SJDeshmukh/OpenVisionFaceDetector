@@ -175,6 +175,11 @@ class LoginActivity : AppCompatActivity() {
         builder.setPositiveButton("Save") { dialog, which ->
             var url = input.text.toString().trim()
             if (url.isNotEmpty()) {
+                val lower = url.lowercase()
+                if (lower.contains(":5173")) {
+                    Toast.makeText(this, "Enter backend URL like http://<LAN_IP>:5001", Toast.LENGTH_LONG).show()
+                    return@setPositiveButton
+                }
                 if (!url.endsWith("/")) url += "/"
                 RetrofitClient.setBaseUrl(url)
                 

@@ -30,9 +30,16 @@ const Attendance = () => {
     designation: '',
     name: ''
   });
+  const [vendorConfig, setVendorConfig] = useState([]);
+  const { user } = useAuth();
 
   useEffect(() => {
     fetchFilters();
+    if (user?.vendor_id) {
+      axios.get(`${API_URL}/admin/vendors/${user.vendor_id}/registration-config`)
+        .then(res => setVendorConfig(res.data?.config || []))
+        .catch(() => setVendorConfig([]));
+    }
   }, []);
 
   useEffect(() => {
@@ -69,6 +76,14 @@ const Attendance = () => {
       if (filters.department) params.append('department', filters.department);
       if (filters.designation) params.append('designation', filters.designation);
       if (filters.name) params.append('name', filters.name);
+      // Append dynamic registration-based filters
+      (vendorConfig || []).forEach(f => {
+        const key = f.field;
+        const val = filters[key];
+        if (val && String(val).trim() !== '') {
+          params.append(key, val);
+        }
+      });
 
       const response = await axios.get(`${API_URL}/attendance?${params.toString()}`);
       setLogs(response.data?.attendance || []);
@@ -260,6 +275,32 @@ const Attendance = () => {
           </select>
         </div>
 
+        {/* Dynamic registration-based filters */}
+        {(vendorConfig || []).map((field, idx) => (
+          <div key={idx} className="w-full md:w-40">
+            {field.type === 'select' ? (
+              <select 
+                value={filters[field.field] || ''}
+                onChange={(e) => setFilters({...filters, [field.field]: e.target.value})}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-600 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              >
+                <option value="">{`All ${field.label}`}</option>
+                {(field.options || []).map((opt, oIdx) => (
+                  <option key={oIdx} value={opt}>{opt}</option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                value={filters[field.field] || ''}
+                onChange={(e) => setFilters({...filters, [field.field]: e.target.value})}
+                placeholder={field.label}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-600 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              />
+            )}
+          </div>
+        ))}
+
         <button 
           onClick={handleSearch}
           className="p-2 bg-blue-600 text-white hover:bg-blue-700 transition-colors border border-transparent rounded-lg"
@@ -276,7 +317,9 @@ const Attendance = () => {
             <tr className="bg-slate-50 border-b border-slate-200">
               <th className="w-10 px-6 py-4"></th>
               <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Employee</th>
-              <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Shift</th>
+              {user?.features?.includes('shifts') && (
+                <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Shift</th>
+              )}
               <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Date</th>
               <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Time</th>
               <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Activity</th>
@@ -327,9 +370,11 @@ const Attendance = () => {
                           </div>
                         </div>
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
-                        {log.shift || <span className="text-slate-400 italic">None</span>}
-                      </td>
+                      {user?.features?.includes('shifts') && (
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
+                          {log.shift || <span className="text-slate-400 italic">None</span>}
+                        </td>
+                      )}
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
                         {new Date(log.timestamp.replace(' ', 'T')).toLocaleDateString()}
                       </td>

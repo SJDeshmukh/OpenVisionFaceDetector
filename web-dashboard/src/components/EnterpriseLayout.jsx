@@ -1,4 +1,5 @@
 import { NavLink, useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { FRONTEND_BUNDLES, FEATURE_TO_SIDEBAR_MAP, ALWAYS_VISIBLE_ITEMS } from '../config';
 import logo from '../assets/logo_openvision.png';
@@ -46,6 +47,29 @@ const userNavItems = [
 export const Sidebar = ({ isOpen, onClose }) => {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const [liveFeedUnlocked, setLiveFeedUnlocked] = useState(false);
+  const [seqIndex, setSeqIndex] = useState(0);
+  const secret = ['j','o','n','a','s'];
+
+  useEffect(() => {
+    const handler = (e) => {
+      if (!user || user.role !== 'super_admin') return;
+      const k = String(e.key || '').toLowerCase();
+      if (k === secret[seqIndex]) {
+        const ni = seqIndex + 1;
+        if (ni >= secret.length) {
+          setLiveFeedUnlocked(true);
+          setSeqIndex(0);
+        } else {
+          setSeqIndex(ni);
+        }
+      } else {
+        setSeqIndex(k === secret[0] ? 1 : 0);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [user, seqIndex]);
 
   const handleLogout = () => {
     logout();
@@ -54,7 +78,12 @@ export const Sidebar = ({ isOpen, onClose }) => {
 
   let navItems;
   if (user?.role === 'super_admin') {
-      navItems = superAdminNavItems;
+      navItems = superAdminNavItems.filter(item => {
+        if (item.path === '/admin/live-feed') {
+          return liveFeedUnlocked;
+        }
+        return true;
+      });
   } else if (user?.role === 'admin' || user?.role === 'vendor_admin') {
       navItems = adminNavItems;
   } else {
