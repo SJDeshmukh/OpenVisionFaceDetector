@@ -38,6 +38,8 @@ const superAdminNavItems = [
   { name: 'Vendors', path: '/admin/vendors', icon: Users },
   { name: 'Live Feed', path: '/admin/live-feed', icon: Video },
   { name: 'Audit Logs', path: '/admin/audit-logs', icon: Shield },
+  { name: 'System Health', path: '/admin/system-health', icon: Activity },
+  { name: 'Background Jobs', path: '/admin/jobs', icon: Activity },
 ];
 
 const userNavItems = [

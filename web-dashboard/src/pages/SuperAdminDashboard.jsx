@@ -48,6 +48,8 @@ const SuperAdminDashboard = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [subscriptionFilter, setSubscriptionFilter] = useState('all');
+  const [selectedVendorIds, setSelectedVendorIds] = useState([]);
+  const [registrationTemplates, setRegistrationTemplates] = useState({});
 
   // --- New Tab & Details State ---
   const [activeTab, setActiveTab] = useState('overview'); // 'overview' | 'vendor_details'
@@ -66,6 +68,7 @@ const SuperAdminDashboard = () => {
     fetchVendors();
     fetchFeatures();
     fetchStats();
+    fetchTemplates();
 
     if (!socket) return;
     socket.on('connect', () => {
@@ -108,6 +111,40 @@ const SuperAdminDashboard = () => {
         console.error("Error fetching stats:", error);
     }
   };
+
+  const fetchTemplates = async () => {
+    try {
+      const res = await axios.get(`${API_URL}/admin/registration/templates`, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      setRegistrationTemplates(res.data.templates || {});
+    } catch (e) {}
+  };
+
+  const toggleSelected = (id, checked) => {
+    setSelectedVendorIds(prev => {
+      const set = new Set(prev);
+      if (checked) set.add(id); else set.delete(id);
+      return Array.from(set);
+    });
+  };
+
+  const runBulkAction = async (payload) => {
+    try {
+      await axios.post(`${API_URL}/admin/vendors/bulk_action`, payload, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      fetchVendors();
+      setSelectedVendorIds([]);
+    } catch (e) {
+      alert("Bulk action failed");
+    }
+  };
+
+  const handleBulkSuspend = () => runBulkAction({ vendor_ids: selectedVendorIds, action: 'suspend' });
+  const handleBulkActivate = () => runBulkAction({ vendor_ids: selectedVendorIds, action: 'activate' });
+  const handleBulkToggleFeature = (feature, enabled) => runBulkAction({ vendor_ids: selectedVendorIds, action: 'toggle_feature', feature, enabled });
+  const handleBulkUpdateWebSessions = (n) => runBulkAction({ vendor_ids: selectedVendorIds, action: 'update_web_sessions', max_web_sessions: n });
   
   const fetchFeatures = async () => {
     try {
@@ -487,6 +524,38 @@ const SuperAdminDashboard = () => {
     }
   };
 
+  const handleExportEmployees = async () => {
+    if (!selectedVendorForDetail) return;
+    try {
+      const res = await axios.get(`${API_URL}/admin/vendors/${selectedVendorForDetail.id}/employees/export`, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      const blob = new Blob([res.data], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${selectedVendorForDetail.company_name}_employees.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      alert("Export failed");
+    }
+  };
+
+  const handleImportEmployees = async (file) => {
+    if (!selectedVendorForDetail || !file) return;
+    try {
+      const text = await file.text();
+      await axios.post(`${API_URL}/admin/vendors/${selectedVendorForDetail.id}/employees/import`, {
+        csv_data: text
+      }, { headers: { Authorization: `Bearer ${user?.token}` } });
+      fetchVendorEmployees(selectedVendorForDetail.id);
+      alert("Import succeeded");
+    } catch (e) {
+      alert("Import failed");
+    }
+  };
+
   if (loading) return <div className="p-8">Loading...</div>;
 
   return (
@@ -594,9 +663,23 @@ const SuperAdminDashboard = () => {
       </div>
 
       <div className="bg-white rounded-xl shadow-sm overflow-hidden border border-slate-200">
+        <div className="p-3 border-b border-slate-100 flex flex-wrap gap-2 items-center">
+          <span className="text-sm text-slate-600">Selected: {selectedVendorIds.length}</span>
+          <button onClick={handleBulkSuspend} className="text-xs bg-red-50 text-red-600 px-2 py-1 rounded">Suspend</button>
+          <button onClick={handleBulkActivate} className="text-xs bg-green-50 text-green-600 px-2 py-1 rounded">Activate</button>
+          <button onClick={() => handleBulkToggleFeature('report_payroll', true)} className="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded">Enable Payroll</button>
+          <button onClick={() => handleBulkToggleFeature('report_payroll', false)} className="text-xs bg-slate-50 text-slate-600 px-2 py-1 rounded">Disable Payroll</button>
+          <button onClick={() => handleBulkUpdateWebSessions(1)} className="text-xs bg-indigo-50 text-indigo-600 px-2 py-1 rounded">Set Web Sessions = 1</button>
+        </div>
         <table className="w-full text-left">
           <thead className="bg-slate-50 border-b border-slate-200">
             <tr>
+              <th className="p-4 font-semibold text-slate-600">
+                <input type="checkbox" onChange={e => {
+                  if (e.target.checked) setSelectedVendorIds(filteredVendors.map(v => v.id));
+                  else setSelectedVendorIds([]);
+                }} />
+              </th>
               <th className="p-4 font-semibold text-slate-600">Company</th>
               <th className="p-4 font-semibold text-slate-600">Architecture</th>
               <th className="p-4 font-semibold text-slate-600">Contact</th>
@@ -618,6 +701,9 @@ const SuperAdminDashboard = () => {
             ) : (
               filteredVendors.map(vendor => (
               <tr key={vendor.id} className="border-b border-slate-100 hover:bg-slate-50">
+                <td className="p-4">
+                  <input type="checkbox" checked={selectedVendorIds.includes(vendor.id)} onChange={e => toggleSelected(vendor.id, e.target.checked)} />
+                </td>
                 <td className="p-4 font-medium text-slate-800">{vendor.company_name}</td>
                 <td className="p-4 text-xs">
                   <div className="flex flex-col gap-1">
@@ -808,6 +894,14 @@ const SuperAdminDashboard = () => {
                         No employees found for this vendor.
                     </div>
                 ) : (
+                    <>
+                    <div className="flex justify-end gap-3 mb-3">
+                      <button onClick={handleExportEmployees} className="text-xs bg-blue-50 text-blue-600 px-3 py-1.5 rounded border border-blue-200">Export CSV</button>
+                      <label className="text-xs bg-slate-50 text-slate-700 px-3 py-1.5 rounded border border-slate-200 cursor-pointer">
+                        Import CSV
+                        <input type="file" accept=".csv,text/csv" className="hidden" onChange={e => handleImportEmployees(e.target.files?.[0])}/>
+                      </label>
+                    </div>
                     <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-6">
                         {vendorEmployees.map(emp => (
                             <div key={emp.id} 
@@ -835,6 +929,7 @@ const SuperAdminDashboard = () => {
                             </div>
                         ))}
                     </div>
+                    </>
                 )}
             </div>
           )}
@@ -1347,6 +1442,19 @@ const SuperAdminDashboard = () => {
                       onChange={e => setNewVendor({...newVendor, max_web_sessions: e.target.value})}
                       placeholder="Default: 1"
                     />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Registration Template</label>
+                    <select 
+                      className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none bg-white"
+                      value={newVendor.registration_template || ''}
+                      onChange={e => setNewVendor({...newVendor, registration_template: e.target.value})}
+                    >
+                      <option value="">None</option>
+                      {Object.keys(registrationTemplates).map(key => (
+                        <option key={key} value={key}>{key}</option>
+                      ))}
+                    </select>
                   </div>
                 </div>
               </div>

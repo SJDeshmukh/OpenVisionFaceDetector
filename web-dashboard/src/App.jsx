@@ -15,6 +15,8 @@ import LiveAttendance from './pages/LiveAttendance';
 import SuperAdminDashboard from './pages/SuperAdminDashboard'; // New
 import SuperAdminLogin from './pages/SuperAdminLogin';
 import LiveFeed from './pages/LiveFeed';
+import SystemHealth from './pages/SystemHealth';
+import JobsDashboard from './pages/JobsDashboard';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { SocketProvider } from './context/SocketContext';
 
@@ -57,6 +59,8 @@ function App() {
                <Route path="/admin/vendors" element={<SuperAdminDashboard />} />
                <Route path="/admin/audit-logs" element={<AuditLogs />} />
                <Route path="/admin/live-feed" element={<LiveFeed />} />
+               <Route path="/admin/system-health" element={<SystemHealth />} />
+               <Route path="/admin/jobs" element={<JobsDashboard />} />
             </Route>
 
             {/* Admin Routes */}

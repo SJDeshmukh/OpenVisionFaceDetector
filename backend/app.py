@@ -330,6 +330,61 @@ def ensure_archive_table():
             pass
     finally:
         conn.close()
+
+def ensure_audit_logs_table():
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        _run(c, """
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                actor_username TEXT,
+                actor_role TEXT,
+                target_vendor_id INTEGER,
+                action TEXT,
+                details TEXT,
+                ip TEXT
+            )
+        """)
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    finally:
+        conn.close()
+
+def log_audit(action, details=None, target_vendor_id=None, status="success"):
+    try:
+        ensure_audit_logs_table()
+        conn = get_db_connection()
+        c = conn.cursor()
+        actor_username = None
+        actor_role = None
+        try:
+            auth_header = request.headers.get('Authorization')
+            if auth_header:
+                token = auth_header.split(" ")[1]
+                user_data = verify_token(token)
+                if user_data:
+                    actor_username = user_data.get('username')
+                    actor_role = user_data.get('role')
+        except Exception:
+            pass
+        ip = request.remote_addr
+        payload = {"status": status}
+        if isinstance(details, dict):
+            payload.update(details)
+        elif isinstance(details, str):
+            payload["message"] = details
+        _run(c, "INSERT INTO audit_logs (actor_username, actor_role, target_vendor_id, action, details, ip) VALUES (?, ?, ?, ?, ?, ?)",
+             (actor_username, actor_role, target_vendor_id, action, json.dumps(payload)))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 def add_vendor_devices_table():
     conn = get_db_connection()
     c = conn.cursor()
@@ -1726,6 +1781,159 @@ ALL_FEATURES = ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'p
 def get_available_features():
     return jsonify({"features": ALL_FEATURES, "bundles": BUNDLE_FEATURES})
 
+# Registration templates by vertical
+REGISTRATION_TEMPLATES = {
+    "school": [
+        {"field": "student_number", "label": "Student Number", "enabled": True},
+        {"field": "class_section", "label": "Class/Section", "enabled": True},
+        {"field": "father_name", "label": "Father's Name", "enabled": True}
+    ],
+    "factory": [
+        {"field": "employee_id", "label": "Employee ID", "enabled": True},
+        {"field": "department", "label": "Department", "enabled": True},
+        {"field": "shift", "label": "Shift", "enabled": True}
+    ],
+    "retail": [
+        {"field": "employee_id", "label": "Employee ID", "enabled": True},
+        {"field": "store", "label": "Store", "enabled": True},
+        {"field": "designation", "label": "Designation", "enabled": True}
+    ]
+}
+
+@greeting_bp.route("/admin/registration/templates", methods=["GET"])
+@super_admin_required
+def get_registration_templates():
+    return jsonify({"templates": REGISTRATION_TEMPLATES})
+
+@greeting_bp.route("/admin/vendors/<int:vendor_id>/registration_config", methods=["PUT"])
+@super_admin_required
+def set_vendor_registration_config(vendor_id):
+    data = request.json or {}
+    config = data.get("registration_config")
+    if config is None:
+        return jsonify({"error": "registration_config required"}), 400
+    try:
+        # Validate JSON array
+        if isinstance(config, str):
+            import json as _json
+            config = _json.loads(config)
+        if not isinstance(config, list):
+            return jsonify({"error": "registration_config must be a list"}), 400
+        conn = get_db_connection()
+        c = conn.cursor()
+        _run(c, "UPDATE vendors SET registration_config = ? WHERE id = ?", (json.dumps(config), vendor_id))
+        conn.commit()
+        conn.close()
+        log_audit("vendor_registration_config_update", {"count": len(config)}, target_vendor_id=vendor_id)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@greeting_bp.route("/admin/vendors/bulk_action", methods=["POST"])
+@super_admin_required
+def bulk_vendor_action():
+    payload = request.json or {}
+    vendor_ids = payload.get("vendor_ids") or []
+    action = payload.get("action")
+    if not vendor_ids or not action:
+        return jsonify({"error": "vendor_ids and action required"}), 400
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        if action in ("suspend", "activate"):
+            new_status = 'suspended' if action == 'suspend' else 'active'
+            for vid in vendor_ids:
+                _run(c, "UPDATE vendors SET status = ? WHERE id = ?", (new_status, vid))
+                log_audit(f"vendor_{action}", {}, target_vendor_id=vid)
+        elif action == "toggle_feature":
+            feature = payload.get("feature")
+            enabled = payload.get("enabled", True)
+            for vid in vendor_ids:
+                _run(c, "SELECT features FROM subscriptions WHERE vendor_id = ?", (vid,))
+                row = c.fetchone()
+                feats = []
+                if row and row[0]:
+                    try:
+                        feats = json.loads(row[0])
+                    except Exception:
+                        feats = []
+                if enabled and feature not in feats:
+                    feats.append(feature)
+                if not enabled:
+                    feats = [f for f in feats if f != feature]
+                _run(c, "UPDATE subscriptions SET features = ? WHERE vendor_id = ?", (json.dumps(feats), vid))
+                log_audit("vendor_toggle_feature", {"feature": feature, "enabled": enabled}, target_vendor_id=vid)
+        elif action == "update_web_sessions":
+            max_web_sessions = int(payload.get("max_web_sessions") or 1)
+            for vid in vendor_ids:
+                _run(c, "UPDATE subscriptions SET max_web_sessions = ? WHERE vendor_id = ?", (max_web_sessions, vid))
+                log_audit("vendor_update_web_sessions", {"max_web_sessions": max_web_sessions}, target_vendor_id=vid)
+        else:
+            return jsonify({"error": "Unknown action"}), 400
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@greeting_bp.route("/admin/vendors/<int:vendor_id>/employees/export", methods=["GET"])
+@super_admin_required
+def export_employees(vendor_id):
+    import csv, io
+    conn = get_db_connection()
+    c = conn.cursor()
+    _run(c, "SELECT name, phone, department, designation, shift, daily_wage, custom_data FROM faces WHERE vendor_id = ?", (vendor_id,))
+    rows = c.fetchall()
+    conn.close()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["name","phone","department","designation","shift","daily_wage","custom_data"])
+    for r in rows:
+        if isinstance(r, dict):
+            writer.writerow([r.get("name"), r.get("phone"), r.get("department"), r.get("designation"), r.get("shift"), r.get("daily_wage"), r.get("custom_data")])
+        else:
+            writer.writerow(list(r))
+    return output.getvalue(), 200, {"Content-Type": "text/csv"}
+
+@greeting_bp.route("/admin/vendors/<int:vendor_id>/employees/import", methods=["POST"])
+@super_admin_required
+def import_employees(vendor_id):
+    import csv, io
+    data = request.json or {}
+    csv_data = data.get("csv_data")
+    if not csv_data:
+        return jsonify({"error": "csv_data required (string)"}), 400
+    f = io.StringIO(csv_data)
+    reader = csv.DictReader(f)
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        count = 0
+        for row in reader:
+            name = (row.get("name") or "").strip()
+            if not name:
+                continue
+            phone = row.get("phone")
+            department = row.get("department")
+            designation = row.get("designation")
+            shift = row.get("shift")
+            daily_wage = float(row.get("daily_wage") or 0)
+            custom_data = row.get("custom_data")
+            _run(c, """INSERT INTO faces (name, phone, department, designation, shift, daily_wage, vendor_id, custom_data)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""", (name, phone, department, designation, shift, daily_wage, vendor_id, custom_data))
+            count += 1
+        conn.commit()
+        log_audit("employees_import", {"count": count}, target_vendor_id=vendor_id)
+        return jsonify({"success": True, "imported": count})
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
 @greeting_bp.route("/admin/vendors", methods=["POST"], endpoint="admin_create_vendor")
 @super_admin_required
 @track_metrics("admin_create_vendor")
@@ -2173,6 +2381,7 @@ def delete_vendor(vendor_id):
         _run(c, "SELECT * FROM vendors WHERE id = ?", (vendor_id,))
         vendor_row = c.fetchone()
         if not vendor_row:
+            log_audit("vendor_delete", {"error": "Not Found"}, target_vendor_id=vendor_id, status="failed")
             return jsonify({"error": "Vendor not found"}), 404
         # Helper to archive rows from table by vendor_id
         def archive_table(table, key="vendor_id"):
@@ -2222,12 +2431,14 @@ def delete_vendor(vendor_id):
         _run(c, "DELETE FROM active_sessions WHERE vendor_id = ?", (vendor_id,))
         _run(c, "DELETE FROM vendors WHERE id = ?", (vendor_id,))
         conn.commit()
+        log_audit("vendor_delete", {"message": "Archived and deleted"}, target_vendor_id=vendor_id, status="success")
         return jsonify({"success": True, "message": "Vendor archived and deleted from live data"})
     except Exception as e:
         try:
             conn.rollback()
         except Exception:
             pass
+        log_audit("vendor_delete", {"error": str(e)}, target_vendor_id=vendor_id, status="failed")
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
@@ -2283,6 +2494,37 @@ def list_archived_vendors():
                 continue
             results.append({"vendor_id": vid, "data": data})
         return jsonify({"archived_vendors": results})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+@greeting_bp.route("/admin/audit-logs", methods=["GET"])
+@super_admin_required
+def list_audit_logs():
+    ensure_audit_logs_table()
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        _run(c, "SELECT id, timestamp, actor_username, actor_role, target_vendor_id, action, details, ip FROM audit_logs ORDER BY timestamp DESC LIMIT 500")
+        rows = c.fetchall()
+        logs = []
+        for r in rows:
+            if isinstance(r, dict):
+                d = r
+            else:
+                d = {
+                    "id": r[0],
+                    "timestamp": r[1],
+                    "actor_username": r[2],
+                    "actor_role": r[3],
+                    "target_vendor_id": r[4],
+                    "action": r[5],
+                    "details": r[6],
+                    "ip": r[7]
+                }
+            logs.append(d)
+        return jsonify({"logs": logs})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
@@ -2352,6 +2594,10 @@ def generate_invoice(vendor_id):
     # Actually, better to mark setup_fee_paid ONLY when invoice is paid.
     
     conn.commit()
+    try:
+        log_audit("invoice_generate", {"amount": total_amount}, target_vendor_id=vendor_id, status="success")
+    except Exception:
+        pass
     conn.close()
     if is_async:
         job_id = create_job(content_type="application/json", ttl=600)
@@ -2391,6 +2637,214 @@ def update_invoice_status(invoice_id):
     conn.close()
     return jsonify({"success": True})
 
+@greeting_bp.route("/admin/system/health", methods=["GET"])
+@super_admin_required
+def system_health():
+    status = {"db": "ok", "redis": "disabled", "active_sessions": 0}
+    # DB check
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        _run(c, "SELECT COUNT(*) FROM active_sessions")
+        row = c.fetchone()
+        status["active_sessions"] = row[0] if row else 0
+        conn.close()
+    except Exception as e:
+        status["db"] = f"error: {str(e)}"
+    # Redis
+    try:
+        if redis_client:
+            redis_client.ping()
+            status["redis"] = "ok"
+    except Exception as e:
+        status["redis"] = f"error: {str(e)}"
+    # Socket info (basic)
+    status["socketio"] = {"async_mode": socketio.async_mode, "ping_timeout": 60, "ping_interval": 25}
+    return jsonify(status)
+
+@greeting_bp.route("/admin/system/queues", methods=["GET"])
+@super_admin_required
+def system_queues():
+    data = {
+        "broker": "unknown",
+        "queues": {},
+        "workers": [],
+        "active": {},
+        "reserved": {},
+        "scheduled": {}
+    }
+    # Broker info
+    try:
+        if redis_client:
+            data["broker"] = "redis"
+            # Common Celery queue names
+            for q in ["celery", "default", "high", "low"]:
+                try:
+                    llen = redis_client.llen(q)
+                    if llen is not None:
+                        data["queues"][q] = int(llen)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    # Celery inspect
+    try:
+        if celery:
+            i = celery.control.inspect()
+            data["active"] = i.active() or {}
+            data["reserved"] = i.reserved() or {}
+            data["scheduled"] = i.scheduled() or {}
+            stats = i.stats() or {}
+            data["workers"] = list(stats.keys())
+    except Exception as e:
+        data["error"] = str(e)
+    return jsonify(data)
+@greeting_bp.route("/admin/jobs/events", methods=["GET"])
+@super_admin_required
+def list_task_events():
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        status = request.args.get("status")
+        queue = request.args.get("queue")
+        name = request.args.get("name")
+        limit = int(request.args.get("limit") or 100)
+        offset = int(request.args.get("offset") or 0)
+        base = "SELECT id, task_id, name, queue, worker, status, received_at, started_at, finished_at, runtime, retries, eta, args, kwargs, result, error FROM task_events"
+        where = []
+        params = []
+        if status:
+            where.append("status = ?")
+            params.append(status)
+        if queue:
+            where.append("queue = ?")
+            params.append(queue)
+        if name:
+            where.append("name = ?")
+            params.append(name)
+        if where:
+            base += " WHERE " + " AND ".join(where)
+        base += " ORDER BY id DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        _run(c, base, params)
+        rows = c.fetchall()
+        events = []
+        for r in rows:
+            if isinstance(r, dict):
+                events.append(r)
+            else:
+                events.append({
+                    "id": r[0], "task_id": r[1], "name": r[2], "queue": r[3], "worker": r[4], "status": r[5],
+                    "received_at": r[6], "started_at": r[7], "finished_at": r[8], "runtime": r[9], "retries": r[10],
+                    "eta": r[11], "args": r[12], "kwargs": r[13], "result": r[14], "error": r[15]
+                })
+        return jsonify({"events": events})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+@greeting_bp.route("/admin/jobs/events/purge", methods=["POST"])
+@super_admin_required
+def purge_task_events():
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        older_days = int(request.args.get("older_days") or 0)
+        max_rows = request.json.get("max_rows") if request.is_json else None
+        deleted = 0
+        if older_days > 0:
+            _run(c, "DELETE FROM task_events WHERE created_at < datetime('now', ?)", (f'-{older_days} days',))
+            deleted += c.rowcount if hasattr(c, "rowcount") else 0
+        if max_rows:
+            _run(c, "SELECT COUNT(*) FROM task_events")
+            total = c.fetchone()[0]
+            if total and int(total) > int(max_rows):
+                overflow = int(total) - int(max_rows)
+                _run(c, "DELETE FROM task_events WHERE id IN (SELECT id FROM task_events ORDER BY id ASC LIMIT ?)", (overflow,))
+                deleted += c.rowcount if hasattr(c, "rowcount") else 0
+        conn.commit()
+        return jsonify({"success": True, "deleted": deleted})
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+@greeting_bp.route("/admin/jobs/metrics", methods=["GET"])
+@super_admin_required
+def jobs_metrics():
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        window_minutes = int(request.args.get("window_minutes") or 60)
+        bucket = request.args.get("bucket") or "minute"
+        cutoff = datetime.utcnow() - timedelta(minutes=window_minutes)
+        _run(c, "SELECT queue, status, runtime, finished_at, started_at, received_at FROM task_events WHERE (finished_at IS NOT NULL AND finished_at >= ?) OR (finished_at IS NULL AND created_at >= ?)", (cutoff.isoformat(), cutoff.isoformat()))
+        rows = c.fetchall()
+        buckets = {}
+        queues = set()
+        def bucket_key(ts):
+            try:
+                if not ts:
+                    return None
+                dt = datetime.fromisoformat(ts.replace('Z',''))
+            except Exception:
+                return None
+            if bucket == "hour":
+                return dt.strftime("%Y-%m-%d %H:00")
+            return dt.strftime("%Y-%m-%d %H:%M")
+        for r in rows:
+            if isinstance(r, dict):
+                q = r.get("queue")
+                st = r.get("status")
+                rt = r.get("runtime")
+                ts = r.get("finished_at") or r.get("started_at") or r.get("received_at")
+            else:
+                q, st, rt, fts, sts, rts = r
+                ts = fts or sts or rts
+            queues.add(q or "unknown")
+            bk = bucket_key(ts)
+            if not bk:
+                continue
+            key = (q or "unknown", bk)
+            if key not in buckets:
+                buckets[key] = {"count": 0, "fail": 0, "retry": 0, "runtimes": []}
+            buckets[key]["count"] += 1
+            if st == "failure":
+                buckets[key]["fail"] += 1
+            if st == "retry":
+                buckets[key]["retry"] += 1
+            try:
+                if rt is not None:
+                    buckets[key]["runtimes"].append(float(rt))
+            except Exception:
+                pass
+        series = {}
+        time_keys = sorted({bk for (_, bk) in buckets.keys()})
+        for q in sorted(queues):
+            series[q] = []
+            for t in time_keys:
+                agg = buckets.get((q, t))
+                if not agg:
+                    series[q].append({"time": t, "count": 0, "fail_rate": 0.0, "avg_runtime": 0.0, "p95": 0.0, "p99": 0.0})
+                    continue
+                cnt = agg["count"]
+                fr = (agg["fail"] / cnt) if cnt else 0.0
+                avg = sum(agg["runtimes"]) / len(agg["runtimes"]) if agg["runtimes"] else 0.0
+                runt = sorted(agg["runtimes"])
+                def pct(p):
+                    if not runt:
+                        return 0.0
+                    idx = int(max(0, min(len(runt)-1, round(p * len(runt)) - 1)))
+                    return runt[idx]
+                series[q].append({"time": t, "count": cnt, "fail_rate": fr, "avg_runtime": avg, "p95": pct(0.95), "p99": pct(0.99)})
+        return jsonify({"bucket": bucket, "window_minutes": window_minutes, "times": time_keys, "series": series})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 @greeting_bp.route("/admin/vendors/restore", methods=["POST"])
 @super_admin_required
 def restore_vendor():
