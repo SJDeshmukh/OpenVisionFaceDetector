@@ -4587,6 +4587,7 @@ def upload_face():
     person_id = data.get("person_id")
     name = data.get("name")
     templates = data.get("templates")
+    templates_list = data.get("templates_list")
     face_image = data.get("face_image")
     phone = data.get("phone")
     department = data.get("department")
@@ -4639,6 +4640,46 @@ def upload_face():
                         return jsonify({"error": "Duplicate student_number for this vendor"}), 409
                 except Exception:
                     continue
+        # Generic duplicate guard for new registrations:
+        # If creating a new person (no person_id), block if name or templates already exist for this vendor
+        if not person_id:
+            try:
+                if vendor_id and name:
+                    cc.execute("SELECT id FROM faces WHERE vendor_id = ? AND name = ? LIMIT 1", (vendor_id, name))
+                    row_name = cc.fetchone()
+                    if row_name:
+                        conn_check.close()
+                        return jsonify({"error": "Face already registered for this vendor (name)"}), 409
+                if vendor_id:
+                    if templates_list and isinstance(templates_list, list) and len(templates_list) > 0:
+                        cc.execute("SELECT templates FROM faces WHERE vendor_id = ?", (vendor_id,))
+                        rows_all = cc.fetchall()
+                        for rtpl in rows_all:
+                            try:
+                                et = rtpl[0] if not isinstance(rtpl, dict) else rtpl.get("templates")
+                                if not et:
+                                    continue
+                                if et.startswith('['):
+                                    arr = json.loads(et)
+                                    for t in templates_list:
+                                        if t in arr:
+                                            conn_check.close()
+                                            return jsonify({"error": "Face already registered for this vendor (templates_list)"}), 409
+                                else:
+                                    for t in templates_list:
+                                        if t == et:
+                                            conn_check.close()
+                                            return jsonify({"error": "Face already registered for this vendor (templates)"}), 409
+                            except Exception:
+                                continue
+                    elif vendor_id and templates and str(templates).strip() != "":
+                        cc.execute("SELECT id FROM faces WHERE vendor_id = ? AND templates = ? LIMIT 1", (vendor_id, templates))
+                        row_tpl = cc.fetchone()
+                        if row_tpl:
+                            conn_check.close()
+                            return jsonify({"error": "Face already registered for this vendor (templates)"}), 409
+            except Exception:
+                pass
         conn_check.close()
     except Exception:
         pass
@@ -4704,7 +4745,9 @@ def upload_face():
             params = []
             if name is not None:
                 fields.append("name=?"); params.append(name)
-            if templates is not None and templates != "":
+            if templates_list and isinstance(templates_list, list) and len(templates_list) > 0:
+                fields.append("templates=?"); params.append(json.dumps(templates_list))
+            elif templates is not None and templates != "":
                 fields.append("templates=?"); params.append(templates)
             if face_image is not None and face_image != "":
                 fields.append("face_image=?"); params.append(face_image)
@@ -4729,8 +4772,13 @@ def upload_face():
                 new_id = person_id
         else:
             # Insert New
+            to_store_templates = None
+            if templates_list and isinstance(templates_list, list) and len(templates_list) > 0:
+                to_store_templates = json.dumps(templates_list)
+            else:
+                to_store_templates = templates or ""
             c.execute("INSERT INTO faces (name, templates, face_image, phone, department, designation, shift, vendor_id, custom_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                      (name, templates or "", face_image, phone or "", department or "", designation or "", shift or "", vendor_id, custom_data))
+                      (name, to_store_templates, face_image, phone or "", department or "", designation or "", shift or "", vendor_id, custom_data))
             new_id = c.lastrowid
 
         conn.commit()

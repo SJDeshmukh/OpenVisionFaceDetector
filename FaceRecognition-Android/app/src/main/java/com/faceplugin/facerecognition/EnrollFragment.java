@@ -61,6 +61,10 @@ public class EnrollFragment extends Fragment {
     private ArrayAdapter<String> shiftAdapter;
     private java.util.Map<String, View> dynamicViews = new java.util.HashMap<>();
     private java.util.Map<String, String> dynamicFieldConfig = new java.util.HashMap<>();
+    private java.util.List<byte[]> capturedTemplates = new java.util.ArrayList<>();
+    private java.util.List<String> capturedSideImages = new java.util.ArrayList<>();
+    private Bitmap capturedFrontImage = null;
+    private int enrollStep = 0;
 
     private ActivityResultLauncher<Intent> cameraLauncher;
     private ActivityResultLauncher<Intent> galleryLauncher;
@@ -165,6 +169,8 @@ public class EnrollFragment extends Fragment {
             Intent intent = new Intent(requireContext(), CaptureActivity.class);
             intent.putExtra("is_capture_only", true);
             cameraLauncher.launch(intent);
+            enrollStep = 0;
+            android.widget.Toast.makeText(getContext(), "Look straight", android.widget.Toast.LENGTH_SHORT).show();
         });
 
         return view;
@@ -192,14 +198,52 @@ public class EnrollFragment extends Fragment {
             String designation = etDesignation.getText().toString().trim();
             String shift = spShift.getSelectedItem() != null ? spShift.getSelectedItem().toString() : "";
             if (shift.equals("No Shift")) shift = "";
-            
+            if (enrollStep == 0) {
+                float maxSimilarityFront = 0f;
+                for (Person p : DBManager.personList) {
+                    try {
+                        float s = FaceSDK.similarityCalculation(templates, p.templates);
+                        if (s > maxSimilarityFront) maxSimilarityFront = s;
+                    } catch (Exception ignored) {}
+                }
+                if (maxSimilarityFront > SettingsActivity.getIdentifyThreshold(requireContext())) {
+                    Toast.makeText(getContext(), "Already registered", Toast.LENGTH_SHORT).show();
+                    capturedTemplates.clear();
+                    capturedSideImages.clear();
+                    capturedFrontImage = null;
+                    enrollStep = 0;
+                    return;
+                }
+                capturedFrontImage = faceImage;
+                capturedTemplates.add(templates);
+                enrollStep = 1;
+                android.widget.Toast.makeText(getContext(), "Look left", android.widget.Toast.LENGTH_SHORT).show();
+                Intent intent = new Intent(requireContext(), CaptureActivity.class);
+                intent.putExtra("is_capture_only", true);
+                cameraLauncher.launch(intent);
+                return;
+            } else if (enrollStep == 1) {
+                capturedTemplates.add(templates);
+                java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+                faceImage.compress(Bitmap.CompressFormat.JPEG, 90, bos);
+                capturedSideImages.add(Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP));
+                enrollStep = 2;
+                android.widget.Toast.makeText(getContext(), "Look right", android.widget.Toast.LENGTH_SHORT).show();
+                Intent intent = new Intent(requireContext(), CaptureActivity.class);
+                intent.putExtra("is_capture_only", true);
+                cameraLauncher.launch(intent);
+                return;
+            } else if (enrollStep == 2) {
+                capturedTemplates.add(templates);
+                java.io.ByteArrayOutputStream bos2 = new java.io.ByteArrayOutputStream();
+                faceImage.compress(Bitmap.CompressFormat.JPEG, 90, bos2);
+                capturedSideImages.add(Base64.encodeToString(bos2.toByteArray(), Base64.NO_WRAP));
+            }
             boolean exists = dbManager.personExists(name);
-            
             // Save to Local DB (Optimistic UI - marked as not synced)
             // Note: Local DB schema update for 'shift' is pending, so we might lose it locally if we don't update DBManager.
             // But requirement is backend sync. We will send it to backend regardless.
-            dbManager.insertPerson(name, faceImage, templates, phone, department, designation, shift, false);
-            
+            dbManager.insertPerson(name, capturedFrontImage, capturedTemplates.get(0), phone, department, designation, shift, false);
             if (exists) {
                 Toast.makeText(getContext(), "Updated existing user: " + name, Toast.LENGTH_SHORT).show();
             } else {
@@ -226,7 +270,19 @@ public class EnrollFragment extends Fragment {
                  dynamicData.addProperty(key, value);
             }
 
-            syncToBackend(name, templates, faceImage, phone, department, designation, shift, dynamicData);
+            com.google.gson.JsonArray templatesListJson = new com.google.gson.JsonArray();
+            for (byte[] t : capturedTemplates) {
+                templatesListJson.add(Base64.encodeToString(t, Base64.NO_WRAP));
+            }
+            com.google.gson.JsonArray faceImagesListJson = new com.google.gson.JsonArray();
+            for (String imgB64 : capturedSideImages) {
+                faceImagesListJson.add(imgB64);
+            }
+            syncToBackend(name, capturedTemplates.get(0), capturedFrontImage, phone, department, designation, shift, dynamicData, templatesListJson, faceImagesListJson);
+            capturedTemplates.clear();
+            capturedSideImages.clear();
+            capturedFrontImage = null;
+            enrollStep = 0;
             
             // Clear inputs
             etName.setText("");
@@ -460,7 +516,7 @@ public class EnrollFragment extends Fragment {
         }
     }
 
-    private void syncToBackend(String name, byte[] templates, Bitmap faceImage, String phone, String department, String designation, String shift, JsonObject dynamicData) {
+    private void syncToBackend(String name, byte[] templates, Bitmap faceImage, String phone, String department, String designation, String shift, JsonObject dynamicData, com.google.gson.JsonArray templatesListJson, com.google.gson.JsonArray faceImagesListJson) {
         String templatesBase64 = Base64.encodeToString(templates, Base64.NO_WRAP);
         ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
         faceImage.compress(Bitmap.CompressFormat.JPEG, 100, byteArrayOutputStream);
@@ -469,6 +525,12 @@ public class EnrollFragment extends Fragment {
         JsonObject json = new JsonObject();
         json.addProperty("name", name);
         json.addProperty("templates", templatesBase64);
+        if (templatesListJson != null) {
+            json.add("templates_list", templatesListJson);
+        }
+        if (faceImagesListJson != null) {
+            json.add("face_images_list", faceImagesListJson);
+        }
         json.addProperty("face_image", faceImageBase64);
         json.addProperty("phone", phone);
         json.addProperty("department", department);

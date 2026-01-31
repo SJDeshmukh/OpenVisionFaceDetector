@@ -952,6 +952,24 @@ const SuperAdminDashboard = () => {
                                 </div>
                              )}
                         </div>
+                        {(() => {
+                          try {
+                            const custom = typeof selectedEmployeeForDetail.custom_data === 'string'
+                              ? JSON.parse(selectedEmployeeForDetail.custom_data)
+                              : selectedEmployeeForDetail.custom_data || {};
+                            const imgs = custom && custom.face_images_list && Array.isArray(custom.face_images_list) ? custom.face_images_list : [];
+                            if (imgs.length === 0) return null;
+                            return (
+                              <div className="grid grid-cols-2 gap-3 mb-6">
+                                {imgs.slice(0,2).map((b64, idx) => (
+                                  <div key={idx} className="aspect-square rounded-lg overflow-hidden bg-slate-100 border border-slate-100">
+                                    <img src={`data:image/jpeg;base64,${b64}`} alt={`side ${idx+1}`} className="w-full h-full object-cover"/>
+                                  </div>
+                                ))}
+                              </div>
+                            );
+                          } catch (e) { return null; }
+                        })()}
                         <h2 className="text-2xl font-bold text-slate-800 mb-1">{selectedEmployeeForDetail.name}</h2>
                         <p className="text-slate-500 mb-6 font-medium">{selectedEmployeeForDetail.designation}</p>
                         
