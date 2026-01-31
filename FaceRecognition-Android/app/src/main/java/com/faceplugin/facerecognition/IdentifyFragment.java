@@ -348,6 +348,11 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                             dbManager.insertAttendanceQueue(personId, name, timestamp, "pending", image, false);
                             Toast.makeText(getContext(), "Offline: Attendance Saved", Toast.LENGTH_SHORT).show();
                             playAttendanceSound("CHECK_IN"); // Generic success sound
+                            try {
+                                SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
+                            } catch (Exception e) {
+                                e.printStackTrace();
+                            }
                         } else {
                             Toast.makeText(getContext(), "Offline: API Error", Toast.LENGTH_SHORT).show();
                         }
