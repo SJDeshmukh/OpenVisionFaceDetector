@@ -30,6 +30,7 @@ import com.google.android.material.textfield.TextInputEditText;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.ocp.facesdk.FaceBox;
 import com.ocp.facesdk.FaceSDK;
 
@@ -97,7 +98,7 @@ public class EnrollFragment extends Fragment {
         if (llShift != null) llShift.setVisibility(View.GONE);
         
         btnProceed = view.findViewById(R.id.btnProceed);
-        dbManager = new DBManager(requireContext());
+        dbManager = new DBManager(requireContext().getApplicationContext());
         // dbManager.loadPerson(); // Removed to prevent redundant loading and race conditions with MainActivity
 
         // Setup Spinner
@@ -106,6 +107,7 @@ public class EnrollFragment extends Fragment {
         shiftAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         spShift.setAdapter(shiftAdapter);
 
+        applyCachedRegistrationConfigOrDefault();
         fetchShifts();
         fetchRegistrationConfig();
 
@@ -215,6 +217,35 @@ public class EnrollFragment extends Fragment {
         return view;
     }
 
+    private void applyCachedRegistrationConfigOrDefault() {
+        try {
+            if (!isAdded()) return;
+            android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE);
+            String cached = prefs.getString("cached_registration_config", null);
+            if (cached != null && !cached.isEmpty()) {
+                JsonArray config = new JsonParser().parse(cached).getAsJsonArray();
+                renderDynamicFields(config);
+                return;
+            }
+        } catch (Exception ignored) {}
+        showDefaultProfileFields();
+    }
+
+    private void showDefaultProfileFields() {
+        requireMobile = false;
+        requireDepartment = false;
+        requireDesignation = false;
+        requireShift = false;
+        dynamicViews.clear();
+        dynamicFieldConfig.clear();
+        if (dynamicContainer != null) dynamicContainer.removeAllViews();
+        if (tilName != null) tilName.setVisibility(View.VISIBLE);
+        if (tilMobile != null) tilMobile.setVisibility(View.VISIBLE);
+        if (tilDepartment != null) tilDepartment.setVisibility(View.VISIBLE);
+        if (tilDesignation != null) tilDesignation.setVisibility(View.VISIBLE);
+        if (llShift != null) llShift.setVisibility(View.VISIBLE);
+    }
+
     private void processImage(Bitmap bitmap) {
         // Run Face Detection
         List<FaceBox> faceBoxes = FaceSDK.faceDetection(bitmap, null);
@@ -271,6 +302,9 @@ public class EnrollFragment extends Fragment {
             
             String customDataStr = dynamicData.toString();
             String localUid = dbManager.insertLocalPerson(name, faceImage, templates, phone, department, designation, shift, customDataStr);
+            try {
+                dbManager.loadPerson();
+            } catch (Exception ignored) {}
             Toast.makeText(getContext(), getString(R.string.person_enrolled) + " " + name, Toast.LENGTH_SHORT).show();
 
             if (!NetworkUtils.INSTANCE.isOnline(requireContext().getApplicationContext())) {
@@ -388,10 +422,27 @@ public class EnrollFragment extends Fragment {
                         JsonObject body = response.body();
                         if (body.has("config") && !body.get("config").isJsonNull()) {
                             JsonArray config = body.getAsJsonArray("config");
+                            try {
+                                prefs.edit().putString("cached_registration_config", config.toString()).apply();
+                            } catch (Exception ignored) {}
                             if (getActivity() != null && isAdded()) {
                                 getActivity().runOnUiThread(() -> renderDynamicFields(config));
                             }
+                            return;
                         }
+                    }
+                    try {
+                        String cached = prefs.getString("cached_registration_config", null);
+                        if (cached != null && !cached.isEmpty()) {
+                            JsonArray config = new JsonParser().parse(cached).getAsJsonArray();
+                            if (getActivity() != null && isAdded()) {
+                                getActivity().runOnUiThread(() -> renderDynamicFields(config));
+                            }
+                            return;
+                        }
+                    } catch (Exception ignored) {}
+                    if (getActivity() != null && isAdded()) {
+                        getActivity().runOnUiThread(() -> showDefaultProfileFields());
                     }
                 } catch (Exception e) {
                     e.printStackTrace();
@@ -400,7 +451,19 @@ public class EnrollFragment extends Fragment {
 
             @Override
             public void onFailure(Call<JsonObject> call, Throwable t) {
-                t.printStackTrace();
+                try {
+                    String cached = prefs.getString("cached_registration_config", null);
+                    if (cached != null && !cached.isEmpty()) {
+                        JsonArray config = new JsonParser().parse(cached).getAsJsonArray();
+                        if (getActivity() != null && isAdded()) {
+                            getActivity().runOnUiThread(() -> renderDynamicFields(config));
+                        }
+                        return;
+                    }
+                } catch (Exception ignored) {}
+                if (getActivity() != null && isAdded()) {
+                    getActivity().runOnUiThread(() -> showDefaultProfileFields());
+                }
             }
         });
     }

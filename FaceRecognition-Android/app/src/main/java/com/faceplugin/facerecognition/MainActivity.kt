@@ -9,6 +9,7 @@ import android.util.Base64
 import android.widget.ImageButton
 import android.widget.TextView
 import android.widget.Toast
+import java.security.MessageDigest
 import androidx.appcompat.app.AppCompatActivity
 import androidx.fragment.app.Fragment
 import com.faceplugin.facerecognition.api.RetrofitClient
@@ -36,7 +37,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var dbManager: DBManager
     private val handler = Handler(Looper.getMainLooper())
-    private val syncInterval: Long = 3000 // 3 seconds for near real-time
+    private val syncInterval: Long = 30000
     private var tvNetworkStatus: TextView? = null
     private val networkStatusInterval: Long = 1500
 
@@ -44,11 +45,14 @@ class MainActivity : AppCompatActivity() {
         override fun run() {
             try {
                 if (NetworkUtils.isOnline(applicationContext)) {
-                    syncFacesFromBackend()
+                    val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+                    val token = prefs.getString("token", null)
+                    if (!token.isNullOrBlank()) {
+                        syncFacesFromBackend()
+                    }
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
-                Toast.makeText(this@MainActivity, "Sync Error: ${e.message}", Toast.LENGTH_SHORT).show()
             }
             handler.postDelayed(this, syncInterval)
         }
@@ -102,7 +106,7 @@ class MainActivity : AppCompatActivity() {
 
         // Initialize DB and Sync
         android.util.Log.e("AppCrash", "Initializing DBManager")
-        dbManager = DBManager(this)
+        dbManager = DBManager(applicationContext)
         dbManager.loadPerson()
         // Removed sync from onCreate to rely on onResume
 
@@ -242,156 +246,87 @@ class MainActivity : AppCompatActivity() {
                     try {
                         if (response.isSuccessful) {
                             val faces = response.body()?.faces ?: emptyList()
-                            val serverIds = faces.mapNotNull { it.id }.toSet()
-                            val serverNames = faces.map { it.name }.toSet()
-                            
-                            // 1. Delete faces that are not on the server (BUT protect unsynced local faces)
-                            val localPersons = DBManager.personList.toList() // Copy list to avoid concurrent modification
-                            var deletedCount = 0
-                            
-                            localPersons.forEach { person ->
-                                var isOnServer = false
-                                if (!person.id.isNullOrEmpty()) {
-                                    if (serverIds.contains(person.id)) isOnServer = true
-                                } else {
-                                     // Legacy/Migration check
-                                     if (serverNames.contains(person.name)) isOnServer = true
-                                }
-        
-                                if (!isOnServer) {
-                                    // Only delete if it was previously synced.
-                                    // If synced == false, it means it's a new local user waiting for upload.
-                                    if (person.synced) {
-                                        if (!person.id.isNullOrEmpty()) {
-                                            dbManager.deletePersonById(person.id)
-                                        } else {
-                                            dbManager.deletePerson(person.name)
-                                        }
-                                        deletedCount++
-                                    }
-                                }
+                            val signature = facesSignature(faces)
+                            val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+                            val lastSig = prefs.getString("last_faces_signature", null)
+                            if (lastSig != null && lastSig == signature) {
+                                return
                             }
-        
-                            // 2. Add or Update faces
-                            var newFacesCount = 0
-                            var updatedFacesCount = 0
-                            
-                            faces.forEach { faceData ->
-                                try {
-                                    // Check if exists
-                                    var existingPerson: com.faceplugin.facerecognition.Person? = null
-                                    
-                                    // Try matching by ID first
-                                    if (!faceData.id.isNullOrEmpty()) {
-                                         existingPerson = DBManager.personList.find { it.id == faceData.id }
-                                    }
-                                    
-                                    // Fallback to Name matching if ID match failed
-                                    if (existingPerson == null) {
-                                         val candidates = DBManager.personList.filter {
-                                             it.synced && it.id.isNullOrEmpty() && it.name == faceData.name
-                                         }
-                                         if (candidates.size == 1) {
-                                             existingPerson = candidates.first()
-                                         }
-                                    }
-                                    
-                                    val phone = faceData.phone ?: ""
-                                    val dept = faceData.department ?: ""
-                                    val desig = faceData.designation ?: ""
-                                    val shift = faceData.shift ?: ""
-                                    val id = faceData.id ?: ""
-                                    val customDataObj = faceData.customData
-                                    val customDataStr = if (customDataObj != null) customDataObj.toString() else ""
-        
-                                    if (existingPerson == null) {
-                                        try {
-                                            if (faceData.templates != null && faceData.faceImage != null) {
-                                                val templates = Base64.decode(faceData.templates, Base64.NO_WRAP)
-                                                val faceImageBytes = Base64.decode(faceData.faceImage, Base64.NO_WRAP)
-                                                val faceBitmap = BitmapFactory.decodeByteArray(faceImageBytes, 0, faceImageBytes.size)
-            
-                                                // Insert into DB and memory
-                                                if (faceBitmap != null) {
-                                                    dbManager.insertPerson(id, faceData.name, faceBitmap, templates, phone, dept, desig, shift, customDataStr, true)
-                                                    newFacesCount++
-                                                }
-                                            }
-                                        } catch (e: Exception) {
-                                            e.printStackTrace()
-                                        }
-                                    } else {
-                                        // Check for updates
-                                        var needsMetadataUpdate = false
-                                        if (existingPerson.phone != phone || 
-                                            existingPerson.department != dept || 
-                                            existingPerson.designation != desig ||
-                                            existingPerson.shift != shift ||
-                                            existingPerson.customData != customDataStr ||
-                                            (existingPerson.id != id && !id.isNullOrEmpty())) { // Also update ID if missing locally
-                                            needsMetadataUpdate = true
-                                        }
+                            prefs.edit().putString("last_faces_signature", signature).apply()
 
-                                        if (!id.isNullOrEmpty() && existingPerson.id.isNullOrEmpty() && !existingPerson.localUid.isNullOrEmpty()) {
-                                            dbManager.updatePersonAfterSyncByLocalUid(existingPerson.localUid, id)
-                                            existingPerson.id = id
-                                        }
-                                        
-                                        // Check for Face Update
-                                        var needsFaceUpdate = false
+                            Thread {
+                                try {
+                                    var newFacesCount = 0
+                                    var updatedFacesCount = 0
+
+                                    faces.forEach { faceData ->
                                         try {
-                                            if (faceData.templates != null) {
-                                                val serverTemplates = Base64.decode(faceData.templates, Base64.NO_WRAP)
-                                                // Compare byte arrays
-                                                if (!java.util.Arrays.equals(existingPerson.templates, serverTemplates)) {
-                                                    needsFaceUpdate = true
-                                                }
+                                            var existingPerson: com.faceplugin.facerecognition.Person? = null
+                                            if (!faceData.id.isNullOrEmpty()) {
+                                                existingPerson = DBManager.personList.find { it.id == faceData.id }
                                             }
-                                        } catch (e: Exception) {
-                                            e.printStackTrace()
-                                        }
-                                        
-                                        // If it was marked as not synced but now it is on server, mark it as synced
-                                        if (!existingPerson.synced) {
-                                            if (!existingPerson.id.isNullOrEmpty()) {
-                                                dbManager.updatePersonStatusById(existingPerson.id, true)
+                                            if (existingPerson == null) {
+                                                existingPerson = DBManager.personList.find { it.synced && it.name == faceData.name }
+                                            }
+
+                                            val phone = faceData.phone ?: ""
+                                            val dept = faceData.department ?: ""
+                                            val desig = faceData.designation ?: ""
+                                            val shift = faceData.shift ?: ""
+                                            val id = faceData.id ?: ""
+                                            val customDataObj = faceData.customData
+                                            val customDataStr = if (customDataObj != null) customDataObj.toString() else ""
+
+                                            val templatesB64 = faceData.templates
+                                            val faceB64 = faceData.faceImage
+                                            if (templatesB64.isNullOrEmpty() || faceB64.isNullOrEmpty()) return@forEach
+
+                                            val templates = Base64.decode(templatesB64, Base64.NO_WRAP)
+                                            val faceImageBytes = Base64.decode(faceB64, Base64.NO_WRAP)
+                                            val faceBitmap = BitmapFactory.decodeByteArray(faceImageBytes, 0, faceImageBytes.size) ?: return@forEach
+
+                                            if (existingPerson == null) {
+                                                dbManager.insertPerson(id, faceData.name, faceBitmap, templates, phone, dept, desig, shift, customDataStr, true)
+                                                newFacesCount++
                                             } else {
-                                                dbManager.updatePersonStatus(existingPerson.name, true)
-                                            }
-                                            // No toast needed, silent update
-                                        }
-            
-                                        if (needsFaceUpdate || needsMetadataUpdate) {
-                                            // Perform Full Update
-                                            try {
-                                                if (faceData.templates != null && faceData.faceImage != null) {
-                                                    val templates = Base64.decode(faceData.templates, Base64.NO_WRAP)
-                                                    val faceImageBytes = Base64.decode(faceData.faceImage, Base64.NO_WRAP)
-                                                    val faceBitmap = BitmapFactory.decodeByteArray(faceImageBytes, 0, faceImageBytes.size)
-                                                    
-                                                    if (faceBitmap != null) {
-                                                        dbManager.insertPerson(id, faceData.name, faceBitmap, templates, phone, dept, desig, shift, customDataStr, true)
-                                                        updatedFacesCount++
+                                                val effectiveId = if (!id.isNullOrEmpty()) id else (existingPerson.id ?: "")
+                                                val needsMetadataUpdate =
+                                                    existingPerson.phone != phone ||
+                                                        existingPerson.department != dept ||
+                                                        existingPerson.designation != desig ||
+                                                        existingPerson.shift != shift ||
+                                                        existingPerson.customData != customDataStr ||
+                                                        (existingPerson.id != id && !id.isNullOrEmpty())
+
+                                                var needsFaceUpdate = false
+                                                try {
+                                                    if (!java.util.Arrays.equals(existingPerson.templates, templates)) {
+                                                        needsFaceUpdate = true
                                                     }
+                                                } catch (_: Exception) {}
+
+                                                if (needsFaceUpdate || needsMetadataUpdate) {
+                                                    dbManager.insertPerson(effectiveId, faceData.name, faceBitmap, templates, phone, dept, desig, shift, customDataStr, true)
+                                                    updatedFacesCount++
                                                 }
-                                            } catch (e: Exception) {
-                                                e.printStackTrace()
                                             }
+                                        } catch (_: Exception) {
                                         }
                                     }
-                                } catch (e: Exception) {
-                                    e.printStackTrace()
+
+                                    runOnUiThread {
+                                        try {
+                                            dbManager.loadPerson()
+                                        } catch (_: Exception) {
+                                        }
+                                        val currentFragment = supportFragmentManager.findFragmentById(R.id.fragment_container)
+                                        if (currentFragment is UsersFragment) {
+                                            currentFragment.refreshList()
+                                        }
+                                    }
+                                } catch (_: Exception) {
                                 }
-                            }
-                            if (newFacesCount > 0 || deletedCount > 0 || updatedFacesCount > 0) {
-                                Toast.makeText(this@MainActivity, "Synced: $newFacesCount added, $updatedFacesCount updated, $deletedCount deleted", Toast.LENGTH_SHORT).show()
-                                
-                                // Force UI Refresh if UsersFragment is visible
-                                val currentFragment = supportFragmentManager.findFragmentById(R.id.fragment_container)
-                                if (currentFragment is UsersFragment) {
-                                    currentFragment.refreshList()
-                                }
-                            }
+                            }.start()
                         } else {
                             // Handle 403 Suspended
                              try {
@@ -427,5 +362,18 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             e.printStackTrace()
         }
+    }
+
+    private fun facesSignature(faces: List<com.faceplugin.facerecognition.api.SyncRequest>): String {
+        val sb = StringBuilder()
+        sb.append(faces.size).append('|')
+        for (i in 0 until kotlin.math.min(faces.size, 100)) {
+            val f = faces[i]
+            sb.append(f.id ?: "").append(':').append(f.name ?: "").append('|')
+        }
+        val bytes = MessageDigest.getInstance("SHA-256").digest(sb.toString().toByteArray(Charsets.UTF_8))
+        val out = StringBuilder(bytes.size * 2)
+        for (b in bytes) out.append(String.format("%02x", b))
+        return out.toString()
     }
 }

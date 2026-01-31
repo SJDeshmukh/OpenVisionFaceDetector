@@ -17,6 +17,7 @@ import android.widget.TextView
 import android.view.View
 import android.provider.Settings
 import com.faceplugin.facerecognition.api.RegisterRequest
+import java.security.MessageDigest
 
 class LoginActivity : AppCompatActivity() {
 
@@ -49,6 +50,24 @@ class LoginActivity : AppCompatActivity() {
 
             val deviceId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
             val request = LoginRequest(username, password, deviceId)
+
+            val online = try {
+                NetworkUtils.isOnline(applicationContext)
+            } catch (_: Exception) {
+                false
+            }
+
+            if (!online) {
+                if (tryOfflineLogin(username, password)) {
+                    val intent = Intent(this@LoginActivity, MainActivity::class.java)
+                    startActivity(intent)
+                    finish()
+                } else {
+                    Toast.makeText(this, "Offline: Login needs last successful credentials", Toast.LENGTH_SHORT).show()
+                }
+                return@setOnClickListener
+            }
+
             RetrofitClient.getService().login(request).enqueue(object : Callback<LoginResponse> {
                 override fun onResponse(call: Call<LoginResponse>, response: Response<LoginResponse>) {
                     if (response.isSuccessful && response.body()?.status == "success") {
@@ -65,6 +84,7 @@ class LoginActivity : AppCompatActivity() {
                         if (token != null) editor.putString("token", token)
                         if (vendorId != null) editor.putInt("vendor_id", vendorId)
                         if (companyId != null) editor.putInt("company_id", companyId)
+                        editor.putString("offline_login_hash", offlineLoginHash(username, password))
                         editor.apply()
 
                         // Set token in RetrofitClient
@@ -98,7 +118,14 @@ class LoginActivity : AppCompatActivity() {
                 }
 
                 override fun onFailure(call: Call<LoginResponse>, t: Throwable) {
-                    Toast.makeText(this@LoginActivity, "Network error: ${t.message}", Toast.LENGTH_SHORT).show()
+                    if (tryOfflineLogin(username, password)) {
+                        Toast.makeText(this@LoginActivity, "Offline: Using cached login", Toast.LENGTH_SHORT).show()
+                        val intent = Intent(this@LoginActivity, MainActivity::class.java)
+                        startActivity(intent)
+                        finish()
+                    } else {
+                        Toast.makeText(this@LoginActivity, "Network error: ${t.message}", Toast.LENGTH_SHORT).show()
+                    }
                 }
             })
         }
@@ -193,5 +220,24 @@ class LoginActivity : AppCompatActivity() {
         builder.setNegativeButton("Cancel") { dialog, which -> dialog.cancel() }
 
         builder.show()
+    }
+
+    private fun offlineLoginHash(username: String, password: String): String {
+        val input = "$username:$password"
+        val bytes = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.UTF_8))
+        val sb = StringBuilder(bytes.size * 2)
+        for (b in bytes) {
+            sb.append(String.format("%02x", b))
+        }
+        return sb.toString()
+    }
+
+    private fun tryOfflineLogin(username: String, password: String): Boolean {
+        val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+        val savedUser = prefs.getString("username", null)
+        val savedHash = prefs.getString("offline_login_hash", null)
+        if (savedUser.isNullOrBlank() || savedHash.isNullOrBlank()) return false
+        if (savedUser != username) return false
+        return savedHash == offlineLoginHash(username, password)
     }
 }

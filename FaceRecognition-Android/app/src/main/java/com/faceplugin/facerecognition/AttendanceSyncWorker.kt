@@ -3,13 +3,10 @@ package com.faceplugin.facerecognition
 import android.content.Context
 import androidx.work.Worker
 import androidx.work.WorkerParameters
-import androidx.work.ForegroundInfo
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.Constraints
 import androidx.work.NetworkType
-import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
 import com.faceplugin.facerecognition.api.PersonEventRequest
 import com.faceplugin.facerecognition.api.RetrofitClient
 import com.faceplugin.facerecognition.api.GreetingService
@@ -59,18 +56,6 @@ class AttendanceSyncWorker(appContext: Context, params: WorkerParameters) : Work
             } catch (e: Exception) {
                 failureCount++
             }
-        }
-        if (successCount > 0) {
-            try {
-                val nm = NotificationManagerCompat.from(applicationContext)
-                val n = NotificationCompat.Builder(applicationContext, "sync_status")
-                    .setSmallIcon(android.R.drawable.stat_sys_upload_done)
-                    .setContentTitle("Attendance Sync")
-                    .setContentText("Synced $successCount items")
-                    .setPriority(NotificationCompat.PRIORITY_LOW)
-                    .build()
-                nm.notify(System.currentTimeMillis().toInt(), n)
-            } catch (_: Exception) {}
         }
         return Result.success()
     }

@@ -7,6 +7,9 @@ import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Toast;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -32,7 +35,7 @@ public class UsersFragment extends Fragment {
     public View onCreateView(@NonNull LayoutInflater inflater, @Nullable ViewGroup container, @Nullable Bundle savedInstanceState) {
         View view = inflater.inflate(R.layout.fragment_users, container, false);
         
-        dbManager = new DBManager(getContext());
+        dbManager = new DBManager(requireContext().getApplicationContext());
         dbManager.loadPerson(); // Ensure latest data is loaded
 
         recyclerView = view.findViewById(R.id.recycler_users);
@@ -79,7 +82,24 @@ public class UsersFragment extends Fragment {
         adapter.notifyItemRangeChanged(position, adapter.getItemCount());
         Toast.makeText(getContext(), "Deleted locally", Toast.LENGTH_SHORT).show();
 
-        // 3. Delete from Backend
+        if (person != null && !person.synced) {
+            return;
+        }
+
+        boolean online = false;
+        try {
+            online = NetworkUtils.INSTANCE.isOnline(requireContext().getApplicationContext());
+        } catch (Exception ignored) {}
+
+        // 3. Delete from Backend (or queue if offline)
+        if (!online) {
+            queueDelete(person);
+            try {
+                SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
+            } catch (Exception ignored) {}
+            return;
+        }
+
         GreetingService service = RetrofitClient.getService();
         Call<Void> call = hasId ? service.deleteFaceById(person.id) : service.deleteFace(person.name);
         call.enqueue(new Callback<Void>() {
@@ -90,19 +110,31 @@ public class UsersFragment extends Fragment {
                          Toast.makeText(getContext(), "Deleted from backend", Toast.LENGTH_SHORT).show();
                     }
                 } else {
-                    if (getActivity() != null) {
-                        Toast.makeText(getContext(), "Failed to delete from backend", Toast.LENGTH_SHORT).show();
-                    }
+                    queueDelete(person);
+                    try {
+                        SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
+                    } catch (Exception ignored) {}
                 }
             }
 
             @Override
             public void onFailure(Call<Void> call, Throwable t) {
-                if (getActivity() != null) {
-                    Toast.makeText(getContext(), "Error deleting from backend: " + t.getMessage(), Toast.LENGTH_SHORT).show();
-                }
+                queueDelete(person);
+                try {
+                    SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
+                } catch (Exception ignored) {}
             }
         });
+    }
+
+    private void queueDelete(Person person) {
+        try {
+            String pid = (person != null && person.id != null) ? person.id : null;
+            String localUid = (person != null && person.localUid != null) ? person.localUid : null;
+            String name = (person != null && person.name != null) ? person.name : null;
+            String ts = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US).format(new Date());
+            dbManager.insertDeleteQueue(pid, localUid, name, ts);
+        } catch (Exception ignored) {}
     }
     
     @Override
@@ -112,8 +144,11 @@ public class UsersFragment extends Fragment {
     }
 
     public void refreshList() {
-        if (adapter != null) {
-            adapter.notifyDataSetChanged();
-        }
+        try {
+            if (dbManager != null) {
+                dbManager.loadPerson();
+            }
+        } catch (Exception ignored) {}
+        if (adapter != null) adapter.notifyDataSetChanged();
     }
 }

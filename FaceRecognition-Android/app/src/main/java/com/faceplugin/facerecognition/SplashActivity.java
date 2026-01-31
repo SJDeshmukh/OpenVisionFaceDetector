@@ -47,49 +47,31 @@ public class SplashActivity extends AppCompatActivity {
             runOnUiThread(() -> tvStatus.setText("Connecting..."));
 
             SharedPreferences prefs = getSharedPreferences("app_prefs", MODE_PRIVATE);
-            String savedUrl = prefs.getString("server_url", null);
-            
-            String targetUrl;
-            boolean localReachable = pingServer(LOCAL_URL, 3000);
+            String targetUrl = LOCAL_URL;
 
-            if (savedUrl != null && !savedUrl.isEmpty()) {
-                boolean savedLooksCloud = savedUrl.contains("onrender.com") || savedUrl.equals(RENDER_URL);
-                boolean savedReachable = pingServer(savedUrl, 3000);
-
-                if (savedLooksCloud && localReachable) {
-                    targetUrl = LOCAL_URL;
-                } else if (savedReachable) {
-                    targetUrl = savedUrl;
-                } else if (localReachable) {
-                    targetUrl = LOCAL_URL;
-                } else {
-                    targetUrl = RENDER_URL;
-                }
-            } else if (localReachable) {
-                targetUrl = LOCAL_URL;
-            } else {
-                targetUrl = RENDER_URL;
-            }
-            
             RetrofitClient.setBaseUrl(targetUrl);
             prefs.edit().putString("server_url", targetUrl).apply();
 
-            // Ping to ensure server is awake
-            // Increased timeout to 30s as requested
-            runOnUiThread(() -> tvStatus.setText("Connecting to " + (targetUrl.equals(RENDER_URL) ? "Cloud Server..." : "Local Server...")));
-            if (pingServer(targetUrl, 30000)) { 
-                 runOnUiThread(() -> {
-                     tvStatus.setText("Connected to " + (targetUrl.equals(RENDER_URL) ? "Cloud" : "Server"));
-                     proceedToNextScreen();
-                 });
+            boolean online = false;
+            try {
+                online = NetworkUtils.INSTANCE.isOnline(getApplicationContext());
+            } catch (Exception ignored) {}
+
+            if (!online) {
+                runOnUiThread(() -> tvStatus.setText("Offline Mode"));
+                new Handler().postDelayed(this::proceedToNextScreen, 800);
+                return;
+            }
+
+            runOnUiThread(() -> tvStatus.setText("Connecting to Server..."));
+            if (pingServer(targetUrl, 15000)) {
+                runOnUiThread(() -> {
+                    tvStatus.setText("Connected");
+                    proceedToNextScreen();
+                });
             } else {
-                 runOnUiThread(() -> {
-                     tvStatus.setText("Server Unreachable. Check Internet.");
-                     // Retry logic or manual retry button could be added here, 
-                     // but for now we proceed so the user isn't stuck forever, 
-                     // although subsequent calls will likely fail.
-                     new Handler().postDelayed(this::proceedToNextScreen, 2000);
-                 });
+                runOnUiThread(() -> tvStatus.setText("Server Unreachable"));
+                new Handler().postDelayed(this::proceedToNextScreen, 1200);
             }
         }).start();
     }

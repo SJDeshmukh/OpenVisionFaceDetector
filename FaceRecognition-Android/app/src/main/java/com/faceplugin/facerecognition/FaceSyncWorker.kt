@@ -3,8 +3,6 @@ package com.faceplugin.facerecognition
 import android.content.Context
 import android.graphics.Bitmap
 import android.util.Base64
-import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
 import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
@@ -68,20 +66,6 @@ class FaceSyncWorker(appContext: Context, params: WorkerParameters) : Worker(app
                     }
                     successCount++
                 }
-            } catch (_: Exception) {
-            }
-        }
-
-        if (successCount > 0) {
-            try {
-                val nm = NotificationManagerCompat.from(applicationContext)
-                val n = NotificationCompat.Builder(applicationContext, "sync_status")
-                    .setSmallIcon(android.R.drawable.stat_sys_upload_done)
-                    .setContentTitle("Face Sync")
-                    .setContentText("Synced $successCount faces")
-                    .setPriority(NotificationCompat.PRIORITY_LOW)
-                    .build()
-                nm.notify(System.currentTimeMillis().toInt(), n)
             } catch (_: Exception) {
             }
         }

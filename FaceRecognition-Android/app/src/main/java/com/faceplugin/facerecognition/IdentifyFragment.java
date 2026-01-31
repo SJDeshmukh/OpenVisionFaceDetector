@@ -120,7 +120,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     public View onCreateView(@NonNull LayoutInflater inflater, @Nullable ViewGroup container, @Nullable Bundle savedInstanceState) {
         View view = inflater.inflate(R.layout.fragment_identify, container, false);
 
-        dbManager = new DBManager(requireContext());
+        dbManager = new DBManager(requireContext().getApplicationContext());
         dbManager.loadPerson(); // Load faces when fragment is created
 
         // --- Socket.IO Init ---
@@ -167,6 +167,11 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     @Override
     public void onResume() {
         super.onResume();
+        try {
+            if (dbManager != null) {
+                dbManager.loadPerson();
+            }
+        } catch (Exception ignored) {}
         lastProcessedPersonId = null;
         hideScreenSaver(); // Start with screen active
         if (statusText != null) {
@@ -282,23 +287,33 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US);
         String timestamp = sdf.format(new Date());
 
-        if (isAttendance) {
-            boolean online = false;
-            try {
-                online = NetworkUtils.INSTANCE.isOnline(requireContext().getApplicationContext());
-            } catch (Exception ignored) {}
-            if (!online || personId == null || personId.isEmpty()) {
+        boolean online = false;
+        try {
+            online = NetworkUtils.INSTANCE.isOnline(requireContext().getApplicationContext());
+        } catch (Exception ignored) {}
+
+        if (!online || personId == null || personId.isEmpty()) {
+            if (isAttendance) {
                 dbManager.insertAttendanceQueue(personId, localUid, name, timestamp, "pending", image, false);
                 Toast.makeText(getContext(), "Offline: Attendance Saved", Toast.LENGTH_SHORT).show();
                 playAttendanceSound("CHECK_IN");
                 showStatusOverlay("CHECK_IN");
-                try {
-                    SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
-                } catch (Exception e) {
-                    e.printStackTrace();
+            } else {
+                Toast.makeText(getContext(), "Offline: Recognized locally", Toast.LENGTH_SHORT).show();
+                playAttendanceSound("CHECK_IN");
+                showStatusOverlay("CHECK_IN");
+                if (getActivity() != null) {
+                    getActivity().runOnUiThread(() -> {
+                        if (statusText != null) statusText.setText("Offline: " + name);
+                    });
                 }
-                return;
             }
+            try {
+                SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+            return;
         }
 
         PersonEventRequest request = new PersonEventRequest(detected, recognized, personId, name, confidence, imageBase64, isAttendance, timestamp);

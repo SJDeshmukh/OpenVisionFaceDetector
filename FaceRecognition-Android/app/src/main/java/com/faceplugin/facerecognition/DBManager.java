@@ -17,7 +17,7 @@ public class DBManager extends SQLiteOpenHelper {
     public static ArrayList<Person> personList = new ArrayList<Person>();
 
     public DBManager(Context context) {
-        super(context, "mydb" , null, 9);
+        super(context, "mydb" , null, 11);
     }
 
     @Override
@@ -31,6 +31,10 @@ public class DBManager extends SQLiteOpenHelper {
         db.execSQL(
                 "create table attendance_queue " +
                         "(id integer primary key autoincrement, person_id text, local_uid text, name text, timestamp text, status text, image blob, is_late integer)"
+        );
+        db.execSQL(
+                "create table delete_queue " +
+                        "(id integer primary key autoincrement, person_id text, local_uid text, name text, created_at text)"
         );
     }
 
@@ -65,6 +69,25 @@ public class DBManager extends SQLiteOpenHelper {
                 db.execSQL("ALTER TABLE attendance_queue ADD COLUMN local_uid text");
             } catch (Exception ignored) {}
         }
+        if (oldVersion < 10) {
+            try { db.execSQL("ALTER TABLE person ADD COLUMN phone text"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE person ADD COLUMN department text"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE person ADD COLUMN designation text"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE person ADD COLUMN shift text"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE person ADD COLUMN custom_data text"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE person ADD COLUMN synced integer default 1"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE person ADD COLUMN id text"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE person ADD COLUMN local_uid text"); } catch (Exception ignored) {}
+            try { db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_person_local_uid ON person(local_uid)"); } catch (Exception ignored) {}
+        }
+        if (oldVersion < 11) {
+            try {
+                db.execSQL(
+                        "create table if not exists delete_queue " +
+                                "(id integer primary key autoincrement, person_id text, local_uid text, name text, created_at text)"
+                );
+            } catch (Exception ignored) {}
+        }
     }
 
     private String ensureLocalUid(String localUid) {
@@ -82,6 +105,19 @@ public class DBManager extends SQLiteOpenHelper {
                 if (p.id != null && p.id.equals(id)) {
                     exists = true;
                     existingLocalUid = p.localUid;
+                    personList.remove(i);
+                    break;
+                }
+            }
+        } else if (name != null && !name.isEmpty()) {
+            for (int i = 0; i < personList.size(); i++) {
+                Person p = personList.get(i);
+                if (p.name != null && p.name.equals(name)) {
+                    exists = true;
+                    existingLocalUid = p.localUid;
+                    if (p.id != null && !p.id.isEmpty()) {
+                        id = p.id;
+                    }
                     personList.remove(i);
                     break;
                 }
@@ -125,7 +161,10 @@ public class DBManager extends SQLiteOpenHelper {
                 db.update("person", contentValues, "local_uid = ?", new String[]{effectiveLocalUid});
             }
         } else {
-            db.insert("person", null, contentValues);
+            long res = db.insert("person", null, contentValues);
+            if (res == -1) {
+                db.update("person", contentValues, "local_uid = ?", new String[]{effectiveLocalUid});
+            }
         }
 
         Person p = new Person(effectiveLocalUid, id, name, face, templates, phone, department, designation, shift, customData);
@@ -532,5 +571,59 @@ public class DBManager extends SQLiteOpenHelper {
             } catch (Exception ignored) {}
         }
         return list;
+    }
+
+    public void insertDeleteQueue(String personId, String localUid, String name, String createdAt) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues cv = new ContentValues();
+        cv.put("person_id", personId);
+        cv.put("local_uid", localUid);
+        cv.put("name", name);
+        cv.put("created_at", createdAt);
+        db.insert("delete_queue", null, cv);
+    }
+
+    public ArrayList<DeleteQueueItem> getDeleteQueue() {
+        ArrayList<DeleteQueueItem> list = new ArrayList<>();
+        SQLiteDatabase db = this.getReadableDatabase();
+        Cursor res = null;
+        try {
+            res = db.rawQuery("select * from delete_queue", null);
+            if (res.moveToFirst()) {
+                while (!res.isAfterLast()) {
+                    DeleteQueueItem item = new DeleteQueueItem();
+                    item.id = res.getInt(res.getColumnIndexOrThrow("id"));
+                    int pidIdx = res.getColumnIndex("person_id");
+                    if (pidIdx != -1) item.personId = res.getString(pidIdx);
+                    int luIdx = res.getColumnIndex("local_uid");
+                    if (luIdx != -1) item.localUid = res.getString(luIdx);
+                    int nameIdx = res.getColumnIndex("name");
+                    if (nameIdx != -1) item.name = res.getString(nameIdx);
+                    int caIdx = res.getColumnIndex("created_at");
+                    if (caIdx != -1) item.createdAt = res.getString(caIdx);
+                    list.add(item);
+                    res.moveToNext();
+                }
+            }
+        } catch (Exception ignored) {
+        } finally {
+            try {
+                if (res != null) res.close();
+            } catch (Exception ignored) {}
+        }
+        return list;
+    }
+
+    public void deleteDeleteQueueItem(int id) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        db.delete("delete_queue", "id = ?", new String[]{String.valueOf(id)});
+    }
+
+    public static class DeleteQueueItem {
+        public int id;
+        public String personId;
+        public String localUid;
+        public String name;
+        public String createdAt;
     }
 }
