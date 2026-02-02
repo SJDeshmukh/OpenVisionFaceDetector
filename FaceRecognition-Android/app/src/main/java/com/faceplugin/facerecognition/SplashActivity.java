@@ -8,6 +8,7 @@ import android.content.Intent;
 import android.os.AsyncTask;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.view.animation.Animation;
 import android.view.animation.AnimationUtils;
@@ -21,9 +22,11 @@ import java.net.URL;
 public class SplashActivity extends AppCompatActivity {
 
     private TextView tvStatus;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
-    private static final String LOCAL_URL = "http://192.168.1.102:5001/";
+    private static final String LOCAL_URL = "http://192.168.1.101:5001/";
     private static final String RENDER_URL = "https://face-detection-backend-69o7.onrender.com/";
+    private static final String LEGACY_LOCAL_URL = "http://192.168.1.102:5001/";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -47,10 +50,17 @@ public class SplashActivity extends AppCompatActivity {
             runOnUiThread(() -> tvStatus.setText("Connecting..."));
 
             SharedPreferences prefs = getSharedPreferences("app_prefs", MODE_PRIVATE);
-            String targetUrl = LOCAL_URL;
+            String targetUrl = prefs.getString("server_url", null);
+            if (targetUrl == null || targetUrl.isEmpty()) {
+                targetUrl = LOCAL_URL;
+                prefs.edit().putString("server_url", targetUrl).apply();
+            }
+            if (LEGACY_LOCAL_URL.equals(targetUrl)) {
+                targetUrl = LOCAL_URL;
+                prefs.edit().putString("server_url", targetUrl).apply();
+            }
 
             RetrofitClient.setBaseUrl(targetUrl);
-            prefs.edit().putString("server_url", targetUrl).apply();
 
             boolean online = false;
             try {
@@ -59,7 +69,7 @@ public class SplashActivity extends AppCompatActivity {
 
             if (!online) {
                 runOnUiThread(() -> tvStatus.setText("Offline Mode"));
-                new Handler().postDelayed(this::proceedToNextScreen, 800);
+                mainHandler.postDelayed(this::proceedToNextScreen, 800);
                 return;
             }
 
@@ -71,7 +81,7 @@ public class SplashActivity extends AppCompatActivity {
                 });
             } else {
                 runOnUiThread(() -> tvStatus.setText("Server Unreachable"));
-                new Handler().postDelayed(this::proceedToNextScreen, 1200);
+                mainHandler.postDelayed(this::proceedToNextScreen, 1200);
             }
         }).start();
     }
@@ -94,7 +104,29 @@ public class SplashActivity extends AppCompatActivity {
 
     private void proceedToNextScreen() {
         SharedPreferences prefs = getSharedPreferences("app_prefs", MODE_PRIVATE);
-        String role = prefs.getString("role", null);
+        String selectedCode = prefs.getString("selected_business_type_code", null);
+        if (selectedCode == null || selectedCode.isEmpty()) {
+            selectedCode = prefs.getString("selected_business_type", null);
+            if (selectedCode != null && !selectedCode.isEmpty()) {
+                prefs.edit().putString("selected_business_type_code", selectedCode).apply();
+            }
+        }
+        if (selectedCode == null || selectedCode.isEmpty()) {
+            String legacyVertical = prefs.getString("selected_vendor_vertical", null);
+            if (legacyVertical != null && !legacyVertical.isEmpty()) {
+                prefs.edit()
+                        .putString("selected_business_type_code", legacyVertical)
+                        .putString("selected_business_type", legacyVertical)
+                        .apply();
+                selectedCode = legacyVertical;
+            }
+        }
+        if (selectedCode == null || selectedCode.isEmpty()) {
+            Intent intent = new Intent(SplashActivity.this, BusinessSelectActivity.class);
+            startActivity(intent);
+            finish();
+            return;
+        }
         String token = prefs.getString("token", null);
 
         if (token != null) {
@@ -102,7 +134,7 @@ public class SplashActivity extends AppCompatActivity {
         }
 
         Intent intent;
-        if (role != null) {
+        if (token != null) {
             intent = new Intent(SplashActivity.this, MainActivity.class);
         } else {
             intent = new Intent(SplashActivity.this, LoginActivity.class);

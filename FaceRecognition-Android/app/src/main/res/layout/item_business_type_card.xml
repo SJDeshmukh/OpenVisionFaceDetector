@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<com.google.android.material.card.MaterialCardView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/card_business_type"
+    android:layout_width="match_parent"
+    android:layout_height="56dp"
+    android:layout_marginBottom="12dp"
+    app:cardBackgroundColor="@color/vision_navy_800"
+    app:cardCornerRadius="14dp"
+    app:cardElevation="0dp"
+    app:strokeColor="@color/vision_navy_700"
+    app:strokeWidth="1dp">
+
+    <TextView
+        android:id="@+id/tv_business_type_label"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:gravity="center"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:textColor="@color/vision_text_primary"
+        android:textSize="14sp"
+        android:textStyle="bold" />
+
+</com.google.android.material.card.MaterialCardView>

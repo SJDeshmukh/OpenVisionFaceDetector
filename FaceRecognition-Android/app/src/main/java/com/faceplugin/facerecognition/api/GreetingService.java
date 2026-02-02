@@ -23,8 +23,17 @@ public interface GreetingService {
     @GET("api/admin/vendors/{vendor_id}/registration-config")
     Call<com.google.gson.JsonObject> getRegistrationConfig(@Path("vendor_id") int vendorId);
 
+    @GET("api/settings")
+    Call<com.google.gson.JsonObject> getSettings();
+
     @GET("api/sync/download")
     Call<SyncResponse> downloadFaces();
+
+    @GET("api/public/vendors")
+    Call<com.google.gson.JsonObject> getPublicVendors();
+
+    @GET("api/public/business-types")
+    Call<com.google.gson.JsonObject> getPublicBusinessTypes();
 
     @POST("api/stream/upload")
     Call<Void> uploadStreamFrame(@Body StreamRequest request);

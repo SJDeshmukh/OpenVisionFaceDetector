@@ -10,6 +10,7 @@ import android.graphics.BitmapFactory;
 
 import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.UUID;
 
 public class DBManager extends SQLiteOpenHelper {
@@ -17,7 +18,7 @@ public class DBManager extends SQLiteOpenHelper {
     public static ArrayList<Person> personList = new ArrayList<Person>();
 
     public DBManager(Context context) {
-        super(context, "mydb" , null, 11);
+        super(context, "mydb" , null, 12);
     }
 
     @Override
@@ -31,6 +32,10 @@ public class DBManager extends SQLiteOpenHelper {
         db.execSQL(
                 "create table attendance_queue " +
                         "(id integer primary key autoincrement, person_id text, local_uid text, name text, timestamp text, status text, image blob, is_late integer)"
+        );
+        db.execSQL(
+                "create table attendance_state " +
+                        "(id_key text primary key, person_id text, local_uid text, name text, last_status text, last_timestamp text)"
         );
         db.execSQL(
                 "create table delete_queue " +
@@ -88,6 +93,14 @@ public class DBManager extends SQLiteOpenHelper {
                 );
             } catch (Exception ignored) {}
         }
+        if (oldVersion < 12) {
+            try {
+                db.execSQL(
+                        "create table if not exists attendance_state " +
+                                "(id_key text primary key, person_id text, local_uid text, name text, last_status text, last_timestamp text)"
+                );
+            } catch (Exception ignored) {}
+        }
     }
 
     private String ensureLocalUid(String localUid) {
@@ -109,17 +122,15 @@ public class DBManager extends SQLiteOpenHelper {
                     break;
                 }
             }
-        } else if (name != null && !name.isEmpty()) {
-            for (int i = 0; i < personList.size(); i++) {
-                Person p = personList.get(i);
-                if (p.name != null && p.name.equals(name)) {
-                    exists = true;
-                    existingLocalUid = p.localUid;
-                    if (p.id != null && !p.id.isEmpty()) {
-                        id = p.id;
+            if (!exists && templates != null) {
+                for (int i = 0; i < personList.size(); i++) {
+                    Person p = personList.get(i);
+                    if (p.templates != null && Arrays.equals(p.templates, templates)) {
+                        exists = true;
+                        existingLocalUid = p.localUid;
+                        personList.remove(i);
+                        break;
                     }
-                    personList.remove(i);
-                    break;
                 }
             }
         } else if (localUid != null && !localUid.isEmpty()) {
@@ -128,6 +139,19 @@ public class DBManager extends SQLiteOpenHelper {
                 if (p.localUid != null && p.localUid.equals(localUid)) {
                     exists = true;
                     existingLocalUid = p.localUid;
+                    personList.remove(i);
+                    break;
+                }
+            }
+        } else if (templates != null) {
+            for (int i = 0; i < personList.size(); i++) {
+                Person p = personList.get(i);
+                if (p.templates != null && Arrays.equals(p.templates, templates)) {
+                    exists = true;
+                    existingLocalUid = p.localUid;
+                    if ((p.id != null && !p.id.isEmpty()) && (id == null || id.isEmpty())) {
+                        id = p.id;
+                    }
                     personList.remove(i);
                     break;
                 }
@@ -156,7 +180,10 @@ public class DBManager extends SQLiteOpenHelper {
 
         if (exists) {
             if (id != null && !id.isEmpty()) {
-                db.update("person", contentValues, "id = ?", new String[]{id});
+                int updated = db.update("person", contentValues, "id = ?", new String[]{id});
+                if (updated == 0) {
+                    db.update("person", contentValues, "local_uid = ?", new String[]{effectiveLocalUid});
+                }
             } else {
                 db.update("person", contentValues, "local_uid = ?", new String[]{effectiveLocalUid});
             }
@@ -256,6 +283,21 @@ public class DBManager extends SQLiteOpenHelper {
         }
     }
 
+    public void updatePersonStatusByLocalUid(String localUid, boolean synced) {
+        if (localUid == null || localUid.isEmpty()) return;
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues contentValues = new ContentValues();
+        contentValues.put("synced", synced ? 1 : 0);
+        db.update("person", contentValues, "local_uid = ?", new String[]{localUid});
+
+        for (Person p : personList) {
+            if (p.localUid != null && p.localUid.equals(localUid)) {
+                p.synced = synced;
+                break;
+            }
+        }
+    }
+
     public void updatePerson(String id, String name, String phone, String department, String designation, String shift, String customData) {
         SQLiteDatabase db = this.getWritableDatabase();
         ContentValues contentValues = new ContentValues();
@@ -335,7 +377,7 @@ public class DBManager extends SQLiteOpenHelper {
         personList.clear();
 
         SQLiteDatabase db = this.getReadableDatabase();
-        Cursor res =  db.rawQuery( "select * from person", null );
+        Cursor res =  db.rawQuery( "select rowid, * from person", null );
         res.moveToFirst();
 
         while(res.isAfterLast() == false){
@@ -346,6 +388,16 @@ public class DBManager extends SQLiteOpenHelper {
             String localUid = "";
             int localUidIdx = res.getColumnIndex("local_uid");
             if (localUidIdx != -1) localUid = res.getString(localUidIdx);
+            if (localUid == null || localUid.isEmpty()) {
+                try {
+                    long rid = res.getLong(res.getColumnIndexOrThrow("rowid"));
+                    String newUid = UUID.randomUUID().toString();
+                    ContentValues cv = new ContentValues();
+                    cv.put("local_uid", newUid);
+                    db.update("person", cv, "rowid = ?", new String[]{String.valueOf(rid)});
+                    localUid = newUid;
+                } catch (Exception ignored) {}
+            }
 
             String id = "";
             int idIdx = res.getColumnIndex("id");
@@ -394,6 +446,13 @@ public class DBManager extends SQLiteOpenHelper {
                     personList.set(i, person);
                     found = true;
                     break;
+                } else if (templates != null && p.templates != null && Arrays.equals(p.templates, templates)) {
+                    boolean keepNew = (id != null && !id.isEmpty()) && (p.id == null || p.id.isEmpty());
+                    if (keepNew) {
+                        personList.set(i, person);
+                    }
+                    found = true;
+                    break;
                 }
             }
             if (!found) {
@@ -420,8 +479,12 @@ public class DBManager extends SQLiteOpenHelper {
 
     public void insertAttendanceQueue(String personId, String localUid, String name, String timestamp, String status, Bitmap image, boolean isLate) {
         SQLiteDatabase db = this.getWritableDatabase();
+        String effectivePersonId = personId;
+        if ((effectivePersonId == null || effectivePersonId.isEmpty()) && localUid != null && !localUid.isEmpty()) {
+            effectivePersonId = resolvePersonId(localUid);
+        }
         ContentValues contentValues = new ContentValues();
-        contentValues.put("person_id", personId);
+        contentValues.put("person_id", effectivePersonId);
         contentValues.put("local_uid", localUid);
         contentValues.put("name", name);
         contentValues.put("timestamp", timestamp);
@@ -435,6 +498,114 @@ public class DBManager extends SQLiteOpenHelper {
         }
 
         db.insert("attendance_queue", null, contentValues);
+        upsertAttendanceState(effectivePersonId, localUid, name, status, timestamp);
+    }
+
+    public String predictNextAttendanceStatus(String personId, String localUid) {
+        return predictNextAttendanceStatus(personId, localUid, null);
+    }
+
+    public String predictNextAttendanceStatus(String personId, String localUid, String name) {
+        String last = getLastAttendanceStatus(personId, localUid, name);
+        if ("CHECK_IN".equalsIgnoreCase(last)) return "CHECK_OUT";
+        return "CHECK_IN";
+    }
+
+    public String getLastAttendanceStatus(String personId, String localUid, String name) {
+        String fromState = getAttendanceStateStatus(personId, localUid, name);
+        if (fromState != null && !fromState.isEmpty()) return fromState;
+        SQLiteDatabase db = this.getReadableDatabase();
+        Cursor c = null;
+        try {
+            String sql;
+            String[] args;
+            if (personId != null && !personId.isEmpty()) {
+                sql = "select status from attendance_queue where person_id = ? and status is not null and trim(status) != '' order by timestamp desc, id desc limit 1";
+                args = new String[]{personId};
+            } else if (localUid != null && !localUid.isEmpty()) {
+                sql = "select status from attendance_queue where local_uid = ? and status is not null and trim(status) != '' order by timestamp desc, id desc limit 1";
+                args = new String[]{localUid};
+            } else {
+                return null;
+            }
+            c = db.rawQuery(sql, args);
+            if (c.moveToFirst()) {
+                String s = c.getString(0);
+                return normalizeAttendanceStatus(s);
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (c != null) {
+                try { c.close(); } catch (Exception ignored) {}
+            }
+        }
+        return null;
+    }
+
+    public String getLastAttendanceTimestamp(String personId, String localUid, String name) {
+        SQLiteDatabase db = this.getReadableDatabase();
+        Cursor c = null;
+        try {
+            String key = makeAttendanceStateKey(personId, localUid, name);
+            if (key == null) return null;
+            c = db.rawQuery("select last_timestamp from attendance_state where id_key = ? limit 1", new String[]{key});
+            if (c.moveToFirst()) {
+                return c.getString(0);
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (c != null) {
+                try { c.close(); } catch (Exception ignored) {}
+            }
+        }
+        return null;
+    }
+
+    public void upsertAttendanceState(String personId, String localUid, String name, String status, String timestamp) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        String key = makeAttendanceStateKey(personId, localUid, name);
+        if (key == null) return;
+        ContentValues cv = new ContentValues();
+        cv.put("id_key", key);
+        cv.put("person_id", personId);
+        cv.put("local_uid", localUid);
+        cv.put("name", name);
+        cv.put("last_status", normalizeAttendanceStatus(status));
+        cv.put("last_timestamp", timestamp);
+        db.insertWithOnConflict("attendance_state", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
+    }
+
+    public String getAttendanceStateStatus(String personId, String localUid, String name) {
+        SQLiteDatabase db = this.getReadableDatabase();
+        Cursor c = null;
+        try {
+            String key = makeAttendanceStateKey(personId, localUid, name);
+            if (key == null) return null;
+            c = db.rawQuery("select last_status from attendance_state where id_key = ? limit 1", new String[]{key});
+            if (c.moveToFirst()) {
+                return normalizeAttendanceStatus(c.getString(0));
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (c != null) {
+                try { c.close(); } catch (Exception ignored) {}
+            }
+        }
+        return null;
+    }
+
+    private String makeAttendanceStateKey(String personId, String localUid, String name) {
+        if (personId != null && !personId.isEmpty()) return "pid:" + personId;
+        if (localUid != null && !localUid.isEmpty()) return "lu:" + localUid;
+        return null;
+    }
+
+    private String normalizeAttendanceStatus(String status) {
+        if (status == null) return null;
+        String cleaned = status.trim();
+        if (cleaned.isEmpty()) return null;
+        if ("pending".equalsIgnoreCase(cleaned)) return "CHECK_IN";
+        return cleaned.toUpperCase();
     }
 
     public ArrayList<QueueItem> getAttendanceQueue() {
@@ -491,21 +662,14 @@ public class DBManager extends SQLiteOpenHelper {
     }
 
     public String resolvePersonId(String localUid, String name) {
+        return resolvePersonId(localUid);
+    }
+
+    public String resolvePersonId(String localUid) {
         try {
             SQLiteDatabase db = this.getReadableDatabase();
             if (localUid != null && !localUid.isEmpty()) {
                 Cursor c = db.rawQuery("select id from person where local_uid = ? limit 1", new String[]{localUid});
-                try {
-                    if (c.moveToFirst()) {
-                        String id = c.getString(0);
-                        if (id != null && !id.isEmpty()) return id;
-                    }
-                } finally {
-                    c.close();
-                }
-            }
-            if (name != null && !name.isEmpty()) {
-                Cursor c = db.rawQuery("select id from person where name = ? and id is not null and id != '' limit 1", new String[]{name});
                 try {
                     if (c.moveToFirst()) {
                         String id = c.getString(0);

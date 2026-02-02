@@ -33,6 +33,40 @@ class LoginActivity : AppCompatActivity() {
         val btnLogin = findViewById<Button>(R.id.btn_login)
         val btnRegister = findViewById<TextView>(R.id.btn_register)
         val tvServerUrl = findViewById<TextView>(R.id.tv_server_url)
+        val tvBusiness = findViewById<TextView>(R.id.tv_business_name)
+        val btnParentLogin = findViewById<TextView>(R.id.btn_parent_login)
+
+        try {
+            val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+            var code = prefs.getString("selected_business_type_code", null)
+            var label = prefs.getString("selected_business_type_label", null)
+            if (code.isNullOrBlank()) {
+                code = prefs.getString("selected_business_type", null)
+            }
+            val allowParentLogin = try {
+                prefs.getBoolean("selected_allow_parent_login", code?.equals("school", true) == true)
+            } catch (_: Exception) {
+                code?.equals("school", true) == true
+            }
+            if (label.isNullOrBlank()) {
+                label = when (code?.lowercase()) {
+                    "school" -> "School / College"
+                    "wages" -> "Daily Wages / Workforce"
+                    "enterprise" -> "Enterprise (Custom)"
+                    else -> code
+                }
+            }
+            if (!code.isNullOrBlank()) {
+                tvBusiness.text = "Business: $label"
+                btnParentLogin.visibility = if (allowParentLogin) View.VISIBLE else View.GONE
+            } else {
+                tvBusiness.text = "Business: -"
+                btnParentLogin.visibility = View.VISIBLE
+            }
+        } catch (_: Exception) {
+            tvBusiness.text = "Business: -"
+            btnParentLogin.visibility = View.VISIBLE
+        }
         
         tvServerUrl.text = "Server: " + RetrofitClient.getBaseUrl()
         tvServerUrl.setOnClickListener {
@@ -71,7 +105,6 @@ class LoginActivity : AppCompatActivity() {
             RetrofitClient.getService().login(request).enqueue(object : Callback<LoginResponse> {
                 override fun onResponse(call: Call<LoginResponse>, response: Response<LoginResponse>) {
                     if (response.isSuccessful && response.body()?.status == "success") {
-                        val role = response.body()?.role ?: "user"
                         val token = response.body()?.token
                         val vendorId = response.body()?.vendorId
                         val companyId = response.body()?.companyId
@@ -79,7 +112,6 @@ class LoginActivity : AppCompatActivity() {
                         // Save login state
                         val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
                         val editor = prefs.edit()
-                        editor.putString("role", role)
                         editor.putString("username", username)
                         if (token != null) editor.putString("token", token)
                         if (vendorId != null) editor.putInt("vendor_id", vendorId)
@@ -155,40 +187,7 @@ class LoginActivity : AppCompatActivity() {
             })
         }
 
-        findViewById<TextView>(R.id.btn_parent_login).setOnClickListener {
-            val username = etUsername.text.toString().trim()
-            val password = etPassword.text.toString().trim()
-            if (username.isEmpty() || password.isEmpty()) {
-                Toast.makeText(this, "Enter username and password", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-            val req = com.faceplugin.facerecognition.api.ParentLoginRequest(username, password)
-            RetrofitClient.getService().parentLogin(req).enqueue(object : Callback<LoginResponse> {
-                override fun onResponse(call: Call<LoginResponse>, response: Response<LoginResponse>) {
-                    if (response.isSuccessful && response.body()?.status == "success") {
-                        val token = response.body()?.token
-                        val parentId = response.body()?.vendorId
-                        val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
-                        val editor = prefs.edit()
-                        editor.putString("role", "parent")
-                        editor.putString("username", username)
-                        if (token != null) editor.putString("token", token)
-                        editor.apply()
-                        if (token != null) {
-                            RetrofitClient.setAuthToken(token)
-                        }
-                        val intent = Intent(this@LoginActivity, ParentActivity::class.java)
-                        startActivity(intent)
-                        finish()
-                    } else {
-                        Toast.makeText(this@LoginActivity, "Parent login failed", Toast.LENGTH_SHORT).show()
-                    }
-                }
-                override fun onFailure(call: Call<LoginResponse>, t: Throwable) {
-                    Toast.makeText(this@LoginActivity, "Network error: ${t.message}", Toast.LENGTH_SHORT).show()
-                }
-            })
-        }
+        findViewById<TextView>(R.id.btn_parent_login).visibility = View.GONE
     }
 
     private fun showServerUrlDialog() {

@@ -19,27 +19,28 @@ class AttendanceSyncWorker(appContext: Context, params: WorkerParameters) : Work
         val token = prefs.getString("token", null)
         if (baseUrl != null) RetrofitClient.setBaseUrl(baseUrl)
         if (token != null) RetrofitClient.setAuthToken(token)
+        if (token.isNullOrBlank()) return Result.success()
         val service: GreetingService = RetrofitClient.getService()
 
         val db = DBManager(applicationContext)
         val queue = db.attendanceQueue
         var successCount = 0
-        var failureCount = 0
+        var needsRetry = false
         for (item in queue) {
             try {
                 var pid = item.personId
                 if (pid.isNullOrBlank()) {
-                    pid = db.resolvePersonId(item.localUid, item.name)
+                    pid = db.resolvePersonId(item.localUid)
                 }
                 if (pid.isNullOrBlank()) {
-                    failureCount++
+                    needsRetry = true
                     continue
                 }
                 val req = PersonEventRequest(
                     true,
                     true,
                     pid,
-                    item.name,
+                    "",
                     0.9f,
                     item.image ?: "",
                     true,
@@ -48,16 +49,27 @@ class AttendanceSyncWorker(appContext: Context, params: WorkerParameters) : Work
                 val resp: Response<com.faceplugin.facerecognition.api.GreetingResponse> =
                     service.sendPersonEvent(req).execute()
                 if (resp.isSuccessful) {
+                    try {
+                        val status = resp.body()?.status ?: item.status ?: ""
+                        db.upsertAttendanceState(pid, item.localUid, item.name, status, item.timestamp)
+                    } catch (_: Exception) {
+                    }
                     db.deleteQueueItem(item.id)
                     successCount++
                 } else {
-                    failureCount++
+                    val code = resp.code()
+                    if (code == 401 || code == 403) {
+                        return Result.success()
+                    }
+                    if (code == 408 || code == 429 || (code in 500..599)) {
+                        needsRetry = true
+                    }
                 }
             } catch (e: Exception) {
-                failureCount++
+                needsRetry = true
             }
         }
-        return Result.success()
+        return if (needsRetry) Result.retry() else Result.success()
     }
 
     companion object {

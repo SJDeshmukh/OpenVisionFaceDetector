@@ -17,33 +17,42 @@ class DeleteSyncWorker(appContext: Context, params: WorkerParameters) : Worker(a
         val token = prefs.getString("token", null)
         if (baseUrl != null) RetrofitClient.setBaseUrl(baseUrl)
         if (token != null) RetrofitClient.setAuthToken(token)
-        if (token.isNullOrBlank()) return Result.retry()
+        if (token.isNullOrBlank()) return Result.success()
 
         val service: GreetingService = RetrofitClient.getService()
         val db = DBManager(applicationContext)
         val queue = db.deleteQueue
+        var needsRetry = false
 
         for (item in queue) {
             try {
-                val pid = item.personId
-                val name = item.name
-                val resp = if (!pid.isNullOrBlank()) {
-                    service.deleteFaceById(pid).execute()
-                } else if (!name.isNullOrBlank()) {
-                    service.deleteFace(name).execute()
-                } else {
-                    db.deleteDeleteQueueItem(item.id)
+                var pid = item.personId
+                if (pid.isNullOrBlank() && !item.localUid.isNullOrBlank()) {
+                    pid = db.resolvePersonId(item.localUid)
+                }
+                if (pid.isNullOrBlank()) {
+                    needsRetry = true
                     continue
                 }
+                val resp = service.deleteFaceById(pid).execute()
 
                 if (resp.isSuccessful || resp.code() == 404) {
                     db.deleteDeleteQueueItem(item.id)
+                } else {
+                    val code = resp.code()
+                    if (code == 401 || code == 403) {
+                        return Result.success()
+                    }
+                    if (code == 408 || code == 429 || (code in 500..599)) {
+                        needsRetry = true
+                    }
                 }
             } catch (_: Exception) {
+                needsRetry = true
             }
         }
 
-        return Result.success()
+        return if (needsRetry) Result.retry() else Result.success()
     }
 
     companion object {
@@ -60,4 +69,3 @@ class DeleteSyncWorker(appContext: Context, params: WorkerParameters) : Worker(a
         }
     }
 }
-

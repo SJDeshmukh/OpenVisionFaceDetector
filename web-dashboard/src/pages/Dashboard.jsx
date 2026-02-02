@@ -336,7 +336,7 @@ const Dashboard = () => {
                            </div>
                            <div className="flex items-center justify-between bg-slate-50 border border-slate-100 rounded-lg px-3 py-2">
                               <span className="text-slate-600">Max Admin Web Sessions</span>
-                              <span className="font-semibold text-slate-800">{subscription.max_web_sessions ?? 0}</span>
+                              <span className="font-semibold text-slate-800">{Math.max(1, Number(subscription.max_web_sessions ?? 1))}</span>
                            </div>
                            <div className="flex items-center justify-between bg-slate-50 border border-slate-100 rounded-lg px-3 py-2">
                               <span className="text-slate-600">Cost Per Device</span>

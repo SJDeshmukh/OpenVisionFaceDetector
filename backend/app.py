@@ -444,6 +444,77 @@ def get_config():
         "frontend_url": FRONTEND_URL
     })
 
+@app.route('/api/public/vendors', methods=['GET'])
+def public_vendors():
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    try:
+        c.execute("SELECT id, company_name, vertical, status FROM vendors ORDER BY company_name ASC")
+        rows = c.fetchall()
+    except Exception:
+        rows = []
+    finally:
+        conn.close()
+    vendors = []
+    for r in rows or []:
+        try:
+            rd = dict(r)
+            if str(rd.get("status") or "active").lower() != "active":
+                continue
+            vendors.append({
+                "id": rd.get("id"),
+                "company_name": rd.get("company_name"),
+                "vertical": rd.get("vertical")
+            })
+        except Exception:
+            pass
+    return jsonify({"vendors": vendors})
+
+@app.route('/api/public/business-types', methods=['GET'])
+def public_business_types():
+    known = [
+        {
+            "value": "school",
+            "label": "School / College / Tuitions",
+            "default_frontend_bundle_id": "attendance_ui",
+            "default_registration_config": [
+                {"field": "student_number", "label": "Student Number", "type": "text", "required": True, "options": []},
+                {"field": "department", "label": "Class/Section", "type": "text", "required": False, "options": []}
+            ],
+            "allow_parent_login": True
+        },
+        {
+            "value": "wages",
+            "label": "Daily Wages / Workforce",
+            "default_frontend_bundle_id": "attendance_payroll_ui",
+            "default_registration_config": [
+                {"field": "daily_wage", "label": "Daily Wage", "type": "text", "required": False, "options": []},
+                {"field": "department", "label": "Department", "type": "text", "required": False, "options": []}
+            ],
+            "allow_parent_login": False
+        },
+        {
+            "value": "factory",
+            "label": "Industrial / Manufacturing",
+            "default_frontend_bundle_id": "attendance_payroll_ui",
+            "default_registration_config": [
+                {"field": "employee_id", "label": "Employee ID", "type": "text", "required": False, "options": []},
+                {"field": "department", "label": "Department", "type": "text", "required": False, "options": []},
+                {"field": "shift", "label": "Shift", "type": "text", "required": False, "options": []}
+            ],
+            "allow_parent_login": False
+        },
+        {
+            "value": "enterprise",
+            "label": "Enterprise (Custom)",
+            "default_frontend_bundle_id": "default_attendance",
+            "default_registration_config": [],
+            "allow_parent_login": False
+        }
+    ]
+    return jsonify({"schema_version": 1, "business_types": known})
+
 # Ensure database is always accessed from the same location (backend directory)
 DB_PATH = os.environ.get('DB_PATH') or os.path.join(os.path.dirname(os.path.abspath(__file__)), 'face_db.sqlite')
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -2014,6 +2085,13 @@ def get_vendor_subscription():
     except Exception:
         sub_dict['features'] = []
     sub_dict['invoices'] = invoices
+
+    try:
+        max_web = int(sub_dict.get("max_web_sessions") or 0)
+        if max_web < 1:
+            sub_dict["max_web_sessions"] = 1
+    except Exception:
+        sub_dict["max_web_sessions"] = 1
     
     return jsonify(sub_dict)
 
@@ -2937,7 +3015,7 @@ def update_vendor_details(vendor_id):
         query = "UPDATE vendors SET "
         params = []
         
-        fields = ['company_name', 'contact_person', 'phone', 'email', 'frontend_bundle_id', 'backend_service_id']
+        fields = ['company_name', 'contact_person', 'phone', 'email', 'frontend_bundle_id', 'backend_service_id', 'vertical']
         for field in fields:
             if field in data:
                 query += f"{field} = ?, "
@@ -6159,6 +6237,18 @@ def person_event():
         })
 
     # Case 3: Person detected and recognized
+    try:
+        if person_id:
+            conn_name = get_db_connection()
+            c_name = conn_name.cursor()
+            c_name.execute("SELECT name FROM faces WHERE id = ? LIMIT 1", (person_id,))
+            r_name = c_name.fetchone()
+            conn_name.close()
+            if r_name and r_name[0]:
+                name = r_name[0]
+    except Exception:
+        pass
+    name = name or ""
     
     # If this is just an identification check (e.g. from Admin panel), do not record attendance
     if not is_attendance:

@@ -640,7 +640,7 @@ public class EnrollFragment extends Fragment {
                         if (newId != null && !newId.isEmpty()) {
                             dbManager.updatePersonAfterSyncByLocalUid(localUid, newId);
                         } else {
-                            dbManager.updatePersonStatus(name, true);
+                            dbManager.updatePersonStatusByLocalUid(localUid, true);
                         }
                     }
                 } else {

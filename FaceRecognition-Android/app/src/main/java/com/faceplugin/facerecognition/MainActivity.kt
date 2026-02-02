@@ -14,6 +14,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.fragment.app.Fragment
 import com.faceplugin.facerecognition.api.RetrofitClient
 import com.faceplugin.facerecognition.api.SyncResponse
+import com.google.gson.JsonObject
 import com.google.android.material.bottomnavigation.BottomNavigationView
 import com.ocp.facesdk.FaceSDK
 import retrofit2.Call
@@ -30,7 +31,7 @@ class MainActivity : AppCompatActivity() {
     private val authFailureReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (MyGlobal.ACTION_AUTH_FAILURE == intent.action) {
-                performLogout()
+                performLogout("Session expired. Please login again.")
             }
         }
     }
@@ -117,22 +118,10 @@ class MainActivity : AppCompatActivity() {
         // Logout
 
         btnLogout.setOnClickListener {
-            performLogout()
+            performLogout("Logged out.")
         }
         tvNetworkStatus = findViewById(R.id.tv_network_status)
         
-        // Role Based Access Control
-        val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
-        val role = prefs.getString("role", "user")
-        
-        android.util.Log.e("AppCrash", "Role: $role")
-
-        if (role == "user") {
-            val menu = bottomNav.menu
-            menu.findItem(R.id.nav_enroll).isVisible = false
-            menu.findItem(R.id.nav_users).isVisible = false
-        }
-
         bottomNav.setOnItemSelectedListener { item ->
             when (item.itemId) {
                 R.id.nav_enroll -> {
@@ -151,16 +140,13 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Load default fragment (Identify or Enroll)
+        // Load default fragment
         if (savedInstanceState == null) {
-            if (role == "user") {
-                loadFragment(IdentifyFragment())
-                bottomNav.selectedItemId = R.id.nav_identify
-            } else {
-                loadFragment(EnrollFragment())
-                bottomNav.selectedItemId = R.id.nav_enroll
-            }
+            loadFragment(IdentifyFragment())
+            bottomNav.selectedItemId = R.id.nav_identify
         }
+
+        fetchCooldownSettings()
     }
 
     private fun loadFragment(fragment: Fragment) {
@@ -184,10 +170,38 @@ class MainActivity : AppCompatActivity() {
         handler.post(syncRunnable) // Start sync immediately
         try {
             SyncScheduler.scheduleImmediate(applicationContext)
+            SyncScheduler.schedulePeriodic(applicationContext)
         } catch (_: Exception) {
         }
         handler.removeCallbacks(networkStatusRunnable)
         handler.post(networkStatusRunnable)
+    }
+
+    private fun fetchCooldownSettings() {
+        try {
+            val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+            val token = prefs.getString("token", null)
+            if (token.isNullOrBlank()) return
+            RetrofitClient.getService().settings.enqueue(object : retrofit2.Callback<JsonObject> {
+                override fun onResponse(call: retrofit2.Call<JsonObject>, response: retrofit2.Response<JsonObject>) {
+                    try {
+                        if (response.isSuccessful && response.body() != null) {
+                            val body = response.body()!!
+                            if (body.has("cooldown") && !body.get("cooldown").isJsonNull) {
+                                val v = body.get("cooldown").asString
+                                val sec = v.toIntOrNull() ?: 30
+                                prefs.edit().putInt("cooldown_seconds", sec).apply()
+                            }
+                        }
+                    } catch (_: Exception) {
+                    }
+                }
+
+                override fun onFailure(call: retrofit2.Call<JsonObject>, t: Throwable) {
+                }
+            })
+        } catch (_: Exception) {
+        }
     }
 
     override fun onPause() {
@@ -220,18 +234,47 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun performLogout() {
+    private fun clearAuthState() {
+        val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+        val editor = prefs.edit()
+        editor.remove("role")
+        editor.remove("token")
+        editor.remove("vendor_id")
+        editor.remove("company_id")
+        editor.apply()
+        RetrofitClient.setAuthToken(null)
+    }
+
+    private fun performLogout(message: String) {
         // Prevent multiple calls
         if (isFinishing) return
 
-        Toast.makeText(this, "Session Expired. Please Login Again.", Toast.LENGTH_LONG).show()
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+
+        clearAuthState()
 
         val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
-        prefs.edit().clear().apply()
-        
-        RetrofitClient.setAuthToken(null) // Clear token
-        
-        val intent = Intent(this, LoginActivity::class.java)
+        var selectedCode = prefs.getString("selected_business_type_code", null)
+        if (selectedCode.isNullOrBlank()) {
+            selectedCode = prefs.getString("selected_business_type", null)
+            if (!selectedCode.isNullOrBlank()) {
+                prefs.edit().putString("selected_business_type_code", selectedCode).apply()
+            }
+        }
+        if (selectedCode.isNullOrBlank()) {
+            selectedCode = prefs.getString("selected_vendor_vertical", null)
+            if (!selectedCode.isNullOrBlank()) {
+                prefs.edit()
+                    .putString("selected_business_type_code", selectedCode)
+                    .putString("selected_business_type", selectedCode)
+                    .apply()
+            }
+        }
+        val intent = if (selectedCode.isNullOrBlank()) {
+            Intent(this, BusinessSelectActivity::class.java)
+        } else {
+            Intent(this, LoginActivity::class.java)
+        }
         intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
         startActivity(intent)
         finish()
@@ -264,9 +307,6 @@ class MainActivity : AppCompatActivity() {
                                             var existingPerson: com.faceplugin.facerecognition.Person? = null
                                             if (!faceData.id.isNullOrEmpty()) {
                                                 existingPerson = DBManager.personList.find { it.id == faceData.id }
-                                            }
-                                            if (existingPerson == null) {
-                                                existingPerson = DBManager.personList.find { it.synced && it.name == faceData.name }
                                             }
 
                                             val phone = faceData.phone ?: ""
@@ -334,18 +374,7 @@ class MainActivity : AppCompatActivity() {
                                 if (response.code() == 403 || (errorBody != null && errorBody.contains("Access Denied"))) {
                                      handler.removeCallbacks(syncRunnable) // Stop syncing
                                      
-                                     Toast.makeText(this@MainActivity, "Access Denied: Vendor Suspended. Logging out...", Toast.LENGTH_LONG).show()
-                                     
-                                     // Logout
-                                     val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
-                                     prefs.edit().clear().apply()
-        
-                                     RetrofitClient.setAuthToken(null) // Clear token
-                                     
-                                     val intent = Intent(this@MainActivity, LoginActivity::class.java)
-                                     intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
-                                     startActivity(intent)
-                                     finish()
+                                     performLogout("Access denied. Please login again.")
                                 }
                             } catch (e: Exception) {
                                 e.printStackTrace()

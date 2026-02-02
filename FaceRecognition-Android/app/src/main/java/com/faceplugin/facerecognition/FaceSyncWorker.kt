@@ -23,11 +23,13 @@ class FaceSyncWorker(appContext: Context, params: WorkerParameters) : Worker(app
         val token = prefs.getString("token", null)
         if (baseUrl != null) RetrofitClient.setBaseUrl(baseUrl)
         if (token != null) RetrofitClient.setAuthToken(token)
+        if (token.isNullOrBlank()) return Result.success()
         val service: GreetingService = RetrofitClient.getService()
 
         val db = DBManager(applicationContext)
         val unsynced = db.unsyncedPersons
         var successCount = 0
+        var needsRetry = false
 
         for (p in unsynced) {
             try {
@@ -62,15 +64,24 @@ class FaceSyncWorker(appContext: Context, params: WorkerParameters) : Worker(app
                     if (!id.isNullOrBlank()) {
                         db.updatePersonAfterSyncByLocalUid(p.localUid, id)
                     } else {
-                        db.updatePersonStatus(p.name, true)
+                        db.updatePersonStatusByLocalUid(p.localUid, true)
                     }
                     successCount++
+                } else {
+                    val code = resp.code()
+                    if (code == 401 || code == 403) {
+                        return Result.success()
+                    }
+                    if (code == 408 || code == 429 || (code in 500..599)) {
+                        needsRetry = true
+                    }
                 }
             } catch (_: Exception) {
+                needsRetry = true
             }
         }
 
-        return Result.success()
+        return if (needsRetry) Result.retry() else Result.success()
     }
 
     companion object {

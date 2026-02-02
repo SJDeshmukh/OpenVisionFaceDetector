@@ -177,9 +177,16 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         if (statusText != null) {
             statusText.setText("Looking for a registered face...");
         }
-        
-        // Try to sync offline queue
-        syncOfflineQueue();
+        try {
+            boolean online = NetworkUtils.INSTANCE.isOnline(requireContext().getApplicationContext());
+            if (online) {
+                android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
+                String token = prefs.getString("token", null);
+                if (token != null && !token.isEmpty()) {
+                    SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
+                }
+            }
+        } catch (Exception ignored) {}
     }
 
     @Override
@@ -276,12 +283,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         GreetingService service = RetrofitClient.getService();
         String imageBase64 = Utils.bitmapToBase64(image);
 
-        // Determine attendance flag based on User Role
-        // If Admin/Vendor -> is_attendance = false (Testing Mode: No Cooldown, No DB Record)
-        // If User/Kiosk -> is_attendance = true (Production Mode: Cooldown, DB Record)
-        android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
-        String role = prefs.getString("role", "user");
-        boolean isAttendance = "user".equalsIgnoreCase(role);
+        boolean isAttendance = true;
 
         // Generate timestamp from mobile
         SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US);
@@ -291,13 +293,26 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         try {
             online = NetworkUtils.INSTANCE.isOnline(requireContext().getApplicationContext());
         } catch (Exception ignored) {}
+        String effectivePersonId = personId;
+        if ((effectivePersonId == null || effectivePersonId.isEmpty()) && localUid != null && !localUid.isEmpty()) {
+            try {
+                effectivePersonId = dbManager.resolvePersonId(localUid);
+            } catch (Exception ignored) {}
+        }
 
-        if (!online || personId == null || personId.isEmpty()) {
+        if (!online || effectivePersonId == null || effectivePersonId.isEmpty()) {
             if (isAttendance) {
-                dbManager.insertAttendanceQueue(personId, localUid, name, timestamp, "pending", image, false);
+                String predicted = dbManager.predictNextAttendanceStatus(effectivePersonId, localUid, name);
+                dbManager.insertAttendanceQueue(effectivePersonId, localUid, name, timestamp, predicted, image, false);
                 Toast.makeText(getContext(), "Offline: Attendance Saved", Toast.LENGTH_SHORT).show();
-                playAttendanceSound("CHECK_IN");
-                showStatusOverlay("CHECK_IN");
+                playAttendanceSound(predicted);
+                showStatusOverlay(predicted);
+                if (getActivity() != null) {
+                    String finalPredicted = predicted;
+                    getActivity().runOnUiThread(() -> {
+                        if (statusText != null) statusText.setText("Offline: " + name + " " + finalPredicted);
+                    });
+                }
             } else {
                 Toast.makeText(getContext(), "Offline: Recognized locally", Toast.LENGTH_SHORT).show();
                 playAttendanceSound("CHECK_IN");
@@ -316,7 +331,8 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             return;
         }
 
-        PersonEventRequest request = new PersonEventRequest(detected, recognized, personId, name, confidence, imageBase64, isAttendance, timestamp);
+        final String finalPersonId = effectivePersonId;
+        PersonEventRequest request = new PersonEventRequest(detected, recognized, finalPersonId, "", confidence, imageBase64, isAttendance, timestamp);
 
         service.sendPersonEvent(request).enqueue(new Callback<GreetingResponse>() {
             @Override
@@ -335,6 +351,11 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                         if (status != null) {
                              playAttendanceSound(status);
                              showStatusOverlay(status);
+                             try {
+                                 if (isAttendance) {
+                                     dbManager.upsertAttendanceState(finalPersonId, localUid, name, status, timestamp);
+                                 }
+                             } catch (Exception ignored) {}
                         } else {
                             
                         } 
@@ -380,9 +401,12 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 if (getActivity() != null) {
                     getActivity().runOnUiThread(() -> {
                         if (isAttendance) {
-                            dbManager.insertAttendanceQueue(personId, localUid, name, timestamp, "pending", image, false);
+                            String predicted = dbManager.predictNextAttendanceStatus(finalPersonId, localUid, name);
+                            dbManager.insertAttendanceQueue(finalPersonId, localUid, name, timestamp, predicted, image, false);
                             Toast.makeText(getContext(), "Offline: Attendance Saved", Toast.LENGTH_SHORT).show();
-                            playAttendanceSound("CHECK_IN"); // Generic success sound
+                            playAttendanceSound(predicted);
+                            showStatusOverlay(predicted);
+                            if (statusText != null) statusText.setText("Offline: " + name + " " + predicted);
                             try {
                                 SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
                             } catch (Exception e) {
@@ -417,9 +441,9 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         getActivity().runOnUiThread(() -> {
             if ("CHECK_IN".equals(status)) {
                 if (ivStatusOverlay != null) {
-                    ivStatusOverlay.setImageResource(android.R.drawable.checkbox_on_background);
-                    ivStatusOverlay.setColorFilter(getResources().getColor(android.R.color.holo_green_light));
-                    statusText.setTextColor(getResources().getColor(android.R.color.holo_green_light));
+                    ivStatusOverlay.setImageResource(R.drawable.ic_check_in_success);
+                    ivStatusOverlay.clearColorFilter();
+                    statusText.setTextColor(getResources().getColor(R.color.vision_success));
                     ivStatusOverlay.setVisibility(View.VISIBLE);
                     ivStatusOverlay.setAlpha(1f);
                     ivStatusOverlay.animate().alpha(0f).setDuration(800).withEndAction(() -> {
@@ -458,54 +482,6 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 }
             }
         });
-    }
-
-    private void syncOfflineQueue() {
-        if (dbManager == null) return;
-        
-        new Thread(() -> {
-            List<DBManager.QueueItem> queue = dbManager.getAttendanceQueue();
-            if (queue.isEmpty()) return;
-
-            Log.d(TAG, "Syncing " + queue.size() + " offline records...");
-            
-            for (DBManager.QueueItem item : queue) {
-                // Create Request
-                // Note: image in QueueItem is Base64 string, but might need formatting
-                String base64Image = item.image; 
-                // If stored as raw bytes, DBManager converts it. If stored as Base64, fine.
-                // In DBManager.java, we encoded it: android.util.Base64.encodeToString(img, android.util.Base64.NO_WRAP);
-                
-                // We need to ensure it has the prefix if backend expects it? 
-                // Utils.bitmapToBase64 usually adds nothing or ?
-                // Let's check Utils.bitmapToBase64. 
-                // Assuming Utils.bitmapToBase64 returns pure Base64.
-                
-                PersonEventRequest request = new PersonEventRequest(
-                    true, // detected
-                    true, // recognized
-                    item.personId, // personId
-                    item.name, // name
-                    0.99f, // confidence (dummy)
-                    base64Image,
-                    true, // isAttendance (always true for offline queue?)
-                    item.timestamp
-                );
-                
-                try {
-                    // Synchronous call since we are in a Thread
-                    Response<GreetingResponse> response = RetrofitClient.getService().sendPersonEvent(request).execute();
-                    if (response.isSuccessful()) {
-                        Log.d(TAG, "Synced: " + item.name);
-                        dbManager.deleteQueueItem(item.id);
-                    } else {
-                        Log.e(TAG, "Sync Failed for " + item.name + ": " + response.code());
-                    }
-                } catch (Exception e) {
-                    Log.e(TAG, "Sync Exception", e);
-                }
-            }
-        }).start();
     }
 
     private void showScreenSaver() {
@@ -679,13 +655,69 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                         consecutiveUnknownFrames = 0;
                         final Person identifiedPerson = maximiarlityPerson;
                         
-                        // Check if this is a new person or re-entry
                         String personId = identifiedPerson.id != null ? identifiedPerson.id : "";
                         String localUid = identifiedPerson.localUid != null ? identifiedPerson.localUid : "";
+                        if ((personId == null || personId.isEmpty()) && localUid != null && !localUid.isEmpty()) {
+                            try {
+                                String resolved = dbManager.resolvePersonId(localUid);
+                                if (resolved != null && !resolved.isEmpty()) {
+                                    personId = resolved;
+                                }
+                            } catch (Exception ignored) {}
+                        }
+
+                        boolean online = false;
+                        try {
+                            online = NetworkUtils.INSTANCE.isOnline(requireContext().getApplicationContext());
+                        } catch (Exception ignored) {}
+
+                        if (!online) {
+                            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US);
+                            String timestamp = sdf.format(new Date());
+                            int cooldown = 30;
+                            try {
+                                android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
+                                cooldown = prefs.getInt("cooldown_seconds", 30);
+                            } catch (Exception ignored) {}
+                            boolean withinCooldown = false;
+                            try {
+                                String lastTs = dbManager.getLastAttendanceTimestamp(personId, localUid, identifiedPerson.name);
+                                if (lastTs != null && !lastTs.isEmpty()) {
+                                    SimpleDateFormat sdf2 = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US);
+                                    long lastMs = sdf2.parse(lastTs).getTime();
+                                    long nowMs = sdf2.parse(timestamp).getTime();
+                                    long deltaSec = (nowMs - lastMs) / 1000;
+                                    if (deltaSec >= 0 && deltaSec < cooldown) {
+                                        withinCooldown = true;
+                                    }
+                                }
+                            } catch (Exception ignored) {}
+                            if (!withinCooldown) {
+                                String predicted = dbManager.predictNextAttendanceStatus(personId, localUid, identifiedPerson.name);
+                                dbManager.insertAttendanceQueue(personId, localUid, identifiedPerson.name, timestamp, predicted, bitmap, false);
+                                playAttendanceSound(predicted);
+                                showStatusOverlay(predicted);
+                                if (getActivity() != null) {
+                                    String finalPredicted = predicted;
+                                    getActivity().runOnUiThread(() -> {
+                                        faceView.setRecognizedName(identifiedPerson.name);
+                                        if (statusText != null) statusText.setText("Offline: " + identifiedPerson.name + " " + finalPredicted);
+                                    });
+                                }
+                                try {
+                                    SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
+                                } catch (Exception e) {
+                                    e.printStackTrace();
+                                }
+                            }
+                            return;
+                        }
+
                         String key = personId;
                         if (key.isEmpty()) {
-                            key = "local:" + (!localUid.isEmpty() ? localUid : identifiedPerson.name);
+                            key = "local:" + (!localUid.isEmpty() ? localUid : "unknown");
                         }
+
                         if (!key.equals(lastProcessedPersonId)) {
                             lastProcessedPersonId = key;
                             
@@ -696,7 +728,6 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                                 });
                             }
 
-                            // Send to Backend
                             sendPersonEvent(true, true, personId, localUid, identifiedPerson.name, maxSimiarlity, bitmap);
                         }
 

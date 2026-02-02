@@ -28,6 +28,22 @@ const SuperAdminDashboard = () => {
     features: [],
     vertical: ''
   });
+  const [businessTypes, setBusinessTypes] = useState([
+    { value: 'school', label: 'School / College / Tuitions', default_frontend_bundle_id: 'attendance_ui', default_registration_config: [
+      { field: 'student_number', label: 'Student Number', type: 'text', required: true, options: [] },
+      { field: 'department', label: 'Class/Section', type: 'text', required: false, options: [] }
+    ] },
+    { value: 'wages', label: 'Daily Wages / Workforce', default_frontend_bundle_id: 'attendance_payroll_ui', default_registration_config: [
+      { field: 'daily_wage', label: 'Daily Wage', type: 'text', required: false, options: [] },
+      { field: 'department', label: 'Department', type: 'text', required: false, options: [] }
+    ] },
+    { value: 'factory', label: 'Industrial / Manufacturing', default_frontend_bundle_id: 'attendance_payroll_ui', default_registration_config: [
+      { field: 'employee_id', label: 'Employee ID', type: 'text', required: false, options: [] },
+      { field: 'department', label: 'Department', type: 'text', required: false, options: [] },
+      { field: 'shift', label: 'Shift', type: 'text', required: false, options: [] }
+    ] },
+    { value: 'enterprise', label: 'Enterprise (Custom)', default_frontend_bundle_id: 'default_attendance', default_registration_config: [] }
+  ]);
   const [registrationConfig, setRegistrationConfig] = useState([]);
   const [editingVendor, setEditingVendor] = useState(null);
   
@@ -69,12 +85,29 @@ const SuperAdminDashboard = () => {
     end: new Date().toISOString().split('T')[0]
   });
 
+  const fetchBusinessTypes = async () => {
+    try {
+      const res = await axios.get(`${API_URL}/public/business-types`);
+      const raw = res?.data?.business_types || [];
+      const normalized = (Array.isArray(raw) ? raw : [])
+        .filter(x => x && typeof x.value === 'string')
+        .map(x => ({
+          value: x.value,
+          label: x.label || x.value,
+          default_frontend_bundle_id: x.default_frontend_bundle_id,
+          default_registration_config: Array.isArray(x.default_registration_config) ? x.default_registration_config : []
+        }));
+      if (normalized.length) setBusinessTypes(normalized);
+    } catch (e) {}
+  };
+
   const { socket, joinSuperAdmin } = useSocket();
   useEffect(() => {
     fetchVendors();
     fetchFeatures();
     fetchStats();
     fetchTemplates();
+    fetchBusinessTypes();
 
     if (!socket) return;
     const doJoin = () => joinSuperAdmin();
@@ -1382,29 +1415,10 @@ const SuperAdminDashboard = () => {
                     value={newVendor.vertical}
                     onChange={e => {
                       const v = e.target.value;
-                      let bundleId = newVendor.frontend_bundle_id;
-                      // Preset bundles/features per vertical
-                      if (v === 'school') {
-                        bundleId = 'attendance_ui';
-                      } else if (v === 'wages') {
-                        bundleId = 'attendance_payroll_ui';
-                      } else {
-                        bundleId = 'default_attendance';
-                      }
+                      const bt = businessTypes.find(x => x.value === v);
+                      let bundleId = bt?.default_frontend_bundle_id || newVendor.frontend_bundle_id || 'default_attendance';
                       const presetFeatures = bundleConfig[bundleId] || [];
-                      // Preset registration config
-                      let presetReg = registrationConfig;
-                      if (v === 'school') {
-                        presetReg = [
-                          { field: 'student_number', label: 'Student Number', type: 'text', required: true, options: [] },
-                          { field: 'department', label: 'Class/Section', type: 'text', required: false, options: [] }
-                        ];
-                      } else if (v === 'wages') {
-                        presetReg = [
-                          { field: 'daily_wage', label: 'Daily Wage', type: 'text', required: false, options: [] },
-                          { field: 'department', label: 'Department', type: 'text', required: false, options: [] }
-                        ];
-                      }
+                      const presetReg = bt?.default_registration_config?.length ? bt.default_registration_config : registrationConfig;
                       setRegistrationConfig(presetReg);
                       setNewVendor({
                         ...newVendor,
@@ -1415,9 +1429,9 @@ const SuperAdminDashboard = () => {
                     }}
                   >
                     <option value="">Select Business</option>
-                    <option value="school">School / College</option>
-                    <option value="wages">Daily Wages / Workforce</option>
-                    <option value="enterprise">Enterprise (Custom)</option>
+                    {businessTypes.map(bt => (
+                      <option key={bt.value} value={bt.value}>{bt.label}</option>
+                    ))}
                   </select>
                 </div>
               </div>

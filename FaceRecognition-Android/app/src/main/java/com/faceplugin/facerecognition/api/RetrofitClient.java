@@ -9,7 +9,7 @@ import android.content.Intent;
 import com.faceplugin.facerecognition.MyGlobal;
 
 public class RetrofitClient {
-    private static String BASE_URL = "http://192.168.1.102:5001/";
+    private static String BASE_URL = "http://192.168.1.101:5001/";
     
     private static Retrofit retrofit = null;
     private static String authToken = null;
