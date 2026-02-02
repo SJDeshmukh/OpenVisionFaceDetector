@@ -2,14 +2,31 @@ import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Search, Trash2, UserCheck } from 'lucide-react';
 import { API_URL } from '../config';
+import { useSocket } from '../context/SocketContext';
+import { useAuth } from '../context/AuthContext';
 
 const Users = () => {
+  const { user } = useAuth();
+  const { socket } = useSocket();
   const [users, setUsers] = useState([]);
   const [search, setSearch] = useState('');
 
   useEffect(() => {
     fetchData();
   }, []);
+
+  useEffect(() => {
+    if (!user || !socket) return;
+    const handlePersonsUpdated = (data) => {
+      if (String(data.vendor_id) === String(user.vendor_id)) {
+        fetchData();
+      }
+    };
+    socket.on('persons_updated', handlePersonsUpdated);
+    return () => {
+      socket.off('persons_updated', handlePersonsUpdated);
+    };
+  }, [user, socket]);
 
   const fetchData = async () => {
     try {

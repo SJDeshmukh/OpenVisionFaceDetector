@@ -15,7 +15,10 @@ import {
 import { cn } from '../lib/utils';
 import { API_URL } from '../config';
 
+import { useSocket } from '../context/SocketContext';
+
 const Attendance = () => {
+  const { socket } = useSocket();
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -45,13 +48,20 @@ const Attendance = () => {
   useEffect(() => {
     fetchLogs(); // Trigger fetch on mount and filter change
     
-    // Auto-refresh every 5 seconds using current filters
-    const interval = setInterval(() => {
-      fetchLogs(true); // isBackground = true (Silent refresh)
-    }, 5000);
+    if (!socket) return;
+    const handleAttendanceUpdated = (ev) => {
+      // If filters are active, we might need a full refresh to be safe
+      // but for "real time" we can just re-fetch the current view.
+      if (String(ev.vendor_id) === String(user.vendor_id)) {
+        fetchLogs(true);
+      }
+    };
+    socket.on('attendance_updated', handleAttendanceUpdated);
     
-    return () => clearInterval(interval);
-  }, [filters]); // Re-create interval when filters change to capture new state
+    return () => {
+      socket.off('attendance_updated', handleAttendanceUpdated);
+    };
+  }, [filters, socket]); // Re-create listener when filters change to ensure correct context if needed
 
   useEffect(() => {
     const t = setTimeout(() => fetchFilters(filtersRef.current), 250);

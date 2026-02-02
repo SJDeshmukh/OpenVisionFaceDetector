@@ -79,9 +79,8 @@ const Dashboard = () => {
     };
 
     fetchData();
-    const interval = setInterval(fetchData, 10000);
     if (!socket) {
-      return () => { clearInterval(interval); };
+      return;
     }
     const handleAttendanceUpdated = (ev) => {
       if (!user?.vendor_id || String(ev.vendor_id) === String(user.vendor_id)) {
@@ -90,7 +89,6 @@ const Dashboard = () => {
     };
     socket.on('attendance_updated', handleAttendanceUpdated);
     return () => { 
-      clearInterval(interval); 
       socket.off('attendance_updated', handleAttendanceUpdated); 
     };
   }, [logout, user, socket]);

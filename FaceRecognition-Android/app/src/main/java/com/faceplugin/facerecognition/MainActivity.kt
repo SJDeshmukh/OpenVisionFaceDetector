@@ -28,8 +28,13 @@ import android.content.IntentFilter
 import android.os.Build
 import androidx.core.content.ContextCompat
 import android.media.AudioManager
+import io.socket.client.IO
+import io.socket.client.Socket
+import org.json.JSONObject
 
 class MainActivity : AppCompatActivity() {
+
+    private var mSocket: Socket? = null
 
     private val authFailureReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -163,6 +168,53 @@ class MainActivity : AppCompatActivity() {
         }
 
         fetchCooldownSettings()
+        setupAuthSocket()
+    }
+
+    private fun setupAuthSocket() {
+        try {
+            val serverUrl = RetrofitClient.getBaseUrl()
+            val options = IO.Options()
+            options.transports = arrayOf("polling")
+            options.path = "/socket.io"
+            mSocket = IO.socket(serverUrl, options)
+
+            mSocket?.on(Socket.EVENT_CONNECT) {
+                val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+                val vendorId = prefs.getInt("vendor_id", -1)
+                if (vendorId != -1) {
+                    val data = JSONObject()
+                    data.put("vendor_id", vendorId)
+                    mSocket?.emit("join_vendor", data)
+                }
+            }
+
+            mSocket?.on("force_logout") { args ->
+                if (args.isNotEmpty()) {
+                    val data = args[0] as JSONObject
+                    val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+                    val myVendorId = prefs.getInt("vendor_id", -1)
+                    val targetVendorId = data.optInt("vendor_id", -1)
+
+                    if (myVendorId != -1 && myVendorId == targetVendorId) {
+                        runOnUiThread {
+                            val reason = data.optString("reason", "Subscription expired")
+                            performLogout("Access Denied: $reason")
+                        }
+                    }
+                }
+            }
+
+            mSocket?.connect()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        mSocket?.disconnect()
+        mSocket?.off()
     }
 
     private fun loadFragment(fragment: Fragment) {

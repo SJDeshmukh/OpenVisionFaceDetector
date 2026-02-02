@@ -68,6 +68,7 @@ public class EnrollFragment extends Fragment {
     private boolean requireDepartment = false;
     private boolean requireDesignation = false;
     private boolean requireShift = false;
+    private JsonArray currentRegistrationConfig;
 
     private ActivityResultLauncher<Intent> cameraLauncher;
     private ActivityResultLauncher<Intent> galleryLauncher;
@@ -291,6 +292,19 @@ public class EnrollFragment extends Fragment {
                  } else if (v instanceof Spinner) {
                      Object selected = ((Spinner) v).getSelectedItem();
                      if (selected != null) value = selected.toString();
+                 } else if (v instanceof android.widget.Button) {
+                     // Handle Multi-select button
+                     Object tag = v.getTag();
+                     if (tag instanceof List) {
+                         List<String> selected = (List<String>) tag;
+                         value = android.text.TextUtils.join(", ", selected);
+                     } else {
+                         // If nothing selected but label was changed by button text, fallback
+                         String btnText = ((android.widget.Button) v).getText().toString();
+                         if (!btnText.startsWith("Select ")) {
+                             value = btnText;
+                         }
+                     }
                  }
                  
                  if ("required".equals(dynamicFieldConfig.get(key)) && value.isEmpty()) {
@@ -298,6 +312,15 @@ public class EnrollFragment extends Fragment {
                       return;
                  }
                  dynamicData.addProperty(key, value);
+
+                 // Update standard fields if they are provided via dynamic config
+                 if (key.equalsIgnoreCase("name") || key.equalsIgnoreCase("full_name")) {
+                     if (!value.isEmpty()) name = value;
+                 }
+                 if (key.equalsIgnoreCase("phone") || key.equalsIgnoreCase("mobile") || key.equalsIgnoreCase("phone_number")) phone = value;
+                 if (key.equalsIgnoreCase("department")) department = value;
+                 if (key.equalsIgnoreCase("designation")) designation = value;
+                 if (key.equalsIgnoreCase("shift")) shift = value;
             }
             
             String customDataStr = dynamicData.toString();
@@ -392,7 +415,12 @@ public class EnrollFragment extends Fragment {
                                 }
                             }
                             if (getActivity() != null) {
-                                getActivity().runOnUiThread(() -> shiftAdapter.notifyDataSetChanged());
+                                getActivity().runOnUiThread(() -> {
+                                    shiftAdapter.notifyDataSetChanged();
+                                    if (currentRegistrationConfig != null) {
+                                        renderDynamicFields(currentRegistrationConfig);
+                                    }
+                                });
                             }
                         }
                     } catch (Exception e) {
@@ -469,6 +497,7 @@ public class EnrollFragment extends Fragment {
     }
 
     private void renderDynamicFields(JsonArray config) {
+        this.currentRegistrationConfig = config;
         android.util.Log.e("AppCrash", "renderDynamicFields started with " + config.size() + " items");
         try {
             if (!isAdded() || getContext() == null) return;
@@ -500,45 +529,49 @@ public class EnrollFragment extends Fragment {
     
                 dynamicFieldConfig.put(key, required ? "required" : "optional");
     
-                // Map standard fields back to existing UI elements
-                if (key.equalsIgnoreCase("name") || key.equalsIgnoreCase("full_name")) {
-                    if (tilName != null) {
-                        tilName.setHint(label);
-                        tilName.setVisibility(View.VISIBLE);
+                // If it's a 'select' or 'multiselect' type, we bypass the mapping to standard UI elements 
+                // and always use the dynamic Spinner rendering below.
+                if (!type.equals("select") && !type.equals("multiselect")) {
+                    // Map standard fields back to existing UI elements
+                    if (key.equalsIgnoreCase("name") || key.equalsIgnoreCase("full_name")) {
+                        if (tilName != null) {
+                            tilName.setHint(label);
+                            tilName.setVisibility(View.VISIBLE);
+                        }
+                        nameInConfig = true;
+                        continue; 
                     }
-                    nameInConfig = true;
-                    continue; 
-                }
-                if (key.equalsIgnoreCase("phone") || key.equalsIgnoreCase("mobile") || key.equalsIgnoreCase("phone_number")) {
-                    if (tilMobile != null) {
-                        tilMobile.setHint(label);
-                        tilMobile.setVisibility(View.VISIBLE);
+                    if (key.equalsIgnoreCase("phone") || key.equalsIgnoreCase("mobile") || key.equalsIgnoreCase("phone_number")) {
+                        if (tilMobile != null) {
+                            tilMobile.setHint(label);
+                            tilMobile.setVisibility(View.VISIBLE);
+                        }
+                        requireMobile = required;
+                        continue;
                     }
-                    requireMobile = required;
-                    continue;
-                }
-                if (key.equalsIgnoreCase("department")) {
-                    if (tilDepartment != null) {
-                        tilDepartment.setHint(label);
-                        tilDepartment.setVisibility(View.VISIBLE);
+                    if (key.equalsIgnoreCase("department")) {
+                        if (tilDepartment != null) {
+                            tilDepartment.setHint(label);
+                            tilDepartment.setVisibility(View.VISIBLE);
+                        }
+                        requireDepartment = required;
+                        continue;
                     }
-                    requireDepartment = required;
-                    continue;
-                }
-                if (key.equalsIgnoreCase("designation")) {
-                    if (tilDesignation != null) {
-                        tilDesignation.setHint(label);
-                        tilDesignation.setVisibility(View.VISIBLE);
+                    if (key.equalsIgnoreCase("designation")) {
+                        if (tilDesignation != null) {
+                            tilDesignation.setHint(label);
+                            tilDesignation.setVisibility(View.VISIBLE);
+                        }
+                        requireDesignation = required;
+                        continue;
                     }
-                    requireDesignation = required;
-                    continue;
-                }
-                if (key.equalsIgnoreCase("shift")) {
-                    if (llShift != null) {
-                        llShift.setVisibility(View.VISIBLE);
+                    if (key.equalsIgnoreCase("shift")) {
+                        if (llShift != null) {
+                            llShift.setVisibility(View.VISIBLE);
+                        }
+                        requireShift = required;
+                        continue;
                     }
-                    requireShift = required;
-                    continue;
                 }
 
                 if (dynamicViews.containsKey(key)) continue;
@@ -567,30 +600,88 @@ public class EnrollFragment extends Fragment {
                     til.addView(et);
                     if (dynamicContainer != null) dynamicContainer.addView(til);
                     dynamicViews.put(key, et);
-                } else if (type.equals("select")) {
+                } else if (type.equals("select") || type.equals("multiselect")) {
                     android.widget.TextView tv = new android.widget.TextView(requireContext());
-                    tv.setText(label);
+                    tv.setText(label + (required ? " *" : ""));
+                    tv.setTextSize(14);
+                    tv.setTextColor(getResources().getColor(android.R.color.darker_gray));
+                    tv.setPadding(0, 16, 0, 8);
                     if (dynamicContainer != null) dynamicContainer.addView(tv);
     
-                    Spinner spinner = new Spinner(requireContext());
                     List<String> options = new ArrayList<>();
                     if (field.has("options") && field.get("options").isJsonArray()) {
                         JsonArray opts = field.getAsJsonArray("options");
-                        for (JsonElement o : opts) options.add(o.getAsString());
+                        for (JsonElement o : opts) {
+                            String opt = o.getAsString();
+                            if (!opt.isEmpty()) options.add(opt);
+                        }
                     }
                     
-                    ArrayAdapter<String> adapter = new ArrayAdapter<>(requireContext(), android.R.layout.simple_spinner_item, options);
-                    adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-                    spinner.setAdapter(adapter);
-                    
-                    android.widget.LinearLayout.LayoutParams params = new android.widget.LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            (int)(48 * getResources().getDisplayMetrics().density));
-                    params.setMargins(0, 8, 0, 32);
-                    spinner.setLayoutParams(params);
-    
-                    if (dynamicContainer != null) dynamicContainer.addView(spinner);
-                    dynamicViews.put(key, spinner);
+                    // SPECIAL CASE: If field is 'shift' and has no manual options, use vendor shifts
+                    if (key.equalsIgnoreCase("shift") && options.isEmpty()) {
+                        options.addAll(shiftNames);
+                        // Filter out "No Shift" if we want a clean list, but usually it's fine
+                    }
+
+                    if (type.equals("multiselect")) {
+                        // Multi-select UI (Click to open dialog with checkboxes)
+                        android.widget.Button btnMulti = new android.widget.Button(requireContext());
+                        btnMulti.setText("Select " + label);
+                        btnMulti.setBackgroundResource(android.R.drawable.btn_default);
+                        
+                        boolean[] checkedItems = new boolean[options.size()];
+                        final List<String> selectedItems = new ArrayList<>();
+                        
+                        btnMulti.setOnClickListener(v -> {
+                            android.app.AlertDialog.Builder builder = new android.app.AlertDialog.Builder(requireContext());
+                            builder.setTitle("Select " + label);
+                            builder.setMultiChoiceItems(options.toArray(new String[0]), checkedItems, (dialog, which, isChecked) -> {
+                                checkedItems[which] = isChecked;
+                            });
+                            builder.setPositiveButton("OK", (dialog, which) -> {
+                                selectedItems.clear();
+                                StringBuilder sb = new StringBuilder();
+                                for (int i = 0; i < options.size(); i++) {
+                                    if (checkedItems[i]) {
+                                        selectedItems.add(options.get(i));
+                                        if (sb.length() > 0) sb.append(", ");
+                                        sb.append(options.get(i));
+                                    }
+                                }
+                                btnMulti.setText(sb.length() > 0 ? sb.toString() : "Select " + label);
+                                btnMulti.setTag(selectedItems);
+                            });
+                            builder.show();
+                        });
+
+                        android.widget.LinearLayout.LayoutParams params = new android.widget.LinearLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.WRAP_CONTENT);
+                        params.setMargins(0, 0, 0, 16);
+                        btnMulti.setLayoutParams(params);
+                        if (dynamicContainer != null) dynamicContainer.addView(btnMulti);
+                        dynamicViews.put(key, btnMulti);
+
+                    } else {
+                        // Single select Spinner
+                        Spinner spinner = new Spinner(requireContext());
+                        try {
+                            spinner.setBackgroundResource(android.R.drawable.btn_default);
+                        } catch (Exception ignored) {}
+                        
+                        ArrayAdapter<String> adapter = new ArrayAdapter<>(requireContext(), android.R.layout.simple_spinner_item, options);
+                        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+                        spinner.setAdapter(adapter);
+                        
+                        android.widget.LinearLayout.LayoutParams params = new android.widget.LinearLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                (int)(48 * getResources().getDisplayMetrics().density));
+                        params.setMargins(0, 0, 0, 16);
+                        spinner.setLayoutParams(params);
+        
+                        if (dynamicContainer != null) dynamicContainer.addView(spinner);
+                        dynamicViews.put(key, spinner);
+                    }
                 }
             }
             if (!nameInConfig && tilName != null) {

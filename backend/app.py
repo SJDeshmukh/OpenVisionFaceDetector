@@ -1251,7 +1251,7 @@ def check_vendor_status(vendor_id):
             
             print(f"DEBUG: Vendor {vendor_id} End Date: {end_date}, Limit: {limit_date}, Today: {date.today()}")
 
-            if date.today() > limit_date:
+            if date.today() > end_date:
                 return False, "Subscription Expired"
         except ValueError as e:
             print(f"DEBUG: Date Parse Error for Vendor {vendor_id}: {e}")
@@ -1357,9 +1357,10 @@ def authenticate_vendor_access():
         if role == 'super_admin':
             return vendor_id, None
              
-        # Skip status checks for now
         is_allowed, reason = check_vendor_status(vendor_id)
         if not is_allowed:
+           # Emit force_logout on every check if expired, to ensure proactive logout
+           socketio.emit('force_logout', {'vendor_id': vendor_id, 'reason': reason}, room=f"vendor_{vendor_id}")
            return None, (jsonify({"error": f"Access Denied: {reason}"}), 403)
             
         return vendor_id, None
@@ -3802,7 +3803,25 @@ def get_analytics():
             # Match shift
             matched_act = None
             if shift_name:
+                # 1. Match by Shift ID if the activity is explicitly linked to a shift object
+                # First, find the shift object in the company's 'shifts' array that matches this name
+                c.execute("SELECT shifts FROM companies WHERE vendor_id = ?", (vendor_id,))
+                s_row = c.fetchone()
+                shifts_list = json.loads(s_row['shifts']) if s_row and s_row['shifts'] else []
+                
+                target_shift_id = None
+                for s_obj in shifts_list:
+                    if s_obj.get('name') == shift_name:
+                        target_shift_id = s_obj.get('id')
+                        break
+                
+                # 2. Match activity by shift_id OR name
                 for act in day_acts:
+                    # If we found a shift ID, try matching that first
+                    if target_shift_id and act.get('shift_id') == target_shift_id:
+                        matched_act = act
+                        break
+                    # Fallback to matching by name
                     if act.get('name') == shift_name:
                         matched_act = act
                         break
@@ -5020,6 +5039,8 @@ def login():
         user_vendor_id = user['vendor_id'] if ('vendor_id' in user_keys and user['vendor_id']) else None
         if user_vendor_id:
             is_allowed, reason = check_vendor_status(user['vendor_id'])
+            if not is_allowed:
+                return jsonify({"error": f"Access Denied: {reason}"}), 403
             
             # Check Web Login Flag and Architecture Config
             conn = get_db_connection()
@@ -7342,55 +7363,77 @@ def calculate_daily_hours(records, timetable=None, date_str=None):
 # Structure: { vendor_id: { device_id: { "data": ..., "timestamp": ..., "source_ip": ... } } }
 latest_frames = {}
 
+# --- Background Tasks ---
 def cleanup_inactive_streams():
     """Background task to remove stale streams and update stats."""
     last_active_count = -1
     while True:
         socketio.sleep(5) # Sleep 5 seconds
-        
         try:
             current_time = datetime.now()
             stale_threshold = timedelta(seconds=30)
-            
-            # 1. Cleanup Stale Devices
-            # We need to modify dictionary while iterating, so use list of keys
             vendors_to_remove = []
-            
             active_count = 0
-            
             for v_id in list(latest_frames.keys()):
                 devices = latest_frames[v_id]
                 devices_to_remove = []
-                
                 for d_id, data in devices.items():
                     if current_time - data['timestamp'] > stale_threshold:
                         devices_to_remove.append(d_id)
                     else:
                         active_count += 1
-                
                 for d_id in devices_to_remove:
                     del devices[d_id]
-                    
                 if not devices:
                     vendors_to_remove.append(v_id)
-            
             for v_id in vendors_to_remove:
                 del latest_frames[v_id]
-                
-            # 2. Emit Stats Update if changed
             if active_count != last_active_count:
                 last_active_count = active_count
                 socketio.emit('active_devices_update', {'count': active_count}, room='super_admin')
-                
         except Exception as e:
             print(f"Error in cleanup task: {e}")
 
-# Start the background task
+def check_subscriptions_periodically():
+    """Background task to proactively logout vendors with expired plans."""
+    while True:
+        socketio.sleep(60) # Check every 1 minute
+        try:
+            with app.app_context():
+                conn = get_db_connection()
+                if not isinstance(conn, CompatConn):
+                    conn.row_factory = sqlite3.Row
+                c = conn.cursor()
+                c.execute("SELECT id, company_name FROM vendors WHERE status = 'active'")
+                vendors = c.fetchall()
+                conn.close()
+                for v in vendors:
+                    vid = v['id'] if isinstance(v, sqlite3.Row) or isinstance(v, dict) else v[0]
+                    is_allowed, reason = check_vendor_status(vid)
+                    if not is_allowed:
+                        print(f"PROACTIVE LOGOUT: Vendor {vid} ({reason})")
+                        socketio.emit('force_logout', {'vendor_id': vid, 'reason': reason}, room=f"vendor_{vid}")
+                        
+                        # Update vendor status in DB to suspended
+                        try:
+                            conn_u = get_db_connection()
+                            cu = conn_u.cursor()
+                            cu.execute("UPDATE vendors SET status = 'suspended' WHERE id = ?", (vid,))
+                            conn_u.commit()
+                            conn_u.close()
+                            # Notify superadmin that a vendor status changed
+                            socketio.emit('vendor_updated', {'vendor_id': vid, 'status': 'suspended'}, room='super_admin')
+                        except Exception as e_u:
+                            print(f"Failed to update vendor status for {vid}: {e_u}")
+        except Exception as e:
+            print(f"Subscription checker error: {e}")
+
+# Start background tasks
 try:
     socketio.start_background_task(cleanup_inactive_streams)
+    socketio.start_background_task(check_subscriptions_periodically)
 except Exception as e:
-    print(f"Failed to start background task: {e}")
-
+    print(f"Failed to start background tasks: {e}")
 
 @greeting_bp.route("/stream/upload", methods=["POST"])
 def upload_stream_frame():

@@ -648,7 +648,20 @@ const Timetable = () => {
                     value={activityForm.shift_id}
                     onChange={(e) => {
                         const sId = Number(e.target.value);
-                        setActivityForm({...activityForm, shift_id: sId});
+                        const selectedShift = shifts.find(s => s.id === sId);
+                        
+                        // Auto-fill activity details if shift is selected
+                        if (selectedShift) {
+                            setActivityForm({
+                                ...activityForm, 
+                                shift_id: sId,
+                                name: activityForm.name || selectedShift.name,
+                                start_time: selectedShift.start_time || activityForm.start_time,
+                                end_time: selectedShift.end_time || activityForm.end_time
+                            });
+                        } else {
+                            setActivityForm({...activityForm, shift_id: ''});
+                        }
                     }}
                     className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-2.5 text-slate-900 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
                   >

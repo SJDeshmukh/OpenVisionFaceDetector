@@ -6,7 +6,7 @@ import { useAuth } from './AuthContext';
 const SocketContext = createContext(null);
 
 export const SocketProvider = ({ children }) => {
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const [socket, setSocket] = useState(null);
 
   useEffect(() => {
@@ -19,6 +19,17 @@ export const SocketProvider = ({ children }) => {
     }
     const s = io(BASE_URL, { transports: ['polling'], upgrade: false, path: '/socket.io' });
     setSocket(s);
+
+    s.on('force_logout', (data) => {
+      if (user.role === 'vendor' || user.role === 'vendor_admin' || user.role === 'admin') {
+        if (String(data.vendor_id) === String(user.vendor_id)) {
+          console.log("Force logout received via Socket.IO:", data.reason);
+          logout();
+          window.location.href = '/login';
+        }
+      }
+    });
+
     return () => {
       if (s) s.disconnect();
     };

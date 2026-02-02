@@ -165,14 +165,6 @@ useEffect(() => {
   };
 }, [user, socket]);
 
-useEffect(() => {
-  if (!user || !socket) return;
-  const handleAttendanceUpdated = (ev) => {
-    if (String(ev.vendor_id) === String(user.vendor_id)) {
-      setLogs((prev) => [ev, ...prev].slice(0, 50));
-    }
-  };
-  socket.on('attendance_updated', handleAttendanceUpdated);
   const fetchLogs = async () => {
     try {
       const res = await axios.get(`${API_URL}/attendance?limit=50`);
@@ -182,13 +174,23 @@ useEffect(() => {
     } catch (e) {
     }
   };
-  fetchLogs();
-  const interval = setInterval(fetchLogs, 2000);
-  return () => { 
-    clearInterval(interval); 
-    socket.off('attendance_updated', handleAttendanceUpdated); 
-  };
-}, [user, socket]);
+
+  useEffect(() => {
+    fetchLogs();
+  }, [user]);
+
+  useEffect(() => {
+    if (!user || !socket) return;
+    const handleAttendanceUpdated = (ev) => {
+      if (String(ev.vendor_id) === String(user.vendor_id)) {
+        setLogs((prev) => [ev, ...prev].slice(0, 50));
+      }
+    };
+    socket.on('attendance_updated', handleAttendanceUpdated);
+    return () => { 
+      socket.off('attendance_updated', handleAttendanceUpdated); 
+    };
+  }, [user, socket]);
 
   const getStatusColor = (status, isLate) => {
     if (status === 'CHECK_OUT') return 'text-slate-500 bg-slate-100 border-slate-200';

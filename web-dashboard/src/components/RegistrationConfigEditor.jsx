@@ -87,6 +87,7 @@ const RegistrationConfigEditor = ({ config, onChange }) => {
                   >
                     <option value="text">Text Input</option>
                     <option value="select">Dropdown (Select)</option>
+                    <option value="multiselect">Multi-Select</option>
                   </select>
                 </div>
                 <div className="flex items-center pt-5">
@@ -107,8 +108,19 @@ const RegistrationConfigEditor = ({ config, onChange }) => {
                   <label className="block text-xs font-medium text-slate-500 mb-1">Dropdown Options (comma separated)</label>
                   <input
                     type="text"
-                    value={Array.isArray(field.options) ? field.options.join(', ') : field.options}
-                    onChange={(e) => updateField(index, 'options', e.target.value.split(',').map(s => s.trim()))}
+                    value={Array.isArray(field.options) ? field.options.join(', ') : (field.options || '')}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      // Split by comma, but don't filter empty strings yet so user can type
+                      // The final cleaning should happen when we pass the state up or on blur if needed
+                      // But for now, we'll just trim each option.
+                      updateField(index, 'options', val.split(',').map(s => s.trim()));
+                    }}
+                    onBlur={(e) => {
+                      // On blur, clean up empty options (e.g. if user left a trailing comma)
+                      const cleanOptions = field.options.filter(opt => opt.length > 0);
+                      updateField(index, 'options', cleanOptions);
+                    }}
                     className="w-full p-1.5 text-sm border rounded focus:ring-1 focus:ring-indigo-500 outline-none"
                     placeholder="Option 1, Option 2, Option 3"
                   />
