@@ -14,6 +14,7 @@ import androidx.core.content.ContextCompat;
 
 import com.ocp.facesdk.FaceBox;
 
+import java.util.ArrayList;
 import java.util.List;
 
 public class FaceView extends View {
@@ -21,11 +22,13 @@ public class FaceView extends View {
     private Context context;
     private Paint realPaint;
     private Paint spoofPaint;
+    private Paint successPaint;
 
     private Size frameSize;
 
     private List<FaceBox> faceBoxes;
     private String recognizedName = null;
+    private List<String> recognizedNames;
 
     public FaceView(Context context) {
         this(context, null);
@@ -47,7 +50,7 @@ public class FaceView extends View {
         realPaint = new Paint();
         realPaint.setStyle(Paint.Style.STROKE);
         realPaint.setStrokeWidth(3);
-        realPaint.setColor(ContextCompat.getColor(context, R.color.ai_neon_blue));
+        realPaint.setColor(Color.WHITE);
         realPaint.setAntiAlias(true);
         realPaint.setTextSize(50);
 
@@ -57,6 +60,12 @@ public class FaceView extends View {
         spoofPaint.setColor(ContextCompat.getColor(context, R.color.ai_error_red));
         spoofPaint.setAntiAlias(true);
         spoofPaint.setTextSize(50);
+
+        successPaint = new Paint();
+        successPaint.setStyle(Paint.Style.STROKE);
+        successPaint.setStrokeWidth(6);
+        successPaint.setColor(Color.WHITE);
+        successPaint.setAntiAlias(true);
     }
 
     public void setFrameSize(Size frameSize)
@@ -72,6 +81,26 @@ public class FaceView extends View {
 
     public void setRecognizedName(String name) {
         this.recognizedName = name;
+        this.recognizedNames = null;
+        invalidate();
+    }
+
+    public void setRecognizedNames(List<String> names) {
+        if (names == null) {
+            this.recognizedNames = null;
+        } else {
+            this.recognizedNames = new ArrayList<>(names);
+        }
+        invalidate();
+    }
+
+    private boolean successAnimating = false;
+    private long successAnimationStart = 0L;
+    private static final long SUCCESS_ANIMATION_DURATION_MS = 500L;
+
+    public void startSuccessCircleAnimation() {
+        successAnimating = true;
+        successAnimationStart = System.currentTimeMillis();
         invalidate();
     }
 
@@ -99,20 +128,71 @@ public class FaceView extends View {
                 }
                 else
                 {
+                    String nameForBox = recognizedName;
+                    if (recognizedNames != null && i < recognizedNames.size()) {
+                        nameForBox = recognizedNames.get(i);
+                    }
+                    boolean isUnknown = nameForBox != null && nameForBox.equalsIgnoreCase("Unknown");
+
                     realPaint.setStrokeWidth(3);
                     realPaint.setStyle(Paint.Style.FILL_AND_STROKE);
-                    
-                    String statusText = "REAL " + faceBox.liveness;
-                    if (recognizedName != null && !recognizedName.isEmpty()) {
-                        statusText = "ID: " + recognizedName;
+
+                    if (!isUnknown && nameForBox != null && !nameForBox.isEmpty()) {
+                        String statusText = "ID: " + nameForBox;
+                        canvas.drawText(statusText, (faceBox.x1 / x_scale) + 10, (faceBox.y1 / y_scale) - 30, realPaint);
                     }
-                    
-                    canvas.drawText(statusText, (faceBox.x1 / x_scale) + 10, (faceBox.y1 / y_scale) - 30, realPaint);
 
                     realPaint.setStyle(Paint.Style.STROKE);
                     realPaint.setStrokeWidth(5);
-                    canvas.drawRect(new Rect((int)(faceBox.x1 / x_scale), (int)(faceBox.y1 / y_scale),
-                            (int)(faceBox.x2 / x_scale), (int)(faceBox.y2 / y_scale)), realPaint);
+
+                    Rect rect = new Rect(
+                            (int) (faceBox.x1 / x_scale),
+                            (int) (faceBox.y1 / y_scale),
+                            (int) (faceBox.x2 / x_scale),
+                            (int) (faceBox.y2 / y_scale)
+                    );
+
+                    if (isUnknown) {
+                        float cornerLength = 40f * getResources().getDisplayMetrics().density;
+
+                        float left = rect.left;
+                        float top = rect.top;
+                        float right = rect.right;
+                        float bottom = rect.bottom;
+
+                        canvas.drawLine(left, top, left + cornerLength, top, realPaint);
+                        canvas.drawLine(left, top, left, top + cornerLength, realPaint);
+
+                        canvas.drawLine(right - cornerLength, top, right, top, realPaint);
+                        canvas.drawLine(right, top, right, top + cornerLength, realPaint);
+
+                        canvas.drawLine(left, bottom - cornerLength, left, bottom, realPaint);
+                        canvas.drawLine(left, bottom, left + cornerLength, bottom, realPaint);
+
+                        canvas.drawLine(right - cornerLength, bottom, right, bottom, realPaint);
+                        canvas.drawLine(right, bottom - cornerLength, right, bottom, realPaint);
+                    } else {
+                        canvas.drawRect(rect, realPaint);
+                    }
+                }
+            }
+
+            if (successAnimating && faceBoxes.size() > 0) {
+                long elapsed = System.currentTimeMillis() - successAnimationStart;
+                float progress = elapsed / (float) SUCCESS_ANIMATION_DURATION_MS;
+                if (progress >= 1f) {
+                    successAnimating = false;
+                } else {
+                    FaceBox faceBox = faceBoxes.get(0);
+                    float cx = (float) ((faceBox.x1 / x_scale) + (faceBox.x2 / x_scale)) / 2f;
+                    float cy = (float) ((faceBox.y1 / y_scale) + (faceBox.y2 / y_scale)) / 2f;
+                    float width = (float) ((faceBox.x2 - faceBox.x1) / x_scale);
+                    float height = (float) ((faceBox.y2 - faceBox.y1) / y_scale);
+                    float maxRadius = Math.max(width, height) / 2f + 20f;
+                    float radius = maxRadius * (1f - progress);
+
+                    canvas.drawCircle(cx, cy, radius, successPaint);
+                    postInvalidateOnAnimation();
                 }
             }
         }

@@ -2,14 +2,14 @@
 <resources>
     <!-- VisionX Palette -->
     <!-- Base Colors -->
-    <color name="vision_navy_900">#0F172A</color> <!-- Main Background -->
-    <color name="vision_navy_800">#1E293B</color> <!-- Card Background / Sidebar -->
-    <color name="vision_navy_700">#334155</color> <!-- Borders / Dividers -->
+    <color name="vision_navy_900">#000000</color>
+    <color name="vision_navy_800">#111111</color>
+    <color name="vision_navy_700">#1C1C1C</color>
     
     <!-- Accents -->
-    <color name="vision_cyan">#06B6D4</color>
-    <color name="vision_blue">#3B82F6</color>
-    <color name="vision_violet">#8B5CF6</color>
+    <color name="vision_cyan">#E5E5E5</color>
+    <color name="vision_blue">#FFFFFF</color>
+    <color name="vision_violet">#A3A3A3</color>
     
     <!-- Status -->
     <color name="vision_success">#10B981</color>
@@ -68,14 +68,14 @@
     <color name="pink_touch">@color/vision_violet</color>
     <color name="pink_700">@color/vision_violet</color>
     <color name="md_theme_light_onBackground">@color/vision_text_primary</color>
-    <color name="ai_neon_blue">@color/vision_cyan</color>
+    <color name="ai_neon_blue">@color/vision_text_primary</color>
     <color name="ai_deep_black">@color/vision_navy_900</color>
     <color name="ai_surface">@color/vision_navy_800</color>
     <color name="ai_text_primary">@color/vision_text_primary</color>
     <color name="ai_text_secondary">@color/vision_text_secondary</color>
     <color name="ai_error_red">@color/vision_error</color>
     <color name="ai_glass_surface">@color/glass_surface_light</color>
-    <color name="ai_neon_purple">@color/vision_violet</color>
+    <color name="ai_neon_purple">@color/vision_text_secondary</color>
     
     <color name="md_theme_dark_inverseOnSurface">@color/vision_text_primary</color>
     <color name="md_theme_dark_errorContainer">@color/vision_error</color>

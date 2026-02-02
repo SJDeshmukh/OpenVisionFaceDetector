@@ -21,7 +21,7 @@
             android:id="@+id/header_logo"
             android:layout_width="36dp"
             android:layout_height="36dp"
-            android:src="@drawable/logo_openvision" />
+            android:src="@drawable/openvision_logo" />
 
         <TextView
             android:id="@+id/header_title"
@@ -36,16 +36,15 @@
             android:fontFamily="sans-serif-medium" />
     </LinearLayout>
 
-    <!-- Actions -->
     <TextView
         android:id="@+id/tv_network_status"
         android:layout_width="wrap_content"
         android:layout_height="36dp"
-        android:background="@drawable/bg_glass_card"
+        android:background="@drawable/bg_network_status_online"
         android:paddingHorizontal="12dp"
         android:gravity="center"
         android:text="ONLINE"
-        android:textColor="@color/vision_success"
+        android:textColor="@android:color/black"
         android:textSize="12sp"
         android:textStyle="bold"
         app:layout_constraintBottom_toBottomOf="parent"

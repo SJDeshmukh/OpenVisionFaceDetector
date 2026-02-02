@@ -3,6 +3,7 @@ package com.faceplugin.facerecognition
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.os.Bundle
+import android.graphics.Color
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
@@ -25,6 +26,8 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.IntentFilter
 import android.os.Build
+import androidx.core.content.ContextCompat
+import android.media.AudioManager
 
 class MainActivity : AppCompatActivity() {
 
@@ -115,6 +118,19 @@ class MainActivity : AppCompatActivity() {
         val bottomNav = findViewById<BottomNavigationView>(R.id.bottom_navigation)
         val btnLogout = findViewById<ImageButton>(R.id.btn_logout)
 
+        // Adjust visibility based on role
+        val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+        val role = prefs.getString("role", "user")
+        val isUser = "user".equals(role, ignoreCase = true)
+
+        if (isUser) {
+            // Hide Enroll and Users for user login
+            bottomNav.menu.findItem(R.id.nav_enroll).isVisible = false
+            bottomNav.menu.findItem(R.id.nav_users).isVisible = false
+            // Hide the bottom navigation bar entirely for users since they only have one tab
+            bottomNav.visibility = android.view.View.GONE
+        }
+
         // Logout
 
         btnLogout.setOnClickListener {
@@ -158,13 +174,16 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
 
+        try {
+            val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+            val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxVolume, 0)
+        } catch (_: Exception) {
+        }
+
         // Register Auth Failure Receiver
         val filter = IntentFilter(MyGlobal.ACTION_AUTH_FAILURE)
-        if (Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(authFailureReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            registerReceiver(authFailureReceiver, filter)
-        }
+        ContextCompat.registerReceiver(this, authFailureReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
 
         handler.removeCallbacks(syncRunnable) // Prevent duplicates
         handler.post(syncRunnable) // Start sync immediately
@@ -227,10 +246,12 @@ class MainActivity : AppCompatActivity() {
         }
         if (online) {
             tv.text = "ONLINE"
-            tv.setTextColor(resources.getColor(R.color.vision_success))
+            tv.setBackgroundResource(R.drawable.bg_network_status_online)
+            tv.setTextColor(Color.BLACK)
         } else {
             tv.text = "OFFLINE"
-            tv.setTextColor(resources.getColor(R.color.vision_error))
+            tv.setBackgroundResource(R.drawable.bg_network_status_offline)
+            tv.setTextColor(Color.BLACK)
         }
     }
 
@@ -289,6 +310,8 @@ class MainActivity : AppCompatActivity() {
                     try {
                         if (response.isSuccessful) {
                             val faces = response.body()?.faces ?: emptyList()
+                            val serverIds = faces.mapNotNull { it.id }.toSet() // Track what's currently on server
+
                             val signature = facesSignature(faces)
                             val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
                             val lastSig = prefs.getString("last_faces_signature", null)
@@ -351,6 +374,17 @@ class MainActivity : AppCompatActivity() {
                                                 }
                                             }
                                         } catch (_: Exception) {
+                                        }
+                                    }
+
+                                    // Cleanup phase: remove local persons that are no longer on server
+                                    val localPersonsCopy = ArrayList(DBManager.personList)
+                                    localPersonsCopy.forEach { localPerson ->
+                                        val localId = localPerson.id
+                                        // Only delete if it has a server ID and that ID is not in the current server list
+                                        if (!localId.isNullOrEmpty() && !serverIds.contains(localId)) {
+                                            dbManager.deletePersonById(localId)
+                                            android.util.Log.e("AppCrash", "Deleted person not on server: ${localPerson.name} (id: $localId)")
                                         }
                                     }
 

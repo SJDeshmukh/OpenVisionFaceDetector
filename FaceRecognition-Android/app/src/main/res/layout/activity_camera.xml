@@ -34,7 +34,7 @@
         <ImageView
             android:layout_width="32dp"
             android:layout_height="32dp"
-            android:src="@drawable/logo_openvision"
+            android:src="@drawable/openvision_logo"
             android:layout_marginEnd="12dp" />
 
         <TextView

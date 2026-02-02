@@ -167,12 +167,17 @@ class ParentActivity : AppCompatActivity() {
             nm.createNotificationChannel(channel)
         }
     }
+    @android.annotation.SuppressLint("MissingPermission")
     private fun showAttendanceNotification(name: String, status: String, timestamp: String, activity: String) {
         val builder = NotificationCompat.Builder(this, "parent_attendance")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle("$name • $status")
             .setContentText("$timestamp • $activity")
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+            if (!granted) return
+        }
         NotificationManagerCompat.from(this).notify(System.currentTimeMillis().toInt(), builder.build())
     }
 }

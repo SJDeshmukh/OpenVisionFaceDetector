@@ -93,6 +93,10 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     private DBManager dbManager;
     private android.widget.ImageView ivStatusOverlay;
     private TextView tvStatusOverlay;
+    private View syncOrb;
+    private TextView networkStatusPill;
+    private long lastNotRecognizedToastAtMs = 0L;
+    private boolean vendorVerifyOnlyMode = false;
 
     // Power Saving / Screen Saver
     private Handler powerSaveHandler = new Handler(Looper.getMainLooper());
@@ -145,6 +149,9 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         screenSaverView = view.findViewById(R.id.screenSaverView);
         ivStatusOverlay = view.findViewById(R.id.ivStatusOverlay);
         tvStatusOverlay = view.findViewById(R.id.tvStatusOverlay);
+        syncOrb = view.findViewById(R.id.syncOrb);
+        networkStatusPill = view.findViewById(R.id.networkStatusPill);
+        vendorVerifyOnlyMode = isVendorVerifyOnlyMode();
 
         // Keep screen on
         if (getActivity() != null) {
@@ -174,11 +181,13 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         } catch (Exception ignored) {}
         lastProcessedPersonId = null;
         hideScreenSaver(); // Start with screen active
+        vendorVerifyOnlyMode = isVendorVerifyOnlyMode();
         if (statusText != null) {
-            statusText.setText("Looking for a registered face...");
+            statusText.setText(vendorVerifyOnlyMode ? "Show a face to verify registration..." : "Looking for a registered face...");
         }
         try {
             boolean online = NetworkUtils.INSTANCE.isOnline(requireContext().getApplicationContext());
+            updateNetworkHud(online);
             if (online) {
                 android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
                 String token = prefs.getString("token", null);
@@ -187,6 +196,28 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 }
             }
         } catch (Exception ignored) {}
+    }
+
+    private boolean isVendorVerifyOnlyMode() {
+        try {
+            android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
+            String role = prefs.getString("role", null);
+            
+            // If role is null, we check if we have a vendor_id but no company_id? 
+            // Or just default to attendance. 
+            // Most reliable: if role is explicitly "user", enable attendance.
+            // For anything else (admin, vendor, superadmin, null), disable attendance.
+            if (role == null) {
+                // If we don't know the role, let's see if we have a token.
+                // If we have a token but no role, it might be an old session.
+                // To be safe, if it's NOT "user", it's verify only.
+                return true; 
+            }
+            
+            return !"user".equalsIgnoreCase(role);
+        } catch (Exception ignored) {
+            return true; // Default to verify only on error
+        }
     }
 
     @Override
@@ -304,22 +335,22 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             if (isAttendance) {
                 String predicted = dbManager.predictNextAttendanceStatus(effectivePersonId, localUid, name);
                 dbManager.insertAttendanceQueue(effectivePersonId, localUid, name, timestamp, predicted, image, false);
-                Toast.makeText(getContext(), "Offline: Attendance Saved", Toast.LENGTH_SHORT).show();
                 playAttendanceSound(predicted);
                 showStatusOverlay(predicted);
+                showAttendanceToast(name, predicted);
                 if (getActivity() != null) {
                     String finalPredicted = predicted;
                     getActivity().runOnUiThread(() -> {
-                        if (statusText != null) statusText.setText("Offline: " + name + " " + finalPredicted);
+                        if (statusText != null) statusText.setText(name + " " + finalPredicted);
                     });
                 }
             } else {
-                Toast.makeText(getContext(), "Offline: Recognized locally", Toast.LENGTH_SHORT).show();
                 playAttendanceSound("CHECK_IN");
                 showStatusOverlay("CHECK_IN");
+                showAttendanceToast(name, "CHECK_IN");
                 if (getActivity() != null) {
                     getActivity().runOnUiThread(() -> {
-                        if (statusText != null) statusText.setText("Offline: " + name);
+                        if (statusText != null) statusText.setText(name);
                     });
                 }
             }
@@ -340,11 +371,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 if (response.isSuccessful() && response.body() != null) {
                     GreetingResponse greeting = response.body();
                     if (greeting.isSpeak()) {
-                        if (getActivity() != null) {
-                            getActivity().runOnUiThread(() -> {
-                                Toast.makeText(getContext(), greeting.getText(), Toast.LENGTH_LONG).show();
-                            });
-                        }
+                        showAttendanceToast(name, greeting.getStatus());
 
                         // Play Sound based on Status (Check-In vs Check-Out)
                         String status = greeting.getStatus();
@@ -403,10 +430,10 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                         if (isAttendance) {
                             String predicted = dbManager.predictNextAttendanceStatus(finalPersonId, localUid, name);
                             dbManager.insertAttendanceQueue(finalPersonId, localUid, name, timestamp, predicted, image, false);
-                            Toast.makeText(getContext(), "Offline: Attendance Saved", Toast.LENGTH_SHORT).show();
                             playAttendanceSound(predicted);
                             showStatusOverlay(predicted);
-                            if (statusText != null) statusText.setText("Offline: " + name + " " + predicted);
+                            showAttendanceToast(name, predicted);
+                            if (statusText != null) statusText.setText(name + " " + predicted);
                             try {
                                 SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
                             } catch (Exception e) {
@@ -451,6 +478,9 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                         statusText.setTextColor(getResources().getColor(R.color.primary_soft_blue));
                     }).start();
                 }
+                if (faceView != null) {
+                    faceView.startSuccessCircleAnimation();
+                }
                 if (tvStatusOverlay != null) {
                     tvStatusOverlay.setVisibility(View.GONE);
                 }
@@ -480,7 +510,74 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                         statusText.setTextColor(getResources().getColor(R.color.primary_soft_blue));
                     }).start();
                 }
+                if (faceView != null) {
+                    faceView.startSuccessCircleAnimation();
+                }
             }
+        });
+    }
+
+    private void showVerifyOverlay() {
+        if (getActivity() == null) return;
+        getActivity().runOnUiThread(() -> {
+            if (ivStatusOverlay != null) {
+                ivStatusOverlay.setImageResource(R.drawable.ic_check_in_success);
+                ivStatusOverlay.clearColorFilter();
+                ivStatusOverlay.setVisibility(View.VISIBLE);
+                ivStatusOverlay.setAlpha(1f);
+                ivStatusOverlay.animate().alpha(0f).setDuration(800).withEndAction(() -> {
+                    ivStatusOverlay.setVisibility(View.GONE);
+                }).start();
+            }
+            if (tvStatusOverlay != null) {
+                tvStatusOverlay.setVisibility(View.GONE);
+            }
+            if (faceView != null) {
+                faceView.startSuccessCircleAnimation();
+            }
+        });
+    }
+
+    private void showVerifyToast(String name) {
+        if (getActivity() == null || getContext() == null) return;
+        String message = "✔ Verified: " + name;
+        getActivity().runOnUiThread(() -> {
+            Toast toast = Toast.makeText(getContext(), message, Toast.LENGTH_SHORT);
+            toast.show();
+            new Handler(Looper.getMainLooper()).postDelayed(toast::cancel, 1000);
+        });
+    }
+
+    private void showNotRecognizedToast() {
+        if (getActivity() == null || getContext() == null) return;
+        long now = System.currentTimeMillis();
+        if (now - lastNotRecognizedToastAtMs < 1200) return;
+        lastNotRecognizedToastAtMs = now;
+        Toast toast = Toast.makeText(getContext(), "Not recognized", Toast.LENGTH_SHORT);
+        toast.show();
+        new Handler(Looper.getMainLooper()).postDelayed(toast::cancel, 1000);
+    }
+
+    private void updateNetworkHud(boolean online) {
+        if (getContext() == null || syncOrb == null || networkStatusPill == null) return;
+        String text = online ? "ONLINE" : "OFFLINE";
+        networkStatusPill.setText(text);
+        networkStatusPill.setTextColor(ContextCompat.getColor(requireContext(), android.R.color.black));
+        networkStatusPill.setBackgroundResource(online ? R.drawable.bg_network_status_online : R.drawable.bg_network_status_offline);
+        syncOrb.setVisibility(View.GONE);
+    }
+
+    private void showAttendanceToast(String name, String status) {
+        if (getActivity() == null || getContext() == null) return;
+        String friendlyStatus = "Check in";
+        if ("CHECK_OUT".equals(status)) {
+            friendlyStatus = "Check out";
+        }
+        String message = "✔️ 👋 " + name + " " + friendlyStatus;
+        getActivity().runOnUiThread(() -> {
+            Toast toast = Toast.makeText(getContext(), message, Toast.LENGTH_SHORT);
+            toast.show();
+            new Handler(Looper.getMainLooper()).postDelayed(toast::cancel, 1000);
         });
     }
 
@@ -637,119 +734,167 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             }
 
             if (faceBoxes.size() > 0) {
-                FaceBox faceBox = faceBoxes.get(0);
-                if (faceBox.liveness > SettingsActivity.getLivenessThreshold(requireContext())) {
-                    byte[] templates = FaceSDK.templateExtraction(bitmap, faceBox);
+                float livenessThreshold = SettingsActivity.getLivenessThreshold(requireContext());
+                float identifyThreshold = SettingsActivity.getIdentifyThreshold(requireContext());
+                List<String> namesForBoxes = new java.util.ArrayList<>();
+                float bestSimilarity = 0f;
+                Person bestPerson = null;
+                FaceBox bestFaceBox = null;
+                String bestPersonId = "";
+                String bestLocalUid = "";
 
-                    float maxSimiarlity = 0;
-                    Person maximiarlityPerson = null;
-                    for (Person person : DBManager.personList) {
-                        float similarity = FaceSDK.similarityCalculation(templates, person.templates);
-                        if (similarity > maxSimiarlity) {
-                            maxSimiarlity = similarity;
-                            maximiarlityPerson = person;
+                for (int i = 0; i < faceBoxes.size(); i++) {
+                    FaceBox faceBox = faceBoxes.get(i);
+                    String nameForBox = "Unknown";
+
+                    if (faceBox.liveness > livenessThreshold) {
+                        byte[] templates = FaceSDK.templateExtraction(bitmap, faceBox);
+
+                        float maxSimilarityForBox = 0f;
+                        Person bestForBox = null;
+                        for (Person person : DBManager.personList) {
+                            float similarity = FaceSDK.similarityCalculation(templates, person.templates);
+                            if (similarity > maxSimilarityForBox) {
+                                maxSimilarityForBox = similarity;
+                                bestForBox = person;
+                            }
+                        }
+
+                        if (bestForBox != null && maxSimilarityForBox > identifyThreshold) {
+                            nameForBox = bestForBox.name;
+                            if (maxSimilarityForBox > bestSimilarity) {
+                                bestSimilarity = maxSimilarityForBox;
+                                bestPerson = bestForBox;
+                                bestFaceBox = faceBox;
+                                bestPersonId = bestForBox.id != null ? bestForBox.id : "";
+                                bestLocalUid = bestForBox.localUid != null ? bestForBox.localUid : "";
+                            }
                         }
                     }
 
-                    if (maxSimiarlity > SettingsActivity.getIdentifyThreshold(requireContext())) {
-                        consecutiveUnknownFrames = 0;
-                        final Person identifiedPerson = maximiarlityPerson;
-                        
-                        String personId = identifiedPerson.id != null ? identifiedPerson.id : "";
-                        String localUid = identifiedPerson.localUid != null ? identifiedPerson.localUid : "";
-                        if ((personId == null || personId.isEmpty()) && localUid != null && !localUid.isEmpty()) {
-                            try {
-                                String resolved = dbManager.resolvePersonId(localUid);
-                                if (resolved != null && !resolved.isEmpty()) {
-                                    personId = resolved;
-                                }
-                            } catch (Exception ignored) {}
-                        }
+                    namesForBoxes.add(nameForBox);
+                }
 
-                        boolean online = false;
+                if (getActivity() != null) {
+                    List<String> finalNamesForBoxes = namesForBoxes;
+                    getActivity().runOnUiThread(() -> {
+                        faceView.setRecognizedNames(finalNamesForBoxes);
+                    });
+                }
+
+                if (bestPerson != null && bestSimilarity > identifyThreshold) {
+                    consecutiveUnknownFrames = 0;
+                    String personId = bestPersonId;
+                    String localUid = bestLocalUid;
+                    if ((personId == null || personId.isEmpty()) && localUid != null && !localUid.isEmpty()) {
                         try {
-                            online = NetworkUtils.INSTANCE.isOnline(requireContext().getApplicationContext());
-                        } catch (Exception ignored) {}
-
-                        if (!online) {
-                            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US);
-                            String timestamp = sdf.format(new Date());
-                            int cooldown = 30;
-                            try {
-                                android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
-                                cooldown = prefs.getInt("cooldown_seconds", 30);
-                            } catch (Exception ignored) {}
-                            boolean withinCooldown = false;
-                            try {
-                                String lastTs = dbManager.getLastAttendanceTimestamp(personId, localUid, identifiedPerson.name);
-                                if (lastTs != null && !lastTs.isEmpty()) {
-                                    SimpleDateFormat sdf2 = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US);
-                                    long lastMs = sdf2.parse(lastTs).getTime();
-                                    long nowMs = sdf2.parse(timestamp).getTime();
-                                    long deltaSec = (nowMs - lastMs) / 1000;
-                                    if (deltaSec >= 0 && deltaSec < cooldown) {
-                                        withinCooldown = true;
-                                    }
-                                }
-                            } catch (Exception ignored) {}
-                            if (!withinCooldown) {
-                                String predicted = dbManager.predictNextAttendanceStatus(personId, localUid, identifiedPerson.name);
-                                dbManager.insertAttendanceQueue(personId, localUid, identifiedPerson.name, timestamp, predicted, bitmap, false);
-                                playAttendanceSound(predicted);
-                                showStatusOverlay(predicted);
-                                if (getActivity() != null) {
-                                    String finalPredicted = predicted;
-                                    getActivity().runOnUiThread(() -> {
-                                        faceView.setRecognizedName(identifiedPerson.name);
-                                        if (statusText != null) statusText.setText("Offline: " + identifiedPerson.name + " " + finalPredicted);
-                                    });
-                                }
-                                try {
-                                    SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
-                                } catch (Exception e) {
-                                    e.printStackTrace();
-                                }
+                            String resolved = dbManager.resolvePersonId(localUid);
+                            if (resolved != null && !resolved.isEmpty()) {
+                                personId = resolved;
                             }
-                            return;
-                        }
+                        } catch (Exception ignored) {}
+                    }
 
+                    if (vendorVerifyOnlyMode) {
                         String key = personId;
+                        if (key == null) key = "";
                         if (key.isEmpty()) {
-                            key = "local:" + (!localUid.isEmpty() ? localUid : "unknown");
+                            key = "local:" + (localUid != null && !localUid.isEmpty() ? localUid : "unknown");
                         }
-
                         if (!key.equals(lastProcessedPersonId)) {
                             lastProcessedPersonId = key;
-                            
+                            String finalName = bestPerson.name;
                             if (getActivity() != null) {
                                 getActivity().runOnUiThread(() -> {
-                                    faceView.setRecognizedName(identifiedPerson.name);
-                                    statusText.setText("Verifying " + identifiedPerson.name + "...");
+                                    if (statusText != null) statusText.setText("Verified " + finalName);
                                 });
                             }
-
-                            sendPersonEvent(true, true, personId, localUid, identifiedPerson.name, maxSimiarlity, bitmap);
+                            showVerifyOverlay();
+                            showVerifyToast(finalName);
                         }
+                        return;
+                    }
 
-                    } else {
-                        // Not Recognized
-                        consecutiveUnknownFrames++;
-                        
-                        if (getActivity() != null) {
-                            getActivity().runOnUiThread(() -> {
-                                if (lastProcessedPersonId != null) {
-                                    // If we were verifying someone, don't switch to Unknown immediately
-                                    if (consecutiveUnknownFrames > UNKNOWN_THRESHOLD) {
-                                        lastProcessedPersonId = null;
-                                        faceView.setRecognizedName("Unknown");
-                                        statusText.setText("Face not recognized");
-                                    }
-                                } else {
-                                    // No previous lock, show Unknown immediately
-                                    faceView.setRecognizedName("Unknown");
+                    boolean online = false;
+                    try {
+                        online = NetworkUtils.INSTANCE.isOnline(requireContext().getApplicationContext());
+                    } catch (Exception ignored) {}
+
+                    if (!online) {
+                        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US);
+                        String timestamp = sdf.format(new Date());
+                        int cooldown = 30;
+                        try {
+                            android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
+                            cooldown = prefs.getInt("cooldown_seconds", 30);
+                        } catch (Exception ignored) {}
+                        boolean withinCooldown = false;
+                        try {
+                            String lastTs = dbManager.getLastAttendanceTimestamp(personId, localUid, bestPerson.name);
+                            if (lastTs != null && !lastTs.isEmpty()) {
+                                SimpleDateFormat sdf2 = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US);
+                                long lastMs = sdf2.parse(lastTs).getTime();
+                                long nowMs = sdf2.parse(timestamp).getTime();
+                                long deltaSec = (nowMs - lastMs) / 1000;
+                                if (deltaSec >= 0 && deltaSec < cooldown) {
+                                    withinCooldown = true;
                                 }
+                            }
+                        } catch (Exception ignored) {}
+                        if (!withinCooldown) {
+                            String predicted = dbManager.predictNextAttendanceStatus(personId, localUid, bestPerson.name);
+                            dbManager.insertAttendanceQueue(personId, localUid, bestPerson.name, timestamp, predicted, bitmap, false);
+                            playAttendanceSound(predicted);
+                            showStatusOverlay(predicted);
+                            if (getActivity() != null) {
+                                String finalPredicted = predicted;
+                                String finalName = bestPerson.name;
+                                getActivity().runOnUiThread(() -> {
+                                    if (statusText != null) statusText.setText(finalName + " " + finalPredicted);
+                                });
+                            }
+                            try {
+                                SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
+                            } catch (Exception e) {
+                                e.printStackTrace();
+                            }
+                        }
+                        return;
+                    }
+
+                    String key = personId;
+                    if (key.isEmpty()) {
+                        key = "local:" + (!localUid.isEmpty() ? localUid : "unknown");
+                    }
+
+                    if (!key.equals(lastProcessedPersonId)) {
+                        lastProcessedPersonId = key;
+
+                        if (getActivity() != null) {
+                            String finalName = bestPerson.name;
+                            getActivity().runOnUiThread(() -> {
+                                statusText.setText("Verifying " + finalName + "...");
                             });
                         }
+
+                        sendPersonEvent(true, true, personId, localUid, bestPerson.name, bestSimilarity, bitmap);
+                    }
+
+                } else {
+                    consecutiveUnknownFrames++;
+
+                    if (getActivity() != null) {
+                        getActivity().runOnUiThread(() -> {
+                            if (lastProcessedPersonId != null) {
+                                if (consecutiveUnknownFrames > UNKNOWN_THRESHOLD) {
+                                    lastProcessedPersonId = null;
+                                    statusText.setText("Face not recognized");
+                                    showNotRecognizedToast();
+                                }
+                            } else {
+                                showNotRecognizedToast();
+                            }
+                        });
                     }
                 }
             }

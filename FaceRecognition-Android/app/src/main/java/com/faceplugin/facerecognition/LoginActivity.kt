@@ -108,11 +108,13 @@ class LoginActivity : AppCompatActivity() {
                         val token = response.body()?.token
                         val vendorId = response.body()?.vendorId
                         val companyId = response.body()?.companyId
+                        val role = response.body()?.role
                         
                         // Save login state
                         val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
                         val editor = prefs.edit()
                         editor.putString("username", username)
+                        if (!role.isNullOrBlank()) editor.putString("role", role)
                         if (token != null) editor.putString("token", token)
                         if (vendorId != null) editor.putInt("vendor_id", vendorId)
                         if (companyId != null) editor.putInt("company_id", companyId)

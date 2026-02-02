@@ -12,7 +12,7 @@
         android:id="@+id/logo_login"
         android:layout_width="120dp"
         android:layout_height="120dp"
-        android:src="@drawable/logo_openvision"
+        android:src="@drawable/openvision_logo"
         app:layout_constraintBottom_toTopOf="@+id/title_login"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"

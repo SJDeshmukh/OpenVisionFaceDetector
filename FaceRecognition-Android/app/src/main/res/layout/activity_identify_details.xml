@@ -103,6 +103,15 @@
             android:textSize="16sp"
             android:layout_marginBottom="12dp"/>
 
+        <TextView
+            android:id="@+id/txtLuminance"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Luminance: 0.83"
+            android:textColor="@color/vision_text_secondary"
+            android:textSize="16sp"
+            android:layout_marginBottom="12dp"/>
+
     </LinearLayout>
 
 </androidx.constraintlayout.widget.ConstraintLayout>

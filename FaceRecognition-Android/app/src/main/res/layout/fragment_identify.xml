@@ -15,6 +15,18 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
+    <!-- Dynamic scan grid overlay -->
+    <View
+        android:id="@+id/scanGridOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:alpha="0.35"
+        android:background="@drawable/bg_bw_gradient"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
     <!-- Overlay Gradient to integrate camera into UI -->
     <View
         android:layout_width="match_parent"
@@ -31,51 +43,183 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <TextView
-        android:id="@+id/statusText"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="48dp"
-        android:background="@drawable/bg_glass_card"
-        android:elevation="8dp"
-        android:paddingHorizontal="24dp"
-        android:paddingVertical="12dp"
-        android:text="Looking for a registered face..."
-        android:textColor="@color/vision_blue"
-        android:textSize="16sp"
-        android:fontFamily="sans-serif-medium"
-        android:letterSpacing="0.05"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent" />
-
     <ImageView
         android:id="@+id/ivStatusOverlay"
         android:layout_width="160dp"
         android:layout_height="160dp"
-        android:alpha="0"
         android:visibility="gone"
+        android:alpha="0"
+        android:src="@drawable/ic_check_in_success"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintVertical_bias="0.55" />
+        app:layout_constraintEnd_toEndOf="parent" />
 
     <TextView
         android:id="@+id/tvStatusOverlay"
-        android:layout_width="160dp"
-        android:layout_height="160dp"
-        android:text="👋"
-        android:textSize="92sp"
-        android:gravity="center"
-        android:textColor="@android:color/holo_blue_light"
-        android:alpha="0"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textSize="96sp"
         android:visibility="gone"
+        android:alpha="0"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintVertical_bias="0.55" />
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- Top HUD: status text and similarity bar -->
+    <LinearLayout
+        android:id="@+id/topHud"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="24dp"
+        android:layout_marginEnd="24dp"
+        android:layout_marginTop="32dp"
+        android:orientation="vertical"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <TextView
+            android:id="@+id/statusText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_glass_card"
+            android:elevation="8dp"
+            android:paddingHorizontal="24dp"
+            android:paddingVertical="12dp"
+            android:text="Scanning for registered faces..."
+            android:textColor="@android:color/white"
+            android:textSize="16sp"
+            android:fontFamily="sans-serif-medium"
+            android:letterSpacing="0.05" />
+
+        <LinearLayout
+            android:id="@+id/similarityBarContainer"
+            android:layout_width="match_parent"
+            android:layout_height="8dp"
+            android:layout_marginTop="8dp"
+            android:background="#33000000"
+            android:gravity="center_vertical">
+
+            <View
+                android:id="@+id/similarityBarFill"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="@drawable/bg_bw_gradient" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/similarityLabel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="Match: 0%"
+            android:textColor="#DDFFFFFF"
+            android:textSize="12sp" />
+    </LinearLayout>
+
+    <!-- Online/Offline pill and sync orb -->
+    <LinearLayout
+        android:id="@+id/networkHud"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:layout_marginEnd="16dp"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:visibility="gone"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <View
+            android:id="@+id/syncOrb"
+            android:layout_width="12dp"
+            android:layout_height="12dp"
+            android:background="@drawable/bg_bw_gradient" />
+
+        <TextView
+            android:id="@+id/networkStatusPill"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:paddingHorizontal="12dp"
+            android:paddingVertical="4dp"
+            android:background="@drawable/bg_network_status_online"
+            android:text="ONLINE"
+            android:textColor="@android:color/black"
+            android:textSize="10sp"
+            android:fontFamily="sans-serif-medium" />
+    </LinearLayout>
+
+    <!-- Center AI attendance card -->
+    <LinearLayout
+        android:id="@+id/attendanceCard"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="32dp"
+        android:layout_marginEnd="32dp"
+        android:padding="16dp"
+        android:background="@drawable/bg_glass_card"
+        android:visibility="gone"
+        android:alpha="0"
+        android:elevation="16dp"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <ImageView
+            android:id="@+id/attendanceIcon"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:src="@drawable/ic_check_in_success" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:orientation="vertical"
+            android:layout_weight="1">
+
+            <TextView
+                android:id="@+id/attendanceTitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Checked in"
+                android:textColor="@android:color/white"
+                android:textSize="16sp"
+                android:fontFamily="sans-serif-medium" />
+
+            <TextView
+                android:id="@+id/attendanceSubtitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Identity confirmed – attendance logged"
+                android:textColor="#CCFFFFFF"
+                android:textSize="12sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Timeline hint chip -->
+    <TextView
+        android:id="@+id/timelineChip"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="16dp"
+        android:layout_marginBottom="24dp"
+        android:paddingHorizontal="12dp"
+        android:paddingVertical="6dp"
+        android:background="@drawable/bg_glass_card"
+        android:text="Last: --"
+        android:textColor="@android:color/white"
+        android:textSize="10sp"
+        android:alpha="0"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
 
     <!-- Power Saving Overlay -->
     <FrameLayout
@@ -102,7 +246,7 @@
                 android:layout_width="180dp"
                 android:layout_height="wrap_content"
                 android:adjustViewBounds="true"
-                android:src="@drawable/logo_openvision"
+                android:src="@drawable/openvision_logo"
                 android:alpha="0.9"
                 android:layout_marginBottom="24dp"
                 android:contentDescription="OpenVision Logo"/>
