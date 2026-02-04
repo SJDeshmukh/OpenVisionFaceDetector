@@ -4,6 +4,9 @@ Modern face-based attendance for two verticals:
 - 🎓 School/College (students + parents)
 - 🏭 Daily Wages/Workforce (employees + payroll)
 
+Customer doc:
+- [Customer Overview](./CUSTOMER_OVERVIEW.md)
+
 Monorepo includes:
 - backend/ → Flask + Socket.IO + Gunicorn (gevent) + Redis + Celery
 - FaceRecognition-Android/ → Android (CameraX + custom Face SDK + Retrofit + Socket.IO client)

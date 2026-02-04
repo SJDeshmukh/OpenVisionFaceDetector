@@ -23,12 +23,31 @@ public class FaceView extends View {
     private Paint realPaint;
     private Paint spoofPaint;
     private Paint successPaint;
+    private Paint meshGlowPaint;
+    private Paint meshPaint;
+    private Paint meshPointPaint;
 
     private Size frameSize;
 
     private List<FaceBox> faceBoxes;
     private String recognizedName = null;
     private List<String> recognizedNames;
+
+    private static final int[] LANDMARK_EDGES_68 = new int[] {
+            0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 15, 15, 16,
+            17, 18, 18, 19, 19, 20, 20, 21,
+            22, 23, 23, 24, 24, 25, 25, 26,
+            27, 28, 28, 29, 29, 30,
+            31, 32, 32, 33, 33, 34, 34, 35,
+            30, 31, 30, 35,
+            36, 37, 37, 38, 38, 39, 39, 40, 40, 41, 41, 36,
+            42, 43, 43, 44, 44, 45, 45, 46, 46, 47, 47, 42,
+            48, 49, 49, 50, 50, 51, 51, 52, 52, 53, 53, 54, 54, 55, 55, 56, 56, 57, 57, 58, 58, 59, 59, 48,
+            60, 61, 61, 62, 62, 63, 63, 64, 64, 65, 65, 66, 66, 67, 67, 60,
+            48, 60, 54, 64
+    };
+
+    private final float[] meshLineBuffer = new float[(LANDMARK_EDGES_68.length / 2) * 4];
 
     public FaceView(Context context) {
         this(context, null);
@@ -66,6 +85,29 @@ public class FaceView extends View {
         successPaint.setStrokeWidth(6);
         successPaint.setColor(Color.WHITE);
         successPaint.setAntiAlias(true);
+
+        float density = getResources().getDisplayMetrics().density;
+        int meshColor = Color.rgb(34, 211, 238);
+
+        meshGlowPaint = new Paint();
+        meshGlowPaint.setStyle(Paint.Style.STROKE);
+        meshGlowPaint.setStrokeWidth(6f * density);
+        meshGlowPaint.setColor(meshColor);
+        meshGlowPaint.setAlpha(70);
+        meshGlowPaint.setAntiAlias(true);
+
+        meshPaint = new Paint();
+        meshPaint.setStyle(Paint.Style.STROKE);
+        meshPaint.setStrokeWidth(2f * density);
+        meshPaint.setColor(meshColor);
+        meshPaint.setAlpha(210);
+        meshPaint.setAntiAlias(true);
+
+        meshPointPaint = new Paint();
+        meshPointPaint.setStyle(Paint.Style.FILL);
+        meshPointPaint.setColor(meshColor);
+        meshPointPaint.setAlpha(230);
+        meshPointPaint.setAntiAlias(true);
     }
 
     public void setFrameSize(Size frameSize)
@@ -173,6 +215,34 @@ public class FaceView extends View {
                         canvas.drawLine(right, bottom - cornerLength, right, bottom, realPaint);
                     } else {
                         canvas.drawRect(rect, realPaint);
+                    }
+
+                    if (faceBox.landmarks_68 != null && faceBox.landmarks_68.length >= 136) {
+                        int edgeCount = LANDMARK_EDGES_68.length / 2;
+                        for (int e = 0; e < edgeCount; e++) {
+                            int a = LANDMARK_EDGES_68[e * 2];
+                            int b = LANDMARK_EDGES_68[e * 2 + 1];
+                            float ax = faceBox.landmarks_68[a * 2] / x_scale;
+                            float ay = faceBox.landmarks_68[a * 2 + 1] / y_scale;
+                            float bx = faceBox.landmarks_68[b * 2] / x_scale;
+                            float by = faceBox.landmarks_68[b * 2 + 1] / y_scale;
+
+                            int o = e * 4;
+                            meshLineBuffer[o] = ax;
+                            meshLineBuffer[o + 1] = ay;
+                            meshLineBuffer[o + 2] = bx;
+                            meshLineBuffer[o + 3] = by;
+                        }
+
+                        canvas.drawLines(meshLineBuffer, 0, edgeCount * 4, meshGlowPaint);
+                        canvas.drawLines(meshLineBuffer, 0, edgeCount * 4, meshPaint);
+
+                        float r = 1.8f * getResources().getDisplayMetrics().density;
+                        for (int p = 0; p < 68; p++) {
+                            float px = faceBox.landmarks_68[p * 2] / x_scale;
+                            float py = faceBox.landmarks_68[p * 2 + 1] / y_scale;
+                            canvas.drawCircle(px, py, r, meshPointPaint);
+                        }
                     }
                 }
             }
