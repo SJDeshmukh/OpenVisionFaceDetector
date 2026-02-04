@@ -9,7 +9,7 @@ import android.content.Intent;
 import com.faceplugin.facerecognition.MyGlobal;
 
 public class RetrofitClient {
-    private static String BASE_URL = "http://192.168.1.101:5001/";
+    private static String BASE_URL = "https://bolometric-lower-joaquina.ngrok-free.dev/";
     
     private static Retrofit retrofit = null;
     private static String authToken = null;
@@ -36,6 +36,13 @@ public class RetrofitClient {
     public static GreetingService getService() {
         if (retrofit == null) {
             OkHttpClient.Builder httpClient = new OkHttpClient.Builder();
+            httpClient.addInterceptor(chain -> {
+                Request original = chain.request();
+                Request.Builder builder = original.newBuilder()
+                        .header("ngrok-skip-browser-warning", "1")
+                        .header("User-Agent", "openvisionx-android");
+                return chain.proceed(builder.build());
+            });
 
             if (authToken != null && !authToken.isEmpty()) {
                 httpClient.addInterceptor(chain -> {

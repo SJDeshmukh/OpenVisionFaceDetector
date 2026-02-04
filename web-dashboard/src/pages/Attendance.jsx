@@ -54,14 +54,23 @@ const Attendance = () => {
       // but for "real time" we can just re-fetch the current view.
       if (String(ev.vendor_id) === String(user.vendor_id)) {
         fetchLogs(true);
+        fetchFilters(filtersRef.current);
+      }
+    };
+    const handlePersonsUpdated = (ev) => {
+      if (String(ev.vendor_id) === String(user.vendor_id)) {
+        fetchLogs(true);
+        fetchFilters(filtersRef.current);
       }
     };
     socket.on('attendance_updated', handleAttendanceUpdated);
+    socket.on('persons_updated', handlePersonsUpdated);
     
     return () => {
       socket.off('attendance_updated', handleAttendanceUpdated);
+      socket.off('persons_updated', handlePersonsUpdated);
     };
-  }, [filters, socket]); // Re-create listener when filters change to ensure correct context if needed
+  }, [filters, socket, user?.vendor_id]); // Re-create listener when filters change to ensure correct context if needed
 
   useEffect(() => {
     const t = setTimeout(() => fetchFilters(filtersRef.current), 250);

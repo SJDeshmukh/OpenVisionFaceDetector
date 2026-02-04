@@ -80,6 +80,17 @@ class MainActivity : AppCompatActivity() {
         android.util.Log.e("AppCrash", "MainActivity onCreate started")
         setContentView(R.layout.activity_main)
 
+        try {
+            val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+            val serverUrl = prefs.getString("server_url", null)
+            if (!serverUrl.isNullOrBlank()) {
+                RetrofitClient.setBaseUrl(serverUrl)
+            }
+            val token = prefs.getString("token", null)
+            RetrofitClient.setAuthToken(token)
+        } catch (_: Exception) {
+        }
+
         // Keep Screen On Always
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 

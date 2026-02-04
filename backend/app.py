@@ -133,7 +133,9 @@ allowed_origins = [
     FRONTEND_URL, 
     "http://localhost:5173", 
     "http://127.0.0.1:5173",
-    "https://face-detection-frontend-kepx.onrender.com"
+    "https://face-detection-frontend-kepx.onrender.com",
+    r"^https?://.*\.ngrok-free\.(app|dev)$",
+    r"^https?://.*\.ngrok\.io$"
 ]
 CORS(
     app,
@@ -209,7 +211,18 @@ def rate_limit(key_func=lambda: request.remote_addr, limit=100, window=60):
 def add_cors_headers(resp):
     try:
         origin = request.headers.get('Origin')
+        origin_allowed = False
         if origin in allowed_origins or origin == '*':
+            origin_allowed = True
+        else:
+            try:
+                host = origin.split("://", 1)[1].split("/", 1)[0].split(":", 1)[0]
+                if host.endswith("ngrok-free.app") or host.endswith("ngrok-free.dev") or host.endswith("ngrok.io"):
+                    origin_allowed = True
+            except Exception:
+                origin_allowed = False
+
+        if origin_allowed:
             resp.headers['Access-Control-Allow-Origin'] = origin
         else:
             resp.headers['Access-Control-Allow-Origin'] = FRONTEND_URL
@@ -851,6 +864,7 @@ def bootstrap_db():
     if postgres_available():
         ensure_postgres_schema()
         ensure_postgres_defaults()
+        ensure_vendor_companies_and_subscription_features()
         add_performance_indexes()
         return
     init_db()
@@ -860,7 +874,97 @@ def bootstrap_db():
     ensure_archive_table()
     ensure_audit_logs_table()
     ensure_task_events_table()
+    ensure_vendor_companies_and_subscription_features()
     add_performance_indexes()
+
+def ensure_vendor_companies_and_subscription_features():
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute("SELECT id, company_name FROM vendors")
+        vendors = c.fetchall() or []
+    except Exception:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return
+    try:
+        import json
+        from datetime import date
+        today = date.today().isoformat()
+        far_future = "2099-12-31"
+        default_features = ["mobile_app", "shifts", "late_mark"]
+
+        for v in vendors:
+            try:
+                vendor_id = int(v[0])
+            except Exception:
+                continue
+            company_name = None
+            try:
+                company_name = (v[1] or "").strip()
+            except Exception:
+                company_name = ""
+            if not company_name:
+                company_name = f"Vendor {vendor_id}"
+
+            try:
+                c.execute("SELECT id FROM companies WHERE vendor_id = ? LIMIT 1", (vendor_id,))
+                has_company = c.fetchone() is not None
+                if not has_company:
+                    c.execute(
+                        "INSERT INTO companies (name, shifts, draft_timetable, live_timetable, vendor_id) VALUES (?, ?, ?, ?, ?)",
+                        (company_name, "[]", "[]", "[]", vendor_id),
+                    )
+            except Exception:
+                pass
+
+            try:
+                c.execute("SELECT features, start_date, end_date, grace_period_days FROM subscriptions WHERE vendor_id = ? LIMIT 1", (vendor_id,))
+                sub = c.fetchone()
+                if not sub:
+                    c.execute(
+                        "INSERT INTO subscriptions (vendor_id, plan_type, start_date, end_date, grace_period_days, features) VALUES (?, ?, ?, ?, ?, ?)",
+                        (vendor_id, "basic", today, far_future, 7, json.dumps(default_features)),
+                    )
+                else:
+                    raw = sub[0]
+                    feats = []
+                    if raw:
+                        try:
+                            feats = json.loads(raw) if isinstance(raw, str) else list(raw)
+                        except Exception:
+                            feats = []
+                    if not isinstance(feats, list):
+                        feats = []
+                    changed = False
+                    for f in default_features:
+                        if f not in feats:
+                            feats.append(f)
+                            changed = True
+                    if sub[1] is None:
+                        c.execute("UPDATE subscriptions SET start_date = ? WHERE vendor_id = ?", (today, vendor_id))
+                    if sub[2] is None:
+                        c.execute("UPDATE subscriptions SET end_date = ? WHERE vendor_id = ?", (far_future, vendor_id))
+                    if sub[3] is None:
+                        c.execute("UPDATE subscriptions SET grace_period_days = ? WHERE vendor_id = ?", (7, vendor_id))
+                    if changed:
+                        c.execute("UPDATE subscriptions SET features = ? WHERE vendor_id = ?", (json.dumps(feats), vendor_id))
+            except Exception:
+                pass
+
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 def ensure_archive_table():
     conn = get_db_connection()
@@ -5513,7 +5617,7 @@ def parent_select_student():
 
 @greeting_bp.route("/settings", methods=["GET"])
 def get_settings():
-    allowed_keys = {'threshold', 'cooldown', 'work_start_time', 'late_threshold', 'auto_checkout', 'voice_greeting', 'admin_alerts'}
+    allowed_keys = {'threshold', 'cooldown', 'work_start_time', 'late_threshold', 'late_grace_period', 'auto_checkout', 'voice_greeting', 'admin_alerts'}
     auth_header = request.headers.get('Authorization')
     token_data = None
     if auth_header:
@@ -5580,7 +5684,7 @@ def update_settings():
     if not token_data:
         return jsonify({"error": "Invalid or Expired Token"}), 401
 
-    allowed_keys = {'threshold', 'cooldown', 'work_start_time', 'late_threshold', 'auto_checkout', 'voice_greeting', 'admin_alerts'}
+    allowed_keys = {'threshold', 'cooldown', 'work_start_time', 'late_threshold', 'late_grace_period', 'auto_checkout', 'voice_greeting', 'admin_alerts'}
     data = request.json or {}
     role = token_data.get('role')
     username = token_data.get('username')
@@ -6018,16 +6122,53 @@ def delete_face(name):
     conn = get_db_connection()
     c = conn.cursor()
     try:
+        face_rows = []
+        if vendor_id:
+            c.execute("SELECT id, vendor_id FROM faces WHERE name = ? AND vendor_id = ?", (name, vendor_id))
+            face_rows = c.fetchall() or []
+        else:
+            c.execute("SELECT id, vendor_id FROM faces WHERE name = ?", (name,))
+            face_rows = c.fetchall() or []
+        if not face_rows:
+            return jsonify({"error": "User not found"}), 404
+
         if vendor_id:
             c.execute("DELETE FROM faces WHERE name = ? AND vendor_id = ?", (name, vendor_id))
         else:
             c.execute("DELETE FROM faces WHERE name = ?", (name,))
+        deleted_faces = c.rowcount
+
+        try:
+            by_vendor = {}
+            for r in face_rows:
+                pid = r[0]
+                vid = r[1]
+                if vid is None:
+                    continue
+                by_vendor.setdefault(int(vid), []).append(int(pid))
+            for vid, ids in by_vendor.items():
+                placeholders = ",".join(["?"] * len(ids))
+                c.execute(
+                    f"DELETE FROM attendance WHERE vendor_id = ? AND (name = ? OR person_id IN ({placeholders}))",
+                    [vid, name, *ids],
+                )
+                c.execute(
+                    f"DELETE FROM student_parents WHERE vendor_id = ? AND person_id IN ({placeholders})",
+                    [vid, *ids],
+                )
+                c.execute(
+                    f"UPDATE parent_users SET selected_person_id = NULL WHERE vendor_id = ? AND selected_person_id IN ({placeholders})",
+                    [vid, *ids],
+                )
+        except Exception:
+            pass
             
         conn.commit()
-        if c.rowcount > 0:
+        if deleted_faces > 0:
             # Real-time update
             if vendor_id:
                 socketio.emit('persons_updated', {'vendor_id': vendor_id}, room=f"vendor_{vendor_id}")
+                socketio.emit('attendance_updated', {'vendor_id': vendor_id}, room=f"vendor_{vendor_id}")
                 socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
             
             return jsonify({"status": "success", "message": f"Face for {name} deleted."})
@@ -6047,6 +6188,7 @@ def delete_face_by_id(person_id):
     c = conn.cursor()
     try:
         # Get name for message and scoping
+        target_vendor_id = vendor_id
         if vendor_id:
             c.execute("SELECT name FROM faces WHERE id = ? AND vendor_id = ?", (person_id, vendor_id))
         else:
@@ -6055,15 +6197,29 @@ def delete_face_by_id(person_id):
         if not row:
             return jsonify({"error": "User not found"}), 404
         name = row[0]
+        if not target_vendor_id:
+            try:
+                target_vendor_id = row[1]
+            except Exception:
+                target_vendor_id = None
         # Delete
         if vendor_id:
             c.execute("DELETE FROM faces WHERE id = ? AND vendor_id = ?", (person_id, vendor_id))
         else:
             c.execute("DELETE FROM faces WHERE id = ?", (person_id,))
+        deleted_faces = c.rowcount
+        try:
+            if target_vendor_id:
+                c.execute("DELETE FROM attendance WHERE vendor_id = ? AND (person_id = ? OR (person_id IS NULL AND name = ?))", (target_vendor_id, person_id, name))
+                c.execute("DELETE FROM student_parents WHERE vendor_id = ? AND person_id = ?", (target_vendor_id, person_id))
+                c.execute("UPDATE parent_users SET selected_person_id = NULL WHERE vendor_id = ? AND selected_person_id = ?", (target_vendor_id, person_id))
+        except Exception:
+            pass
         conn.commit()
-        if c.rowcount > 0:
+        if deleted_faces > 0:
             if vendor_id:
                 socketio.emit('persons_updated', {'vendor_id': vendor_id}, room=f"vendor_{vendor_id}")
+                socketio.emit('attendance_updated', {'vendor_id': vendor_id}, room=f"vendor_{vendor_id}")
                 socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
             return jsonify({"status": "success", "message": f"Face for {name} deleted.", "person_id": person_id})
         else:
@@ -6456,11 +6612,17 @@ def person_event():
             
             matching_acts = []
             
-            # Fetch Settings
-            c.execute("SELECT key, value FROM system_settings WHERE key IN ('activity_tolerance', 'late_grace_period')")
+            # Fetch Settings (support vendor overrides)
+            base_keys = ['activity_tolerance', 'late_grace_period']
+            keys = list(base_keys)
+            if vendor_id_to_check:
+                keys.extend([f"{k}_vendor_{vendor_id_to_check}" for k in base_keys])
+            placeholders = ",".join(["?"] * len(keys))
+            c.execute(f"SELECT key, value FROM system_settings WHERE key IN ({placeholders})", keys)
             settings = {row['key']: row['value'] for row in c.fetchall()}
-            tolerance = int(settings.get('activity_tolerance', 30))
-            grace_period = int(settings.get('late_grace_period', 15))
+            vendor_suffix = f"_vendor_{vendor_id_to_check}" if vendor_id_to_check else ""
+            tolerance = int(settings.get(f"activity_tolerance{vendor_suffix}", settings.get('activity_tolerance', 30)))
+            grace_period = int(settings.get(f"late_grace_period{vendor_suffix}", settings.get('late_grace_period', 15)))
 
             # --- Check Yesterday's Night Shifts (Spillover) ---
             # If current time is early morning, it might belong to a shift that started yesterday
@@ -6748,87 +6910,128 @@ def person_event():
     
     # Calculate Late Status
     is_late = 0
-    if new_status == 'CHECK_IN' and best_match:
-        try:
-            # Ensure grace_period is available
-            if 'grace_period' not in locals(): grace_period = 15
-            
-            # Recalculate curr_mins if needed
-            if 'curr_mins' not in locals():
-                now_check = current_time_obj
-                curr_mins = now_check.hour * 60 + now_check.minute
-            
-            start_hm = best_match.get('start_time', '09:00')
-            start_mins = to_mins(start_hm)
-            
-            # Use activity-specific grace period
-            act_rules = best_match.get('rules', {})
+    if new_status == 'CHECK_IN':
+        if best_match:
             try:
-                # Robust parsing for grace period (handle "15 min", "15", etc.)
-                raw_grace = act_rules.get('grace_period', grace_period)
-                if isinstance(raw_grace, str):
-                    # Extract digits
-                    import re
-                    digits = re.findall(r'\d+', raw_grace)
-                    if digits:
-                        act_grace = int(digits[0])
+                # Ensure grace_period is available
+                if 'grace_period' not in locals():
+                    grace_period = 15
+
+                # Recalculate curr_mins if needed
+                if 'curr_mins' not in locals():
+                    now_check = current_time_obj
+                    curr_mins = now_check.hour * 60 + now_check.minute
+
+                start_hm = best_match.get('start_time', '09:00')
+                start_mins = to_mins(start_hm)
+
+                # Use activity-specific grace period
+                act_rules = best_match.get('rules', {})
+                try:
+                    # Robust parsing for grace period (handle "15 min", "15", etc.)
+                    raw_grace = act_rules.get('grace_period', grace_period)
+                    if isinstance(raw_grace, str):
+                        # Extract digits
+                        import re
+                        digits = re.findall(r'\d+', raw_grace)
+                        if digits:
+                            act_grace = int(digits[0])
+                        else:
+                            act_grace = 15
                     else:
-                        act_grace = 15
+                        act_grace = int(raw_grace)
+                except Exception:
+                    act_grace = 15
+
+                # --- STRICT LATE CHECK ---
+                # User requirement: If check-in is not in [start, start + grace], mark as Late.
+                # Even if it is within the activity duration.
+
+                # Handle Overnight Shifts for comparison
+                # If start > end, and we are in the "next day" part (early morning), we add 1440 to check_mins
+                # But we must compare against start_mins (which is previous day).
+                # So if check_mins is early morning (e.g. 01:00 = 60), and start is 22:00 (1320),
+                # check_mins becomes 1500. 1500 > 1320 + grace.
+
+                check_mins = curr_mins
+                effective_start_mins = start_mins
+
+                # Detect if we are in the "next day" part of an overnight shift
+                end_hm = best_match.get('end_time', '17:00')
+                end_mins = to_mins(end_hm)
+
+                # STRICT LOGIC: If matched activity is from Yesterday, we MUST treat current time as Next Day (+1440)
+                if best_match.get('_is_yesterday'):
+                    print("Strict Logic: Activity is from Yesterday. Adding 1440 to check_mins.")
+                    check_mins += 1440
+                elif start_mins > end_mins:
+                    # Night shift (Today)
+                    # If current time is early morning (less than end time + buffer), assume next day
+                    if curr_mins <= (end_mins + 360) and start_mins > 360:
+                        check_mins += 1440
+
+                # --- Smart Rollover Safety Net ---
+                # REMOVED: User requested no assumptions.
+                # We strictly rely on Shift Matching to pick the correct shift (Yesterday vs Today).
+
+                # Debug Log
+                print(f"LATE CHECK: Act={activity_name}, Start={effective_start_mins}, Check={check_mins}, Grace={act_grace}")
+
+                # Calculate Threshold
+                late_threshold = effective_start_mins + act_grace
+
+                if check_mins > late_threshold:
+                    is_late = 1
+                    print(f"Late Detected (Strict): {name} [ID={person_id}] (Time: {check_mins}, Start: {effective_start_mins}, Grace: {act_grace}, Diff: {check_mins - effective_start_mins})")
                 else:
-                    act_grace = int(raw_grace)
-            except:
-                act_grace = 15
-            
-            # --- STRICT LATE CHECK ---
-            # User requirement: If check-in is not in [start, start + grace], mark as Late.
-            # Even if it is within the activity duration.
-            
-            # Handle Overnight Shifts for comparison
-            # If start > end, and we are in the "next day" part (early morning), we add 1440 to check_mins
-            # But we must compare against start_mins (which is previous day).
-            # So if check_mins is early morning (e.g. 01:00 = 60), and start is 22:00 (1320),
-            # check_mins becomes 1500. 1500 > 1320 + grace.
-            
-            check_mins = curr_mins
-            effective_start_mins = start_mins
-            
-            # Detect if we are in the "next day" part of an overnight shift
-            end_hm = best_match.get('end_time', '17:00')
-            end_mins = to_mins(end_hm)
-            
-            # STRICT LOGIC: If matched activity is from Yesterday, we MUST treat current time as Next Day (+1440)
-            if best_match.get('_is_yesterday'):
-                print("Strict Logic: Activity is from Yesterday. Adding 1440 to check_mins.")
-                check_mins += 1440
-            elif start_mins > end_mins:
-                 # Night shift (Today)
-                 # If current time is early morning (less than end time + buffer), assume next day
-                 if curr_mins <= (end_mins + 360) and start_mins > 360:
-                     check_mins += 1440
-            
-            # --- Smart Rollover Safety Net ---
-            # REMOVED: User requested no assumptions.
-            # We strictly rely on Shift Matching to pick the correct shift (Yesterday vs Today).
-            
-            # Debug Log
-            print(f"LATE CHECK: Act={activity_name}, Start={effective_start_mins}, Check={check_mins}, Grace={act_grace}")
+                    # Debugging info
+                    print(f"On Time Detected: {name} [ID={person_id}] (Time: {check_mins}, Start: {effective_start_mins}, Grace: {act_grace}, Threshold: {late_threshold})")
 
-            # Calculate Threshold
-            late_threshold = effective_start_mins + act_grace
-            
-            if check_mins > late_threshold:
-                is_late = 1
-                print(f"Late Detected (Strict): {name} [ID={person_id}] (Time: {check_mins}, Start: {effective_start_mins}, Grace: {act_grace}, Diff: {check_mins - effective_start_mins})")
-            else:
-                # Debugging info
-                print(f"On Time Detected: {name} [ID={person_id}] (Time: {check_mins}, Start: {effective_start_mins}, Grace: {act_grace}, Threshold: {late_threshold})")
-                
-                # Also check if check_mins is BEFORE start_mins (Early Arrival is On Time)
-                if check_mins < effective_start_mins:
-                    print(f"Early Arrival: {effective_start_mins - check_mins} mins early.")
+                    # Also check if check_mins is BEFORE start_mins (Early Arrival is On Time)
+                    if check_mins < effective_start_mins:
+                        print(f"Early Arrival: {effective_start_mins - check_mins} mins early.")
 
-        except Exception as e:
-            print(f"Late Calculation Error: {e}")
+            except Exception as e:
+                print(f"Late Calculation Error: {e}")
+        else:
+            try:
+                if 'curr_mins' not in locals():
+                    now_check = current_time_obj
+                    curr_mins = now_check.hour * 60 + now_check.minute
+
+                base_keys = ['work_start_time', 'late_threshold', 'late_grace_period']
+                keys = list(base_keys)
+                if vendor_id_to_check:
+                    keys.extend([f"{k}_vendor_{vendor_id_to_check}" for k in base_keys])
+                placeholders = ",".join(["?"] * len(keys))
+                c.execute(f"SELECT key, value FROM system_settings WHERE key IN ({placeholders})", keys)
+                settings_rows = c.fetchall() or []
+                settings_map = {r['key']: r['value'] for r in settings_rows}
+                vendor_suffix = f"_vendor_{vendor_id_to_check}" if vendor_id_to_check else ""
+
+                raw_late_threshold = (settings_map.get(f"late_threshold{vendor_suffix}") or settings_map.get('late_threshold') or '').strip()
+                raw_work_start = (settings_map.get(f"work_start_time{vendor_suffix}") or settings_map.get('work_start_time') or '').strip()
+                raw_grace = (settings_map.get(f"late_grace_period{vendor_suffix}") or settings_map.get('late_grace_period') or '').strip()
+
+                grace_mins = 15
+                try:
+                    grace_mins = int(raw_grace) if raw_grace != "" else 15
+                except Exception:
+                    grace_mins = 15
+
+                threshold_mins = 0
+                if raw_late_threshold:
+                    threshold_mins = to_mins(raw_late_threshold)
+                if threshold_mins <= 0 and raw_work_start:
+                    threshold_mins = to_mins(raw_work_start) + grace_mins
+                if threshold_mins <= 0:
+                    threshold_mins = to_mins('09:00') + grace_mins
+
+                if curr_mins > threshold_mins:
+                    is_late = 1
+                    print(f"Late Detected (Fallback): {name} [ID={person_id}] (Time: {curr_mins}, Threshold: {threshold_mins}, Grace: {grace_mins})")
+            except Exception as e:
+                print(f"Late Fallback Error: {e}")
 
     if vendor_id_to_check and not vendor_has_feature(vendor_id_to_check, "late_mark"):
         is_late = 0
@@ -7004,7 +7207,7 @@ def get_attendance():
     query = """
         SELECT a.*, f.department, f.designation, f.shift, f.phone, f.custom_data AS face_custom_data
         FROM attendance a
-        LEFT JOIN faces f ON (a.person_id IS NOT NULL AND a.person_id = f.id) OR (a.person_id IS NULL AND a.name = f.name AND f.vendor_id = a.vendor_id)
+        JOIN faces f ON (a.person_id IS NOT NULL AND a.person_id = f.id) OR (a.person_id IS NULL AND a.name = f.name AND f.vendor_id = a.vendor_id)
         WHERE 1=1
     """
     params = []
@@ -7911,4 +8114,7 @@ app.register_blueprint(greeting_bp)
 
 if __name__ == "__main__":
     bootstrap_db()
-    socketio.run(app, host="0.0.0.0", port=5001, debug=True)
+    debug_flag = os.environ.get("FLASK_DEBUG") or os.environ.get("DEBUG") or ""
+    debug = str(debug_flag).lower() in ("1", "true", "yes", "on")
+    port = int(os.environ.get("PORT", "5001"))
+    socketio.run(app, host="0.0.0.0", port=port, debug=debug, use_reloader=False)

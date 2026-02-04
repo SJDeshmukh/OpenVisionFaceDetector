@@ -218,6 +218,12 @@ public class EnrollFragment extends Fragment {
         return view;
     }
 
+    @Override
+    public void onResume() {
+        super.onResume();
+        fetchRegistrationConfig();
+    }
+
     private void applyCachedRegistrationConfigOrDefault() {
         try {
             if (!isAdded()) return;
@@ -440,7 +446,13 @@ public class EnrollFragment extends Fragment {
         if (!isAdded()) return;
         android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE);
         int vendorId = prefs.getInt("vendor_id", -1);
-        if (vendorId == -1) return;
+        if (vendorId == -1) {
+            vendorId = prefs.getInt("selected_vendor_id", -1);
+        }
+        if (vendorId == -1) {
+            resolveVendorIdFromSelectedBusinessThenFetch(prefs);
+            return;
+        }
 
         RetrofitClient.getService().getRegistrationConfig(vendorId).enqueue(new Callback<JsonObject>() {
             @Override
@@ -474,6 +486,83 @@ public class EnrollFragment extends Fragment {
                     }
                 } catch (Exception e) {
                     e.printStackTrace();
+                }
+            }
+
+            @Override
+            public void onFailure(Call<JsonObject> call, Throwable t) {
+                try {
+                    String cached = prefs.getString("cached_registration_config", null);
+                    if (cached != null && !cached.isEmpty()) {
+                        JsonArray config = new JsonParser().parse(cached).getAsJsonArray();
+                        if (getActivity() != null && isAdded()) {
+                            getActivity().runOnUiThread(() -> renderDynamicFields(config));
+                        }
+                        return;
+                    }
+                } catch (Exception ignored) {}
+                if (getActivity() != null && isAdded()) {
+                    getActivity().runOnUiThread(() -> showDefaultProfileFields());
+                }
+            }
+        });
+    }
+
+    private void resolveVendorIdFromSelectedBusinessThenFetch(android.content.SharedPreferences prefs) {
+        String vertical = null;
+        try {
+            vertical = prefs.getString("selected_business_type_code", null);
+            if (vertical == null || vertical.isEmpty()) {
+                vertical = prefs.getString("selected_business_type", null);
+            }
+        } catch (Exception ignored) {}
+        if (vertical == null || vertical.isEmpty()) return;
+        final String verticalFinal = vertical;
+
+        RetrofitClient.getService().getPublicVendors().enqueue(new Callback<JsonObject>() {
+            @Override
+            public void onResponse(Call<JsonObject> call, Response<JsonObject> response) {
+                try {
+                    if (response.isSuccessful() && response.body() != null) {
+                        JsonObject root = response.body();
+                        if (root.has("vendors") && root.get("vendors").isJsonArray()) {
+                            JsonArray vendors = root.getAsJsonArray("vendors");
+                            Integer selectedVendorId = null;
+                            for (JsonElement el : vendors) {
+                                try {
+                                    if (!el.isJsonObject()) continue;
+                                    JsonObject v = el.getAsJsonObject();
+                                    if (!v.has("id") || v.get("id").isJsonNull()) continue;
+                                    int id = v.get("id").getAsInt();
+                                    String vVertical = v.has("vertical") && !v.get("vertical").isJsonNull() ? v.get("vertical").getAsString() : "";
+                                    if (!vVertical.isEmpty() && vVertical.equalsIgnoreCase(verticalFinal)) {
+                                        selectedVendorId = id;
+                                        break;
+                                    }
+                                } catch (Exception ignored) {}
+                            }
+                            if (selectedVendorId != null) {
+                                try {
+                                    prefs.edit().putInt("selected_vendor_id", selectedVendorId).apply();
+                                } catch (Exception ignored) {}
+                                fetchRegistrationConfig();
+                                return;
+                            }
+                        }
+                    }
+                } catch (Exception ignored) {}
+                try {
+                    String cached = prefs.getString("cached_registration_config", null);
+                    if (cached != null && !cached.isEmpty()) {
+                        JsonArray config = new JsonParser().parse(cached).getAsJsonArray();
+                        if (getActivity() != null && isAdded()) {
+                            getActivity().runOnUiThread(() -> renderDynamicFields(config));
+                        }
+                        return;
+                    }
+                } catch (Exception ignored) {}
+                if (getActivity() != null && isAdded()) {
+                    getActivity().runOnUiThread(() -> showDefaultProfileFields());
                 }
             }
 

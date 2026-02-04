@@ -24,9 +24,9 @@ public class SplashActivity extends AppCompatActivity {
     private TextView tvStatus;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
-    private static final String LOCAL_URL = "http://192.168.1.101:5001/";
+    private static final String LOCAL_URL = "https://bolometric-lower-joaquina.ngrok-free.dev/";
     private static final String RENDER_URL = "https://face-detection-backend-69o7.onrender.com/";
-    private static final String LEGACY_LOCAL_URL = "http://192.168.1.102:5001/";
+    private static final String LEGACY_LOCAL_URL = "http://192.0.0.2:5001/";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -61,6 +61,10 @@ public class SplashActivity extends AppCompatActivity {
             }
 
             RetrofitClient.setBaseUrl(targetUrl);
+            try {
+                String token = prefs.getString("token", null);
+                RetrofitClient.setAuthToken(token);
+            } catch (Exception ignored) {}
 
             boolean online = false;
             try {
@@ -94,6 +98,8 @@ public class SplashActivity extends AppCompatActivity {
             connection.setConnectTimeout(timeout);
             connection.setReadTimeout(timeout);
             connection.setRequestMethod("GET");
+            connection.setRequestProperty("ngrok-skip-browser-warning", "1");
+            connection.setRequestProperty("User-Agent", "openvisionx-android");
             int code = connection.getResponseCode();
             connection.disconnect();
             return code == 200;

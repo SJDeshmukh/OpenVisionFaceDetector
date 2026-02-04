@@ -18,6 +18,11 @@ export const AuthProvider = ({ children }) => {
         axios.defaults.headers.common['Authorization'] = `Bearer ${parsedUser.token}`;
       }
     }
+    if (typeof BASE_URL === 'string' && BASE_URL.includes('ngrok')) {
+      axios.defaults.headers.common['ngrok-skip-browser-warning'] = '1';
+    } else {
+      delete axios.defaults.headers.common['ngrok-skip-browser-warning'];
+    }
     setLoading(false);
 
     // Add Axios Interceptor for Auto-Logout

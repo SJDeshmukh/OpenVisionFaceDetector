@@ -27,8 +27,8 @@ import java.util.Locale
 class BusinessSelectActivity : AppCompatActivity() {
     private var allBusinesses: List<BusinessTypeItem> = emptyList()
     private lateinit var businessAdapter: BusinessTypeCardAdapter
-    private val legacyLocalUrl = "http://192.168.1.102:5001/"
-    private val currentLocalUrl = "http://192.168.1.101:5001/"
+    private val legacyLocalUrl = "http://192.0.0.2:5001/"
+    private val currentLocalUrl = "https://bolometric-lower-joaquina.ngrok-free.dev/"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -82,6 +82,7 @@ class BusinessSelectActivity : AppCompatActivity() {
                 editor.putString("selected_business_type_code", chosenValue)
                 editor.putString("selected_business_type_label", chosenLabel ?: chosenValue)
                 editor.putString("selected_business_type", chosenValue)
+                editor.putString("selected_vendor_vertical", chosenValue)
                 val allow = chosenAllowParentLogin ?: chosenValue.equals("school", true)
                 editor.putBoolean("selected_allow_parent_login", allow)
             } else {
@@ -91,8 +92,53 @@ class BusinessSelectActivity : AppCompatActivity() {
             editor.putString("selected_vendor_set_at", SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US).format(Date()))
             editor.apply()
 
-            startActivity(Intent(this, LoginActivity::class.java))
-            finish()
+            val existingVendorId = prefs.getInt("vendor_id", -1)
+            val existingSelectedVendorId = prefs.getInt("selected_vendor_id", -1)
+            if (existingVendorId != -1 || existingSelectedVendorId != -1) {
+                startActivity(Intent(this, LoginActivity::class.java))
+                finish()
+                return@setOnClickListener
+            }
+
+            progress.visibility = View.VISIBLE
+            tvError.visibility = View.GONE
+            RetrofitClient.getService().getPublicVendors().enqueue(object : Callback<JsonObject> {
+                override fun onResponse(call: Call<JsonObject>, response: Response<JsonObject>) {
+                    try {
+                        if (response.isSuccessful && response.body() != null) {
+                            val root = response.body()!!
+                            if (root.has("vendors") && root.get("vendors").isJsonArray) {
+                                val vendors = root.getAsJsonArray("vendors")
+                                var selectedVendorId: Int? = null
+                                for (el in vendors) {
+                                    if (!el.isJsonObject) continue
+                                    val v = el.asJsonObject
+                                    val vertical = if (v.has("vertical") && !v.get("vertical").isJsonNull) v.get("vertical").asString else null
+                                    val id = if (v.has("id") && !v.get("id").isJsonNull) v.get("id").asInt else null
+                                    if (id != null && !vertical.isNullOrBlank() && vertical.equals(chosenValue, true)) {
+                                        selectedVendorId = id
+                                        break
+                                    }
+                                }
+                                if (selectedVendorId != null) {
+                                    prefs.edit().putInt("selected_vendor_id", selectedVendorId).apply()
+                                }
+                            }
+                        }
+                    } catch (_: Exception) {
+                    } finally {
+                        progress.visibility = View.GONE
+                        startActivity(Intent(this@BusinessSelectActivity, LoginActivity::class.java))
+                        finish()
+                    }
+                }
+
+                override fun onFailure(call: Call<JsonObject>, t: Throwable) {
+                    progress.visibility = View.GONE
+                    startActivity(Intent(this@BusinessSelectActivity, LoginActivity::class.java))
+                    finish()
+                }
+            })
         }
 
         btnContinue.isEnabled = false

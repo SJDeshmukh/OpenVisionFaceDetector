@@ -3,8 +3,12 @@ package com.faceplugin.facerecognition;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.LinearGradient;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Rect;
+import android.graphics.Shader;
+import android.os.SystemClock;
 import android.util.AttributeSet;
 import android.util.Size;
 import android.view.View;
@@ -25,7 +29,15 @@ public class FaceView extends View {
     private Paint successPaint;
     private Paint meshGlowPaint;
     private Paint meshPaint;
+    private Paint meshSweepPaint;
     private Paint meshPointPaint;
+    private LinearGradient meshSweepGradient;
+    private Matrix meshSweepMatrix;
+    private float density = 1f;
+    private long meshAnimStartMs = 0L;
+    private boolean meshAnimating = false;
+    private static final long MESH_PULSE_PERIOD_MS = 1400L;
+    private static final long MESH_SWEEP_PERIOD_MS = 2200L;
 
     private Size frameSize;
 
@@ -86,7 +98,7 @@ public class FaceView extends View {
         successPaint.setColor(Color.WHITE);
         successPaint.setAntiAlias(true);
 
-        float density = getResources().getDisplayMetrics().density;
+        density = getResources().getDisplayMetrics().density;
         int meshColor = Color.rgb(34, 211, 238);
 
         meshGlowPaint = new Paint();
@@ -103,11 +115,49 @@ public class FaceView extends View {
         meshPaint.setAlpha(210);
         meshPaint.setAntiAlias(true);
 
+        meshSweepPaint = new Paint();
+        meshSweepPaint.setStyle(Paint.Style.STROKE);
+        meshSweepPaint.setStrokeWidth(3f * density);
+        meshSweepPaint.setAlpha(170);
+        meshSweepPaint.setAntiAlias(true);
+
         meshPointPaint = new Paint();
         meshPointPaint.setStyle(Paint.Style.FILL);
         meshPointPaint.setColor(meshColor);
         meshPointPaint.setAlpha(230);
         meshPointPaint.setAntiAlias(true);
+
+        meshSweepMatrix = new Matrix();
+    }
+
+    @Override
+    protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+        super.onSizeChanged(w, h, oldw, oldh);
+        if (w <= 0) {
+            meshSweepGradient = null;
+            meshSweepPaint.setShader(null);
+            return;
+        }
+
+        int r = 34;
+        int g = 211;
+        int b = 238;
+        int transparent = Color.argb(0, r, g, b);
+        int bright = Color.argb(255, r, g, b);
+        meshSweepGradient = new LinearGradient(
+                0f,
+                0f,
+                (float) w,
+                0f,
+                new int[] { transparent, bright, transparent },
+                new float[] { 0f, 0.5f, 1f },
+                Shader.TileMode.CLAMP
+        );
+        meshSweepPaint.setShader(meshSweepGradient);
+    }
+
+    private float clamp(float v, float min, float max) {
+        return Math.max(min, Math.min(max, v));
     }
 
     public void setFrameSize(Size frameSize)
@@ -153,6 +203,7 @@ public class FaceView extends View {
         if (frameSize != null &&  faceBoxes != null) {
             float x_scale = this.frameSize.getWidth() / (float)canvas.getWidth();
             float y_scale = this.frameSize.getHeight() / (float)canvas.getHeight();
+            boolean drewMeshThisFrame = false;
 
             for (int i = 0; i < faceBoxes.size(); i++) {
                 FaceBox faceBox = faceBoxes.get(i);
@@ -234,17 +285,51 @@ public class FaceView extends View {
                             meshLineBuffer[o + 3] = by;
                         }
 
+                        long now = SystemClock.uptimeMillis();
+                        if (!meshAnimating) {
+                            meshAnimating = true;
+                            meshAnimStartMs = now;
+                        }
+                        float pulsePhase = ((now - meshAnimStartMs) % MESH_PULSE_PERIOD_MS) / (float) MESH_PULSE_PERIOD_MS;
+                        float pulse = (float) (0.5f - 0.5f * Math.cos(2.0 * Math.PI * pulsePhase));
+
+                        float faceSize = Math.max(rect.width(), rect.height());
+                        float sizeNorm = clamp(faceSize / 420f, 0.85f, 1.8f);
+
+                        meshGlowPaint.setStrokeWidth((3.8f + 3.8f * pulse) * density * sizeNorm);
+                        meshGlowPaint.setAlpha(35 + (int) (95 * pulse));
+
+                        meshPaint.setStrokeWidth((1.5f + 1.2f * pulse) * density * sizeNorm);
+                        meshPaint.setAlpha(160 + (int) (70 * pulse));
+
+                        meshSweepPaint.setStrokeWidth(meshPaint.getStrokeWidth() * 1.35f);
+                        meshSweepPaint.setAlpha(120 + (int) (80 * (1f - pulse)));
+                        if (meshSweepGradient != null) {
+                            float sweepPhase = ((now - meshAnimStartMs) % MESH_SWEEP_PERIOD_MS) / (float) MESH_SWEEP_PERIOD_MS;
+                            float tx = -getWidth() + (getWidth() * 2f * sweepPhase);
+                            meshSweepMatrix.setTranslate(tx, 0f);
+                            meshSweepGradient.setLocalMatrix(meshSweepMatrix);
+                        }
+
                         canvas.drawLines(meshLineBuffer, 0, edgeCount * 4, meshGlowPaint);
                         canvas.drawLines(meshLineBuffer, 0, edgeCount * 4, meshPaint);
+                        canvas.drawLines(meshLineBuffer, 0, edgeCount * 4, meshSweepPaint);
 
-                        float r = 1.8f * getResources().getDisplayMetrics().density;
+                        float r = (1.6f + 1.0f * pulse) * density * clamp(sizeNorm, 0.9f, 1.4f);
                         for (int p = 0; p < 68; p++) {
                             float px = faceBox.landmarks_68[p * 2] / x_scale;
                             float py = faceBox.landmarks_68[p * 2 + 1] / y_scale;
                             canvas.drawCircle(px, py, r, meshPointPaint);
                         }
+                        drewMeshThisFrame = true;
                     }
                 }
+            }
+
+            if (!drewMeshThisFrame) {
+                meshAnimating = false;
+            } else {
+                postInvalidateOnAnimation();
             }
 
             if (successAnimating && faceBoxes.size() > 0) {

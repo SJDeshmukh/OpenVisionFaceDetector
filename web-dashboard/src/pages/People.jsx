@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { 
@@ -231,16 +231,43 @@ const People = () => {
     ];
   };
 
-  const columns = getColumns();
+  const registrationColumns = getColumns();
+
+  const tableColumns = useMemo(() => {
+    const isFilled = (value) => {
+      if (value === null || value === undefined) return false;
+      if (typeof value === 'string') return value.trim() !== '' && value.trim() !== '-';
+      return true;
+    };
+
+    const getRawValue = (person, field) => {
+      if (person?.custom_data && person.custom_data[field] !== undefined && person.custom_data[field] !== null) {
+        return person.custom_data[field];
+      }
+      if (person && person[field] !== undefined && person[field] !== null) {
+        return person[field];
+      }
+      return null;
+    };
+
+    return (registrationColumns || []).filter((col) => {
+      const field = col.field;
+      if (!field) return false;
+      if (['name', 'phone'].includes(field)) return true;
+      return (users || []).some((p) => isFilled(getRawValue(p, field)));
+    });
+  }, [registrationColumns, users]);
 
   const getCellValue = (person, field) => {
-    // 1. Check custom_data (Priority for dynamic fields)
-    if (person.custom_data && person.custom_data[field]) {
-      return person.custom_data[field];
+    if (person?.custom_data && person.custom_data[field] !== undefined && person.custom_data[field] !== null) {
+      const v = person.custom_data[field];
+      const s = typeof v === 'string' ? v.trim() : v;
+      return s === '' ? '-' : s;
     }
-    // 2. Check root properties (Legacy/Fallback)
-    if (person[field]) {
-      return person[field];
+    if (person && person[field] !== undefined && person[field] !== null) {
+      const v = person[field];
+      const s = typeof v === 'string' ? v.trim() : v;
+      return s === '' ? '-' : s;
     }
     return '-';
   };
@@ -295,7 +322,7 @@ const People = () => {
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200">
                 <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Employee</th>
-                {columns.map(col => (
+                {tableColumns.map(col => (
                   <th key={col.field} className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
                     {col.label}
                   </th>
@@ -306,11 +333,11 @@ const People = () => {
             <tbody className="divide-y divide-slate-100">
               {loading ? (
                 <tr>
-                  <td colSpan={columns.length + 2} className="px-6 py-8 text-center text-slate-500">Loading employees...</td>
+                  <td colSpan={tableColumns.length + 2} className="px-6 py-8 text-center text-slate-500">Loading employees...</td>
                 </tr>
               ) : users.length === 0 ? (
                 <tr>
-                  <td colSpan={columns.length + 2} className="px-6 py-8 text-center text-slate-500">No employees found.</td>
+                  <td colSpan={tableColumns.length + 2} className="px-6 py-8 text-center text-slate-500">No employees found.</td>
                 </tr>
               ) : (
                 users.map((user, idx) => (
@@ -346,7 +373,7 @@ const People = () => {
                       </div>
                     </td>
                     
-                    {columns.map(col => (
+                    {tableColumns.map(col => (
                       <td key={col.field} className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
                         {getCellValue(user, col.field)}
                       </td>
@@ -450,7 +477,7 @@ const People = () => {
 
               {/* Dynamic Fields Rendering */}
               <div className="space-y-4">
-                  {columns.map((col, idx) => {
+                  {registrationColumns.map((col, idx) => {
                       const fieldKey = col.key || col.field;
                       // Skip name/phone as they are already handled above
                       if (['name', 'phone'].includes(fieldKey)) return null;

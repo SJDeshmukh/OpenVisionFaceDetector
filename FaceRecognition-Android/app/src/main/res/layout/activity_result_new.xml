@@ -40,7 +40,7 @@
             android:id="@+id/imageIdentified"
             android:layout_width="match_parent"
             android:layout_height="180dp"
-            android:src="@drawable/ic_faceplugin"
+            android:src="@drawable/openvision_logo"
             app:shapeAppearanceOverlay="@style/roundedImageView" />
 
         <TextView
@@ -70,7 +70,7 @@
             android:id="@+id/imageEnrolled"
             android:layout_width="match_parent"
             android:layout_height="180dp"
-            android:src="@drawable/ic_faceplugin"
+            android:src="@drawable/openvision_logo"
             app:shapeAppearanceOverlay="@style/roundedImageView" />
 
         <TextView

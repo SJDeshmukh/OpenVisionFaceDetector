@@ -66,6 +66,10 @@ import android.provider.Settings;
 import io.socket.client.IO;
 import io.socket.client.Socket;
 import org.json.JSONObject;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.net.URISyntaxException;
 
 public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitListener {
@@ -74,7 +78,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     static int PREVIEW_WIDTH = 720;
     static int PREVIEW_HEIGHT = 1280;
 
-    public static String BASE_URL = "http://192.168.1.102:5001"; // Default
+    public static String BASE_URL = "https://bolometric-lower-joaquina.ngrok-free.dev"; // Default
     private Socket mSocket;
 
     private TextToSpeech tts;
@@ -134,6 +138,10 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             try {
                 IO.Options options = new IO.Options();
                 options.reconnection = true;
+                Map<String, List<String>> headers = new HashMap<>();
+                headers.put("ngrok-skip-browser-warning", Collections.singletonList("1"));
+                headers.put("User-Agent", Collections.singletonList("openvisionx-android"));
+                options.extraHeaders = headers;
                 if (serverUrl.endsWith("/")) serverUrl = serverUrl.substring(0, serverUrl.length() - 1);
                 mSocket = IO.socket(serverUrl, options);
                 mSocket.connect();
