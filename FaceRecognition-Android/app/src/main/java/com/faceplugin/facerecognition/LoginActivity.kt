@@ -18,6 +18,9 @@ import android.view.View
 import android.provider.Settings
 import com.faceplugin.facerecognition.api.RegisterRequest
 import java.security.MessageDigest
+import android.animation.AnimatorSet
+import android.animation.ObjectAnimator
+import android.widget.ImageView
 
 class LoginActivity : AppCompatActivity() {
 
@@ -126,10 +129,8 @@ class LoginActivity : AppCompatActivity() {
                             RetrofitClient.setAuthToken(token)
                         }
 
-                        // Go to MainActivity
-                        val intent = Intent(this@LoginActivity, MainActivity::class.java)
-                        startActivity(intent)
-                        finish()
+                        // Reflective logo animation then navigate
+                        runLogoShineThenNavigate()
                     } else {
                         var errorMsg = "Login failed"
                         try {
@@ -154,9 +155,7 @@ class LoginActivity : AppCompatActivity() {
                 override fun onFailure(call: Call<LoginResponse>, t: Throwable) {
                     if (tryOfflineLogin(username, password)) {
                         Toast.makeText(this@LoginActivity, "Offline: Using cached login", Toast.LENGTH_SHORT).show()
-                        val intent = Intent(this@LoginActivity, MainActivity::class.java)
-                        startActivity(intent)
-                        finish()
+                        runLogoShineThenNavigate()
                     } else {
                         Toast.makeText(this@LoginActivity, "Network error: ${t.message}", Toast.LENGTH_SHORT).show()
                     }
@@ -190,6 +189,46 @@ class LoginActivity : AppCompatActivity() {
         }
 
         findViewById<TextView>(R.id.btn_parent_login).visibility = View.GONE
+    }
+
+    private fun runLogoShineThenNavigate() {
+        try {
+            val logo = findViewById<ImageView>(R.id.logo_login)
+            val shine = findViewById<View>(R.id.logo_shine)
+            if (logo != null && shine != null) {
+                shine.visibility = View.VISIBLE
+                shine.alpha = 0.0f
+                // Position shine to start left outside logo bounds
+                val width = logo.width.toFloat()
+                val startX = -width * 0.6f
+                val endX = width * 0.6f
+                shine.translationX = startX
+                // Animations: alpha up, slide across, alpha down
+                val fadeIn = ObjectAnimator.ofFloat(shine, "alpha", 0f, 0.9f)
+                fadeIn.duration = 120
+                val slide = ObjectAnimator.ofFloat(shine, "translationX", startX, endX)
+                slide.duration = 420
+                val fadeOut = ObjectAnimator.ofFloat(shine, "alpha", 0.9f, 0f)
+                fadeOut.duration = 120
+                val set = AnimatorSet()
+                set.playSequentially(fadeIn, slide, fadeOut)
+                set.start()
+                shine.postDelayed({
+                    shine.visibility = View.GONE
+                    val intent = Intent(this@LoginActivity, MainActivity::class.java)
+                    startActivity(intent)
+                    finish()
+                }, 650)
+            } else {
+                val intent = Intent(this@LoginActivity, MainActivity::class.java)
+                startActivity(intent)
+                finish()
+            }
+        } catch (_: Exception) {
+            val intent = Intent(this@LoginActivity, MainActivity::class.java)
+            startActivity(intent)
+            finish()
+        }
     }
 
     private fun showServerUrlDialog() {

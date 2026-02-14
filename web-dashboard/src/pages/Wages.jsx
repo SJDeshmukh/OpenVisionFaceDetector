@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { API_BASE_URL } from '../config';
 import { useAuth } from '../context/AuthContext';
+import { useSocket } from '../context/SocketContext';
 
 const Wages = () => {
   const { user } = useAuth();
+  const { socket } = useSocket();
   
   // Helper to format date as YYYY-MM-DD in local time
   const formatDate = (date) => {
@@ -29,6 +31,8 @@ const Wages = () => {
   const [workingHoursChanged, setWorkingHoursChanged] = useState(false);
   const [globalSettings, setGlobalSettings] = useState({ allowance: 7, deduction: 0 });
   const [globalSettingsChanged, setGlobalSettingsChanged] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [detailsPerson, setDetailsPerson] = useState(null);
 
   useEffect(() => {
     if (user) {
@@ -139,6 +143,28 @@ const Wages = () => {
     }
   }, [startDate, endDate, hasChanges, workingHoursChanged]);
 
+  useEffect(() => {
+    if (!socket || !user) return;
+    const onPersonsUpdated = (data) => {
+      try {
+        if (!data || String(data.vendor_id) !== String(user.vendor_id)) return;
+        if (!hasChanges && !workingHoursChanged) fetchPayroll(true);
+      } catch {}
+    };
+    const onAttendanceUpdated = (data) => {
+      try {
+        if (!data || String(data.vendor_id) !== String(user.vendor_id)) return;
+        if (!hasChanges && !workingHoursChanged) fetchPayroll(true);
+      } catch {}
+    };
+    socket.on('persons_updated', onPersonsUpdated);
+    socket.on('attendance_updated', onAttendanceUpdated);
+    return () => {
+      socket.off('persons_updated', onPersonsUpdated);
+      socket.off('attendance_updated', onAttendanceUpdated);
+    };
+  }, [socket, user, hasChanges, workingHoursChanged, startDate, endDate]);
+
   const handleWageChange = (index, field, value) => {
     const newData = [...payrollData];
     
@@ -162,7 +188,7 @@ const Wages = () => {
     const deductableLates = Math.max(0, lateMarks - allowance);
     const totalDeduction = deductableLates * deduction;
     
-    const finalPayout = Math.max(0, baseCost - totalDeduction);
+    const finalPayout = baseCost - totalDeduction;
     
     newData[index].base_cost = baseCost.toFixed(2);
     newData[index].late_deduction = totalDeduction.toFixed(2);
@@ -199,12 +225,18 @@ const Wages = () => {
   const saveWages = async () => {
     setSaveLoading(true);
     try {
-      const updates = payrollData.map(p => ({
-        name: p.name,
-        daily_wage: p.daily_wage,
-        late_allowance_days: p.late_allowance_days,
-        late_deduction_amount: p.late_deduction_amount
-      }));
+      const updates = payrollData.map(p => {
+        const u = {};
+        if (p.person_id) u.person_id = p.person_id; else u.name = p.name;
+        if (typeof p.daily_wage === 'number') u.daily_wage = p.daily_wage;
+        if (p.late_allowance_days !== null && p.late_allowance_days !== '' && p.late_allowance_days !== undefined) {
+          u.late_allowance_days = p.late_allowance_days;
+        }
+        if (p.late_deduction_amount !== null && p.late_deduction_amount !== '' && p.late_deduction_amount !== undefined) {
+          u.late_deduction_amount = p.late_deduction_amount;
+        }
+        return u;
+      });
 
       const res = await fetch(`${API_BASE_URL}/persons/wages`, {
         method: 'PUT',
@@ -225,6 +257,7 @@ const Wages = () => {
       if (res.ok) {
         setHasChanges(false);
         alert("Wages saved successfully!");
+        fetchPayroll();
       } else {
         alert("Failed to save wages");
       }
@@ -454,9 +487,9 @@ const Wages = () => {
                             </div>
                           )}
                         </div>
-                        <div>
+                        <div onClick={() => { setDetailsPerson(person); setDetailsOpen(true); }} className="cursor-pointer">
                           <p className="font-medium text-slate-900 text-sm">{person.name}</p>
-                          <p className="text-xs text-slate-500">{person.designation || person.department || 'No Dept'}</p>
+                          <p className="text-xs text-slate-500 font-mono">ID: {person.person_id || '—'}</p>
                         </div>
                       </div>
                     </td>
@@ -539,6 +572,24 @@ const Wages = () => {
           </table>
         </div>
       </div>
+      {detailsOpen && detailsPerson && (
+        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-lg w-[420px] p-6">
+            <h2 className="text-lg font-bold text-slate-800 mb-3">Employee Details</h2>
+            <div className="space-y-2 text-sm">
+              <div className="flex justify-between"><span className="text-slate-500">Name</span><span className="font-medium">{detailsPerson.name}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">ID</span><span className="font-mono">{detailsPerson.person_id}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Department</span><span className="font-medium">{detailsPerson.department || '—'}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Designation</span><span className="font-medium">{detailsPerson.designation || '—'}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Phone</span><span className="font-medium">{detailsPerson.phone || '—'}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Shift</span><span className="font-medium">{detailsPerson.shift || '—'}</span></div>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button onClick={() => setDetailsOpen(false)} className="px-3 py-2 bg-slate-100 rounded hover:bg-slate-200 text-sm">Close</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

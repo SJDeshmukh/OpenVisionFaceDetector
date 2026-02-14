@@ -60,6 +60,19 @@
                 app:layout_constraintTop_toTopOf="parent"
                 app:layout_constraintVertical_chainStyle="packed" />
 
+            <!-- Shine overlay for reflective animation -->
+            <View
+                android:id="@+id/logo_shine"
+                android:layout_width="60dp"
+                android:layout_height="120dp"
+                android:rotation="25"
+                android:visibility="gone"
+                android:background="@drawable/shine_gradient"
+                app:layout_constraintTop_toTopOf="@+id/logo_login"
+                app:layout_constraintBottom_toBottomOf="@+id/logo_login"
+                app:layout_constraintStart_toStartOf="@+id/logo_login"
+                app:layout_constraintEnd_toEndOf="@+id/logo_login" />
+
             <!-- Login Card -->
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:id="@+id/login_card"
@@ -99,6 +112,8 @@
                     android:layout_marginTop="32dp"
                     android:background="@drawable/bg_input_field"
                     android:hint="Username"
+                    android:inputType="text"
+                    android:singleLine="true"
                     android:padding="16dp"
                     style="@style/Typography.Body"
                     android:textColorHint="@color/text_tertiary"
@@ -112,6 +127,7 @@
                     android:background="@drawable/bg_input_field"
                     android:hint="Password"
                     android:inputType="textPassword"
+                    android:singleLine="true"
                     android:padding="16dp"
                     style="@style/Typography.Body"
                     android:textColorHint="@color/text_tertiary"

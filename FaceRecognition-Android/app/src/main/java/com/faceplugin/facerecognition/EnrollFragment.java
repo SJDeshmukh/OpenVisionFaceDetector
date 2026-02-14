@@ -329,27 +329,11 @@ public class EnrollFragment extends Fragment {
                  if (key.equalsIgnoreCase("shift")) shift = value;
             }
             
-            String customDataStr = dynamicData.toString();
-            String localUid = dbManager.insertLocalPerson(name, faceImage, templates, phone, department, designation, shift, customDataStr);
-            try {
-                dbManager.loadPerson();
-            } catch (Exception ignored) {}
-            Toast.makeText(getContext(), getString(R.string.person_enrolled) + " " + name, Toast.LENGTH_SHORT).show();
-
             if (!NetworkUtils.INSTANCE.isOnline(requireContext().getApplicationContext())) {
-                Toast.makeText(getContext(), "Offline: Saved locally, will sync when internet returns", Toast.LENGTH_LONG).show();
-                try {
-                    SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
-                } catch (Exception ignored) {}
-                etName.setText("");
-                etMobile.setText("");
-                etDepartment.setText("");
-                etDesignation.setText("");
-                spShift.setSelection(0);
+                Toast.makeText(getContext(), "Internet required for registration", Toast.LENGTH_LONG).show();
                 return;
             }
-
-            syncToBackend(localUid, name, templates, faceImage, phone, department, designation, shift, dynamicData);
+            syncToBackend(name, templates, faceImage, phone, department, designation, shift, dynamicData);
             
             // Clear inputs
             etName.setText("");
@@ -784,7 +768,7 @@ public class EnrollFragment extends Fragment {
         }
     }
 
-    private void syncToBackend(String localUid, String name, byte[] templates, Bitmap faceImage, String phone, String department, String designation, String shift, JsonObject dynamicData) {
+    private void syncToBackend(String name, byte[] templates, Bitmap faceImage, String phone, String department, String designation, String shift, JsonObject dynamicData) {
         String templatesBase64 = Base64.encodeToString(templates, Base64.NO_WRAP);
         ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
         faceImage.compress(Bitmap.CompressFormat.JPEG, 100, byteArrayOutputStream);
@@ -816,12 +800,14 @@ public class EnrollFragment extends Fragment {
                         }
                     } catch (Exception ignored) {}
                     Toast.makeText(getContext(), "Synced to Cloud", Toast.LENGTH_SHORT).show();
-                    if (dbManager != null) {
-                        if (newId != null && !newId.isEmpty()) {
-                            dbManager.updatePersonAfterSyncByLocalUid(localUid, newId);
-                        } else {
-                            dbManager.updatePersonStatusByLocalUid(localUid, true);
-                        }
+                    if (dbManager != null && newId != null && !newId.isEmpty()) {
+                        String phoneVal = phone;
+                        String deptVal = department;
+                        String desigVal = designation;
+                        String shiftVal = shift;
+                        String customDataStr = dynamicData.toString();
+                        dbManager.insertPerson(newId, name, faceImage, templates, phoneVal, deptVal, desigVal, shiftVal, customDataStr, true);
+                        try { dbManager.loadPerson(); } catch (Exception ignored) {}
                     }
                 } else {
                     String errorMsg = "Sync Failed: " + response.code();
@@ -836,19 +822,13 @@ public class EnrollFragment extends Fragment {
                         }
                     } catch (Exception ignored) {}
                     Toast.makeText(getContext(), errorMsg, Toast.LENGTH_LONG).show();
-                    try {
-                        SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
-                    } catch (Exception ignored) {}
                 }
             }
 
             @Override
             public void onFailure(Call<UploadFaceResponse> call, Throwable t) {
                 t.printStackTrace();
-                Toast.makeText(getContext(), "Offline: Saved locally, will sync when internet returns", Toast.LENGTH_LONG).show();
-                try {
-                    SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
-                } catch (Exception ignored) {}
+                Toast.makeText(getContext(), "Internet required for registration", Toast.LENGTH_LONG).show();
             }
         });
     }

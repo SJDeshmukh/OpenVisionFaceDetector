@@ -34,11 +34,26 @@ export const AuthProvider = ({ children }) => {
           const errorMessage = error.response.data?.error || "";
           
           // 401 is always an auth failure. 
-          // 403 with "Access Denied" or "Subscription Expired" is a suspension/expiry.
-          if (status === 401 || (status === 403 && (errorMessage.includes("Access Denied") || errorMessage.includes("Subscription Expired")))) {
+          // 403 with "Subscription Expired" or explicit suspension should logout.
+          const isSuspended = errorMessage.includes("Subscription Expired") || errorMessage.includes("Account Suspended") || errorMessage.includes("Service Suspended");
+          const isFeatureMissing = errorMessage.includes("Feature") && errorMessage.includes("not enabled");
+          if (status === 401 || (status === 403 && isSuspended)) {
              console.log("Auto-logout triggered due to status:", status, "message:", errorMessage);
              logout();
              window.location.href = '/login'; // Force redirect
+          } else if (status === 403 && isFeatureMissing) {
+             // Feature removed from plan: refresh features and continue (no logout)
+             try {
+               axios.get(`${API_URL}/vendor/subscription`).then(res => {
+                 const features = res.data?.features || [];
+                 setUser((prev) => {
+                   if (!prev) return prev;
+                   const next = { ...prev, features };
+                   localStorage.setItem('user', JSON.stringify(next));
+                   return next;
+                 });
+               }).catch(() => {});
+             } catch (e) {}
           }
         }
         return Promise.reject(error);
@@ -103,8 +118,24 @@ export const AuthProvider = ({ children }) => {
     delete axios.defaults.headers.common['Authorization'];
   };
 
+  const refreshFeatures = async () => {
+    try {
+      const res = await axios.get(`${API_URL}/vendor/subscription`);
+      const features = res.data?.features || [];
+      setUser((prev) => {
+        if (!prev) return prev;
+        const next = { ...prev, features };
+        localStorage.setItem('user', JSON.stringify(next));
+        return next;
+      });
+      return features;
+    } catch (e) {
+      return null;
+    }
+  };
+
   return (
-    <AuthContext.Provider value={{ user, login, logout, loading }}>
+    <AuthContext.Provider value={{ user, login, logout, loading, refreshFeatures }}>
       {!loading && children}
     </AuthContext.Provider>
   );

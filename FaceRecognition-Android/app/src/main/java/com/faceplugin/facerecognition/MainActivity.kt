@@ -215,6 +215,29 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
+            
+            mSocket?.on("force_logout_mobile") { args ->
+                if (args.isNotEmpty()) {
+                    val data = args[0] as JSONObject
+                    val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+                    val myVendorId = prefs.getInt("vendor_id", -1)
+                    val targetVendorId = data.optInt("vendor_id", -1)
+                    if (myVendorId != -1 && myVendorId == targetVendorId) {
+                        runOnUiThread {
+                            val reason = data.optString("reason", "Device limit decreased")
+                            performLogout("Access Denied: $reason")
+                        }
+                    }
+                }
+            }
+            
+            mSocket?.on("features_updated") { args ->
+                runOnUiThread {
+                    try {
+                        android.widget.Toast.makeText(this, "Plan updated", android.widget.Toast.LENGTH_SHORT).show()
+                    } catch (_: Exception) {}
+                }
+            }
 
             mSocket?.connect()
         } catch (e: Exception) {

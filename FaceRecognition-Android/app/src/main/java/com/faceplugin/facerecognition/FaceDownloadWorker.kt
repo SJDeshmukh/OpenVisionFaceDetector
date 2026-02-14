@@ -40,10 +40,17 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
         val faces = resp.body()?.faces ?: emptyList()
         val signature = facesSignature(faces)
         val lastSig = prefs.getString("last_faces_signature", null)
-        if (lastSig != null && lastSig == signature) return Result.success()
+        if (lastSig != null && lastSig == signature) {
+            // Even if signature unchanged, perform reconciliation to remove deleted faces
+            try {
+                reconcileLocalWithServer(faces)
+            } catch (_: Exception) {}
+            return Result.success()
+        }
         prefs.edit().putString("last_faces_signature", signature).apply()
 
         val db = DBManager(applicationContext)
+        // Insert/update faces
         for (faceData in faces) {
             try {
                 val id = faceData.id ?: ""
@@ -67,6 +74,11 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
             } catch (_: Exception) {
             }
         }
+
+        // Reconcile: delete any local person not present on server
+        try {
+            reconcileLocalWithServer(faces)
+        } catch (_: Exception) {}
 
         return Result.success()
     }
@@ -97,5 +109,24 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
                 .enqueueUniqueWork(UNIQUE_WORK_NAME, ExistingWorkPolicy.KEEP, req)
         }
     }
-}
 
+    private fun reconcileLocalWithServer(faces: List<com.faceplugin.facerecognition.api.SyncRequest>) {
+        val db = DBManager(applicationContext)
+        val serverIds = faces.mapNotNull { it.id }.filter { it.isNotBlank() }.toSet()
+        val readable = db.readableDatabase
+        var cursor: android.database.Cursor? = null
+        try {
+            cursor = readable.rawQuery("select id from person where id is not null and trim(id) != ''", null)
+            if (cursor.moveToFirst()) {
+                do {
+                    val id = cursor.getString(0)
+                    if (id != null && id.isNotBlank() && !serverIds.contains(id)) {
+                        db.deletePersonById(id)
+                    }
+                } while (cursor.moveToNext())
+            }
+        } finally {
+            try { cursor?.close() } catch (_: Exception) {}
+        }
+    }
+}

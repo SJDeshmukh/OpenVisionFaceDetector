@@ -6,8 +6,9 @@ import { useAuth } from './AuthContext';
 const SocketContext = createContext(null);
 
 export const SocketProvider = ({ children }) => {
-  const { user, logout } = useAuth();
+  const { user, logout, refreshFeatures } = useAuth();
   const [socket, setSocket] = useState(null);
+  const [toastMsg, setToastMsg] = useState(null);
 
   useEffect(() => {
     if (!user || !user.token) {
@@ -28,6 +29,26 @@ export const SocketProvider = ({ children }) => {
           window.location.href = '/login';
         }
       }
+    });
+    
+    s.on('force_logout_web', (data) => {
+      if (user.role === 'vendor' || user.role === 'vendor_admin' || user.role === 'admin') {
+        if (String(data.vendor_id) === String(user.vendor_id)) {
+          console.log("Force logout (web) via Socket.IO:", data.reason);
+          logout();
+          window.location.href = '/login';
+        }
+      }
+    });
+    
+    s.on('features_updated', async (data) => {
+      try {
+        if (!data || !data.vendor_id) return;
+        if (String(data.vendor_id) !== String(user.vendor_id)) return;
+        const feats = await refreshFeatures();
+        setToastMsg("Plan updated");
+        setTimeout(() => setToastMsg(null), 3000);
+      } catch (e) {}
     });
 
     return () => {
@@ -70,7 +91,14 @@ export const SocketProvider = ({ children }) => {
     return { socket, joinVendor, joinSuperAdmin };
   }, [socket]);
 
-  return <SocketContext.Provider value={value}>{children}</SocketContext.Provider>;
+  return <SocketContext.Provider value={value}>
+    {children}
+    {toastMsg && (
+      <div className="fixed bottom-4 right-4 bg-slate-900 text-white px-4 py-2 rounded shadow-lg z-50 text-sm">
+        {toastMsg}
+      </div>
+    )}
+  </SocketContext.Provider>;
 };
 
 export const useSocket = () => useContext(SocketContext);

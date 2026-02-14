@@ -14,6 +14,8 @@
             android:layout_height="48dp"
             android:hint="Enter Student Number"
             android:background="@drawable/bg_input_field"
+            android:inputType="text"
+            android:singleLine="true"
             android:padding="12dp"
             android:textColor="@color/vision_text_primary"
             android:textColorHint="@color/vision_text_tertiary"/>
@@ -30,6 +32,8 @@
             android:layout_height="48dp"
             android:hint="YYYY-MM-DD (optional)"
             android:background="@drawable/bg_input_field"
+            android:inputType="text"
+            android:singleLine="true"
             android:padding="12dp"
             android:layout_marginTop="8dp"
             android:textColor="@color/vision_text_primary"

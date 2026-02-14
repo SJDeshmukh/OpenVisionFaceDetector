@@ -71,9 +71,15 @@ const Dashboard = () => {
       } catch (error) {
         console.error("Error fetching data:", error);
         if (error.response && error.response.status === 403) {
-           const msg = error.response.data?.error || "Access Denied: Account Suspended";
+           const msg = error.response.data?.error || "Access Denied";
            setError(msg);
-           setTimeout(() => logout(), 3000); // Auto logout after 3s
+           const suspended = msg.includes("Subscription Expired") || msg.includes("Account Suspended") || msg.includes("Service Suspended");
+           if (suspended) {
+             setTimeout(() => logout(), 3000);
+           } else {
+             // Feature missing or other 403: do not logout
+             // UI will be gated by updated features from AuthContext interceptor
+           }
         }
       }
     };

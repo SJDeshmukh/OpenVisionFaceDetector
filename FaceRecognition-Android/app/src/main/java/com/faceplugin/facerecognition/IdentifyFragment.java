@@ -72,6 +72,12 @@ import java.util.List;
 import java.util.Map;
 import java.net.URISyntaxException;
 
+import androidx.work.Constraints;
+import androidx.work.ExistingWorkPolicy;
+import androidx.work.NetworkType;
+import androidx.work.OneTimeWorkRequest;
+import androidx.work.WorkManager;
+
 public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitListener {
 
     static String TAG = IdentifyFragment.class.getSimpleName();
@@ -97,6 +103,9 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     private DBManager dbManager;
     private android.widget.ImageView ivStatusOverlay;
     private TextView tvStatusOverlay;
+    private View similarityBarFill;
+    private View similarityBarContainer;
+    private TextView similarityLabel;
     private View syncOrb;
     private TextView networkStatusPill;
     private long lastNotRecognizedToastAtMs = 0L;
@@ -144,6 +153,19 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 options.extraHeaders = headers;
                 if (serverUrl.endsWith("/")) serverUrl = serverUrl.substring(0, serverUrl.length() - 1);
                 mSocket = IO.socket(serverUrl, options);
+                mSocket.on("persons_updated", (Object... args) -> {
+                    try {
+                        Context ctx = requireContext().getApplicationContext();
+                        Constraints constraints = new Constraints.Builder()
+                                .setRequiredNetworkType(NetworkType.CONNECTED)
+                                .build();
+                        OneTimeWorkRequest req = new OneTimeWorkRequest.Builder(FaceDownloadWorker.class)
+                                .setConstraints(constraints)
+                                .build();
+                        WorkManager.getInstance(ctx)
+                                .enqueueUniqueWork("face-download", ExistingWorkPolicy.REPLACE, req);
+                    } catch (Exception ignored) {}
+                });
                 mSocket.connect();
             } catch (Exception e) {
                 e.printStackTrace();
@@ -157,6 +179,9 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         screenSaverView = view.findViewById(R.id.screenSaverView);
         ivStatusOverlay = view.findViewById(R.id.ivStatusOverlay);
         tvStatusOverlay = view.findViewById(R.id.tvStatusOverlay);
+        similarityBarContainer = view.findViewById(R.id.similarityBarContainer);
+        similarityBarFill = view.findViewById(R.id.similarityBarFill);
+        similarityLabel = view.findViewById(R.id.similarityLabel);
         syncOrb = view.findViewById(R.id.syncOrb);
         networkStatusPill = view.findViewById(R.id.networkStatusPill);
         vendorVerifyOnlyMode = isVendorVerifyOnlyMode();
@@ -193,6 +218,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         if (statusText != null) {
             statusText.setText(vendorVerifyOnlyMode ? "Show a face to verify registration..." : "Looking for a registered face...");
         }
+        updateSimilarityHud(0f);
         try {
             boolean online = NetworkUtils.INSTANCE.isOnline(requireContext().getApplicationContext());
             updateNetworkHud(online);
@@ -339,39 +365,35 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             } catch (Exception ignored) {}
         }
 
-        if (!online || effectivePersonId == null || effectivePersonId.isEmpty()) {
-            if (isAttendance) {
-                String predicted = dbManager.predictNextAttendanceStatus(effectivePersonId, localUid, name);
-                dbManager.insertAttendanceQueue(effectivePersonId, localUid, name, timestamp, predicted, image, false);
-                playAttendanceSound(predicted);
-                showStatusOverlay(predicted);
-                showAttendanceToast(name, predicted);
-                if (getActivity() != null) {
-                    String finalPredicted = predicted;
-                    getActivity().runOnUiThread(() -> {
-                        if (statusText != null) statusText.setText(name + " " + finalPredicted);
-                    });
+        if (!online) {
+            if (effectivePersonId != null && !effectivePersonId.isEmpty()) {
+                if (isAttendance) {
+                    String predicted = dbManager.predictNextAttendanceStatus(effectivePersonId, localUid, name);
+                    dbManager.insertAttendanceQueue(effectivePersonId, localUid, name, timestamp, predicted, image, false);
+                    playAttendanceSound(predicted);
+                    showStatusOverlay(predicted);
+                    showAttendanceToast(name, predicted);
+                    if (getActivity() != null) {
+                        String finalPredicted = predicted;
+                        getActivity().runOnUiThread(() -> {
+                            if (statusText != null) statusText.setText(name + " " + finalPredicted);
+                        });
+                    }
+                    try { SyncScheduler.scheduleImmediate(requireContext().getApplicationContext()); } catch (Exception ignored) {}
                 }
             } else {
-                playAttendanceSound("CHECK_IN");
-                showStatusOverlay("CHECK_IN");
-                showAttendanceToast(name, "CHECK_IN");
                 if (getActivity() != null) {
                     getActivity().runOnUiThread(() -> {
-                        if (statusText != null) statusText.setText(name);
+                        Toast.makeText(getContext(), "Sync required: missing person ID", Toast.LENGTH_LONG).show();
+                        if (statusText != null) statusText.setText("Sync required");
                     });
                 }
-            }
-            try {
-                SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
-            } catch (Exception e) {
-                e.printStackTrace();
             }
             return;
         }
 
         final String finalPersonId = effectivePersonId;
-        PersonEventRequest request = new PersonEventRequest(detected, recognized, finalPersonId, "", confidence, imageBase64, isAttendance, timestamp);
+        PersonEventRequest request = new PersonEventRequest(detected, recognized, finalPersonId, name, confidence, imageBase64, isAttendance, timestamp);
 
         service.sendPersonEvent(request).enqueue(new Callback<GreetingResponse>() {
             @Override
@@ -589,6 +611,29 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         });
     }
 
+    private void updateSimilarityHud(float similarity) {
+        try {
+            float clamped = Math.max(0f, Math.min(similarity, 1f));
+            int percent = Math.round(clamped * 100f);
+            if (getActivity() != null) {
+                getActivity().runOnUiThread(() -> {
+                    if (similarityLabel != null) {
+                        similarityLabel.setText("Match: " + percent + "%");
+                    }
+                    if (similarityBarContainer != null && similarityBarFill != null) {
+                        int containerWidth = similarityBarContainer.getWidth();
+                        if (containerWidth > 0) {
+                            int fillWidth = Math.round(containerWidth * clamped);
+                            android.view.ViewGroup.LayoutParams lp = similarityBarFill.getLayoutParams();
+                            lp.width = fillWidth;
+                            similarityBarFill.setLayoutParams(lp);
+                        }
+                    }
+                });
+            }
+        } catch (Exception ignored) {}
+    }
+
     private void showScreenSaver() {
         if (!isScreenSaverActive && screenSaverView != null) {
             screenSaverView.setVisibility(View.VISIBLE);
@@ -720,6 +765,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                             powerSaveHandler.removeCallbacks(powerSaveRunnable);
                             isPowerSaveTimerRunning = false;
                         }
+                        updateSimilarityHud(0f);
                     } else {
                         // No Face Detected
                         if (faceBoxes.isEmpty()) {
@@ -730,6 +776,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                                 statusText.setTextColor(getResources().getColor(R.color.primary_soft_blue));
                                 faceView.setRecognizedName(null);
                             }
+                            updateSimilarityHud(0f);
                             
                             // Start Power Save Timer if not running and screen not already black
                             if (!isScreenSaverActive && !isPowerSaveTimerRunning) {
@@ -789,6 +836,8 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                         faceView.setRecognizedNames(finalNamesForBoxes);
                     });
                 }
+
+                updateSimilarityHud(bestSimilarity);
 
                 if (bestPerson != null && bestSimilarity > identifyThreshold) {
                     consecutiveUnknownFrames = 0;
@@ -875,7 +924,26 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                         key = "local:" + (!localUid.isEmpty() ? localUid : "unknown");
                     }
 
-                    if (!key.equals(lastProcessedPersonId)) {
+                    boolean allowByCooldown = false;
+                    try {
+                        android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
+                        int cooldown = prefs.getInt("cooldown_seconds", 30);
+                        String lastTs = dbManager.getLastAttendanceTimestamp(personId, localUid, bestPerson.name);
+                        if (lastTs == null || lastTs.isEmpty()) {
+                            allowByCooldown = true;
+                        } else {
+                            SimpleDateFormat sdf2 = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US);
+                            String nowStr = sdf2.format(new Date());
+                            long lastMs = sdf2.parse(lastTs).getTime();
+                            long nowMs = sdf2.parse(nowStr).getTime();
+                            long deltaSec = (nowMs - lastMs) / 1000;
+                            if (deltaSec >= cooldown || deltaSec < 0) {
+                                allowByCooldown = true;
+                            }
+                        }
+                    } catch (Exception ignored) {}
+
+                    if (!key.equals(lastProcessedPersonId) || allowByCooldown) {
                         lastProcessedPersonId = key;
 
                         if (getActivity() != null) {
@@ -898,9 +966,11 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                                     lastProcessedPersonId = null;
                                     statusText.setText("Face not recognized");
                                     showNotRecognizedToast();
+                                    updateSimilarityHud(0f);
                                 }
                             } else {
                                 showNotRecognizedToast();
+                                updateSimilarityHud(0f);
                             }
                         });
                     }

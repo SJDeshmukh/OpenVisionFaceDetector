@@ -81,11 +81,6 @@ const Attendance = () => {
     try {
       const params = new URLSearchParams();
       const f = activeFilters || {};
-      if (f.name) params.append('name', f.name);
-      if (f.department) params.append('department', f.department);
-      if (f.designation) params.append('designation', f.designation);
-      if (f.shift) params.append('shift', f.shift);
-      if (f.phone) params.append('phone', f.phone);
       Object.entries(filterOptions.dynamic_filters || {}).forEach(([key]) => {
         const v = f[key];
         if (v && String(v).trim() !== '') params.append(key, v);
@@ -94,21 +89,6 @@ const Attendance = () => {
       const nextOptions = res.data || {};
       setFilterOptions(nextOptions);
       const nextFilters = { ...filtersRef.current };
-      const vis = nextOptions.visible_standard_filters || {};
-      const allowedNames = new Set((nextOptions.names || []).map(String));
-      if (nextFilters.name && !allowedNames.has(String(nextFilters.name))) nextFilters.name = '';
-      const pruneStandard = (key, enabled, list) => {
-        if (!enabled) {
-          if (nextFilters[key]) nextFilters[key] = '';
-          return;
-        }
-        const allowed = new Set((list || []).map(String));
-        if (nextFilters[key] && !allowed.has(String(nextFilters[key]))) nextFilters[key] = '';
-      };
-      pruneStandard('department', !!vis.department, nextOptions.departments);
-      pruneStandard('designation', !!vis.designation, nextOptions.designations);
-      pruneStandard('shift', !!vis.shift, nextOptions.shifts);
-      pruneStandard('phone', !!vis.phone, nextOptions.phones);
       Object.entries(nextOptions.dynamic_filters || {}).forEach(([key, cfg]) => {
         const allowed = new Set(((cfg && cfg.options) || []).map(String));
         if (nextFilters[key] && !allowed.has(String(nextFilters[key]))) nextFilters[key] = '';
@@ -129,11 +109,6 @@ const Attendance = () => {
       const params = new URLSearchParams();
       if (filters.startDate) params.append('start_date', filters.startDate);
       if (filters.endDate) params.append('end_date', filters.endDate);
-      if (filters.department) params.append('department', filters.department);
-      if (filters.designation) params.append('designation', filters.designation);
-      if (filters.shift) params.append('shift', filters.shift);
-      if (filters.phone) params.append('phone', filters.phone);
-      if (filters.name) params.append('name', filters.name);
       Object.entries(filterOptions.dynamic_filters || {}).forEach(([key, cfg]) => {
         const val = filters[key];
         if (val && String(val).trim() !== '') {
@@ -164,10 +139,6 @@ const Attendance = () => {
     const params = new URLSearchParams();
     if (filters.startDate) params.append('start_date', filters.startDate);
     if (filters.endDate) params.append('end_date', filters.endDate);
-    if (filters.department) params.append('department', filters.department);
-    if (filters.designation) params.append('designation', filters.designation);
-    if (filters.shift) params.append('shift', filters.shift);
-    if (filters.phone) params.append('phone', filters.phone);
     Object.entries(filterOptions.dynamic_filters || {}).forEach(([key, cfg]) => {
       const val = filters[key];
       if (val && String(val).trim() !== '') {
@@ -291,19 +262,6 @@ const Attendance = () => {
 
       {/* Filters */}
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col md:flex-row gap-4 items-end md:items-center flex-wrap">
-        <div className="w-full md:w-56">
-          <select
-            value={filters.name}
-            onChange={(e) => setFilters({ ...filters, name: e.target.value })}
-            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-600 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-          >
-            <option value="">All Names</option>
-            {(filterOptions.names || []).map(n => (
-              <option key={n} value={n}>{n}</option>
-            ))}
-          </select>
-        </div>
-        
         <div className="w-full md:w-auto">
             <input 
               type="date" 
@@ -321,66 +279,6 @@ const Attendance = () => {
               className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-600 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
             />
         </div>
-        
-        <div className="w-full md:w-40">
-          {(filterOptions.visible_standard_filters?.department ?? false) && (
-            <select 
-              value={filters.department}
-              onChange={(e) => setFilters({...filters, department: e.target.value})}
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-600 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-            >
-              <option value="">All Departments</option>
-              {(filterOptions?.departments || []).map(dept => (
-                <option key={dept} value={dept}>{dept}</option>
-              ))}
-            </select>
-          )}
-        </div>
-
-        <div className="w-full md:w-40">
-          {(filterOptions.visible_standard_filters?.designation ?? false) && (
-            <select 
-              value={filters.designation}
-              onChange={(e) => setFilters({...filters, designation: e.target.value})}
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-600 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-            >
-              <option value="">All Designations</option>
-              {(filterOptions?.designations || []).map(desig => (
-                <option key={desig} value={desig}>{desig}</option>
-              ))}
-            </select>
-          )}
-        </div>
-
-        {(filterOptions.visible_standard_filters?.shift ?? false) && (
-          <div className="w-full md:w-40">
-            <select
-              value={filters.shift}
-              onChange={(e) => setFilters({...filters, shift: e.target.value})}
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-600 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-            >
-              <option value="">All Shifts</option>
-              {(filterOptions?.shifts || []).map(s => (
-                <option key={s} value={s}>{s}</option>
-              ))}
-            </select>
-          </div>
-        )}
-
-        {(filterOptions.visible_standard_filters?.phone ?? false) && (
-          <div className="w-full md:w-44">
-            <select
-              value={filters.phone}
-              onChange={(e) => setFilters({...filters, phone: e.target.value})}
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-600 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-            >
-              <option value="">All Phones</option>
-              {(filterOptions?.phones || []).map(p => (
-                <option key={p} value={p}>{p}</option>
-              ))}
-            </select>
-          </div>
-        )}
 
         {Object.entries(filterOptions.dynamic_filters || {}).map(([key, cfg]) => (
           <div key={key} className="w-full md:w-44">
