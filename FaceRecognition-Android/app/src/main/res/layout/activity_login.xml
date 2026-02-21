@@ -53,7 +53,7 @@
                 android:id="@+id/logo_login"
                 android:layout_width="100dp"
                 android:layout_height="100dp"
-                android:src="@drawable/openvision_logo"
+                android:src="@drawable/logo_openvision"
                 app:layout_constraintBottom_toTopOf="@+id/login_card"
                 app:layout_constraintEnd_toEndOf="parent"
                 app:layout_constraintStart_toStartOf="parent"
@@ -132,6 +132,43 @@
                     style="@style/Typography.Body"
                     android:textColorHint="@color/text_tertiary"
                     app:layout_constraintTop_toBottomOf="@+id/et_username" />
+                
+                <EditText
+                    android:id="@+id/et_student_id"
+                    android:layout_width="match_parent"
+                    android:layout_height="56dp"
+                    android:layout_marginTop="32dp"
+                    android:background="@drawable/bg_input_field"
+                    android:hint="Student ID"
+                    android:inputType="text"
+                    android:singleLine="true"
+                    android:padding="16dp"
+                    android:visibility="gone"
+                    style="@style/Typography.Body"
+                    android:textColorHint="@color/text_tertiary"
+                    app:layout_constraintTop_toBottomOf="@+id/tv_business_name" />
+
+                <EditText
+                    android:id="@+id/et_mobile_number"
+                    android:layout_width="match_parent"
+                    android:layout_height="56dp"
+                    android:layout_marginTop="16dp"
+                    android:background="@drawable/bg_input_field"
+                    android:hint="Registered Mobile"
+                    android:inputType="phone"
+                    android:singleLine="true"
+                    android:padding="16dp"
+                    android:visibility="gone"
+                    style="@style/Typography.Body"
+                    android:textColorHint="@color/text_tertiary"
+                    app:layout_constraintTop_toBottomOf="@+id/et_student_id" />
+
+                <androidx.constraintlayout.widget.Barrier
+                    android:id="@+id/barrier_inputs"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    app:barrierDirection="bottom"
+                    app:constraint_referenced_ids="et_password,et_mobile_number" />
 
                 <Button
                     android:id="@+id/btn_login"
@@ -140,7 +177,7 @@
                     android:layout_marginTop="32dp"
                     android:text="SIGN IN"
                     style="@style/ButtonStyle"
-                    app:layout_constraintTop_toBottomOf="@+id/et_password" />
+                    app:layout_constraintTop_toBottomOf="@+id/barrier_inputs" />
 
                 <TextView
                     android:id="@+id/btn_register"

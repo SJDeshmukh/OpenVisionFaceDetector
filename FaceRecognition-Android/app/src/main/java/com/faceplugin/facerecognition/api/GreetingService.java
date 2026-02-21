@@ -6,6 +6,7 @@ import retrofit2.http.DELETE;
 import retrofit2.http.GET;
 import retrofit2.http.POST;
 import retrofit2.http.Path;
+import retrofit2.http.Query;
 
 public interface GreetingService {
     @POST("api/auth/login")
@@ -56,12 +57,24 @@ public interface GreetingService {
     @GET("api/parents/attendance")
     Call<com.google.gson.JsonObject> getParentAttendance();
 
+    @GET("api/parents/attendance")
+    Call<com.google.gson.JsonObject> getParentAttendanceByDate(@Query("date") String date);
+
+    @GET("api/parents/attendance")
+    Call<com.google.gson.JsonObject> getParentAttendanceByDateLimit(@Query("date") String date, @Query("limit") int limit);
+
+    @GET("api/parents/student-day")
+    Call<com.google.gson.JsonObject> getParentStudentDay(@Query("date") String date);
+
     @POST("api/parents/select-student")
     Call<com.google.gson.JsonObject> selectStudent(@Body ParentSelectRequest request);
 
+    @POST("api/parents/logout")
+    Call<com.google.gson.JsonObject> parentLogout();
+
     @GET("api/public/attendance-by-student")
-    Call<com.google.gson.JsonObject> attendanceByStudent(@retrofit2.http.Query("student_number") String studentNumber);
+    Call<com.google.gson.JsonObject> attendanceByStudent(@Query("student_number") String studentNumber);
     @GET("api/public/attendance-by-student")
-    Call<com.google.gson.JsonObject> attendanceByStudentWithDate(@retrofit2.http.Query("student_number") String studentNumber,
-                                                                 @retrofit2.http.Query("date") String date);
+    Call<com.google.gson.JsonObject> attendanceByStudentWithDate(@Query("student_number") String studentNumber,
+                                                                 @Query("date") String date);
 }

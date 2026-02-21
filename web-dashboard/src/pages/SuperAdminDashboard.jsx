@@ -30,7 +30,8 @@ const SuperAdminDashboard = () => {
   });
   const [businessTypes, setBusinessTypes] = useState([
     { value: 'school', label: 'School / College / Tuitions', default_frontend_bundle_id: 'attendance_ui', default_registration_config: [
-      { field: 'student_number', label: 'Student Number', type: 'text', required: true, options: [] },
+      { field: 'student_number', label: 'Student ID', type: 'text', required: true, options: [] },
+      { field: 'phone', label: 'Parent Mobile Number', type: 'text', required: true, options: [] },
       { field: 'department', label: 'Class/Section', type: 'text', required: false, options: [] }
     ] },
     { value: 'wages', label: 'Daily Wages / Workforce', default_frontend_bundle_id: 'attendance_payroll_ui', default_registration_config: [

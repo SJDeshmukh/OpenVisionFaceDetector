@@ -39,6 +39,32 @@ class LoginActivity : AppCompatActivity() {
         val tvBusiness = findViewById<TextView>(R.id.tv_business_name)
         val btnParentLogin = findViewById<TextView>(R.id.btn_parent_login)
 
+        val etStudentId = findViewById<EditText>(R.id.et_student_id)
+        val etMobileNumber = findViewById<EditText>(R.id.et_mobile_number)
+        var isParentLogin = false
+        
+        btnParentLogin.setOnClickListener {
+            if (!isParentLogin) {
+                isParentLogin = true
+                etUsername.visibility = View.GONE
+                etPassword.visibility = View.GONE
+                btnRegister.visibility = View.GONE
+                etStudentId.visibility = View.VISIBLE
+                etMobileNumber.visibility = View.VISIBLE
+                btnParentLogin.text = "Back to Staff Login"
+                btnLogin.text = "Secure Parent Login"
+            } else {
+                isParentLogin = false
+                etUsername.visibility = View.VISIBLE
+                etPassword.visibility = View.VISIBLE
+                btnRegister.visibility = View.VISIBLE
+                etStudentId.visibility = View.GONE
+                etMobileNumber.visibility = View.GONE
+                btnParentLogin.text = "Parent Portal Login"
+                btnLogin.text = "SIGN IN"
+            }
+        }
+
         try {
             val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
             var code = prefs.getString("selected_business_type_code", null)
@@ -64,11 +90,11 @@ class LoginActivity : AppCompatActivity() {
                 btnParentLogin.visibility = if (allowParentLogin) View.VISIBLE else View.GONE
             } else {
                 tvBusiness.text = "Business: -"
-                btnParentLogin.visibility = View.VISIBLE
+                btnParentLogin.visibility = View.GONE
             }
         } catch (_: Exception) {
             tvBusiness.text = "Business: -"
-            btnParentLogin.visibility = View.VISIBLE
+            btnParentLogin.visibility = View.GONE
         }
         
         tvServerUrl.text = "Server: " + RetrofitClient.getBaseUrl()
@@ -77,6 +103,66 @@ class LoginActivity : AppCompatActivity() {
         }
 
         btnLogin.setOnClickListener {
+            if (isParentLogin) {
+                val studentId = etStudentId.text.toString().trim()
+                val mobile = etMobileNumber.text.toString().trim()
+                if (studentId.isEmpty() || mobile.isEmpty()) {
+                    Toast.makeText(this, "Enter Student ID and Mobile Number", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                
+                val deviceId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
+                val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+                var vendorId = prefs.getInt("vendor_id", -1)
+                if (vendorId == -1) vendorId = 1
+                
+                val request = com.faceplugin.facerecognition.api.ParentLoginRequest(studentId, mobile, deviceId, vendorId, "")
+                
+                RetrofitClient.getService().parentLogin(request).enqueue(object : Callback<LoginResponse> {
+                    override fun onResponse(call: Call<LoginResponse>, response: Response<LoginResponse>) {
+                        if (response.isSuccessful && response.body()?.status == "success") {
+                             val token = response.body()?.token
+                             val role = response.body()?.role
+                             val vId = response.body()?.vendorId
+                             
+                             val editor = prefs.edit()
+                             if (token != null) editor.putString("token", token)
+                             if (role != null) editor.putString("role", role)
+                             if (vId != null) editor.putInt("vendor_id", vId)
+                             editor.putString("student_id", studentId)
+                             editor.putString("parent_student_number", studentId)
+                             editor.putString("parent_mobile_number", mobile)
+                             editor.apply()
+                             
+                             if (token != null) RetrofitClient.setAuthToken(token)
+                             
+                             runLogoShineThenNavigate()
+                        } else {
+                             var errorMsg = "Login Failed"
+                             try {
+                                 val errorBody = response.errorBody()?.string()
+                                 if (!errorBody.isNullOrEmpty() && errorBody.contains("error")) {
+                                     val start = errorBody.indexOf("\"error\"") + 9
+                                     val end = errorBody.indexOf("\"", start)
+                                     if (start > 8 && end > start) {
+                                         errorMsg = errorBody.substring(start, end).replace("\\", "")
+                                     }
+                                 } else {
+                                     errorMsg = response.body()?.error ?: "Invalid credentials"
+                                 }
+                             } catch (e: Exception) {
+                                 e.printStackTrace()
+                             }
+                             Toast.makeText(this@LoginActivity, errorMsg, Toast.LENGTH_LONG).show()
+                        }
+                    }
+                    override fun onFailure(call: Call<LoginResponse>, t: Throwable) {
+                        Toast.makeText(this@LoginActivity, "Network Error: ${t.message}", Toast.LENGTH_SHORT).show()
+                    }
+                })
+                return@setOnClickListener
+            }
+
             val username = etUsername.text.toString().trim()
             val password = etPassword.text.toString().trim()
 
@@ -108,10 +194,11 @@ class LoginActivity : AppCompatActivity() {
             RetrofitClient.getService().login(request).enqueue(object : Callback<LoginResponse> {
                 override fun onResponse(call: Call<LoginResponse>, response: Response<LoginResponse>) {
                     if (response.isSuccessful && response.body()?.status == "success") {
-                        val token = response.body()?.token
-                        val vendorId = response.body()?.vendorId
-                        val companyId = response.body()?.companyId
-                        val role = response.body()?.role
+                        val body = response.body()
+                        val token = body?.token
+                        val vendorId = body?.vendorId
+                        val companyId = body?.companyId
+                        val role = body?.role
                         
                         // Save login state
                         val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
@@ -121,6 +208,27 @@ class LoginActivity : AppCompatActivity() {
                         if (token != null) editor.putString("token", token)
                         if (vendorId != null) editor.putInt("vendor_id", vendorId)
                         if (companyId != null) editor.putInt("company_id", companyId)
+                        try {
+                            val vc = body?.vendorConfig
+                            val cached = when {
+                                vc == null || vc.isJsonNull -> null
+                                vc.isJsonArray -> vc.asJsonArray.toString()
+                                vc.isJsonObject -> {
+                                    val obj = vc.asJsonObject
+                                    val reg = obj.get("registration_config")
+                                    when {
+                                        reg != null && reg.isJsonArray -> reg.asJsonArray.toString()
+                                        reg != null && reg.isJsonObject && reg.asJsonObject.get("fields")?.isJsonArray == true ->
+                                            reg.asJsonObject.getAsJsonArray("fields").toString()
+                                        else -> null
+                                    }
+                                }
+                                else -> null
+                            }
+                            if (!cached.isNullOrBlank()) {
+                                editor.putString("cached_registration_config", cached)
+                            }
+                        } catch (_: Exception) {}
                         editor.putString("offline_login_hash", offlineLoginHash(username, password))
                         editor.apply()
 
@@ -188,7 +296,6 @@ class LoginActivity : AppCompatActivity() {
             })
         }
 
-        findViewById<TextView>(R.id.btn_parent_login).visibility = View.GONE
     }
 
     private fun runLogoShineThenNavigate() {
@@ -215,17 +322,26 @@ class LoginActivity : AppCompatActivity() {
                 set.start()
                 shine.postDelayed({
                     shine.visibility = View.GONE
-                    val intent = Intent(this@LoginActivity, MainActivity::class.java)
+                    val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+                    val role = prefs.getString("role", null)
+                    val target = if (role == "parent") ParentActivity::class.java else MainActivity::class.java
+                    val intent = Intent(this@LoginActivity, target)
                     startActivity(intent)
                     finish()
                 }, 650)
             } else {
-                val intent = Intent(this@LoginActivity, MainActivity::class.java)
+                val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+                val role = prefs.getString("role", null)
+                val target = if (role == "parent") ParentActivity::class.java else MainActivity::class.java
+                val intent = Intent(this@LoginActivity, target)
                 startActivity(intent)
                 finish()
             }
         } catch (_: Exception) {
-            val intent = Intent(this@LoginActivity, MainActivity::class.java)
+            val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+            val role = prefs.getString("role", null)
+            val target = if (role == "parent") ParentActivity::class.java else MainActivity::class.java
+            val intent = Intent(this@LoginActivity, target)
             startActivity(intent)
             finish()
         }

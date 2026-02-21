@@ -13,7 +13,10 @@ logger = logging.getLogger(__name__)
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 # Auto-detect DB_TYPE if DATABASE_URL is present
 DB_TYPE = os.environ.get("DB_TYPE", "postgres" if DATABASE_URL else "sqlite")
-DB_PATH = os.environ.get("DB_PATH", "face_db.sqlite")
+
+# Default to face_db.sqlite in the same directory as this file
+DEFAULT_DB_PATH = os.path.join(os.path.dirname(__file__), "face_db.sqlite")
+DB_PATH = os.environ.get("DB_PATH", DEFAULT_DB_PATH)
 
 class PostgresCursorWrapper:
     def __init__(self, cursor):

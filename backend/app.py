@@ -4,7 +4,7 @@ import os
 import json
 from dotenv import load_dotenv
 load_dotenv()
-from flask import Flask, Blueprint, request, jsonify, render_template
+from flask import Flask, Blueprint, request, jsonify, render_template, send_from_directory
 from flask_cors import CORS
 from flask_socketio import SocketIO, join_room, leave_room
 try:
@@ -495,6 +495,7 @@ def public_vendors():
         rows = []
     finally:
         conn.close()
+
     vendors = []
     for r in rows or []:
         try:
@@ -510,6 +511,42 @@ def public_vendors():
             pass
     return jsonify({"vendors": vendors})
 
+def reset_sequence(table_name):
+    """
+    Resets the auto-increment sequence for a given table to MAX(id) + 1.
+    Compatible with SQLite and PostgreSQL.
+    """
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        # Check if Postgres
+        is_pg = False
+        try:
+            is_pg = isinstance(conn, CompatConn) and getattr(conn, "_is_pg", False)
+        except Exception:
+            pass
+            
+        if is_pg:
+            # Postgres: setval
+            # We use pg_get_serial_sequence to get the correct sequence name
+            # COALESCE ensures that if table is empty, we reset to 0 (so next is 1)
+            # setval(seq, val, is_called=true) -> next value will be val+1.
+            # So if MAX(id) is 10, setval(..., 10) -> next is 11.
+            sql = f"SELECT setval(pg_get_serial_sequence('{table_name}', 'id'), COALESCE((SELECT MAX(id) FROM {table_name}), 0))"
+            _run(c, sql)
+        else:
+            # SQLite: UPDATE sqlite_sequence
+            # SQLite sequence tracks the *last inserted* rowid.
+            # If we set seq to MAX(id), the next insert will be MAX(id) + 1.
+            sql = f"UPDATE sqlite_sequence SET seq = COALESCE((SELECT MAX(id) FROM {table_name}), 0) WHERE name = '{table_name}'"
+            _run(c, sql)
+            
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Error resetting sequence for {table_name}: {e}")
+
 @app.route('/api/public/business-types', methods=['GET'])
 def public_business_types():
     known = [
@@ -519,6 +556,7 @@ def public_business_types():
             "default_frontend_bundle_id": "attendance_ui",
             "default_registration_config": [
                 {"field": "student_number", "label": "Student Number", "type": "text", "required": True, "options": []},
+                {"field": "phone", "label": "Mobile Number", "type": "text", "required": True, "options": []},
                 {"field": "department", "label": "Class/Section", "type": "text", "required": False, "options": []}
             ],
             "allow_parent_login": True
@@ -1098,6 +1136,18 @@ def ensure_audit_logs_table():
                     ip TEXT
                 )
             """)
+            
+            # Migration: Add missing columns if table existed from old version
+            try:
+                c.execute("PRAGMA table_info(audit_logs)")
+                cols = [info[1] for info in c.fetchall()]
+                if 'actor_role' not in cols:
+                    c.execute("ALTER TABLE audit_logs ADD COLUMN actor_role TEXT")
+                if 'ip' not in cols:
+                    c.execute("ALTER TABLE audit_logs ADD COLUMN ip TEXT")
+            except Exception:
+                pass
+
         conn.commit()
     except Exception:
         try:
@@ -1107,35 +1157,47 @@ def ensure_audit_logs_table():
     finally:
         conn.close()
 
-def log_audit(action, details=None, target_vendor_id=None, status="success"):
+def log_audit(action, details=None, target_vendor_id=None, status="success", actor=None):
     try:
         ensure_audit_logs_table()
         conn = get_db_connection()
         c = conn.cursor()
-        actor_username = None
+        actor_username = actor
         actor_role = None
+        
+        if not actor_username:
+            try:
+                auth_header = request.headers.get('Authorization')
+                if auth_header:
+                    token = auth_header.split(" ")[1]
+                    user_data = verify_token(token)
+                    if user_data:
+                        actor_username = user_data.get('username')
+                        actor_role = user_data.get('role')
+            except Exception:
+                pass
+        
+        if not actor_username:
+            actor_username = 'system'
+
         try:
-            auth_header = request.headers.get('Authorization')
-            if auth_header:
-                token = auth_header.split(" ")[1]
-                user_data = verify_token(token)
-                if user_data:
-                    actor_username = user_data.get('username')
-                    actor_role = user_data.get('role')
-        except Exception:
-            pass
-        ip = request.remote_addr
+            ip = request.remote_addr
+        except:
+            ip = '0.0.0.0'
+
         payload = {"status": status}
         if isinstance(details, dict):
             payload.update(details)
         elif isinstance(details, str):
             payload["message"] = details
+            
+        import json
         _run(c, "INSERT INTO audit_logs (actor_username, actor_role, target_vendor_id, action, details, ip) VALUES (?, ?, ?, ?, ?, ?)",
-             (actor_username, actor_role, target_vendor_id, action, json.dumps(payload)))
+             (actor_username, actor_role, target_vendor_id, action, json.dumps(payload), ip))
         conn.commit()
         conn.close()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Audit Log Error: {e}")
 def add_vendor_devices_table():
     conn = get_db_connection()
     c = conn.cursor()
@@ -1275,6 +1337,32 @@ def add_missing_columns():
                       student_number TEXT,
                       selected_person_id INTEGER,
                       created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+
+        # Check parent_users columns
+        c.execute("PRAGMA table_info(parent_users)")
+        p_cols = [info[1] for info in c.fetchall()]
+        if 'device_id' not in p_cols:
+            print("MIGRATION: Adding device_id to parent_users...")
+            try:
+                c.execute("ALTER TABLE parent_users ADD COLUMN device_id TEXT")
+            except Exception as e:
+                print(f"Error adding device_id: {e}")
+        if 'fcm_token' not in p_cols:
+            print("MIGRATION: Adding fcm_token to parent_users...")
+            try:
+                c.execute("ALTER TABLE parent_users ADD COLUMN fcm_token TEXT")
+            except Exception as e:
+                print(f"Error adding fcm_token: {e}")
+        if 'session_version' not in p_cols:
+            print("MIGRATION: Adding session_version to parent_users...")
+            try:
+                c.execute("ALTER TABLE parent_users ADD COLUMN session_version INTEGER DEFAULT 1")
+            except Exception as e:
+                print(f"Error adding session_version: {e}")
+        try:
+            c.execute("UPDATE parent_users SET session_version = 1 WHERE session_version IS NULL")
+        except Exception:
+            pass
         c.execute('''CREATE TABLE IF NOT EXISTS student_parents
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
                       vendor_id INTEGER,
@@ -1993,6 +2081,12 @@ def generate_token(username, role):
     # Add a random nonce to ensure uniqueness even within the same second
     return serializer.dumps({'username': username, 'role': role, 'nonce': str(uuid.uuid4())})
 
+def generate_token_with_claims(username, role, extra_claims):
+    payload = {'username': username, 'role': role, 'nonce': str(uuid.uuid4())}
+    if isinstance(extra_claims, dict):
+        payload.update(extra_claims)
+    return serializer.dumps(payload)
+
 def hash_password(raw_password):
     return generate_password_hash(str(raw_password))
 
@@ -2022,6 +2116,16 @@ def verify_token(token):
         return data
     except:
         return None
+
+def extract_token(auth_header):
+    if not auth_header:
+        return None
+    parts = str(auth_header).strip().split()
+    if len(parts) == 1:
+        return parts[0]
+    if len(parts) >= 2 and parts[0].lower() in ("bearer", "token"):
+        return parts[1]
+    return None
 
 def super_admin_required(f):
     @wraps(f)
@@ -2127,36 +2231,14 @@ def vendor_has_feature(vendor_id, feature_name):
 
 greeting_bp = Blueprint("greeting", __name__, url_prefix="/api")
 
-def log_audit(actor_username, action, target_vendor_id=None, details=None):
-    """
-    Helper to log system events.
-    """
+@greeting_bp.route("/logo.png", methods=["GET"])
+def get_logo_png():
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    logo_dir = os.path.join(base_dir, "logo")
     try:
-        conn = get_db_connection()
-        c = conn.cursor()
-        try:
-            c.execute("CREATE TABLE IF NOT EXISTS audit_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, actor_username TEXT, action TEXT, target_vendor_id INTEGER, details TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)")
-        except Exception:
-            pass
-        import json
-        details_json = json.dumps(details) if details else None
-        c.execute("INSERT INTO audit_logs (actor_username, action, target_vendor_id, details) VALUES (?, ?, ?, ?)",
-                  (actor_username, action, target_vendor_id, details_json))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"Audit Log Error: {e}")
-
-def get_current_actor():
-    try:
-        auth_header = request.headers.get('Authorization')
-        if auth_header:
-            token = auth_header.split(" ")[1]
-            data = verify_token(token)
-            return data['username']
-    except:
-        pass
-    return 'system'
+        return send_from_directory(logo_dir, "logo.png")
+    except Exception:
+        return jsonify({"error": "Logo not found"}), 404
 
 @greeting_bp.route("/admin/audit-logs", methods=["GET"])
 @super_admin_required
@@ -2226,7 +2308,7 @@ def impersonate_vendor():
     except:
         actor = 'system'
         
-    log_audit(actor, 'impersonate_vendor', vendor_id, {'impersonated_user': user['username']})
+    log_audit('impersonate_vendor', {'impersonated_user': user['username']}, target_vendor_id=vendor_id, actor=actor)
     
     return jsonify({
         "token": token,
@@ -2314,6 +2396,13 @@ def get_companies():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
 
+    if not vendor_id:
+        auth_header = request.headers.get('Authorization')
+        token = extract_token(auth_header) if auth_header else None
+        data = verify_token(token) if token else None
+        if data and data.get("role") == "super_admin":
+            return jsonify({"error": "Vendor Context Required"}), 400
+
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -2334,6 +2423,9 @@ def get_companies():
 def create_company():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
+
+    if not vendor_id:
+        return jsonify({"error": "Vendor Context Required"}), 400
     
     data = request.json
     person_id = data.get("id") or data.get("person_id")
@@ -2367,6 +2459,9 @@ def create_company():
 def update_company_settings(company_id):
     vendor_id, error = authenticate_vendor_access()
     if error: return error
+
+    if not vendor_id:
+        return jsonify({"error": "Vendor Context Required"}), 400
 
     conn = get_db_connection()
     c = conn.cursor()
@@ -2424,6 +2519,9 @@ def get_company_details(company_id):
     vendor_id, error = authenticate_vendor_access()
     if error: return error
 
+    if not vendor_id:
+        return jsonify({"error": "Vendor Context Required"}), 400
+
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -2457,6 +2555,9 @@ def get_company_details(company_id):
 def update_draft_timetable(company_id):
     vendor_id, error = authenticate_vendor_access()
     if error: return error
+
+    if not vendor_id:
+        return jsonify({"error": "Vendor Context Required"}), 400
 
     conn = get_db_connection()
     c = conn.cursor()
@@ -2494,6 +2595,9 @@ def update_draft_timetable(company_id):
 def publish_timetable(company_id):
     vendor_id, error = authenticate_vendor_access()
     if error: return error
+
+    if not vendor_id:
+        return jsonify({"error": "Vendor Context Required"}), 400
 
     conn = get_db_connection()
     c = conn.cursor()
@@ -2978,7 +3082,7 @@ def create_vendor():
                            (company_name, '[]', '[]', '[]', vendor_id))
                 conn2.commit()
                 conn2.close()
-                log_audit(get_current_actor(), 'create_vendor', vendor_id, {'company_name': company_name})
+                log_audit('create_vendor', {'company_name': company_name}, target_vendor_id=vendor_id)
                 socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
             except Exception:
                 try:
@@ -3051,7 +3155,7 @@ def suspend_vendor(vendor_id):
         pass
     conn.close()
     
-    log_audit(get_current_actor(), 'suspend_vendor' if action == 'suspend' else 'activate_vendor', vendor_id, {'new_status': status})
+    log_audit('suspend_vendor' if action == 'suspend' else 'activate_vendor', {'new_status': status}, target_vendor_id=vendor_id)
     
     # Real-time updates
     socketio.emit('vendor_updated', {'vendor_id': vendor_id, 'status': status}) # For SuperAdmin list
@@ -3073,7 +3177,7 @@ def toggle_web_login(vendor_id):
     conn.commit()
     conn.close()
     
-    log_audit(get_current_actor(), 'toggle_web_login', vendor_id, {'enabled': enabled})
+    log_audit('toggle_web_login', {'enabled': enabled}, target_vendor_id=vendor_id)
     
     socketio.emit('vendor_updated', {'vendor_id': vendor_id, 'web_login_enabled': enabled})
     
@@ -3249,7 +3353,7 @@ def update_vendor_subscription(vendor_id):
             conn.commit()
             
             # Log Audit
-            log_audit(get_current_actor(), 'update_subscription', vendor_id, data)
+            log_audit('update_subscription', data, target_vendor_id=vendor_id)
             
             try:
                 _run(c, "SELECT features FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
@@ -3328,7 +3432,7 @@ def update_vendor_registration_config(vendor_id):
         conn.commit()
         
         # Log Audit
-        log_audit(get_current_actor(), 'update_registration_config', vendor_id, data)
+        log_audit('update_registration_config', data, target_vendor_id=vendor_id)
         
         return jsonify({"status": "success"})
     except Exception as e:
@@ -3512,6 +3616,14 @@ def delete_vendor(vendor_id):
         _run(c, "DELETE FROM vendors WHERE id = ?", (vendor_id,))
         conn.commit()
         log_audit("vendor_delete", {"message": "Archived and deleted"}, target_vendor_id=vendor_id, status="success")
+
+        try:
+            reset_sequence("vendors")
+            reset_sequence("faces")
+            reset_sequence("companies")
+        except Exception:
+            pass
+
         return jsonify({"success": True, "message": "Vendor archived and deleted from live data"})
     except Exception as e:
         try:
@@ -5789,35 +5901,264 @@ def register_parent():
 @greeting_bp.route("/parents/login", methods=["POST"])
 def parent_login():
     data = request.json
-    username = data.get("username")
-    password = data.get("password")
+    # Support both old (username/password) and new (student_id/mobile) flows? 
+    # Or just switch to new? User asked for Student ID + Mobile.
+    # Let's support the new flow primarily.
+    
+    student_id = data.get("student_id")
+    mobile_number = data.get("mobile_number")
+    device_id = data.get("device_id")
+    vendor_id = data.get("vendor_id")
+    fcm_token = data.get("fcm_token")
+    
+    print(f"DEBUG: Parent Login Attempt - Student: {student_id}, Mobile: {mobile_number}, Vendor: {vendor_id}, Device: {device_id}")
+
+    if not student_id or not mobile_number or not device_id or not vendor_id:
+        return jsonify({"error": "Missing required fields (student_id, mobile_number, device_id, vendor_id)"}), 400
+
     conn = get_db_connection()
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    c.execute("SELECT * FROM parent_users WHERE username = ?", (username,))
-    user = c.fetchone()
-    conn.close()
-    if not user or not verify_password(password, user.get("password") if hasattr(user, "get") else user["password"]):
-        return jsonify({"error": "Invalid credentials"}), 401
     try:
-        stored_pw = user.get("password") if hasattr(user, "get") else user["password"]
-        if stored_pw == password:
-            conn_u = get_db_connection()
-            cu = conn_u.cursor()
-            cu.execute("UPDATE parent_users SET password = ? WHERE username = ?", (hash_password(password), username))
-            conn_u.commit()
-            conn_u.close()
+        conn.row_factory = sqlite3.Row
     except Exception:
         pass
-    token = generate_token(user['username'], 'parent')
-    return jsonify({
-        "status": "success",
-        "role": "parent",
-        "username": user["username"],
-        "token": token,
-        "vendor_id": user["vendor_id"],
-        "parent_id": user["id"]
-    })
+    c = conn.cursor()
+    try:
+        def _digits(s):
+            try:
+                return "".join(ch for ch in str(s or "") if ch.isdigit())
+            except Exception:
+                return ""
+
+        mobile_digits = _digits(mobile_number)
+        mobile_tail = mobile_digits[-10:] if len(mobile_digits) >= 10 else mobile_digits
+
+        def _row_get(r, idx, key):
+            if r is None:
+                return None
+            try:
+                return r[key]
+            except Exception:
+                try:
+                    return r[idx]
+                except Exception:
+                    return None
+
+        row = None
+        actual_vendor_id = None
+        resolved_person_id = None
+
+        def _extract_student_number_from_custom_data(c_data_raw, fallback_search_text=None):
+            if not c_data_raw:
+                return ""
+            try:
+                cd = json.loads(c_data_raw) if isinstance(c_data_raw, str) else c_data_raw
+            except Exception:
+                cd = None
+            sn_val = ""
+            if isinstance(cd, dict):
+                sn_val = str(cd.get("student_number") or cd.get("roll_number") or cd.get("admission_number") or "").strip()
+            if not sn_val and fallback_search_text and str(student_id) in str(fallback_search_text):
+                sn_val = str(student_id).strip()
+            return sn_val
+
+        def _find_student_person_id(vendor_to_check):
+            try:
+                c.execute(
+                    "SELECT id, phone, custom_data FROM faces WHERE vendor_id = ? AND phone LIKE ?",
+                    (vendor_to_check, f"%{mobile_tail}%"),
+                )
+                candidates2 = c.fetchall() or []
+                for st in candidates2:
+                    try:
+                        pid2 = _row_get(st, 0, "id")
+                        c_data2 = _row_get(st, 2, "custom_data")
+                        sn2 = _extract_student_number_from_custom_data(c_data2, fallback_search_text=c_data2)
+                        if sn2 == str(student_id).strip():
+                            return int(pid2) if pid2 is not None else None
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            return None
+
+        c.execute(
+            "SELECT id, vendor_id, device_id, contact_phone, session_version FROM parent_users WHERE student_number = ?",
+            (student_id,),
+        )
+        candidates = c.fetchall() or []
+        for r in candidates:
+            cp = _row_get(r, 3, "contact_phone")
+            cp_tail = _digits(cp)[-10:]
+            if mobile_tail and cp_tail == mobile_tail:
+                row = r
+                actual_vendor_id = _row_get(r, 1, "vendor_id")
+                break
+
+        if row and actual_vendor_id:
+            try:
+                c.execute(
+                    "SELECT id, custom_data FROM faces WHERE vendor_id = ? AND phone LIKE ?",
+                    (actual_vendor_id, f"%{mobile_tail}%"),
+                )
+                rows = c.fetchall() or []
+                exists = False
+                for st in rows:
+                    try:
+                        c_data = _row_get(st, 1, "custom_data")
+                        if not c_data:
+                            continue
+                        sn = _extract_student_number_from_custom_data(c_data, fallback_search_text=c_data)
+                        if sn == str(student_id).strip():
+                            exists = True
+                            break
+                    except Exception:
+                        continue
+                if not exists:
+                    stale_parent_id = _row_get(row, 0, "id")
+                    c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (actual_vendor_id, str(student_id).strip()))
+                    c.execute("DELETE FROM student_parents WHERE vendor_id = ? AND parent_id = ?", (actual_vendor_id, stale_parent_id))
+                    c.execute("DELETE FROM parent_users WHERE id = ?", (stale_parent_id,))
+                    conn.commit()
+                    row = None
+                    actual_vendor_id = None
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+        if not row:
+            print(f"DEBUG: Parent user not found in parent_users, checking faces table for phone {mobile_number} and vendor {vendor_id}")
+            # Strict vendor-bound lookup
+            c.execute(
+                "SELECT id, vendor_id, phone, custom_data FROM faces WHERE vendor_id = ? AND phone LIKE ?",
+                (vendor_id, f"%{mobile_tail}%"),
+            )
+            potential_students = c.fetchall() or []
+            # Filter by matching student_number in custom_data
+            potential_students = [
+                s for s in potential_students
+                if (lambda _cd: (lambda cd: isinstance(cd, dict) and str(cd.get('student_number') or cd.get('roll_number') or cd.get('admission_number') or '').strip() == str(student_id).strip())(
+                    (json.loads(_cd) if isinstance(_cd, str) else _cd) if _cd else {}
+                ))(_row_get(s, 3, 'custom_data'))
+            ]
+            if potential_students:
+                try:
+                    s = potential_students[0]
+                    actual_vendor_id = _row_get(s, 1, "vendor_id")
+                    resolved_person_id = int(_row_get(s, 0, "id"))
+                    username = f"parent_{actual_vendor_id}_{student_id}"
+                    c.execute(
+                        "INSERT OR IGNORE INTO parent_users (vendor_id, username, student_number, contact_phone, created_at) VALUES (?, ?, ?, ?, ?)",
+                        (actual_vendor_id, username, student_id, mobile_number, datetime.now()),
+                    )
+                    conn.commit()
+                    c.execute(
+                        "SELECT id, vendor_id, device_id, contact_phone, session_version FROM parent_users WHERE student_number = ? AND vendor_id = ?",
+                        (student_id, actual_vendor_id),
+                    )
+                    row = c.fetchone()
+                except Exception as e:
+                    print(f"DEBUG: Error processing strict vendor match: {e}")
+                    row = None
+            # If no matching face in vendor, aggressively purge stale parent entries for this student+phone
+            if not row:
+                try:
+                    c.execute("DELETE FROM parent_users WHERE student_number = ? AND contact_phone LIKE ?", (str(student_id).strip(), f"%{mobile_tail}%"))
+                    c.execute("DELETE FROM parent_tokens WHERE student_number = ?", (str(student_id).strip(),))
+                    conn.commit()
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+
+        if not row:
+            print("DEBUG: Student ID not found or Mobile mismatch after all checks.")
+            conn.close()
+            return jsonify({"error": "No identity found"}), 404
+
+        parent_id = _row_get(row, 0, "id")
+        actual_vendor_id = _row_get(row, 1, "vendor_id") or actual_vendor_id or vendor_id
+        stored_device_id = _row_get(row, 2, "device_id")
+        stored_mobile = _row_get(row, 3, "contact_phone")
+        session_version = _row_get(row, 4, "session_version") or 1
+
+        print(f"DEBUG: Parent found (ID: {parent_id}, Vendor: {actual_vendor_id}). Input Vendor: {vendor_id}")
+
+        if mobile_tail and _digits(stored_mobile)[-10:] != mobile_tail:
+            conn.close()
+            return jsonify({"error": "Mobile number mismatch"}), 401
+
+        if resolved_person_id is None:
+            resolved_person_id = _find_student_person_id(actual_vendor_id)
+        if resolved_person_id is None:
+            try:
+                c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (actual_vendor_id, str(student_id).strip()))
+                c.execute("DELETE FROM student_parents WHERE vendor_id = ? AND parent_id = ?", (actual_vendor_id, parent_id))
+                c.execute("DELETE FROM parent_users WHERE id = ?", (parent_id,))
+                conn.commit()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            conn.close()
+            return jsonify({"error": "No identity found"}), 404
+        
+        # Device Binding Logic
+        if not stored_device_id:
+            c.execute("UPDATE parent_users SET device_id = ? WHERE id = ?", (device_id, parent_id))
+            conn.commit()
+            stored_device_id = device_id
+        elif stored_device_id != device_id:
+            try:
+                new_sv = int(session_version or 1) + 1
+            except Exception:
+                new_sv = 2
+            c.execute(
+                "UPDATE parent_users SET device_id = ?, fcm_token = ?, session_version = ? WHERE id = ?",
+                (device_id, fcm_token, new_sv, parent_id),
+            )
+            conn.commit()
+            stored_device_id = device_id
+            session_version = new_sv
+
+        if fcm_token:
+            c.execute("UPDATE parent_users SET fcm_token = ? WHERE id = ?", (fcm_token, parent_id))
+            conn.commit()
+
+        try:
+            c.execute("UPDATE parent_users SET selected_person_id = ? WHERE id = ?", (resolved_person_id, parent_id))
+            c.execute(
+                "INSERT OR IGNORE INTO student_parents (vendor_id, person_id, parent_id) VALUES (?, ?, ?)",
+                (actual_vendor_id, resolved_person_id, parent_id),
+            )
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
+        # Generate Token
+        token_username = f"parent_{actual_vendor_id}_{student_id}"
+        token = generate_token_with_claims(token_username, "parent", {"sv": int(session_version)})
+        
+        conn.close()
+        return jsonify({
+            "status": "success", 
+            "token": token, 
+            "student_id": student_id,
+            "role": "parent",
+            "vendor_id": actual_vendor_id,
+            "parent_id": parent_id
+        })
+
+    except Exception as e:
+        print(f"DEBUG: Exception: {e}")
+        conn.close()
+        return jsonify({"error": str(e)}), 500
 
 @greeting_bp.route("/admin/students/assign-parent", methods=["POST"])
 def assign_parent():
@@ -5849,34 +6190,198 @@ def get_parent_attendance():
     if not auth_header:
         return jsonify({"error": "Missing Authorization Header"}), 401
     try:
-        token = auth_header.split(" ")[1]
+        token = extract_token(auth_header)
+        if not token:
+            return jsonify({"error": "Invalid Token Format"}), 401
         data = verify_token(token)
         if not data or data.get('role') != 'parent':
             return jsonify({"error": "Invalid or Expired Token"}), 401
         conn = get_db_connection()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
-        c.execute("SELECT id, vendor_id FROM parent_users WHERE username = ?", (data['username'],))
+        c.execute("SELECT id, vendor_id, session_version FROM parent_users WHERE username = ?", (data['username'],))
         pu = c.fetchone()
         if not pu:
             conn.close()
             return jsonify({"error": "Parent not found"}), 404
+        token_sv = data.get("sv")
+        pu_sv = pu["session_version"] if "session_version" in pu.keys() else 1
+        if token_sv is None or int(token_sv) != int(pu_sv or 1):
+            conn.close()
+            return jsonify({"error": "Invalid or Expired Token"}), 401
         parent_id = pu['id']
         vendor_id = pu['vendor_id']
         limit = int(request.args.get('limit', 50))
+        date_filter = (request.args.get('date') or "").strip()
+        if not date_filter:
+            date_filter = datetime.now().strftime("%Y-%m-%d")
         c.execute("""
             SELECT a.id, a.name, a.timestamp, a.status, a.activity, a.is_late, a.person_id 
             FROM attendance a
             JOIN student_parents sp ON sp.person_id = a.person_id
-            WHERE sp.parent_id = ? AND a.vendor_id = ?
+            WHERE sp.parent_id = ? AND a.vendor_id = ? AND date(a.timestamp) = ?
             ORDER BY a.timestamp DESC
             LIMIT ?
-        """, (parent_id, vendor_id, limit))
+        """, (parent_id, vendor_id, date_filter, limit))
         rows = c.fetchall()
         conn.close()
-        return jsonify({"attendance": [dict(r) for r in rows]})
+        return jsonify({"attendance": [dict(r) for r in rows], "date": date_filter})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@greeting_bp.route("/parents/logout", methods=["POST"])
+def parent_logout():
+    auth_header = request.headers.get('Authorization')
+    if not auth_header:
+        return jsonify({"error": "Missing Authorization Header"}), 401
+    token = extract_token(auth_header)
+    if not token:
+        return jsonify({"error": "Invalid Token Format"}), 401
+    data = verify_token(token)
+    if not data or data.get('role') != 'parent':
+        return jsonify({"error": "Invalid or Expired Token"}), 401
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        token_sv = data.get("sv")
+        if token_sv is None:
+            return jsonify({"error": "Invalid or Expired Token"}), 401
+        c.execute(
+            "UPDATE parent_users SET device_id = NULL, fcm_token = NULL, session_version = COALESCE(session_version, 1) + 1 WHERE username = ? AND COALESCE(session_version, 1) = ?",
+            (data['username'], int(token_sv)),
+        )
+        if getattr(c, "rowcount", 0) == 0:
+            return jsonify({"error": "Invalid or Expired Token"}), 401
+        conn.commit()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+@greeting_bp.route("/parents/student-day", methods=["GET"])
+def parent_student_day():
+    auth_header = request.headers.get('Authorization')
+    if not auth_header:
+        return jsonify({"error": "Missing Authorization Header"}), 401
+    token = extract_token(auth_header)
+    if not token:
+        return jsonify({"error": "Invalid Token Format"}), 401
+    data = verify_token(token)
+    if not data or data.get('role') != 'parent':
+        return jsonify({"error": "Invalid or Expired Token"}), 401
+
+    date_filter = (request.args.get("date") or "").strip()
+    if not date_filter:
+        date_filter = datetime.now().strftime("%Y-%m-%d")
+
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    try:
+        c.execute("SELECT id, vendor_id, student_number, selected_person_id, contact_phone, session_version FROM parent_users WHERE username = ?", (data['username'],))
+        pu = c.fetchone()
+        if not pu:
+            return jsonify({"error": "Parent not found"}), 404
+        token_sv = data.get("sv")
+        pu_sv = pu["session_version"] if "session_version" in pu.keys() else 1
+        if token_sv is None or int(token_sv) != int(pu_sv or 1):
+            return jsonify({"error": "Invalid or Expired Token"}), 401
+
+        parent_id = pu["id"]
+        vendor_id = pu["vendor_id"]
+        student_number = str(pu["student_number"] or "").strip()
+        person_id = pu["selected_person_id"]
+        contact_phone = pu["contact_phone"]
+
+        if not person_id:
+            c.execute("SELECT person_id FROM student_parents WHERE vendor_id = ? AND parent_id = ? ORDER BY id DESC LIMIT 1", (vendor_id, parent_id))
+            r = c.fetchone()
+            if r:
+                person_id = r["person_id"]
+
+        student_row = None
+        if person_id:
+            c.execute("SELECT id, name, phone, department, designation, custom_data FROM faces WHERE vendor_id = ? AND id = ?", (vendor_id, person_id))
+            student_row = c.fetchone()
+
+        if not student_row:
+            phone_digits = "".join(ch for ch in str(contact_phone or "") if ch.isdigit())
+            phone_tail = phone_digits[-10:] if len(phone_digits) >= 10 else phone_digits
+            c.execute("SELECT id, name, phone, department, designation, custom_data FROM faces WHERE vendor_id = ? AND phone LIKE ?", (vendor_id, f"%{phone_tail}%"))
+            candidates = c.fetchall() or []
+            for r in candidates:
+                cd_raw = r["custom_data"]
+                sn = ""
+                try:
+                    cd = json.loads(cd_raw) if cd_raw else {}
+                    sn = str(cd.get("student_number") or cd.get("roll_number") or cd.get("admission_number") or "").strip()
+                except Exception:
+                    sn = ""
+                if student_number and sn == student_number:
+                    student_row = r
+                    person_id = r["id"]
+                    break
+            if not student_row and not student_number:
+                if candidates:
+                    student_row = candidates[0]
+                    person_id = candidates[0]["id"]
+
+        if not student_row:
+            return jsonify({"error": "No identity found"}), 404
+
+        c.execute(
+            """
+            SELECT id, name, timestamp, status, activity, is_late, person_id
+            FROM attendance
+            WHERE vendor_id = ? AND person_id = ? AND date(timestamp) = ?
+            ORDER BY timestamp ASC
+            """,
+            (vendor_id, person_id, date_filter),
+        )
+        rows = c.fetchall() or []
+        attendance = [dict(r) for r in rows]
+
+        check_in = None
+        check_out = None
+        last_status = None
+        for r in attendance:
+            last_status = r.get("status") or last_status
+            if r.get("status") == "CHECK_IN" and not check_in:
+                check_in = r.get("timestamp")
+            if r.get("status") == "CHECK_OUT":
+                check_out = r.get("timestamp")
+
+        student_custom = {}
+        try:
+            student_custom = json.loads(student_row["custom_data"]) if student_row["custom_data"] else {}
+        except Exception:
+            student_custom = {}
+
+        return jsonify({
+            "date": date_filter,
+            "vendor_id": vendor_id,
+            "student": {
+                "person_id": student_row["id"],
+                "name": student_row["name"],
+                "phone": student_row["phone"],
+                "department": student_row["department"] if "department" in student_row.keys() else None,
+                "designation": student_row["designation"] if "designation" in student_row.keys() else None,
+                "student_number": student_custom.get("student_number") or student_number,
+                "custom_data": student_custom,
+            },
+            "check_in": check_in,
+            "check_out": check_out,
+            "last_status": last_status,
+            "attendance": attendance,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 @greeting_bp.route("/public/attendance-by-student", methods=["GET"])
 def public_attendance_by_student():
@@ -5945,7 +6450,9 @@ def parent_select_student():
     if not auth_header:
         return jsonify({"error": "Missing Authorization Header"}), 401
     try:
-        token = auth_header.split(" ")[1]
+        token = extract_token(auth_header)
+        if not token:
+            return jsonify({"error": "Invalid Token Format"}), 401
         data = verify_token(token)
         if not data or data.get('role') != 'parent':
             return jsonify({"error": "Invalid or Expired Token"}), 401
@@ -5956,11 +6463,16 @@ def parent_select_student():
         conn = get_db_connection()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
-        c.execute("SELECT id, vendor_id FROM parent_users WHERE username = ?", (data['username'],))
+        c.execute("SELECT id, vendor_id, session_version FROM parent_users WHERE username = ?", (data['username'],))
         pu = c.fetchone()
         if not pu:
             conn.close()
             return jsonify({"error": "Parent not found"}), 404
+        token_sv = data.get("sv")
+        pu_sv = pu["session_version"] if "session_version" in pu.keys() else 1
+        if token_sv is None or int(token_sv) != int(pu_sv or 1):
+            conn.close()
+            return jsonify({"error": "Invalid or Expired Token"}), 401
         parent_id = pu['id']
         vendor_id = pu['vendor_id']
         # Find student by custom_data->student_number under this vendor
@@ -6407,6 +6919,24 @@ def upload_face():
                 params.append(person_id)
                 c.execute(q, params)
                 new_id = person_id
+
+            try:
+                if phone is not None and phone != "" and str(phone) != str(existing.get("phone") or ""):
+                    updated_cd = custom_data if custom_data is not None else existing.get("custom_data")
+                    student_number_for_parent = None
+                    try:
+                        cd_obj = json.loads(updated_cd) if updated_cd else {}
+                        if isinstance(cd_obj, dict):
+                            student_number_for_parent = str(cd_obj.get("student_number") or cd_obj.get("roll_number") or cd_obj.get("admission_number") or "").strip()
+                    except Exception:
+                        student_number_for_parent = None
+                    if student_number_for_parent:
+                        c.execute(
+                            "UPDATE parent_users SET contact_phone = ?, device_id = NULL, fcm_token = NULL, session_version = COALESCE(session_version, 1) + 1 WHERE vendor_id = ? AND student_number = ?",
+                            (phone, existing.get("vendor_id"), student_number_for_parent),
+                        )
+            except Exception:
+                pass
         else:
             # Insert New
             to_store_templates = None
@@ -6502,10 +7032,10 @@ def delete_face(name):
     try:
         face_rows = []
         if vendor_id:
-            c.execute("SELECT id, vendor_id FROM faces WHERE name = ? AND vendor_id = ?", (name, vendor_id))
+            c.execute("SELECT id, vendor_id, phone, custom_data FROM faces WHERE name = ? AND vendor_id = ?", (name, vendor_id))
             face_rows = c.fetchall() or []
         else:
-            c.execute("SELECT id, vendor_id FROM faces WHERE name = ?", (name,))
+            c.execute("SELECT id, vendor_id, phone, custom_data FROM faces WHERE name = ?", (name,))
             face_rows = c.fetchall() or []
         if not face_rows:
             return jsonify({"error": "User not found"}), 404
@@ -6518,12 +7048,31 @@ def delete_face(name):
 
         try:
             by_vendor = {}
+            student_numbers_by_vendor = {}
+            phones_by_vendor = {}
             for r in face_rows:
                 pid = r[0]
                 vid = r[1]
                 if vid is None:
                     continue
                 by_vendor.setdefault(int(vid), []).append(int(pid))
+                sn = None
+                try:
+                    c_data = r[3]
+                    if c_data:
+                        cd = json.loads(c_data) if isinstance(c_data, str) else c_data
+                        if isinstance(cd, dict):
+                            sn = str(cd.get("student_number") or cd.get("roll_number") or cd.get("admission_number") or "").strip()
+                except Exception:
+                    sn = None
+                if sn:
+                    student_numbers_by_vendor.setdefault(int(vid), set()).add(sn)
+                try:
+                    ph = r[2]
+                    if ph:
+                        phones_by_vendor.setdefault(int(vid), set()).add(str(ph).strip())
+                except Exception:
+                    pass
             for vid, ids in by_vendor.items():
                 placeholders = ",".join(["?"] * len(ids))
                 c.execute(
@@ -6538,10 +7087,40 @@ def delete_face(name):
                     f"UPDATE parent_users SET selected_person_id = NULL WHERE vendor_id = ? AND selected_person_id IN ({placeholders})",
                     [vid, *ids],
                 )
+                c.execute(
+                    f"DELETE FROM parent_users WHERE vendor_id = ? AND selected_person_id IN ({placeholders})",
+                    [vid, *ids],
+                )
+                for sn in sorted(student_numbers_by_vendor.get(int(vid), set())):
+                    c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (vid, sn))
+                    c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND student_number = ?", (vid, sn))
+                for ph in sorted(phones_by_vendor.get(int(vid), set())):
+                    try:
+                        c.execute("SELECT id, student_number FROM parent_users WHERE vendor_id = ? AND contact_phone = ?", (vid, ph))
+                        rows_pu = c.fetchall() or []
+                        parent_ids = [row[0] for row in rows_pu if row and row[0] is not None]
+                        if parent_ids:
+                            ph_placeholders = ",".join(["?"] * len(parent_ids))
+                            c.execute(f"DELETE FROM student_parents WHERE vendor_id = ? AND parent_id IN ({ph_placeholders})", [vid, *parent_ids])
+                        for pu_row in rows_pu:
+                            try:
+                                sn_val = pu_row[1]
+                                if sn_val:
+                                    c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (vid, str(sn_val).strip()))
+                            except Exception:
+                                pass
+                        c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND contact_phone = ?", (vid, ph))
+                    except Exception:
+                        pass
         except Exception:
             pass
             
         conn.commit()
+        try:
+            reset_sequence("faces")
+        except Exception:
+            pass
+
         if deleted_faces > 0:
             # Real-time update
             if vendor_id:
@@ -6567,10 +7146,12 @@ def delete_face_by_id(person_id):
     try:
         # Get name for message and scoping
         target_vendor_id = vendor_id
+        phone = None
+        custom_data = None
         if vendor_id:
-            c.execute("SELECT name FROM faces WHERE id = ? AND vendor_id = ?", (person_id, vendor_id))
+            c.execute("SELECT name, phone, custom_data FROM faces WHERE id = ? AND vendor_id = ?", (person_id, vendor_id))
         else:
-            c.execute("SELECT name, vendor_id FROM faces WHERE id = ?", (person_id,))
+            c.execute("SELECT name, vendor_id, phone, custom_data FROM faces WHERE id = ?", (person_id,))
         row = c.fetchone()
         if not row:
             return jsonify({"error": "User not found"}), 404
@@ -6580,6 +7161,22 @@ def delete_face_by_id(person_id):
                 target_vendor_id = row[1]
             except Exception:
                 target_vendor_id = None
+        try:
+            phone = row[2] if not vendor_id else row[1]
+        except Exception:
+            phone = None
+        try:
+            custom_data = row[3] if not vendor_id else row[2]
+        except Exception:
+            custom_data = None
+        sn = None
+        try:
+            if custom_data:
+                cd = json.loads(custom_data) if isinstance(custom_data, str) else custom_data
+                if isinstance(cd, dict):
+                    sn = str(cd.get("student_number") or cd.get("roll_number") or cd.get("admission_number") or "").strip()
+        except Exception:
+            sn = None
         # Delete
         if vendor_id:
             c.execute("DELETE FROM faces WHERE id = ? AND vendor_id = ?", (person_id, vendor_id))
@@ -6591,9 +7188,37 @@ def delete_face_by_id(person_id):
                 c.execute("DELETE FROM attendance WHERE vendor_id = ? AND (person_id = ? OR (person_id IS NULL AND name = ?))", (target_vendor_id, person_id, name))
                 c.execute("DELETE FROM student_parents WHERE vendor_id = ? AND person_id = ?", (target_vendor_id, person_id))
                 c.execute("UPDATE parent_users SET selected_person_id = NULL WHERE vendor_id = ? AND selected_person_id = ?", (target_vendor_id, person_id))
+                c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND selected_person_id = ?", (target_vendor_id, person_id))
+                if sn:
+                    c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (target_vendor_id, sn))
+                    c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND student_number = ?", (target_vendor_id, sn))
+                if phone:
+                    try:
+                        c.execute("SELECT id, student_number FROM parent_users WHERE vendor_id = ? AND contact_phone = ?", (target_vendor_id, str(phone).strip()))
+                        rows_pu = c.fetchall() or []
+                        parent_ids = [row[0] for row in rows_pu if row and row[0] is not None]
+                        if parent_ids:
+                            ph_placeholders = ",".join(["?"] * len(parent_ids))
+                            c.execute(f"DELETE FROM student_parents WHERE vendor_id = ? AND parent_id IN ({ph_placeholders})", [target_vendor_id, *parent_ids])
+                        for pu_row in rows_pu:
+                            try:
+                                sn_val = pu_row[1]
+                                if sn_val:
+                                    c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (target_vendor_id, str(sn_val).strip()))
+                            except Exception:
+                                pass
+                        c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND contact_phone = ?", (target_vendor_id, str(phone).strip()))
+                    except Exception:
+                        pass
         except Exception:
             pass
         conn.commit()
+        
+        try:
+            reset_sequence("faces")
+        except Exception:
+            pass
+
         if deleted_faces > 0:
             if vendor_id:
                 socketio.emit('persons_updated', {'vendor_id': vendor_id}, room=f"vendor_{vendor_id}")
@@ -8498,6 +9123,20 @@ except Exception as _e:
         pass
 
 app.register_blueprint(greeting_bp)
+
+# --- Serve Frontend (SPA) ---
+@app.route("/", defaults={'path': ''})
+@app.route("/<path:path>")
+def serve_frontend(path):
+    # Adjust path to point to web-dashboard/dist relative to backend/app.py
+    # app.py is in backend/, so ../web-dashboard/dist
+    static_folder = os.path.abspath(os.path.join(os.path.dirname(__file__), "../web-dashboard/dist"))
+    
+    if path != "" and os.path.exists(os.path.join(static_folder, path)):
+        return send_from_directory(static_folder, path)
+    
+    # Fallback to index.html for SPA routing
+    return send_from_directory(static_folder, 'index.html')
 
 if __name__ == "__main__":
     bootstrap_db()

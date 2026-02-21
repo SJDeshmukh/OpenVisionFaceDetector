@@ -438,6 +438,19 @@ public class EnrollFragment extends Fragment {
             return;
         }
 
+        try {
+            String role = prefs.getString("role", "");
+            String cached = prefs.getString("cached_registration_config", null);
+            if (role == null) role = "";
+            if (!role.equalsIgnoreCase("vendor_admin") && cached != null && !cached.isEmpty()) {
+                JsonArray config = new JsonParser().parse(cached).getAsJsonArray();
+                if (getActivity() != null && isAdded()) {
+                    getActivity().runOnUiThread(() -> renderDynamicFields(config));
+                }
+                return;
+            }
+        } catch (Exception ignored) {}
+
         RetrofitClient.getService().getRegistrationConfig(vendorId).enqueue(new Callback<JsonObject>() {
             @Override
             public void onResponse(Call<JsonObject> call, Response<JsonObject> response) {
@@ -593,11 +606,29 @@ public class EnrollFragment extends Fragment {
             for (JsonElement el : config) {
                 if (!el.isJsonObject()) continue;
                 JsonObject field = el.getAsJsonObject();
-                if (!field.has("field") || !field.has("type") || !field.has("label")) continue;
+                if (!field.has("field")) continue;
                 
                 String key = field.get("field").getAsString();
-                String label = field.get("label").getAsString();
-                String type = field.get("type").getAsString();
+                if (key == null || key.trim().isEmpty()) continue;
+                String label = field.has("label") && !field.get("label").isJsonNull()
+                        ? field.get("label").getAsString()
+                        : key;
+                boolean enabled = !field.has("enabled") || field.get("enabled").isJsonNull() || field.get("enabled").getAsBoolean();
+                if (!enabled) continue;
+
+                String typeRaw = (field.has("type") && !field.get("type").isJsonNull())
+                        ? field.get("type").getAsString()
+                        : "text";
+                String type = typeRaw == null ? "" : typeRaw.trim().toLowerCase(java.util.Locale.ROOT);
+                if (type.equals("text input") || type.equals("textinput") || type.equals("text_input") || type.equals("string")) {
+                    type = "text";
+                } else if (type.equals("dropdown") || type.equals("drop-down") || type.equals("drop down") || type.equals("dropdown (select)") || type.equals("select (dropdown)")) {
+                    type = "select";
+                } else if (type.equals("multi select") || type.equals("multi-select") || type.equals("multi_select") || type.equals("multiple")) {
+                    type = "multiselect";
+                } else if (type.equals("number input") || type.equals("numeric")) {
+                    type = "number";
+                }
                 boolean required = field.has("required") && field.get("required").getAsBoolean();
     
                 dynamicFieldConfig.put(key, required ? "required" : "optional");
@@ -688,6 +719,17 @@ public class EnrollFragment extends Fragment {
                             String opt = o.getAsString();
                             if (!opt.isEmpty()) options.add(opt);
                         }
+                    } else if (field.has("options") && field.get("options").isJsonPrimitive()) {
+                        try {
+                            String raw = field.get("options").getAsString();
+                            if (raw != null && !raw.trim().isEmpty()) {
+                                String[] parts = raw.split(",");
+                                for (String p : parts) {
+                                    String opt = p == null ? "" : p.trim();
+                                    if (!opt.isEmpty()) options.add(opt);
+                                }
+                            }
+                        } catch (Exception ignored) {}
                     }
                     
                     // SPECIAL CASE: If field is 'shift' and has no manual options, use vendor shifts

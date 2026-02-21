@@ -2,7 +2,6 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { FRONTEND_BUNDLES, FEATURE_TO_SIDEBAR_MAP, ALWAYS_VISIBLE_ITEMS } from '../config';
-import logo from '../assets/logo_openvision.png';
 import { 
   LayoutDashboard, 
   Users, 
@@ -135,8 +134,8 @@ export const Sidebar = ({ isOpen, onClose }) => {
       } lg:translate-x-0`}>
         <div className="h-16 flex items-center justify-between px-6 border-b border-slate-800">
           <div className="flex items-center">
-            <div className="w-8 h-8 flex items-center justify-center mr-3">
-              <img src={logo} alt="TapInX" className="w-full h-full object-contain" />
+            <div className="w-10 h-10 bg-white rounded-full flex items-center justify-center mr-3 overflow-hidden">
+              <img src="/openvisionxLogo.svg" alt="TapInX" className="w-9 h-9 object-contain" />
             </div>
             <span className="text-lg font-bold tracking-tight">TapInX</span>
           </div>

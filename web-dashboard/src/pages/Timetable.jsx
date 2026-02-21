@@ -14,13 +14,18 @@ import {
   Building2
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { API_URL } from '../config';
+import { API_URL, BASE_URL } from '../config';
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-const ACTIVITY_TYPES = ['Work', 'Meal', 'Break', 'Custom'];
+const DEFAULT_ACTIVITY_TYPES = ['Work', 'Meal', 'Break', 'Custom'];
+const SCHOOL_ACTIVITY_TYPES = ['College', 'Hostel', 'Meal', 'Break', 'Custom'];
 
 const Timetable = () => {
   const { user } = useAuth();
+  const [vendors, setVendors] = useState([]);
+  const [businessTypes, setBusinessTypes] = useState([]);
+  const [selectedBusinessType, setSelectedBusinessType] = useState('all');
+  const [selectedVendorId, setSelectedVendorId] = useState(null);
   const [companies, setCompanies] = useState([]);
   const [selectedCompanyId, setSelectedCompanyId] = useState(null);
   const [activities, setActivities] = useState([]); // This is the DRAFT state
@@ -63,8 +68,40 @@ const Timetable = () => {
   });
 
   useEffect(() => {
+    if (!user) return;
+    if (user?.role === 'super_admin') {
+      fetchBusinessTypes();
+      fetchVendors();
+      return;
+    }
     fetchCompanies();
-  }, []);
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    if (user?.role !== 'super_admin') return;
+    setSelectedCompanyId(null);
+    setCompanies([]);
+    if (selectedVendorId) {
+      fetchCompanies(selectedVendorId);
+    } else {
+      setLoading(false);
+    }
+  }, [user, selectedVendorId]);
+
+  useEffect(() => {
+    if (!user || user?.role !== 'super_admin') return;
+    const filtered = vendors.filter(v => selectedBusinessType === 'all' ? true : String(v.vertical || '').toLowerCase() === String(selectedBusinessType).toLowerCase());
+    if (!filtered.length) {
+      setSelectedVendorId(null);
+      return;
+    }
+    if (!selectedVendorId || !filtered.some(v => Number(v.id) === Number(selectedVendorId))) {
+      const nextId = Number(filtered[0].id);
+      setSelectedVendorId(nextId);
+      try { localStorage.setItem('timetable_selected_vendor_id', String(nextId)); } catch (e2) {}
+    }
+  }, [user, vendors, selectedBusinessType]);
 
   useEffect(() => {
     if (selectedCompanyId) {
@@ -72,9 +109,90 @@ const Timetable = () => {
     }
   }, [selectedCompanyId]);
 
-  const fetchCompanies = async () => {
+  const getVendorParams = () => {
+    if (user?.role === 'super_admin') {
+      if (!selectedVendorId) return null;
+      return { vendor_id: selectedVendorId };
+    }
+    return undefined;
+  };
+
+  const getEffectiveBusinessType = () => {
+    if (user?.role === 'super_admin') {
+      const v = vendors.find(x => Number(x?.id) === Number(selectedVendorId));
+      const vt = String(v?.vertical || '').trim();
+      if (vt) return vt;
+      return String(selectedBusinessType || '').trim();
+    }
+    const v1 = String(user?.vertical || '').trim();
+    if (v1) return v1;
+    const cfg = user?.vendor_config;
+    if (cfg && typeof cfg === 'object') {
+      return String(cfg.vertical || cfg.business_type || cfg.business || '').trim();
+    }
+    if (cfg && typeof cfg === 'string') {
+      try {
+        const obj = JSON.parse(cfg);
+        return String(obj?.vertical || obj?.business_type || obj?.business || '').trim();
+      } catch (e) {}
+    }
+    return '';
+  };
+
+  const getActivityTypeOptions = () => {
+    const bt = getEffectiveBusinessType().toLowerCase();
+    if (bt === 'school' || bt === 'college') return SCHOOL_ACTIVITY_TYPES;
+    return DEFAULT_ACTIVITY_TYPES;
+  };
+
+  const normalizeActivityType = (t) => {
+    const bt = getEffectiveBusinessType().toLowerCase();
+    const raw = String(t || '').trim();
+    if (!raw) return (bt === 'school' || bt === 'college') ? 'College' : 'Work';
+    if ((bt === 'school' || bt === 'college') && raw.toLowerCase() === 'work') return 'College';
+    return raw;
+  };
+
+  const fetchBusinessTypes = async () => {
     try {
-      const res = await axios.get(`${API_URL}/companies`);
+      const res = await axios.get(`${BASE_URL}/api/public/business-types`);
+      const items = Array.isArray(res.data?.business_types) ? res.data.business_types : Array.isArray(res.data) ? res.data : [];
+      setBusinessTypes(items.filter(x => x && x.value));
+    } catch (e) {
+      setBusinessTypes([]);
+    }
+  };
+
+  const fetchVendors = async () => {
+    try {
+      const res = await axios.get(`${API_URL}/admin/vendors`);
+      const list = Array.isArray(res.data?.vendors) ? res.data.vendors : Array.isArray(res.data) ? res.data : [];
+      const safe = list.filter(v => v && v.id);
+      setVendors(safe);
+      const stored = localStorage.getItem('timetable_selected_vendor_id');
+      const preferred = stored ? Number(stored) : null;
+      const nextId = preferred && safe.some(v => Number(v.id) === preferred) ? preferred : (safe[0]?.id ? Number(safe[0].id) : null);
+      setSelectedVendorId(nextId);
+    } catch (error) {
+      console.error("Error fetching vendors:", error);
+      setVendors([]);
+      setSelectedVendorId(null);
+      setLoading(false);
+    }
+  };
+
+  const fetchCompanies = async (forcedVendorId = null) => {
+    try {
+      const effectiveVendorId = forcedVendorId || selectedVendorId;
+      const queryParams = user?.role === 'super_admin' ? (effectiveVendorId ? { vendor_id: effectiveVendorId } : null) : undefined;
+      if (user?.role === 'super_admin' && !queryParams) {
+        setCompanies([]);
+        setSelectedCompanyId(null);
+        setLoading(false);
+        return;
+      }
+
+      const res = await axios.get(`${API_URL}/companies`, queryParams ? { params: queryParams } : undefined);
       const validCompanies = (Array.isArray(res.data.companies) ? res.data.companies : [])
         .filter(c => c && typeof c === 'object' && c.id);
       setCompanies(validCompanies);
@@ -86,6 +204,7 @@ const Timetable = () => {
     } catch (error) {
       console.error("Error fetching companies:", error);
       setCompanies([]);
+      setSelectedCompanyId(null);
       setLoading(false);
     }
   };
@@ -93,7 +212,8 @@ const Timetable = () => {
   const fetchTimetable = async (companyId) => {
     setLoading(true);
     try {
-      const res = await axios.get(`${API_URL}/companies/${companyId}`);
+      const params = getVendorParams();
+      const res = await axios.get(`${API_URL}/companies/${companyId}`, params ? { params } : undefined);
       
       // Parse shifts
       let parsedShifts = [];
@@ -128,7 +248,7 @@ const Timetable = () => {
           id: item.id || Math.random(), // Ensure ID
           days: Array.isArray(item.days) ? item.days : [], // Ensure days array
           name: item.name || 'Untitled',
-          type: item.type || 'Work',
+          type: normalizeActivityType(item.type),
           shift_id: item.shift_id || '', // Ensure shift_id
           start_time: item.start_time || '09:00',
           end_time: item.end_time || '17:00',
@@ -178,9 +298,8 @@ const Timetable = () => {
     }
 
     try {
-      await axios.put(`${API_URL}/companies/${selectedCompanyId}`, {
-        shifts: updatedShifts
-      });
+      const params = getVendorParams();
+      await axios.put(`${API_URL}/companies/${selectedCompanyId}`, { shifts: updatedShifts }, params ? { params } : undefined);
       setShifts(updatedShifts);
       setShowShiftModal(false);
       resetShiftForm();
@@ -195,9 +314,8 @@ const Timetable = () => {
     if (!confirm("Delete this shift? Activities linked to this shift will lose the association.")) return;
     const updatedShifts = shifts.filter(s => s.id !== id);
     try {
-      await axios.put(`${API_URL}/companies/${selectedCompanyId}`, {
-        shifts: updatedShifts
-      });
+      const params = getVendorParams();
+      await axios.put(`${API_URL}/companies/${selectedCompanyId}`, { shifts: updatedShifts }, params ? { params } : undefined);
       setShifts(updatedShifts);
       
       // Update activities to remove deleted shift_id
@@ -240,7 +358,8 @@ const Timetable = () => {
   const handleCreateCompany = async () => {
     if (!newCompanyName.trim()) return;
     try {
-      const res = await axios.post(`${API_URL}/companies`, { name: newCompanyName });
+      const params = getVendorParams();
+      const res = await axios.post(`${API_URL}/companies`, { name: newCompanyName }, params ? { params } : undefined);
       setCompanies([...companies, { id: res.data.id, name: res.data.name }]);
       setSelectedCompanyId(res.data.id);
       setShowCompanyModal(false);
@@ -253,10 +372,11 @@ const Timetable = () => {
   const handleSaveDraft = async (dataToSave = null) => {
     try {
       const payload = dataToSave || activities;
+      const params = getVendorParams();
       await axios.put(`${API_URL}/companies/${selectedCompanyId}/draft`, {
         draft_timetable: payload,
         modified_by: user.username
-      });
+      }, params ? { params } : undefined);
       setIsDirty(false);
       // alert("Draft saved successfully!"); // Removed alert for smoother auto-save UX
       console.log("Draft auto-saved");
@@ -270,15 +390,16 @@ const Timetable = () => {
     if (!confirm("Are you sure you want to publish these changes? This will affect live operations.")) return;
     try {
       // First save draft to ensure consistency
+      const params = getVendorParams();
       await axios.put(`${API_URL}/companies/${selectedCompanyId}/draft`, {
         draft_timetable: activities,
         modified_by: user.username
-      });
+      }, params ? { params } : undefined);
       
       // Then publish
       await axios.post(`${API_URL}/companies/${selectedCompanyId}/publish`, {
         published_by: user.username
-      });
+      }, params ? { params } : undefined);
       
       setIsDirty(false);
       alert("Timetable published successfully!");
@@ -357,7 +478,7 @@ const Timetable = () => {
       shift_id: '',
       start_time: '09:00',
       end_time: '17:00',
-      type: 'Work',
+      type: getActivityTypeOptions()[0] || 'Work',
       days: [...DAYS],
       enabled: true,
       is_payable: true,
@@ -390,6 +511,43 @@ const Timetable = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-4">
+            {user?.role === 'super_admin' && (
+              <>
+                <div className="relative">
+                  <select
+                    value={selectedBusinessType}
+                    onChange={(e) => setSelectedBusinessType(e.target.value)}
+                    className="appearance-none bg-white border border-slate-200 rounded-lg pl-4 pr-10 py-2.5 text-slate-800 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 w-64 shadow-sm"
+                  >
+                    <option value="all" className="bg-white text-slate-900">All Businesses</option>
+                    {businessTypes.map(b => (
+                      <option key={b.value} value={b.value} className="bg-white text-slate-900">{b.label || b.value}</option>
+                    ))}
+                  </select>
+                  <Building2 className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" size={18} />
+                </div>
+                <div className="relative">
+                  <select
+                    value={selectedVendorId || ''}
+                    onChange={(e) => {
+                      const next = Number(e.target.value);
+                      setSelectedVendorId(next);
+                      try { localStorage.setItem('timetable_selected_vendor_id', String(next)); } catch (e2) {}
+                    }}
+                    className="appearance-none bg-white border border-slate-200 rounded-lg pl-4 pr-10 py-2.5 text-slate-800 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 w-64 shadow-sm"
+                  >
+                    {vendors
+                      .filter(v => selectedBusinessType === 'all' ? true : String(v.vertical || '').toLowerCase() === String(selectedBusinessType).toLowerCase())
+                      .map(v => (
+                        <option key={v.id} value={v.id} className="bg-white text-slate-900">
+                          {v.company_name || v.name || `Vendor ${v.id}`}
+                        </option>
+                      ))}
+                  </select>
+                  <Building2 className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" size={18} />
+                </div>
+              </>
+            )}
             <div className="relative">
               <select 
                 value={selectedCompanyId || ''} 
@@ -710,7 +868,7 @@ const Timetable = () => {
                     onChange={(e) => setActivityForm({...activityForm, type: e.target.value})}
                     className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-2.5 text-slate-900 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
                   >
-                    {ACTIVITY_TYPES.map(t => (
+                    {getActivityTypeOptions().map(t => (
                       <option key={t} value={t} className="bg-white">{t}</option>
                     ))}
                   </select>

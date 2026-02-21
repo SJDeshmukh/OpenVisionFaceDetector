@@ -90,7 +90,8 @@ export const AuthProvider = ({ children }) => {
           frontend_bundle_id: response.data.frontend_bundle_id,
           backend_service_id: response.data.backend_service_id,
           vendor_config: response.data.vendor_config,
-          features: response.data.features || []
+          features: response.data.features || [],
+          vertical: response.data.vertical
         };
         setUser(userData);
         localStorage.setItem('user', JSON.stringify(userData));

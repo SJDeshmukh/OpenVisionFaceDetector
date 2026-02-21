@@ -22,7 +22,7 @@
         android:id="@+id/logo_splash"
         android:layout_width="120dp"
         android:layout_height="120dp"
-        android:src="@drawable/openvision_logo"
+        android:src="@drawable/logo_openvision"
         android:elevation="10dp"
         app:layout_constraintBottom_toTopOf="@+id/title_splash"
         app:layout_constraintEnd_toEndOf="parent"

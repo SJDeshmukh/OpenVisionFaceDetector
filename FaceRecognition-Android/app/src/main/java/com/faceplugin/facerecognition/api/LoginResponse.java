@@ -1,5 +1,6 @@
 package com.faceplugin.facerecognition.api;
 
+import com.google.gson.JsonElement;
 import com.google.gson.annotations.SerializedName;
 
 public class LoginResponse {
@@ -21,6 +22,9 @@ public class LoginResponse {
     @SerializedName("company_id")
     private Integer companyId;
 
+    @SerializedName("vendor_config")
+    private JsonElement vendorConfig;
+
     @SerializedName("error")
     private String error;
 
@@ -30,5 +34,6 @@ public class LoginResponse {
     public String getToken() { return token; }
     public Integer getVendorId() { return vendorId; }
     public Integer getCompanyId() { return companyId; }
+    public JsonElement getVendorConfig() { return vendorConfig; }
     public String getError() { return error; }
 }

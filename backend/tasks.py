@@ -53,7 +53,7 @@ if celery:
                    (company_name, '[]', '[]', '[]', vendor_id))
         conn2.commit()
         conn2.close()
-        log_audit("system", 'create_vendor', vendor_id, {'company_name': company_name})
+        log_audit('create_vendor', details={'company_name': company_name}, target_vendor_id=vendor_id, actor="system")
         socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
 
 def ensure_task_events_table():

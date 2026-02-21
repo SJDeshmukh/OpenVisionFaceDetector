@@ -178,6 +178,8 @@ const Attendance = () => {
     return { label: 'Late', color: 'bg-amber-100 text-amber-700' };
   };
 
+  const showShiftColumn = user?.features?.includes('shifts') && !!(filterOptions.dynamic_filters && filterOptions.dynamic_filters.shift);
+
   const groupedLogs = logs.reduce((acc, log) => {
     const key = log.person_id ? `id:${log.person_id}` : `name:${log.vendor_id || 'unknown'}:${log.name}`;
     if (!acc[key]) {
@@ -311,7 +313,7 @@ const Attendance = () => {
             <tr className="bg-slate-50 border-b border-slate-200">
               <th className="w-10 px-6 py-4"></th>
               <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Employee</th>
-              {user?.features?.includes('shifts') && (
+              {showShiftColumn && (
                 <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Shift</th>
               )}
               <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Date</th>
@@ -367,7 +369,7 @@ const Attendance = () => {
                           </div>
                         </div>
                       </td>
-                      {user?.features?.includes('shifts') && (
+                      {showShiftColumn && (
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
                           {log.shift || <span className="text-slate-400 italic">None</span>}
                         </td>

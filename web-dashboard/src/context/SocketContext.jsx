@@ -18,7 +18,14 @@ export const SocketProvider = ({ children }) => {
       }
       return;
     }
-    const s = io(BASE_URL, { transports: ['polling'], upgrade: false, path: '/socket.io' });
+    const s = io(BASE_URL, { 
+      transports: ['polling'],
+      upgrade: false,
+      path: '/socket.io/',
+      withCredentials: true,
+      reconnectionAttempts: 5,
+      query: { 'ngrok-skip-browser-warning': '1' }
+    });
     setSocket(s);
 
     s.on('force_logout', (data) => {

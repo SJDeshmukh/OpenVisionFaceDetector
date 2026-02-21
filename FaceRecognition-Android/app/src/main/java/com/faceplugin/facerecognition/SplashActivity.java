@@ -141,7 +141,12 @@ public class SplashActivity extends AppCompatActivity {
 
         Intent intent;
         if (token != null) {
-            intent = new Intent(SplashActivity.this, MainActivity.class);
+            String role = prefs.getString("role", null);
+            if ("parent".equals(role)) {
+                intent = new Intent(SplashActivity.this, ParentActivity.class);
+            } else {
+                intent = new Intent(SplashActivity.this, MainActivity.class);
+            }
         } else {
             intent = new Intent(SplashActivity.this, LoginActivity.class);
         }

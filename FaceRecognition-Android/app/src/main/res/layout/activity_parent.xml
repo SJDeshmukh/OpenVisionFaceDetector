@@ -8,49 +8,197 @@
         android:layout_height="wrap_content"
         android:orientation="vertical"
         android:padding="16dp">
-        <EditText
-            android:id="@+id/et_student_number"
+        <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:hint="Enter Student Number"
-            android:background="@drawable/bg_input_field"
-            android:inputType="text"
-            android:singleLine="true"
-            android:padding="12dp"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="12dp">
+            <ImageView
+                android:id="@+id/iv_parent_logo"
+                android:layout_width="34dp"
+                android:layout_height="34dp"
+                android:src="@drawable/openvision_logo"
+                android:layout_marginEnd="10dp"/>
+            <TextView
+                android:id="@+id/tv_parent_title"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Parent Portal"
+                android:textStyle="bold"
+                android:textSize="18sp"
+                android:textColor="@color/vision_text_primary"/>
+            <Button
+                android:id="@+id/btn_parent_logout"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:text="Logout"
+                android:backgroundTint="@android:color/holo_red_light"
+                android:textColor="@android:color/white"
+                style="@style/ButtonStyle"/>
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/tv_parent_student_name"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Student"
+            android:textStyle="bold"
+            android:textSize="18sp"
             android:textColor="@color/vision_text_primary"
-            android:textColorHint="@color/vision_text_tertiary"/>
-        <Button
-            android:id="@+id/btn_save_student"
+            android:layout_marginBottom="4dp"/>
+        <TextView
+            android:id="@+id/tv_parent_student_meta"
             android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:text="Save"
-            style="@style/ButtonStyle"
-            android:layout_marginTop="8dp"/>
-        <EditText
-            android:id="@+id/et_date"
+            android:layout_height="wrap_content"
+            android:text="Student ID: -"
+            android:textSize="14sp"
+            android:textColor="@color/vision_text_secondary"
+            android:layout_marginBottom="2dp"/>
+        <TextView
+            android:id="@+id/tv_parent_parent_meta"
             android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:hint="YYYY-MM-DD (optional)"
-            android:background="@drawable/bg_input_field"
-            android:inputType="text"
-            android:singleLine="true"
-            android:padding="12dp"
-            android:layout_marginTop="8dp"
-            android:textColor="@color/vision_text_primary"
-            android:textColorHint="@color/vision_text_tertiary"/>
-        <Button
-            android:id="@+id/btn_filter_date"
+            android:layout_height="wrap_content"
+            android:text="Mobile: -"
+            android:textSize="14sp"
+            android:textColor="@color/vision_text_secondary"
+            android:layout_marginBottom="12dp"/>
+
+        <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:text="Filter"
-            style="@style/ButtonStyle"
-            android:layout_marginTop="8dp"/>
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="12dp">
+            <EditText
+                android:id="@+id/et_date"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:hint="Select date"
+                android:background="@drawable/bg_input_field"
+                android:inputType="none"
+                android:focusable="false"
+                android:singleLine="true"
+                android:padding="12dp"
+                android:textColor="@color/vision_text_primary"
+                android:textColorHint="@color/vision_text_tertiary"/>
+            <Button
+                android:id="@+id/btn_filter_date"
+                android:layout_width="wrap_content"
+                android:layout_height="48dp"
+                android:text="Apply"
+                style="@style/ButtonStyle"
+                android:layout_marginStart="10dp"/>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_marginBottom="12dp">
+                <LinearLayout
+                    android:id="@+id/card_check_in"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:background="@drawable/bg_input_field"
+                    android:padding="14dp"
+                    android:layout_marginBottom="12dp">
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Check In"
+                        android:textStyle="bold"
+                        android:textSize="14sp"
+                        android:textColor="@color/vision_text_primary"/>
+                    <TextView
+                        android:id="@+id/tv_card_checkin_time"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="--:--"
+                        android:textStyle="bold"
+                        android:textSize="24sp"
+                        android:textColor="@color/vision_text_primary"
+                        android:layout_marginTop="6dp"/>
+                    <TextView
+                        android:id="@+id/tv_card_checkin_hint"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="No check-in"
+                        android:textSize="12sp"
+                        android:textColor="@color/vision_text_secondary"
+                        android:layout_marginTop="2dp"/>
+                </LinearLayout>
+                <LinearLayout
+                    android:id="@+id/card_check_out"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:background="@drawable/bg_input_field"
+                    android:padding="14dp">
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Check Out"
+                        android:textStyle="bold"
+                        android:textSize="14sp"
+                        android:textColor="@color/vision_text_primary"/>
+                    <TextView
+                        android:id="@+id/tv_card_checkout_time"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="--:--"
+                        android:textStyle="bold"
+                        android:textSize="24sp"
+                        android:textColor="@color/vision_text_primary"
+                        android:layout_marginTop="6dp"/>
+                    <TextView
+                        android:id="@+id/tv_card_checkout_hint"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="No check-out"
+                        android:textSize="12sp"
+                        android:textColor="@color/vision_text_secondary"
+                        android:layout_marginTop="2dp"/>
+                </LinearLayout>
+        </LinearLayout>
+        <TextView
+            android:id="@+id/tv_parent_day_summary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Today"
+            android:textSize="14sp"
+            android:textColor="@color/vision_text_secondary"
+            android:layout_marginBottom="8dp"/>
+
         <LinearLayout
             android:id="@+id/parent_container"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:layout_marginTop="16dp"/>
+            android:layout_marginTop="8dp"
+            android:visibility="gone"/>
+
+        <TextView
+            android:id="@+id/tv_parent_history_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="History"
+            android:textStyle="bold"
+            android:textSize="14sp"
+            android:textColor="@color/vision_text_primary"
+            android:layout_marginTop="12dp"
+            android:layout_marginBottom="8dp"/>
+
+        <LinearLayout
+            android:id="@+id/parent_history_container"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_marginBottom="10dp"/>
+
         <ImageView
             android:id="@+id/ivParentStatus"
             android:layout_width="120dp"
