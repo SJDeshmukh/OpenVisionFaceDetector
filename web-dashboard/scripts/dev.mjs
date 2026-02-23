@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import net from "node:net";
 import process from "node:process";
+import readline from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 
 const defaultPort = Number.parseInt(process.env.FRONTEND_PORT ?? "5173", 10);
@@ -89,6 +90,21 @@ function canBindPort(port, host) {
   });
 }
 
+let selectedStorageProvider = null;
+
+async function selectStorageProviderForDev() {
+  if (selectedStorageProvider) return selectedStorageProvider;
+  const envValue = (process.env.STORAGE_PROVIDER ?? process.env.OBJECT_STORAGE_PROVIDER ?? "").toLowerCase();
+  if (envValue === "aws") {
+    selectedStorageProvider = envValue;
+    process.env.STORAGE_PROVIDER = selectedStorageProvider;
+    return selectedStorageProvider;
+  }
+  selectedStorageProvider = "none";
+  process.env.STORAGE_PROVIDER = selectedStorageProvider;
+  return selectedStorageProvider;
+}
+
 async function findFrontendPort() {
   for (let offset = 0; offset < 20; offset += 1) {
     const port = defaultPort + offset;
@@ -141,6 +157,7 @@ let shuttingDown = false;
 async function startBackendIfNeeded() {
   const shouldStart = (process.env.START_BACKEND ?? "1") !== "0";
   if (!shouldStart) return;
+  await selectStorageProviderForDev();
   process.stdout.write(`Starting backend (http://${backendHost}:${backendPort})...\n`);
   if (await isBackendReachable()) {
     process.stdout.write("Backend already running.\n");
