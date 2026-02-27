@@ -222,6 +222,14 @@ async function startFrontend() {
     process.stdout.write(`WEBSITE: ${url}\n`);
     process.stdout.write(`API (proxied): ${url}/api\n`);
     process.stdout.write(`MOBILE SERVER URL: ${url}/\n\n`);
+    try {
+      const ipRes = await fetch("https://api.ipify.org?format=text").catch(() => null);
+      const ipText = (await ipRes?.text())?.trim();
+      if (ipText) {
+        process.stdout.write(`If loca.lt asks for a tunnel password, enter your PUBLIC IP: ${ipText}\n`);
+        process.stdout.write(`(This page appears once per viewer IP every few days as abuse protection.)\n\n`);
+      }
+    } catch {}
     // Keep the tunnel open
     tunnel.on("close", () => {
       process.stdout.write("LocalTunnel closed.\n");
