@@ -4,7 +4,7 @@ services:
     env: python
     autoDeploy: true
     buildCommand: pip install -r backend/requirements.txt
-    startCommand: cd backend && gunicorn -k gevent --worker-connections 1000 -w 2 --timeout 120 app:app --bind 0.0.0.0:$PORT
+    startCommand: cd backend && gunicorn -c gunicorn_config.py app:app --bind 0.0.0.0:$PORT
     healthCheckPath: /api/ping
     envVars:
       - key: SECRET_KEY
