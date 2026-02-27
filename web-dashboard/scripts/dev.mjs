@@ -206,37 +206,49 @@ async function startFrontend() {
     process.stderr.write(`${String(e)}\n`);
   }
 
-  try {
-    const subdomain = process.env.LT_SUBDOMAIN || undefined;
-    const hostOverride = process.env.LT_HOST || undefined; // e.g., https://loca.lt
-    process.stdout.write("Starting LocalTunnel...\n");
-    const lt = ltModule?.default ?? ltModule;
-    const tunnel = await lt({
-      port,
-      subdomain,
-      host: hostOverride,
-    });
-    frontendTunnel = tunnel;
-    const url = tunnel.url;
-    process.stdout.write(`\nPUBLIC URL (share this): ${url}\n`);
-    process.stdout.write(`WEBSITE: ${url}\n`);
-    process.stdout.write(`API (proxied): ${url}/api\n`);
-    process.stdout.write(`MOBILE SERVER URL: ${url}/\n\n`);
+  const provider = String(process.env.TUNNEL_PROVIDER || "lt").toLowerCase();
+  if (provider === "custom") {
+    const url = process.env.TUNNEL_URL || "";
+    if (!url) {
+      process.stderr.write("TUNNEL_PROVIDER=custom but TUNNEL_URL is not set.\n");
+    } else {
+      process.stdout.write(`\nPUBLIC URL (share this): ${url}\n`);
+      process.stdout.write(`WEBSITE: ${url}\n`);
+      process.stdout.write(`API (proxied): ${url}/api\n`);
+      process.stdout.write(`MOBILE SERVER URL: ${url}/\n\n`);
+    }
+  } else {
     try {
-      const ipRes = await fetch("https://api.ipify.org?format=text").catch(() => null);
-      const ipText = (await ipRes?.text())?.trim();
-      if (ipText) {
-        process.stdout.write(`If loca.lt asks for a tunnel password, enter your PUBLIC IP: ${ipText}\n`);
-        process.stdout.write(`(This page appears once per viewer IP every few days as abuse protection.)\n\n`);
-      }
-    } catch {}
-    // Keep the tunnel open
-    tunnel.on("close", () => {
-      process.stdout.write("LocalTunnel closed.\n");
-    });
-  } catch (e) {
-    process.stderr.write(`Failed to start LocalTunnel: ${String(e?.message || e)}\n`);
-    process.stderr.write("Install it with: npm i -D localtunnel\n");
+      const subdomain = process.env.LT_SUBDOMAIN || undefined;
+      const hostOverride = process.env.LT_HOST || undefined;
+      process.stdout.write("Starting LocalTunnel...\n");
+      const lt = ltModule?.default ?? ltModule;
+      const tunnel = await lt({
+        port,
+        subdomain,
+        host: hostOverride,
+      });
+      frontendTunnel = tunnel;
+      const url = tunnel.url;
+      process.stdout.write(`\nPUBLIC URL (share this): ${url}\n`);
+      process.stdout.write(`WEBSITE: ${url}\n`);
+      process.stdout.write(`API (proxied): ${url}/api\n`);
+      process.stdout.write(`MOBILE SERVER URL: ${url}/\n\n`);
+      try {
+        const ipRes = await fetch("https://api.ipify.org?format=text").catch(() => null);
+        const ipText = (await ipRes?.text())?.trim();
+        if (ipText) {
+          process.stdout.write(`If loca.lt asks for a tunnel password, enter your PUBLIC IP: ${ipText}\n`);
+          process.stdout.write(`(This page appears once per viewer IP every few days as abuse protection.)\n\n`);
+        }
+      } catch {}
+      tunnel.on("close", () => {
+        process.stdout.write("LocalTunnel closed.\n");
+      });
+    } catch (e) {
+      process.stderr.write(`Failed to start LocalTunnel: ${String(e?.message || e)}\n`);
+      process.stderr.write("Install it with: npm i -D localtunnel\n");
+    }
   }
 
   await backendPromise;
