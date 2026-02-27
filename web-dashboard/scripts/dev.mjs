@@ -3,6 +3,7 @@ import net from "node:net";
 import process from "node:process";
 import readline from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
+import localtunnel from "localtunnel";
 
 const defaultPort = Number.parseInt(process.env.FRONTEND_PORT ?? "5173", 10);
 const host = process.env.FRONTEND_HOST ?? "127.0.0.1";
@@ -150,7 +151,7 @@ async function isBackendReachable() {
 }
 
 let backend = null;
-let frontendNgrok = null;
+let frontendTunnel = null;
 let vite = null;
 let shuttingDown = false;
 
@@ -206,43 +207,27 @@ async function startFrontend() {
   }
 
   try {
-    const existing = await getExistingNgrokPublicUrlForPort(port);
-    if (existing) {
-      process.stdout.write(`\nPUBLIC URL (share this): ${existing}\n`);
-      process.stdout.write(`WEBSITE: ${existing}\n`);
-      process.stdout.write(`API (proxied): ${existing}/api\n`);
-      process.stdout.write(`MOBILE SERVER URL: ${existing}/\n\n`);
-      await backendPromise;
-      await new Promise(() => {});
-      return;
-    }
-
-    process.stdout.write("Starting ngrok tunnel...\n");
-    const child = spawn("ngrok", ["http", String(port), "--log=stdout"], {
-      stdio: ["inherit", "pipe", "pipe"],
-      env: process.env,
+    const subdomain = process.env.LT_SUBDOMAIN || undefined;
+    const hostOverride = process.env.LT_HOST || undefined; // e.g., https://loca.lt
+    process.stdout.write("Starting LocalTunnel...\n");
+    const tunnel = await localtunnel({
+      port,
+      subdomain,
+      host: hostOverride,
     });
-    frontendNgrok = child;
-    child.stdout.on("data", (buf) => {
-      const text = buf.toString("utf8");
-      process.stdout.write(text);
-      for (const line of text.split("\n")) {
-        const url = findNgrokUrl(line);
-        if (url) {
-          process.stdout.write(`\nPUBLIC URL (share this): ${url}\n`);
-          process.stdout.write(`WEBSITE: ${url}\n`);
-          process.stdout.write(`API (proxied): ${url}/api\n`);
-          process.stdout.write(`MOBILE SERVER URL: ${url}/\n\n`);
-          break;
-        }
-      }
+    frontendTunnel = tunnel;
+    const url = tunnel.url;
+    process.stdout.write(`\nPUBLIC URL (share this): ${url}\n`);
+    process.stdout.write(`WEBSITE: ${url}\n`);
+    process.stdout.write(`API (proxied): ${url}/api\n`);
+    process.stdout.write(`MOBILE SERVER URL: ${url}/\n\n`);
+    // Keep the tunnel open
+    tunnel.on("close", () => {
+      process.stdout.write("LocalTunnel closed.\n");
     });
-    child.stderr.on("data", (buf) => {
-      process.stderr.write(buf);
-    });
-  } catch {
-    process.stderr.write("ngrok is not installed or not on PATH.\n");
-    return;
+  } catch (e) {
+    process.stderr.write(`Failed to start LocalTunnel: ${String(e?.message || e)}\n`);
+    process.stderr.write("Install it with: npm i -D localtunnel\n");
   }
 
   await backendPromise;
@@ -258,7 +243,7 @@ function shutdown() {
     vite?.kill("SIGINT");
   } catch {}
   try {
-    frontendNgrok?.kill("SIGINT");
+    if (frontendTunnel?.close) frontendTunnel.close();
   } catch {}
   try {
     backend?.kill("SIGINT");
