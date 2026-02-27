@@ -3,7 +3,7 @@ import net from "node:net";
 import process from "node:process";
 import readline from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
-import localtunnel from "localtunnel";
+import ltModule from "localtunnel";
 
 const defaultPort = Number.parseInt(process.env.FRONTEND_PORT ?? "5173", 10);
 const host = process.env.FRONTEND_HOST ?? "127.0.0.1";
@@ -210,7 +210,8 @@ async function startFrontend() {
     const subdomain = process.env.LT_SUBDOMAIN || undefined;
     const hostOverride = process.env.LT_HOST || undefined; // e.g., https://loca.lt
     process.stdout.write("Starting LocalTunnel...\n");
-    const tunnel = await localtunnel({
+    const lt = ltModule?.default ?? ltModule;
+    const tunnel = await lt({
       port,
       subdomain,
       host: hostOverride,
