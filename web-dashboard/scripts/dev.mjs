@@ -152,6 +152,7 @@ async function isBackendReachable() {
 
 let backend = null;
 let frontendTunnel = null;
+let tmProc = null;
 let vite = null;
 let shuttingDown = false;
 
@@ -206,7 +207,7 @@ async function startFrontend() {
     process.stderr.write(`${String(e)}\n`);
   }
 
-  const provider = String(process.env.TUNNEL_PROVIDER || "lt").toLowerCase();
+  const provider = String(process.env.TUNNEL_PROVIDER || "cf").toLowerCase();
   if (provider === "custom") {
     const url = process.env.TUNNEL_URL || "";
     if (!url) {
@@ -216,6 +217,90 @@ async function startFrontend() {
       process.stdout.write(`WEBSITE: ${url}\n`);
       process.stdout.write(`API (proxied): ${url}/api\n`);
       process.stdout.write(`MOBILE SERVER URL: ${url}/\n\n`);
+    }
+  } else if (provider === "tm") {
+    try {
+      process.stdout.write("Starting Tunnelmole via npx...\n");
+      // Use npx with -y to skip prompts, pass port only
+      const args = ["-y", "tunnelmole", String(port)];
+      // Allow extra args via TM_ARGS (space-separated)
+      if (process.env.TM_ARGS) {
+        args.push(...process.env.TM_ARGS.split(" ").filter(Boolean));
+      }
+      tmProc = spawnProc("npx", args, { name: "tunnelmole", stdio: "pipe" });
+      let announced = false;
+      const onData = (buf) => {
+        const text = buf.toString("utf8");
+        process.stdout.write(text);
+        // Find first URL in output
+        const urlMatch = text.match(/https?:\/\/[^\s]+/g);
+        if (!announced && urlMatch && urlMatch.length > 0) {
+          const url = urlMatch.find(u => /^https?:\/\//.test(u));
+          if (url) {
+            announced = true;
+            process.stdout.write(`\nPUBLIC URL (share this): ${url}\n`);
+            process.stdout.write(`WEBSITE: ${url}\n`);
+            process.stdout.write(`API (proxied): ${url}/api\n`);
+            process.stdout.write(`MOBILE SERVER URL: ${url}/\n\n`);
+          }
+        }
+      };
+      tmProc.stdout?.on("data", onData);
+      tmProc.stderr?.on("data", onData);
+    } catch (e) {
+      process.stderr.write(`Failed to start Tunnelmole: ${String(e?.message || e)}\n`);
+      process.stderr.write("Try installing it globally: npm i -g tunnelmole\n");
+    }
+  } else if (provider === "cf") {
+    try {
+      process.stdout.write("Starting Cloudflare Tunnel (cloudflared)...\n");
+      const extra = (process.env.CF_ARGS || "").split(" ").filter(Boolean);
+      const args = ["tunnel", "--no-autoupdate", "--url", `http://${host}:${port}`, ...extra];
+      const cf = spawnProc("cloudflared", args, { name: "cloudflared", stdio: "pipe" });
+      let announced = false;
+      const onData = (buf) => {
+        const text = buf.toString("utf8");
+        process.stdout.write(text);
+        const matches = text.match(/https?:\/\/[^\s]+/g);
+        if (!announced && matches && matches.length) {
+          const url = matches.find(u => u.includes("trycloudflare.com")) || matches[0];
+          if (url) {
+            announced = true;
+            process.stdout.write(`\nPUBLIC URL (share this): ${url}\n`);
+            process.stdout.write(`WEBSITE: ${url}\n`);
+            process.stdout.write(`API (proxied): ${url}/api\n`);
+            process.stdout.write(`MOBILE SERVER URL: ${url}/\n\n`);
+          }
+        }
+      };
+      cf.stdout?.on("data", onData);
+      cf.stderr?.on("data", onData);
+    } catch (e) {
+      process.stderr.write(`Failed to start cloudflared: ${String(e?.message || e)}\n`);
+      process.stderr.write("Install it first. macOS: brew install cloudflare/cloudflare/cloudflared\n");
+      // Fallback to LocalTunnel for convenience
+      try {
+        const subdomain = process.env.LT_SUBDOMAIN || undefined;
+        const hostOverride = process.env.LT_HOST || undefined;
+        process.stdout.write("Falling back to LocalTunnel...\n");
+        const lt = ltModule?.default ?? ltModule;
+        const tunnel = await lt({
+          port,
+          subdomain,
+          host: hostOverride,
+        });
+        frontendTunnel = tunnel;
+        const url = tunnel.url;
+        process.stdout.write(`\nPUBLIC URL (share this): ${url}\n`);
+        process.stdout.write(`WEBSITE: ${url}\n`);
+        process.stdout.write(`API (proxied): ${url}/api\n`);
+        process.stdout.write(`MOBILE SERVER URL: ${url}/\n\n`);
+        tunnel.on("close", () => {
+          process.stdout.write("LocalTunnel closed.\n");
+        });
+      } catch (e2) {
+        process.stderr.write(`LocalTunnel fallback failed: ${String(e2?.message || e2)}\n`);
+      }
     }
   } else {
     try {
@@ -265,6 +350,7 @@ function shutdown() {
   } catch {}
   try {
     if (frontendTunnel?.close) frontendTunnel.close();
+    tmProc?.kill("SIGINT");
   } catch {}
   try {
     backend?.kill("SIGINT");

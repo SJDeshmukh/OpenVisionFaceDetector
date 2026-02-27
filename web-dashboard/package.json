@@ -4,7 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "node scripts/dev.mjs",
+    "dev": "TUNNEL_PROVIDER=cf node scripts/dev.mjs",
+    "dev:tm": "TUNNEL_PROVIDER=tm node scripts/dev.mjs",
+    "dev:cf": "TUNNEL_PROVIDER=cf node scripts/dev.mjs",
     "dev:vite": "vite",
     "build": "vite build",
     "lint": "eslint .",
