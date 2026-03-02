@@ -251,6 +251,32 @@ async function startFrontend() {
       process.stderr.write(`Failed to start Tunnelmole: ${String(e?.message || e)}\n`);
       process.stderr.write("Try installing it globally: npm i -g tunnelmole\n");
     }
+  } else if (provider === "ngrok") {
+    try {
+      process.stdout.write("Starting ngrok tunnel...\n");
+      const ng = spawnProc("ngrok", ["http", String(port), "--log=stdout"], { name: "ngrok", stdio: "pipe" });
+      let announced = false;
+      const onData = (buf) => {
+        const text = buf.toString("utf8");
+        process.stdout.write(text);
+        for (const line of text.split("\n")) {
+          const url = findNgrokUrl(line);
+          if (!announced && url) {
+            announced = true;
+            process.stdout.write(`\nPUBLIC URL (share this): ${url}\n`);
+            process.stdout.write(`WEBSITE: ${url}\n`);
+            process.stdout.write(`API (proxied): ${url}/api\n`);
+            process.stdout.write(`MOBILE SERVER URL: ${url}/\n\n`);
+            break;
+          }
+        }
+      };
+      ng.stdout?.on("data", onData);
+      ng.stderr?.on("data", onData);
+    } catch (e) {
+      process.stderr.write(`Failed to start ngrok: ${String(e?.message || e)}\n`);
+      process.stderr.write("Install from https://ngrok.com/download and set authtoken if required\n");
+    }
   } else if (provider === "cf") {
     try {
       process.stdout.write("Starting Cloudflare Tunnel (cloudflared)...\n");

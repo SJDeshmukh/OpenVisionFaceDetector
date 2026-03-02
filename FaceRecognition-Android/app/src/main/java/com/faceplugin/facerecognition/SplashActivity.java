@@ -24,7 +24,7 @@ public class SplashActivity extends AppCompatActivity {
     private TextView tvStatus;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
-    private static final String LOCAL_URL = "https://bolometric-lower-joaquina.ngrok-free.dev/";
+    private static final String LOCAL_URL = "https://postdural-patty-pallial.ngrok-free.dev/";
     private static final String RENDER_URL = "https://face-detection-backend-69o7.onrender.com/";
     private static final String LEGACY_LOCAL_URL = "http://192.0.0.2:5001/";
 

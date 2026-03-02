@@ -53,7 +53,7 @@
                 android:id="@+id/logo_login"
                 android:layout_width="100dp"
                 android:layout_height="100dp"
-                android:src="@drawable/logo_openvision"
+                android:src="@drawable/openvision_logo"
                 app:layout_constraintBottom_toTopOf="@+id/login_card"
                 app:layout_constraintEnd_toEndOf="parent"
                 app:layout_constraintStart_toStartOf="parent"

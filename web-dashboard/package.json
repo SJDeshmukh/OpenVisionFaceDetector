@@ -4,8 +4,8 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "TUNNEL_PROVIDER=cf node scripts/dev.mjs",
-    "dev:tm": "TUNNEL_PROVIDER=tm node scripts/dev.mjs",
+    "dev": "TUNNEL_PROVIDER=ngrok node scripts/dev.mjs",
+    "dev:tm": "TUNNEL_PROVIDER=ngrok node scripts/dev.mjs",
     "dev:cf": "TUNNEL_PROVIDER=cf node scripts/dev.mjs",
     "dev:vite": "vite",
     "build": "vite build",

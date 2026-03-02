@@ -16,7 +16,7 @@ const Home = () => {
         <div className="flex justify-center mb-8">
           <div className="relative">
             <div className="absolute inset-0 bg-blue-500 blur-2xl opacity-20 rounded-full"></div>
-            <img src="/openvisionxLogo.svg" alt="TapInX" className="w-32 h-32 relative z-10 object-contain" />
+            <img src="/tapinx-logo.svg" alt="TapInX" className="w-32 h-32 relative z-10 object-contain" />
           </div>
         </div>
 

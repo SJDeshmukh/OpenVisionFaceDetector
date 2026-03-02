@@ -135,7 +135,7 @@ export const Sidebar = ({ isOpen, onClose }) => {
         <div className="h-16 flex items-center justify-between px-6 border-b border-slate-800">
           <div className="flex items-center">
             <div className="w-10 h-10 bg-white rounded-full flex items-center justify-center mr-3 overflow-hidden">
-              <img src="/openvisionxLogo.svg" alt="TapInX" className="w-9 h-9 object-contain" />
+              <img src="/tapinx-logo.svg" alt="TapInX" className="w-9 h-9 object-contain" />
             </div>
             <span className="text-lg font-bold tracking-tight">TapInX</span>
           </div>
@@ -210,7 +210,7 @@ export const Topbar = ({ onToggleSidebar }) => {
         <div className="flex items-center space-x-3 pl-6 border-l border-slate-200">
           <div className="text-right hidden sm:block">
             <p className="text-sm font-bold text-slate-800 capitalize">{user?.username || 'Guest'}</p>
-            <p className="text-xs text-slate-500 capitalize">{user?.role === 'admin' ? 'Administrator' : 'Kiosk User'}</p>
+            <p className="text-xs text-slate-500 capitalize">{user?.role === 'admin' ? 'Administrator' : 'TapInX User'}</p>
           </div>
           <div className="w-10 h-10 rounded-full bg-slate-200 flex items-center justify-center text-slate-600 font-bold border-2 border-white shadow-sm">
             {user?.username?.charAt(0).toUpperCase() || 'U'}

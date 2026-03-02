@@ -1,11 +1,16 @@
 import os
 import base64
+from io import BytesIO
 try:
     import boto3
     from botocore.client import Config
 except Exception:
     boto3 = None
     Config = None
+try:
+    from PIL import Image
+except Exception:
+    Image = None
 from datetime import timedelta
 
 AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID")
@@ -32,6 +37,19 @@ def upload_base64_image(name, b64_data):
     key = f"faces/{name}.jpg"
     data = b64_data.split(",")[-1] if "," in b64_data else b64_data
     body = base64.b64decode(data)
+    if Image is not None:
+        try:
+            img = Image.open(BytesIO(body))
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            max_size = int(os.environ.get("IMAGE_MAX_SIZE", "640"))
+            img.thumbnail((max_size, max_size))
+            buf = BytesIO()
+            quality = int(os.environ.get("IMAGE_JPEG_QUALITY", "70"))
+            img.save(buf, format="JPEG", quality=quality, optimize=True)
+            body = buf.getvalue()
+        except Exception:
+            pass
     s3.put_object(Bucket=S3_BUCKET, Key=key, Body=body, ContentType="image/jpeg", ACL="private")
     return f"s3://{S3_BUCKET}/{key}"
 

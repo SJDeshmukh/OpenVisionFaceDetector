@@ -9,7 +9,7 @@ import android.content.Intent;
 import com.faceplugin.facerecognition.MyGlobal;
 
 public class RetrofitClient {
-    private static String BASE_URL = "https://bolometric-lower-joaquina.ngrok-free.dev/";
+    private static String BASE_URL = "https://postdural-patty-pallial.ngrok-free.dev/";
     
     private static Retrofit retrofit = null;
     private static String authToken = null;

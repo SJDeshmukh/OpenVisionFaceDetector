@@ -28,7 +28,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginStart="12dp"
-            android:text="OpenVisionX"
+            android:text="TapInX"
             style="@style/Typography.H3"
             android:letterSpacing="0.1" />
     </LinearLayout>

@@ -13,3 +13,4 @@ redis
 celery
 prometheus-client
 boto3
+Pillow
