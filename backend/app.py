@@ -7528,6 +7528,7 @@ def person_event():
     activity_name = "Work" # Default
     activity_type = "Work"
     best_match = None
+    has_timetable_entries = False
     
     try:
         # Fetch Timetable and Shifts
@@ -7574,6 +7575,10 @@ def person_event():
         filtered_timetable = []
         if company_row and company_row['live_timetable']:
             full_timetable = _json.loads(company_row['live_timetable'])
+            try:
+                has_timetable_entries = isinstance(full_timetable, list) and len(full_timetable) > 0
+            except Exception:
+                has_timetable_entries = False
             
             if user_shift_id:
                 # 1. Collect Specific Matches
@@ -8005,38 +8010,43 @@ def person_event():
                 if 'curr_mins' not in locals():
                     now_check = current_time_obj
                     curr_mins = now_check.hour * 60 + now_check.minute
+                # If there is no timetable configured at all (no shifts/activities),
+                # do NOT apply generic fallback thresholds. Treat as On Time.
+                if has_timetable_entries:
+                    base_keys = ['work_start_time', 'late_threshold', 'late_grace_period']
+                    keys = list(base_keys)
+                    if vendor_id_to_check:
+                        keys.extend([f"{k}_vendor_{vendor_id_to_check}" for k in base_keys])
+                    placeholders = ",".join(["?"] * len(keys))
+                    c.execute(f"SELECT key, value FROM system_settings WHERE key IN ({placeholders})", keys)
+                    settings_rows = c.fetchall() or []
+                    settings_map = {r['key']: r['value'] for r in settings_rows}
+                    vendor_suffix = f"_vendor_{vendor_id_to_check}" if vendor_id_to_check else ""
 
-                base_keys = ['work_start_time', 'late_threshold', 'late_grace_period']
-                keys = list(base_keys)
-                if vendor_id_to_check:
-                    keys.extend([f"{k}_vendor_{vendor_id_to_check}" for k in base_keys])
-                placeholders = ",".join(["?"] * len(keys))
-                c.execute(f"SELECT key, value FROM system_settings WHERE key IN ({placeholders})", keys)
-                settings_rows = c.fetchall() or []
-                settings_map = {r['key']: r['value'] for r in settings_rows}
-                vendor_suffix = f"_vendor_{vendor_id_to_check}" if vendor_id_to_check else ""
+                    raw_late_threshold = (settings_map.get(f"late_threshold{vendor_suffix}") or settings_map.get('late_threshold') or '').strip()
+                    raw_work_start = (settings_map.get(f"work_start_time{vendor_suffix}") or settings_map.get('work_start_time') or '').strip()
+                    raw_grace = (settings_map.get(f"late_grace_period{vendor_suffix}") or settings_map.get('late_grace_period') or '').strip()
 
-                raw_late_threshold = (settings_map.get(f"late_threshold{vendor_suffix}") or settings_map.get('late_threshold') or '').strip()
-                raw_work_start = (settings_map.get(f"work_start_time{vendor_suffix}") or settings_map.get('work_start_time') or '').strip()
-                raw_grace = (settings_map.get(f"late_grace_period{vendor_suffix}") or settings_map.get('late_grace_period') or '').strip()
-
-                grace_mins = 15
-                try:
-                    grace_mins = int(raw_grace) if raw_grace != "" else 15
-                except Exception:
                     grace_mins = 15
+                    try:
+                        grace_mins = int(raw_grace) if raw_grace != "" else 15
+                    except Exception:
+                        grace_mins = 15
 
-                threshold_mins = 0
-                if raw_late_threshold:
-                    threshold_mins = to_mins(raw_late_threshold)
-                if threshold_mins <= 0 and raw_work_start:
-                    threshold_mins = to_mins(raw_work_start) + grace_mins
-                if threshold_mins <= 0:
-                    threshold_mins = to_mins('09:00') + grace_mins
+                    threshold_mins = 0
+                    if raw_late_threshold:
+                        threshold_mins = to_mins(raw_late_threshold)
+                    if threshold_mins <= 0 and raw_work_start:
+                        threshold_mins = to_mins(raw_work_start) + grace_mins
+                    if threshold_mins <= 0:
+                        threshold_mins = to_mins('09:00') + grace_mins
 
-                if curr_mins > threshold_mins:
-                    is_late = 1
-                    print(f"Late Detected (Fallback): {name} [ID={person_id}] (Time: {curr_mins}, Threshold: {threshold_mins}, Grace: {grace_mins})")
+                    if curr_mins > threshold_mins:
+                        is_late = 1
+                        print(f"Late Detected (Fallback): {name} [ID={person_id}] (Time: {curr_mins}, Threshold: {threshold_mins}, Grace: {grace_mins})")
+                else:
+                    # No timetable/activities configured: never mark late by fallback.
+                    is_late = 0
             except Exception as e:
                 print(f"Late Fallback Error: {e}")
 
