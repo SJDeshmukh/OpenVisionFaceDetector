@@ -395,3 +395,18 @@ Android: open in Android Studio → build & run
 - Android parent notifications: [ParentActivity.kt](file:///Users/hashteelab/Documents/trae_projects/face_detection/FaceRecognition-Android/app/src/main/java/com/faceplugin/facerecognition/ParentActivity.kt)
 - Kiosk feedback overlays: [IdentifyFragment.java](file:///Users/hashteelab/Documents/trae_projects/face_detection/FaceRecognition-Android/app/src/main/java/com/faceplugin/facerecognition/IdentifyFragment.java)
 - Super Admin dashboard: [SuperAdminDashboard.jsx](file:///Users/hashteelab/Documents/trae_projects/face_detection/web-dashboard/src/pages/SuperAdminDashboard.jsx)
+
+
+
+
+
+
+Useful PM2 Commands
+
+- Status: pm2 ls
+- Logs: pm2 logs face-web-dev
+- Restart: pm2 restart face-web-dev
+- Stop: pm2 stop face-web-dev
+- Autostart on boot: pm2 save && pm2 startup
+
+pm2 start web-dashboard/ecosystem.config.cjs --only face-web-dev

@@ -207,6 +207,9 @@ async function startFrontend() {
     process.stderr.write(`${String(e)}\n`);
   }
 
+  process.stdout.write(`\nLOCAL WEBSITE: http://${host}:${port}\n`);
+  process.stdout.write(`LOCAL API: http://${backendHost}:${backendPort}/api\n\n`);
+
   const provider = String(process.env.TUNNEL_PROVIDER || "cf").toLowerCase();
   if (provider === "custom") {
     const url = process.env.TUNNEL_URL || "";
