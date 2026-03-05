@@ -15,7 +15,7 @@ capture_output = True
 
 # Ensure the database and migrations are run on startup
 def on_starting(server):
-    print("Starting Gunicorn with gevent worker...")
+    print("Starting Gunicorn with eventlet worker...")
     try:
         import db_factory
         import migrate_to_postgres

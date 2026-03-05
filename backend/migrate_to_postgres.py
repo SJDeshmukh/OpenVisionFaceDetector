@@ -9,10 +9,6 @@ import db_factory
 SQLITE_DB_PATH = os.environ.get("DB_PATH", "face_db.sqlite")
 POSTGRES_DB_URL = os.environ.get("DATABASE_URL")
 
-if not POSTGRES_DB_URL:
-    print("Error: DATABASE_URL environment variable is not set.")
-    sys.exit(1)
-
 def get_sqlite_conn():
     conn = sqlite3.connect(SQLITE_DB_PATH)
     conn.row_factory = sqlite3.Row
