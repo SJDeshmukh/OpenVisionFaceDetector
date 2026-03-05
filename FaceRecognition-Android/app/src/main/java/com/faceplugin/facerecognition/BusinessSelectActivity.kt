@@ -45,7 +45,11 @@ class BusinessSelectActivity : AppCompatActivity() {
         val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
         var initialUrl = prefs.getString("server_url", null)
         if (initialUrl == legacyLocalUrl) {
-            initialUrl = currentLocalUrl
+            initialUrl = RetrofitClient.getBaseUrl()
+            prefs.edit().putString("server_url", initialUrl).apply()
+        }
+        if (!initialUrl.isNullOrBlank() && initialUrl.contains("ngrok-free.dev")) {
+            initialUrl = RetrofitClient.getBaseUrl()
             prefs.edit().putString("server_url", initialUrl).apply()
         }
         if (!initialUrl.isNullOrBlank()) {

@@ -84,7 +84,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     static int PREVIEW_WIDTH = 720;
     static int PREVIEW_HEIGHT = 1280;
 
-    public static String BASE_URL = "https://bolometric-lower-joaquina.ngrok-free.dev"; // Default
+    public static String BASE_URL = "https://p01--openvisionfacedetector--g4rz8tx5rcc5.code.run"; 
     private Socket mSocket;
 
     private TextToSpeech tts;
@@ -142,7 +142,10 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
 
         // --- Socket.IO Init ---
         android.content.SharedPreferences sharedPref = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
-        String serverUrl = sharedPref.getString("server_url", BASE_URL);
+        String serverUrl = sharedPref.getString("server_url", null);
+        if (serverUrl == null || serverUrl.isEmpty()) {
+            serverUrl = RetrofitClient.getBaseUrl();
+        }
         if (serverUrl != null && !serverUrl.isEmpty()) {
             try {
                 IO.Options options = new IO.Options();

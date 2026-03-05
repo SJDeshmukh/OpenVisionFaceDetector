@@ -52,13 +52,19 @@ public class SplashActivity extends AppCompatActivity {
             SharedPreferences prefs = getSharedPreferences("app_prefs", MODE_PRIVATE);
             String targetUrl = prefs.getString("server_url", null);
             if (targetUrl == null || targetUrl.isEmpty()) {
-                targetUrl = LOCAL_URL;
+                targetUrl = RetrofitClient.getBaseUrl();
                 prefs.edit().putString("server_url", targetUrl).apply();
             }
             if (LEGACY_LOCAL_URL.equals(targetUrl)) {
-                targetUrl = LOCAL_URL;
+                targetUrl = RetrofitClient.getBaseUrl();
                 prefs.edit().putString("server_url", targetUrl).apply();
             }
+            try {
+                if (targetUrl != null && targetUrl.contains("ngrok-free.dev")) {
+                    targetUrl = RetrofitClient.getBaseUrl();
+                    prefs.edit().putString("server_url", targetUrl).apply();
+                }
+            } catch (Exception ignored) {}
 
             RetrofitClient.setBaseUrl(targetUrl);
             try {

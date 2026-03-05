@@ -6403,6 +6403,38 @@ def parent_login():
                     conn.rollback()
                 except Exception:
                     pass
+        if row and vendor_id and actual_vendor_id and str(actual_vendor_id) != str(vendor_id):
+            try:
+                c.execute(
+                    "SELECT id, custom_data FROM faces WHERE vendor_id = ? AND phone LIKE ?",
+                    (vendor_id, f"%{mobile_tail}%"),
+                )
+                vv = c.fetchall() or []
+                ok = False
+                for st in vv:
+                    try:
+                        cd = _row_get(st, 1, "custom_data")
+                        sn = _extract_student_number_from_custom_data(cd, fallback_search_text=cd)
+                        if sn == str(student_id).strip():
+                            ok = True
+                            resolved_person_id = _row_get(st, 0, "id")
+                            break
+                    except Exception:
+                        continue
+                if ok:
+                    pid_tmp = _row_get(row, 0, "id")
+                    try:
+                        c.execute("UPDATE parent_users SET vendor_id = ? WHERE id = ?", (vendor_id, pid_tmp))
+                        conn.commit()
+                    except Exception:
+                        pass
+                    actual_vendor_id = vendor_id
+                else:
+                    row = None
+                    actual_vendor_id = None
+            except Exception:
+                row = None
+                actual_vendor_id = None
 
         if not row:
             print(f"DEBUG: Parent user not found in parent_users, checking faces table for phone {mobile_number} and vendor {vendor_id}")

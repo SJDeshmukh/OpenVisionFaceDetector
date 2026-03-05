@@ -70,7 +70,7 @@ import java.net.URISyntaxException;
 
 public class CameraActivity extends AppCompatActivity implements TextToSpeech.OnInitListener {
 
-    public static String BASE_URL = "https://bolometric-lower-joaquina.ngrok-free.dev"; // Default
+    public static String BASE_URL = "https://p01--openvisionfacedetector--g4rz8tx5rcc5.code.run"; 
     private Socket mSocket;
     {
         try {
@@ -112,7 +112,10 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
 
         // --- Socket.IO Init ---
         android.content.SharedPreferences sharedPref = getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
-        String serverUrl = sharedPref.getString("server_url", BASE_URL);
+        String serverUrl = sharedPref.getString("server_url", null);
+        if (serverUrl == null || serverUrl.isEmpty()) {
+            serverUrl = RetrofitClient.getBaseUrl();
+        }
         if (serverUrl != null && !serverUrl.isEmpty()) {
             try {
                 IO.Options options = new IO.Options();
