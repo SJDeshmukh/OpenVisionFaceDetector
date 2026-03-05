@@ -1732,13 +1732,24 @@ def init_db():
         import db_factory
         target_path = getattr(db_factory, "DB_PATH", None)
         if target_path:
-            conn = sqlite3.connect(target_path)
+            conn = sqlite3.connect(target_path, timeout=15, check_same_thread=False)
         else:
             conn = get_db_connection()
     except Exception:
         conn = get_db_connection()
     c = conn.cursor()
-    c.execute("PRAGMA journal_mode=WAL")
+    try:
+        c.execute("PRAGMA journal_mode=WAL")
+    except Exception:
+        pass
+    try:
+        c.execute("PRAGMA synchronous=NORMAL")
+    except Exception:
+        pass
+    try:
+        c.execute("PRAGMA busy_timeout=10000")
+    except Exception:
+        pass
     c.execute('''CREATE TABLE IF NOT EXISTS faces
                  (name TEXT PRIMARY KEY, 
                   templates TEXT, 
@@ -1924,7 +1935,18 @@ def init_db():
     }
     
     for key, val in default_settings.items():
-        c.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)", (key, val))
+        attempt = 0
+        while True:
+            try:
+                c.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)", (key, val))
+                break
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower() and attempt < 3:
+                    time.sleep(0.15 * (attempt + 1))
+                    attempt += 1
+                    continue
+                else:
+                    raise
 
     # --- SaaS Tables ---
     # Vendors Table
@@ -2316,6 +2338,277 @@ def impersonate_vendor():
         "username": user['username'],
         "role": user['role']
     })
+
+# --- Device Management (Super Admin) ---
+
+@greeting_bp.route("/admin/vendors/<int:vendor_id>/devices", methods=["GET"])
+@super_admin_required
+def list_vendor_devices(vendor_id):
+    try:
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        # Ensure table exists for SQLite environments
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS vendor_devices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                vendor_id INTEGER,
+                device_id TEXT,
+                device_name TEXT,
+                registered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                last_login_at DATETIME
+            )
+        """)
+        c.execute("SELECT id, device_id, device_name, registered_at, last_login_at FROM vendor_devices WHERE vendor_id = ? ORDER BY registered_at DESC", (vendor_id,))
+        rows = [dict(row) for row in c.fetchall() or []]
+        conn.close()
+        return jsonify({"devices": rows})
+    except Exception as e:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 500
+
+@greeting_bp.route("/admin/vendors/<int:vendor_id>/devices/<device_id>", methods=["PUT"])
+@super_admin_required
+def update_vendor_device_name(vendor_id, device_id):
+    data = request.json or {}
+    new_name = str(data.get("device_name") or "").strip()
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT id FROM vendor_devices WHERE vendor_id = ? AND device_id = ? LIMIT 1", (vendor_id, device_id))
+        row = c.fetchone()
+        if new_name:
+            if row:
+                c.execute("UPDATE vendor_devices SET device_name = ?, last_login_at = CURRENT_TIMESTAMP WHERE vendor_id = ? AND device_id = ?", (new_name, vendor_id, device_id))
+            else:
+                c.execute("INSERT INTO vendor_devices (vendor_id, device_id, device_name) VALUES (?, ?, ?)", (vendor_id, device_id, new_name))
+            try:
+                ev = {"vendor_id": vendor_id, "device_id": device_id, "device_name": new_name}
+                socketio.emit("device_name_updated", ev, room=f"vendor_{vendor_id}")
+            except Exception:
+                pass
+        else:
+            # Unassign device name: clear friendly name and free any slot assignment
+            if row:
+                try:
+                    c.execute("UPDATE vendor_devices SET device_name = NULL WHERE vendor_id = ? AND device_id = ?", (vendor_id, device_id))
+                except Exception:
+                    c.execute("UPDATE vendor_devices SET device_name = '' WHERE vendor_id = ? AND device_id = ?", (vendor_id, device_id))
+            # Clear any slot assignment for this device
+            try:
+                c.execute("UPDATE vendor_device_slots SET assigned_device_id = NULL, assigned_at = NULL WHERE vendor_id = ? AND assigned_device_id = ?", (vendor_id, device_id))
+            except Exception:
+                pass
+        conn.commit()
+        conn.close()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        try:
+            conn.rollback()
+            conn.close()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 500
+
+@greeting_bp.route("/admin/vendors/<int:vendor_id>/device-slots", methods=["GET"])
+@super_admin_required
+def list_vendor_device_slots(vendor_id):
+    try:
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS vendor_device_slots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                vendor_id INTEGER,
+                slot_name TEXT,
+                assigned_device_id TEXT,
+                assigned_at DATETIME,
+                UNIQUE(vendor_id, slot_name)
+            )
+        """)
+        c.execute("SELECT id, slot_name, assigned_device_id, assigned_at FROM vendor_device_slots WHERE vendor_id = ? ORDER BY id ASC", (vendor_id,))
+        rows = [dict(row) for row in c.fetchall() or []]
+        conn.close()
+        return jsonify({"slots": rows})
+    except Exception as e:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 500
+
+@greeting_bp.route("/admin/vendors/<int:vendor_id>/device-slots", methods=["PUT"])
+@super_admin_required
+def set_vendor_device_slots(vendor_id):
+    data = request.json or {}
+    slots = data.get("slots") or []
+    if not isinstance(slots, list):
+        return jsonify({"error": "slots must be a list"}), 400
+    slots = [str(s).strip() for s in slots if str(s or "").strip() != ""]
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS vendor_device_slots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                vendor_id INTEGER,
+                slot_name TEXT,
+                assigned_device_id TEXT,
+                assigned_at DATETIME,
+                UNIQUE(vendor_id, slot_name)
+            )
+        """)
+        # Upsert slots
+        for s in slots:
+            try:
+                c.execute("INSERT OR IGNORE INTO vendor_device_slots (vendor_id, slot_name) VALUES (?, ?)", (vendor_id, s))
+            except Exception:
+                pass
+        # Remove slots not present if they are unassigned
+        q_marks = ",".join(["?"] * len(slots)) if slots else ""
+        if slots:
+            c.execute(f"DELETE FROM vendor_device_slots WHERE vendor_id = ? AND (assigned_device_id IS NULL OR assigned_device_id = '') AND slot_name NOT IN ({q_marks})", [vendor_id, *slots])
+        else:
+            # If empty list provided, do not delete assigned slots
+            c.execute("DELETE FROM vendor_device_slots WHERE vendor_id = ? AND (assigned_device_id IS NULL OR assigned_device_id = '')", (vendor_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        try:
+            conn.rollback()
+            conn.close()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 500
+
+# --- Mobile Device Slot Assignment (Vendor/Admin) ---
+@greeting_bp.route("/mobile/device-slots", methods=["GET"])
+def mobile_list_slots():
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+    try:
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS vendor_device_slots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                vendor_id INTEGER,
+                slot_name TEXT,
+                assigned_device_id TEXT,
+                assigned_at DATETIME,
+                UNIQUE(vendor_id, slot_name)
+            )
+        """)
+        c.execute("SELECT slot_name FROM vendor_device_slots WHERE vendor_id = ? AND (assigned_device_id IS NULL OR assigned_device_id = '') ORDER BY id ASC", (vendor_id,))
+        rows = [r[0] if not hasattr(r, 'keys') else r['slot_name'] for r in (c.fetchall() or [])]
+        conn.close()
+        return jsonify({"slots": rows})
+    except Exception as e:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 500
+
+@greeting_bp.route("/mobile/device-info", methods=["GET"])
+def mobile_device_info():
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+    try:
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        # Resolve current device_id from token
+        auth_header = request.headers.get('Authorization')
+        token = extract_token(auth_header)
+        device_id = None
+        if token:
+            c.execute("SELECT device_id FROM active_sessions WHERE token = ? LIMIT 1", (token,))
+            row = c.fetchone()
+            if row:
+                try:
+                    device_id = row['device_id']
+                except Exception:
+                    device_id = row[0]
+        device_name = None
+        if device_id:
+            c.execute("SELECT device_name FROM vendor_devices WHERE vendor_id = ? AND device_id = ? LIMIT 1", (vendor_id, device_id))
+            r = c.fetchone()
+            if r:
+                try:
+                    device_name = r['device_name']
+                except Exception:
+                    device_name = r[0]
+        conn.close()
+        return jsonify({"device_id": device_id, "device_name": device_name})
+    except Exception as e:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 500
+
+@greeting_bp.route("/mobile/assign-slot", methods=["POST"])
+def mobile_assign_slot():
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+    data = request.json or {}
+    device_id = str(data.get("device_id") or "").strip()
+    slot_name = str(data.get("slot_name") or "").strip()
+    if not device_id or not slot_name:
+        return jsonify({"error": "device_id and slot_name required"}), 400
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        # Ensure slot exists
+        c.execute("SELECT id, assigned_device_id FROM vendor_device_slots WHERE vendor_id = ? AND slot_name = ? LIMIT 1", (vendor_id, slot_name))
+        row = c.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"error": "Slot not found"}), 404
+        current_assigned = None
+        try:
+            current_assigned = row['assigned_device_id']
+        except Exception:
+            current_assigned = row[1]
+        # If assigned to another device, block
+        if current_assigned and current_assigned != device_id:
+            conn.close()
+            return jsonify({"error": "Slot already assigned"}), 409
+        # Clear any previous assignment for this device on other slots (reassignment)
+        try:
+            c.execute("UPDATE vendor_device_slots SET assigned_device_id = NULL, assigned_at = NULL WHERE vendor_id = ? AND assigned_device_id = ? AND slot_name != ?", (vendor_id, device_id, slot_name))
+        except Exception:
+            pass
+        # Assign target slot to this device
+        now = datetime.now()
+        c.execute("UPDATE vendor_device_slots SET assigned_device_id = ?, assigned_at = ? WHERE vendor_id = ? AND slot_name = ?", (device_id, now, vendor_id, slot_name))
+        # Sync friendly name into vendor_devices
+        try:
+            c.execute("UPDATE vendor_devices SET device_name = ?, last_login_at = ? WHERE vendor_id = ? AND device_id = ?", (slot_name, now, vendor_id, device_id))
+        except Exception:
+            pass
+        conn.commit()
+        try:
+            ev = {"vendor_id": vendor_id, "device_id": device_id, "device_name": slot_name}
+            socketio.emit("device_name_updated", ev, room=f"vendor_{vendor_id}")
+        except Exception:
+            pass
+        conn.close()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        try:
+            conn.rollback()
+            conn.close()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 500
 
 # --- Company & Timetable Endpoints ---
 
@@ -5762,6 +6055,37 @@ def login():
             if row:
                 company_id = row[0]
             
+            # If this is a mobile login, check if vendor has predefined device slots
+            device_slot_required = False
+            available_slots = []
+            try:
+                if platform == 'mobile':
+                    # Ensure slots table
+                    c.execute("""
+                        CREATE TABLE IF NOT EXISTS vendor_device_slots (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            vendor_id INTEGER,
+                            slot_name TEXT,
+                            assigned_device_id TEXT,
+                            assigned_at DATETIME,
+                            UNIQUE(vendor_id, slot_name)
+                        )
+                    """)
+                    # Already assigned?
+                    if device_id:
+                        c.execute("SELECT slot_name FROM vendor_device_slots WHERE vendor_id = ? AND assigned_device_id = ? LIMIT 1", (user_vendor_id, device_id))
+                        assigned_row = c.fetchone()
+                        if not assigned_row:
+                            # Gather unassigned slots
+                            c.execute("SELECT slot_name FROM vendor_device_slots WHERE vendor_id = ? AND (assigned_device_id IS NULL OR assigned_device_id = '') ORDER BY id ASC", (user_vendor_id,))
+                            available_rows = c.fetchall() or []
+                            available_slots = [r[0] if not hasattr(r, 'keys') else (r['slot_name']) for r in available_rows]
+                            if len(available_slots) > 0:
+                                device_slot_required = True
+            except Exception as _e:
+                device_slot_required = False
+                available_slots = []
+            
             # --- Web Session Limits ---
             if platform == 'web' and user['role'] == 'vendor_admin':
                 max_web = 1
@@ -5819,7 +6143,9 @@ def login():
             "backend_service_id": backend_service_id,
             "vendor_config": vendor_config,
             "features": features,
-            "vertical": vendor_vertical
+            "vertical": vendor_vertical,
+            "device_slot_required": bool(locals().get('device_slot_required', False)),
+            "available_slots": locals().get('available_slots', [])
         })
     else:
         print("Login Failed: Invalid credentials") # DEBUG LOG
@@ -7452,17 +7778,68 @@ def person_event():
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
 
+    # Ensure attendance has device_id column (SQLite safe migration)
+    try:
+        c.execute("PRAGMA table_info(attendance)")
+        cols = [row[1] if isinstance(row, (list, tuple)) else row['name'] for row in c.fetchall() or []]
+        if 'device_id' not in cols:
+            try:
+                c.execute("ALTER TABLE attendance ADD COLUMN device_id TEXT")
+                conn.commit()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Resolve current device_id from session token (preferred) or payload fallback
+    current_device_id = None
+    try:
+        auth_header2 = request.headers.get('Authorization')
+        token2 = extract_token(auth_header2)
+        if token2:
+            try:
+                c.execute("SELECT device_id FROM active_sessions WHERE token = ? LIMIT 1", (token2,))
+                row_d = c.fetchone()
+                if row_d:
+                    # RealDictCursor or sqlite row
+                    try:
+                        current_device_id = row_d['device_id']
+                    except Exception:
+                        current_device_id = row_d[0]
+            except Exception:
+                current_device_id = None
+    except Exception:
+        current_device_id = None
+    # Fallback to body field if provided by client (future-proof)
+    if not current_device_id:
+        try:
+            current_device_id = str(data.get('device_id') or '').strip() or None
+        except Exception:
+            current_device_id = None
+
     # Determine Expected Status EARLY (for better activity matching)
     if person_id:
         if vendor_id_to_check:
-            c.execute("SELECT * FROM attendance WHERE person_id = ? AND vendor_id = ? ORDER BY timestamp DESC LIMIT 1", (person_id, vendor_id_to_check))
+            if current_device_id:
+                c.execute("SELECT * FROM attendance WHERE person_id = ? AND vendor_id = ? AND device_id = ? ORDER BY timestamp DESC LIMIT 1", (person_id, vendor_id_to_check, current_device_id))
+            else:
+                c.execute("SELECT * FROM attendance WHERE person_id = ? AND vendor_id = ? ORDER BY timestamp DESC LIMIT 1", (person_id, vendor_id_to_check))
         else:
-            c.execute("SELECT * FROM attendance WHERE person_id = ? ORDER BY timestamp DESC LIMIT 1", (person_id,))
+            if current_device_id:
+                c.execute("SELECT * FROM attendance WHERE person_id = ? AND device_id = ? ORDER BY timestamp DESC LIMIT 1", (person_id, current_device_id))
+            else:
+                c.execute("SELECT * FROM attendance WHERE person_id = ? ORDER BY timestamp DESC LIMIT 1", (person_id,))
     else:
         if vendor_id_to_check:
-            c.execute("SELECT * FROM attendance WHERE name = ? AND vendor_id = ? ORDER BY timestamp DESC LIMIT 1", (name, vendor_id_to_check))
+            if current_device_id:
+                c.execute("SELECT * FROM attendance WHERE name = ? AND vendor_id = ? AND device_id = ? ORDER BY timestamp DESC LIMIT 1", (name, vendor_id_to_check, current_device_id))
+            else:
+                c.execute("SELECT * FROM attendance WHERE name = ? AND vendor_id = ? ORDER BY timestamp DESC LIMIT 1", (name, vendor_id_to_check))
         else:
-            c.execute("SELECT * FROM attendance WHERE name = ? ORDER BY timestamp DESC LIMIT 1", (name,))
+            if current_device_id:
+                c.execute("SELECT * FROM attendance WHERE name = ? AND device_id = ? ORDER BY timestamp DESC LIMIT 1", (name, current_device_id))
+            else:
+                c.execute("SELECT * FROM attendance WHERE name = ? ORDER BY timestamp DESC LIMIT 1", (name,))
     last_record = c.fetchone()
     
     expected_status = 'CHECK_IN'
@@ -8069,8 +8446,18 @@ def person_event():
     
     current_time = current_time_obj
     try:
-        c.execute("INSERT INTO attendance (name, timestamp, status, captured_image, activity, is_late, vendor_id, person_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", 
-                  (name, current_time, new_status, captured_image, activity_name, is_late, vendor_id_to_check, person_id))
+        # Insert with device_id if column exists, else fallback
+        try:
+            if current_device_id is not None:
+                c.execute("INSERT INTO attendance (name, timestamp, status, captured_image, activity, is_late, vendor_id, person_id, device_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", 
+                          (name, current_time, new_status, captured_image, activity_name, is_late, vendor_id_to_check, person_id, current_device_id))
+            else:
+                c.execute("INSERT INTO attendance (name, timestamp, status, captured_image, activity, is_late, vendor_id, person_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", 
+                          (name, current_time, new_status, captured_image, activity_name, is_late, vendor_id_to_check, person_id))
+        except Exception:
+            # Fallback if device_id column not present
+            c.execute("INSERT INTO attendance (name, timestamp, status, captured_image, activity, is_late, vendor_id, person_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", 
+                      (name, current_time, new_status, captured_image, activity_name, is_late, vendor_id_to_check, person_id))
         conn.commit()
         print(f"Attendance Recorded: {name} - {new_status} ({activity_name}) Late={is_late} at {current_time}")
         try:
@@ -8080,8 +8467,20 @@ def person_event():
                 "status": new_status,
                 "is_late": is_late,
                 "activity": activity_name,
-                "vendor_id": vendor_id_to_check
+                "vendor_id": vendor_id_to_check,
+                "device_id": current_device_id
             }
+            try:
+                if vendor_id_to_check and current_device_id:
+                    c.execute("SELECT device_name FROM vendor_devices WHERE vendor_id = ? AND device_id = ? LIMIT 1", (vendor_id_to_check, current_device_id))
+                    rdn = c.fetchone()
+                    if rdn:
+                        try:
+                            ev["device_name"] = rdn['device_name']
+                        except Exception:
+                            ev["device_name"] = rdn[0]
+            except Exception:
+                pass
             if vendor_id_to_check:
                 socketio.emit('attendance_updated', ev, room=f"vendor_{vendor_id_to_check}")
                 pid_lookup = person_id
@@ -8226,11 +8625,20 @@ def get_attendance():
     name = request.args.get('name')
     person_id = request.args.get('person_id')
     status = request.args.get('status')
+    device_id_filter = request.args.get('device_id')
+    device_name_filter = request.args.get('device_name')
 
     query = """
-        SELECT a.*, f.department, f.designation, f.shift, f.phone, f.custom_data AS face_custom_data
+        SELECT a.*, 
+               f.department, f.designation, f.shift, f.phone, f.custom_data AS face_custom_data,
+               a.device_id AS device_id,
+               vd.device_name AS device_name
         FROM attendance a
-        JOIN faces f ON (a.person_id IS NOT NULL AND a.person_id = f.id) OR (a.person_id IS NULL AND a.name = f.name AND f.vendor_id = a.vendor_id)
+        JOIN faces f 
+             ON (a.person_id IS NOT NULL AND a.person_id = f.id) 
+             OR (a.person_id IS NULL AND a.name = f.name AND f.vendor_id = a.vendor_id)
+        LEFT JOIN vendor_devices vd
+             ON vd.vendor_id = a.vendor_id AND vd.device_id = a.device_id
         WHERE 1=1
     """
     params = []
@@ -8274,6 +8682,14 @@ def get_attendance():
             params.append(pid)
         except Exception:
             return jsonify({"error": "Invalid person_id"}), 400
+
+    # Device filters
+    if device_id_filter and str(device_id_filter).strip() != "":
+        query += " AND a.device_id = ?"
+        params.append(str(device_id_filter).strip())
+    if device_name_filter and str(device_name_filter).strip() != "":
+        query += " AND COALESCE(vd.device_name, '') = ?"
+        params.append(str(device_name_filter).strip())
 
     if status and status != "All Statuses":
         # Map UI status to DB status if needed, or just use DB status
@@ -8347,6 +8763,8 @@ def get_attendance():
             "activity": row["activity"] if "activity" in row.keys() else "",
             "captured_image": img,
             "vendor_id": row["vendor_id"] if "vendor_id" in row.keys() else None,
+            "device_id": row["device_id"] if "device_id" in row.keys() else None,
+            "device_name": row["device_name"] if "device_name" in row.keys() else None,
             "department": row["department"] if "department" in row.keys() else "",
             "designation": row["designation"] if "designation" in row.keys() else "",
             "shift": row["shift"] if "shift" in row.keys() else "",

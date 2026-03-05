@@ -33,8 +33,10 @@ const Attendance = () => {
     designation: '',
     shift: '',
     phone: '',
-    name: ''
+    name: '',
+    deviceName: ''
   });
+  const [deviceOptions, setDeviceOptions] = useState([]);
   const { user } = useAuth();
   const filtersRef = useRef(filters);
   useEffect(() => {
@@ -116,8 +118,20 @@ const Attendance = () => {
         }
       });
 
+      if (filters.deviceName && String(filters.deviceName).trim() !== '') {
+        params.append('device_name', filters.deviceName);
+      }
       const response = await axios.get(`${API_URL}/attendance?${params.toString()}`);
-      setLogs(response.data?.attendance || []);
+      const list = response.data?.attendance || [];
+      setLogs(list);
+      try {
+        const setNames = new Set();
+        list.forEach(l => {
+          const dn = l.device_name || '';
+          if (dn && dn.trim() !== '') setNames.add(dn.trim());
+        });
+        setDeviceOptions(Array.from(setNames).sort());
+      } catch (e) {}
       setError(null);
     } catch (error) {
       console.error("Error fetching logs:", error);
@@ -280,6 +294,19 @@ const Attendance = () => {
               onChange={(e) => setFilters({...filters, endDate: e.target.value})}
               className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-600 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
             />
+        </div>
+
+        <div className="w-full md:w-52">
+            <select
+              value={filters.deviceName || ''}
+              onChange={(e) => setFilters({...filters, deviceName: e.target.value})}
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-600 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+            >
+              <option value="">All Devices</option>
+              {deviceOptions.map(opt => (
+                <option key={opt} value={opt}>{opt}</option>
+              ))}
+            </select>
         </div>
 
         {Object.entries(filterOptions.dynamic_filters || {}).map(([key, cfg]) => (

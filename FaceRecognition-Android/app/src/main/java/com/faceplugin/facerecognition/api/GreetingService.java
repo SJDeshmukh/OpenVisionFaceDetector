@@ -77,4 +77,13 @@ public interface GreetingService {
     @GET("api/public/attendance-by-student")
     Call<com.google.gson.JsonObject> attendanceByStudentWithDate(@Query("student_number") String studentNumber,
                                                                  @Query("date") String date);
+
+    // Mobile device slot management
+    @GET("api/mobile/device-slots")
+    Call<com.google.gson.JsonObject> getMobileDeviceSlots(@Query("include_deleted") boolean includeDeleted);
+    @POST("api/mobile/assign-slot")
+    Call<com.google.gson.JsonObject> assignMobileDeviceSlot(@Body com.google.gson.JsonObject body);
+
+    @GET("api/mobile/device-info")
+    Call<com.google.gson.JsonObject> getMobileDeviceInfo();
 }

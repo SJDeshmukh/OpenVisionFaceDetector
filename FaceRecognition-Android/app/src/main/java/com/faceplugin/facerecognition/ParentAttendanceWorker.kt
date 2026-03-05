@@ -79,6 +79,7 @@ class ParentAttendanceWorker(appContext: Context, params: WorkerParameters) : Wo
         }
     }
 
+    @android.annotation.SuppressLint("MissingPermission")
     private fun showNotification(name: String, status: String, timestamp: String, activity: String) {
         createChannel()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {

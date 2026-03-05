@@ -28,6 +28,12 @@ public class LoginResponse {
     @SerializedName("error")
     private String error;
 
+    // Device slot onboarding (mobile)
+    @SerializedName("device_slot_required")
+    private Boolean deviceSlotRequired;
+    @SerializedName("available_slots")
+    private JsonElement availableSlots;
+
     public String getStatus() { return status; }
     public String getRole() { return role; }
     public String getUsername() { return username; }
@@ -36,4 +42,6 @@ public class LoginResponse {
     public Integer getCompanyId() { return companyId; }
     public JsonElement getVendorConfig() { return vendorConfig; }
     public String getError() { return error; }
+    public Boolean getDeviceSlotRequired() { return deviceSlotRequired; }
+    public JsonElement getAvailableSlots() { return availableSlots; }
 }

@@ -18,6 +18,8 @@ const LiveAttendance = () => {
   const { user } = useAuth();
   const [liveImage, setLiveImage] = useState(null);
   const [logs, setLogs] = useState([]);
+  const [devices, setDevices] = useState([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState('');
   const [isConnected, setIsConnected] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
   const [isPublishing, setIsPublishing] = useState(false);
@@ -38,7 +40,11 @@ const LiveAttendance = () => {
     if (!user) return;
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`${API_URL}/stream/view`, {
+        const url = new URL(`${API_URL}/stream/view`);
+        if (selectedDeviceId && selectedDeviceId.trim() !== '') {
+          url.searchParams.set('device_id', selectedDeviceId);
+        }
+        const res = await fetch(url.toString(), {
           headers: {
             'Authorization': `Bearer ${user.token}`
           }
@@ -56,7 +62,7 @@ const LiveAttendance = () => {
       }
     }, 2000);
     return () => clearInterval(interval);
-  }, [user]);
+  }, [user, selectedDeviceId]);
 
   const stopPublishing = async () => {
     try {
@@ -167,7 +173,12 @@ useEffect(() => {
 
   const fetchLogs = async () => {
     try {
-      const res = await axios.get(`${API_URL}/attendance?limit=50`);
+      const params = new URLSearchParams();
+      params.append('limit', '50');
+      if (selectedDeviceId && selectedDeviceId.trim() !== '') {
+        params.append('device_id', selectedDeviceId);
+      }
+      const res = await axios.get(`${API_URL}/attendance?${params.toString()}`);
       const allLogs = res.data.attendance || [];
       const sorted = allLogs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)).slice(0, 50);
       setLogs(sorted);
@@ -177,6 +188,26 @@ useEffect(() => {
 
   useEffect(() => {
     fetchLogs();
+  }, [user, selectedDeviceId]);
+
+  const fetchActiveDevices = async () => {
+    try {
+      const res = await axios.get(`${API_URL}/stream/active-devices`, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      const list = res?.data?.devices || [];
+      setDevices(list);
+      if (!selectedDeviceId && list.length > 0) {
+        setSelectedDeviceId(list[0].device_id);
+      }
+    } catch (e) {}
+  };
+
+  useEffect(() => {
+    if (!user) return;
+    fetchActiveDevices();
+    const t = setInterval(fetchActiveDevices, 5000);
+    return () => clearInterval(t);
   }, [user]);
 
   useEffect(() => {
@@ -213,6 +244,17 @@ useEffect(() => {
               <p className="text-slate-500 text-sm">Real-time surveillance stream</p>
             </div>
             <div className="flex items-center gap-3">
+              <select
+                value={selectedDeviceId}
+                onChange={(e) => setSelectedDeviceId(e.target.value)}
+                className="px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-sm text-slate-700"
+              >
+                {devices.length === 0 ? (
+                  <option value="">No active devices</option>
+                ) : devices.map(d => (
+                  <option key={d.device_id} value={d.device_id}>{d.device_name || d.device_id}</option>
+                ))}
+              </select>
               <button
                 onClick={() => (isPublishing ? stopPublishing() : startPublishing())}
                 className={`px-3 py-1.5 rounded-lg text-sm font-medium border ${isPublishing ? 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'}`}

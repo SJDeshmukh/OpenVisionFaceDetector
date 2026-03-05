@@ -153,6 +153,13 @@ class MainActivity : AppCompatActivity() {
             performLogout("Logged out.")
         }
         tvNetworkStatus = findViewById(R.id.tv_network_status)
+        try {
+            val dn = getSharedPreferences("app_prefs", MODE_PRIVATE).getString("device_name", null)
+            val tvPlace = findViewById<TextView>(R.id.tv_device_name)
+            if (!dn.isNullOrBlank() && tvPlace != null) {
+                tvPlace.text = "— $dn"
+            }
+        } catch (_: Exception) {}
         
         bottomNav.setOnItemSelectedListener { item ->
             when (item.itemId) {
@@ -180,6 +187,8 @@ class MainActivity : AppCompatActivity() {
 
         fetchCooldownSettings()
         setupAuthSocket()
+        // Ensure device name is up to date on launch
+        refreshDeviceName()
     }
 
     private fun setupAuthSocket() {
@@ -216,6 +225,26 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             
+            // Sync device name in real-time
+            mSocket?.on("device_name_updated") { args ->
+                if (args.isNotEmpty()) {
+                    try {
+                        val obj = args[0] as JSONObject
+                        val targetDid = obj.optString("device_id", "")
+                        val newName = obj.optString("device_name", "")
+                        val myDid = android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.ANDROID_ID)
+                        if (targetDid == myDid && newName.isNotBlank()) {
+                            val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+                            prefs.edit().putString("device_name", newName).apply()
+                            runOnUiThread {
+                                val tvPlace = findViewById<TextView>(R.id.tv_device_name)
+                                tvPlace?.text = "— $newName"
+                            }
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
+            
             mSocket?.on("force_logout_mobile") { args ->
                 if (args.isNotEmpty()) {
                     val data = args[0] as JSONObject
@@ -243,6 +272,28 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             e.printStackTrace()
         }
+    }
+
+    private fun refreshDeviceName() {
+        try {
+            RetrofitClient.getService().getMobileDeviceInfo().enqueue(object: Callback<com.google.gson.JsonObject> {
+                override fun onResponse(call: Call<com.google.gson.JsonObject>, response: Response<com.google.gson.JsonObject>) {
+                    if (response.isSuccessful) {
+                        val obj = response.body()
+                        val dn = obj?.get("device_name")?.asString
+                        if (!dn.isNullOrBlank()) {
+                            val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+                            prefs.edit().putString("device_name", dn).apply()
+                            runOnUiThread {
+                                val tvPlace = findViewById<TextView>(R.id.tv_device_name)
+                                tvPlace?.text = "— $dn"
+                            }
+                        }
+                    }
+                }
+                override fun onFailure(call: Call<com.google.gson.JsonObject>, t: Throwable) {}
+            })
+        } catch (_: Exception) {}
     }
 
     override fun onDestroy() {

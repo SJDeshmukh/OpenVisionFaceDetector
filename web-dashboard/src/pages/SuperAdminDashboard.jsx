@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { Plus, Check, X, Shield, User, Lock, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight, Search, Filter, ArrowLeft, ArrowRight, Eye, Settings, Trash2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
@@ -51,6 +51,10 @@ const SuperAdminDashboard = () => {
   // Features Config
   const [availableFeatures, setAvailableFeatures] = useState([]);
   const [bundleConfig, setBundleConfig] = useState({});
+  const [vendorDevices, setVendorDevices] = useState([]);
+  const [deviceEdits, setDeviceEdits] = useState({});
+  const [deviceSlots, setDeviceSlots] = useState([]);
+  const [newSlotName, setNewSlotName] = useState('');
 
   // Stats State
   const [stats, setStats] = useState({
@@ -85,6 +89,7 @@ const SuperAdminDashboard = () => {
     start: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0],
     end: new Date().toISOString().split('T')[0]
   });
+  const [serverSubEcho, setServerSubEcho] = useState(null);
 
   const fetchBusinessTypes = async () => {
     try {
@@ -103,6 +108,9 @@ const SuperAdminDashboard = () => {
   };
 
   const { socket, joinSuperAdmin } = useSocket();
+  const maxUsersRef = useRef(null);
+  const maxEmployeesRef = useRef(null);
+  const maxWebSessionsRef = useRef(null);
   useEffect(() => {
     fetchVendors();
     fetchFeatures();
@@ -127,6 +135,14 @@ const SuperAdminDashboard = () => {
             fetchEmployeeReport(selectedVendorForDetail.id, selectedEmployeeForDetail);
           }
         }
+        try {
+          const vid = data && data.vendor_id;
+          if (editingVendor?.id && vid === editingVendor.id) {
+            axios.get(`${API_URL}/admin/vendors/${editingVendor.id}/subscription`, {
+              headers: { Authorization: `Bearer ${user?.token}` }
+            }).then(resp => setServerSubEcho(resp.data || null)).catch(() => {});
+          }
+        } catch (_) {}
     });
 
     socket.on('active_devices_update', (data) => {
@@ -148,7 +164,7 @@ const SuperAdminDashboard = () => {
         socket.off('active_devices_update');
         socket.off('device_heartbeat');
     };
-  }, [socket, selectedVendorForDetail, detailViewMode, selectedEmployeeForDetail, reportDateRange]);
+  }, [socket, selectedVendorForDetail, detailViewMode, selectedEmployeeForDetail, reportDateRange, editingVendor]);
   
   const fetchStats = async () => {
     try {
@@ -168,6 +184,87 @@ const SuperAdminDashboard = () => {
       });
       setRegistrationTemplates(res.data.templates || {});
     } catch (e) {}
+  };
+
+  const fetchVendorDevices = async (vendorId) => {
+    try {
+      const res = await axios.get(`${API_URL}/admin/vendors/${vendorId}/devices`, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      const list = res?.data?.devices || [];
+      setVendorDevices(list);
+      const edits = {};
+      list.forEach(d => { edits[d.device_id] = d.device_name || ''; });
+      setDeviceEdits(edits);
+    } catch (e) {
+      console.error("Error fetching devices:", e?.response?.data || e);
+      setVendorDevices([]);
+    }
+  };
+
+  const fetchVendorDeviceSlots = async (vendorId) => {
+    try {
+      const res = await axios.get(`${API_URL}/admin/vendors/${vendorId}/device-slots`, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      setDeviceSlots(res?.data?.slots || []);
+    } catch (e) {
+      setDeviceSlots([]);
+    }
+  };
+
+  const saveDeviceSlots = async (vendorId, slots) => {
+    try {
+      await axios.put(`${API_URL}/admin/vendors/${vendorId}/device-slots`, 
+        { slots }, 
+        { headers: { Authorization: `Bearer ${user?.token}` } }
+      );
+      fetchVendorDeviceSlots(vendorId);
+    } catch (e) {
+      alert("Failed to save device slots");
+    }
+  };
+
+  const saveDeviceName = async (vendorId, deviceId, labelOverride) => {
+    const newName = (labelOverride != null ? String(labelOverride) : (deviceEdits?.[deviceId] ?? '')).trim();
+    try {
+      await axios.put(`${API_URL}/admin/vendors/${vendorId}/devices/${encodeURIComponent(deviceId)}`, 
+        { device_name: newName }, 
+        { headers: { Authorization: `Bearer ${user?.token}` } }
+      );
+      // Reflect change locally
+      setVendorDevices(prev => prev.map(d => d.device_id === deviceId ? { ...d, device_name: newName } : d));
+      try {
+        if (selectedVendorForDetail?.id === vendorId) {
+          fetchVendorDeviceSlots(vendorId);
+        }
+      } catch (_) {}
+    } catch (e) {
+      const msg = e?.response?.data?.error || e.message || "Failed to update device name";
+      alert(msg);
+    }
+  };
+
+  const deletePlaceSlot = async (vendorId, slotName) => {
+    if (!slotName) return;
+    if (!window.confirm(`Delete place "${slotName}"? This will unassign any devices using it.`)) return;
+    try {
+      const impacted = (vendorDevices || []).filter(d => (d.device_name || '').trim() === slotName);
+      // 1) Unassign all impacted devices first (backend won't delete assigned slots)
+      await Promise.all(
+        impacted.map(d => {
+          setDeviceEdits(prev => ({ ...prev, [d.device_id]: '' }));
+          return saveDeviceName(vendorId, d.device_id, '');
+        })
+      );
+      // 2) Now remove the slot
+      const remaining = (deviceSlots || [])
+        .filter(x => x.slot_name !== slotName)
+        .map(x => x.slot_name);
+      await saveDeviceSlots(vendorId, remaining);
+    } catch (e) {
+      alert("Failed to delete place");
+    }
   };
 
   const toggleSelected = (id, checked) => {
@@ -270,6 +367,9 @@ const SuperAdminDashboard = () => {
         }
       }
       if (editingVendor) {
+        const liveMaxUsers = maxUsersRef.current ? maxUsersRef.current.value : newVendor.max_users;
+        const liveMaxEmployees = maxEmployeesRef.current ? maxEmployeesRef.current.value : newVendor.max_employees;
+        const liveMaxWeb = maxWebSessionsRef.current ? maxWebSessionsRef.current.value : newVendor.max_web_sessions;
         // Update Mode
         await axios.put(`${API_URL}/admin/vendors/${editingVendor.id}`, {
             company_name: newVendor.company_name,
@@ -292,14 +392,39 @@ const SuperAdminDashboard = () => {
             end_date: newVendor.end_date,
             cost_per_user: newVendor.cost_per_user,
             cost_per_employee: newVendor.cost_per_employee,
-            max_users: newVendor.max_users,
-            max_employees: newVendor.max_employees,
-            max_web_sessions: normalizePositiveInt(newVendor.max_web_sessions, 1),
+            max_users: normalizePositiveInt(liveMaxUsers, 1),
+            max_mobile_devices: normalizePositiveInt(liveMaxUsers, 1),
+            max_employees: normalizePositiveInt(liveMaxEmployees, 1),
+            max_web_sessions: normalizePositiveInt(liveMaxWeb, 1),
             plan_type: 'custom',
             features: newVendor.features
         }, {
             headers: { Authorization: `Bearer ${user?.token}` }
         });
+        try {
+          const subResp = await axios.get(`${API_URL}/admin/vendors/${editingVendor.id}/subscription`, {
+            headers: { Authorization: `Bearer ${user?.token}` }
+          });
+          const sub = subResp.data || {};
+          setNewVendor(prev => ({
+            ...prev,
+            max_users: sub.max_users != null ? String(sub.max_users) : prev.max_users,
+            max_employees: sub.max_employees != null ? String(sub.max_employees) : prev.max_employees,
+            max_web_sessions: sub.max_web_sessions != null ? String(sub.max_web_sessions) : prev.max_web_sessions,
+            cost_per_user: sub.cost_per_user != null ? sub.cost_per_user : prev.cost_per_user,
+            cost_per_employee: sub.cost_per_employee != null ? sub.cost_per_employee : prev.cost_per_employee
+          }));
+          setVendors(prev => prev.map(v => v.id === editingVendor.id ? {
+            ...v,
+            max_users: sub.max_users ?? v.max_users,
+            max_employees: sub.max_employees ?? v.max_employees,
+            max_web_sessions: sub.max_web_sessions ?? v.max_web_sessions,
+            cost_per_user: sub.cost_per_user ?? v.cost_per_user,
+            cost_per_employee: sub.cost_per_employee ?? v.cost_per_employee,
+            max_mobile_devices: sub.max_mobile_devices ?? v.max_mobile_devices
+          } : v));
+          fetchVendors();
+        } catch (_) {}
 
         // Save Registration Config
         await axios.put(`${API_URL}/admin/vendors/${editingVendor.id}/registration-config`, {
@@ -310,17 +435,37 @@ const SuperAdminDashboard = () => {
 
         alert("Vendor Updated Successfully!");
       } else {
+        const liveMaxUsers = maxUsersRef.current ? maxUsersRef.current.value : newVendor.max_users;
+        const liveMaxEmployees = maxEmployeesRef.current ? maxEmployeesRef.current.value : newVendor.max_employees;
+        const liveMaxWeb = maxWebSessionsRef.current ? maxWebSessionsRef.current.value : newVendor.max_web_sessions;
         // Create Mode
         const response = await axios.post(`${API_URL}/admin/vendors`, { 
             ...newVendor, 
-            max_users: newVendor.max_users || 5,
-            max_employees: newVendor.max_employees || 50,
-            max_web_sessions: normalizePositiveInt(newVendor.max_web_sessions, 1)
+            max_users: normalizePositiveInt(liveMaxUsers, 5),
+            max_mobile_devices: normalizePositiveInt(liveMaxUsers, 5),
+            max_employees: normalizePositiveInt(liveMaxEmployees, 50),
+            max_web_sessions: normalizePositiveInt(liveMaxWeb, 1)
         }, {
           headers: { Authorization: `Bearer ${user?.token}` }
         });
 
         const newVendorId = response.data.vendor_id;
+        try {
+          const subResp = await axios.get(`${API_URL}/admin/vendors/${newVendorId}/subscription`, {
+            headers: { Authorization: `Bearer ${user?.token}` }
+          });
+          const sub = subResp.data || {};
+          setVendors(prev => prev.map(v => v.id === newVendorId ? {
+            ...v,
+            max_users: sub.max_users ?? v.max_users,
+            max_employees: sub.max_employees ?? v.max_employees,
+            max_web_sessions: sub.max_web_sessions ?? v.max_web_sessions,
+            cost_per_user: sub.cost_per_user ?? v.cost_per_user,
+            cost_per_employee: sub.cost_per_employee ?? v.cost_per_employee,
+            max_mobile_devices: sub.max_mobile_devices ?? v.max_mobile_devices
+          } : v));
+          fetchVendors();
+        } catch (_) {}
         
         // Save Registration Config for new vendor
         if (registrationConfig.length > 0) {
@@ -359,27 +504,60 @@ const SuperAdminDashboard = () => {
 
   const handleEditClick = async (vendor) => {
     setEditingVendor(vendor);
-    setNewVendor({
-      company_name: vendor.company_name || '',
-      contact_person: vendor.contact_person || '',
-      phone: vendor.phone || '',
-      email: vendor.email || '',
-      start_date: vendor.start_date || '',
-      end_date: vendor.end_date ? vendor.end_date.split(' ')[0] : '',
-      cost_per_user: vendor.cost_per_user || '',
-      cost_per_employee: vendor.cost_per_employee || '',
-      max_users: vendor.max_users || '',
-      max_employees: vendor.max_employees || '',
-      max_web_sessions: normalizePositiveInt(vendor.max_web_sessions, 1),
-      admin_username: vendor.admin_username || '',
-      admin_password: '', // Keep blank
-      user_username: vendor.user_username || '',
-      user_password: '',   // Keep blank
-      frontend_bundle_id: vendor.frontend_bundle_id || 'default_attendance',
-      backend_service_id: vendor.backend_service_id || 'default_api',
-      features: vendor.features || [],
-      vertical: vendor.vertical || ''
-    });
+    try {
+      let sub = null;
+      try {
+        const resp = await axios.get(`${API_URL}/admin/vendors/${vendor.id}/subscription`, {
+          headers: { Authorization: `Bearer ${user?.token}` }
+        });
+        sub = resp.data || null;
+      } catch (e) {
+        sub = null;
+      }
+      setNewVendor({
+        company_name: vendor.company_name || '',
+        contact_person: vendor.contact_person || '',
+        phone: vendor.phone || '',
+        email: vendor.email || '',
+        start_date: (sub && sub.start_date) || vendor.start_date || '',
+        end_date: (sub && sub.end_date) ? String(sub.end_date).split(' ')[0] : (vendor.end_date ? vendor.end_date.split(' ')[0] : ''),
+        cost_per_user: (sub && sub.cost_per_user != null) ? sub.cost_per_user : (vendor.cost_per_user || ''),
+        cost_per_employee: (sub && sub.cost_per_employee != null) ? sub.cost_per_employee : (vendor.cost_per_employee || ''),
+        max_users: (sub && sub.max_users != null) ? String(sub.max_users) : (vendor.max_users || ''),
+        max_employees: (sub && sub.max_employees != null) ? String(sub.max_employees) : (vendor.max_employees || ''),
+        max_web_sessions: (sub && sub.max_web_sessions != null) ? String(sub.max_web_sessions) : String(normalizePositiveInt(vendor.max_web_sessions, 1)),
+        admin_username: vendor.admin_username || '',
+        admin_password: '',
+        user_username: vendor.user_username || '',
+        user_password: '',
+        frontend_bundle_id: vendor.frontend_bundle_id || 'default_attendance',
+        backend_service_id: vendor.backend_service_id || 'default_api',
+        features: vendor.features || [],
+        vertical: vendor.vertical || ''
+      });
+    } catch (e) {
+      setNewVendor({
+        company_name: vendor.company_name || '',
+        contact_person: vendor.contact_person || '',
+        phone: vendor.phone || '',
+        email: vendor.email || '',
+        start_date: vendor.start_date || '',
+        end_date: vendor.end_date ? vendor.end_date.split(' ')[0] : '',
+        cost_per_user: vendor.cost_per_user || '',
+        cost_per_employee: vendor.cost_per_employee || '',
+        max_users: vendor.max_users || '',
+        max_employees: vendor.max_employees || '',
+        max_web_sessions: normalizePositiveInt(vendor.max_web_sessions, 1),
+        admin_username: vendor.admin_username || '',
+        admin_password: '',
+        user_username: vendor.user_username || '',
+        user_password: '',
+        frontend_bundle_id: vendor.frontend_bundle_id || 'default_attendance',
+        backend_service_id: vendor.backend_service_id || 'default_api',
+        features: vendor.features || [],
+        vertical: vendor.vertical || ''
+      });
+    }
 
     try {
       const response = await axios.get(`${API_URL}/admin/vendors/${vendor.id}/registration-config`, {
@@ -928,7 +1106,12 @@ const SuperAdminDashboard = () => {
                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                  {vendors.map(vendor => (
                    <div key={vendor.id} 
-                        onClick={() => { setSelectedVendorForDetail(vendor); fetchVendorEmployees(vendor.id); }}
+                        onClick={() => { 
+                          setSelectedVendorForDetail(vendor); 
+                          fetchVendorEmployees(vendor.id); 
+                          fetchVendorDevices(vendor.id); 
+                          fetchVendorDeviceSlots(vendor.id);
+                        }}
                         className="p-5 border border-slate-200 rounded-xl cursor-pointer hover:border-indigo-500 hover:shadow-md transition-all group bg-white"
                    >
                      <div className="flex items-start gap-4 mb-3">
@@ -963,6 +1146,166 @@ const SuperAdminDashboard = () => {
                     <div className="bg-indigo-50 text-indigo-700 px-4 py-2 rounded-lg font-mono text-sm">
                         Vendor ID: {selectedVendorForDetail.id}
                     </div>
+                </div>
+                
+                {/* Devices Panel */}
+                <div className="mb-8 bg-white border border-slate-200 rounded-xl shadow-sm">
+                  <div className="flex items-center justify-between p-4 border-b border-slate-200">
+                    <div>
+                      <h3 className="font-bold text-slate-800">Mobile Devices</h3>
+                      <p className="text-slate-500 text-sm">Name and track devices for this vendor</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button 
+                        onClick={() => fetchVendorDevices(selectedVendorForDetail.id)} 
+                        className="text-xs bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 px-3 py-1.5 rounded"
+                      >
+                        Refresh
+                      </button>
+                    </div>
+                  </div>
+                  <div className="p-4">
+                    {/* Slot Configuration */}
+                    <div className="mb-5">
+                      <div className="flex items-center justify-between mb-2">
+                        <h4 className="font-semibold text-slate-700">Predefined Places (Slots)</h4>
+                        <div className="text-xs text-slate-500">
+                          Configure labels shown to mobiles on first login
+                          {(() => {
+                            const limit = normalizeLimit(selectedVendorForDetail?.max_mobile_devices) ?? normalizeLimit(selectedVendorForDetail?.max_users);
+                            const used = (deviceSlots || []).length;
+                            return (
+                              <span className="ml-3 font-mono text-slate-600">
+                                {used} / {limit ?? '∞'}
+                              </span>
+                            );
+                          })()}
+                        </div>
+                      </div>
+                      <div className="flex gap-2 mb-3">
+                        <input 
+                          className="flex-1 p-2 border rounded text-sm"
+                          placeholder="Add place e.g., Office"
+                          value={newSlotName}
+                          onChange={e => setNewSlotName(e.target.value)}
+                        />
+                        <button
+                          onClick={() => {
+                            const name = (newSlotName || '').trim();
+                            if (!name) return;
+                            const limit = normalizeLimit(selectedVendorForDetail?.max_mobile_devices) ?? normalizeLimit(selectedVendorForDetail?.max_users);
+                            const current = (deviceSlots || []).length;
+                            if (limit != null && current >= limit) {
+                              alert(`You have reached the maximum number of places (${limit}) allowed for this vendor.`);
+                              return;
+                            }
+                            const next = Array.from(new Set([...(deviceSlots || []).map(s => s.slot_name), name]));
+                            const trimmed = (limit != null && next.length > limit) ? next.slice(0, limit) : next;
+                            saveDeviceSlots(selectedVendorForDetail.id, trimmed);
+                            setNewSlotName('');
+                          }}
+                          className="text-xs bg-indigo-600 text-white px-3 py-1.5 rounded border border-indigo-600 hover:bg-indigo-700"
+                        >
+                          Add
+                        </button>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {(deviceSlots || []).map((s) => (
+                          <div key={s.id || s.slot_name} className="flex items-center gap-2 border rounded px-2 py-1 text-sm">
+                            <span className="font-mono">{s.slot_name}</span>
+                            {s.assigned_device_id && (
+                              <span className="text-xs text-green-600">assigned</span>
+                            )}
+                            <button
+                              className="text-xs text-red-600 cursor-pointer hover:opacity-80"
+                              title="Delete this place"
+                              onClick={() => deletePlaceSlot(selectedVendorForDetail.id, s.slot_name)}
+                            >
+                              delete
+                            </button>
+                          </div>
+                        ))}
+                        {(deviceSlots || []).length === 0 && (
+                          <div className="text-slate-400 text-sm">No slots configured</div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full text-sm">
+                        <thead>
+                          <tr className="text-left text-slate-500">
+                            <th className="p-2">Device ID</th>
+                            <th className="p-2">Name</th>
+                            <th className="p-2">Registered</th>
+                            <th className="p-2">Last Login</th>
+                            <th className="p-2"></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {vendorDevices.length === 0 ? (
+                            <tr>
+                              <td colSpan="5" className="p-3 text-slate-400">No devices discovered yet.</td>
+                            </tr>
+                          ) : vendorDevices.map(d => {
+                            const edited = deviceEdits?.[d.device_id] ?? '';
+                            const changed = (edited || '') !== (d.device_name || '');
+                            return (
+                              <tr key={d.id || d.device_id} className="border-t border-slate-100">
+                                <td className="p-2 font-mono">{d.device_id}</td>
+                                <td className="p-2">
+                                  <input 
+                                    className="w-full p-2 border rounded text-sm"
+                                    placeholder="e.g., Office, Class A"
+                                    value={edited}
+                                    onChange={e => setDeviceEdits(prev => ({ ...prev, [d.device_id]: e.target.value }))}
+                                  />
+                                </td>
+                                <td className="p-2 text-slate-500">{d.registered_at || '-'}</td>
+                                <td className="p-2 text-slate-500">{d.last_login_at || '-'}</td>
+                                <td className="p-2">
+                                  <div className="flex items-center gap-2">
+                                    <button 
+                                      disabled={!changed}
+                                      onClick={() => saveDeviceName(selectedVendorForDetail.id, d.device_id)}
+                                      className={`text-xs px-3 py-1.5 rounded border ${changed ? 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700' : 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'}`}
+                                    >
+                                      Save
+                                    </button>
+                                    <button
+                                      onClick={() => {
+                                        setDeviceEdits(prev => ({ ...prev, [d.device_id]: '' }));
+                                        setTimeout(() => saveDeviceName(selectedVendorForDetail.id, d.device_id), 0);
+                                      }}
+                                      className="text-xs px-3 py-1.5 rounded border bg-white text-slate-700 border-slate-300 hover:bg-slate-50"
+                                      title="Unassign device from place"
+                                    >
+                                      Unassign
+                                    </button>
+                                    <select
+                                      value=""
+                                      onChange={(e) => {
+                                        const name = (e.target.value || '').trim();
+                                        if (!name) return;
+                                        setDeviceEdits(prev => ({ ...prev, [d.device_id]: name }));
+                                        saveDeviceName(selectedVendorForDetail.id, d.device_id, name);
+                                      }}
+                                      className="text-xs px-2 py-1.5 border rounded bg-white text-slate-700 border-slate-300"
+                                      title="Assign from predefined places"
+                                    >
+                                      <option value="">Assign to…</option>
+                                      {(deviceSlots || []).map(s => (
+                                        <option key={s.slot_name} value={s.slot_name}>{s.slot_name}</option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
                 </div>
                 
                 {vendorEmployees.length === 0 ? (
@@ -1489,31 +1832,54 @@ const SuperAdminDashboard = () => {
                     * Recommended Pricing: ₹120/Employee, ₹200/Device
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Max Phones (Devices)</label>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">
+                      Max Phones (Devices)
+                      {serverSubEcho && (
+                        <span className="ml-2 text-xs text-slate-500">(Saved: {serverSubEcho.max_mobile_devices ?? serverSubEcho.max_users})</span>
+                      )}
+                    </label>
                     <input 
                       type="number" 
+                      step="1"
+                      min="0"
                       className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none bg-white"
                       value={newVendor.max_users}
+                      ref={maxUsersRef}
                       onChange={e => setNewVendor({...newVendor, max_users: e.target.value})}
                       placeholder="Default: 5"
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Max Employees</label>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">
+                      Max Employees
+                      {serverSubEcho && (
+                        <span className="ml-2 text-xs text-slate-500">(Saved: {serverSubEcho.max_employees})</span>
+                      )}
+                    </label>
                     <input 
                       type="number" 
+                      step="1"
+                      min="0"
                       className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none bg-white"
                       value={newVendor.max_employees}
+                      ref={maxEmployeesRef}
                       onChange={e => setNewVendor({...newVendor, max_employees: e.target.value})}
                       placeholder="Default: 50"
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Max Admin Web Sessions</label>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">
+                      Max Admin Web Sessions
+                      {serverSubEcho && (
+                        <span className="ml-2 text-xs text-slate-500">(Saved: {serverSubEcho.max_web_sessions})</span>
+                      )}
+                    </label>
                     <input 
                       type="number" 
+                      step="1"
                       className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none bg-white"
                       value={newVendor.max_web_sessions}
+                      ref={maxWebSessionsRef}
                       onChange={e => setNewVendor({...newVendor, max_web_sessions: e.target.value})}
                       min="1"
                       placeholder="Default: 1"

@@ -17,18 +17,18 @@ AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 S3_BUCKET = os.environ.get("S3_BUCKET")
-OBJECT_STORAGE_ENABLED = bool(S3_BUCKET and AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY and boto3)
+OBJECT_STORAGE_ENABLED = bool(S3_BUCKET and boto3)
 
 def get_s3():
     if not OBJECT_STORAGE_ENABLED:
         return None
-    return boto3.client(
-        "s3",
-        region_name=AWS_REGION,
-        aws_access_key_id=AWS_ACCESS_KEY_ID,
-        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-        config=Config(signature_version="s3v4") if Config else None
-    )
+    params = {"region_name": AWS_REGION}
+    if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY:
+        params["aws_access_key_id"] = AWS_ACCESS_KEY_ID
+        params["aws_secret_access_key"] = AWS_SECRET_ACCESS_KEY
+    if Config:
+        params["config"] = Config(signature_version="s3v4")
+    return boto3.client("s3", **params)
 
 def upload_base64_image(name, b64_data):
     s3 = get_s3()

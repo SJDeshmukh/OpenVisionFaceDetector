@@ -210,6 +210,7 @@ def init_postgres_schema():
             captured_image TEXT,
             activity TEXT,
             is_late INTEGER DEFAULT 0,
+            device_id TEXT,
             vendor_id INTEGER REFERENCES vendors(id),
             person_id INTEGER REFERENCES faces(id)
         )

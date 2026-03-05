@@ -237,7 +237,91 @@ class LoginActivity : AppCompatActivity() {
                             RetrofitClient.setAuthToken(token)
                         }
 
-                        // Reflective logo animation then navigate
+                        // Prompt for device place on first run (or if admin configured slots and not yet confirmed)
+                        try {
+                            val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+                            val cachedName = prefs.getString("device_name", null)
+                            val alreadyPrompted = try { prefs.getBoolean("place_onboarded", false) } catch (_: Exception) { false }
+                            val deviceId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
+                            
+                            // Helper to fetch slots and show picker
+                            fun fetchSlotsAndPick(includeDeleted: Boolean = false) {
+                                RetrofitClient.getService().getMobileDeviceSlots(includeDeleted).enqueue(object: Callback<com.google.gson.JsonObject> {
+                                    override fun onResponse(call: Call<com.google.gson.JsonObject>, resp: Response<com.google.gson.JsonObject>) {
+                                        val arr = resp.body()?.getAsJsonArray("slots")
+                                        val slots = mutableListOf<String>()
+                                        if (arr != null) {
+                                            for (el in arr) {
+                                                if (el != null && !el.isJsonNull) slots.add(el.asString)
+                                            }
+                                        }
+                                        if (slots.isNotEmpty()) {
+                                            showSlotSelectionDialog(slots, { selected ->
+                                                try {
+                                                    val obj = com.google.gson.JsonObject()
+                                                    obj.addProperty("device_id", deviceId)
+                                                    obj.addProperty("slot_name", selected)
+                                                    RetrofitClient.getService().assignMobileDeviceSlot(obj).enqueue(object: Callback<com.google.gson.JsonObject> {
+                                                        override fun onResponse(call: Call<com.google.gson.JsonObject>, resp2: Response<com.google.gson.JsonObject>) {
+                                                            try {
+                                                                prefs.edit().putString("device_name", selected).apply()
+                                                                prefs.edit().putBoolean("place_onboarded", true).apply()
+                                                            } catch (_: Exception) {}
+                                                            runLogoShineThenNavigate()
+                                                        }
+                                                        override fun onFailure(call: Call<com.google.gson.JsonObject>, t: Throwable) {
+                                                            Toast.makeText(this@LoginActivity, "Slot assign failed: ${t.message}", Toast.LENGTH_SHORT).show()
+                                                            runLogoShineThenNavigate()
+                                                        }
+                                                    })
+                                                } catch (_: Exception) {
+                                                    runLogoShineThenNavigate()
+                                                }
+                                            }, if (!includeDeleted) { { fetchSlotsAndPick(true) } } else null)
+                                        } else {
+                                            runLogoShineThenNavigate()
+                                        }
+                                    }
+                                    override fun onFailure(call: Call<com.google.gson.JsonObject>, t: Throwable) {
+                                        runLogoShineThenNavigate()
+                                    }
+                                })
+                            }
+                            
+                            // Always run onboarding once per install (or when not yet confirmed)
+                            if (!alreadyPrompted) {
+                                RetrofitClient.getService().getMobileDeviceInfo().enqueue(object: Callback<com.google.gson.JsonObject> {
+                                    override fun onResponse(call: Call<com.google.gson.JsonObject>, infoResp: Response<com.google.gson.JsonObject>) {
+                                        val assigned = infoResp.body()?.get("device_name")?.asString
+                                        if (!assigned.isNullOrBlank()) {
+                                            val builder = androidx.appcompat.app.AlertDialog.Builder(this@LoginActivity)
+                                            builder.setTitle("Device Place")
+                                            builder.setMessage("Use current place \"$assigned\" or change?")
+                                            builder.setPositiveButton("Use \"$assigned\"") { dialog, _ ->
+                                                try { 
+                                                    prefs.edit().putString("device_name", assigned).apply()
+                                                    prefs.edit().putBoolean("place_onboarded", true).apply()
+                                                } catch (_: Exception) {}
+                                                runLogoShineThenNavigate()
+                                            }
+                                            builder.setNegativeButton("Change Place") { dialog, _ ->
+                                                fetchSlotsAndPick(false)
+                                            }
+                                            builder.setCancelable(false)
+                                            builder.show()
+                                        } else {
+                                            // Not assigned: fetch available slots for selection
+                                            fetchSlotsAndPick(false)
+                                        }
+                                    }
+                                    override fun onFailure(call: Call<com.google.gson.JsonObject>, t: Throwable) {
+                                        fetchSlotsAndPick(false)
+                                    }
+                                })
+                                return
+                            }
+                        } catch (_: Exception) {}
+
                         runLogoShineThenNavigate()
                     } else {
                         var errorMsg = "Login failed"
@@ -296,6 +380,32 @@ class LoginActivity : AppCompatActivity() {
             })
         }
 
+    }
+
+    private fun showSlotSelectionDialog(options: List<String>, onChosen: (String) -> Unit, onMore: (() -> Unit)? = null) {
+        if (options.isEmpty()) { onChosen.invoke(""); return }
+        val builder = androidx.appcompat.app.AlertDialog.Builder(this)
+        builder.setTitle("Select Device Place")
+        var selectedIndex = 0
+        val arr = options.toTypedArray()
+        builder.setSingleChoiceItems(arr, 0) { _, which ->
+            selectedIndex = which
+        }
+        builder.setPositiveButton("Confirm") { dialog, _ ->
+            onChosen.invoke(arr[selectedIndex])
+            dialog.dismiss()
+        }
+        if (onMore != null) {
+            builder.setNeutralButton("More options") { dialog, _ ->
+                onMore.invoke()
+                dialog.dismiss()
+            }
+        }
+        builder.setNegativeButton("Cancel") { dialog, _ ->
+            dialog.cancel()
+        }
+        builder.setCancelable(false)
+        builder.show()
     }
 
     private fun runLogoShineThenNavigate() {
