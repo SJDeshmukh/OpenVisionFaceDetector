@@ -3304,6 +3304,16 @@ def create_vendor():
         if vertical:
             try:
                 c.execute("UPDATE vendors SET vertical = ? WHERE id = ?", (vertical, vendor_id))
+                if str(vertical).strip().lower() == "school":
+                    try:
+                        rc = json.dumps([
+                            {"field": "student_number", "label": "Student ID", "type": "text", "required": True, "options": []},
+                            {"field": "phone", "label": "Mobile Number", "type": "text", "required": True, "options": []},
+                            {"field": "department", "label": "Class/Section", "type": "text", "required": False, "options": []}
+                        ])
+                        c.execute("UPDATE vendors SET registration_config = ? WHERE id = ? AND (registration_config IS NULL OR TRIM(registration_config) = '')", (rc, vendor_id))
+                    except Exception:
+                        pass
                 conn.commit()
             except Exception:
                 pass
@@ -3695,16 +3705,34 @@ def get_vendor_registration_config(vendor_id):
     conn = get_db_connection()
     c = conn.cursor()
     try:
-        c.execute("SELECT registration_config FROM vendors WHERE id = ?", (vendor_id,))
+        c.execute("SELECT registration_config, vertical FROM vendors WHERE id = ?", (vendor_id,))
         row = c.fetchone()
         if not row:
             return jsonify({"error": "Vendor not found"}), 404
-        
-        config = row[0]
+        config = None
+        vertical_val = None
+        try:
+            config = row[0]
+            vertical_val = row[1]
+        except Exception:
+            try:
+                config = row["registration_config"]
+                vertical_val = row["vertical"]
+            except Exception:
+                pass
         if config:
             return jsonify({"config": json.loads(config)})
-        else:
-            return jsonify({"config": None})
+        if str(vertical_val or "").strip().lower() == "school":
+            try:
+                default_rc = [
+                    {"field": "student_number", "label": "Student ID", "type": "text", "required": True, "options": []},
+                    {"field": "phone", "label": "Mobile Number", "type": "text", "required": True, "options": []},
+                    {"field": "department", "label": "Class/Section", "type": "text", "required": False, "options": []}
+                ]
+                return jsonify({"config": default_rc})
+            except Exception:
+                return jsonify({"config": None})
+        return jsonify({"config": None})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
@@ -3785,6 +3813,28 @@ def update_vendor_details(vendor_id):
             query = query.rstrip(", ") + " WHERE id = ?"
             params.append(vendor_id)
             c.execute(query, params)
+            try:
+                if 'vertical' in data and str(data.get('vertical') or '').strip().lower() == 'school':
+                    c.execute("SELECT registration_config FROM vendors WHERE id = ?", (vendor_id,))
+                    r = c.fetchone()
+                    needs_set = False
+                    if not r:
+                        needs_set = True
+                    else:
+                        try:
+                            existing_rc = r[0]
+                            needs_set = existing_rc is None or str(existing_rc).strip() == ''
+                        except Exception:
+                            needs_set = True
+                    if needs_set:
+                        rc = json.dumps([
+                            {"field": "student_number", "label": "Student ID", "type": "text", "required": True, "options": []},
+                            {"field": "phone", "label": "Mobile Number", "type": "text", "required": True, "options": []},
+                            {"field": "department", "label": "Class/Section", "type": "text", "required": False, "options": []}
+                        ])
+                        c.execute("UPDATE vendors SET registration_config = ? WHERE id = ?", (rc, vendor_id))
+            except Exception:
+                pass
             
         # 2. Update Admin Credentials
         admin_username = data.get('admin_username')
