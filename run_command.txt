@@ -1,0 +1,1 @@
+AWS_REGION=us-east-1 AWS_PROFILE=default FUNCTION_NAME=face-detection-api BUCKET_NAME=face-detection-web-myprod ./scripts/deploy-aws-all.sh
