@@ -14,7 +14,8 @@ sed -i "s/listen 80 default_server;/listen $PORT default_server;/g" /etc/nginx/s
 # We bind to 127.0.0.1:5001 because Nginx will proxy to it locally
 echo "Starting Gunicorn Backend..."
 cd backend
-gunicorn app:app --bind 127.0.0.1:5001 --daemon
+# Use gunicorn_config.py to ensure eventlet workers for Socket.IO
+PORT=5001 gunicorn -c gunicorn_config.py app:app --daemon
 
 # 3. Start Nginx in the foreground (so Docker keeps running)
 echo "Starting Nginx..."
