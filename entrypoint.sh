@@ -34,7 +34,25 @@ fi
 echo "Starting Gunicorn Backend..."
 cd backend
 # Use gunicorn_config.py to ensure eventlet workers for Socket.IO
-PORT=5001 gunicorn -c gunicorn_config.py app:app --daemon
+# Run in background but stream logs to stdout/stderr
+PORT=5001 gunicorn -c gunicorn_config.py app:app --access-logfile - --error-logfile - --log-level info &
+
+# Wait for backend to be reachable before starting Nginx
+echo "Waiting for backend http://127.0.0.1:5001/api/config ..."
+python3 - <<'PY'
+import time, urllib.request, sys
+url = "http://127.0.0.1:5001/api/config"
+for i in range(60):
+    try:
+        with urllib.request.urlopen(url, timeout=2) as r:
+            if r.status < 500:
+                print("Backend is up")
+                sys.exit(0)
+    except Exception as e:
+        time.sleep(0.5)
+print("Backend did not start in time")
+sys.exit(1)
+PY
 
 # 3. Start Nginx in the foreground (so Docker keeps running)
 echo "Starting Nginx..."
