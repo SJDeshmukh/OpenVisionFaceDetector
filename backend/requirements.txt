@@ -1,26 +1,30 @@
+# Core web framework
 flask
-requests
 flask-cors
 flask-socketio
+Flask-Compress
 gunicorn
-gevent
-psycopg2-binary
+eventlet
 python-dotenv
 itsdangerous
-eventlet # Optional alternative to gevent, but gevent is configured
-Flask-Compress
-redis
-celery
-prometheus-client
-boto3
+requests
 Pillow
-awsgi
+
+# Data processing
 numpy
 opencv-python-headless
-torch
-torchvision
-facexlib
-gfpgan
-basicsr
-gradio
 pandas
+
+# Task queue & caching
+celery
+redis
+
+# Monitoring
+prometheus-client
+
+# Database (Postgres support)
+psycopg2-binary
+
+# AWS (S3 storage + Lambda)
+boto3
+awsgi
