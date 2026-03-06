@@ -12,6 +12,8 @@ import Recharge from './pages/Recharge';
 import Timetable from './pages/Timetable';
 import Wages from './pages/Wages';
 import LiveAttendance from './pages/LiveAttendance';
+import BulkImageAttendance from './pages/BulkImageAttendance';
+import Classes from './pages/Classes';
 import SuperAdminDashboard from './pages/SuperAdminDashboard'; // New
 import SuperAdminLogin from './pages/SuperAdminLogin';
 import LiveFeed from './pages/LiveFeed';
@@ -74,6 +76,8 @@ function App() {
               <Route path="/timetable" element={<Timetable />} />
               <Route path="/wages" element={<Wages />} />
               <Route path="/live-attendance" element={<LiveAttendance />} />
+              <Route path="/bulk-image-attendance" element={<BulkImageAttendance />} />
+              <Route path="/classes" element={<Classes />} />
             </Route>
 
             {/* Shared/User Routes */}

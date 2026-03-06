@@ -7,6 +7,16 @@ load_dotenv()
 from flask import Flask, Blueprint, request, jsonify, render_template, send_from_directory
 from flask_cors import CORS
 from flask_socketio import SocketIO, join_room, leave_room
+import cv2
+import numpy as np
+import sys as _sys
+# Ensure project root is importable so `multiple_face_detection` can be imported as a package
+try:
+    _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if _BASE_DIR not in _sys.path:
+        _sys.path.insert(0, _BASE_DIR)
+except Exception:
+    pass
 try:
     from flask_compress import Compress
 except Exception:
@@ -14,8 +24,25 @@ except Exception:
         def __init__(self, *args, **kwargs): pass
 try:
     import eventlet
+    import eventlet.tpool
 except Exception:
     eventlet = None
+
+def _run_in_native_thread(fn, *args, **kwargs):
+    """Run a function in a native OS thread so it doesn't block the eventlet event loop.
+    Falls back to direct execution if eventlet is not available."""
+    if eventlet:
+        try:
+            def _worker():
+                try:
+                    eventlet.tpool.execute(fn, *args, **kwargs)
+                except Exception as ex:
+                    print(f"tpool execution failed for {fn.__name__}: {ex}")
+            eventlet.spawn_n(_worker)
+        except Exception:
+            fn(*args, **kwargs)
+    else:
+        fn(*args, **kwargs)
 from services.llm_service import generate_greeting
 import uuid
 import time
@@ -559,6 +586,16 @@ def public_business_types():
                 {"field": "student_number", "label": "Student Number", "type": "text", "required": True, "options": []},
                 {"field": "phone", "label": "Mobile Number", "type": "text", "required": True, "options": []},
                 {"field": "department", "label": "Class/Section", "type": "text", "required": False, "options": []}
+            ],
+            "allow_parent_login": True
+        },
+        {
+            "value": "class_attendance",
+            "label": "Class Attendance",
+            "default_frontend_bundle_id": "class_attendance_ui",
+            "default_registration_config": [
+                {"field": "student_number", "label": "Student Number", "type": "text", "required": True, "options": []},
+                {"field": "class_section", "label": "Class/Section", "type": "text", "required": True, "options": []}
             ],
             "allow_parent_login": True
         },
@@ -3286,13 +3323,14 @@ def get_vendors():
 
 # Feature Mapping based on Frontend Bundles
 BUNDLE_FEATURES = {
-    'attendance_ui': ['reports', 'report_detailed', 'mobile_app', 'live_attendance', 'cameras', 'enable_attendance', 'geofencing'],
-    'attendance_payroll_ui': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'whatsapp_alerts'],
-    'enterprise_custom_ui': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'api_access', 'white_labeling'],
-    'default_attendance': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing']
+    'attendance_ui': ['reports', 'report_detailed', 'mobile_app', 'live_attendance', 'cameras', 'enable_attendance', 'geofencing', 'classes'],
+    'attendance_payroll_ui': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'classes'],
+    'enterprise_custom_ui': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'api_access', 'white_labeling', 'classes'],
+    'default_attendance': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'classes'],
+    'class_attendance_ui': ['reports', 'report_detailed', 'bulk_image_attendance', 'live_attendance', 'cameras', 'enable_attendance', 'classes']
 }
 
-ALL_FEATURES = ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'api_access', 'white_labeling', 'late_mark']
+ALL_FEATURES = ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'api_access', 'white_labeling', 'late_mark', 'bulk_image_attendance', 'classes']
 
 @greeting_bp.route("/admin/features", methods=["GET"])
 @super_admin_required
@@ -3305,6 +3343,11 @@ REGISTRATION_TEMPLATES = {
         {"field": "student_number", "label": "Student Number", "enabled": True},
         {"field": "class_section", "label": "Class/Section", "enabled": True},
         {"field": "father_name", "label": "Father's Name", "enabled": True}
+    ],
+    "class_attendance": [
+        {"field": "student_number", "label": "Student Number", "enabled": True},
+        {"field": "class_section", "label": "Class/Section", "enabled": True},
+        {"field": "phone", "label": "Parent Mobile Number", "enabled": False}
     ],
     "factory": [
         {"field": "employee_id", "label": "Employee ID", "enabled": True},
@@ -3322,6 +3365,558 @@ REGISTRATION_TEMPLATES = {
 @super_admin_required
 def get_registration_templates():
     return jsonify({"templates": REGISTRATION_TEMPLATES})
+
+try:
+    from facexlib.detection import init_detection_model
+    _retina_det = init_detection_model('retinaface_resnet50', half=False)
+except Exception:
+    _retina_det = None
+_VENDOR_EMB_CACHE = {}
+def _now_ts():
+    try:
+        import time as _t
+        return _t.time()
+    except Exception:
+        return 0.0
+def _normalize_vec(v: np.ndarray) -> np.ndarray:
+    if v is None or v.size == 0:
+        return np.zeros((0,), dtype=np.float32)
+    v = v.astype(np.float32)
+    n = float(np.linalg.norm(v))
+    if not np.isfinite(n) or n <= 1e-12:
+        return v
+    return (v / n).astype(np.float32)
+def _decode_data_uri_to_rgb(uri: str):
+    try:
+        if not uri:
+            return None
+        if uri.startswith('data:'):
+            b64 = uri.split(',', 1)[1] if ',' in uri else ''
+            raw = base64.b64decode(b64)
+        else:
+            raw = base64.b64decode(uri)
+        arr = np.frombuffer(raw, dtype=np.uint8)
+        bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if bgr is None:
+            return None
+        return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    except Exception:
+        return None
+def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str | None = None, division: str | None = None, branch: str | None = None):
+    try:
+        key = int(vendor_id or 0)
+        ent = _VENDOR_EMB_CACHE.get(key)
+        if ent and (_now_ts() - ent.get('ts', 0.0)) < ttl_sec and ent.get('items'):
+            return ent
+        from multiple_face_detection import app as mfd_app
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute("PRAGMA table_info(faces)")
+        cols = [r[1] if isinstance(r, (list, tuple)) else r['name'] for r in c.fetchall() or []]
+        face_img_col = 'face_image'
+        if face_img_col not in cols:
+            return None
+        base_query = f"SELECT id, name, {face_img_col}, department, custom_data FROM faces"
+        params = []
+        where = []
+        if vendor_id:
+            where.append("vendor_id = ?"); params.append(vendor_id)
+        # Flexible class filter: check custom_data JSON or department
+        if class_year:
+            where.append("(custom_data LIKE ?)")
+            params.append(f'%\"class_year\":\"{class_year}\"%')
+        if division:
+            where.append("(custom_data LIKE ?)")
+            params.append(f'%\"division\":\"{division}\"%')
+        if branch:
+            where.append("(custom_data LIKE ?)")
+            params.append(f'%\"branch\":\"{branch}\"%')
+        if where:
+            base_query += " WHERE " + " AND ".join(where)
+        c.execute(base_query, params)
+        rows = c.fetchall() or []
+        conn.close()
+        items = []
+        for r in rows:
+            try:
+                pid = r['id'] if isinstance(r, sqlite3.Row) else r[0]
+                nm = r['name'] if isinstance(r, sqlite3.Row) else r[1]
+                uri = r[face_img_col] if isinstance(r, sqlite3.Row) else r[2]
+                img_rgb = _decode_data_uri_to_rgb(uri)
+                if img_rgb is None:
+                    continue
+                # Tight-face center crop heuristic (square from center) if large portrait
+                h, w = img_rgb.shape[:2]
+                y1 = max(0, int(h * 0.1)); y2 = int(min(h, y1 + max(64, h * 0.6)))
+                x1 = max(0, int(w * 0.2)); x2 = int(min(w, x1 + max(64, w * 0.6)))
+                crop = img_rgb[y1:y2, x1:x2] if (y2 > y1 and x2 > x1) else img_rgb
+                emb = mfd_app.embedder.embed(crop)
+                emb = _normalize_vec(emb)
+                if emb.size > 0:
+                    items.append({'person_id': int(pid), 'name': str(nm), 'vec': emb})
+            except Exception:
+                continue
+        _VENDOR_EMB_CACHE[key] = {'ts': _now_ts(), 'items': items, 'dim': (items[0]['vec'].size if items else 0)}
+        return _VENDOR_EMB_CACHE[key]
+    except Exception:
+        return None
+def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3) -> list:
+    try:
+        v = _normalize_vec(vec)
+        if cache is None or not cache.get('items') or v.size == 0:
+            return []
+        sims = []
+        for it in cache['items']:
+            u = it['vec']
+            if u.size != v.size:
+                continue
+            sims.append((float(np.dot(u, v)), it['person_id'], it['name']))
+        sims.sort(key=lambda x: x[0], reverse=True)
+        out = []
+        for s, pid, nm in sims[:topk]:
+            out.append({'person_id': pid, 'name': nm, 'similarity': s})
+        return out
+    except Exception:
+        return []
+
+@greeting_bp.route("/utils/detect-faces", methods=["POST"])
+@require_feature("bulk_image_attendance")
+def detect_faces_basic():
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+    try:
+        file = None
+        if 'image' in request.files:
+            file = request.files['image'].read()
+        else:
+            data = request.get_json(silent=True) or {}
+            img_b64 = data.get('image')
+            if img_b64 and isinstance(img_b64, str):
+                parts = img_b64.split(',', 1)
+                payload = parts[1] if len(parts) == 2 else parts[0]
+                file = base64.b64decode(payload)
+        if not file:
+            return jsonify({"error": "image required"}), 400
+        arr = np.frombuffer(file, dtype=np.uint8)
+        bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if bgr is None:
+            return jsonify({"error": "invalid image"}), 400
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        try:
+            from multiple_face_detection import app as mfd_app
+        except Exception:
+            # Fallback to current pipeline if import fails
+            return jsonify({"error": "multiple_face_detection not available in environment"}), 500
+        # Robust defaults aligned with multiple_face_detection UI
+        # Accept optional overrides from request JSON
+        enhancer = (data.get('enhancer') if 'data' in locals() and isinstance(data, dict) else None) or "GFPGAN"
+        crop_mode = (data.get('crop_mode') if 'data' in locals() and isinstance(data, dict) else None) or "Portrait"
+        gfp_up = int((data.get('gfpgan_upscale') if 'data' in locals() and isinstance(data, dict) else None) or 2)
+        preclean_whole = bool((data.get('preclean_whole') if 'data' in locals() and isinstance(data, dict) else None) if 'data' in locals() else True)
+        preclean_level = float((data.get('preclean_level') if 'data' in locals() and isinstance(data, dict) else None) or 0.4)
+        def _heavy_detect():
+            return mfd_app.detect_faces(
+                image_input=rgb,
+                enhancer=enhancer,
+                enhance_level=0.5,
+                gfpgan_upscale=gfp_up,
+                codeformer_w=0.5,
+                compute_embeddings=True,
+                crop_mode=crop_mode,
+                portrait_scale=3.0,
+                preclean_whole=preclean_whole,
+                preclean_level=preclean_level,
+                det_max_side=1280
+            )
+        if eventlet:
+            annotated, crops, df, df_emb = eventlet.tpool.execute(_heavy_detect)
+        else:
+            annotated, crops, df, df_emb = _heavy_detect()
+        faces = []
+        # Build vendor embedding cache once
+        class_year = (data.get('class_year') if 'data' in locals() and isinstance(data, dict) else None)
+        division = (data.get('division') if 'data' in locals() and isinstance(data, dict) else None)
+        branch = (data.get('branch') if 'data' in locals() and isinstance(data, dict) else None)
+        vcache = _ensure_vendor_emb_cache(vendor_id, class_year=class_year, division=division, branch=branch)
+        if isinstance(annotated, tuple) and len(annotated) == 2:
+            img_rgb, anns = annotated
+            draw = cv2.cvtColor(img_rgb.copy(), cv2.COLOR_RGB2BGR)
+            for i, (box, score_str) in enumerate(anns or []):
+                x1, y1, x2, y2 = [int(v) for v in box]
+                cv2.rectangle(draw, (x1, y1), (x2, y2), (0, 180, 255), 2)
+                # thumbnails from crops list by index alignment
+                if i < len(crops):
+                    crop_rgb = crops[i]
+                    # Compute portrait crop as well (for later student card usage)
+                    try:
+                        px1, py1, px2, py2 = mfd_app._compute_portrait_box(x1, y1, x2, y2, img_rgb.shape[1], img_rgb.shape[0], scale=3.0, margin=0.5)
+                        portrait = img_rgb[py1:py2, px1:px2]
+                        portrait_enh = mfd_app.gfpgan_manager.enhance_crop(portrait, upscale=gfp_up, whole=True) if portrait.size > 0 else portrait
+                    except Exception:
+                        portrait_enh = portrait if 'portrait' in locals() else crop_rgb
+                    # Encode tight face thumb
+                    ok, buf = cv2.imencode('.jpg', cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    face_b64 = base64.b64encode(buf.tobytes()).decode('ascii') if ok else ''
+                    # Encode portrait thumb
+                    if portrait_enh is not None and portrait_enh.size > 0:
+                        okp, bufp = cv2.imencode('.jpg', cv2.cvtColor(portrait_enh, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
+                        port_b64 = base64.b64encode(bufp.tobytes()).decode('ascii') if okp else ''
+                    else:
+                        port_b64 = ''
+                    # Embedding + suggestions
+                    try:
+                        emb = mfd_app.embedder.embed(crop_rgb)
+                        sugg = _suggest_from_cache(emb, vcache, topk=3)
+                    except Exception:
+                        sugg = []
+                    if ok:
+                        b64 = base64.b64encode(buf.tobytes()).decode('ascii')
+                        faces.append({
+                            "index": i,
+                            "box": [x1, y1, x2, y2],
+                            "score": float(score_str) if score_str else None,
+                            "thumbs": {
+                                "face": f"data:image/jpeg;base64,{face_b64}" if face_b64 else None,
+                                "portrait": f"data:image/jpeg;base64,{port_b64}" if port_b64 else None
+                            },
+                            "suggestions": sugg
+                        })
+            ok2, ann = cv2.imencode('.jpg', draw, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            annotated_b64 = f"data:image/jpeg;base64,{base64.b64encode(ann.tobytes()).decode('ascii')}" if ok2 else ''
+        else:
+            annotated_b64 = ''
+        return jsonify({"faces": faces, "count": len(faces), "annotated_image": annotated_b64})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@greeting_bp.route("/classes", methods=["GET"])
+def list_classes():
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        # Ensure table
+        c.execute("""CREATE TABLE IF NOT EXISTS classes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            vendor_id INTEGER,
+            class_year TEXT,
+            division TEXT,
+            branch TEXT,
+            label TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )""")
+        if vendor_id:
+            c.execute("SELECT id, class_year, division, branch, label FROM classes WHERE vendor_id = ? ORDER BY created_at DESC", (vendor_id,))
+        else:
+            c.execute("SELECT id, class_year, division, branch, label FROM classes ORDER BY created_at DESC")
+        rows = c.fetchall() or []
+        conn.close()
+        items = []
+        for r in rows:
+            items.append({
+                "id": r[0], "class_year": r[1], "division": r[2], "branch": r[3], "label": r[4]
+            })
+        return jsonify({"classes": items})
+    except Exception as e:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 500
+
+@greeting_bp.route("/classes", methods=["POST"])
+def create_class():
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+    data = request.get_json(silent=True) or {}
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("""CREATE TABLE IF NOT EXISTS classes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            vendor_id INTEGER,
+            class_year TEXT,
+            division TEXT,
+            branch TEXT,
+            label TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )""")
+        c.execute("INSERT INTO classes (vendor_id, class_year, division, branch, label) VALUES (?, ?, ?, ?, ?)",
+                  (vendor_id, str(data.get('class_year') or ''), str(data.get('division') or ''), str(data.get('branch') or ''), str(data.get('label') or '')))
+        conn.commit()
+        new_id = c.lastrowid
+        conn.close()
+        return jsonify({"ok": True, "id": new_id})
+    except Exception as e:
+        try:
+            conn.rollback(); conn.close()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 500
+
+@greeting_bp.route("/classes/<int:cid>", methods=["PUT"])
+def update_class(cid: int):
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+    data = request.get_json(silent=True) or {}
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT vendor_id FROM classes WHERE id = ?", (cid,))
+        row = c.fetchone()
+        if not row or (vendor_id and int(row[0]) != int(vendor_id)):
+            conn.close()
+            return jsonify({"error": "not found"}), 404
+        fields = []; params = []
+        for k in ["class_year", "division", "branch", "label"]:
+            if k in data:
+                fields.append(f"{k} = ?"); params.append(str(data.get(k) or ''))
+        if fields:
+            params.append(cid)
+            c.execute(f"UPDATE classes SET {', '.join(fields)} WHERE id = ?", params)
+            conn.commit()
+        conn.close()
+        return jsonify({"ok": True})
+    except Exception as e:
+        try:
+            conn.rollback(); conn.close()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 500
+
+@greeting_bp.route("/classes/<int:cid>", methods=["DELETE"])
+def delete_class(cid: int):
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("DELETE FROM classes WHERE id = ? AND vendor_id = ?", (cid, vendor_id))
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True})
+    except Exception as e:
+        try:
+            conn.rollback(); conn.close()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 500
+
+def _ensure_class_batch_tables(conn):
+    c = conn.cursor()
+    c.execute("""CREATE TABLE IF NOT EXISTS class_batches(
+        id TEXT PRIMARY KEY,
+        vendor_id INTEGER,
+        class_year TEXT,
+        division TEXT,
+        branch TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        status TEXT
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS class_batch_items(
+        id TEXT PRIMARY KEY,
+        batch_id TEXT,
+        seq INTEGER,
+        image_b64 TEXT,
+        annotated_b64 TEXT,
+        faces_json TEXT,
+        status TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )""")
+    conn.commit()
+
+def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
+    try:
+        arr = np.frombuffer(image_bytes, dtype=np.uint8)
+        bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if bgr is None:
+            return [], ''
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        from multiple_face_detection import app as mfd_app
+        enhancer = params.get('enhancer') or "GFPGAN"
+        crop_mode = params.get('crop_mode') or "Portrait"
+        portrait_scale = float(params.get('portrait_scale') or 1.5)
+        gfp_up = int(params.get('gfpgan_upscale') or 2)
+        preclean_whole = bool(params.get('preclean_whole') if 'preclean_whole' in params else True)
+        preclean_level = float(params.get('preclean_level') or 0.4)
+        annotated, crops, df, df_emb = mfd_app.detect_faces(
+            image_input=rgb,
+            enhancer=enhancer,
+            enhance_level=0.5,
+            gfpgan_upscale=gfp_up,
+            codeformer_w=0.5,
+            compute_embeddings=True,
+            crop_mode=crop_mode,
+            portrait_scale=portrait_scale,
+            preclean_whole=preclean_whole,
+            preclean_level=preclean_level,
+            det_max_side=1280
+        )
+        faces = []
+        class_year = params.get('class_year'); division = params.get('division'); branch = params.get('branch')
+        vcache = _ensure_vendor_emb_cache(vendor_id, class_year=class_year, division=division, branch=branch)
+        if isinstance(annotated, tuple) and len(annotated) == 2:
+            img_rgb, anns = annotated
+            draw = cv2.cvtColor(img_rgb.copy(), cv2.COLOR_RGB2BGR)
+            for i, (box, score_str) in enumerate(anns or []):
+                x1, y1, x2, y2 = [int(v) for v in box]
+                cv2.rectangle(draw, (x1, y1), (x2, y2), (0, 180, 255), 2)
+                if i < len(crops):
+                    crop_rgb = crops[i]
+                    try:
+                        px1, py1, px2, py2 = mfd_app._compute_portrait_box(x1, y1, x2, y2, img_rgb.shape[1], img_rgb.shape[0], scale=3.0, margin=0.5)
+                        portrait = img_rgb[py1:py2, px1:px2]
+                        portrait_enh = mfd_app.gfpgan_manager.enhance_crop(portrait, upscale=gfp_up, whole=True) if portrait.size > 0 else portrait
+                    except Exception:
+                        portrait_enh = crop_rgb
+                    ok, buf = cv2.imencode('.jpg', cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    face_b64 = base64.b64encode(buf.tobytes()).decode('ascii') if ok else ''
+                    if portrait_enh is not None and portrait_enh.size > 0:
+                        okp, bufp = cv2.imencode('.jpg', cv2.cvtColor(portrait_enh, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
+                        port_b64 = base64.b64encode(bufp.tobytes()).decode('ascii') if okp else ''
+                    else:
+                        port_b64 = ''
+                    try:
+                        emb = mfd_app.embedder.embed(crop_rgb)
+                        sugg = _suggest_from_cache(emb, vcache, topk=3)
+                    except Exception:
+                        sugg = []
+                    faces.append({
+                        "index": i,
+                        "box": [x1, y1, x2, y2],
+                        "score": float(score_str) if score_str else None,
+                        "thumbs": {"face": f"data:image/jpeg;base64,{face_b64}" if face_b64 else None, "portrait": f"data:image/jpeg;base64,{port_b64}" if port_b64 else None},
+                        "suggestions": sugg
+                    })
+            ok2, ann = cv2.imencode('.jpg', draw, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            annotated_b64 = f"data:image/jpeg;base64,{base64.b64encode(ann.tobytes()).decode('ascii')}" if ok2 else ''
+        else:
+            annotated_b64 = ''
+        return faces, annotated_b64
+    except Exception:
+        return [], ''
+
+@greeting_bp.route("/class-batch/start", methods=["POST"])
+def class_batch_start():
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+    data = request.get_json(silent=True) or {}
+    bid = uuid.uuid4().hex[:12]
+    conn = get_db_connection()
+    _ensure_class_batch_tables(conn)
+    c = conn.cursor()
+    c.execute("INSERT INTO class_batches (id, vendor_id, class_year, division, branch, status) VALUES (?, ?, ?, ?, ?, ?)",
+              (bid, vendor_id, str(data.get('class_year') or ''), str(data.get('division') or ''), str(data.get('branch') or ''), 'active'))
+    conn.commit(); conn.close()
+    return jsonify({"batch_id": bid})
+
+@greeting_bp.route("/class-batch/add", methods=["POST"])
+def class_batch_add():
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+    bid = request.form.get('batch_id') or request.args.get('batch_id')
+    if not bid:
+        return jsonify({"error": "batch_id required"}), 400
+    params = {
+        "class_year": request.form.get('class_year') or request.args.get('class_year') or '',
+        "division": request.form.get('division') or request.args.get('division') or '',
+        "branch": request.form.get('branch') or request.args.get('branch') or ''
+    }
+    conn = get_db_connection()
+    _ensure_class_batch_tables(conn)
+    c = conn.cursor()
+    c.execute("SELECT id FROM class_batches WHERE id = ? AND vendor_id = ?", (bid, vendor_id))
+    if not c.fetchone():
+        conn.close()
+        return jsonify({"error": "batch not found"}), 404
+    files = request.files.getlist('images')
+    if not files and 'image' in request.files:
+        files = [request.files['image']]
+    if not files:
+        conn.close()
+        return jsonify({"error": "no images"}), 400
+    created = []
+    seq_base = int(time.time())
+    for idx, f in enumerate(files):
+        raw = f.read()
+        img_b64 = 'data:image/jpeg;base64,' + base64.b64encode(raw).decode('ascii')
+        item_id = uuid.uuid4().hex[:12]
+        c.execute("INSERT INTO class_batch_items (id, batch_id, seq, image_b64, annotated_b64, faces_json, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                  (item_id, bid, seq_base + idx, img_b64, '', '[]', 'pending'))
+        created.append(item_id)
+    conn.commit()
+    conn.close()
+    
+    def _dispatch_task():
+        try:
+            if celery:
+                celery.send_task("tasks.process_class_batch_items", args=[bid, vendor_id, params])
+            else:
+                from tasks import process_class_batch_items
+                def _worker():
+                    try:
+                        eventlet.tpool.execute(process_class_batch_items, bid, vendor_id, params)
+                    except Exception as ex:
+                        print(f"tpool execution failed: {ex}")
+                eventlet.spawn_n(_worker)
+        except Exception as e:
+            import traceback
+            repr_err = traceback.format_exc()
+            print(f"Failed to dispatch class batch task:\n{repr_err}")
+            
+    _dispatch_task()
+    
+    return jsonify({"ok": True, "created": created})
+
+@greeting_bp.route("/class-batch/status", methods=["GET"])
+def class_batch_status():
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+    bid = request.args.get('batch_id')
+    if not bid:
+        return jsonify({"error": "batch_id required"}), 400
+    conn = get_db_connection()
+    _ensure_class_batch_tables(conn)
+    c = conn.cursor()
+    c.execute("SELECT id, class_year, division, branch, status FROM class_batches WHERE id = ? AND vendor_id = ?", (bid, vendor_id))
+    b = c.fetchone()
+    if not b:
+        conn.close()
+        return jsonify({"error": "batch not found"}), 404
+    c.execute("SELECT id, seq, image_b64, annotated_b64, faces_json, status FROM class_batch_items WHERE batch_id = ? ORDER BY seq ASC", (bid,))
+    rows = c.fetchall() or []
+    conn.close()
+    items = []
+    for r in rows:
+        items.append({"id": r[0], "seq": r[1], "image": r[2], "annotated": r[3], "faces": json.loads(r[4] or "[]"), "status": r[5]})
+    return jsonify({"batch": {"id": b[0], "class_year": b[1], "division": b[2], "branch": b[3], "status": b[4]}, "items": items})
+
+@greeting_bp.route("/class-batch/clear", methods=["POST"])
+def class_batch_clear():
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+    data = request.get_json(silent=True) or {}
+    bid = data.get('batch_id')
+    if not bid:
+        return jsonify({"error": "batch_id required"}), 400
+    conn = get_db_connection()
+    _ensure_class_batch_tables(conn)
+    c = conn.cursor()
+    c.execute("DELETE FROM class_batch_items WHERE batch_id = ?", (bid,))
+    c.execute("DELETE FROM class_batches WHERE id = ? AND vendor_id = ?", (bid, vendor_id))
+    conn.commit(); conn.close()
+    return jsonify({"ok": True})
 
 @greeting_bp.route("/admin/vendors/<int:vendor_id>/registration_config", methods=["PUT"])
 @super_admin_required
@@ -3593,7 +4188,7 @@ def create_vendor():
                 if app.config.get('TESTING'):
                     _process()
                 else:
-                    eventlet.spawn_n(_process)
+                    _run_in_native_thread(_process)
         else:
             _process()
         # Ensure vendor admin exists

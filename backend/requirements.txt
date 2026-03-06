@@ -15,3 +15,12 @@ prometheus-client
 boto3
 Pillow
 awsgi
+numpy
+opencv-python-headless
+torch
+torchvision
+facexlib
+gfpgan
+basicsr
+gradio
+pandas

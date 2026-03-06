@@ -18,8 +18,9 @@ export const API_URL = `${BASE_URL}/api`;
 export const API_BASE_URL = API_URL;
 
 export const FRONTEND_BUNDLES = {
-  'attendance_ui': ['Dashboard', 'Attendance', 'Live Attendance', 'Settings', 'Reports', 'People', 'Cameras', 'Audit Logs'],
-  'attendance_payroll_ui': ['Dashboard', 'Attendance', 'Live Attendance', 'Wages', 'Settings', 'Reports', 'People', 'Cameras', 'Audit Logs', 'Timetable'],
+  'attendance_ui': ['Dashboard', 'Attendance', 'Live Attendance', 'Settings', 'Reports', 'People', 'Cameras', 'Audit Logs', 'Classes'],
+  'attendance_payroll_ui': ['Dashboard', 'Attendance', 'Live Attendance', 'Wages', 'Settings', 'Reports', 'People', 'Cameras', 'Audit Logs', 'Timetable', 'Classes'],
+  'class_attendance_ui': ['Dashboard', 'Attendance', 'Bulk Image Attendance', 'Live Attendance', 'Settings', 'Reports', 'People', 'Cameras', 'Audit Logs', 'Classes'],
   'enterprise_custom_ui': 'ALL',
   'default_attendance': 'ALL' 
 };
@@ -32,12 +33,14 @@ export const FEATURE_TO_SIDEBAR_MAP = {
     'payroll': 'Wages',
     'shifts': 'Timetable',
     'live_attendance': 'Live Attendance',
+    'bulk_image_attendance': 'Bulk Image Attendance',
     'cameras': 'Cameras',
     'mobile_app': 'Dashboard', // Dashboard is usually base, but mobile_app might unlock it? Assume Dashboard is always there unless restricted
     'geofencing': 'Settings', // Settings usually contains geofencing
     'api_access': 'Settings',
-    'audit_logs': 'Audit Logs'
+    'audit_logs': 'Audit Logs',
+    'classes': 'Classes'
 };
 
 // Items that are ALWAYS visible regardless of features (Base System)
-export const ALWAYS_VISIBLE_ITEMS = ['Dashboard', 'People', 'Settings', 'Attendance'];
+export const ALWAYS_VISIBLE_ITEMS = ['Dashboard', 'People', 'Settings', 'Attendance', 'Classes'];

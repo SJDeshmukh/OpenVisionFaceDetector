@@ -19,3 +19,10 @@ dist/
 .gradle/
 build/
 local.properties
+
+# Redis
+dump.rdb
+
+# Model weights / subpackages
+gfpgan/
+multiple_face_detection/

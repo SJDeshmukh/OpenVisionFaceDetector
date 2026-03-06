@@ -1,10 +1,19 @@
-from celery_app import celery
+try:
+    from celery_app import celery
+    from celery.signals import task_prerun, task_postrun, task_failure, task_retry, task_received, task_revoked
+except Exception:
+    celery = None
+    class _DummySignal:
+        def connect(self, func):
+            return func
+    task_prerun = task_postrun = task_failure = task_retry = task_received = task_revoked = _DummySignal()
+
 from app import get_db_connection, socketio, log_audit, BUNDLE_FEATURES
 import json
 from datetime import date, timedelta, datetime
 import sqlite3
-from celery.signals import task_prerun, task_postrun, task_failure, task_retry, task_received, task_revoked
 import os
+
 TASK_EVENTS_MAX = int(os.environ.get("TASK_EVENTS_MAX", "50000"))
 
 if celery:
@@ -201,3 +210,55 @@ def _on_task_retry(request=None, reason=None, einfo=None, **kwargs):
         })
     except Exception:
         pass
+
+
+def process_class_batch_items(batch_id, vendor_id, params):
+    from app import _detect_faces_from_bytes, get_db_connection
+    import base64
+    import json
+    
+    conn = get_db_connection()
+    c = conn.cursor()
+    
+    # Get pending items
+    c.execute("SELECT id, image_b64 FROM class_batch_items WHERE batch_id = ? AND status = 'pending' ORDER BY seq ASC", (batch_id,))
+    items = c.fetchall()
+    
+    for item in items:
+        item_id, img_b64 = item[0], item[1]
+        try:
+            # Update status to processing
+            c.execute("UPDATE class_batch_items SET status = 'processing' WHERE id = ?", (item_id,))
+            conn.commit()
+            
+            # Decode image
+            header, encoded = img_b64.split(',', 1) if ',' in img_b64 else ('', img_b64)
+            raw = base64.b64decode(encoded)
+            
+            # Detect faces
+            faces, annotated_b64 = _detect_faces_from_bytes(raw, params, vendor_id)
+            
+            # Update item with results
+            c.execute(
+                "UPDATE class_batch_items SET faces_json = ?, annotated_b64 = ?, status = 'done' WHERE id = ?",
+                (json.dumps(faces), annotated_b64, item_id)
+            )
+            conn.commit()
+        except Exception as e:
+            # Mark as failed
+            c.execute(
+                "UPDATE class_batch_items SET status = 'failed', faces_json = '[]', annotated_b64 = ? WHERE id = ?",
+                (f"Error: {str(e)}", item_id)
+            )
+            conn.commit()
+    
+    # Check if all items are done/failed, then mark batch completed
+    c.execute("SELECT COUNT(*) FROM class_batch_items WHERE batch_id = ? AND status IN ('pending', 'processing')", (batch_id,))
+    if c.fetchone()[0] == 0:
+        c.execute("UPDATE class_batches SET status = 'completed' WHERE id = ?", (batch_id,))
+        conn.commit()
+        
+    conn.close()
+
+if celery:
+    process_class_batch_items = celery.task(name="tasks.process_class_batch_items")(process_class_batch_items)

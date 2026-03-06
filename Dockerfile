@@ -10,8 +10,11 @@ RUN npm run build
 # Stage 2: Build Backend & Runtime
 FROM python:3.9-slim
 
-# Install Nginx and required system dependencies
-RUN apt-get update && apt-get install -y nginx && rm -rf /var/lib/apt/lists/*
+# Install Nginx, Redis, and required system dependencies
+RUN apt-get update && apt-get install -y \
+    nginx \
+    redis-server \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -36,6 +39,10 @@ RUN chmod +x entrypoint.sh
 # Environment Defaults
 ENV PORT=10000
 ENV HOST=0.0.0.0
+ENV CELERY_BROKER_URL=redis://127.0.0.1:6379/0
+ENV CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/0
+ENV REDIS_URL=redis://127.0.0.1:6379/0
+ENV CELERY_CONCURRENCY=2
 
 # Expose ports
 EXPOSE 10000 5001

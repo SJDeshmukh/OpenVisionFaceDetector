@@ -23,9 +23,11 @@ import {
 const adminNavItems = [
   { name: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
   { name: 'People', path: '/people', icon: Users },
+  { name: 'Classes', path: '/classes', icon: Users },
   { name: 'Timetable', path: '/timetable', icon: CalendarClock },
   { name: 'Wages', path: '/wages', icon: DollarSign },
   { name: 'Attendance', path: '/attendance', icon: ClipboardList },
+  { name: 'Bulk Image Attendance', path: '/bulk-image-attendance', icon: ClipboardList },
   { name: 'Live Attendance', path: '/live-attendance', icon: Activity },
   { name: 'Cameras', path: '/cameras', icon: Video },
   { name: 'Reports', path: '/reports', icon: FileText },

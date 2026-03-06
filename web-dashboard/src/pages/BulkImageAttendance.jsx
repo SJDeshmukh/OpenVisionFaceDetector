@@ -1,0 +1,420 @@
+import { useEffect, useState, useRef } from 'react';
+import Webcam from 'react-webcam';
+import axios from 'axios';
+import { useAuth } from '../context/AuthContext';
+import { API_URL } from '../config';
+import { Upload, Check, Users, Camera, Loader2 } from 'lucide-react';
+
+const BulkImageAttendance = () => {
+  const { user } = useAuth();
+  const [faces, setFaces] = useState([]);
+  const [people, setPeople] = useState([]);
+  const [assign, setAssign] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [marking, setMarking] = useState({});
+  const [classes, setClasses] = useState([]);
+  const [selectedClass, setSelectedClass] = useState({ class_year: '', division: '', branch: '' });
+  const [batchId, setBatchId] = useState(() => localStorage.getItem('class_batch_id') || '');
+  const [batchItems, setBatchItems] = useState([]);
+  const [showWebcam, setShowWebcam] = useState(false);
+  const webcamRef = useRef(null);
+
+  const captureAndUpload = async () => {
+    if (!webcamRef.current) return;
+    const imageSrc = webcamRef.current.getScreenshot();
+    if (!imageSrc) return;
+
+    // Convert base64 to file
+    const res = await fetch(imageSrc);
+    const buf = await res.arrayBuffer();
+    const file = new File([buf], `webcam-${Date.now()}.jpg`, { type: 'image/jpeg' });
+
+    setShowWebcam(false);
+    onUploadImages([file]);
+  };
+
+  useEffect(() => {
+    const fetchPeople = async () => {
+      try {
+        const res = await axios.get(`${API_URL}/persons`, {
+          headers: { Authorization: `Bearer ${user?.token}` }
+        });
+        const list = (res.data?.persons || []).map(p => ({
+          id: p.person_id || p.id,
+          name: p.name
+        })).filter(p => p.id && p.name);
+        list.sort((a, b) => a.name.localeCompare(b.name));
+        setPeople(list);
+      } catch (e) {
+        setPeople([]);
+      }
+    };
+    fetchPeople();
+    // Load classes for filtering/scope
+    (async () => {
+      try {
+        const r = await axios.get(`${API_URL}/classes`, { headers: { Authorization: `Bearer ${user?.token}` } });
+        setClasses(r.data?.classes || []);
+      } catch (_) { }
+    })();
+  }, [user]);
+
+  const ensureBatch = async () => {
+    if (batchId) return batchId;
+    const res = await axios.post(`${API_URL}/class-batch/start`, selectedClass, {
+      headers: { Authorization: `Bearer ${user?.token}` }
+    });
+    const id = res.data?.batch_id;
+    if (id) {
+      localStorage.setItem('class_batch_id', id);
+      setBatchId(id);
+    }
+    return id;
+  };
+
+  const fetchBatchStatus = async (id) => {
+    const params = new URLSearchParams({ batch_id: id });
+    const res = await axios.get(`${API_URL}/class-batch/status?${params.toString()}`, {
+      headers: { Authorization: `Bearer ${user?.token}` }
+    });
+    const rawItems = res.data?.items || [];
+
+    // Compute everything BEFORE setting any React state
+    let allFaces = [];
+    let isPending = false;
+    let globalIndex = 0;
+
+    // Deep-copy items so React detects a new reference
+    const enrichedItems = rawItems.map(item => {
+      const newItem = { ...item, mappedFaces: [] };
+      if (newItem.status === 'pending' || newItem.status === 'processing') {
+        isPending = true;
+      }
+      if (newItem.faces && Array.isArray(newItem.faces)) {
+        newItem.faces.forEach((f) => {
+          const currentFaceIndex = globalIndex++;
+          const normFace = f.thumbs ? { ...f } : { ...f, thumbs: { face: f.thumb } };
+          normFace.globalIndex = currentFaceIndex;
+          newItem.mappedFaces.push(normFace);
+          allFaces.push(normFace);
+        });
+      }
+      return newItem;
+    });
+
+    // Now set all state together — React will batch these
+    setBatchItems(enrichedItems);
+    setFaces(allFaces);
+    setAssign(prevAssign => {
+      const nextAssign = { ...prevAssign };
+      allFaces.forEach(f => {
+        if (nextAssign[f.globalIndex] === undefined) {
+          const top = Array.isArray(f.suggestions) && f.suggestions.length ? f.suggestions[0] : null;
+          nextAssign[f.globalIndex] = top?.person_id ? String(top.person_id) : '';
+        }
+      });
+      return nextAssign;
+    });
+
+    return { isPending, items: enrichedItems, doneCount: enrichedItems.filter(i => i.status === 'done').length };
+  };
+
+  useEffect(() => {
+    let interval;
+    let doneStableCount = 0; // track how many consecutive polls show all-done
+    const poll = async () => {
+      if (batchId && user?.token) {
+        try {
+          const { isPending, doneCount, items: polledItems } = await fetchBatchStatus(batchId);
+          if (!isPending && polledItems.length > 0) {
+            doneStableCount++;
+            // Keep polling a few extra cycles to pick up final face data
+            if (doneStableCount >= 3) {
+              clearInterval(interval);
+            }
+          } else {
+            doneStableCount = 0;
+          }
+        } catch (e) {
+          clearInterval(interval);
+        }
+      }
+    };
+
+    if (batchId) {
+      poll(); // initial
+      interval = setInterval(poll, 2000); // poll every 2s for snappier updates
+    }
+
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [batchId, user?.token]);
+
+  const onUploadImages = async (files) => {
+    const arr = Array.from(files || []).filter(f => f.type.startsWith('image/'));
+    if (arr.length === 0) return;
+
+    setLoading(true);
+    try {
+      const id = await ensureBatch();
+      const fd = new FormData();
+      arr.forEach(f => fd.append('images', f));
+      fd.append('batch_id', id || '');
+      fd.append('class_year', selectedClass.class_year || '');
+      fd.append('division', selectedClass.division || '');
+      fd.append('branch', selectedClass.branch || '');
+
+      const params = new URLSearchParams();
+      await axios.post(`${API_URL}/class-batch/add?${params.toString()}`, fd, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+
+      // Status will be polled by useEffect
+    } catch (e) {
+      alert(e.response?.data?.error || e.message || 'Detection failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const markOne = async (f) => {
+    const personId = assign[f.globalIndex];
+    if (!personId) {
+      alert('Select a person first');
+      return;
+    }
+    setMarking(prev => ({ ...prev, [f.globalIndex]: true }));
+    try {
+      await axios.post(`${API_URL}/person-event`, {
+        detected: true,
+        recognized: true,
+        person_id: personId,
+        is_attendance: true,
+        image: f.thumbs?.face || f.thumb
+      }, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+    } catch (e) {
+      alert(e.response?.data?.error || e.message || 'Mark failed');
+    } finally {
+      setMarking(prev => ({ ...prev, [f.globalIndex]: false }));
+    }
+  };
+
+  const markAll = async () => {
+    for (const f of faces) {
+      if (assign[f.globalIndex]) {
+        await markOne(f);
+      }
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold text-slate-800">Bulk Image Attendance</h1>
+      </div>
+
+      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+        <div className="flex flex-wrap items-center gap-3">
+          <select
+            className="p-2 border rounded-lg bg-white"
+            value={`${selectedClass.class_year}|${selectedClass.division}|${selectedClass.branch}`}
+            onChange={(e) => {
+              const [y, d, b] = e.target.value.split('|');
+              setSelectedClass({ class_year: y || '', division: d || '', branch: b || '' });
+            }}
+          >
+            <option value="||">Select Class Scope (optional)</option>
+            {classes.map(c => (
+              <option key={c.id} value={`${c.class_year}|${c.division}|${c.branch}`}>
+                {c.label || `${c.class_year} ${c.branch} ${c.division}`}
+              </option>
+            ))}
+          </select>
+          <label className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 cursor-pointer disabled:opacity-50">
+            {loading ? 'Uploading...' : <><Upload size={18} /><span>Upload Images</span></>}
+            <input
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              disabled={loading}
+              onChange={(e) => {
+                if (e.target.files?.length > 0) onUploadImages(e.target.files);
+              }}
+            />
+          </label>
+          <div className="text-sm font-medium flex items-center gap-2">
+            {batchItems.some(i => i.status === 'processing' || i.status === 'pending') ? (
+              <span className="flex items-center gap-2 text-amber-600 bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200">
+                <Loader2 size={16} className="animate-spin" />
+                Parsing... {batchItems.filter(i => i.status === 'done').length}/{batchItems.length} parsed
+              </span>
+            ) : batchItems.length > 0 ? (
+              <span className="flex items-center gap-1 text-emerald-600 bg-emerald-50 px-3 py-1.5 rounded-lg border border-emerald-200">
+                <Check size={16} /> All {batchItems.length} items parsed
+              </span>
+            ) : (
+              <span className="text-slate-500 py-1.5">Status: Idle</span>
+            )}
+          </div>
+          <button
+            onClick={() => setShowWebcam(true)}
+            className="px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 inline-flex items-center gap-2"
+            title="Live Capture"
+          >
+            <Camera size={16} /> Live
+          </button>
+          <button
+            onClick={markAll}
+            disabled={faces.length === 0}
+            className="px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+          >
+            Mark Selected
+          </button>
+          <button
+            onClick={async () => {
+              const id = localStorage.getItem('class_batch_id');
+              if (!id) return;
+              if (!confirm('End session and clear server cache?')) return;
+              await axios.post(`${API_URL}/class-batch/clear`, { batch_id: id }, { headers: { Authorization: `Bearer ${user?.token}` } });
+              localStorage.removeItem('class_batch_id');
+              setBatchId('');
+              setBatchItems([]);
+              setFaces([]); setAssign({});
+            }}
+            className="px-3 py-2 rounded-lg bg-red-50 text-red-600 border border-red-200 hover:bg-red-100"
+          >
+            End Session
+          </button>
+        </div>
+      </div>
+
+      {batchItems.length > 0 && (
+        <div className="space-y-6">
+          <div className="flex items-center gap-2">
+            <Camera size={18} className="text-slate-500" />
+            <h2 className="font-semibold text-slate-800">Uploaded Images ({batchItems.length})</h2>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {batchItems.map(item => (
+              <div key={item.id} className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
+                <div className="relative bg-slate-100 h-64 sm:h-80 flex-shrink-0 flex items-center justify-center overflow-hidden">
+                  {(item.annotated || item.image) ? (
+                    <img
+                      src={item.annotated || (item.image?.startsWith('data:') ? item.image : `data:image/jpeg;base64,${item.image}`)}
+                      alt={`frame-seq-${item.seq}`}
+                      className="w-full h-full object-contain p-2"
+                    />
+                  ) : (
+                    <div className="text-slate-400">No Image Data</div>
+                  )}
+                  <div className={`absolute top-2 right-2 px-2 py-1 text-xs font-bold rounded-lg shadow-sm backdrop-blur border 
+                    ${item.status === 'done' ? 'bg-emerald-500/90 text-white border-emerald-600' :
+                      item.status === 'processing' ? 'bg-amber-500/90 text-white border-amber-600' :
+                        item.status === 'failed' ? 'bg-red-500/90 text-white border-red-600' :
+                          'bg-slate-800/80 text-white border-slate-700'}`}>
+                    {item.status.toUpperCase()}
+                  </div>
+                </div>
+
+                {item.mappedFaces && item.mappedFaces.length > 0 && (
+                  <div className="p-4 bg-slate-50 border-t">
+                    <h3 className="text-sm font-semibold text-slate-700 mb-3 flex items-center gap-2">
+                      <Users size={14} /> Detected Faces ({item.mappedFaces.length})
+                    </h3>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">
+                      {item.mappedFaces.map(f => (
+                        <div key={f.globalIndex} className="border rounded-xl p-2 bg-white shadow-sm flex flex-col">
+                          <div className="w-full aspect-square mb-2 bg-slate-100 rounded-lg overflow-hidden flex items-center justify-center border">
+                            <img src={(f.thumbs?.face || f.thumb)} alt={`face-${f.globalIndex}`} className="w-full h-full object-contain" />
+                          </div>
+                          {Array.isArray(f.suggestions) && f.suggestions.length > 0 && (
+                            <div className="flex flex-wrap gap-1 mb-2">
+                              {f.suggestions.slice(0, 3).map(s => (
+                                <button
+                                  key={`${f.globalIndex}-${s.person_id}`}
+                                  onClick={() => setAssign(prev => ({ ...prev, [f.globalIndex]: String(s.person_id) }))}
+                                  className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100"
+                                  title={`Similarity ${(s.similarity * 100).toFixed(1)}%`}
+                                >
+                                  {s.name}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                          <select
+                            className="w-full p-1.5 border rounded-md bg-slate-50 text-xs mb-2"
+                            value={assign[f.globalIndex] || ''}
+                            onChange={(e) => setAssign(prev => ({ ...prev, [f.globalIndex]: e.target.value }))}
+                          >
+                            <option value="">Assign person…</option>
+                            {people.map(p => (
+                              <option key={p.id} value={p.id}>{p.name}</option>
+                            ))}
+                          </select>
+                          <button
+                            onClick={() => markOne(f)}
+                            className="w-full flex items-center justify-center gap-1 px-2 py-1.5 rounded-md bg-indigo-600 text-white hover:bg-indigo-700 text-xs disabled:opacity-50 tracking-wide"
+                            disabled={marking[f.globalIndex]}
+                          >
+                            {marking[f.globalIndex] ? '...' : 'Mark'}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {item.status === 'done' && (!item.mappedFaces || item.mappedFaces.length === 0) && (
+                  <div className="p-3 text-center text-sm text-slate-500 bg-slate-50 border-t">
+                    No faces detected in this image.
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {showWebcam && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl p-4 w-full max-w-2xl">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-semibold text-slate-800">Live Camera Capture</h3>
+              <button onClick={() => setShowWebcam(false)} className="text-slate-500 hover:text-slate-700 font-bold">✕</button>
+            </div>
+            <div className="bg-slate-900 rounded-lg overflow-hidden flex justify-center mb-4">
+              <Webcam
+                audio={false}
+                ref={webcamRef}
+                screenshotFormat="image/jpeg"
+                videoConstraints={{ facingMode: "environment" }}
+                className="w-full max-w-lg"
+              />
+            </div>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setShowWebcam(false)}
+                className="px-4 py-2 border rounded-lg hover:bg-slate-50 text-slate-700"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={captureAndUpload}
+                disabled={loading}
+                className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 inline-flex gap-2 items-center"
+              >
+                <Camera size={18} />
+                Capture & Detect
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default BulkImageAttendance;

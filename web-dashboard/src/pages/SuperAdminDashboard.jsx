@@ -34,6 +34,10 @@ const SuperAdminDashboard = () => {
       { field: 'phone', label: 'Parent Mobile Number', type: 'text', required: true, options: [] },
       { field: 'department', label: 'Class/Section', type: 'text', required: false, options: [] }
     ] },
+    { value: 'class_attendance', label: 'Class Attendance', default_frontend_bundle_id: 'class_attendance_ui', default_registration_config: [
+      { field: 'student_number', label: 'Student Number', type: 'text', required: true, options: [] },
+      { field: 'class_section', label: 'Class/Section', type: 'text', required: true, options: [] }
+    ] },
     { value: 'wages', label: 'Daily Wages / Workforce', default_frontend_bundle_id: 'attendance_payroll_ui', default_registration_config: [
       { field: 'daily_wage', label: 'Daily Wage', type: 'text', required: false, options: [] },
       { field: 'department', label: 'Department', type: 'text', required: false, options: [] }

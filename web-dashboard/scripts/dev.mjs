@@ -56,7 +56,7 @@ async function waitForHttpReady(url, timeoutMs = 25_000) {
     try {
       const res = await fetchWithTimeout(url, { method: "GET", timeoutMs: 5000 });
       if (res.status >= 200 && res.status < 500) return;
-    } catch {}
+    } catch { }
     await delay(350);
   }
   throw new Error(`Timed out waiting for ${url}`);
@@ -127,24 +127,85 @@ let backend = null;
 let frontendTunnel = null;
 let tmProc = null;
 let vite = null;
+let redisProc = null;
+let celeryProc = null;
 let shuttingDown = false;
+
+const REDIS_URL = "redis://127.0.0.1:6379/0";
+
+async function startRedis() {
+  process.stdout.write("Starting Redis server...\n");
+  try {
+    redisProc = spawnProc("/opt/homebrew/opt/redis/bin/redis-server", ["--daemonize", "no", "--port", "6379"], {
+      name: "redis",
+      stdio: "pipe",
+    });
+    // Give Redis a moment to start
+    await delay(500);
+    process.stdout.write("Redis started.\n");
+  } catch (e) {
+    process.stderr.write(`Failed to start Redis: ${String(e)}\n`);
+    process.stderr.write("Falling back to thread-based processing (no Celery).\n");
+  }
+}
+
+async function startCeleryWorker() {
+  if (!redisProc) {
+    process.stdout.write("Skipping Celery worker (Redis not available).\n");
+    return;
+  }
+  process.stdout.write("Starting Celery worker...\n");
+  try {
+    celeryProc = spawnProc("celery", [
+      "-A", "celery_app",
+      "worker",
+      "--loglevel=info",
+      "--concurrency=2",
+      "--pool=prefork",
+      "-Q", "celery,default",
+      "--include", "tasks",
+    ], {
+      name: "celery",
+      stdio: "pipe",
+      cwd: process.cwd() + "/../backend",
+      env: {
+        ...process.env,
+        CELERY_BROKER_URL: REDIS_URL,
+        CELERY_RESULT_BACKEND: REDIS_URL,
+        DB_PATH: "../backend/face_db.sqlite",
+      },
+    });
+    // Give Celery a moment to connect
+    await delay(2000);
+    process.stdout.write("Celery worker started (2 concurrent workers).\n");
+  } catch (e) {
+    process.stderr.write(`Failed to start Celery worker: ${String(e)}\n`);
+  }
+}
 
 async function startBackendIfNeeded() {
   const shouldStart = (process.env.START_BACKEND ?? "1") !== "0";
   if (!shouldStart) return;
   await selectStorageProviderForDev();
+
+  // Start Redis first
+  await startRedis();
+
   process.stdout.write(`Starting backend (http://${backendHost}:${backendPort})...\n`);
   if (await isBackendReachable()) {
     process.stdout.write("Backend already running.\n");
     return;
   }
 
-  backend = spawnProc("python3", ["../backend/app.py"], {
+  backend = spawnProc("python", ["../backend/app.py"], {
     name: "backend",
     stdio: "inherit",
     env: {
       ...process.env,
       DB_PATH: "../backend/face_db.sqlite",
+      CELERY_BROKER_URL: redisProc ? REDIS_URL : "",
+      CELERY_RESULT_BACKEND: redisProc ? REDIS_URL : "",
+      REDIS_URL: redisProc ? REDIS_URL : "",
     },
   });
   try {
@@ -153,6 +214,9 @@ async function startBackendIfNeeded() {
   } catch (e) {
     process.stderr.write(`Backend did not become ready: ${String(e)}\n`);
   }
+
+  // Start Celery worker after backend is ready
+  await startCeleryWorker();
 }
 
 async function startFrontend() {
@@ -330,7 +394,7 @@ async function startFrontend() {
           process.stdout.write(`If loca.lt asks for a tunnel password, enter your PUBLIC IP: ${ipText}\n`);
           process.stdout.write(`(This page appears once per viewer IP every few days as abuse protection.)\n\n`);
         }
-      } catch {}
+      } catch { }
       tunnel.on("close", () => {
         process.stdout.write("LocalTunnel closed.\n");
       });
@@ -341,7 +405,7 @@ async function startFrontend() {
   }
 
   await backendPromise;
-  await new Promise(() => {});
+  await new Promise(() => { });
 }
 
 await startFrontend();
@@ -351,14 +415,20 @@ function shutdown() {
   shuttingDown = true;
   try {
     vite?.kill("SIGINT");
-  } catch {}
+  } catch { }
   try {
     if (frontendTunnel?.close) frontendTunnel.close();
     tmProc?.kill("SIGINT");
-  } catch {}
+  } catch { }
+  try {
+    celeryProc?.kill("SIGINT");
+  } catch { }
   try {
     backend?.kill("SIGINT");
-  } catch {}
+  } catch { }
+  try {
+    redisProc?.kill("SIGINT");
+  } catch { }
   process.exit(0);
 }
 
