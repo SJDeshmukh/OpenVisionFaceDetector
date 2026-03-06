@@ -2397,6 +2397,12 @@ def update_vendor_device_name(vendor_id, device_id):
                     c.execute("UPDATE vendor_devices SET device_name = NULL WHERE vendor_id = ? AND device_id = ?", (vendor_id, device_id))
                 except Exception:
                     c.execute("UPDATE vendor_devices SET device_name = '' WHERE vendor_id = ? AND device_id = ?", (vendor_id, device_id))
+            else:
+                # Ensure a record exists even if no name provided (pre-registration)
+                try:
+                    c.execute("INSERT INTO vendor_devices (vendor_id, device_id, device_name) VALUES (?, ?, NULL)", (vendor_id, device_id))
+                except Exception:
+                    pass
             # Clear any slot assignment for this device
             try:
                 c.execute("UPDATE vendor_device_slots SET assigned_device_id = NULL, assigned_at = NULL WHERE vendor_id = ? AND assigned_device_id = ?", (vendor_id, device_id))
@@ -2405,6 +2411,175 @@ def update_vendor_device_name(vendor_id, device_id):
         conn.commit()
         conn.close()
         return jsonify({"status": "success"})
+    except Exception as e:
+        try:
+            conn.rollback()
+            conn.close()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 500
+
+@greeting_bp.route("/admin/vendors/<int:vendor_id>/devices/<device_id>/assign-slot", methods=["POST"])
+@super_admin_required
+def admin_assign_device_slot(vendor_id, device_id):
+    data = request.json or {}
+    slot_name = str(data.get("slot_name") or "").strip()
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        # Ensure tables exist
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS vendor_device_slots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                vendor_id INTEGER,
+                slot_name TEXT,
+                assigned_device_id TEXT,
+                assigned_at DATETIME,
+                UNIQUE(vendor_id, slot_name)
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS vendor_devices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                vendor_id INTEGER,
+                device_id TEXT,
+                device_name TEXT,
+                registered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                last_login_at DATETIME
+            )
+        """)
+        # Ensure vendor_devices record exists
+        c.execute("SELECT id FROM vendor_devices WHERE vendor_id = ? AND device_id = ? LIMIT 1", (vendor_id, device_id))
+        exists = c.fetchone()
+        if not exists:
+            c.execute("INSERT INTO vendor_devices (vendor_id, device_id, device_name) VALUES (?, ?, NULL)", (vendor_id, device_id))
+        if not slot_name:
+            # Clear all assignments for this device
+            try:
+                c.execute("UPDATE vendor_device_slots SET assigned_device_id = NULL, assigned_at = NULL WHERE vendor_id = ? AND assigned_device_id = ?", (vendor_id, device_id))
+            except Exception:
+                pass
+            try:
+                c.execute("UPDATE vendor_devices SET device_name = NULL WHERE vendor_id = ? AND device_id = ?", (vendor_id, device_id))
+            except Exception:
+                c.execute("UPDATE vendor_devices SET device_name = '' WHERE vendor_id = ? AND device_id = ?", (vendor_id, device_id))
+            conn.commit()
+            try:
+                socketio.emit("device_name_updated", {"vendor_id": vendor_id, "device_id": device_id, "device_name": None}, room=f"vendor_{vendor_id}")
+            except Exception:
+                pass
+            log_audit("device_unassign_slot_admin", {"device_id": device_id}, target_vendor_id=vendor_id)
+            conn.close()
+            return jsonify({"success": True})
+        # Ensure slot exists
+        c.execute("SELECT id, assigned_device_id FROM vendor_device_slots WHERE vendor_id = ? AND slot_name = ? LIMIT 1", (vendor_id, slot_name))
+        row = c.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"error": "Slot not found"}), 404
+        current_assigned = None
+        try:
+            current_assigned = row['assigned_device_id']
+        except Exception:
+            current_assigned = row[1]
+        if current_assigned and current_assigned != device_id:
+            conn.close()
+            return jsonify({"error": "Slot already assigned"}), 409
+        # Clear any previous assignment for this device on other slots
+        try:
+            c.execute("UPDATE vendor_device_slots SET assigned_device_id = NULL, assigned_at = NULL WHERE vendor_id = ? AND assigned_device_id = ? AND slot_name != ?", (vendor_id, device_id, slot_name))
+        except Exception:
+            pass
+        # Assign target slot to this device
+        now = datetime.now()
+        c.execute("UPDATE vendor_device_slots SET assigned_device_id = ?, assigned_at = ? WHERE vendor_id = ? AND slot_name = ?", (device_id, now, vendor_id, slot_name))
+        # Sync friendly name into vendor_devices
+        try:
+            c.execute("UPDATE vendor_devices SET device_name = ?, last_login_at = ? WHERE vendor_id = ? AND device_id = ?", (slot_name, now, vendor_id, device_id))
+        except Exception:
+            pass
+        conn.commit()
+        try:
+            ev = {"vendor_id": vendor_id, "device_id": device_id, "device_name": slot_name}
+            socketio.emit("device_name_updated", ev, room=f"vendor_{vendor_id}")
+        except Exception:
+            pass
+        conn.close()
+        log_audit("device_assign_slot_admin", {"device_id": device_id, "slot_name": slot_name}, target_vendor_id=vendor_id)
+        return jsonify({"success": True})
+    except Exception as e:
+        try:
+            conn.rollback()
+            conn.close()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 500
+
+@greeting_bp.route("/admin/vendors/<int:vendor_id>/devices/<device_id>", methods=["DELETE"])
+@super_admin_required
+def delete_vendor_device(vendor_id, device_id):
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        # Ensure tables exist
+        try:
+            c.execute("CREATE TABLE IF NOT EXISTS vendor_devices (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, device_id TEXT, device_name TEXT, registered_at DATETIME DEFAULT CURRENT_TIMESTAMP, last_login_at DATETIME)")
+            c.execute("CREATE TABLE IF NOT EXISTS vendor_device_slots (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, slot_name TEXT, assigned_device_id TEXT, assigned_at DATETIME, UNIQUE(vendor_id, slot_name))")
+            c.execute("CREATE TABLE IF NOT EXISTS active_sessions (token TEXT PRIMARY KEY, username TEXT, vendor_id INTEGER, device_id TEXT, platform TEXT, last_active DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
+        except Exception:
+            pass
+        # Unassign any slots tied to this device
+        try:
+            c.execute("UPDATE vendor_device_slots SET assigned_device_id = NULL, assigned_at = NULL WHERE vendor_id = ? AND assigned_device_id = ?", (vendor_id, device_id))
+        except Exception:
+            pass
+        # Delete any active sessions for this device (mobile/web tied to this device_id)
+        try:
+            c.execute("DELETE FROM active_sessions WHERE vendor_id = ? AND device_id = ?", (vendor_id, device_id))
+        except Exception:
+            pass
+        # Remove the device record
+        c.execute("DELETE FROM vendor_devices WHERE vendor_id = ? AND device_id = ?", (vendor_id, device_id))
+        conn.commit()
+        try:
+            socketio.emit("vendor_updated", {"vendor_id": vendor_id}, room="super_admin")
+            socketio.emit("device_removed", {"vendor_id": vendor_id, "device_id": device_id}, room=f"vendor_{vendor_id}")
+        except Exception:
+            pass
+        conn.close()
+        log_audit("device_delete", {"device_id": device_id}, target_vendor_id=vendor_id)
+        return jsonify({"success": True})
+    except Exception as e:
+        try:
+            conn.rollback()
+            conn.close()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 500
+
+@greeting_bp.route("/admin/vendors/<int:vendor_id>/devices/<device_id>/logout", methods=["POST"])
+@super_admin_required
+def logout_vendor_device(vendor_id, device_id):
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        # Remove only mobile sessions for this device
+        try:
+            c.execute("DELETE FROM active_sessions WHERE vendor_id = ? AND device_id = ? AND platform = 'mobile'", (vendor_id, device_id))
+        except Exception:
+            # Fallback: remove any sessions for this device_id regardless of platform
+            try:
+                c.execute("DELETE FROM active_sessions WHERE vendor_id = ? AND device_id = ?", (vendor_id, device_id))
+            except Exception:
+                pass
+        conn.commit()
+        conn.close()
+        try:
+            socketio.emit("force_logout_mobile_device", {"vendor_id": vendor_id, "device_id": device_id}, room=f"vendor_{vendor_id}")
+        except Exception:
+            pass
+        log_audit("device_logout", {"device_id": device_id}, target_vendor_id=vendor_id)
+        return jsonify({"success": True})
     except Exception as e:
         try:
             conn.rollback()
@@ -2589,11 +2764,29 @@ def mobile_assign_slot():
         # Assign target slot to this device
         now = datetime.now()
         c.execute("UPDATE vendor_device_slots SET assigned_device_id = ?, assigned_at = ? WHERE vendor_id = ? AND slot_name = ?", (device_id, now, vendor_id, slot_name))
-        # Sync friendly name into vendor_devices
+        # Upsert vendor_devices and sync friendly name
         try:
-            c.execute("UPDATE vendor_devices SET device_name = ?, last_login_at = ? WHERE vendor_id = ? AND device_id = ?", (slot_name, now, vendor_id, device_id))
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS vendor_devices (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    vendor_id INTEGER,
+                    device_id TEXT,
+                    device_name TEXT,
+                    registered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    last_login_at DATETIME
+                )
+            """)
         except Exception:
             pass
+        try:
+            c.execute("UPDATE vendor_devices SET device_name = ?, last_login_at = ? WHERE vendor_id = ? AND device_id = ?", (slot_name, now, vendor_id, device_id))
+            if c.rowcount == 0:
+                c.execute("INSERT INTO vendor_devices (vendor_id, device_id, device_name, registered_at, last_login_at) VALUES (?, ?, ?, ?, ?)", (vendor_id, device_id, slot_name, now, now))
+        except Exception:
+            try:
+                c.execute("INSERT INTO vendor_devices (vendor_id, device_id, device_name, registered_at, last_login_at) VALUES (?, ?, ?, ?, ?)", (vendor_id, device_id, slot_name, now, now))
+            except Exception:
+                pass
         conn.commit()
         try:
             ev = {"vendor_id": vendor_id, "device_id": device_id, "device_name": slot_name}

@@ -245,6 +245,48 @@ const SuperAdminDashboard = () => {
     }
   };
 
+  const logoutVendorDevice = async (vendorId, deviceId) => {
+    if (!window.confirm(`Logout device ${deviceId}? This will invalidate its mobile session.`)) return;
+    try {
+      await axios.post(`${API_URL}/admin/vendors/${vendorId}/devices/${encodeURIComponent(deviceId)}/logout`, {}, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      alert("Device logged out");
+    } catch (e) {
+      const msg = e?.response?.data?.error || e.message || "Failed to logout device";
+      alert(msg);
+    }
+  };
+
+  const deleteVendorDevice = async (vendorId, deviceId) => {
+    if (!window.confirm(`Delete device ${deviceId}? This removes it from records and frees its place.`)) return;
+    try {
+      await axios.delete(`${API_URL}/admin/vendors/${vendorId}/devices/${encodeURIComponent(deviceId)}`, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      // Refresh local state
+      await fetchVendorDevices(vendorId);
+      await fetchVendorDeviceSlots(vendorId);
+    } catch (e) {
+      const msg = e?.response?.data?.error || e.message || "Failed to delete device";
+      alert(msg);
+    }
+  };
+
+  const adminAssignDeviceSlot = async (vendorId, deviceId, slotName) => {
+    try {
+      await axios.post(`${API_URL}/admin/vendors/${vendorId}/devices/${encodeURIComponent(deviceId)}/assign-slot`, 
+        { slot_name: slotName }, 
+        { headers: { Authorization: `Bearer ${user?.token}` } }
+      );
+      await fetchVendorDevices(vendorId);
+      await fetchVendorDeviceSlots(vendorId);
+    } catch (e) {
+      const msg = e?.response?.data?.error || e.message || "Failed to assign place";
+      alert(msg);
+    }
+  };
+
   const deletePlaceSlot = async (vendorId, slotName) => {
     if (!slotName) return;
     if (!window.confirm(`Delete place "${slotName}"? This will unassign any devices using it.`)) return;
@@ -1182,6 +1224,40 @@ const SuperAdminDashboard = () => {
                           })()}
                         </div>
                       </div>
+                      {(() => {
+                        const limit = normalizeLimit(selectedVendorForDetail?.max_mobile_devices) ?? normalizeLimit(selectedVendorForDetail?.max_users);
+                        const over = limit != null && (deviceSlots || []).length > limit;
+                        if (!over) return null;
+                        return (
+                          <div className="mb-3 p-3 rounded-lg border border-red-200 bg-red-50 text-red-700 text-sm flex items-center justify-between">
+                            <span>Over limit. Reduce places to match plan.</span>
+                            <button
+                              onClick={async () => {
+                                const limit2 = normalizeLimit(selectedVendorForDetail?.max_mobile_devices) ?? normalizeLimit(selectedVendorForDetail?.max_users);
+                                const slots = Array.from(deviceSlots || []);
+                                const unassigned = slots.filter(s => !s.assigned_device_id);
+                                const assigned = slots.filter(s => s.assigned_device_id);
+                                const extra = slots.length - (limit2 || 0);
+                                const removeList = [];
+                                for (let i = 0; i < unassigned.length && removeList.length < extra; i++) removeList.push(unassigned[i]);
+                                for (let i = 0; i < assigned.length && removeList.length < extra; i++) removeList.push(assigned[i]);
+                                for (const s of removeList) {
+                                  if (s.assigned_device_id) {
+                                    await adminAssignDeviceSlot(selectedVendorForDetail.id, s.assigned_device_id, '');
+                                  }
+                                }
+                                const keep = slots.filter(s => !removeList.find(r => (r.slot_name === s.slot_name)));
+                                const nextNames = keep.slice(0, limit2).map(s => s.slot_name);
+                                await saveDeviceSlots(selectedVendorForDetail.id, nextNames);
+                                await fetchVendorDeviceSlots(selectedVendorForDetail.id);
+                              }}
+                              className="text-xs bg-red-600 text-white px-3 py-1.5 rounded border border-red-600 hover:bg-red-700"
+                            >
+                              Trim to Limit
+                            </button>
+                          </div>
+                        );
+                      })()}
                       <div className="flex gap-2 mb-3">
                         <input 
                           className="flex-1 p-2 border rounded text-sm"
@@ -1230,12 +1306,13 @@ const SuperAdminDashboard = () => {
                         )}
                       </div>
                     </div>
+                    {/* No manual device entry; devices appear after first mobile login and place selection */}
                     <div className="overflow-x-auto">
                       <table className="min-w-full text-sm">
                         <thead>
                           <tr className="text-left text-slate-500">
                             <th className="p-2">Device ID</th>
-                            <th className="p-2">Name</th>
+                            <th className="p-2">Place</th>
                             <th className="p-2">Registered</th>
                             <th className="p-2">Last Login</th>
                             <th className="p-2"></th>
@@ -1247,47 +1324,43 @@ const SuperAdminDashboard = () => {
                               <td colSpan="5" className="p-3 text-slate-400">No devices discovered yet.</td>
                             </tr>
                           ) : vendorDevices.map(d => {
-                            const edited = deviceEdits?.[d.device_id] ?? '';
-                            const changed = (edited || '') !== (d.device_name || '');
                             return (
                               <tr key={d.id || d.device_id} className="border-t border-slate-100">
                                 <td className="p-2 font-mono">{d.device_id}</td>
                                 <td className="p-2">
-                                  <input 
-                                    className="w-full p-2 border rounded text-sm"
-                                    placeholder="e.g., Office, Class A"
-                                    value={edited}
-                                    onChange={e => setDeviceEdits(prev => ({ ...prev, [d.device_id]: e.target.value }))}
-                                  />
+                                  <div className="w-full p-2 border rounded text-sm bg-slate-50 text-slate-700">{d.device_name || '-'}</div>
                                 </td>
                                 <td className="p-2 text-slate-500">{d.registered_at || '-'}</td>
                                 <td className="p-2 text-slate-500">{d.last_login_at || '-'}</td>
                                 <td className="p-2">
                                   <div className="flex items-center gap-2">
-                                    <button 
-                                      disabled={!changed}
-                                      onClick={() => saveDeviceName(selectedVendorForDetail.id, d.device_id)}
-                                      className={`text-xs px-3 py-1.5 rounded border ${changed ? 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700' : 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'}`}
+                                    <button
+                                      onClick={() => adminAssignDeviceSlot(selectedVendorForDetail.id, d.device_id, '')}
+                                      className="text-xs px-3 py-1.5 rounded border bg-white text-slate-700 border-slate-300 hover:bg-slate-50"
+                                      title="Clear place"
                                     >
-                                      Save
+                                      Clear
                                     </button>
                                     <button
-                                      onClick={() => {
-                                        setDeviceEdits(prev => ({ ...prev, [d.device_id]: '' }));
-                                        setTimeout(() => saveDeviceName(selectedVendorForDetail.id, d.device_id), 0);
-                                      }}
-                                      className="text-xs px-3 py-1.5 rounded border bg-white text-slate-700 border-slate-300 hover:bg-slate-50"
-                                      title="Unassign device from place"
+                                      onClick={() => logoutVendorDevice(selectedVendorForDetail.id, d.device_id)}
+                                      className="text-xs px-3 py-1.5 rounded border bg-white text-amber-700 border-amber-200 hover:bg-amber-50"
+                                      title="Logout this device"
                                     >
-                                      Unassign
+                                      Logout
+                                    </button>
+                                    <button
+                                      onClick={() => deleteVendorDevice(selectedVendorForDetail.id, d.device_id)}
+                                      className="text-xs px-3 py-1.5 rounded border bg-white text-red-600 border-red-200 hover:bg-red-50"
+                                      title="Delete this device"
+                                    >
+                                      Delete
                                     </button>
                                     <select
                                       value=""
                                       onChange={(e) => {
                                         const name = (e.target.value || '').trim();
                                         if (!name) return;
-                                        setDeviceEdits(prev => ({ ...prev, [d.device_id]: name }));
-                                        saveDeviceName(selectedVendorForDetail.id, d.device_id, name);
+                                        adminAssignDeviceSlot(selectedVendorForDetail.id, d.device_id, name);
                                       }}
                                       className="text-xs px-2 py-1.5 border rounded bg-white text-slate-700 border-slate-300"
                                       title="Assign from predefined places"
