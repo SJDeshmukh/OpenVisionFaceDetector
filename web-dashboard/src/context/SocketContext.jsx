@@ -24,7 +24,7 @@ export const SocketProvider = ({ children }) => {
       path: '/socket.io/',
       withCredentials: true,
       reconnectionAttempts: 5,
-      query: { 'ngrok-skip-browser-warning': '1' }
+      query: {}
     });
     setSocket(s);
 

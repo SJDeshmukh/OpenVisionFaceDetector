@@ -60,10 +60,7 @@ public class SplashActivity extends AppCompatActivity {
                 prefs.edit().putString("server_url", targetUrl).apply();
             }
             try {
-                if (targetUrl != null && targetUrl.contains("ngrok-free.dev")) {
-                    targetUrl = RetrofitClient.getBaseUrl();
-                    prefs.edit().putString("server_url", targetUrl).apply();
-                }
+                // No special-case for ngrok; use the configured base URL directly
             } catch (Exception ignored) {}
 
             RetrofitClient.setBaseUrl(targetUrl);

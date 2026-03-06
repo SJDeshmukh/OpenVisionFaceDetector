@@ -152,7 +152,6 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 IO.Options options = new IO.Options();
                 options.reconnection = true;
                 Map<String, List<String>> headers = new HashMap<>();
-                headers.put("ngrok-skip-browser-warning", Collections.singletonList("1"));
                 headers.put("User-Agent", Collections.singletonList("openvisionx-android"));
                 options.extraHeaders = headers;
                 if (serverUrl.endsWith("/")) serverUrl = serverUrl.substring(0, serverUrl.length() - 1);

@@ -43,7 +43,6 @@ public class RetrofitClient {
             httpClient.addInterceptor(chain -> {
                 Request original = chain.request();
                 Request.Builder builder = original.newBuilder()
-                        .header("ngrok-skip-browser-warning", "1")
                         .header("User-Agent", "openvisionx-android");
                 return chain.proceed(builder.build());
             });

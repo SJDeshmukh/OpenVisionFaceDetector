@@ -3,7 +3,6 @@ import net from "node:net";
 import process from "node:process";
 import readline from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
-import ltModule from "localtunnel";
 
 const defaultPort = Number.parseInt(process.env.FRONTEND_PORT ?? "5173", 10);
 const host = process.env.FRONTEND_HOST ?? "127.0.0.1";
@@ -63,10 +62,7 @@ async function waitForHttpReady(url, timeoutMs = 25_000) {
   throw new Error(`Timed out waiting for ${url}`);
 }
 
-function findNgrokUrl(line) {
-  const match = line.match(/url=(https:\/\/[^\s]+)/);
-  return match?.[1] ?? null;
-}
+// Remove ngrok/localtunnel helpers to reduce external dependencies
 
 function isAddressInUse(err) {
   return err?.code === "EADDRINUSE";
@@ -116,30 +112,7 @@ async function findFrontendPort() {
   return { port: defaultPort, alreadyRunning: false };
 }
 
-async function findRunningNgrokApiPort() {
-  for (let p = 4040; p <= 4050; p += 1) {
-    if (await isHttpListening(`http://127.0.0.1:${p}/api/tunnels`)) return p;
-  }
-  return null;
-}
-
-async function getExistingNgrokPublicUrlForPort(frontendPort) {
-  const apiPort = await findRunningNgrokApiPort();
-  if (!apiPort) return null;
-  try {
-    const res = await fetchWithTimeout(`http://127.0.0.1:${apiPort}/api/tunnels`, { timeoutMs: 1500 });
-    if (!res.ok) return null;
-    const data = await res.json();
-    const tunnels = Array.isArray(data?.tunnels) ? data.tunnels : [];
-    for (const tunnel of tunnels) {
-      const publicUrl = tunnel?.public_url;
-      const addr = tunnel?.config?.addr ?? "";
-      if (typeof publicUrl !== "string") continue;
-      if (typeof addr === "string" && addr.includes(`:${frontendPort}`)) return publicUrl;
-    }
-  } catch {}
-  return null;
-}
+// Removed ngrok API usage
 
 async function isBackendReachable() {
   try {
@@ -210,7 +183,7 @@ async function startFrontend() {
   process.stdout.write(`\nLOCAL WEBSITE: http://${host}:${port}\n`);
   process.stdout.write(`LOCAL API: http://${backendHost}:${backendPort}/api\n\n`);
 
-  const provider = String(process.env.TUNNEL_PROVIDER || "cf").toLowerCase();
+  const provider = "none";
   if (provider === "custom") {
     const url = process.env.TUNNEL_URL || "";
     if (!url) {
@@ -331,6 +304,8 @@ async function startFrontend() {
         process.stderr.write(`LocalTunnel fallback failed: ${String(e2?.message || e2)}\n`);
       }
     }
+  } else if (provider === "none") {
+    process.stdout.write("Public tunnel disabled. Use LOCAL WEBSITE/LOCAL API above.\n");
   } else {
     try {
       const subdomain = process.env.LT_SUBDOMAIN || undefined;
