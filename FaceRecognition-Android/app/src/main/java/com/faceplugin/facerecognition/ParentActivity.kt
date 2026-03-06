@@ -37,7 +37,7 @@ import java.util.Locale
 class ParentActivity : AppCompatActivity() {
     private var mSocket: Socket? = null
 
-    private fun createHistoryCard(status: String, timestamp: String, activity: String): LinearLayout {
+    private fun createHistoryCard(status: String, timestamp: String, activity: String, place: String): LinearLayout {
         val card = LinearLayout(this)
         card.orientation = LinearLayout.VERTICAL
         card.setBackgroundResource(R.drawable.bg_input_field)
@@ -54,7 +54,8 @@ class ParentActivity : AppCompatActivity() {
         val label = if (status == "CHECK_IN") "Checked In" else "Checked Out"
         val time = formatTime(timestamp)
         val day = try { if (timestamp.contains(" ")) timestamp.split(" ").firstOrNull() ?: "" else "" } catch (_: Exception) { "" }
-        val subtitle = listOf(label, day, activity).filter { it.isNotBlank() }.joinToString(" • ")
+        val placeLabel = if (place.isNotBlank()) place else ""
+        val subtitle = listOf(label, day, activity, placeLabel).filter { it.isNotBlank() }.joinToString(" • ")
 
         val tvTime = TextView(this)
         tvTime.setTextColor(resources.getColor(R.color.vision_text_primary))
@@ -221,7 +222,11 @@ class ParentActivity : AppCompatActivity() {
                             if (status != "CHECK_IN" && status != "CHECK_OUT") continue
                             val ts = try { obj.get("timestamp")?.asString ?: "" } catch (_: Exception) { "" }
                             val activity = try { obj.get("activity")?.asString ?: "" } catch (_: Exception) { "" }
-                            history.addView(createHistoryCard(status, ts, activity))
+                            val place = try {
+                                val dn = obj.get("device_name")?.asString
+                                if (!dn.isNullOrBlank()) dn else obj.get("place")?.asString ?: ""
+                            } catch (_: Exception) { "" }
+                            history.addView(createHistoryCard(status, ts, activity, place))
                         }
                     } catch (_: Exception) {}
                 }
@@ -252,9 +257,10 @@ class ParentActivity : AppCompatActivity() {
                         val s = obj.optString("status")
                         val ts = obj.optString("timestamp")
                         val ac = obj.optString("activity")
+                        val place = obj.optString("device_name", obj.optString("place", ""))
                         if (s == "CHECK_IN" || s == "CHECK_OUT") {
                             val history = findViewById<LinearLayout>(R.id.parent_history_container)
-                            history.addView(createHistoryCard(s, ts, ac))
+                            history.addView(createHistoryCard(s, ts, ac, place))
                             if (s == "CHECK_IN") {
                                 val t = formatTime(ts)
                                 findViewById<TextView>(R.id.tv_card_checkin_time).text = if (t == "-") "--:--" else t
@@ -273,7 +279,7 @@ class ParentActivity : AppCompatActivity() {
                                 }
                             } catch (_: Exception) {}
                         }
-                        showAttendanceNotification(n, s, ts, ac)
+                        showAttendanceNotification(n, s, ts, ac, place)
                         val iv = findViewById<ImageView>(R.id.ivParentStatus)
                         val tvWave = findViewById<TextView>(R.id.tvParentStatus)
                         if (s == "CHECK_IN") {
@@ -403,11 +409,11 @@ class ParentActivity : AppCompatActivity() {
     }
 
     @android.annotation.SuppressLint("MissingPermission")
-    private fun showAttendanceNotification(name: String, status: String, timestamp: String, activity: String) {
+    private fun showAttendanceNotification(name: String, status: String, timestamp: String, activity: String, place: String) {
         val builder = NotificationCompat.Builder(this, "parent_attendance")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle("$name • $status")
-            .setContentText("$timestamp • $activity")
+            .setContentText(listOf(timestamp, activity, if (place.isNotBlank()) place else null).filterNotNull().joinToString(" • "))
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val granted =

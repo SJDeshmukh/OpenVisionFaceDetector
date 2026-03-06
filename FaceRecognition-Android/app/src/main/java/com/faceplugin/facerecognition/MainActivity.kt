@@ -49,6 +49,7 @@ class MainActivity : AppCompatActivity() {
     private val syncInterval: Long = 30000
     private var tvNetworkStatus: TextView? = null
     private val networkStatusInterval: Long = 1500
+    private val settingsInterval: Long = 60000
 
     private val syncRunnable = object : Runnable {
         override fun run() {
@@ -71,6 +72,16 @@ class MainActivity : AppCompatActivity() {
         override fun run() {
             updateNetworkStatusBadge()
             handler.postDelayed(this, networkStatusInterval)
+        }
+    }
+
+    private val settingsRunnable = object : Runnable {
+        override fun run() {
+            try {
+                fetchCooldownSettings()
+            } catch (_: Exception) {
+            }
+            handler.postDelayed(this, settingsInterval)
         }
     }
 
@@ -264,6 +275,7 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread {
                     try {
                         android.widget.Toast.makeText(this, "Plan updated", android.widget.Toast.LENGTH_SHORT).show()
+                        fetchCooldownSettings()
                     } catch (_: Exception) {}
                 }
             }
@@ -331,6 +343,11 @@ class MainActivity : AppCompatActivity() {
         }
         handler.removeCallbacks(networkStatusRunnable)
         handler.post(networkStatusRunnable)
+        handler.removeCallbacks(settingsRunnable)
+        handler.post(settingsRunnable)
+        try {
+            fetchCooldownSettings()
+        } catch (_: Exception) {}
     }
 
     private fun fetchCooldownSettings() {
@@ -338,14 +355,16 @@ class MainActivity : AppCompatActivity() {
             val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
             val token = prefs.getString("token", null)
             if (token.isNullOrBlank()) return
-            RetrofitClient.getService().settings.enqueue(object : retrofit2.Callback<JsonObject> {
+            RetrofitClient.getService().getSettings().enqueue(object : retrofit2.Callback<JsonObject> {
                 override fun onResponse(call: retrofit2.Call<JsonObject>, response: retrofit2.Response<JsonObject>) {
                     try {
                         if (response.isSuccessful && response.body() != null) {
                             val body = response.body()!!
                             if (body.has("cooldown") && !body.get("cooldown").isJsonNull) {
-                                val v = body.get("cooldown").asString
-                                val sec = v.toIntOrNull() ?: 30
+                                val raw = body.get("cooldown")
+                                val s = if (raw.isJsonPrimitive) raw.asString else raw.toString()
+                                val match = Regex("""\d+""").find(s)
+                                val sec = match?.value?.toIntOrNull() ?: 30
                                 prefs.edit().putInt("cooldown_seconds", sec).apply()
                             }
                         }
@@ -372,6 +391,7 @@ class MainActivity : AppCompatActivity() {
 
         handler.removeCallbacks(syncRunnable) // Stop sync when backgrounded
         handler.removeCallbacks(networkStatusRunnable)
+        handler.removeCallbacks(settingsRunnable)
     }
 
     private fun updateNetworkStatusBadge() {

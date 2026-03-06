@@ -46,6 +46,25 @@ class AttendanceSyncWorker(appContext: Context, params: WorkerParameters) : Work
                     true,
                     item.timestamp
                 )
+                try {
+                    val deviceId = android.provider.Settings.Secure.getString(applicationContext.contentResolver, android.provider.Settings.Secure.ANDROID_ID)
+                    val deviceName = applicationContext.getSharedPreferences("app_prefs", Context.MODE_PRIVATE).getString("device_name", null)
+                    val dn = if (!deviceName.isNullOrBlank()) deviceName else {
+                        if (!deviceId.isNullOrBlank() && deviceId.length >= 8) "Mobile ${deviceId.substring(0, 8)}" else "Mobile"
+                    }
+                    req.deviceId = deviceId
+                    req.deviceName = dn
+                    val prefs2 = applicationContext.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+                    val vendorId = prefs2.getInt("vendor_id", -1)
+                    if (vendorId > 0) req.vendorId = vendorId
+                    var btype = prefs2.getString("selected_business_type_code", null)
+                    if (btype.isNullOrBlank()) {
+                        btype = prefs2.getString("selected_business_type", null)
+                    }
+                    if (!btype.isNullOrBlank()) {
+                        req.businessType = btype!!.lowercase()
+                    }
+                } catch (_: Exception) {}
                 val resp: Response<com.faceplugin.facerecognition.api.GreetingResponse> =
                     service.sendPersonEvent(req).execute()
                 if (resp.isSuccessful) {

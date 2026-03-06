@@ -20,6 +20,15 @@ public class PersonEventRequest {
     @SerializedName("timestamp")
     private String timestamp;
 
+    @SerializedName("device_id")
+    private String deviceId;
+    @SerializedName("device_name")
+    private String deviceName;
+    @SerializedName("vendor_id")
+    private Integer vendorId;
+    @SerializedName("business_type")
+    private String businessType;
+
     // Constructor with is_attendance and timestamp
     public PersonEventRequest(boolean detected, boolean recognized, String personId, String name, float confidence, String imageBase64, boolean is_attendance, String timestamp) {
         this.detected = detected;
@@ -106,5 +115,37 @@ public class PersonEventRequest {
 
     public void setTimestamp(String timestamp) {
         this.timestamp = timestamp;
+    }
+
+    public String getDeviceId() {
+        return deviceId;
+    }
+
+    public void setDeviceId(String deviceId) {
+        this.deviceId = deviceId;
+    }
+
+    public String getDeviceName() {
+        return deviceName;
+    }
+
+    public void setDeviceName(String deviceName) {
+        this.deviceName = deviceName;
+    }
+    
+    public Integer getVendorId() {
+        return vendorId;
+    }
+    
+    public void setVendorId(Integer vendorId) {
+        this.vendorId = vendorId;
+    }
+    
+    public String getBusinessType() {
+        return businessType;
+    }
+    
+    public void setBusinessType(String businessType) {
+        this.businessType = businessType;
     }
 }

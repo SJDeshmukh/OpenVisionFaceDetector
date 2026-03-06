@@ -7,9 +7,10 @@ import retrofit2.converter.gson.GsonConverterFactory;
 
 import android.content.Intent;
 import com.faceplugin.facerecognition.MyGlobal;
+import com.faceplugin.facerecognition.BuildConfig;
 
 public class RetrofitClient {
-    private static String BASE_URL = "https://p01--openvisionfacedetector--g4rz8tx5rcc5.code.run/";
+    private static String BASE_URL = BuildConfig.BASE_URL;
     
     private static Retrofit retrofit = null;
     private static String authToken = null;
@@ -30,6 +31,9 @@ public class RetrofitClient {
     }
 
     public static String getBaseUrl() {
+        if (BASE_URL == null || BASE_URL.isEmpty()) {
+            BASE_URL = BuildConfig.BASE_URL;
+        }
         return BASE_URL;
     }
 

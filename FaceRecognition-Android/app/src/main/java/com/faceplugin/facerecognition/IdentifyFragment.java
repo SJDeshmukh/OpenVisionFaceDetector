@@ -84,7 +84,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     static int PREVIEW_WIDTH = 720;
     static int PREVIEW_HEIGHT = 1280;
 
-    public static String BASE_URL = "https://p01--openvisionfacedetector--g4rz8tx5rcc5.code.run"; 
+    public static String BASE_URL = BuildConfig.BASE_URL; 
     private Socket mSocket;
 
     private TextToSpeech tts;
@@ -110,6 +110,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     private TextView networkStatusPill;
     private long lastNotRecognizedToastAtMs = 0L;
     private boolean vendorVerifyOnlyMode = false;
+    private java.util.Map<String, Long> lastEventSentAtMs = new java.util.HashMap<>();
 
     // Power Saving / Screen Saver
     private Handler powerSaveHandler = new Handler(Looper.getMainLooper());
@@ -397,6 +398,29 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
 
         final String finalPersonId = effectivePersonId;
         PersonEventRequest request = new PersonEventRequest(detected, recognized, finalPersonId, name, confidence, imageBase64, isAttendance, timestamp);
+        try {
+            String deviceId = Settings.Secure.getString(requireContext().getContentResolver(), Settings.Secure.ANDROID_ID);
+            android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
+            String deviceName = prefs.getString("device_name", null);
+            if (deviceName == null || deviceName.isEmpty()) {
+                if (deviceId != null && deviceId.length() >= 8) {
+                    deviceName = "Mobile " + deviceId.substring(0, 8);
+                } else {
+                    deviceName = "Mobile";
+                }
+            }
+            request.setDeviceId(deviceId);
+            request.setDeviceName(deviceName);
+            int vendorId = prefs.getInt("vendor_id", -1);
+            if (vendorId > 0) request.setVendorId(vendorId);
+            String btype = prefs.getString("selected_business_type_code", null);
+            if (btype == null || btype.isEmpty()) {
+                btype = prefs.getString("selected_business_type", null);
+            }
+            if (btype != null && !btype.isEmpty()) {
+                request.setBusinessType(btype.toLowerCase());
+            }
+        } catch (Exception ignored) {}
 
         service.sendPersonEvent(request).enqueue(new Callback<GreetingResponse>() {
             @Override
@@ -901,6 +925,20 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                                 }
                             }
                         } catch (Exception ignored) {}
+                        String k = personId;
+                        if (k == null || k.isEmpty()) {
+                            k = "local:" + (localUid != null && !localUid.isEmpty() ? localUid : "unknown");
+                        }
+                        try {
+                            Long lastLocal = lastEventSentAtMs.get(k);
+                            if (lastLocal != null) {
+                                long nowMs = System.currentTimeMillis();
+                                long deltaSec = (nowMs - lastLocal) / 1000;
+                                if (deltaSec >= 0 && deltaSec < cooldown) {
+                                    withinCooldown = true;
+                                }
+                            }
+                        } catch (Exception ignored) {}
                         if (!withinCooldown) {
                             String predicted = dbManager.predictNextAttendanceStatus(personId, localUid, bestPerson.name);
                             dbManager.insertAttendanceQueue(personId, localUid, bestPerson.name, timestamp, predicted, bitmap, false);
@@ -913,6 +951,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                                     if (statusText != null) statusText.setText(finalName + " " + finalPredicted);
                                 });
                             }
+                            try { lastEventSentAtMs.put(k, System.currentTimeMillis()); } catch (Exception ignored) {}
                             try {
                                 SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
                             } catch (Exception e) {
@@ -940,13 +979,23 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                             long lastMs = sdf2.parse(lastTs).getTime();
                             long nowMs = sdf2.parse(nowStr).getTime();
                             long deltaSec = (nowMs - lastMs) / 1000;
-                            if (deltaSec >= cooldown || deltaSec < 0) {
-                                allowByCooldown = true;
+                            allowByCooldown = (deltaSec >= cooldown || deltaSec < 0);
+                        }
+                    } catch (Exception ignored) {}
+
+                    try {
+                        Long lastLocal = lastEventSentAtMs.get(key);
+                        if (lastLocal != null) {
+                            long nowMs = System.currentTimeMillis();
+                            int cooldown = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE).getInt("cooldown_seconds", 30);
+                            long deltaSec = (nowMs - lastLocal) / 1000;
+                            if (!(deltaSec >= cooldown || deltaSec < 0)) {
+                                allowByCooldown = false;
                             }
                         }
                     } catch (Exception ignored) {}
 
-                    if (!key.equals(lastProcessedPersonId) || allowByCooldown) {
+                    if (allowByCooldown) {
                         lastProcessedPersonId = key;
 
                         if (getActivity() != null) {
@@ -957,6 +1006,14 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                         }
 
                         sendPersonEvent(true, true, personId, localUid, bestPerson.name, bestSimilarity, bitmap);
+                        try { lastEventSentAtMs.put(key, System.currentTimeMillis()); } catch (Exception ignored) {}
+                    } else {
+                        if (getActivity() != null) {
+                            String finalName = bestPerson.name;
+                            getActivity().runOnUiThread(() -> {
+                                statusText.setText(finalName + " — please wait (cooldown)");
+                            });
+                        }
                     }
 
                 } else {

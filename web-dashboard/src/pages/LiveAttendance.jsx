@@ -333,7 +333,7 @@ useEffect(() => {
                       <h3 className="font-semibold text-slate-800 truncate">{log.name}</h3>
                       <span className="text-xs text-slate-400 font-mono">{new Date(log.timestamp.replace(' ', 'T')).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'})}</span>
                     </div>
-                    <p className="text-xs text-slate-500 mb-1.5">{log.department || 'Employee'}</p>
+                    <p className="text-xs text-slate-500 mb-1.5">{log.department || ((user?.vertical && ['school','hostel'].includes(String(user.vertical).toLowerCase())) ? 'Student' : 'Employee')}</p>
                     
                     <div className="flex flex-wrap gap-2">
                       <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium border ${getStatusColor(log.status, log.is_late)}`}>

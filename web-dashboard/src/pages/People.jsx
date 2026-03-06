@@ -20,6 +20,7 @@ import { API_URL, BASE_URL } from '../config';
 
 const People = () => {
   const { user } = useAuth();
+  const personLabel = (user?.vertical && ['school','hostel'].includes(String(user.vertical).toLowerCase())) ? 'Student' : 'Employee';
   const [users, setUsers] = useState([]);
   const [shifts, setShifts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -277,7 +278,7 @@ const People = () => {
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-800">People Management</h1>
-          <p className="text-slate-500">Manage employees and their facial data.</p>
+          <p className="text-slate-500">Manage {personLabel.toLowerCase()}s and their facial data.</p>
         </div>
         <div className="flex space-x-3">
           <button className="flex items-center space-x-2 px-4 py-2 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 font-medium transition-colors">
@@ -288,7 +289,7 @@ const People = () => {
             onClick={openAddModal}
             className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium transition-colors shadow-sm">
             <Plus size={18} />
-            <span>Add Employee</span>
+            <span>{`Add ${personLabel}`}</span>
           </button>
         </div>
       </div>
@@ -321,7 +322,7 @@ const People = () => {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200">
-                <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Employee</th>
+                <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">{personLabel}</th>
                 {tableColumns.map(col => (
                   <th key={col.field} className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
                     {col.label}
@@ -420,7 +421,7 @@ const People = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden max-h-[90vh] overflow-y-auto">
             <div className="flex justify-between items-center p-6 border-b border-slate-100 sticky top-0 bg-white z-10">
-              <h2 className="text-xl font-bold text-slate-800">{isEditing ? 'Edit Employee' : 'Add New Employee'}</h2>
+              <h2 className="text-xl font-bold text-slate-800">{isEditing ? `Edit ${personLabel}` : `Add New ${personLabel}`}</h2>
               <button onClick={() => setIsModalOpen(false)} className="text-slate-400 hover:text-slate-600">
                 <X size={24} />
               </button>
@@ -529,7 +530,7 @@ const People = () => {
                   disabled={submitting || !formData.name || (!isEditing && !formData.photo)}
                   className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {submitting ? 'Saving...' : (isEditing ? 'Save Changes' : 'Register Employee')}
+                  {submitting ? 'Saving...' : (isEditing ? 'Save Changes' : `Register ${personLabel}`)}
                 </button>
               </div>
             </form>

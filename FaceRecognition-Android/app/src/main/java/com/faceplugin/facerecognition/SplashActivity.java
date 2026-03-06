@@ -24,8 +24,8 @@ public class SplashActivity extends AppCompatActivity {
     private TextView tvStatus;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
-    private static final String LOCAL_URL = "https://postdural-patty-pallial.ngrok-free.dev/";
-    private static final String RENDER_URL = "https://face-detection-backend-69o7.onrender.com/";
+    private static final String LOCAL_URL = BuildConfig.BASE_URL;
+    private static final String RENDER_URL = BuildConfig.BASE_URL;
     private static final String LEGACY_LOCAL_URL = "http://192.0.0.2:5001/";
 
     @Override
@@ -98,18 +98,11 @@ public class SplashActivity extends AppCompatActivity {
 
     private boolean pingServer(String baseUrl, int timeout) {
         try {
-            // Use api/config as it's a valid endpoint (api/ping does not exist)
-            URL url = new URL(baseUrl + "api/config");
-            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-            connection.setConnectTimeout(timeout);
-            connection.setReadTimeout(timeout);
-            connection.setRequestMethod("GET");
-            connection.setRequestProperty("ngrok-skip-browser-warning", "1");
-            connection.setRequestProperty("User-Agent", "openvisionx-android");
-            int code = connection.getResponseCode();
-            connection.disconnect();
-            return code == 200;
-        } catch (IOException e) {
+            com.faceplugin.facerecognition.api.GreetingService svc = com.faceplugin.facerecognition.api.RetrofitClient.getService();
+            retrofit2.Response<com.google.gson.JsonObject> resp = svc.getConfig().execute();
+            int code = resp.code();
+            return code >= 200 && code < 400 && resp.body() != null;
+        } catch (Exception e) {
             return false;
         }
     }

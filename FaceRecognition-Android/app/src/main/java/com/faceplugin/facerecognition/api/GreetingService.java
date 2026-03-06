@@ -36,6 +36,9 @@ public interface GreetingService {
     @GET("api/public/business-types")
     Call<com.google.gson.JsonObject> getPublicBusinessTypes();
 
+    @GET("api/config")
+    Call<com.google.gson.JsonObject> getConfig();
+
     @POST("api/stream/upload")
     Call<Void> uploadStreamFrame(@Body StreamRequest request);
 

@@ -28,7 +28,7 @@ class BusinessSelectActivity : AppCompatActivity() {
     private var allBusinesses: List<BusinessTypeItem> = emptyList()
     private lateinit var businessAdapter: BusinessTypeCardAdapter
     private val legacyLocalUrl = "http://192.0.0.2:5001/"
-    private val currentLocalUrl = "https://bolometric-lower-joaquina.ngrok-free.dev/"
+    private val currentLocalUrl = BuildConfig.BASE_URL
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

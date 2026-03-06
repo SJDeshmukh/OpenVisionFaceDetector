@@ -70,7 +70,7 @@ import java.net.URISyntaxException;
 
 public class CameraActivity extends AppCompatActivity implements TextToSpeech.OnInitListener {
 
-    public static String BASE_URL = "https://p01--openvisionfacedetector--g4rz8tx5rcc5.code.run"; 
+    public static String BASE_URL = BuildConfig.BASE_URL; 
     private Socket mSocket;
     {
         try {

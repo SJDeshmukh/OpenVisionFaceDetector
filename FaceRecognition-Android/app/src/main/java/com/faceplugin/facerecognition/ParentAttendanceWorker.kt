@@ -65,6 +65,11 @@ class ParentAttendanceWorker(appContext: Context, params: WorkerParameters) : Wo
             val ts = try { obj.get("timestamp")?.asString } catch (_: Exception) { null }
             val name = try { obj.get("name")?.asString } catch (_: Exception) { null }
             val activity = try { obj.get("activity")?.asString } catch (_: Exception) { null }
+            val place = try {
+                val dnEl = obj.get("device_name")
+                val dn = dnEl?.asString
+                if (!dn.isNullOrBlank()) dn else obj.get("place")?.asString
+            } catch (_: Exception) { null }
 
             val lastId = prefs.getInt("parent_last_attendance_id", -1)
             if (id == null || id == lastId) {
@@ -72,7 +77,7 @@ class ParentAttendanceWorker(appContext: Context, params: WorkerParameters) : Wo
             }
 
             prefs.edit().putInt("parent_last_attendance_id", id).apply()
-            showNotification(name ?: "Student", status ?: "Update", ts ?: "", activity ?: "")
+            showNotification(name ?: "Student", status ?: "Update", ts ?: "", activity ?: "", place ?: "")
             Result.success()
         } catch (_: Exception) {
             Result.success()
@@ -80,7 +85,7 @@ class ParentAttendanceWorker(appContext: Context, params: WorkerParameters) : Wo
     }
 
     @android.annotation.SuppressLint("MissingPermission")
-    private fun showNotification(name: String, status: String, timestamp: String, activity: String) {
+    private fun showNotification(name: String, status: String, timestamp: String, activity: String, place: String) {
         createChannel()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val granted = ContextCompat.checkSelfPermission(applicationContext, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
@@ -88,7 +93,7 @@ class ParentAttendanceWorker(appContext: Context, params: WorkerParameters) : Wo
         }
 
         val title = "$name • $status"
-        val content = listOf(timestamp, activity).filter { it.isNotBlank() }.joinToString(" • ")
+        val content = listOf(timestamp, activity, if (place.isNotBlank()) place else null).filterNotNull().filter { it.isNotBlank() }.joinToString(" • ")
 
         val notif = NotificationCompat.Builder(applicationContext, "parent_attendance_bg")
             .setSmallIcon(android.R.drawable.ic_dialog_info)

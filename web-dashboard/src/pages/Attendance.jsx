@@ -42,6 +42,7 @@ const Attendance = () => {
   useEffect(() => {
     filtersRef.current = filters;
   }, [filters]);
+  const personLabel = (user?.vertical && ['school','hostel'].includes(String(user.vertical).toLowerCase())) ? 'Student' : 'Employee';
 
   useEffect(() => {
     fetchFilters(filtersRef.current);
@@ -223,7 +224,7 @@ const Attendance = () => {
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-800">Attendance Logs</h1>
-          <p className="text-slate-500">Track employee check-ins and movements.</p>
+          <p className="text-slate-500">Track {personLabel.toLowerCase()} check-ins and movements.</p>
         </div>
         <div className="flex space-x-3">
            <div className="relative">
@@ -339,13 +340,14 @@ const Attendance = () => {
           <thead>
             <tr className="bg-slate-50 border-b border-slate-200">
               <th className="w-10 px-6 py-4"></th>
-              <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Employee</th>
+              <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">{personLabel}</th>
               {showShiftColumn && (
                 <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Shift</th>
               )}
               <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Date</th>
               <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Time</th>
               <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Activity</th>
+              <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Place</th>
               <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Status</th>
               <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Confidence</th>
             </tr>
@@ -412,6 +414,16 @@ const Attendance = () => {
                            {log.activity || 'Work'}
                          </span>
                       </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
+                        {log.device_name ? (
+                          <span className="inline-flex items-center gap-1">
+                            <MapPin size={14} className="text-slate-400" />
+                            <span className="font-medium">{log.device_name}</span>
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 italic">-</span>
+                        )}
+                      </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${status.color}`}>
                           {status.label}
@@ -436,6 +448,7 @@ const Attendance = () => {
                                       <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Image</th>
                                       <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Time</th>
                                       <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Date</th>
+                                      <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Place</th>
                                       <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Status</th>
                                    </tr>
                                 </thead>
@@ -460,6 +473,9 @@ const Attendance = () => {
                                          </td>
                                          <td className="px-4 py-2 text-sm text-slate-600">
                                             {new Date(historyLog.timestamp.replace(' ', 'T')).toLocaleDateString()}
+                                         </td>
+                                         <td className="px-4 py-2 text-sm text-slate-600">
+                                            {historyLog.device_name ? historyLog.device_name : <span className="text-slate-400 italic">-</span>}
                                          </td>
                                          <td className="px-4 py-2">
                                             <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${getStatus(historyLog).color}`}>

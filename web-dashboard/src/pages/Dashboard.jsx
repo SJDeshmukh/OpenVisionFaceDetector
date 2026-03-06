@@ -31,6 +31,7 @@ const Dashboard = () => {
   const { user, logout } = useAuth();
   const { socket, joinVendor } = useSocket();
   const [activeTab, setActiveTab] = useState('overview');
+  const personLabel = (user?.vertical && ['school','hostel'].includes(String(user.vertical).toLowerCase())) ? 'Student' : 'Employee';
   const [stats, setStats] = useState({
     total: 0,
     present: 0,
@@ -168,7 +169,7 @@ const Dashboard = () => {
           {/* KPI Cards */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
             <KpiCard 
-              title="Total Employees" 
+              title={`Total ${personLabel}s`} 
               value={stats.total} 
               subtext="Registered in system" 
               icon={Users} 
