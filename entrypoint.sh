@@ -64,8 +64,8 @@ PY
 echo "Starting Celery worker (concurrency=$CELERY_CONCURRENCY)..."
 celery -A celery_app worker \
   --loglevel=info \
-  --concurrency=$CELERY_CONCURRENCY \
-  --pool=prefork \
+  --concurrency=1 \
+  --pool=solo \
   -Q celery,default \
   --include tasks \
   --logfile=/dev/stdout &
