@@ -25,4 +25,6 @@ dump.rdb
 
 # Model weights / subpackages
 gfpgan/
-multiple_face_detection/
+multiple_face_detection/*
+!multiple_face_detection/app.py
+!multiple_face_detection/sdk_src/

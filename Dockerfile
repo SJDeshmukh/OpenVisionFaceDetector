@@ -44,6 +44,10 @@ RUN cd /app/multiple_face_detection/third_party/BasicSR && pip install --no-cach
 # Copy Backend Code
 COPY backend/ ./backend
 
+# Overlay the local modifications to multiple_face_detection
+COPY multiple_face_detection/app.py /app/multiple_face_detection/app.py
+COPY multiple_face_detection/sdk_src /app/multiple_face_detection/sdk_src
+
 # Copy Frontend Build from Stage 1
 # We place it where nginx.conf expects it: /var/www/face-detection/web-dashboard/dist
 COPY --from=frontend-builder /app/frontend/dist /var/www/face-detection/web-dashboard/dist
