@@ -3862,21 +3862,33 @@ def class_batch_add():
     conn.close()
     
     def _dispatch_task():
+        import sys
         try:
-            if celery:
-                celery.send_task("tasks.process_class_batch_items", args=[bid, vendor_id, params])
-            else:
-                from tasks import process_class_batch_items
-                def _worker():
-                    try:
-                        eventlet.tpool.execute(process_class_batch_items, bid, vendor_id, params)
-                    except Exception as ex:
-                        print(f"tpool execution failed: {ex}")
-                eventlet.spawn_n(_worker)
+            print(f"[DISPATCH] batch={bid} vendor={vendor_id} celery={'YES' if celery else 'NO'}", flush=True)
+            from tasks import process_class_batch_items
+            def _worker():
+                try:
+                    print(f"[WORKER] Starting batch={bid}", flush=True)
+                    process_class_batch_items(bid, vendor_id, params)
+                    print(f"[WORKER] Finished batch={bid}", flush=True)
+                except Exception as ex:
+                    import traceback
+                    print(f"[WORKER] FAILED batch={bid}: {ex}", flush=True)
+                    traceback.print_exc()
+                    sys.stdout.flush()
+            # Use eventlet.tpool for real OS thread (not green thread)
+            # This prevents blocking the event loop during CPU-heavy face detection
+            try:
+                eventlet.spawn_n(lambda: eventlet.tpool.execute(_worker))
+            except Exception:
+                # Fallback to native thread if eventlet not available
+                import threading
+                t = threading.Thread(target=_worker, daemon=True)
+                t.start()
         except Exception as e:
             import traceback
             repr_err = traceback.format_exc()
-            print(f"Failed to dispatch class batch task:\n{repr_err}")
+            print(f"[DISPATCH] Failed:\n{repr_err}", flush=True)
             
     _dispatch_task()
     
