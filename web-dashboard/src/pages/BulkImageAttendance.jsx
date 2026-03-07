@@ -60,7 +60,19 @@ const BulkImageAttendance = () => {
   }, [user]);
 
   const ensureBatch = async () => {
-    if (batchId) return batchId;
+    // If we have a stored batchId, verify it still exists in the backend
+    if (batchId) {
+      try {
+        await axios.get(`${API_URL}/class-batch/status?batch_id=${batchId}`, {
+          headers: { Authorization: `Bearer ${user?.token}` }
+        });
+        return batchId; // batch is valid
+      } catch (e) {
+        // Batch is stale/gone — clear it and create a new one
+        localStorage.removeItem('class_batch_id');
+        setBatchId('');
+      }
+    }
     const res = await axios.post(`${API_URL}/class-batch/start`, selectedClass, {
       headers: { Authorization: `Bearer ${user?.token}` }
     });

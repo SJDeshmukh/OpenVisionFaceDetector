@@ -1847,6 +1847,10 @@ def init_db():
         print("Migrating: Adding captured_image column to attendance table")
         c.execute("ALTER TABLE attendance ADD COLUMN captured_image TEXT")
 
+    if 'device_id' not in attendance_columns:
+        print("Migrating: Adding device_id column to attendance table")
+        c.execute("ALTER TABLE attendance ADD COLUMN device_id TEXT")
+
     # Check for extra columns in faces table (department, designation, phone)
     c.execute("PRAGMA table_info(faces)")
     faces_columns = [info[1] for info in c.fetchall()]
