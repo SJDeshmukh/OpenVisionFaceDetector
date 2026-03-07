@@ -1,11 +1,11 @@
 import { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
-import { 
-  MoreVertical, 
-  Search, 
-  Plus, 
-  Filter, 
+import {
+  MoreVertical,
+  Search,
+  Plus,
+  Filter,
   Download,
   Trash2,
   Edit2,
@@ -20,20 +20,20 @@ import { API_URL, BASE_URL } from '../config';
 
 const People = () => {
   const { user } = useAuth();
-  const personLabel = (user?.vertical && ['school','hostel'].includes(String(user.vertical).toLowerCase())) ? 'Student' : 'Employee';
+  const personLabel = (user?.vertical && ['school', 'hostel'].includes(String(user.vertical).toLowerCase())) ? 'Student' : 'Employee';
   const [users, setUsers] = useState([]);
   const [shifts, setShifts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
-  const [formData, setFormData] = useState({ 
+  const [formData, setFormData] = useState({
     id: null,
-    name: '', 
-    phone: '', 
-    department: '', 
-    designation: '', 
+    name: '',
+    phone: '',
+    department: '',
+    designation: '',
     shift: '',
-    photo: null, 
+    photo: null,
     photoPreview: null,
     templates: ''
   });
@@ -51,23 +51,23 @@ const People = () => {
           .then(res => setVendorConfig(res.data.config || []))
           .catch(() => setVendorConfig([]));
       }
-      
+
       if (socket) {
         socket.on('connect', () => {
           if (user.vendor_id) {
-              joinVendor(user.vendor_id);
+            joinVendor(user.vendor_id);
           }
         });
 
         socket.on('persons_updated', (data) => {
           if (String(data.vendor_id) === String(user.vendor_id)) {
-              console.log("Person updated, refreshing list...");
-              fetchUsers();
+            console.log("Person updated, refreshing list...");
+            fetchUsers();
           }
         });
       }
 
-      return () => {};
+      return () => { };
     }
   }, [user, socket]);
 
@@ -95,27 +95,58 @@ const People = () => {
     }
   };
 
-  const handleImageChange = (e) => {
+  const handleImageChange = async (e) => {
     const file = e.target.files[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setFormData({ ...formData, photo: reader.result, photoPreview: reader.result });
-      };
-      reader.readAsDataURL(file);
+    if (!file) return;
+
+    try {
+      // Compress the image before using it
+      const compressedDataUrl = await new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+          let { width, height } = img;
+          const maxDim = 800;
+          if (width > maxDim || height > maxDim) {
+            if (width > height) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            } else {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', 0.8));
+        };
+        img.onerror = reject;
+
+        const reader = new FileReader();
+        reader.onload = (ev) => { img.src = ev.target.result; };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+
+      setFormData({ ...formData, photo: compressedDataUrl, photoPreview: compressedDataUrl });
+    } catch (error) {
+      console.error("Error compressing image:", error);
+      alert("Failed to process image. Please try a different photo.");
     }
   };
 
   const openAddModal = () => {
     setIsEditing(false);
-    setFormData({ 
+    setFormData({
       id: null,
-      name: '', 
-      phone: '', 
-      department: '', 
-      designation: '', 
+      name: '',
+      phone: '',
+      department: '',
+      designation: '',
       shift: '',
-      photo: null, 
+      photo: null,
       photoPreview: null,
       templates: ''
     });
@@ -125,7 +156,7 @@ const People = () => {
   const handleEdit = (user) => {
     setIsEditing(true);
     const dynamicFields = user.custom_data || {};
-    
+
     setFormData({
       id: user.person_id || user.id,
       name: user.name || '',
@@ -137,8 +168,8 @@ const People = () => {
       photoPreview: user.image_url
         ? user.image_url
         : (user.face_image && (user.face_image.startsWith('http') || user.face_image.startsWith('data:'))
-            ? user.face_image
-            : (user.face_image ? `data:image/jpeg;base64,${user.face_image}` : null)),
+          ? user.face_image
+          : (user.face_image ? `data:image/jpeg;base64,${user.face_image}` : null)),
       templates: user.templates || '',
       ...dynamicFields
     });
@@ -166,7 +197,7 @@ const People = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!formData.name || !formData.photo) return;
-    
+
     setSubmitting(true);
     try {
       const missingRequired = (vendorConfig || []).filter(f => f.required).some(f => {
@@ -188,24 +219,24 @@ const People = () => {
 
       // Cleanup
       delete payload.photoPreview;
-      delete payload.photo; 
-      delete payload.id; 
+      delete payload.photo;
+      delete payload.id;
 
       const response = await axios.post(`${API_URL}/sync/upload`, payload);
       if (response.data.status === 'success') {
         setIsModalOpen(false);
-        setFormData({ 
-            id: null,
-            name: '', 
-            phone: '', 
-            department: '', 
-            designation: '', 
-            shift: '',
-            photo: null, 
-            photoPreview: null,
-            templates: ''
+        setFormData({
+          id: null,
+          name: '',
+          phone: '',
+          department: '',
+          designation: '',
+          shift: '',
+          photo: null,
+          photoPreview: null,
+          templates: ''
         });
-        fetchUsers(); 
+        fetchUsers();
       }
     } catch (error) {
       console.error("Error registering user:", error);
@@ -285,7 +316,7 @@ const People = () => {
             <Upload size={18} />
             <span>Import</span>
           </button>
-          <button 
+          <button
             onClick={openAddModal}
             className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium transition-colors shadow-sm">
             <Plus size={18} />
@@ -298,9 +329,9 @@ const People = () => {
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col sm:flex-row gap-4 justify-between items-center">
         <div className="relative w-full sm:w-96">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
-          <input 
-            type="text" 
-            placeholder="Search employees by name or ID..." 
+          <input
+            type="text"
+            placeholder="Search employees by name or ID..."
             className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
           />
         </div>
@@ -346,17 +377,17 @@ const People = () => {
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="flex items-center">
                         {user.face_image || user.image_url ? (
-                          <img 
+                          <img
                             src={
                               user.image_url
                                 ? user.image_url
                                 : (user.face_image.startsWith('http')
                                   ? user.face_image
                                   : (user.face_image.startsWith('data:')
-                                      ? user.face_image
-                                      : `data:image/jpeg;base64,${user.face_image}`))
-                            } 
-                            alt={user.name} 
+                                    ? user.face_image
+                                    : `data:image/jpeg;base64,${user.face_image}`))
+                            }
+                            alt={user.name}
                             className="h-10 w-10 rounded-full object-cover mr-3 border border-slate-200"
                           />
                         ) : (
@@ -373,7 +404,7 @@ const People = () => {
                         </div>
                       </div>
                     </td>
-                    
+
                     {tableColumns.map(col => (
                       <td key={col.field} className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
                         {getCellValue(user, col.field)}
@@ -382,12 +413,12 @@ const People = () => {
 
                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                       <div className="flex justify-end space-x-2">
-                        <button 
+                        <button
                           onClick={() => handleEdit(user)}
                           className="p-1 text-slate-400 hover:text-blue-600 transition-colors">
                           <Edit2 size={16} />
                         </button>
-                        <button 
+                        <button
                           onClick={() => handleDelete(user.id, user.name)}
                           className="p-1 text-slate-400 hover:text-red-600 transition-colors">
                           <Trash2 size={16} />
@@ -403,7 +434,7 @@ const People = () => {
             </tbody>
           </table>
         </div>
-        
+
         {/* Pagination */}
         <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-between">
           <div className="text-sm text-slate-500">
@@ -426,7 +457,7 @@ const People = () => {
                 <X size={24} />
               </button>
             </div>
-            
+
             <form onSubmit={handleSubmit} className="p-6 space-y-6">
               <div className="flex flex-col items-center justify-center space-y-4">
                 <div className="relative group cursor-pointer">
@@ -440,8 +471,8 @@ const People = () => {
                       </div>
                     )}
                   </div>
-                  <input 
-                    type="file" 
+                  <input
+                    type="file"
                     accept="image/*"
                     onChange={handleImageChange}
                     className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
@@ -454,10 +485,10 @@ const People = () => {
                 <label className="text-sm font-medium text-slate-700">Full Name</label>
                 <div className="relative">
                   <User className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                  <input 
-                    type="text" 
+                  <input
+                    type="text"
                     value={formData.name}
-                    onChange={(e) => setFormData({...formData, name: e.target.value})}
+                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                     placeholder="e.g. John Doe"
                     className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
                     required
@@ -467,65 +498,65 @@ const People = () => {
 
               <div className="space-y-2">
                 <label className="text-sm font-medium text-slate-700">Phone</label>
-                <input 
-                    type="tel" 
-                    value={formData.phone}
-                    onChange={(e) => setFormData({...formData, phone: e.target.value})}
-                    placeholder="e.g. +1234567890"
-                    className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                <input
+                  type="tel"
+                  value={formData.phone}
+                  onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                  placeholder="e.g. +1234567890"
+                  className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
                 />
               </div>
 
               {/* Dynamic Fields Rendering */}
               <div className="space-y-4">
-                  {registrationColumns.map((col, idx) => {
-                      const fieldKey = col.key || col.field;
-                      // Skip name/phone as they are already handled above
-                      if (['name', 'phone'].includes(fieldKey)) return null;
+                {registrationColumns.map((col, idx) => {
+                  const fieldKey = col.key || col.field;
+                  // Skip name/phone as they are already handled above
+                  if (['name', 'phone'].includes(fieldKey)) return null;
 
-                      return (
-                          <div key={idx} className="space-y-2">
-                              <label className="text-sm font-medium text-slate-700">{col.label}</label>
-                              {col.type === 'select' || fieldKey === 'shift' ? (
-                                  <select 
-                                      value={formData[fieldKey] || ''}
-                                      onChange={(e) => setFormData({...formData, [fieldKey]: e.target.value})}
-                                      className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                                  >
-                                      <option value="">Select {col.label}</option>
-                                      {fieldKey === 'shift' ? (
-                                          shifts.map((s, sIdx) => (
-                                              <option key={sIdx} value={s.name}>{s.name} ({s.start_time} - {s.end_time})</option>
-                                          ))
-                                      ) : (
-                                          col.options && col.options.map((opt, oId) => (
-                                              <option key={oId} value={opt}>{opt}</option>
-                                          ))
-                                      )}
-                                  </select>
-                              ) : (
-                                  <input 
-                                      type={col.type || 'text'}
-                                      value={formData[fieldKey] || ''}
-                                      onChange={(e) => setFormData({...formData, [fieldKey]: e.target.value})}
-                                      placeholder={`Enter ${col.label}`}
-                                      className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                                  />
-                              )}
-                          </div>
-                      );
-                  })}
+                  return (
+                    <div key={idx} className="space-y-2">
+                      <label className="text-sm font-medium text-slate-700">{col.label}</label>
+                      {col.type === 'select' || fieldKey === 'shift' ? (
+                        <select
+                          value={formData[fieldKey] || ''}
+                          onChange={(e) => setFormData({ ...formData, [fieldKey]: e.target.value })}
+                          className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                        >
+                          <option value="">Select {col.label}</option>
+                          {fieldKey === 'shift' ? (
+                            shifts.map((s, sIdx) => (
+                              <option key={sIdx} value={s.name}>{s.name} ({s.start_time} - {s.end_time})</option>
+                            ))
+                          ) : (
+                            col.options && col.options.map((opt, oId) => (
+                              <option key={oId} value={opt}>{opt}</option>
+                            ))
+                          )}
+                        </select>
+                      ) : (
+                        <input
+                          type={col.type || 'text'}
+                          value={formData[fieldKey] || ''}
+                          onChange={(e) => setFormData({ ...formData, [fieldKey]: e.target.value })}
+                          placeholder={`Enter ${col.label}`}
+                          className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                        />
+                      )}
+                    </div>
+                  );
+                })}
               </div>
 
               <div className="flex gap-3 pt-2">
-                <button 
+                <button
                   type="button"
                   onClick={() => setIsModalOpen(false)}
                   className="flex-1 px-4 py-2 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 font-medium"
                 >
                   Cancel
                 </button>
-                <button 
+                <button
                   type="submit"
                   disabled={submitting || !formData.name || (!isEditing && !formData.photo)}
                   className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed"

@@ -39,7 +39,7 @@ const Faces = () => {
           let custom = {};
           try {
             custom = p.custom_data || {};
-          } catch (_) {}
+          } catch (_) { }
           return {
             id: p.person_id || p.id,
             name: p.name || '',
@@ -134,10 +134,31 @@ const Faces = () => {
     setSearching(true);
     setSearchResults([]);
     try {
-      // Convert to data URI so we can send JSON with class scope
       const toDataURL = (f) => new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+          let { width, height } = img;
+          const maxDim = 800;
+          if (width > maxDim || height > maxDim) {
+            if (width > height) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            } else {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', 0.8));
+        };
+        img.onerror = reject;
+
         const r = new FileReader();
-        r.onload = () => resolve(r.result);
+        r.onload = (e) => { img.src = e.target.result; };
         r.onerror = reject;
         r.readAsDataURL(f);
       });

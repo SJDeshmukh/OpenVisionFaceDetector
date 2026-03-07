@@ -209,8 +209,8 @@ const BulkImageAttendance = () => {
   }, [batchId, user?.token]);
 
   const onUploadImages = async (files) => {
-    const arr = Array.from(files || []).filter(f => f.type.startsWith('image/'));
-    if (arr.length === 0) return;
+    const rawArr = Array.from(files || []).filter(f => f.type.startsWith('image/'));
+    if (rawArr.length === 0) return;
     if (!scopeSelected) {
       alert('Select class scope first');
       return;
@@ -220,7 +220,53 @@ const BulkImageAttendance = () => {
     try {
       const id = await ensureBatch();
       const fd = new FormData();
-      arr.forEach(f => fd.append('images', f));
+
+      // Compress each image before adding to FormData
+      for (const file of rawArr) {
+        const compressedFile = await new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => {
+            let { width, height } = img;
+            // Use 1600px max for bulk attendance to preserve some face detail for detection
+            const maxDim = 1600;
+            if (width > maxDim || height > maxDim) {
+              if (width > height) {
+                height = Math.round((height * maxDim) / width);
+                width = maxDim;
+              } else {
+                width = Math.round((width * maxDim) / height);
+                height = maxDim;
+              }
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, width, height);
+
+            canvas.toBlob((blob) => {
+              if (blob) {
+                // Return as a new File object
+                resolve(new File([blob], file.name || `image-${Date.now()}.jpg`, {
+                  type: 'image/jpeg',
+                  lastModified: Date.now()
+                }));
+              } else {
+                resolve(file); // Fallback to original if blob fails
+              }
+            }, 'image/jpeg', 0.82); // 82% quality yields good compression while keeping faces readable
+          };
+          img.onerror = () => resolve(file); // fallback on error
+
+          const reader = new FileReader();
+          reader.onload = (e) => { img.src = e.target.result; };
+          reader.onerror = () => resolve(file);
+          reader.readAsDataURL(file);
+        });
+
+        fd.append('images', compressedFile);
+      }
+
       fd.append('batch_id', id || '');
       fd.append('class_year', selectedClass.class_year || '');
       fd.append('division', selectedClass.division || '');
