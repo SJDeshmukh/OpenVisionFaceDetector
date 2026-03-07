@@ -28,3 +28,5 @@ psycopg2-binary
 # AWS (S3 storage + Lambda)
 boto3
 awsgi
+gradio<4.0
+huggingface_hub>=0.19.0
