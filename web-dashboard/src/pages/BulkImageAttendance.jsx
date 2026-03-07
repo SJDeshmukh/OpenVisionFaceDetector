@@ -18,8 +18,37 @@ const BulkImageAttendance = () => {
   const [batchItems, setBatchItems] = useState([]);
   const [showWebcam, setShowWebcam] = useState(false);
   const webcamRef = useRef(null);
+  const [simThreshold, setSimThreshold] = useState(0.6);
+  const peopleById = useRef(null);
+  useEffect(() => {
+    peopleById.current = new Map(people.map(p => [String(p.id), p.name]));
+  }, [people]);
+
+  const applyThresholdToFaces = (threshold) => {
+    setAssign(prevAssign => {
+      const nextAssign = { ...prevAssign };
+      faces.forEach(f => {
+        const top = Array.isArray(f.suggestions) && f.suggestions.length ? f.suggestions[0] : null;
+        const ok = top && typeof top.similarity === 'number' ? top.similarity >= threshold : !!top?.person_id;
+        if (!nextAssign[f.globalIndex] || !ok) {
+          nextAssign[f.globalIndex] = ok && top?.person_id ? String(top.person_id) : (nextAssign[f.globalIndex] || '');
+        }
+      });
+      return nextAssign;
+    });
+  };
+
+  const scopeSelected = Boolean(
+    (selectedClass.class_year && selectedClass.class_year.trim()) ||
+    (selectedClass.division && selectedClass.division.trim()) ||
+    (selectedClass.branch && selectedClass.branch.trim())
+  );
 
   const captureAndUpload = async () => {
+    if (!scopeSelected) {
+      alert('Select class scope first');
+      return;
+    }
     if (!webcamRef.current) return;
     const imageSrc = webcamRef.current.getScreenshot();
     if (!imageSrc) return;
@@ -57,7 +86,30 @@ const BulkImageAttendance = () => {
         setClasses(r.data?.classes || []);
       } catch (_) { }
     })();
+    // Load threshold for selected class if any
   }, [user]);
+
+  useEffect(() => {
+    const loadThreshold = async () => {
+      const y = selectedClass.class_year || '';
+      const d = selectedClass.division || '';
+      const b = selectedClass.branch || '';
+      if (!y && !d && !b) return;
+      try {
+        const qs = new URLSearchParams({ class_year: y, division: d, branch: b });
+        const r = await axios.get(`${API_URL}/class-threshold?${qs.toString()}`, {
+          headers: { Authorization: `Bearer ${user?.token}` }
+        });
+        if (r.data && typeof r.data.threshold === 'number') {
+          const thr = Math.max(0, Math.min(1, r.data.threshold));
+          setSimThreshold(thr);
+          applyThresholdToFaces(thr);
+        }
+      } catch (_) { }
+    };
+    loadThreshold();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedClass.class_year, selectedClass.division, selectedClass.branch, user?.token]);
 
   const ensureBatch = async () => {
     // If we have a stored batchId, verify it still exists in the backend
@@ -107,6 +159,8 @@ const BulkImageAttendance = () => {
           const currentFaceIndex = globalIndex++;
           const normFace = f.thumbs ? { ...f } : { ...f, thumbs: { face: f.thumb } };
           normFace.globalIndex = currentFaceIndex;
+          normFace.itemId = newItem.id;
+          normFace.faceIndex = typeof f.index === 'number' ? f.index : currentFaceIndex;
           newItem.mappedFaces.push(normFace);
           allFaces.push(normFace);
         });
@@ -122,7 +176,8 @@ const BulkImageAttendance = () => {
       allFaces.forEach(f => {
         if (nextAssign[f.globalIndex] === undefined) {
           const top = Array.isArray(f.suggestions) && f.suggestions.length ? f.suggestions[0] : null;
-          nextAssign[f.globalIndex] = top?.person_id ? String(top.person_id) : '';
+          const ok = top && typeof top.similarity === 'number' ? top.similarity >= simThreshold : !!top?.person_id;
+          nextAssign[f.globalIndex] = ok && top?.person_id ? String(top.person_id) : '';
         }
       });
       return nextAssign;
@@ -133,29 +188,19 @@ const BulkImageAttendance = () => {
 
   useEffect(() => {
     let interval;
-    let doneStableCount = 0; // track how many consecutive polls show all-done
     const poll = async () => {
       if (batchId && user?.token) {
         try {
-          const { isPending, doneCount, items: polledItems } = await fetchBatchStatus(batchId);
-          if (!isPending && polledItems.length > 0) {
-            doneStableCount++;
-            // Keep polling a few extra cycles to pick up final face data
-            if (doneStableCount >= 3) {
-              clearInterval(interval);
-            }
-          } else {
-            doneStableCount = 0;
-          }
+          await fetchBatchStatus(batchId);
         } catch (e) {
-          clearInterval(interval);
+          // ignore transient errors; next tick will try again
         }
       }
     };
 
     if (batchId) {
       poll(); // initial
-      interval = setInterval(poll, 2000); // poll every 2s for snappier updates
+      interval = setInterval(poll, 2000); // keep polling; lightweight and fixes stale UI after new uploads
     }
 
     return () => {
@@ -166,6 +211,10 @@ const BulkImageAttendance = () => {
   const onUploadImages = async (files) => {
     const arr = Array.from(files || []).filter(f => f.type.startsWith('image/'));
     if (arr.length === 0) return;
+    if (!scopeSelected) {
+      alert('Select class scope first');
+      return;
+    }
 
     setLoading(true);
     try {
@@ -182,11 +231,48 @@ const BulkImageAttendance = () => {
         headers: { Authorization: `Bearer ${user?.token}` }
       });
 
-      // Status will be polled by useEffect
+      // Proactively refresh state once for immediate UI update; periodic poll continues
+      if (id) {
+        await fetchBatchStatus(id);
+      }
     } catch (e) {
       alert(e.response?.data?.error || e.message || 'Detection failed');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const saveMappings = async () => {
+    const id = localStorage.getItem('class_batch_id');
+    if (!id) {
+      alert('No active session');
+      return;
+    }
+    const assigns = faces
+      .filter(f => assign[f.globalIndex])
+      .map(f => ({
+        item_id: f.itemId,
+        face_index: f.faceIndex,
+        person_id: assign[f.globalIndex]
+      }));
+    if (assigns.length === 0) {
+      alert('Nothing to save');
+      return;
+    }
+    try {
+      await axios.post(`${API_URL}/class-batch/commit`, {
+        batch_id: id,
+        assignments: assigns,
+        class_year: selectedClass.class_year || '',
+        division: selectedClass.division || '',
+        branch: selectedClass.branch || '',
+        threshold: simThreshold
+      }, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      alert('Saved');
+    } catch (e) {
+      alert(e.response?.data?.error || e.message || 'Save failed');
     }
   };
 
@@ -238,7 +324,7 @@ const BulkImageAttendance = () => {
               setSelectedClass({ class_year: y || '', division: d || '', branch: b || '' });
             }}
           >
-            <option value="||">Select Class Scope (optional)</option>
+            <option value="||">Select Class Scope</option>
             {classes.map(c => (
               <option key={c.id} value={`${c.class_year}|${c.division}|${c.branch}`}>
                 {c.label || `${c.class_year} ${c.branch} ${c.division}`}
@@ -252,9 +338,10 @@ const BulkImageAttendance = () => {
               accept="image/*"
               multiple
               className="hidden"
-              disabled={loading}
+              disabled={loading || !scopeSelected}
               onChange={(e) => {
                 if (e.target.files?.length > 0) onUploadImages(e.target.files);
+                e.target.value = '';
               }}
             />
           </label>
@@ -273,7 +360,8 @@ const BulkImageAttendance = () => {
             )}
           </div>
           <button
-            onClick={() => setShowWebcam(true)}
+            onClick={() => { if (scopeSelected) setShowWebcam(true); }}
+            disabled={!scopeSelected}
             className="px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 inline-flex items-center gap-2"
             title="Live Capture"
           >
@@ -337,26 +425,39 @@ const BulkImageAttendance = () => {
                     <h3 className="text-sm font-semibold text-slate-700 mb-3 flex items-center gap-2">
                       <Users size={14} /> Detected Faces ({item.mappedFaces.length})
                     </h3>
+                    <div className="flex items-center gap-2 mb-3">
+                      <span className="text-xs text-slate-600">Similarity threshold</span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={Math.round(simThreshold * 100)}
+                        onChange={e => setSimThreshold(Math.max(0, Math.min(100, parseInt(e.target.value || '0', 10))) / 100)}
+                        className="w-16 p-1.5 border rounded"
+                      />
+                      <span className="text-xs text-slate-600">%</span>
+                      <button
+                        onClick={saveMappings}
+                        className="ml-auto px-3 py-1.5 rounded bg-emerald-600 text-white text-xs hover:bg-emerald-700"
+                      >
+                        Save Mappings
+                      </button>
+                    </div>
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">
                       {item.mappedFaces.map(f => (
                         <div key={f.globalIndex} className="border rounded-xl p-2 bg-white shadow-sm flex flex-col">
                           <div className="w-full aspect-square mb-2 bg-slate-100 rounded-lg overflow-hidden flex items-center justify-center border">
                             <img src={(f.thumbs?.face || f.thumb)} alt={`face-${f.globalIndex}`} className="w-full h-full object-contain" />
                           </div>
-                          {Array.isArray(f.suggestions) && f.suggestions.length > 0 && (
-                            <div className="flex flex-wrap gap-1 mb-2">
-                              {f.suggestions.slice(0, 3).map(s => (
-                                <button
-                                  key={`${f.globalIndex}-${s.person_id}`}
-                                  onClick={() => setAssign(prev => ({ ...prev, [f.globalIndex]: String(s.person_id) }))}
-                                  className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100"
-                                  title={`Similarity ${(s.similarity * 100).toFixed(1)}%`}
-                                >
-                                  {s.name}
-                                </button>
-                              ))}
+                          {assign[f.globalIndex] ? (
+                            <div className="mb-2">
+                              <span className="inline-block px-2 py-0.5 text-[10px] rounded bg-emerald-600 text-white">
+                                {peopleById.current?.get(String(assign[f.globalIndex])) || 'Assigned'}
+                              </span>
                             </div>
-                          )}
+                          ) : null}
+                          {/* Suggestions chips removed per UX: keep only Top suggestion text below */}
                           <select
                             className="w-full p-1.5 border rounded-md bg-slate-50 text-xs mb-2"
                             value={assign[f.globalIndex] || ''}
@@ -367,13 +468,7 @@ const BulkImageAttendance = () => {
                               <option key={p.id} value={p.id}>{p.name}</option>
                             ))}
                           </select>
-                          <button
-                            onClick={() => markOne(f)}
-                            className="w-full flex items-center justify-center gap-1 px-2 py-1.5 rounded-md bg-indigo-600 text-white hover:bg-indigo-700 text-xs disabled:opacity-50 tracking-wide"
-                            disabled={marking[f.globalIndex]}
-                          >
-                            {marking[f.globalIndex] ? '...' : 'Mark'}
-                          </button>
+                          <div className="text-[10px] text-slate-500">Top suggestion: {Array.isArray(f.suggestions) && f.suggestions.length ? `${f.suggestions[0].name} ${(f.suggestions[0].similarity * 100).toFixed(1)}%` : '—'}</div>
                         </div>
                       ))}
                     </div>

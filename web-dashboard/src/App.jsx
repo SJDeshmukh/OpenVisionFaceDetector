@@ -21,6 +21,7 @@ import SystemHealth from './pages/SystemHealth';
 import JobsDashboard from './pages/JobsDashboard';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { SocketProvider } from './context/SocketContext';
+import Faces from './pages/Faces';
 
 // Protected Route Component
 const ProtectedRoute = ({ allowedRoles }) => {
@@ -78,6 +79,7 @@ function App() {
               <Route path="/live-attendance" element={<LiveAttendance />} />
               <Route path="/bulk-image-attendance" element={<BulkImageAttendance />} />
               <Route path="/classes" element={<Classes />} />
+              <Route path="/faces" element={<Faces />} />
             </Route>
 
             {/* Shared/User Routes */}

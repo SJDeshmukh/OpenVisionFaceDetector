@@ -5,6 +5,14 @@ import os
 import json
 from dotenv import load_dotenv
 load_dotenv()
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+os.environ.setdefault("GOTO_NUM_THREADS", "1")
+os.environ.setdefault("KMP_INIT_AT_FORK", "FALSE")
+os.environ.setdefault("KMP_SETTINGS", "0")
+os.environ.setdefault("KMP_BLOCKTIME", "0")
 from flask import Flask, Blueprint, request, jsonify, render_template, send_from_directory
 from flask_cors import CORS
 from flask_socketio import SocketIO, join_room, leave_room
@@ -38,7 +46,7 @@ def _run_in_native_thread(fn, *args, **kwargs):
                 try:
                     eventlet.tpool.execute(fn, *args, **kwargs)
                 except Exception as ex:
-                    print(f"tpool execution failed for {fn.__name__}: {ex}")
+                    pass # print(f"tpool execution failed for {fn.__name__}: {ex}")
             eventlet.spawn_n(_worker)
         except Exception:
             fn(*args, **kwargs)
@@ -51,6 +59,20 @@ try:
     import redis
 except Exception:
     redis = None
+# Reduce native thread usage to avoid OpenMP mutex init failures on small instances
+try:
+    import cv2 as _cv2_i
+    try:
+        _cv2_i.setNumThreads(int(os.environ.get("OPENCV_NUM_THREADS", "1") or "1"))
+    except Exception:
+        pass
+except Exception:
+    pass
+try:
+    from threadpoolctl import threadpool_limits as _tpl_limits
+    _tpl_limits(limits=int(os.environ.get("BLAS_NUM_THREADS", "1") or "1"))
+except Exception:
+    pass
 try:
     from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 except Exception:
@@ -154,6 +176,39 @@ load_dotenv()
 BACKEND_URL = os.environ.get("BACKEND_URL", "http://127.0.0.1:5001")
 BASE_URL = BACKEND_URL # Alias for compatibility
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+
+LOW_RAM_MODE = str(os.environ.get("LOW_RAM_MODE", "0")).strip().lower() in ("1", "true", "yes", "y")
+try:
+    DET_MAX_SIDE_DEFAULT = int(os.environ.get("DET_MAX_SIDE", "640" if LOW_RAM_MODE else "1280"))
+except Exception:
+    DET_MAX_SIDE_DEFAULT = 640 if LOW_RAM_MODE else 1280
+try:
+    import faiss as _faiss
+except Exception:
+    _faiss = None
+USE_FAISS = str(os.environ.get("USE_FAISS", "0")).strip().lower() in ("1", "true", "yes", "y") and (_faiss is not None) and (not LOW_RAM_MODE)
+try:
+    if _faiss is not None:
+        _FAISS_THREADS = int(os.environ.get("FAISS_NUM_THREADS", "1") or "1")
+        try:
+            _faiss.omp_set_num_threads(_FAISS_THREADS)
+        except Exception:
+            try:
+                _faiss.set_num_threads(_FAISS_THREADS)
+            except Exception:
+                pass
+except Exception:
+    pass
+try:
+    import threading as _threading
+    _FAISS_LOCK = _threading.Lock() if USE_FAISS else None
+except Exception:
+    _FAISS_LOCK = None
+try:
+    # Reduce OpenCV internal threads to stabilize on small instances
+    cv2.setNumThreads(int(os.environ.get("OPENCV_NUM_THREADS", "1") or "1"))
+except Exception:
+    pass
 
 def is_testing():
     try:
@@ -574,7 +629,7 @@ def reset_sequence(table_name):
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"Error resetting sequence for {table_name}: {e}")
+        pass # print(f"Error resetting sequence for {table_name}: {e}")
 
 @app.route('/api/public/business-types', methods=['GET'])
 def public_business_types():
@@ -1236,7 +1291,7 @@ def log_audit(action, details=None, target_vendor_id=None, status="success", act
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"Audit Log Error: {e}")
+        pass # print(f"Audit Log Error: {e}")
 def add_vendor_devices_table():
     conn = get_db_connection()
     c = conn.cursor()
@@ -1258,7 +1313,7 @@ def add_vendor_devices_table():
             c.execute("PRAGMA journal_mode=WAL")
             c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='vendor_devices'")
             if not c.fetchone():
-                print("MIGRATION: Creating vendor_devices table...")
+                pass # print("MIGRATION: Creating vendor_devices table...")
                 c.execute('''CREATE TABLE vendor_devices
                              (id INTEGER PRIMARY KEY AUTOINCREMENT,
                               vendor_id INTEGER,
@@ -1285,7 +1340,7 @@ def add_missing_columns():
         # 1. Add is_late to attendance if missing
         try:
             c.execute("ALTER TABLE attendance ADD COLUMN is_late INTEGER DEFAULT 0")
-            print("Added column 'is_late' to attendance table.")
+            pass # print("Added column 'is_late' to attendance table.")
         except sqlite3.OperationalError:
             pass # Already exists
 
@@ -1294,11 +1349,11 @@ def add_missing_columns():
         cols = [info[1] for info in c.fetchall()]
         
         if 'late_allowance_days' not in cols:
-            print("MIGRATION: Adding late_allowance_days to faces table...")
+            pass # print("MIGRATION: Adding late_allowance_days to faces table...")
             c.execute("ALTER TABLE faces ADD COLUMN late_allowance_days INTEGER DEFAULT NULL")
             
         if 'late_deduction_amount' not in cols:
-            print("MIGRATION: Adding late_deduction_amount to faces table...")
+            pass # print("MIGRATION: Adding late_deduction_amount to faces table...")
             c.execute("ALTER TABLE faces ADD COLUMN late_deduction_amount REAL DEFAULT NULL")
 
         # 3. Add Global Defaults to system_settings
@@ -1317,10 +1372,10 @@ def add_missing_columns():
         c.execute("PRAGMA table_info(subscriptions)")
         sub_cols = [info[1] for info in c.fetchall()]
         if 'max_mobile_devices' not in sub_cols:
-            print("MIGRATION: Adding max_mobile_devices to subscriptions...")
+            pass # print("MIGRATION: Adding max_mobile_devices to subscriptions...")
             c.execute("ALTER TABLE subscriptions ADD COLUMN max_mobile_devices INTEGER DEFAULT 1")
         if 'max_web_sessions' not in sub_cols:
-            print("MIGRATION: Adding max_web_sessions to subscriptions...")
+            pass # print("MIGRATION: Adding max_web_sessions to subscriptions...")
             c.execute("ALTER TABLE subscriptions ADD COLUMN max_web_sessions INTEGER DEFAULT 1")
         try:
             c.execute("UPDATE subscriptions SET max_web_sessions = 1 WHERE max_web_sessions IS NULL OR max_web_sessions < 1")
@@ -1328,11 +1383,11 @@ def add_missing_columns():
             pass
             
         if 'max_employees' not in sub_cols:
-            print("MIGRATION: Adding max_employees to subscriptions...")
+            pass # print("MIGRATION: Adding max_employees to subscriptions...")
             c.execute("ALTER TABLE subscriptions ADD COLUMN max_employees INTEGER DEFAULT 50")
 
         if 'cost_per_employee' not in sub_cols:
-            print("MIGRATION: Adding cost_per_employee to subscriptions...")
+            pass # print("MIGRATION: Adding cost_per_employee to subscriptions...")
             c.execute("ALTER TABLE subscriptions ADD COLUMN cost_per_employee REAL DEFAULT 0")
 
         # 5. Create active_sessions table
@@ -1381,23 +1436,23 @@ def add_missing_columns():
         c.execute("PRAGMA table_info(parent_users)")
         p_cols = [info[1] for info in c.fetchall()]
         if 'device_id' not in p_cols:
-            print("MIGRATION: Adding device_id to parent_users...")
+            pass # print("MIGRATION: Adding device_id to parent_users...")
             try:
                 c.execute("ALTER TABLE parent_users ADD COLUMN device_id TEXT")
             except Exception as e:
-                print(f"Error adding device_id: {e}")
+                pass # print(f"Error adding device_id: {e}")
         if 'fcm_token' not in p_cols:
-            print("MIGRATION: Adding fcm_token to parent_users...")
+            pass # print("MIGRATION: Adding fcm_token to parent_users...")
             try:
                 c.execute("ALTER TABLE parent_users ADD COLUMN fcm_token TEXT")
             except Exception as e:
-                print(f"Error adding fcm_token: {e}")
+                pass # print(f"Error adding fcm_token: {e}")
         if 'session_version' not in p_cols:
-            print("MIGRATION: Adding session_version to parent_users...")
+            pass # print("MIGRATION: Adding session_version to parent_users...")
             try:
                 c.execute("ALTER TABLE parent_users ADD COLUMN session_version INTEGER DEFAULT 1")
             except Exception as e:
-                print(f"Error adding session_version: {e}")
+                pass # print(f"Error adding session_version: {e}")
         try:
             c.execute("UPDATE parent_users SET session_version = 1 WHERE session_version IS NULL")
         except Exception:
@@ -1412,23 +1467,23 @@ def add_missing_columns():
         c.execute("PRAGMA table_info(vendors)")
         vendor_cols = [info[1] for info in c.fetchall()]
         if 'registration_config' not in vendor_cols:
-            print("MIGRATION: Adding registration_config to vendors table...")
+            pass # print("MIGRATION: Adding registration_config to vendors table...")
             c.execute("ALTER TABLE vendors ADD COLUMN registration_config TEXT DEFAULT NULL") # JSON Schema
         if 'vertical' not in vendor_cols:
-            print("MIGRATION: Adding vertical to vendors table...")
+            pass # print("MIGRATION: Adding vertical to vendors table...")
             c.execute("ALTER TABLE vendors ADD COLUMN vertical TEXT DEFAULT NULL") # Business vertical: school, industry, hospital
 
         # 9. Add custom_data to faces
         c.execute("PRAGMA table_info(faces)")
         faces_cols = [info[1] for info in c.fetchall()]
         if 'custom_data' not in faces_cols:
-            print("MIGRATION: Adding custom_data to faces table...")
+            pass # print("MIGRATION: Adding custom_data to faces table...")
             c.execute("ALTER TABLE faces ADD COLUMN custom_data TEXT DEFAULT NULL") # JSON Values
 
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"Schema Update Error: {e}")
+        pass # print(f"Schema Update Error: {e}")
 import time
 CACHE = {}
 def cache_get(key):
@@ -1492,7 +1547,7 @@ def add_performance_indexes():
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"Index Setup Error: {e}")
+        pass # print(f"Index Setup Error: {e}")
 def check_vendor_status(vendor_id):
     """
     Checks if a vendor is allowed to access the system.
@@ -1506,7 +1561,7 @@ def check_vendor_status(vendor_id):
         conn.row_factory = sqlite3.Row
     c = conn.cursor()
     try:
-        print(f"CHECK_VENDOR_STATUS: vendor_id={vendor_id} DB_PATH={DB_PATH}")
+        pass # print(f"CHECK_VENDOR_STATUS: vendor_id={vendor_id} DB_PATH={DB_PATH}")
     except Exception:
         pass
     
@@ -1548,12 +1603,12 @@ def check_vendor_status(vendor_id):
             grace = sub['grace_period_days'] or 0
             limit_date = end_date + timedelta(days=grace)
             
-            print(f"DEBUG: Vendor {vendor_id} End Date: {end_date}, Limit: {limit_date}, Today: {date.today()}")
+            pass # print(f"DEBUG: Vendor {vendor_id} End Date: {end_date}, Limit: {limit_date}, Today: {date.today()}")
 
             if date.today() > end_date:
                 return False, "Subscription Expired"
         except ValueError as e:
-            print(f"DEBUG: Date Parse Error for Vendor {vendor_id}: {e}")
+            pass # print(f"DEBUG: Date Parse Error for Vendor {vendor_id}: {e}")
             return False, "Invalid Date Format"
             
     return True, "Active"
@@ -1710,7 +1765,7 @@ def migrate_faces_pk():
         cols = [info[1] for info in c.fetchall()]
         
         if 'id' not in cols:
-            print("MIGRATION: Converting faces table to use ID as Primary Key...")
+            pass # print("MIGRATION: Converting faces table to use ID as Primary Key...")
             
             # 1. Rename old table
             c.execute("ALTER TABLE faces RENAME TO faces_old")
@@ -1738,10 +1793,10 @@ def migrate_faces_pk():
                          SELECT name, templates, face_image, department, designation, phone, shift, daily_wage, late_allowance_days, late_deduction_amount, vendor_id 
                          FROM faces_old""")
             
-            print(f"Copied {c.rowcount} rows to new faces table.")
+            pass # print(f"Copied {c.rowcount} rows to new faces table.")
             
             # 4. Backfill person_id in attendance table
-            print("Backfilling person_id in attendance table...")
+            pass # print("Backfilling person_id in attendance table...")
             c.execute("""UPDATE attendance 
                          SET person_id = (SELECT id FROM faces WHERE faces.name = attendance.name AND faces.vendor_id = attendance.vendor_id)
                          WHERE person_id IS NULL""")
@@ -1755,10 +1810,10 @@ def migrate_faces_pk():
             # c.execute("DROP TABLE faces_old")
             
             conn.commit()
-            print("MIGRATION: Faces table updated successfully.")
+            pass # print("MIGRATION: Faces table updated successfully.")
             
     except Exception as e:
-        print(f"MIGRATION ERROR: {e}")
+        pass # print(f"MIGRATION ERROR: {e}")
         conn.rollback()
     finally:
         conn.close()
@@ -1821,22 +1876,22 @@ def init_db():
     c.execute("PRAGMA table_info(faces)")
     faces_cols = [info[1] for info in c.fetchall()]
     if 'vendor_id' not in faces_cols:
-        print("Migrating: Adding vendor_id to faces table")
+        pass # print("Migrating: Adding vendor_id to faces table")
         c.execute("ALTER TABLE faces ADD COLUMN vendor_id INTEGER")
 
     # Check for vendor_id in attendance table
     c.execute("PRAGMA table_info(attendance)")
     attendance_columns = [info[1] for info in c.fetchall()]
     if 'vendor_id' not in attendance_columns:
-        print("Migrating: Adding vendor_id column to attendance table")
+        pass # print("Migrating: Adding vendor_id column to attendance table")
         c.execute("ALTER TABLE attendance ADD COLUMN vendor_id INTEGER")
         # Backfill vendor_id from faces table
-        print("Migrating: Backfilling vendor_id in attendance table")
+        pass # print("Migrating: Backfilling vendor_id in attendance table")
         c.execute("UPDATE attendance SET vendor_id = (SELECT vendor_id FROM faces WHERE faces.name = attendance.name)")
 
     # Check for person_id in attendance table
     if 'person_id' not in attendance_columns:
-        print("Migrating: Adding person_id column to attendance table")
+        pass # print("Migrating: Adding person_id column to attendance table")
         c.execute("ALTER TABLE attendance ADD COLUMN person_id INTEGER")
 
 
@@ -1844,11 +1899,11 @@ def init_db():
     c.execute("PRAGMA table_info(attendance)")
     attendance_columns = [info[1] for info in c.fetchall()]
     if 'captured_image' not in attendance_columns:
-        print("Migrating: Adding captured_image column to attendance table")
+        pass # print("Migrating: Adding captured_image column to attendance table")
         c.execute("ALTER TABLE attendance ADD COLUMN captured_image TEXT")
 
     if 'device_id' not in attendance_columns:
-        print("Migrating: Adding device_id column to attendance table")
+        pass # print("Migrating: Adding device_id column to attendance table")
         c.execute("ALTER TABLE attendance ADD COLUMN device_id TEXT")
 
     # Check for extra columns in faces table (department, designation, phone)
@@ -1856,42 +1911,42 @@ def init_db():
     faces_columns = [info[1] for info in c.fetchall()]
     
     if 'department' not in faces_columns:
-        print("Migrating: Adding department column to faces table")
+        pass # print("Migrating: Adding department column to faces table")
         c.execute("ALTER TABLE faces ADD COLUMN department TEXT")
         
     if 'designation' not in faces_columns:
-        print("Migrating: Adding designation column to faces table")
+        pass # print("Migrating: Adding designation column to faces table")
         c.execute("ALTER TABLE faces ADD COLUMN designation TEXT")
         
     if 'phone' not in faces_columns:
-        print("Migrating: Adding phone column to faces table")
+        pass # print("Migrating: Adding phone column to faces table")
         c.execute("ALTER TABLE faces ADD COLUMN phone TEXT")
 
     if 'shift' not in faces_columns:
-        print("Migrating: Adding shift column to faces table")
+        pass # print("Migrating: Adding shift column to faces table")
         c.execute("ALTER TABLE faces ADD COLUMN shift TEXT")
 
     if 'daily_wage' not in faces_columns:
-        print("Migrating: Adding daily_wage column to faces table")
+        pass # print("Migrating: Adding daily_wage column to faces table")
         c.execute("ALTER TABLE faces ADD COLUMN daily_wage REAL DEFAULT 0")
 
     if 'late_allowance_days' not in faces_columns:
-        print("Migrating: Adding late_allowance_days column to faces table")
+        pass # print("Migrating: Adding late_allowance_days column to faces table")
         c.execute("ALTER TABLE faces ADD COLUMN late_allowance_days INTEGER DEFAULT NULL")
 
     if 'late_deduction_amount' not in faces_columns:
-        print("Migrating: Adding late_deduction_amount column to faces table")
+        pass # print("Migrating: Adding late_deduction_amount column to faces table")
         c.execute("ALTER TABLE faces ADD COLUMN late_deduction_amount REAL DEFAULT 0")
 
     # Check for activity column in attendance table and add if missing
     c.execute("PRAGMA table_info(attendance)")
     attendance_columns = [info[1] for info in c.fetchall()]
     if 'activity' not in attendance_columns:
-        print("Migrating: Adding activity column to attendance table")
+        pass # print("Migrating: Adding activity column to attendance table")
         c.execute("ALTER TABLE attendance ADD COLUMN activity TEXT")
 
     if 'is_late' not in attendance_columns:
-        print("Migrating: Adding is_late column to attendance table")
+        pass # print("Migrating: Adding is_late column to attendance table")
         c.execute("ALTER TABLE attendance ADD COLUMN is_late INTEGER DEFAULT 0")
 
     # --- New Table for Companies & Timetables ---
@@ -1910,7 +1965,7 @@ def init_db():
     c.execute("PRAGMA table_info(companies)")
     companies_columns = [info[1] for info in c.fetchall()]
     if 'working_hours' not in companies_columns:
-        print("Migrating: Adding working_hours column to companies table")
+        pass # print("Migrating: Adding working_hours column to companies table")
         c.execute("ALTER TABLE companies ADD COLUMN working_hours REAL DEFAULT 8.0")
 
     # Create default admin if not exists
@@ -1935,7 +1990,7 @@ def init_db():
     c.execute("PRAGMA table_info(system_users)")
     system_users_columns = [info[1] for info in c.fetchall()]
     if 'vendor_id' not in system_users_columns:
-        print("Migrating: Adding vendor_id column to system_users table")
+        pass # print("Migrating: Adding vendor_id column to system_users table")
         c.execute("ALTER TABLE system_users ADD COLUMN vendor_id INTEGER")
 
     # Create default company if not exists
@@ -1949,11 +2004,11 @@ def init_db():
     c.execute("PRAGMA table_info(companies)")
     companies_columns = [info[1] for info in c.fetchall()]
     if 'shifts' not in companies_columns:
-        print("Migrating: Adding shifts column to companies table")
+        pass # print("Migrating: Adding shifts column to companies table")
         c.execute("ALTER TABLE companies ADD COLUMN shifts TEXT DEFAULT '[]'")
 
     if 'vendor_id' not in companies_columns:
-        print("Migrating: Adding vendor_id column to companies table")
+        pass # print("Migrating: Adding vendor_id column to companies table")
         c.execute("ALTER TABLE companies ADD COLUMN vendor_id INTEGER")
         # Link existing company (id=1) to first vendor (id=1) if exists, or just leave null
         # For simplicity, let's assume legacy company is vendor 1 if we are migrating
@@ -2023,7 +2078,7 @@ def init_db():
     c.execute("PRAGMA table_info(subscriptions)")
     subs_columns = [info[1] for info in c.fetchall()]
     if 'features' not in subs_columns:
-        print("Migrating: Adding features column to subscriptions table")
+        pass # print("Migrating: Adding features column to subscriptions table")
         c.execute("ALTER TABLE subscriptions ADD COLUMN features TEXT DEFAULT '[]'")
     
     # Backfill legacy features (Fix for Access Denied issue)
@@ -2034,13 +2089,13 @@ def init_db():
 
     # Check for max_employees and max_mobile_devices (Migration)
     if 'max_employees' not in subs_columns:
-        print("Migrating: Adding max_employees column to subscriptions table")
+        pass # print("Migrating: Adding max_employees column to subscriptions table")
         c.execute("ALTER TABLE subscriptions ADD COLUMN max_employees INTEGER DEFAULT 50")
     if 'max_mobile_devices' not in subs_columns:
-        print("Migrating: Adding max_mobile_devices column to subscriptions table")
+        pass # print("Migrating: Adding max_mobile_devices column to subscriptions table")
         c.execute("ALTER TABLE subscriptions ADD COLUMN max_mobile_devices INTEGER DEFAULT 5")
     if 'cost_per_employee' not in subs_columns:
-        print("Migrating: Adding cost_per_employee column to subscriptions table")
+        pass # print("Migrating: Adding cost_per_employee column to subscriptions table")
         c.execute("ALTER TABLE subscriptions ADD COLUMN cost_per_employee REAL DEFAULT 50.0")
 
     # Invoices Table
@@ -2061,34 +2116,34 @@ def init_db():
     sub_cols = [info[1] for info in c.fetchall()]
     
     if 'plan_type' not in sub_cols:
-         print("Migrating: Adding plan_type to subscriptions")
+         pass # print("Migrating: Adding plan_type to subscriptions")
          c.execute("ALTER TABLE subscriptions ADD COLUMN plan_type TEXT DEFAULT 'basic'")
     if 'start_date' not in sub_cols:
-         print("Migrating: Adding start_date to subscriptions")
+         pass # print("Migrating: Adding start_date to subscriptions")
          c.execute("ALTER TABLE subscriptions ADD COLUMN start_date DATE")
     if 'end_date' not in sub_cols:
-         print("Migrating: Adding end_date to subscriptions")
+         pass # print("Migrating: Adding end_date to subscriptions")
          c.execute("ALTER TABLE subscriptions ADD COLUMN end_date DATE")
     if 'grace_period_days' not in sub_cols:
-         print("Migrating: Adding grace_period_days to subscriptions")
+         pass # print("Migrating: Adding grace_period_days to subscriptions")
          c.execute("ALTER TABLE subscriptions ADD COLUMN grace_period_days INTEGER DEFAULT 7")
     if 'max_users' not in sub_cols:
-         print("Migrating: Adding max_users to subscriptions")
+         pass # print("Migrating: Adding max_users to subscriptions")
          c.execute("ALTER TABLE subscriptions ADD COLUMN max_users INTEGER DEFAULT 10")
     if 'max_employees' not in sub_cols:
-         print("Migrating: Adding max_employees to subscriptions")
+         pass # print("Migrating: Adding max_employees to subscriptions")
          c.execute("ALTER TABLE subscriptions ADD COLUMN max_employees INTEGER DEFAULT 50")
     if 'max_mobile_devices' not in sub_cols:
-         print("Migrating: Adding max_mobile_devices to subscriptions")
+         pass # print("Migrating: Adding max_mobile_devices to subscriptions")
          c.execute("ALTER TABLE subscriptions ADD COLUMN max_mobile_devices INTEGER DEFAULT 1")
     if 'cost_per_user' not in sub_cols:
-         print("Migrating: Adding cost_per_user to subscriptions")
+         pass # print("Migrating: Adding cost_per_user to subscriptions")
          c.execute("ALTER TABLE subscriptions ADD COLUMN cost_per_user REAL DEFAULT 199.0")
     if 'setup_fee' not in sub_cols:
-         print("Migrating: Adding setup_fee to subscriptions")
+         pass # print("Migrating: Adding setup_fee to subscriptions")
          c.execute("ALTER TABLE subscriptions ADD COLUMN setup_fee REAL DEFAULT 0.0")
     if 'setup_fee_paid' not in sub_cols:
-         print("Migrating: Adding setup_fee_paid to subscriptions")
+         pass # print("Migrating: Adding setup_fee_paid to subscriptions")
          c.execute("ALTER TABLE subscriptions ADD COLUMN setup_fee_paid BOOLEAN DEFAULT 0")
 
     # Vendors Migration
@@ -2096,37 +2151,37 @@ def init_db():
     vendor_cols = [info[1] for info in c.fetchall()]
     
     if 'name' in vendor_cols and 'company_name' not in vendor_cols:
-        print("Migrating: Renaming vendors.name to vendors.company_name")
+        pass # print("Migrating: Renaming vendors.name to vendors.company_name")
         try:
             c.execute("ALTER TABLE vendors RENAME COLUMN name TO company_name")
         except Exception as e:
-            print(f"Migration Error (Rename): {e}")
+            pass # print(f"Migration Error (Rename): {e}")
             
     if 'contact_person' not in vendor_cols:
-        print("Migrating: Adding contact_person to vendors")
+        pass # print("Migrating: Adding contact_person to vendors")
         c.execute("ALTER TABLE vendors ADD COLUMN contact_person TEXT")
 
     if 'web_login_enabled' not in vendor_cols:
-        print("Migrating: Adding web_login_enabled to vendors")
+        pass # print("Migrating: Adding web_login_enabled to vendors")
         c.execute("ALTER TABLE vendors ADD COLUMN web_login_enabled INTEGER DEFAULT 1")
 
     if 'frontend_bundle_id' not in vendor_cols:
-        print("Migrating: Adding frontend_bundle_id to vendors")
+        pass # print("Migrating: Adding frontend_bundle_id to vendors")
         c.execute("ALTER TABLE vendors ADD COLUMN frontend_bundle_id TEXT DEFAULT 'default_attendance'")
 
     if 'backend_service_id' not in vendor_cols:
-        print("Migrating: Adding backend_service_id to vendors")
+        pass # print("Migrating: Adding backend_service_id to vendors")
         c.execute("ALTER TABLE vendors ADD COLUMN backend_service_id TEXT DEFAULT 'default_api'")
 
     if 'config' not in vendor_cols:
-        print("Migrating: Adding config to vendors")
+        pass # print("Migrating: Adding config to vendors")
         c.execute("ALTER TABLE vendors ADD COLUMN config TEXT DEFAULT '{}'")
 
     # Update system_users for multi-tenancy
     c.execute("PRAGMA table_info(system_users)")
     user_cols = [info[1] for info in c.fetchall()]
     if 'vendor_id' not in user_cols:
-        print("Migrating: Adding vendor_id to system_users")
+        pass # print("Migrating: Adding vendor_id to system_users")
         c.execute("ALTER TABLE system_users ADD COLUMN vendor_id INTEGER")
     
     # Create SuperAdmin User
@@ -3316,7 +3371,7 @@ def get_vendors():
                 else:
                     v['subscription_status'] = 'Active'
             except Exception as e:
-                print(f"Date Parsing Error for Vendor {v.get('id')}: {e}")
+                pass # print(f"Date Parsing Error for Vendor {v.get('id')}: {e}")
                 v['subscription_status'] = 'Error'
         else:
             v['subscription_status'] = 'No Plan'
@@ -3373,9 +3428,8 @@ def get_registration_templates():
 
 try:
     from facexlib.detection import init_detection_model
-    _retina_det = init_detection_model('retinaface_resnet50', half=False)
 except Exception:
-    _retina_det = None
+    init_detection_model = None
 _VENDOR_EMB_CACHE = {}
 def _now_ts():
     try:
@@ -3409,60 +3463,207 @@ def _decode_data_uri_to_rgb(uri: str):
         return None
 def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str | None = None, division: str | None = None, branch: str | None = None):
     try:
-        key = int(vendor_id or 0)
-        ent = _VENDOR_EMB_CACHE.get(key)
-        if ent and (_now_ts() - ent.get('ts', 0.0)) < ttl_sec and ent.get('items'):
-            return ent
-        from multiple_face_detection import app as mfd_app
+        class_y = str(class_year or "")
+        div = str(division or "")
+        br = str(branch or "")
+        key = f"{vendor_id}_{class_y}_{div}_{br}"
+        
         conn = get_db_connection()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
+        
+        # Fast multi-process staleness check
+        try:
+            c.execute("SELECT MAX(id), COUNT(id) FROM person_embeddings WHERE vendor_id = ?", (int(vendor_id or 0),))
+            sig_row = c.fetchone()
+            current_sig = f"{sig_row[0]}_{sig_row[1]}" if sig_row and sig_row[0] is not None else "0_0"
+        except Exception:
+            current_sig = "0_0"
+
+        ent = _VENDOR_EMB_CACHE.get(key)
+        if ent and ent.get('sig') == current_sig and (_now_ts() - ent.get('ts', 0.0)) < ttl_sec and ent.get('items'):
+            conn.close()
+            return ent
+            
+        from multiple_face_detection import app as mfd_app
+        try:
+            c.execute("""CREATE TABLE IF NOT EXISTS person_embeddings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                vendor_id INTEGER,
+                person_id INTEGER,
+                class_year TEXT,
+                division TEXT,
+                branch TEXT,
+                vec BLOB,
+                dim INTEGER,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )""")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_person_embeddings_vid ON person_embeddings(vendor_id)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_person_embeddings_classes ON person_embeddings(class_year, division, branch)")
+            
+            # Migration: drop old UNIQUE constraint if present
+            try:
+                c.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='person_embeddings'")
+                trow = c.fetchone()
+                if trow:
+                    tsql = trow[0] if isinstance(trow, (list, tuple)) else trow['sql']
+                    if tsql and 'UNIQUE' in str(tsql):
+                        c.execute("ALTER TABLE person_embeddings RENAME TO _person_embeddings_old")
+                        c.execute("""CREATE TABLE person_embeddings (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            vendor_id INTEGER,
+                            person_id INTEGER,
+                            class_year TEXT,
+                            division TEXT,
+                            branch TEXT,
+                            vec BLOB,
+                            dim INTEGER,
+                            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                        )""")
+                        c.execute("INSERT INTO person_embeddings SELECT * FROM _person_embeddings_old")
+                        c.execute("DROP TABLE _person_embeddings_old")
+                        conn.commit()
+            except Exception:
+                pass
+        except Exception:
+            pass
+        items = []
+        try:
+            q = "SELECT person_id, vec, dim FROM person_embeddings WHERE vendor_id = ?"
+            args = [int(vendor_id or 0)]
+            if class_year:
+                q += " AND (class_year = ?)"
+                args.append(str(class_year))
+            if division:
+                q += " AND (division = ?)"
+                args.append(str(division))
+            if branch:
+                q += " AND (branch = ?)"
+                args.append(str(branch))
+            c.execute(q, args)
+            rows_emb = c.fetchall() or []
+            id_set = set()
+            for r in rows_emb:
+                try:
+                    pid = int(r['person_id'] if isinstance(r, sqlite3.Row) else r[0])
+                    vb = r['vec'] if isinstance(r, sqlite3.Row) else r[1]
+                    dim = int(r['dim'] if isinstance(r, sqlite3.Row) else r[2])
+                    if vb and dim > 0:
+                        v = np.frombuffer(vb, dtype=np.float32)
+                        if v.size == dim:
+                            v = _normalize_vec(v)
+                            items.append({'person_id': pid, 'name': '', 'vec': v})
+                            id_set.add(pid)
+                except Exception:
+                    continue
+            if id_set:
+                pid_list = list(id_set)
+                ph = ",".join(["?"] * len(pid_list))
+                try:
+                    c.execute(f"SELECT id, name FROM faces WHERE id IN ({ph})", pid_list)
+                    nmrows = c.fetchall() or []
+                    nmap = {}
+                    for nr in nmrows:
+                        nid = nr['id'] if isinstance(nr, sqlite3.Row) else nr[0]
+                        nmap[int(nid)] = nr['name'] if isinstance(nr, sqlite3.Row) else nr[1]
+                    for it in items:
+                        it['name'] = nmap.get(it['person_id'], '')
+                except Exception:
+                    pass
+        except Exception:
+            pass
         c.execute("PRAGMA table_info(faces)")
         cols = [r[1] if isinstance(r, (list, tuple)) else r['name'] for r in c.fetchall() or []]
         face_img_col = 'face_image'
-        if face_img_col not in cols:
-            return None
-        base_query = f"SELECT id, name, {face_img_col}, department, custom_data FROM faces"
-        params = []
-        where = []
-        if vendor_id:
-            where.append("vendor_id = ?"); params.append(vendor_id)
-        # Flexible class filter: check custom_data JSON or department
-        if class_year:
-            where.append("(custom_data LIKE ?)")
-            params.append(f'%\"class_year\":\"{class_year}\"%')
-        if division:
-            where.append("(custom_data LIKE ?)")
-            params.append(f'%\"division\":\"{division}\"%')
-        if branch:
-            where.append("(custom_data LIKE ?)")
-            params.append(f'%\"branch\":\"{branch}\"%')
-        if where:
-            base_query += " WHERE " + " AND ".join(where)
-        c.execute(base_query, params)
-        rows = c.fetchall() or []
-        conn.close()
-        items = []
-        for r in rows:
-            try:
-                pid = r['id'] if isinstance(r, sqlite3.Row) else r[0]
-                nm = r['name'] if isinstance(r, sqlite3.Row) else r[1]
-                uri = r[face_img_col] if isinstance(r, sqlite3.Row) else r[2]
-                img_rgb = _decode_data_uri_to_rgb(uri)
-                if img_rgb is None:
+        has_face_img = face_img_col in cols
+        # Build set of person_ids that already have pre-computed embeddings
+        emb_pid_set = set(it['person_id'] for it in items)
+        # Load people from faces table if face_image column exists, skipping those with pre-computed embeddings
+        if has_face_img:
+            base_query = f"SELECT id, name, {face_img_col}, department, custom_data FROM faces"
+            params = []
+            where = []
+            if vendor_id:
+                where.append("vendor_id = ?"); params.append(vendor_id)
+            if class_year:
+                where.append("(custom_data LIKE ?)")
+                params.append(f'%\"class_year\":\"{class_year}\"%')
+            if division:
+                where.append("(custom_data LIKE ?)")
+                params.append(f'%\"division\":\"{division}\"%')
+            if branch:
+                where.append("(custom_data LIKE ?)")
+                params.append(f'%\"branch\":\"{branch}\"%')
+            if where:
+                base_query += " WHERE " + " AND ".join(where)
+            c.execute(base_query, params)
+            rows = c.fetchall() or []
+            conn.close()
+            for r in rows:
+                try:
+                    pid = int(r['id'] if isinstance(r, sqlite3.Row) else r[0])
+                    if pid in emb_pid_set:
+                        continue  # already have pre-computed embedding
+                    nm = r['name'] if isinstance(r, sqlite3.Row) else r[1]
+                    uri = r[face_img_col] if isinstance(r, sqlite3.Row) else r[2]
+                    img_rgb = _decode_data_uri_to_rgb(uri)
+                    if img_rgb is None:
+                        continue
+                    try:
+                        det_ann, det_crops, _, _ = mfd_app.detect_faces(
+                            image_input=img_rgb,
+                            enhancer="GFPGAN",
+                            enhance_level=0.5,
+                            gfpgan_upscale=1,
+                            codeformer_w=0.5,
+                            compute_embeddings=False,
+                            crop_mode="Portrait",
+                            portrait_scale=3.0,
+                            preclean_whole=False,
+                            preclean_level=0.2,
+                            det_max_side=640
+                        )
+                        crop = det_crops[0] if (isinstance(det_crops, list) and len(det_crops) > 0) else img_rgb
+                    except Exception:
+                        crop = img_rgb
+                    emb = mfd_app.embedder.embed(crop)
+                    emb = _normalize_vec(emb)
+                    if emb.size > 0:
+                        items.append({'person_id': int(pid), 'name': str(nm), 'vec': emb})
+                except Exception:
                     continue
-                # Tight-face center crop heuristic (square from center) if large portrait
-                h, w = img_rgb.shape[:2]
-                y1 = max(0, int(h * 0.1)); y2 = int(min(h, y1 + max(64, h * 0.6)))
-                x1 = max(0, int(w * 0.2)); x2 = int(min(w, x1 + max(64, w * 0.6)))
-                crop = img_rgb[y1:y2, x1:x2] if (y2 > y1 and x2 > x1) else img_rgb
-                emb = mfd_app.embedder.embed(crop)
-                emb = _normalize_vec(emb)
-                if emb.size > 0:
-                    items.append({'person_id': int(pid), 'name': str(nm), 'vec': emb})
+        _VENDOR_EMB_CACHE[key] = {'ts': _now_ts(), 'sig': current_sig, 'items': items, 'dim': (items[0]['vec'].size if items else 0)}
+        if USE_FAISS and items and _VENDOR_EMB_CACHE[key]['dim'] > 0:
+            try:
+                dim = _VENDOR_EMB_CACHE[key]['dim']
+                xb = np.vstack([it['vec'] for it in items]).astype(np.float32)
+                index = _faiss.IndexFlatIP(dim)
+                if _FAISS_LOCK:
+                    with _FAISS_LOCK:
+                        index.add(xb)
+                else:
+                    index.add(xb)
+                _VENDOR_EMB_CACHE[key]['faiss_index'] = index
+                _VENDOR_EMB_CACHE[key]['faiss_map'] = [(it['person_id'], it.get('name', '')) for it in items]
             except Exception:
-                continue
-        _VENDOR_EMB_CACHE[key] = {'ts': _now_ts(), 'items': items, 'dim': (items[0]['vec'].size if items else 0)}
+                pass
+        if LOW_RAM_MODE:
+            try:
+                max_items = int(os.environ.get("EMB_CACHE_MAX_ITEMS", "200") or "200")
+            except Exception:
+                max_items = 200
+            _VENDOR_EMB_CACHE[key]['items'] = _VENDOR_EMB_CACHE[key]['items'][:max_items]
+            try:
+                max_vendors = int(os.environ.get("EMB_CACHE_MAX_VENDORS", "20") or "20")
+            except Exception:
+                max_vendors = 20
+            if len(_VENDOR_EMB_CACHE) > max_vendors:
+                ks = sorted(_VENDOR_EMB_CACHE.items(), key=lambda kv: kv[1].get('ts', 0.0))
+                for kdrop, _ in ks[:-max_vendors]:
+                    try:
+                        del _VENDOR_EMB_CACHE[kdrop]
+                    except Exception:
+                        pass
         return _VENDOR_EMB_CACHE[key]
     except Exception:
         return None
@@ -3471,17 +3672,42 @@ def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3) -> list:
         v = _normalize_vec(vec)
         if cache is None or not cache.get('items') or v.size == 0:
             return []
+        # Helper to deduplicate by person_id, keeping highest similarity
+        def _dedup(raw, topk):
+            best = {}
+            for entry in raw:
+                pid = entry['person_id']
+                if pid not in best or entry['similarity'] > best[pid]['similarity']:
+                    best[pid] = entry
+            return sorted(best.values(), key=lambda x: x['similarity'], reverse=True)[:topk]
+        if cache.get('faiss_index') is not None and USE_FAISS:
+            try:
+                q = v.reshape(1, -1).astype(np.float32)
+                # Search more than topk to account for duplicate person_ids
+                search_k = min(topk * 5, len(cache['items']))
+                if _FAISS_LOCK:
+                    with _FAISS_LOCK:
+                        D, I = cache['faiss_index'].search(q, search_k)
+                else:
+                    D, I = cache['faiss_index'].search(q, search_k)
+                raw = []
+                fmap = cache.get('faiss_map') or []
+                for rank, idx in enumerate(I[0].tolist()):
+                    if idx < 0 or idx >= len(fmap):
+                        continue
+                    pid, nm = fmap[idx]
+                    sim = float(D[0][rank]) if D is not None else 0.0
+                    raw.append({'person_id': int(pid), 'name': str(nm), 'similarity': sim})
+                return _dedup(raw, topk)
+            except Exception:
+                pass
         sims = []
         for it in cache['items']:
             u = it['vec']
             if u.size != v.size:
                 continue
-            sims.append((float(np.dot(u, v)), it['person_id'], it['name']))
-        sims.sort(key=lambda x: x[0], reverse=True)
-        out = []
-        for s, pid, nm in sims[:topk]:
-            out.append({'person_id': pid, 'name': nm, 'similarity': s})
-        return out
+            sims.append({'person_id': it['person_id'], 'name': it['name'], 'similarity': float(np.dot(u, v))})
+        return _dedup(sims, topk)
     except Exception:
         return []
 
@@ -3518,9 +3744,15 @@ def detect_faces_basic():
         # Accept optional overrides from request JSON
         enhancer = (data.get('enhancer') if 'data' in locals() and isinstance(data, dict) else None) or "GFPGAN"
         crop_mode = (data.get('crop_mode') if 'data' in locals() and isinstance(data, dict) else None) or "Portrait"
-        gfp_up = int((data.get('gfpgan_upscale') if 'data' in locals() and isinstance(data, dict) else None) or 2)
-        preclean_whole = bool((data.get('preclean_whole') if 'data' in locals() and isinstance(data, dict) else None) if 'data' in locals() else True)
-        preclean_level = float((data.get('preclean_level') if 'data' in locals() and isinstance(data, dict) else None) or 0.4)
+        lr = LOW_RAM_MODE
+        if lr:
+            gfp_up = int((data.get('gfpgan_upscale') if 'data' in locals() and isinstance(data, dict) else None) or 1)
+            preclean_whole = bool((data.get('preclean_whole') if 'data' in locals() and isinstance(data, dict) else None) if 'data' in locals() else False)
+            preclean_level = float((data.get('preclean_level') if 'data' in locals() and isinstance(data, dict) else None) or 0.2)
+        else:
+            gfp_up = int((data.get('gfpgan_upscale') if 'data' in locals() and isinstance(data, dict) else None) or 2)
+            preclean_whole = bool((data.get('preclean_whole') if 'data' in locals() and isinstance(data, dict) else None) if 'data' in locals() else True)
+            preclean_level = float((data.get('preclean_level') if 'data' in locals() and isinstance(data, dict) else None) or 0.4)
         def _heavy_detect():
             return mfd_app.detect_faces(
                 image_input=rgb,
@@ -3554,25 +3786,42 @@ def detect_faces_basic():
                 # thumbnails from crops list by index alignment
                 if i < len(crops):
                     crop_rgb = crops[i]
+                    ih, iw = img_rgb.shape[:2]
+                    # Get original face bounding box from df (raw detector output, no padding)
+                    if df is not None and hasattr(df, 'iloc') and i < len(df):
+                        row = df.iloc[i]
+                        bx1, by1, bx2, by2 = int(row['x1']), int(row['y1']), int(row['x2']), int(row['y2'])
+                    else:
+                        bx1, by1, bx2, by2 = x1, y1, x2, y2
+                    # Pure face crop - NO padding, just the detector box
+                    bx1 = max(0, bx1); by1 = max(0, by1)
+                    bx2 = min(iw, bx2); by2 = min(ih, by2)
+                    pure_face = img_rgb[by1:by2, bx1:bx2]
                     # Compute portrait crop as well (for later student card usage)
                     try:
-                        px1, py1, px2, py2 = mfd_app._compute_portrait_box(x1, y1, x2, y2, img_rgb.shape[1], img_rgb.shape[0], scale=3.0, margin=0.5)
+                        px1, py1, px2, py2 = mfd_app._compute_portrait_box(bx1, by1, bx2, by2, img_rgb.shape[1], img_rgb.shape[0], scale=3.0, margin=0.5)
                         portrait = img_rgb[py1:py2, px1:px2]
-                        portrait_enh = mfd_app.gfpgan_manager.enhance_crop(portrait, upscale=gfp_up, whole=True) if portrait.size > 0 else portrait
+                        if lr:
+                            portrait_enh = portrait
+                        else:
+                            portrait_enh = mfd_app.gfpgan_manager.enhance_crop(portrait, upscale=gfp_up, whole=True) if portrait.size > 0 else portrait
                     except Exception:
                         portrait_enh = portrait if 'portrait' in locals() else crop_rgb
-                    # Encode tight face thumb
-                    ok, buf = cv2.imencode('.jpg', cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    # Encode pure face crop as thumbs.face
+                    ok, buf = cv2.imencode('.jpg', cv2.cvtColor(pure_face, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
                     face_b64 = base64.b64encode(buf.tobytes()).decode('ascii') if ok else ''
-                    # Encode portrait thumb
                     if portrait_enh is not None and portrait_enh.size > 0:
                         okp, bufp = cv2.imencode('.jpg', cv2.cvtColor(portrait_enh, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
                         port_b64 = base64.b64encode(bufp.tobytes()).decode('ascii') if okp else ''
                     else:
                         port_b64 = ''
-                    # Embedding + suggestions
+                    # Embedding from PURE face crop (no padding, no background)
+                    emb_vec_b64 = ''
                     try:
-                        emb = mfd_app.embedder.embed(crop_rgb)
+                        emb = mfd_app.embedder.embed(pure_face)
+                        emb_norm = _normalize_vec(emb)
+                        if emb_norm.size > 0:
+                            emb_vec_b64 = base64.b64encode(emb_norm.astype(np.float32).tobytes()).decode('ascii')
                         sugg = _suggest_from_cache(emb, vcache, topk=3)
                     except Exception:
                         sugg = []
@@ -3580,19 +3829,225 @@ def detect_faces_basic():
                         b64 = base64.b64encode(buf.tobytes()).decode('ascii')
                         faces.append({
                             "index": i,
-                            "box": [x1, y1, x2, y2],
+                            "box": [bx1, by1, bx2, by2],
                             "score": float(score_str) if score_str else None,
                             "thumbs": {
                                 "face": f"data:image/jpeg;base64,{face_b64}" if face_b64 else None,
                                 "portrait": f"data:image/jpeg;base64,{port_b64}" if port_b64 else None
                             },
-                            "suggestions": sugg
+                            "suggestions": sugg,
+                            "emb_vec": emb_vec_b64
                         })
             ok2, ann = cv2.imencode('.jpg', draw, [cv2.IMWRITE_JPEG_QUALITY, 85])
             annotated_b64 = f"data:image/jpeg;base64,{base64.b64encode(ann.tobytes()).decode('ascii')}" if ok2 else ''
         else:
             annotated_b64 = ''
         return jsonify({"faces": faces, "count": len(faces), "annotated_image": annotated_b64})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@greeting_bp.route("/utils/search-embedding", methods=["POST"])
+def search_embedding():
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+    try:
+        file = None
+        if 'image' in request.files:
+            file = request.files['image'].read()
+        else:
+            data = request.get_json(silent=True) or {}
+            img_b64 = data.get('image')
+            if img_b64 and isinstance(img_b64, str):
+                parts = img_b64.split(',', 1)
+                payload = parts[1] if len(parts) == 2 else parts[0]
+                file = base64.b64decode(payload)
+        if not file:
+            return jsonify({"error": "image required"}), 400
+        arr = np.frombuffer(file, dtype=np.uint8)
+        bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if bgr is None:
+            return jsonify({"error": "invalid image"}), 400
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        try:
+            from multiple_face_detection import app as mfd_app
+        except Exception:
+            return jsonify({"error": "multiple_face_detection not available in environment"}), 500
+        data = locals().get('data') if 'data' in locals() else {}
+        lr = LOW_RAM_MODE
+        try:
+            fast_flag = data.get('fast') if isinstance(data, dict) else None
+            if fast_flag is not None:
+                lr = lr or str(fast_flag).strip().lower() in ("1", "true", "yes", "y")
+        except Exception:
+            pass
+        try:
+            det_override = int(data.get('det_max_side')) if isinstance(data, dict) and data.get('det_max_side') is not None else None
+        except Exception:
+            det_override = None
+        det_bound = det_override if det_override else DET_MAX_SIDE_DEFAULT
+        try:
+            hh, ww = rgb.shape[:2]
+            mx = max(hh, ww)
+            if mx > det_bound and det_bound > 0:
+                scale = float(det_bound) / float(mx)
+                nh = max(1, int(round(hh * scale)))
+                nw = max(1, int(round(ww * scale)))
+                rgb = cv2.resize(rgb, (nw, nh), interpolation=cv2.INTER_AREA)
+        except Exception:
+            pass
+        enhancer = (data.get('enhancer') if isinstance(data, dict) else None) or "GFPGAN"
+        crop_mode = (data.get('crop_mode') if isinstance(data, dict) else None) or "Portrait"
+        if lr:
+            gfp_up = int((data.get('gfpgan_upscale') if isinstance(data, dict) else None) or 1)
+            preclean_whole = False
+            preclean_level = 0.2
+        else:
+            gfp_up = int((data.get('gfpgan_upscale') if isinstance(data, dict) else None) or 2)
+            preclean_whole = True
+            preclean_level = 0.4
+        annotated, crops, df, df_emb = mfd_app.detect_faces(
+            image_input=rgb,
+            enhancer=enhancer,
+            enhance_level=0.5,
+            gfpgan_upscale=gfp_up,
+            codeformer_w=0.5,
+            compute_embeddings=True,
+            crop_mode=crop_mode,
+            portrait_scale=3.0,
+            preclean_whole=preclean_whole,
+            preclean_level=preclean_level,
+            det_max_side=det_bound
+        )
+        class_year = (data.get('class_year') if isinstance(data, dict) else None)
+        division = (data.get('division') if isinstance(data, dict) else None)
+        branch = (data.get('branch') if isinstance(data, dict) else None)
+        vcache = _ensure_vendor_emb_cache(vendor_id, class_year=class_year, division=division, branch=branch)
+        topk = 5
+        try:
+            if isinstance(data, dict) and data.get('topk') is not None:
+                topk = int(data.get('topk'))
+        except Exception:
+            topk = 5
+        faces_out = []
+        if isinstance(annotated, tuple) and len(annotated) == 2:
+            img_rgb, anns = annotated
+            jq = 75 if lr else 85
+            for i, (box, score_str) in enumerate(anns or []):
+                if i >= len(crops):
+                    continue
+                crop_rgb = crops[i]
+                x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
+                # Get original face bounding box from df (raw detector output, no padding)
+                ih, iw = img_rgb.shape[:2]
+                if df is not None and hasattr(df, 'iloc') and i < len(df):
+                    row = df.iloc[i]
+                    bx1, by1, bx2, by2 = int(row['x1']), int(row['y1']), int(row['x2']), int(row['y2'])
+                else:
+                    bx1, by1, bx2, by2 = x1, y1, x2, y2
+                # Pure face crop - NO padding, just the detector box
+                bx1 = max(0, bx1); by1 = max(0, by1)
+                bx2 = min(iw, bx2); by2 = min(ih, by2)
+                pure_face = img_rgb[by1:by2, bx1:bx2]
+                try:
+                    ok, buf = cv2.imencode('.jpg', cv2.cvtColor(pure_face, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, jq])
+                    face_b64 = base64.b64encode(buf.tobytes()).decode('ascii') if ok else ''
+                except Exception:
+                    face_b64 = ''
+                # Compute embedding from PURE face crop (no padding, no background)
+                emb_vec_b64 = ''
+                try:
+                    emb = mfd_app.embedder.embed(pure_face)
+                    emb_norm = _normalize_vec(emb)
+                    if emb_norm.size > 0:
+                        emb_vec_b64 = base64.b64encode(emb_norm.astype(np.float32).tobytes()).decode('ascii')
+                    sugg = _suggest_from_cache(emb, vcache, topk=topk)
+                except Exception:
+                    sugg = []
+                faces_out.append({
+                    "index": i,
+                    "box": [bx1, by1, bx2, by2],
+                    "score": float(score_str) if score_str else None,
+                    "suggestions": sugg,
+                    "face_thumb": f"data:image/jpeg;base64,{face_b64}" if face_b64 else None,
+                    "emb_vec": emb_vec_b64
+                })
+        try:
+            pid_set = set()
+            for f in faces_out:
+                for s in f.get("suggestions") or []:
+                    try:
+                        pid_set.add(int(s.get("person_id")))
+                    except Exception:
+                        pass
+            if pid_set:
+                conn = get_db_connection()
+                conn.row_factory = sqlite3.Row
+                c = conn.cursor()
+                ph = ",".join(["?"] * len(pid_set))
+                c.execute(f"SELECT id, face_image FROM faces WHERE id IN ({ph}) AND vendor_id = ?", [*pid_set, vendor_id])
+                rows = c.fetchall() or []
+                conn.close()
+                tmap = {}
+                for r in rows:
+                    try:
+                        pid = int(r["id"] if isinstance(r, sqlite3.Row) else r[0])
+                        uri = r["face_image"] if isinstance(r, sqlite3.Row) else r[1]
+                        rgb2 = _decode_data_uri_to_rgb(uri)
+                        if rgb2 is None:
+                            continue
+                        # Use face detector to get bounding box, then crop tight face
+                        try:
+                            det_ann, _, _, _ = mfd_app.detect_faces(
+                                image_input=rgb2,
+                                enhancer="GFPGAN",
+                                enhance_level=0.5,
+                                gfpgan_upscale=1,
+                                codeformer_w=0.5,
+                                compute_embeddings=False,
+                                crop_mode="Portrait",
+                                portrait_scale=1.0,
+                                preclean_whole=False,
+                                preclean_level=0.2,
+                                det_max_side=640
+                            )
+                            # Extract tight face from bounding box (same as Bulk Image Attendance)
+                            if isinstance(det_ann, tuple) and len(det_ann) == 2:
+                                _, anns2 = det_ann
+                                if anns2 and len(anns2) > 0:
+                                    box2 = anns2[0][0]
+                                    bx1, by1, bx2, by2 = int(box2[0]), int(box2[1]), int(box2[2]), int(box2[3])
+                                    ih, iw = rgb2.shape[:2]
+                                    pad_w = int((bx2 - bx1) * 0.1)
+                                    pad_h = int((by2 - by1) * 0.1)
+                                    fx1 = max(0, bx1 - pad_w)
+                                    fy1 = max(0, by1 - pad_h)
+                                    fx2 = min(iw, bx2 + pad_w)
+                                    fy2 = min(ih, by2 + pad_h)
+                                    crop2 = rgb2[fy1:fy2, fx1:fx2]
+                                else:
+                                    crop2 = rgb2
+                            else:
+                                crop2 = rgb2
+                        except Exception:
+                            crop2 = rgb2
+                        ok2, b2 = cv2.imencode('.jpg', cv2.cvtColor(crop2, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
+                        if ok2:
+                            tmap[pid] = "data:image/jpeg;base64," + base64.b64encode(b2.tobytes()).decode("ascii")
+                    except Exception:
+                        continue
+                if tmap:
+                    for f in faces_out:
+                        for s in f.get("suggestions") or []:
+                            try:
+                                pid = int(s.get("person_id"))
+                                if pid in tmap:
+                                    s["face_thumb"] = tmap[pid]
+                            except Exception:
+                                pass
+        except Exception:
+            pass
+        return jsonify({"faces": faces_out, "count": len(faces_out)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -3747,10 +4202,11 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
         from multiple_face_detection import app as mfd_app
         enhancer = params.get('enhancer') or "GFPGAN"
         crop_mode = params.get('crop_mode') or "Portrait"
-        portrait_scale = float(params.get('portrait_scale') or 1.5)
-        gfp_up = int(params.get('gfpgan_upscale') or 2)
-        preclean_whole = bool(params.get('preclean_whole') if 'preclean_whole' in params else True)
-        preclean_level = float(params.get('preclean_level') or 0.4)
+        lr = LOW_RAM_MODE
+        portrait_scale = float(params.get('portrait_scale') or (1.2 if lr else 1.5))
+        gfp_up = int(params.get('gfpgan_upscale') or (1 if lr else 2))
+        preclean_whole = bool(params.get('preclean_whole') if 'preclean_whole' in params else (False if lr else True))
+        preclean_level = float(params.get('preclean_level') or (0.2 if lr else 0.4))
         annotated, crops, df, df_emb = mfd_app.detect_faces(
             image_input=rgb,
             enhancer=enhancer,
@@ -3775,30 +4231,53 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                 cv2.rectangle(draw, (x1, y1), (x2, y2), (0, 180, 255), 2)
                 if i < len(crops):
                     crop_rgb = crops[i]
+                    ih, iw = img_rgb.shape[:2]
+                    # Get original face bounding box from df (raw detector output, no padding)
+                    if df is not None and hasattr(df, 'iloc') and i < len(df):
+                        row = df.iloc[i]
+                        bx1, by1, bx2, by2 = int(row['x1']), int(row['y1']), int(row['x2']), int(row['y2'])
+                    else:
+                        bx1, by1, bx2, by2 = x1, y1, x2, y2
+                    # Pure face crop - NO padding, just the detector box
+                    bx1 = max(0, bx1); by1 = max(0, by1)
+                    bx2 = min(iw, bx2); by2 = min(ih, by2)
+                    pure_face = img_rgb[by1:by2, bx1:bx2]
                     try:
-                        px1, py1, px2, py2 = mfd_app._compute_portrait_box(x1, y1, x2, y2, img_rgb.shape[1], img_rgb.shape[0], scale=3.0, margin=0.5)
+                        px1, py1, px2, py2 = mfd_app._compute_portrait_box(bx1, by1, bx2, by2, img_rgb.shape[1], img_rgb.shape[0], scale=3.0, margin=0.5)
                         portrait = img_rgb[py1:py2, px1:px2]
-                        portrait_enh = mfd_app.gfpgan_manager.enhance_crop(portrait, upscale=gfp_up, whole=True) if portrait.size > 0 else portrait
+                        if lr:
+                            portrait_enh = portrait
+                        else:
+                            portrait_enh = mfd_app.gfpgan_manager.enhance_crop(portrait, upscale=gfp_up, whole=True) if portrait.size > 0 else portrait
                     except Exception:
                         portrait_enh = crop_rgb
-                    ok, buf = cv2.imencode('.jpg', cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    # Encode pure face crop as thumbs.face (used for display AND saving embeddings)
+                    ok, buf = cv2.imencode('.jpg', cv2.cvtColor(pure_face, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
                     face_b64 = base64.b64encode(buf.tobytes()).decode('ascii') if ok else ''
                     if portrait_enh is not None and portrait_enh.size > 0:
                         okp, bufp = cv2.imencode('.jpg', cv2.cvtColor(portrait_enh, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
                         port_b64 = base64.b64encode(bufp.tobytes()).decode('ascii') if okp else ''
                     else:
                         port_b64 = ''
+                    # Compute embedding from PURE face crop (no padding, no background)
+                    emb_vec_b64 = ''
                     try:
-                        emb = mfd_app.embedder.embed(crop_rgb)
+                        emb = mfd_app.embedder.embed(pure_face)
+                        # Store the raw embedding so commit can reuse it exactly
+                        emb_norm = _normalize_vec(emb)
+                        if emb_norm.size > 0:
+                            emb_vec_b64 = base64.b64encode(emb_norm.astype(np.float32).tobytes()).decode('ascii')
                         sugg = _suggest_from_cache(emb, vcache, topk=3)
+                        pass # print(f"[EMB_DEBUG] face={i} box=({bx1},{by1},{bx2},{by2}) crop={pure_face.shape} emb_first5={emb_norm[:5].tolist() if emb_norm.size>0 else 'NONE'} sugg={[(s.get('name','?'), round(s.get('similarity',0)*100,1)) for s in sugg]}", flush=True)
                     except Exception:
                         sugg = []
                     faces.append({
                         "index": i,
-                        "box": [x1, y1, x2, y2],
+                        "box": [bx1, by1, bx2, by2],
                         "score": float(score_str) if score_str else None,
                         "thumbs": {"face": f"data:image/jpeg;base64,{face_b64}" if face_b64 else None, "portrait": f"data:image/jpeg;base64,{port_b64}" if port_b64 else None},
-                        "suggestions": sugg
+                        "suggestions": sugg,
+                        "emb_vec": emb_vec_b64
                     })
             ok2, ann = cv2.imencode('.jpg', draw, [cv2.IMWRITE_JPEG_QUALITY, 85])
             annotated_b64 = f"data:image/jpeg;base64,{base64.b64encode(ann.tobytes()).decode('ascii')}" if ok2 else ''
@@ -3807,7 +4286,7 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
         return faces, annotated_b64
     except Exception as e:
         import traceback
-        print(f"[FACE_DETECT] ERROR: {e}", flush=True)
+        pass # print(f"[FACE_DETECT] ERROR: {e}", flush=True)
         traceback.print_exc()
         return [], ''
 
@@ -3839,6 +4318,18 @@ def class_batch_add():
         "division": request.form.get('division') or request.args.get('division') or '',
         "branch": request.form.get('branch') or request.args.get('branch') or ''
     }
+    try:
+        fast_raw = request.form.get('fast') or request.args.get('fast')
+        if fast_raw is not None:
+            params["fast"] = str(fast_raw).strip().lower() in ("1", "true", "yes", "y")
+    except Exception:
+        pass
+    try:
+        dms_raw = request.form.get('det_max_side') or request.args.get('det_max_side')
+        if dms_raw is not None and str(dms_raw).strip() != "":
+            params["det_max_side"] = int(dms_raw)
+    except Exception:
+        pass
     conn = get_db_connection()
     _ensure_class_batch_tables(conn)
     c = conn.cursor()
@@ -3867,16 +4358,16 @@ def class_batch_add():
     def _dispatch_task():
         import sys
         try:
-            print(f"[DISPATCH] batch={bid} vendor={vendor_id} celery={'YES' if celery else 'NO'}", flush=True)
+            pass # print(f"[DISPATCH] batch={bid} vendor={vendor_id} celery={'YES' if celery else 'NO'}", flush=True)
             from tasks import process_class_batch_items
             def _worker():
                 try:
-                    print(f"[WORKER] Starting batch={bid}", flush=True)
+                    pass # print(f"[WORKER] Starting batch={bid}", flush=True)
                     process_class_batch_items(bid, vendor_id, params)
-                    print(f"[WORKER] Finished batch={bid}", flush=True)
+                    pass # print(f"[WORKER] Finished batch={bid}", flush=True)
                 except Exception as ex:
                     import traceback
-                    print(f"[WORKER] FAILED batch={bid}: {ex}", flush=True)
+                    pass # print(f"[WORKER] FAILED batch={bid}: {ex}", flush=True)
                     traceback.print_exc()
                     sys.stdout.flush()
             # Use eventlet.tpool for real OS thread (not green thread)
@@ -3891,12 +4382,165 @@ def class_batch_add():
         except Exception as e:
             import traceback
             repr_err = traceback.format_exc()
-            print(f"[DISPATCH] Failed:\n{repr_err}", flush=True)
+            pass # print(f"[DISPATCH] Failed:\n{repr_err}", flush=True)
             
     _dispatch_task()
     
     return jsonify({"ok": True, "created": created})
 
+@greeting_bp.route("/class-batch/commit", methods=["POST"])
+def class_batch_commit():
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+    payload = request.get_json(silent=True) or {}
+    bid = payload.get('batch_id')
+    assigns = payload.get('assignments') or []
+    class_year = payload.get('class_year') or ''
+    division = payload.get('division') or ''
+    branch = payload.get('branch') or ''
+    threshold = payload.get('threshold')
+    if not bid or not isinstance(assigns, list):
+        return jsonify({"error": "batch_id and assignments required"}), 400
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    try:
+        c.execute("""CREATE TABLE IF NOT EXISTS person_embeddings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            vendor_id INTEGER,
+            person_id INTEGER,
+            class_year TEXT,
+            division TEXT,
+            branch TEXT,
+            vec BLOB,
+            dim INTEGER,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS class_thresholds (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            vendor_id INTEGER,
+            class_year TEXT,
+            division TEXT,
+            branch TEXT,
+            threshold REAL,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(vendor_id, class_year, division, branch)
+        )""")
+    except Exception:
+        pass
+    if threshold is not None:
+        try:
+            thr = float(threshold)
+            c.execute("""INSERT INTO class_thresholds (vendor_id, class_year, division, branch, threshold)
+                         VALUES (?, ?, ?, ?, ?)
+                         ON CONFLICT(vendor_id, class_year, division, branch)
+                         DO UPDATE SET threshold=excluded.threshold, updated_at=CURRENT_TIMESTAMP
+                      """, (vendor_id, str(class_year), str(division), str(branch), thr))
+            conn.commit()
+        except Exception:
+            pass
+    try:
+        from multiple_face_detection import app as mfd_app
+    except Exception:
+        return jsonify({"error": "embedder unavailable"}), 500
+    saved = 0
+    for a in assigns:
+        try:
+            item_id = a.get('item_id'); face_index = a.get('face_index'); person_id = a.get('person_id')
+            if not item_id or person_id in (None, '', 0) or face_index is None:
+                continue
+            c.execute("SELECT faces_json FROM class_batch_items WHERE id = ? AND batch_id = ?", (item_id, bid))
+            row = c.fetchone()
+            if not row:
+                continue
+            faces = json.loads(row['faces_json'] if isinstance(row, sqlite3.Row) else row[0] or '[]')
+            face = None
+            for f in faces:
+                if int(f.get('index', -1)) == int(face_index):
+                    face = f; break
+            if not face:
+                continue
+            uri = None
+            if isinstance(face.get('thumbs'), dict):
+                uri = face['thumbs'].get('face') or face.get('thumb')
+            else:
+                uri = face.get('thumb')
+            if not uri:
+                continue
+            # Prefer the pre-computed embedding vector from detection (avoids JPEG re-encoding mismatch)
+            emb_vec_b64 = face.get('emb_vec') or ''
+            if emb_vec_b64:
+                try:
+                    raw_bytes = base64.b64decode(emb_vec_b64)
+                    emb = np.frombuffer(raw_bytes, dtype=np.float32).copy()
+                    emb = _normalize_vec(emb)
+                except Exception:
+                    emb = None
+            else:
+                emb = None
+            if emb is None or emb.size == 0:
+                # Fallback: re-embed from thumbnail (less accurate)
+                img_rgb = _decode_data_uri_to_rgb(uri)
+                if img_rgb is None:
+                    continue
+                emb = mfd_app.embedder.embed(img_rgb)
+                emb = _normalize_vec(emb)
+            if emb is None or emb.size == 0:
+                continue
+            vec_blob = emb.astype(np.float32).tobytes()
+            dim = int(emb.size)
+            c.execute("""INSERT INTO person_embeddings (vendor_id, person_id, class_year, division, branch, vec, dim)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)
+                      """, (vendor_id, int(person_id), str(class_year), str(division), str(branch), vec_blob, dim))
+            saved += 1
+        except Exception:
+            continue
+    conn.commit()
+    # Invalidate ALL embedding caches for this vendor
+    try:
+        prefix = f"{int(vendor_id or 0)}_"
+        keys_to_delete = [k for k in _VENDOR_EMB_CACHE.keys() if str(k).startswith(prefix)]
+        for k in keys_to_delete:
+            del _VENDOR_EMB_CACHE[k]
+    except Exception:
+        pass
+    conn.close()
+    return jsonify({"ok": True, "saved": saved})
+
+@greeting_bp.route("/class-threshold", methods=["GET"])
+def get_class_threshold():
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+    class_year = request.args.get('class_year') or ''
+    division = request.args.get('division') or ''
+    branch = request.args.get('branch') or ''
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute("""CREATE TABLE IF NOT EXISTS class_thresholds (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            vendor_id INTEGER,
+            class_year TEXT,
+            division TEXT,
+            branch TEXT,
+            threshold REAL,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(vendor_id, class_year, division, branch)
+        )""")
+        c.execute("""SELECT threshold FROM class_thresholds WHERE vendor_id = ? AND class_year = ? AND division = ? AND branch = ?""",
+                  (vendor_id, str(class_year), str(division), str(branch)))
+        row = c.fetchone()
+        thr = float(row[0]) if row and row[0] is not None else None
+        conn.close()
+        return jsonify({"threshold": thr})
+    except Exception as e:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 500
 @greeting_bp.route("/class-batch/status", methods=["GET"])
 def class_batch_status():
     vendor_id, error = authenticate_vendor_access()
@@ -4236,13 +4880,13 @@ def create_vendor():
         
     except sqlite3.IntegrityError as e:
         try:
-            print(f"Create Vendor Exception: {e}")
+            pass # print(f"Create Vendor Exception: {e}")
         except Exception:
             pass
         return jsonify({"error": f"Database Error: {str(e)}"}), 400
     except Exception as e:
         try:
-            print(f"Create Vendor Exception: {e}")
+            pass # print(f"Create Vendor Exception: {e}")
         except Exception:
             pass
         return jsonify({"error": str(e)}), 500
@@ -5377,7 +6021,7 @@ def get_analytics():
                         pass
                 return ids
         except Exception as e:
-            print(f"Error checking is_late column: {e}")
+            pass # print(f"Error checking is_late column: {e}")
 
         # 2. Fallback to calculation
         day_name = datetime.strptime(target_date_str, '%Y-%m-%d').strftime('%a')
@@ -6743,11 +7387,11 @@ def login():
             pass
     conn.close()
 
-    print(f"DEBUG: Login attempt for {username}, user_found={bool(user)}")
+    pass # print(f"DEBUG: Login attempt for {username}, user_found={bool(user)}")
     if user:
         try:
             spw = user.get("password") if hasattr(user, "get") else user["password"]
-            print(f"DEBUG: Stored password len={len(str(spw))} type={type(spw)}")
+            pass # print(f"DEBUG: Stored password len={len(str(spw))} type={type(spw)}")
         except Exception:
             pass
     if user and username == "superadmin" and is_testing():
@@ -6865,11 +7509,11 @@ def login():
             conn.close()
 
             if not is_allowed:
-                print(f"Login Blocked: {reason}")
+                pass # print(f"Login Blocked: {reason}")
                 
                 # Special Case: Expired Subscription + Web Login Enabled -> Allow Login with Redirect
                 if reason == "Subscription Expired" and web_login_enabled:
-                     print("Subscription Expired but Web Login Enabled -> Redirecting to Recharge")
+                     pass # print("Subscription Expired but Web Login Enabled -> Redirecting to Recharge")
                      token = generate_token(user['username'], user['role'])
                      return jsonify({
                         "status": "success",
@@ -6900,7 +7544,7 @@ def login():
             vendor_config = {}
             features = ALL_FEATURES
 
-        print(f"Login Success: Role={user['role']}") # DEBUG LOG
+        pass # print(f"Login Success: Role={user['role']}") # DEBUG LOG
         token = generate_token(user['username'], user['role'])
         
         # Get Company ID for this vendor (if any)
@@ -7006,7 +7650,7 @@ def login():
             "available_slots": locals().get('available_slots', [])
         })
     else:
-        print("Login Failed: Invalid credentials") # DEBUG LOG
+        pass # print("Login Failed: Invalid credentials") # DEBUG LOG
         return jsonify({"error": "Invalid credentials"}), 401
 
 @greeting_bp.route("/auth/register", methods=["POST"])
@@ -7096,7 +7740,7 @@ def parent_login():
     vendor_id = data.get("vendor_id")
     fcm_token = data.get("fcm_token")
     
-    print(f"DEBUG: Parent Login Attempt - Student: {student_id}, Mobile: {mobile_number}, Vendor: {vendor_id}, Device: {device_id}")
+    pass # print(f"DEBUG: Parent Login Attempt - Student: {student_id}, Mobile: {mobile_number}, Vendor: {vendor_id}, Device: {device_id}")
 
     if not student_id or not mobile_number or not device_id or not vendor_id:
         return jsonify({"error": "Missing required fields (student_id, mobile_number, device_id, vendor_id)"}), 400
@@ -7245,7 +7889,7 @@ def parent_login():
                 actual_vendor_id = None
 
         if not row:
-            print(f"DEBUG: Parent user not found in parent_users, checking faces table for phone {mobile_number} and vendor {vendor_id}")
+            pass # print(f"DEBUG: Parent user not found in parent_users, checking faces table for phone {mobile_number} and vendor {vendor_id}")
             # Strict vendor-bound lookup
             c.execute(
                 "SELECT id, vendor_id, phone, custom_data FROM faces WHERE vendor_id = ? AND phone LIKE ?",
@@ -7276,7 +7920,7 @@ def parent_login():
                     )
                     row = c.fetchone()
                 except Exception as e:
-                    print(f"DEBUG: Error processing strict vendor match: {e}")
+                    pass # print(f"DEBUG: Error processing strict vendor match: {e}")
                     row = None
             # If no matching face in vendor, aggressively purge stale parent entries for this student+phone
             if not row:
@@ -7291,7 +7935,7 @@ def parent_login():
                         pass
 
         if not row:
-            print("DEBUG: Student ID not found or Mobile mismatch after all checks.")
+            pass # print("DEBUG: Student ID not found or Mobile mismatch after all checks.")
             conn.close()
             return jsonify({"error": "No identity found"}), 404
 
@@ -7301,7 +7945,7 @@ def parent_login():
         stored_mobile = _row_get(row, 3, "contact_phone")
         session_version = _row_get(row, 4, "session_version") or 1
 
-        print(f"DEBUG: Parent found (ID: {parent_id}, Vendor: {actual_vendor_id}). Input Vendor: {vendor_id}")
+        pass # print(f"DEBUG: Parent found (ID: {parent_id}, Vendor: {actual_vendor_id}). Input Vendor: {vendor_id}")
 
         if mobile_tail and _digits(stored_mobile)[-10:] != mobile_tail:
             conn.close()
@@ -7373,7 +8017,7 @@ def parent_login():
         })
 
     except Exception as e:
-        print(f"DEBUG: Exception: {e}")
+        pass # print(f"DEBUG: Exception: {e}")
         conn.close()
         return jsonify({"error": str(e)}), 500
 
@@ -8308,6 +8952,17 @@ def delete_face(name):
                     f"DELETE FROM parent_users WHERE vendor_id = ? AND selected_person_id IN ({placeholders})",
                     [vid, *ids],
                 )
+                # Delete all embeddings for the deleted person(s)
+                c.execute(
+                    f"DELETE FROM person_embeddings WHERE vendor_id = ? AND person_id IN ({placeholders})",
+                    [vid, *ids],
+                )
+                # Invalidate embedding cache for this vendor
+                for k in list(_VENDOR_EMB_CACHE.keys()):
+                    if isinstance(k, (int, str)) and str(k).startswith(str(vid)):
+                        del _VENDOR_EMB_CACHE[k]
+                    elif isinstance(k, tuple) and len(k) > 0 and k[0] == vid:
+                        del _VENDOR_EMB_CACHE[k]
                 for sn in sorted(student_numbers_by_vendor.get(int(vid), set())):
                     c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (vid, sn))
                     c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND student_number = ?", (vid, sn))
@@ -8406,6 +9061,14 @@ def delete_face_by_id(person_id):
                 c.execute("DELETE FROM student_parents WHERE vendor_id = ? AND person_id = ?", (target_vendor_id, person_id))
                 c.execute("UPDATE parent_users SET selected_person_id = NULL WHERE vendor_id = ? AND selected_person_id = ?", (target_vendor_id, person_id))
                 c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND selected_person_id = ?", (target_vendor_id, person_id))
+                # Delete all embeddings for the deleted person
+                c.execute("DELETE FROM person_embeddings WHERE vendor_id = ? AND person_id = ?", (target_vendor_id, person_id))
+                # Invalidate embedding cache for this vendor
+                for k in list(_VENDOR_EMB_CACHE.keys()):
+                    if isinstance(k, (int, str)) and str(k).startswith(str(target_vendor_id)):
+                        del _VENDOR_EMB_CACHE[k]
+                    elif isinstance(k, tuple) and len(k) > 0 and k[0] == target_vendor_id:
+                        del _VENDOR_EMB_CACHE[k]
                 if sn:
                     c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (target_vendor_id, sn))
                     c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND student_number = ?", (target_vendor_id, sn))
@@ -8510,7 +9173,7 @@ def person_event():
     data = request.json
     
     # Debug Log
-    print(f"Received person-event: detected={data.get('detected')}, recognized={data.get('recognized')}, name={data.get('name')}")
+    pass # print(f"Received person-event: detected={data.get('detected')}, recognized={data.get('recognized')}, name={data.get('name')}")
 
     detected = data.get("detected", False)
     recognized = data.get("recognized", False)
@@ -8605,7 +9268,7 @@ def person_event():
                 # Fallback for format without milliseconds
                 current_time_obj = datetime.strptime(timestamp_str, "%Y-%m-%dT%H:%M:%S")
             except ValueError:
-                print(f"Invalid timestamp format: {timestamp_str}. Using server time.")
+                pass # print(f"Invalid timestamp format: {timestamp_str}. Using server time.")
                 current_time_obj = datetime.now()
     else:
         # User requested no assumptions about Timezone.
@@ -8618,9 +9281,9 @@ def person_event():
         # We now rely STRICTLY on the mobile timestamp.
         # If timestamp_str is missing, we use Server Time (UTC) as a raw fallback.
         # If this causes negative durations, the root cause is the Client not sending the timestamp.
-        print(f"WARNING: No timestamp received from client. Falling back to Server Time (UTC): {current_time_obj}")
+        pass # print(f"WARNING: No timestamp received from client. Falling back to Server Time (UTC): {current_time_obj}")
 
-    print(f"DEBUG TIME: Server saw {current_time_obj} (Original TS: {timestamp_str})")
+    pass # print(f"DEBUG TIME: Server saw {current_time_obj} (Original TS: {timestamp_str})")
 
     # Case 1: No person detected
     if not detected:
@@ -8650,7 +9313,7 @@ def person_event():
     
     # If this is just an identification check (e.g. from Admin panel), do not record attendance
     if not is_attendance:
-        print(f"Admin Identification Check: {name}")
+        pass # print(f"Admin Identification Check: {name}")
         return jsonify({
             "speak": True,
             "text": f"Identified: {name} (Admin Mode)"
@@ -8750,10 +9413,10 @@ def person_event():
             duration_hours = (current_time_obj - last_ts).total_seconds() / 3600
             
             if duration_hours > 16:
-                print(f"Stale Check-In detected for {name} ({duration_hours:.1f}h ago). Resetting to CHECK_IN.")
+                pass # print(f"Stale Check-In detected for {name} ({duration_hours:.1f}h ago). Resetting to CHECK_IN.")
                 expected_status = 'CHECK_IN'
         except Exception as e:
-            print(f"Error checking stale status: {e}")
+            pass # print(f"Error checking stale status: {e}")
 
     # Helper function for time conversion
     # Define to_mins ONLY ONCE if not already in scope, but here it is local.
@@ -8826,12 +9489,12 @@ def person_event():
              shifts_data = _json.loads(company_row['shifts']) if company_row['shifts'] else []
              # Resolve User Shift ID
              if user_shift_name:
-                print(f"User Shift Name: {user_shift_name}")
+                pass # print(f"User Shift Name: {user_shift_name}")
                 for s in shifts_data:
                     # Loose matching for robustness (case-insensitive, trim)
                     if s.get('name', '').strip().lower() == user_shift_name.strip().lower():
                         user_shift_id = s.get('id')
-                        print(f"Resolved User Shift ID: {user_shift_id}")
+                        pass # print(f"Resolved User Shift ID: {user_shift_id}")
                         break
         
         # --- STRICT SHIFT FILTERING (User Request) ---
@@ -8875,7 +9538,7 @@ def person_event():
                         continue
                     filtered_timetable.append(ga)
                     
-                print(f"Shift Filter Applied: {len(full_timetable)} -> {len(filtered_timetable)} activities.")
+                pass # print(f"Shift Filter Applied: {len(full_timetable)} -> {len(filtered_timetable)} activities.")
             else:
                 # No shift assigned to user? Use everything (Open Mode)
                 filtered_timetable = full_timetable
@@ -8929,7 +9592,7 @@ def person_event():
                     # Logic: (Current Time + 24h) <= (End Time + Grace)
                     if (curr_mins + 1440) <= (e + act_grace): 
                         is_yesterday_match = True
-                        print(f"Matched Yesterday's Standard Shift: {act.get('name')} (Grace Period)")
+                        pass # print(f"Matched Yesterday's Standard Shift: {act.get('name')} (Grace Period)")
 
                 if is_yesterday_match:
                     # Verify Shift ID Match
@@ -8946,7 +9609,7 @@ def person_event():
                         # This allows downstream logic to know we need to apply overnight calculations.
                         act['_is_yesterday'] = True
                         matching_acts.append(act)
-                        print(f"Matched Yesterday's Shift: {act.get('name')}")
+                        pass # print(f"Matched Yesterday's Shift: {act.get('name')}")
             
             for act in today_acts:
                 start_mins = to_mins(act.get('start_time', '00:00'))
@@ -9056,7 +9719,7 @@ def person_event():
                      
                      best_fallback = potential_acts[0]
                      
-                     print(f"Fallback Activity Match: {best_fallback.get('name')} (Strict window missed)")
+                     pass # print(f"Fallback Activity Match: {best_fallback.get('name')} (Strict window missed)")
                      matching_acts.append(best_fallback)
 
             # Prioritize:
@@ -9089,7 +9752,7 @@ def person_event():
                 if expected_status == 'CHECK_IN':
                     # Prioritize Longest Duration (Work) but respect Yesterday First
                     best_match = matching_acts[0]
-                    print(f"Check-In Priority: Picked {best_match.get('name')} (Yesterday={best_match.get('_is_yesterday', False)})")
+                    pass # print(f"Check-In Priority: Picked {best_match.get('name')} (Yesterday={best_match.get('_is_yesterday', False)})")
                 else:
                     # Check-Out Logic: Prioritize Breaks?
                     # Original logic prioritized Breaks over Work. Let's keep that for Check-Out to allow "Going to Lunch"
@@ -9108,7 +9771,7 @@ def person_event():
                     grace_period = int(act_rules['grace_period'])
 
     except Exception as e:
-        print(f"Activity Detection Error: {e}")
+        pass # print(f"Activity Detection Error: {e}")
 
     # --- Duplication Check ---
     # User Requirement: "if the employee has completed the activity... it should not duplicate again"
@@ -9129,7 +9792,7 @@ def person_event():
         # Or maybe just check if they are already "IN" from Lunch?
         # If count >= 2, it implies they left and came back.
         if count >= 2:
-            print(f"Activity {activity_name} already completed for {name}. Skipping.")
+            pass # print(f"Activity {activity_name} already completed for {name}. Skipping.")
             conn.close()
             return jsonify({
                 "speak": True,
@@ -9160,10 +9823,10 @@ def person_event():
             # Use abs() to handle cases where DB has "future" timestamps due to timezone mixups
             # (e.g. if DB has IST but server checks against UTC)
             delta_seconds = (datetime.now() - last_ts).total_seconds()
-            print(f"Cooldown Check: Name={name}, Last={last_ts}, Now={datetime.now()}, Delta={delta_seconds}s, Limit={cooldown_seconds}s")
+            pass # print(f"Cooldown Check: Name={name}, Last={last_ts}, Now={datetime.now()}, Delta={delta_seconds}s, Limit={cooldown_seconds}s")
             
             if 0 <= delta_seconds < cooldown_seconds:
-                print(f"Cooldown active for {name}. Skipping.")
+                pass # print(f"Cooldown active for {name}. Skipping.")
                 conn.close()
                 return jsonify({"speak": False})
             elif delta_seconds < 0:
@@ -9174,14 +9837,14 @@ def person_event():
                  # Given the issues, let's allow it if it's > 60 seconds in future (assume data error/timezone),
                  # but block if it's within 0 to -60 seconds (likely just double scan with clock skew).
                  if abs(delta_seconds) < 60:
-                     print(f"Cooldown active (future skew) for {name}. Skipping.")
+                     pass # print(f"Cooldown active (future skew) for {name}. Skipping.")
                      conn.close()
                      return jsonify({"speak": False})
                  else:
-                     print(f"Ignoring future timestamp (timezone mismatch?) for {name}. Allowing entry.")
+                     pass # print(f"Ignoring future timestamp (timezone mismatch?) for {name}. Allowing entry.")
 
     except Exception as e:
-        print(f"Cooldown Error: {e}" )
+        pass # print(f"Cooldown Error: {e}" )
 
     new_status = expected_status
     # if last_record and last_record['status'] == 'CHECK_IN':
@@ -9241,7 +9904,7 @@ def person_event():
 
                 # STRICT LOGIC: If matched activity is from Yesterday, we MUST treat current time as Next Day (+1440)
                 if best_match.get('_is_yesterday'):
-                    print("Strict Logic: Activity is from Yesterday. Adding 1440 to check_mins.")
+                    pass # print("Strict Logic: Activity is from Yesterday. Adding 1440 to check_mins.")
                     check_mins += 1440
                 elif start_mins > end_mins:
                     # Night shift (Today)
@@ -9254,24 +9917,24 @@ def person_event():
                 # We strictly rely on Shift Matching to pick the correct shift (Yesterday vs Today).
 
                 # Debug Log
-                print(f"LATE CHECK: Act={activity_name}, Start={effective_start_mins}, Check={check_mins}, Grace={act_grace}")
+                pass # print(f"LATE CHECK: Act={activity_name}, Start={effective_start_mins}, Check={check_mins}, Grace={act_grace}")
 
                 # Calculate Threshold
                 late_threshold = effective_start_mins + act_grace
 
                 if check_mins > late_threshold:
                     is_late = 1
-                    print(f"Late Detected (Strict): {name} [ID={person_id}] (Time: {check_mins}, Start: {effective_start_mins}, Grace: {act_grace}, Diff: {check_mins - effective_start_mins})")
+                    pass # print(f"Late Detected (Strict): {name} [ID={person_id}] (Time: {check_mins}, Start: {effective_start_mins}, Grace: {act_grace}, Diff: {check_mins - effective_start_mins})")
                 else:
                     # Debugging info
-                    print(f"On Time Detected: {name} [ID={person_id}] (Time: {check_mins}, Start: {effective_start_mins}, Grace: {act_grace}, Threshold: {late_threshold})")
+                    pass # print(f"On Time Detected: {name} [ID={person_id}] (Time: {check_mins}, Start: {effective_start_mins}, Grace: {act_grace}, Threshold: {late_threshold})")
 
                     # Also check if check_mins is BEFORE start_mins (Early Arrival is On Time)
                     if check_mins < effective_start_mins:
-                        print(f"Early Arrival: {effective_start_mins - check_mins} mins early.")
+                        pass # print(f"Early Arrival: {effective_start_mins - check_mins} mins early.")
 
             except Exception as e:
-                print(f"Late Calculation Error: {e}")
+                pass # print(f"Late Calculation Error: {e}")
         else:
             try:
                 if 'curr_mins' not in locals():
@@ -9310,12 +9973,12 @@ def person_event():
 
                     if curr_mins > threshold_mins:
                         is_late = 1
-                        print(f"Late Detected (Fallback): {name} [ID={person_id}] (Time: {curr_mins}, Threshold: {threshold_mins}, Grace: {grace_mins})")
+                        pass # print(f"Late Detected (Fallback): {name} [ID={person_id}] (Time: {curr_mins}, Threshold: {threshold_mins}, Grace: {grace_mins})")
                 else:
                     # No timetable/activities configured: never mark late by fallback.
                     is_late = 0
             except Exception as e:
-                print(f"Late Fallback Error: {e}")
+                pass # print(f"Late Fallback Error: {e}")
 
     if vendor_id_to_check and not vendor_has_feature(vendor_id_to_check, "late_mark"):
         try:
@@ -9349,7 +10012,7 @@ def person_event():
             c.execute("INSERT INTO attendance (name, timestamp, status, captured_image, activity, is_late, vendor_id, person_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", 
                       (name, current_time, new_status, captured_image, activity_name, is_late, vendor_id_to_check, person_id))
         conn.commit()
-        print(f"Attendance Recorded: {name} - {new_status} ({activity_name}) Late={is_late} at {current_time}")
+        pass # print(f"Attendance Recorded: {name} - {new_status} ({activity_name}) Late={is_late} at {current_time}")
         try:
             ev = {
                 "name": name,
@@ -9446,7 +10109,7 @@ def person_event():
             "person_id": person_id
         })
     except Exception as e:
-        print(f"Attendance insert error: {e}")
+        pass # print(f"Attendance insert error: {e}")
         try:
             conn.close()
         except Exception:
@@ -9876,7 +10539,7 @@ def calculate_daily_hours(records, timetable=None, date_str=None):
                     "duration_mins": round(duration / 60)
                 })
         except Exception as e:
-            print(f"Real-time calc error: {e}")
+            pass # print(f"Real-time calc error: {e}")
 
     # Calculate string format (e.g. "2h 30m")
     h = int(total_seconds // 3600)
@@ -9926,7 +10589,7 @@ def cleanup_inactive_streams():
                 last_active_count = active_count
                 socketio.emit('active_devices_update', {'count': active_count}, room='super_admin')
         except Exception as e:
-            print(f"Error in cleanup task: {e}")
+            pass # print(f"Error in cleanup task: {e}")
 
 def check_subscriptions_periodically():
     """Background task to proactively logout vendors with expired plans."""
@@ -9945,7 +10608,7 @@ def check_subscriptions_periodically():
                     vid = v['id'] if isinstance(v, sqlite3.Row) or isinstance(v, dict) else v[0]
                     is_allowed, reason = check_vendor_status(vid)
                     if not is_allowed:
-                        print(f"PROACTIVE LOGOUT: Vendor {vid} ({reason})")
+                        pass # print(f"PROACTIVE LOGOUT: Vendor {vid} ({reason})")
                         socketio.emit('force_logout', {'vendor_id': vid, 'reason': reason}, room=f"vendor_{vid}")
                         
                         # Update vendor status in DB to suspended
@@ -9958,16 +10621,16 @@ def check_subscriptions_periodically():
                             # Notify superadmin that a vendor status changed
                             socketio.emit('vendor_updated', {'vendor_id': vid, 'status': 'suspended'}, room='super_admin')
                         except Exception as e_u:
-                            print(f"Failed to update vendor status for {vid}: {e_u}")
+                            pass # print(f"Failed to update vendor status for {vid}: {e_u}")
         except Exception as e:
-            print(f"Subscription checker error: {e}")
+            pass # print(f"Subscription checker error: {e}")
 
 # Start background tasks
 try:
     socketio.start_background_task(cleanup_inactive_streams)
     socketio.start_background_task(check_subscriptions_periodically)
 except Exception as e:
-    print(f"Failed to start background tasks: {e}")
+    pass # print(f"Failed to start background tasks: {e}")
 
 @greeting_bp.route("/stream/upload", methods=["POST"])
 def upload_stream_frame():
@@ -10026,7 +10689,7 @@ def upload_stream_frame():
         
         return jsonify({"status": "success"})
     except Exception as e:
-        print(f"Stream Upload Error: {e}")
+        pass # print(f"Stream Upload Error: {e}")
         return jsonify({"error": str(e)}), 500
 
 @greeting_bp.route("/stream/view", methods=["GET"])
@@ -10124,7 +10787,7 @@ def calculate_expected_hours(day_activities):
                 duration = (e - s).total_seconds() / 3600
                 expected_hours += duration
             except Exception as e:
-                print(f"Error calculating expected hours for activity {act}: {e}")
+                pass # print(f"Error calculating expected hours for activity {act}: {e}")
                 pass
     return expected_hours
 
@@ -10195,7 +10858,7 @@ def calculate_arrival_status(expected_start, sessions, day_activities=None):
             if diff_seconds > (tolerance_mins * 60):
                 arrival_status = "Late"
         except Exception as e:
-            print(f"Error calc arrival status: {e}")
+            pass # print(f"Error calc arrival status: {e}")
             # Fallback: simple comparison if complex logic fails
             try:
                  # Simple string compare if format allows? No, safer to leave as On Time or retry simple
@@ -10437,7 +11100,7 @@ try:
     bootstrap_db()
 except Exception as _e:
     try:
-        print(f"Bootstrap Error: {_e}")
+        pass # print(f"Bootstrap Error: {_e}")
     except Exception:
         pass
 

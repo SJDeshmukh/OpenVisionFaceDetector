@@ -19,10 +19,12 @@ import {
   Menu,
   X
 } from 'lucide-react';
+import { Image as ImageIcon } from 'lucide-react';
 
 const adminNavItems = [
   { name: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
   { name: 'People', path: '/people', icon: Users },
+  { name: 'Faces', path: '/faces', icon: ImageIcon },
   { name: 'Classes', path: '/classes', icon: Users },
   { name: 'Timetable', path: '/timetable', icon: CalendarClock },
   { name: 'Wages', path: '/wages', icon: DollarSign },
@@ -109,6 +111,11 @@ export const Sidebar = ({ isOpen, onClose }) => {
                   allowedNames.add(sidebarName);
               }
           });
+          // Show Faces only for Class Attendance business
+          const bundleId = user?.frontend_bundle_id || 'default_attendance';
+          if (bundleId === 'class_attendance_ui' || user.features.includes('classes')) {
+            allowedNames.add('Faces');
+          }
           
           navItems = navItems.filter(item => allowedNames.has(item.name));
       } 

@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom';
-import { Home, LayoutDashboard, Users, Settings, CalendarClock } from 'lucide-react';
+import { Home, LayoutDashboard, Users, Settings, CalendarClock, Image as ImageIcon } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 const Navbar = () => {
@@ -9,6 +9,7 @@ const Navbar = () => {
     { name: 'Home', path: '/', icon: Home },
     { name: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
     { name: 'Users', path: '/users', icon: Users },
+    { name: 'Faces', path: '/faces', icon: ImageIcon },
   ];
 
   if (user?.role === 'admin') {
