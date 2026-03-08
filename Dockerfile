@@ -8,48 +8,45 @@ COPY web-dashboard/ ./
 RUN npm run build
 
 # Stage 2: Build Backend & Runtime
-FROM python:3.9-slim
+FROM python:3.10-slim
 
-# Install Nginx, Redis, Git, and required system dependencies
+# Install Nginx, Redis, and system dependencies including build tools for C++ extensions
 RUN apt-get update && apt-get install -y \
     nginx \
     redis-server \
     git \
+    g++ \
+    make \
+    cmake \
     libgl1 \
-    libglib2.0-0t64 \
+    libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy Backend Requirements & Install
+# 1. Install Backend Dependencies
 COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install face detection dependencies (torch CPU-only to save space)
+# 2. Install Torch (CPU-only for production compatibility)
 RUN pip install --no-cache-dir \
-    torch torchvision --index-url https://download.pytorch.org/whl/cpu && \
-    pip install --no-cache-dir gradio facexlib gfpgan basicsr
+    torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
-# Clone the multiple_face_detection package
-RUN git clone --depth 1 --branch version1 \
-    https://github.com/SJDeshmukh/class-attendance.git \
-    /app/multiple_face_detection
+# 3. Copy & Install Local Face Detection Package (multiple_face_detection)
+# We copy the local version to preserve our bugfixes (RealESRGAN, GFPGAN weights logic)
+COPY multiple_face_detection ./multiple_face_detection
+RUN cd multiple_face_detection/third_party/BasicSR && pip install --no-cache-dir -e . 2>/dev/null || true && \
+    cd ../facexlib && pip install --no-cache-dir -e . 2>/dev/null || true && \
+    cd ../GFPGAN && pip install --no-cache-dir -e . 2>/dev/null || true && \
+    cd ../Real-ESRGAN && pip install --no-cache-dir -e . 2>/dev/null || true
 
-# Install third_party packages from multiple_face_detection
-RUN cd /app/multiple_face_detection/third_party/BasicSR && pip install --no-cache-dir -e . 2>/dev/null || true && \
-    cd /app/multiple_face_detection/third_party/facexlib && pip install --no-cache-dir -e . 2>/dev/null || true && \
-    cd /app/multiple_face_detection/third_party/GFPGAN && pip install --no-cache-dir -e . 2>/dev/null || true && \
-    cd /app/multiple_face_detection/third_party/Real-ESRGAN && pip install --no-cache-dir -e . 2>/dev/null || true
-
-# Copy Backend Code
+# 4. Copy Backend Code (including standalone_live_mesh)
 COPY backend/ ./backend
 
-# Overlay the local modifications to multiple_face_detection
-COPY multiple_face_detection/app.py /app/multiple_face_detection/app.py
-COPY multiple_face_detection/sdk_src /app/multiple_face_detection/sdk_src
+# 5. Install 3DDFA-V3 dependencies (for 3D mesh)
+RUN pip install --no-cache-dir -r backend/standalone_live_mesh/requirements.txt
 
-# Copy Frontend Build from Stage 1
-# We place it where nginx.conf expects it: /var/www/face-detection/web-dashboard/dist
+# 6. Copy Frontend Build from Stage 1
 COPY --from=frontend-builder /app/frontend/dist /var/www/face-detection/web-dashboard/dist
 
 # Copy Configs
@@ -66,7 +63,7 @@ ENV CELERY_BROKER_URL=redis://127.0.0.1:6379/0
 ENV CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/0
 ENV REDIS_URL=redis://127.0.0.1:6379/0
 ENV CELERY_CONCURRENCY=1
-ENV PYTHONPATH=/app:/app/multiple_face_detection
+ENV PYTHONPATH=/app:/app/multiple_face_detection:/app/backend
 
 # Expose ports
 EXPOSE 10000 5001

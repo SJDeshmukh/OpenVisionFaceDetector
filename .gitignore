@@ -23,8 +23,18 @@ local.properties
 # Redis
 dump.rdb
 
-# Model weights / subpackages
-gfpgan/
+# Model weights / large blobs
+*.pth
+*.onnx
+*.weights
+*.pb
+
+# Multi-face detection (Local Package)
+# Allow the wrapper and our sdk improvements
 multiple_face_detection/*
 !multiple_face_detection/app.py
 !multiple_face_detection/sdk_src/
+!multiple_face_detection/third_party/
+
+# Backend sub-modules
+!backend/standalone_live_mesh/

@@ -316,7 +316,13 @@ const BulkImageAttendance = () => {
       }, {
         headers: { Authorization: `Bearer ${user?.token}` }
       });
-      alert('Saved');
+      try {
+        await axios.post(`${API_URL}/class-batch/refresh`, { batch_id: id }, { headers: { Authorization: `Bearer ${user?.token}` } });
+      } catch (_) { }
+      try {
+        await fetchBatchStatus(id);
+      } catch (_) { }
+      alert('Saved and refreshed suggestions');
     } catch (e) {
       alert(e.response?.data?.error || e.message || 'Save failed');
     }
@@ -493,8 +499,25 @@ const BulkImageAttendance = () => {
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">
                       {item.mappedFaces.map(f => (
                         <div key={f.globalIndex} className="border rounded-xl p-2 bg-white shadow-sm flex flex-col">
-                          <div className="w-full aspect-square mb-2 bg-slate-100 rounded-lg overflow-hidden flex items-center justify-center border">
-                            <img src={(f.thumbs?.face || f.thumb)} alt={`face-${f.globalIndex}`} className="w-full h-full object-contain" />
+                          <div className="w-full aspect-square mb-2 bg-slate-100 rounded-lg overflow-hidden border relative group">
+                            <img src={(f.thumbs?.face || f.thumb)} alt={`face-${f.globalIndex}`} className="w-full h-full object-cover" />
+
+                            {/* 3D Landmarks Overlay */}
+                            {f.landmarks_3d && Array.isArray(f.landmarks_3d) && (
+                              <svg className="absolute inset-0 w-full h-full pointer-events-none opacity-80"
+                                viewBox={`0 0 ${Math.max(1, f.box[2] - f.box[0])} ${Math.max(1, f.box[3] - f.box[1])}`} preserveAspectRatio="none">
+                                {f.landmarks_3d.map((pt, i) => (
+                                  <circle key={`lmk-${i}`} cx={pt[0]} cy={pt[1]} r={Math.max(0.7, (f.box[2] - f.box[0]) / 50)} fill="#10B981" fillOpacity="0.9" />
+                                ))}
+                              </svg>
+                            )}
+
+                            {/* 3D Ready Badge */}
+                            {f.struct_vec && (
+                              <div className="absolute top-1 right-1 bg-emerald-600 border border-emerald-400 text-white text-[9px] font-bold px-1.5 py-0.5 rounded shadow">
+                                3D Ready
+                              </div>
+                            )}
                           </div>
                           {assign[f.globalIndex] ? (
                             <div className="mb-2">
@@ -503,7 +526,6 @@ const BulkImageAttendance = () => {
                               </span>
                             </div>
                           ) : null}
-                          {/* Suggestions chips removed per UX: keep only Top suggestion text below */}
                           <select
                             className="w-full p-1.5 border rounded-md bg-slate-50 text-xs mb-2"
                             value={assign[f.globalIndex] || ''}
@@ -514,7 +536,11 @@ const BulkImageAttendance = () => {
                               <option key={p.id} value={p.id}>{p.name}</option>
                             ))}
                           </select>
-                          <div className="text-[10px] text-slate-500">Top suggestion: {Array.isArray(f.suggestions) && f.suggestions.length ? `${f.suggestions[0].name} ${(f.suggestions[0].similarity * 100).toFixed(1)}%` : '—'}</div>
+                          <div className="text-[10px] text-slate-500">
+                            Top suggestion: {Array.isArray(f.suggestions) && f.suggestions.length
+                              ? <><span className="font-semibold text-slate-700">{f.suggestions[0].name}</span> {(f.suggestions[0].similarity * 100).toFixed(1)}%</>
+                              : '—'}
+                          </div>
                         </div>
                       ))}
                     </div>

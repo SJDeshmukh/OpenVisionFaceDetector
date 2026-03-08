@@ -11,10 +11,37 @@ import time
 import urllib.request
 import urllib.parse
 
+def init_third_party_paths(base_dir: str):
+    tp = os.path.join(base_dir, "third_party")
+    # Priority paths for libraries
+    subs = ["BasicSR", "facexlib", "Real-ESRGAN", "GFPGAN"]
+    for sub in subs:
+        p = os.path.join(tp, sub)
+        if os.path.isdir(p) and p not in sys.path:
+            sys.path.insert(0, p)
+    
+    # Try to verify imports early
+    try:
+        import basicsr
+        import facexlib
+    except Exception:
+        pass
+
+# Initialize immediately
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+init_third_party_paths(_BASE_DIR)
+
+# PATCH: RealESRGAN missing version fix
+try:
+    import realesrgan
+    if not hasattr(realesrgan, '__version__'):
+        realesrgan.__version__ = '0.2.5.0'
+except Exception:
+    pass
+
 class GFPGANManager:
     def __init__(self, base_dir: str):
         self._base = os.path.abspath(base_dir)
-        self._init_paths()
         self._restorer = None
         self._weights_dir = os.path.join(self._base, "models", "gfpgan")
         os.makedirs(self._weights_dir, exist_ok=True)
@@ -24,31 +51,23 @@ class GFPGANManager:
             import torch
             if torch.cuda.is_available():
                 return "cuda"
-            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() and torch.backends.mps.is_built():
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
                 return "mps"
         except Exception:
             pass
         return "cpu"
 
-    def _init_paths(self):
-        tp = os.path.join(self._base, "third_party")
-        for sub in ["BasicSR", "facexlib", "Real-ESRGAN", "GFPGAN"]:
-            p = os.path.join(tp, sub)
-            if os.path.isdir(p) and p not in sys.path:
-                sys.path.insert(0, p)
-        try:
-            import basicsr  # noqa
-            import facexlib  # noqa
-        except Exception:
-            pass
-
     def _ensure_weights(self) -> str:
+        # Check v1.4 first, then v1.3
+        # Ensure file exists and is reasonably large (> 10MB)
         p14 = os.path.join(self._weights_dir, "GFPGANv1.4.pth")
         p13 = os.path.join(self._weights_dir, "GFPGANv1.3.pth")
-        if os.path.exists(p14):
+        
+        if os.path.exists(p14) and os.path.getsize(p14) > 10 * 1024 * 1024:
             return p14
-        if os.path.exists(p13):
+        if os.path.exists(p13) and os.path.getsize(p13) > 10 * 1024 * 1024:
             return p13
+            
         urls = [
             ("GFPGANv1.4.pth", "https://github.com/TencentARC/GFPGAN/releases/download/v1.4.0/GFPGANv1.4.pth"),
             ("GFPGANv1.3.pth", "https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.3.pth"),
@@ -57,31 +76,54 @@ class GFPGANManager:
         for fname, url in urls:
             try:
                 dst = os.path.join(self._weights_dir, fname)
+                print(f"[GFPGAN] Downloading {fname}...", flush=True)
                 urllib.request.urlretrieve(url, dst)
-                return dst
-            except Exception:
+                if os.path.exists(dst) and os.path.getsize(dst) > 10 * 1024 * 1024:
+                    return dst
+            except Exception as e:
+                print(f"[GFPGAN] Download failed for {fname}: {e}", flush=True)
                 continue
         return ""
 
     def load(self, upscale: int = 2):
+        # Reload if scale factor changed
         if self._restorer is not None:
-            return self._restorer
+            if getattr(self._restorer, 'upscale', 2) == upscale:
+                return self._restorer
+            else:
+                print(f"[GFPGAN] Reloading restorer with new upscale factor {upscale}...", flush=True)
+                self._restorer = None
+
         model_path = self._ensure_weights()
         if not model_path:
             return None
         import torch
-        _orig_load = torch.load
-        def _patched_load(*args, **kwargs):
-            kwargs.setdefault("weights_only", False)
+        # Robust weight loading
+        try:
+            dev = self._get_device()
+            # Try to load without patching first
+            from gfpgan import GFPGANer
+            self._restorer = GFPGANer(model_path=model_path, upscale=upscale, arch="clean", channel_multiplier=2, bg_upsampler=None, device=dev)
+        except Exception as e:
+            print(f"[GFPGAN] Direct load failed, trying patched load: {e}", flush=True)
+            _orig_load = torch.load
+            def _patched_load(*args, **kwargs):
+                kwargs["weights_only"] = False # Force false
+                kwargs.setdefault("map_location", self._get_device())
+                return _orig_load(*args, **kwargs)
+            torch.load = _patched_load
             try:
-                dev = self._get_device()
-            except Exception:
-                dev = "cpu"
-            kwargs.setdefault("map_location", dev)
-            return _orig_load(*args, **kwargs)
-        torch.load = _patched_load
-        from gfpgan import GFPGANer
-        self._restorer = GFPGANer(model_path=model_path, upscale=upscale, arch="clean", channel_multiplier=2, bg_upsampler=None)
+                from gfpgan import GFPGANer
+                self._restorer = GFPGANer(model_path=model_path, upscale=upscale, arch="clean", channel_multiplier=2, bg_upsampler=None)
+            except Exception as e2:
+                print(f"[GFPGAN] Patched load also failed: {e2}", flush=True)
+                self._restorer = None
+            finally:
+                torch.load = _orig_load
+        
+        if self._restorer:
+            self._restorer.upscale = upscale
+            print(f"[GFPGAN] Loaded model: {model_path} on {self._get_device()} with upscale={upscale}", flush=True)
         return self._restorer
 
     def enhance_crop(self, crop_rgb: np.ndarray, upscale: int = 2, whole: bool = False) -> np.ndarray:
@@ -104,9 +146,92 @@ class GFPGANManager:
                 if restored_faces and len(restored_faces) > 0:
                     out = cv2.cvtColor(restored_faces[0], cv2.COLOR_BGR2RGB)
                     return out
-        except Exception:
+        except Exception as e:
+            print(f"[GFPGAN] Enhance error: {e}", flush=True)
             pass
         return crop_rgb
+
+class RealESRGANManager:
+    def __init__(self, base_dir: str):
+        self._base = os.path.abspath(base_dir)
+        self._weights_dir = os.path.join(self._base, "models", "realesrgan")
+        os.makedirs(self._weights_dir, exist_ok=True)
+        self._upsampler = None
+
+    def _ensure_weights(self) -> str:
+        dst = os.path.join(self._weights_dir, "RealESRGAN_x2plus.pth")
+        if os.path.exists(dst) and os.path.getsize(dst) > 5 * 1024 * 1024:
+            return dst
+        url = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth"
+        try:
+            import urllib.request
+            print(f"[RealESRGAN] Downloading RealESRGAN_x2plus.pth...", flush=True)
+            urllib.request.urlretrieve(url, dst)
+            if os.path.exists(dst) and os.path.getsize(dst) > 5 * 1024 * 1024:
+                return dst
+        except Exception as e:
+            print(f"[RealESRGAN] Download failed: {e}", flush=True)
+            return ""
+        return ""
+
+    def load(self, upscale: int = 2):
+        if self._upsampler is not None:
+            return self._upsampler
+        model_path = self._ensure_weights()
+        if not model_path: return None
+        try:
+            import torch
+            _orig_load = torch.load
+            # RealESRGAN architecture fixes
+            def _patched_load(*args, **kwargs):
+                kwargs["weights_only"] = False
+                kwargs.setdefault("map_location", "cpu")
+                return _orig_load(*args, **kwargs)
+            torch.load = _patched_load
+            
+            try:
+                from realesrgan import RealESRGANer
+                from basicsr.archs.rrdbnet_arch import RRDBNet
+                device = "cuda" if torch.cuda.is_available() else ("mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu")
+                # x2plus model uses RRDBNet with 23 blocks
+                model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=2)
+                self._upsampler = RealESRGANer(
+                    scale=2,
+                    model_path=model_path,
+                    model=model,
+                    tile=400,
+                    tile_pad=10,
+                    pre_pad=0,
+                    half=False,
+                    device=device
+                )
+                print(f"[RealESRGAN] Loaded model: {model_path} on {device}", flush=True)
+            finally:
+                torch.load = _orig_load
+            return self._upsampler
+        except Exception as e:
+            print(f"[RealESRGAN] Load error: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            return None
+
+    def upscale(self, rgb: np.ndarray, scale: int = 2) -> np.ndarray:
+        if rgb is None or rgb.size == 0: return rgb
+        try:
+            if scale <= 1: return rgb
+            upsampler = self.load()
+            if upsampler is None:
+                print("[RealESRGAN] Upsampler not available, returning original.", flush=True)
+                return rgb
+            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+            # Clip scale to what's reasonable (model is x2, but RealESRGANer can do outscale)
+            out, _ = upsampler.enhance(bgr, outscale=scale)
+            return cv2.cvtColor(out, cv2.COLOR_BGR2RGB)
+        except Exception as e:
+            print(f"[RealESRGAN] Enhance error: {e}", flush=True)
+            return rgb
+
+realesrgan_manager = RealESRGANManager(base_dir=os.path.dirname(__file__))
 
 class CodeFormerManager:
     def __init__(self):
@@ -416,17 +541,41 @@ def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0
                     emb = embedder.embed(crop)
                     embeds_rows.append({"index": i, "len": int(emb.size), "norm": float(np.linalg.norm(emb)) if emb.size > 0 else 0.0, "first5": list(map(float, emb[:5])) if emb.size >= 5 else []})
                 continue
+            # PHASE: Face Crop Enhancement
+            # User Pipeline: Face Crop -> RealESRGAN (Upscale) -> GFPGAN / CodeFormer
+            
+            # Step 1: Intelligent Upscale with RealESRGAN
+            # Goal: Make short side at least 256px if enhancement enabled
+            temp_crop = crop
+            if enhancer != "None":
+                h_c, w_c = crop.shape[:2]
+                short_side = min(h_c, w_c)
+                target_res = 256
+                if short_side < target_res and short_side > 0:
+                    calc_scale = max(2, int(np.ceil(target_res / short_side)))
+                    # Allow gfpgan_upscale to be the floor or ceiling
+                    final_scale = max(int(gfpgan_upscale), calc_scale)
+                    print(f"[RE-ENGINE] Face {i} is small ({short_side}px). Pre-upscaling x{final_scale} with RealESRGAN...", flush=True)
+                    temp_crop = realesrgan_manager.upscale(crop, scale=final_scale)
+                elif gfpgan_upscale > 1:
+                    print(f"[RE-ENGINE] Pre-upscaling face {i} x{gfpgan_upscale} with RealESRGAN...", flush=True)
+                    temp_crop = realesrgan_manager.upscale(crop, scale=int(gfpgan_upscale))
+            
+            # Step 2: Restore with GFPGAN / CodeFormer
+            print(f"[RE-ENGINE] Restoring face {i} with {enhancer}...", flush=True)
             if enhancer == "None":
-                out_crop = crop
+                out_crop = temp_crop
             elif enhancer == "OpenCV":
-                out_crop = enhance_face_crop(crop, level=enhance_level)
+                out_crop = enhance_face_crop(temp_crop, level=enhance_level)
             elif enhancer == "GFPGAN":
-                out_crop = gfpgan_manager.enhance_crop(crop, upscale=gfpgan_upscale, whole=(crop_mode == "Portrait"))
+                # Note: internal upscale set to 1 since we already upscaled with ESRGAN
+                out_crop = gfpgan_manager.enhance_crop(temp_crop, upscale=1, whole=(crop_mode == "Portrait"))
             elif enhancer == "GFPGAN+CodeFormer":
-                first = gfpgan_manager.enhance_crop(crop, upscale=gfpgan_upscale, whole=(crop_mode == "Portrait"))
+                first = gfpgan_manager.enhance_crop(temp_crop, upscale=1, whole=(crop_mode == "Portrait"))
                 out_crop = codeformer_manager.refine_crop(first, fidelity=codeformer_w, upscale=1)
             else:
-                out_crop = crop
+                out_crop = temp_crop
+            print(f"[RE-ENGINE] Face {i} processing complete. Input Shape: {crop.shape[:2]} -> Output Shape: {out_crop.shape[:2]}", flush=True)
             crops.append(out_crop)
             if compute_embeddings:
                 emb = embedder.embed(out_crop)

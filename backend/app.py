@@ -18,6 +18,44 @@ from flask_cors import CORS
 from flask_socketio import SocketIO, join_room, leave_room
 import cv2
 import numpy as np
+
+# --- 3D STRUCTURAL INTEGRATION ---
+import sys
+_mesh_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "standalone_live_mesh")
+if _mesh_dir not in sys.path:
+    sys.path.append(_mesh_dir)
+
+try:
+    from standalone_live_mesh.inference import get_realtime_engine
+except ImportError as e:
+    print(f"[3DDFA] import error: {e}", flush=True)
+    def get_realtime_engine(): return None
+except Exception as e:
+    print(f"[3DDFA] other error: {e}", flush=True)
+    def get_realtime_engine(): return None
+
+def _extract_structural_vector(lmks):
+    if lmks is None or len(lmks) != 68:
+        return np.array([], dtype=np.float32)
+    left_eye_center = np.mean(lmks[36:42], axis=0)
+    right_eye_center = np.mean(lmks[42:48], axis=0)
+    interocular_dist = np.linalg.norm(left_eye_center - right_eye_center)
+    if interocular_dist < 1e-5: return np.array([], dtype=np.float32)
+    
+    nose = lmks[33]
+    vec = []
+    for i in range(68):
+        if i == 33: continue 
+        d = np.linalg.norm(lmks[i] - nose) / interocular_dist
+        vec.append(d)
+        
+    v = np.array(vec, dtype=np.float32)
+    norm = np.linalg.norm(v)
+    if norm > 1e-5:
+        v = v / norm
+    return v
+# ----------------------------------
+
 import sys as _sys
 # Ensure project root is importable so `multiple_face_detection` can be imported as a package
 try:
@@ -3496,6 +3534,8 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
                 branch TEXT,
                 vec BLOB,
                 dim INTEGER,
+                struct_vec BLOB,
+                landmarks_3d TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )""")
             c.execute("CREATE INDEX IF NOT EXISTS idx_person_embeddings_vid ON person_embeddings(vendor_id)")
@@ -3518,10 +3558,21 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
                             branch TEXT,
                             vec BLOB,
                             dim INTEGER,
+                            struct_vec BLOB,
+                            landmarks_3d TEXT,
                             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                         )""")
-                        c.execute("INSERT INTO person_embeddings SELECT * FROM _person_embeddings_old")
+                        # Need exact column mapping since struct_vec/landmarks_3d may not exist
+                        try:
+                            c.execute("INSERT INTO person_embeddings (id, vendor_id, person_id, class_year, division, branch, vec, dim, created_at) SELECT id, vendor_id, person_id, class_year, division, branch, vec, dim, created_at FROM _person_embeddings_old")
+                        except Exception:
+                            c.execute("INSERT INTO person_embeddings SELECT * FROM _person_embeddings_old")
                         c.execute("DROP TABLE _person_embeddings_old")
+                        conn.commit()
+                    elif tsql and 'struct_vec' not in str(tsql):
+                        c.execute("ALTER TABLE person_embeddings ADD COLUMN struct_vec BLOB")
+                        try: c.execute("ALTER TABLE person_embeddings ADD COLUMN landmarks_3d TEXT")
+                        except Exception: pass
                         conn.commit()
             except Exception:
                 pass
@@ -3529,7 +3580,7 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
             pass
         items = []
         try:
-            q = "SELECT person_id, vec, dim FROM person_embeddings WHERE vendor_id = ?"
+            q = "SELECT person_id, vec, dim, struct_vec FROM person_embeddings WHERE vendor_id = ?"
             args = [int(vendor_id or 0)]
             if class_year:
                 q += " AND (class_year = ?)"
@@ -3548,11 +3599,18 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
                     pid = int(r['person_id'] if isinstance(r, sqlite3.Row) else r[0])
                     vb = r['vec'] if isinstance(r, sqlite3.Row) else r[1]
                     dim = int(r['dim'] if isinstance(r, sqlite3.Row) else r[2])
+                    sb = r['struct_vec'] if isinstance(r, sqlite3.Row) else r[3]
+                    s_vec = None
+                    if sb:
+                        sd = np.frombuffer(sb, dtype=np.float32)
+                        if sd.size > 0:
+                            s_vec = sd
+                            
                     if vb and dim > 0:
                         v = np.frombuffer(vb, dtype=np.float32)
                         if v.size == dim:
                             v = _normalize_vec(v)
-                            items.append({'person_id': pid, 'name': '', 'vec': v})
+                            items.append({'person_id': pid, 'name': '', 'vec': v, 'struct_vec': s_vec})
                             id_set.add(pid)
                 except Exception:
                     continue
@@ -3667,7 +3725,7 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
         return _VENDOR_EMB_CACHE[key]
     except Exception:
         return None
-def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3) -> list:
+def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3, struct_vec=None) -> list:
     try:
         v = _normalize_vec(vec)
         if cache is None or not cache.get('items') or v.size == 0:
@@ -3697,6 +3755,15 @@ def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3) -> list:
                         continue
                     pid, nm = fmap[idx]
                     sim = float(D[0][rank]) if D is not None else 0.0
+                    
+                    if struct_vec is not None:
+                        match_item = next((x for x in cache['items'] if x['person_id'] == int(pid)), None)
+                        if match_item and match_item.get('struct_vec') is not None:
+                            s_u = match_item['struct_vec']
+                            if s_u.size == struct_vec.size:
+                                struct_sim = float(np.dot(s_u, struct_vec))
+                                sim = (sim * 0.70) + (struct_sim * 0.30)
+                    
                     raw.append({'person_id': int(pid), 'name': str(nm), 'similarity': sim})
                 return _dedup(raw, topk)
             except Exception:
@@ -3706,7 +3773,15 @@ def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3) -> list:
             u = it['vec']
             if u.size != v.size:
                 continue
-            sims.append({'person_id': it['person_id'], 'name': it['name'], 'similarity': float(np.dot(u, v))})
+            sim = float(np.dot(u, v))
+            
+            if struct_vec is not None and it.get('struct_vec') is not None:
+                s_u = it['struct_vec']
+                if s_u.size == struct_vec.size:
+                    struct_sim = float(np.dot(s_u, struct_vec))
+                    sim = (sim * 0.70) + (struct_sim * 0.30)
+                    
+            sims.append({'person_id': it['person_id'], 'name': it['name'], 'similarity': sim})
         return _dedup(sims, topk)
     except Exception:
         return []
@@ -4261,13 +4336,44 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                         port_b64 = ''
                     # Compute embedding from PURE face crop (no padding, no background)
                     emb_vec_b64 = ''
+                    struct_vec_b64 = ''
+                    landmarks_3d = []
                     try:
                         emb = mfd_app.embedder.embed(pure_face)
                         # Store the raw embedding so commit can reuse it exactly
                         emb_norm = _normalize_vec(emb)
                         if emb_norm.size > 0:
                             emb_vec_b64 = base64.b64encode(emb_norm.astype(np.float32).tobytes()).decode('ascii')
-                        sugg = _suggest_from_cache(emb, vcache, topk=3)
+                        
+                        # --- 3DDFA-V3 Integration ---
+                        engine = get_realtime_engine()
+                        struct_vec_val = None
+                        if engine is not None:
+                            try:
+                                # Use a 1.5x padded box for 3D context - MTCNN needs background to detect keypoints
+                                c3x1, c3y1, c3x2, c3y2 = mfd_app._compute_portrait_box(bx1, by1, bx2, by2, img_rgb.shape[1], img_rgb.shape[0], scale=1.5, margin=0.2)
+                                face_for_3d = img_rgb[c3y1:c3y2, c3x1:c3x2]
+                                
+                                if face_for_3d.size > 0:
+                                    lmks_list = engine.extract_landmarks(face_for_3d)
+                                    if lmks_list and len(lmks_list) > 0:
+                                        lmks = lmks_list[0]
+                                        landmarks_3d = lmks.tolist()
+                                        
+                                        # Draw on full annotated image
+                                        for pt in landmarks_3d:
+                                            cx, cy = int(pt[0]) + c3x1, int(pt[1]) + c3y1
+                                            cv2.circle(draw, (cx, cy), 2, (0, 255, 0), -1)
+                                            
+                                        struct_vec_val = _extract_structural_vector(lmks)
+                                        if struct_vec_val.size > 0:
+                                            struct_vec_b64 = base64.b64encode(struct_vec_val.astype(np.float32).tobytes()).decode('ascii')
+                                    else:
+                                        pass # print(f"[3D_ENGINE] Face {i}: No landmarks found in 1.5x crop ({face_for_3d.shape})", flush=True)
+                            except Exception as e:
+                                pass # print(f"[3D_ENGINE] Error for face {i}: {e}", flush=True)
+                        
+                        sugg = _suggest_from_cache(emb, vcache, topk=3, struct_vec=struct_vec_val)
                         pass # print(f"[EMB_DEBUG] face={i} box=({bx1},{by1},{bx2},{by2}) crop={pure_face.shape} emb_first5={emb_norm[:5].tolist() if emb_norm.size>0 else 'NONE'} sugg={[(s.get('name','?'), round(s.get('similarity',0)*100,1)) for s in sugg]}", flush=True)
                     except Exception:
                         sugg = []
@@ -4277,7 +4383,9 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                         "score": float(score_str) if score_str else None,
                         "thumbs": {"face": f"data:image/jpeg;base64,{face_b64}" if face_b64 else None, "portrait": f"data:image/jpeg;base64,{port_b64}" if port_b64 else None},
                         "suggestions": sugg,
-                        "emb_vec": emb_vec_b64
+                        "emb_vec": emb_vec_b64,
+                        "struct_vec": struct_vec_b64,
+                        "landmarks_3d": landmarks_3d
                     })
             ok2, ann = cv2.imencode('.jpg', draw, [cv2.IMWRITE_JPEG_QUALITY, 85])
             annotated_b64 = f"data:image/jpeg;base64,{base64.b64encode(ann.tobytes()).decode('ascii')}" if ok2 else ''
@@ -4415,6 +4523,8 @@ def class_batch_commit():
             branch TEXT,
             vec BLOB,
             dim INTEGER,
+            struct_vec BLOB,
+            landmarks_3d TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )""")
         c.execute("""CREATE TABLE IF NOT EXISTS class_thresholds (
@@ -4490,9 +4600,24 @@ def class_batch_commit():
                 continue
             vec_blob = emb.astype(np.float32).tobytes()
             dim = int(emb.size)
-            c.execute("""INSERT INTO person_embeddings (vendor_id, person_id, class_year, division, branch, vec, dim)
-                         VALUES (?, ?, ?, ?, ?, ?, ?)
-                      """, (vendor_id, int(person_id), str(class_year), str(division), str(branch), vec_blob, dim))
+
+            struct_vec_b64 = face.get('struct_vec') or ''
+            landmarks_3d = face.get('landmarks_3d') or []
+            
+            struct_blob = None
+            if struct_vec_b64:
+                try:
+                    s_bytes = base64.b64decode(struct_vec_b64)
+                    s_emb = np.frombuffer(s_bytes, dtype=np.float32).copy()
+                    if s_emb.size > 0:
+                        struct_blob = s_emb.astype(np.float32).tobytes()
+                except Exception:
+                    pass
+            lmks_json = json.dumps(landmarks_3d) if landmarks_3d else None
+
+            c.execute("""INSERT INTO person_embeddings (vendor_id, person_id, class_year, division, branch, vec, dim, struct_vec, landmarks_3d)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      """, (vendor_id, int(person_id), str(class_year), str(division), str(branch), vec_blob, dim, struct_blob, lmks_json))
             saved += 1
         except Exception:
             continue
@@ -4580,6 +4705,58 @@ def class_batch_clear():
     c.execute("DELETE FROM class_batch_items WHERE batch_id = ?", (bid,))
     c.execute("DELETE FROM class_batches WHERE id = ? AND vendor_id = ?", (bid, vendor_id))
     conn.commit(); conn.close()
+    return jsonify({"ok": True})
+
+@greeting_bp.route("/class-batch/refresh", methods=["POST"])
+def class_batch_refresh():
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+    data = request.get_json(silent=True) or {}
+    bid = data.get('batch_id')
+    if not bid:
+        return jsonify({"error": "batch_id required"}), 400
+    conn = get_db_connection()
+    _ensure_class_batch_tables(conn)
+    c = conn.cursor()
+    c.execute("SELECT id, vendor_id, class_year, division, branch FROM class_batches WHERE id = ? AND vendor_id = ?", (bid, vendor_id))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "batch not found"}), 404
+    params = {
+        "class_year": str(row[2] or ""),
+        "division": str(row[3] or ""),
+        "branch": str(row[4] or "")
+    }
+    try:
+        if 'fast' in data:
+            params["fast"] = bool(data.get('fast'))
+    except Exception:
+        pass
+    try:
+        if 'det_max_side' in data and data.get('det_max_side') is not None:
+            params["det_max_side"] = int(data.get('det_max_side'))
+    except Exception:
+        pass
+    conn.close()
+    def _dispatch_refresh():
+        try:
+            from tasks import refresh_class_batch_items
+            def _worker():
+                try:
+                    refresh_class_batch_items(bid, vendor_id, params)
+                except Exception:
+                    pass
+            try:
+                eventlet.spawn_n(lambda: eventlet.tpool.execute(_worker)) if eventlet else None
+            except Exception:
+                import threading
+                t = threading.Thread(target=_worker, daemon=True)
+                t.start()
+        except Exception:
+            pass
+    _dispatch_refresh()
     return jsonify({"ok": True})
 
 @greeting_bp.route("/admin/vendors/<int:vendor_id>/registration_config", methods=["PUT"])
@@ -8780,6 +8957,19 @@ def upload_face():
                 params.append(person_id)
                 c.execute(q, params)
                 new_id = person_id
+                
+                # If face image or templates are updated, clear accumulated embeddings
+                if (face_image is not None and face_image != "") or (templates_list and len(templates_list) > 0) or (templates is not None and templates != ""):
+                    try:
+                        c.execute("DELETE FROM person_embeddings WHERE person_id = ?", (person_id,))
+                        # Invalidate cache
+                        vid = existing.get("vendor_id") or vendor_id
+                        prefix = f"{int(vid or 0)}_"
+                        keys_to_delete = [k for k in _VENDOR_EMB_CACHE.keys() if str(k).startswith(prefix)]
+                        for k in keys_to_delete:
+                            del _VENDOR_EMB_CACHE[k]
+                    except Exception:
+                        pass
 
             try:
                 if phone is not None and phone != "" and str(phone) != str(existing.get("phone") or ""):
@@ -8808,6 +8998,15 @@ def upload_face():
             c.execute("INSERT INTO faces (name, templates, face_image, phone, department, designation, shift, vendor_id, custom_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                       (name, to_store_templates, face_image, phone or "", department or "", designation or "", shift or "", vendor_id, custom_data))
             new_id = c.lastrowid
+            
+            # Invalidate cache for new insert as well
+            try:
+                prefix = f"{int(vendor_id or 0)}_"
+                keys_to_delete = [k for k in _VENDOR_EMB_CACHE.keys() if str(k).startswith(prefix)]
+                for k in keys_to_delete:
+                    del _VENDOR_EMB_CACHE[k]
+            except Exception:
+                pass
 
         conn.commit()
         

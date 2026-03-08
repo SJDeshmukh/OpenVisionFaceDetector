@@ -2,15 +2,15 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { FRONTEND_BUNDLES, FEATURE_TO_SIDEBAR_MAP, ALWAYS_VISIBLE_ITEMS } from '../config';
-import { 
-  LayoutDashboard, 
-  Users, 
-  ClipboardList, 
-  Video, 
-  FileText, 
-  Settings, 
-  Shield, 
-  Bell, 
+import {
+  LayoutDashboard,
+  Users,
+  ClipboardList,
+  Video,
+  FileText,
+  Settings,
+  Shield,
+  Bell,
   Search,
   LogOut,
   CalendarClock,
@@ -54,7 +54,7 @@ export const Sidebar = ({ isOpen, onClose }) => {
   const navigate = useNavigate();
   const [liveFeedUnlocked, setLiveFeedUnlocked] = useState(false);
   const [seqIndex, setSeqIndex] = useState(0);
-  const secret = ['j','o','n','a','s'];
+  const secret = ['j', 'o', 'n', 'a', 's'];
 
   useEffect(() => {
     const handler = (e) => {
@@ -83,64 +83,63 @@ export const Sidebar = ({ isOpen, onClose }) => {
 
   let navItems;
   if (user?.role === 'super_admin') {
-      navItems = superAdminNavItems.filter(item => {
-        if (item.path === '/admin/live-feed') {
-          return liveFeedUnlocked;
-        }
-        return true;
-      });
+    navItems = superAdminNavItems.filter(item => {
+      if (item.path === '/admin/live-feed') {
+        return liveFeedUnlocked;
+      }
+      return true;
+    });
   } else if (user?.role === 'admin' || user?.role === 'vendor_admin') {
-      navItems = adminNavItems;
+    navItems = adminNavItems;
   } else {
-      navItems = userNavItems;
+    navItems = userNavItems;
   }
 
   // Dynamic Frontend Loading Logic
   if (user?.role !== 'super_admin') {
-      const bundleId = user?.frontend_bundle_id || 'default_attendance';
-      
-      // PRIORITY: Check if we have explicit 'features' list from backend (granular control)
-      if (user?.features && Array.isArray(user.features)) {
-          // 1. Start with Always Visible Items
-          const allowedNames = new Set(ALWAYS_VISIBLE_ITEMS);
+    const bundleId = user?.frontend_bundle_id || 'default_attendance';
 
-          // 2. Add items based on enabled features
-          user.features.forEach(featureKey => {
-              const sidebarName = FEATURE_TO_SIDEBAR_MAP[featureKey];
-              if (sidebarName) {
-                  allowedNames.add(sidebarName);
-              }
-          });
-          // Show Faces only for Class Attendance business
-          const bundleId = user?.frontend_bundle_id || 'default_attendance';
-          if (bundleId === 'class_attendance_ui' || user.features.includes('classes')) {
-            allowedNames.add('Faces');
-          }
-          
-          navItems = navItems.filter(item => allowedNames.has(item.name));
-      } 
-      // FALLBACK: Use legacy Bundle ID system
-      else {
-          const allowedItems = FRONTEND_BUNDLES[bundleId] || FRONTEND_BUNDLES['default_attendance'];
-          if (allowedItems !== 'ALL') {
-              navItems = navItems.filter(item => allowedItems.includes(item.name));
-          }
+    // PRIORITY: Check if we have explicit 'features' list from backend (granular control)
+    if (user?.features && Array.isArray(user.features)) {
+      // 1. Start with Always Visible Items
+      const allowedNames = new Set(ALWAYS_VISIBLE_ITEMS);
+
+      // 2. Add items based on enabled features
+      user.features.forEach(featureKey => {
+        const sidebarName = FEATURE_TO_SIDEBAR_MAP[featureKey];
+        if (sidebarName) {
+          allowedNames.add(sidebarName);
+        }
+      });
+      // Show Faces only for Class Attendance business
+      const bundleId = user?.frontend_bundle_id || 'default_attendance';
+      if (bundleId === 'class_attendance_ui' || user.features.includes('classes')) {
+        allowedNames.add('Faces');
       }
+
+      navItems = navItems.filter(item => allowedNames.has(item.name));
+    }
+    // FALLBACK: Use legacy Bundle ID system
+    else {
+      const allowedItems = FRONTEND_BUNDLES[bundleId] || FRONTEND_BUNDLES['default_attendance'];
+      if (allowedItems !== 'ALL') {
+        navItems = navItems.filter(item => allowedItems.includes(item.name));
+      }
+    }
   }
 
   return (
     <>
       {/* Mobile Overlay */}
       {isOpen && (
-        <div 
+        <div
           className="fixed inset-0 bg-black/50 z-30 lg:hidden"
           onClick={onClose}
         />
       )}
-      
-      <aside className={`fixed left-0 top-0 h-full w-64 bg-slate-900 text-white z-40 flex flex-col shadow-xl transition-transform duration-300 ease-in-out ${
-        isOpen ? 'translate-x-0' : '-translate-x-full'
-      } lg:translate-x-0`}>
+
+      <aside className={`fixed left-0 top-0 h-full w-64 bg-slate-900 text-white z-40 flex flex-col shadow-xl transition-transform duration-300 ease-in-out ${isOpen ? 'translate-x-0' : '-translate-x-full'
+        } lg:translate-x-0`}>
         <div className="h-16 flex items-center justify-between px-6 border-b border-slate-800">
           <div className="flex items-center">
             <div className="w-10 h-10 bg-white rounded-full flex items-center justify-center mr-3 overflow-hidden">
@@ -160,10 +159,9 @@ export const Sidebar = ({ isOpen, onClose }) => {
               to={item.path}
               onClick={() => onClose?.()} // Close sidebar on mobile when link clicked
               className={({ isActive }) =>
-                `flex items-center px-3 py-2.5 rounded-lg transition-all duration-200 group ${
-                  isActive 
-                    ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/20' 
-                    : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                `flex items-center px-3 py-2.5 rounded-lg transition-all duration-200 group ${isActive
+                  ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/20'
+                  : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`
               }
             >
@@ -174,7 +172,7 @@ export const Sidebar = ({ isOpen, onClose }) => {
         </div>
 
         <div className="p-4 border-t border-slate-800">
-          <button 
+          <button
             onClick={handleLogout}
             className="flex items-center w-full px-3 py-2.5 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-red-400 transition-colors"
           >
@@ -193,7 +191,7 @@ export const Topbar = ({ onToggleSidebar }) => {
   return (
     <header className="fixed top-0 left-0 lg:left-64 right-0 h-16 bg-white border-b border-slate-200 z-30 flex items-center justify-between px-4 lg:px-8 shadow-sm transition-all duration-300">
       <div className="flex items-center w-full max-w-xl">
-        <button 
+        <button
           onClick={onToggleSidebar}
           className="mr-4 p-2 text-slate-500 hover:bg-slate-100 rounded-lg lg:hidden"
         >
@@ -202,9 +200,9 @@ export const Topbar = ({ onToggleSidebar }) => {
 
         <div className="relative w-full max-w-md hidden sm:block">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-          <input 
-            type="text" 
-            placeholder="Search..." 
+          <input
+            type="text"
+            placeholder="Search..."
             className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm"
           />
         </div>
@@ -215,7 +213,7 @@ export const Topbar = ({ onToggleSidebar }) => {
           <Bell size={20} />
           <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border-2 border-white"></span>
         </button>
-        
+
         <div className="flex items-center space-x-3 pl-6 border-l border-slate-200">
           <div className="text-right hidden sm:block">
             <p className="text-sm font-bold text-slate-800 capitalize">{user?.username || 'Guest'}</p>

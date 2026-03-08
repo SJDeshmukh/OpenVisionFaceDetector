@@ -405,7 +405,9 @@ async function startFrontend() {
   }
 
   await backendPromise;
-  await new Promise(() => { });
+
+  // Keep the process alive without triggering an unsettled top-level await warning
+  setInterval(() => { }, 3600000);
 }
 
 await startFrontend();

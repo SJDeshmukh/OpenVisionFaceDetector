@@ -35,7 +35,11 @@ echo "Starting Redis..."
 redis-server --daemonize yes --port 6379 --loglevel warning
 echo "Redis started on port 6379."
 
-# 3. Start Backend (Gunicorn) in the background
+# 3. Pre-flight Check: Verify Models
+echo "Verifying local model weights..."
+python3 -c "import os; models=['multiple_face_detection/models/gfpgan/GFPGANv1.3.pth', 'multiple_face_detection/models/realesrgan/RealESRGAN_x4plus.pth']; [print(f'Missing: {m}') for m in models if not os.path.exists(m)]"
+
+# 4. Start Backend (Gunicorn) in the background
 # We bind to 127.0.0.1:5001 because Nginx will proxy to it locally
 echo "Starting Gunicorn Backend..."
 cd backend
