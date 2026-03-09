@@ -3,7 +3,10 @@ import sys
 from typing import List, Tuple
 
 import cv2
-import gradio as gr
+try:
+    import gradio as gr  # optional; not required in production
+except Exception:
+    gr = None
 import numpy as np
 import pandas as pd
 import json
@@ -848,122 +851,122 @@ def detect_faces_ui6(image_input, enhancer, enhance_level, gfpgan_upscale, codef
         preclean_level=0.4,
     )
 
-with gr.Blocks(title="Face Detection (Faceplugin SDK)") as demo:
-    gr.Markdown("Face detection: upload an image to get detected face cards and boxes. Choose enhancement.")
-    with gr.Row():
-        with gr.Column(scale=1):
-            inp = gr.Image(label="Upload Image", type="filepath")
-            enhancer = gr.Radio(choices=["GFPGAN", "GFPGAN+CodeFormer", "OpenCV", "None"], value="GFPGAN", label="Enhancer")
-            enhance_lvl = gr.Slider(label="OpenCV strength", minimum=0.0, maximum=1.0, value=0.5, step=0.05)
-            gfp_up = gr.Slider(label="GFPGAN upscale", minimum=1, maximum=4, value=2, step=1)
-            cf_w = gr.Slider(label="CodeFormer fidelity (w)", minimum=0.0, maximum=1.0, value=0.5, step=0.05)
-            do_embed = gr.Checkbox(label="Compute embeddings", value=False)
-            crop_mode = gr.Radio(choices=["Face", "Portrait"], value="Face", label="Crop mode")
-            portrait_scale = gr.Slider(label="Portrait scale (face heights)", minimum=2.0, maximum=4.0, value=3.0, step=0.1)
-            preclean = gr.Checkbox(label="Pre-clean whole image", value=False)
-            preclean_lvl = gr.Slider(label="Pre-clean strength", minimum=0.0, maximum=1.0, value=0.4, step=0.05)
-            run_btn = gr.Button("Detect Faces", variant="primary")
-        with gr.Column(scale=1):
-            annotated = gr.AnnotatedImage(label="Detected Faces")
-    with gr.Row():
-        gallery = gr.Gallery(label="Face Cards", allow_preview=True, columns=4, height=300)
-    with gr.Row():
-        table = gr.Dataframe(headers=["x1", "y1", "x2", "y2", "score"], interactive=False)
-    with gr.Row():
-        embeds = gr.Dataframe(headers=["index", "len", "norm", "first5"], interactive=False)
-
-    run_btn.click(fn=lambda a,b,c,d,e,f,g,h: detect_faces(a,b,c,d,e,f,crop_mode="Portrait",portrait_scale=3.0,preclean_whole=g,preclean_level=h),
-                  inputs=[inp, enhancer, enhance_lvl, gfp_up, cf_w, do_embed, preclean, preclean_lvl],
-                  outputs=[annotated, gallery, table, embeds])
-    inp.change(fn=lambda a,b,c,d,e,f,g,h: detect_faces(a,b,c,d,e,f,crop_mode="Portrait",portrait_scale=3.0,preclean_whole=g,preclean_level=h),
-               inputs=[inp, enhancer, enhance_lvl, gfp_up, cf_w, do_embed, preclean, preclean_lvl],
-               outputs=[annotated, gallery, table, embeds])
-
-    gr.Markdown("Chunks: browse recent analysis snapshots from the backend")
-    API_BASE = os.getenv("API_BASE_URL", "http://127.0.0.1:5001")
-
-    def _http_json(url: str):
-        try:
-            with urllib.request.urlopen(url, timeout=5) as r:
-                return json.loads(r.read().decode("utf-8"))
-        except Exception:
-            return {}
-
-    def list_chunks():
-        data = _http_json(f"{API_BASE}/chunks")
-        items = data.get("items", [])
-        rows = []
-        choices = []
-        labels = []
-        for it in items:
-            cid = it.get("id", "")
-            ts = float(it.get("ts", 0.0))
-            tstr = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
-            names = ", ".join(sorted(set(it.get("names", []))))
-            rows.append([cid, tstr, int(it.get("count", 0)), names])
-            choices.append(cid)
-            labels.append(f"{tstr} ({cid[:6]})")
-        df = pd.DataFrame(rows, columns=["id", "time", "count", "names"])
-        return df, gr.Dropdown(choices=choices, value=(choices[0] if choices else None), label="Chunk ID"), gr.Dropdown.update(choices=choices)
-
-    def load_chunk(cid: str):
-        if not cid:
-            return [], None
-        q = urllib.parse.urlencode({"id": cid})
-        data = _http_json(f"{API_BASE}/chunk_images?{q}")
-        return data.get("items", []), data.get("image", None)
-
-    with gr.Tab("Registered Users"):
+if __name__ == "__main__" and os.getenv("ENABLE_GRADIO_UI", "0").strip().lower() in ("1", "true", "yes") and gr is not None:
+    with gr.Blocks(title="Face Detection (Faceplugin SDK)") as demo:
+        gr.Markdown("Face detection: upload an image to get detected face cards and boxes. Choose enhancement.")
         with gr.Row():
-            load_users_btn = gr.Button("Load Users")
-            user_select = gr.Dropdown(choices=[], label="User")
+            with gr.Column(scale=1):
+                inp = gr.Image(label="Upload Image", type="filepath")
+                enhancer = gr.Radio(choices=["GFPGAN", "GFPGAN+CodeFormer", "OpenCV", "None"], value="GFPGAN", label="Enhancer")
+                enhance_lvl = gr.Slider(label="OpenCV strength", minimum=0.0, maximum=1.0, value=0.5, step=0.05)
+                gfp_up = gr.Slider(label="GFPGAN upscale", minimum=1, maximum=4, value=2, step=1)
+                cf_w = gr.Slider(label="CodeFormer fidelity (w)", minimum=0.0, maximum=1.0, value=0.5, step=0.05)
+                do_embed = gr.Checkbox(label="Compute embeddings", value=False)
+                crop_mode = gr.Radio(choices=["Face", "Portrait"], value="Face", label="Crop mode")
+                portrait_scale = gr.Slider(label="Portrait scale (face heights)", minimum=2.0, maximum=4.0, value=3.0, step=0.1)
+                preclean = gr.Checkbox(label="Pre-clean whole image", value=False)
+                preclean_lvl = gr.Slider(label="Pre-clean strength", minimum=0.0, maximum=1.0, value=0.4, step=0.05)
+                run_btn = gr.Button("Detect Faces", variant="primary")
+            with gr.Column(scale=1):
+                annotated = gr.AnnotatedImage(label="Detected Faces")
         with gr.Row():
-            refresh_user_chunks_btn = gr.Button("Refresh User Chunks")
+            gallery = gr.Gallery(label="Face Cards", allow_preview=True, columns=4, height=300)
         with gr.Row():
-            user_chunks_table = gr.Dataframe(headers=["id", "time", "count", "names"], interactive=False)
+            table = gr.Dataframe(headers=["x1", "y1", "x2", "y2", "score"], interactive=False)
         with gr.Row():
-            user_chunk_select = gr.Dropdown(choices=[], label="Chunk ID")
-        with gr.Row():
-            user_chunk_image = gr.Image(label="Annotated Image")
-        with gr.Row():
-            user_chunk_gallery = gr.Gallery(label="Chunk Photos", columns=4, height=300)
+            embeds = gr.Dataframe(headers=["index", "len", "norm", "first5"], interactive=False)
 
-        def list_users():
-            data = _http_json(f"{API_BASE}/labels")
-            items = data.get("items", [])
-            names = [it.get("name", "") for it in items if it.get("name", "")]
-            return gr.Dropdown.update(choices=names, value=(names[0] if names else None))
+        run_btn.click(fn=lambda a,b,c,d,e,f,g,h: detect_faces(a,b,c,d,e,f,crop_mode="Portrait",portrait_scale=3.0,preclean_whole=g,preclean_level=h),
+                      inputs=[inp, enhancer, enhance_lvl, gfp_up, cf_w, do_embed, preclean, preclean_lvl],
+                      outputs=[annotated, gallery, table, embeds])
+        inp.change(fn=lambda a,b,c,d,e,f,g,h: detect_faces(a,b,c,d,e,f,crop_mode="Portrait",portrait_scale=3.0,preclean_whole=g,preclean_level=h),
+                   inputs=[inp, enhancer, enhance_lvl, gfp_up, cf_w, do_embed, preclean, preclean_lvl],
+                   outputs=[annotated, gallery, table, embeds])
 
-        def list_user_chunks(username: str):
+        gr.Markdown("Chunks: browse recent analysis snapshots from the backend")
+        API_BASE = os.getenv("API_BASE_URL", "http://127.0.0.1:5001")
+
+        def _http_json(url: str):
+            try:
+                with urllib.request.urlopen(url, timeout=5) as r:
+                    return json.loads(r.read().decode("utf-8"))
+            except Exception:
+                return {}
+
+        def list_chunks():
             data = _http_json(f"{API_BASE}/chunks")
             items = data.get("items", [])
-            filt = []
+            rows = []
             choices = []
+            labels = []
             for it in items:
-                if username in it.get("names", []):
-                    cid = it.get("id", "")
-                    ts = float(it.get("ts", 0.0))
-                    tstr = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
-                    names = ", ".join(sorted(set(it.get("names", []))))
-                    filt.append([cid, tstr, int(it.get("count", 0)), names])
-                    choices.append(cid)
-            df = pd.DataFrame(filt, columns=["id", "time", "count", "names"])
-            return df, gr.Dropdown.update(choices=choices, value=(choices[0] if choices else None))
+                cid = it.get("id", "")
+                ts = float(it.get("ts", 0.0))
+                tstr = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+                names = ", ".join(sorted(set(it.get("names", []))))
+                rows.append([cid, tstr, int(it.get("count", 0)), names])
+                choices.append(cid)
+                labels.append(f"{tstr} ({cid[:6]})")
+            df = pd.DataFrame(rows, columns=["id", "time", "count", "names"])
+            return df, gr.Dropdown(choices=choices, value=(choices[0] if choices else None), label="Chunk ID"), gr.Dropdown.update(choices=choices)
 
-        def load_user_chunk(username: str, cid: str):
+        def load_chunk(cid: str):
             if not cid:
                 return [], None
             q = urllib.parse.urlencode({"id": cid})
             data = _http_json(f"{API_BASE}/chunk_images?{q}")
-            items = data.get("items", [])
-            names = data.get("names", [])
-            imgs = [img for img, nm in zip(items, names) if nm == username] if items and names else items
-            return imgs, data.get("image", None)
+            return data.get("items", []), data.get("image", None)
 
-        load_users_btn.click(fn=list_users, inputs=[], outputs=[user_select])
-        refresh_user_chunks_btn.click(fn=list_user_chunks, inputs=[user_select], outputs=[user_chunks_table, user_chunk_select])
-        user_chunk_select.change(fn=lambda u, c: load_user_chunk(u, c), inputs=[user_select, user_chunk_select], outputs=[user_chunk_gallery, user_chunk_image])
+        with gr.Tab("Registered Users"):
+            with gr.Row():
+                load_users_btn = gr.Button("Load Users")
+                user_select = gr.Dropdown(choices=[], label="User")
+            with gr.Row():
+                refresh_user_chunks_btn = gr.Button("Refresh User Chunks")
+            with gr.Row():
+                user_chunks_table = gr.Dataframe(headers=["id", "time", "count", "names"], interactive=False)
+            with gr.Row():
+                user_chunk_select = gr.Dropdown(choices=[], label="Chunk ID")
+            with gr.Row():
+                user_chunk_image = gr.Image(label="Annotated Image")
+            with gr.Row():
+                user_chunk_gallery = gr.Gallery(label="Chunk Photos", columns=4, height=300)
 
-if __name__ == "__main__":
+            def list_users():
+                data = _http_json(f"{API_BASE}/labels")
+                items = data.get("items", [])
+                names = [it.get("name", "") for it in items if it.get("name", "")]
+                return gr.Dropdown.update(choices=names, value=(names[0] if names else None))
+
+            def list_user_chunks(username: str):
+                data = _http_json(f"{API_BASE}/chunks")
+                items = data.get("items", [])
+                filt = []
+                choices = []
+                for it in items:
+                    if username in it.get("names", []):
+                        cid = it.get("id", "")
+                        ts = float(it.get("ts", 0.0))
+                        tstr = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+                        names = ", ".join(sorted(set(it.get("names", []))))
+                        filt.append([cid, tstr, int(it.get("count", 0)), names])
+                        choices.append(cid)
+                df = pd.DataFrame(filt, columns=["id", "time", "count", "names"])
+                return df, gr.Dropdown.update(choices=choices, value=(choices[0] if choices else None))
+
+            def load_user_chunk(username: str, cid: str):
+                if not cid:
+                    return [], None
+                q = urllib.parse.urlencode({"id": cid})
+                data = _http_json(f"{API_BASE}/chunk_images?{q}")
+                items = data.get("items", [])
+                names = data.get("names", [])
+                imgs = [img for img, nm in zip(items, names) if nm == username] if items and names else items
+                return imgs, data.get("image", None)
+
+            load_users_btn.click(fn=list_users, inputs=[], outputs=[user_select])
+            refresh_user_chunks_btn.click(fn=list_user_chunks, inputs=[user_select], outputs=[user_chunks_table, user_chunk_select])
+            user_chunk_select.change(fn=lambda u, c: load_user_chunk(u, c), inputs=[user_select, user_chunk_select], outputs=[user_chunk_gallery, user_chunk_image])
+
     port = int(os.getenv("GRADIO_SERVER_PORT", "7860"))
     demo.launch(server_name="0.0.0.0", server_port=port, share=True)
