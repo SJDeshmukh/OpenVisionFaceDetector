@@ -8,14 +8,20 @@ except Exception:
             return func
     task_prerun = task_postrun = task_failure = task_retry = task_received = task_revoked = _DummySignal()
 
-from app import get_db_connection, socketio, log_audit, BUNDLE_FEATURES
+try:
+    # Prefer explicit backend.app to avoid collision with multiple_face_detection.app
+    from backend.app import get_db_connection, socketio, log_audit, BUNDLE_FEATURES
+    from backend.app import redis_client
+except Exception:
+    # Fallback to plain 'app' if module pathing already configured
+    from app import get_db_connection, socketio, log_audit, BUNDLE_FEATURES
+    from app import redis_client
 import json
 from datetime import date, timedelta, datetime
 import sqlite3
 import os
 import base64
 import hashlib
-from app import redis_client
 
 TASK_EVENTS_MAX = int(os.environ.get("TASK_EVENTS_MAX", "50000"))
 

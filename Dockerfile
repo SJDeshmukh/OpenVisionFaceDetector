@@ -69,7 +69,8 @@ ENV CELERY_BROKER_URL=redis://127.0.0.1:6379/0
 ENV CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/0
 ENV REDIS_URL=redis://127.0.0.1:6379/0
 ENV CELERY_CONCURRENCY=1
-ENV PYTHONPATH=/app:/app/multiple_face_detection:/app/backend
+# Ensure backend comes first so `import app` resolves to backend/app.py, not multiple_face_detection/app.py
+ENV PYTHONPATH=/app/backend:/app:/app/multiple_face_detection
 
 # Optional public URL for logs (entrypoint prints it)
 ARG PUBLIC_URL
