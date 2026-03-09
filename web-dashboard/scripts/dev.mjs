@@ -160,8 +160,8 @@ async function startCeleryWorker() {
       "-A", "celery_app",
       "worker",
       "--loglevel=info",
-      "--concurrency=2",
-      "--pool=prefork",
+      "--concurrency=1",
+      "--pool=solo",
       "-Q", "celery,default",
       "--include", "tasks",
     ], {
@@ -173,6 +173,9 @@ async function startCeleryWorker() {
         CELERY_BROKER_URL: REDIS_URL,
         CELERY_RESULT_BACKEND: REDIS_URL,
         DB_PATH: "../backend/face_db.sqlite",
+        KMP_DUPLICATE_LIB_OK: "TRUE",
+        OMP_NUM_THREADS: "1",
+        OPENCV_NUM_THREADS: "1",
       },
     });
     // Give Celery a moment to connect
@@ -206,6 +209,9 @@ async function startBackendIfNeeded() {
       CELERY_BROKER_URL: redisProc ? REDIS_URL : "",
       CELERY_RESULT_BACKEND: redisProc ? REDIS_URL : "",
       REDIS_URL: redisProc ? REDIS_URL : "",
+      KMP_DUPLICATE_LIB_OK: "TRUE",
+      OMP_NUM_THREADS: "1",
+      OPENCV_NUM_THREADS: "1",
     },
   });
   try {

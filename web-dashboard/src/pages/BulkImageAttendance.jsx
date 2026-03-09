@@ -273,9 +273,15 @@ const BulkImageAttendance = () => {
       fd.append('branch', selectedClass.branch || '');
 
       const params = new URLSearchParams();
-      await axios.post(`${API_URL}/class-batch/add?${params.toString()}`, fd, {
+      const res = await axios.post(`${API_URL}/class-batch/add?${params.toString()}`, fd, {
         headers: { Authorization: `Bearer ${user?.token}` }
       });
+
+      // If we got a task_id, we could track it, but the existing batchId polling
+      // already handles the per-item status updates.
+      if (res.data?.task_id) {
+        console.log('Batch add task started:', res.data.task_id);
+      }
 
       // Proactively refresh state once for immediate UI update; periodic poll continues
       if (id) {
@@ -317,7 +323,10 @@ const BulkImageAttendance = () => {
         headers: { Authorization: `Bearer ${user?.token}` }
       });
       try {
-        await axios.post(`${API_URL}/class-batch/refresh`, { batch_id: id }, { headers: { Authorization: `Bearer ${user?.token}` } });
+        const rRefresh = await axios.post(`${API_URL}/class-batch/refresh`, { batch_id: id }, { headers: { Authorization: `Bearer ${user?.token}` } });
+        if (rRefresh.data?.task_id) {
+          console.log('Batch refresh task started:', rRefresh.data.task_id);
+        }
       } catch (_) { }
       try {
         await fetchBatchStatus(id);

@@ -171,10 +171,29 @@ const Faces = () => {
         branch: selectedClass.branch || '',
         topk: 5
       };
+      const pollTask = async (taskId) => {
+        while (true) {
+          const sres = await axios.get(`${API_URL}/tasks/${taskId}`, {
+            headers: { Authorization: `Bearer ${user?.token}` }
+          });
+          if (sres.data?.state === 'SUCCESS') return sres.data.result;
+          if (sres.data?.state === 'FAILURE') throw new Error(sres.data.status || 'Task failed');
+          await new Promise(r => setTimeout(r, 1000));
+        }
+      };
+
       const res = await axios.post(`${API_URL}/utils/search-embedding`, body, {
         headers: { Authorization: `Bearer ${user?.token}` }
       });
-      const faces = res.data?.faces || [];
+
+      let results = [];
+      if (res.status === 202 && res.data?.task_id) {
+        results = await pollTask(res.data.task_id);
+      } else {
+        results = res.data;
+      }
+
+      const faces = results?.faces || [];
       setSearchResults(faces);
     } catch (e) {
       alert(e.response?.data?.error || e.message || 'Search failed');

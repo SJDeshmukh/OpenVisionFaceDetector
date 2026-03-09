@@ -10,6 +10,51 @@ import json
 import time
 import urllib.request
 import urllib.parse
+import base64
+
+def _extract_structural_vector(lmks):
+    if lmks is None or len(lmks) != 68:
+        return np.array([], dtype=np.float32)
+    left_eye_center = np.mean(lmks[36:42], axis=0)
+    right_eye_center = np.mean(lmks[42:48], axis=0)
+    interocular_dist = np.linalg.norm(left_eye_center - right_eye_center)
+    if interocular_dist < 1e-5: return np.array([], dtype=np.float32)
+    
+    nose = lmks[33]
+    vec = []
+    for i in range(68):
+        if i == 33: continue 
+        d = np.linalg.norm(lmks[i] - nose) / interocular_dist
+        vec.append(d)
+        
+    v = np.array(vec, dtype=np.float32)
+    norm = np.linalg.norm(v)
+    if norm > 1e-5:
+        v = v / norm
+    return v
+
+_mesh_engine = None
+def get_realtime_engine():
+    global _mesh_engine
+    if _mesh_engine is not None:
+        return _mesh_engine
+    
+    # Try to find standalone_live_mesh
+    mesh_dir = os.path.join(os.path.dirname(_BASE_DIR), "backend", "standalone_live_mesh")
+    if not os.path.isdir(mesh_dir):
+        # Maybe it's in the current dir?
+        mesh_dir = os.path.join(_BASE_DIR, "standalone_live_mesh")
+        
+    if os.path.isdir(mesh_dir):
+        if mesh_dir not in sys.path:
+            sys.path.append(mesh_dir)
+        try:
+            from standalone_live_mesh.inference import get_realtime_engine as _get
+            _mesh_engine = _get()
+            return _mesh_engine
+        except Exception as e:
+            print(f"[3D_ENGINE] Error loading mesh engine: {e}", flush=True)
+    return None
 
 def init_third_party_paths(base_dir: str):
     tp = os.path.join(base_dir, "third_party")
@@ -231,7 +276,12 @@ class RealESRGANManager:
             print(f"[RealESRGAN] Enhance error: {e}", flush=True)
             return rgb
 
-realesrgan_manager = RealESRGANManager(base_dir=os.path.dirname(__file__))
+_realesrgan_manager = None
+def get_realesrgan_manager():
+    global _realesrgan_manager
+    if _realesrgan_manager is None:
+        _realesrgan_manager = RealESRGANManager(base_dir=os.path.dirname(__file__))
+    return _realesrgan_manager
 
 class CodeFormerManager:
     def __init__(self):
@@ -397,15 +447,46 @@ class FaceDetector:
             os.chdir(cwd)
 
 
-detector = FaceDetector(sdk_dir=os.path.join(os.path.dirname(__file__), "sdk_src"))
-gfpgan_manager = GFPGANManager(base_dir=os.path.dirname(__file__))
-codeformer_manager = CodeFormerManager()
-embedder = FaceEmbedder()
-try:
-    from facexlib.detection import init_detection_model
-    _retina_det = init_detection_model('retinaface_resnet50', half=False)
-except Exception:
-    _retina_det = None
+# Global instances for lazy loading
+_detector = None
+_gfpgan_manager = None
+_codeformer_manager = None
+_embedder = None
+_retina_det = None
+
+def get_detector():
+    global _detector
+    if _detector is None:
+        _detector = FaceDetector(sdk_dir=os.path.join(os.path.dirname(__file__), "sdk_src"))
+    return _detector
+
+def get_gfpgan_manager():
+    global _gfpgan_manager
+    if _gfpgan_manager is None:
+        _gfpgan_manager = GFPGANManager(base_dir=os.path.dirname(__file__))
+    return _gfpgan_manager
+
+def get_codeformer_manager():
+    global _codeformer_manager
+    if _codeformer_manager is None:
+        _codeformer_manager = CodeFormerManager()
+    return _codeformer_manager
+
+def get_embedder():
+    global _embedder
+    if _embedder is None:
+        _embedder = FaceEmbedder()
+    return _embedder
+
+def get_retina_det():
+    global _retina_det
+    if _retina_det is None:
+        try:
+            from facexlib.detection import init_detection_model
+            _retina_det = init_detection_model('retinaface_resnet50', half=False)
+        except Exception:
+            _retina_det = False # Use False as a "tried but failed" marker
+    return _retina_det if _retina_det is not False else None
 
 def _load_image(image_input):
     if isinstance(image_input, np.ndarray):
@@ -431,18 +512,19 @@ def _detect_boxes_with_downscale(bgr_image: np.ndarray, max_side: int = 1280):
         bgr_small = cv2.resize(bgr_image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
     else:
         bgr_small = bgr_image
-    if _retina_det is not None:
+    rd = get_retina_det()
+    if rd is not None:
         try:
-            rlt = _retina_det.detect_faces(bgr_small, conf_threshold=0.5)
+            rlt = rd.detect_faces(bgr_small, conf_threshold=0.5)
             if rlt is not None and len(rlt) > 0:
                 boxes_s = rlt[:, 0:4].astype(np.float32)
                 scores = rlt[:, 4].astype(np.float32)
             else:
                 boxes_s, scores = np.zeros((0, 4), dtype=np.float32), np.zeros((0,), dtype=np.float32)
         except Exception:
-            boxes_s, scores = detector.detect(bgr_small)
+            boxes_s, scores = get_detector().detect(bgr_small)
     else:
-        boxes_s, scores = detector.detect(bgr_small)
+        boxes_s, scores = get_detector().detect(bgr_small)
     if scale != 1.0 and len(boxes_s) > 0:
         boxes_s = (boxes_s.astype(np.float32) / scale).astype(np.float32)
     return boxes_s, scores
@@ -538,7 +620,7 @@ def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0
             if min(crop.shape[0], crop.shape[1]) < 64:
                 crops.append(crop)
                 if compute_embeddings:
-                    emb = embedder.embed(crop)
+                    emb = get_embedder().embed(crop)
                     embeds_rows.append({"index": i, "len": int(emb.size), "norm": float(np.linalg.norm(emb)) if emb.size > 0 else 0.0, "first5": list(map(float, emb[:5])) if emb.size >= 5 else []})
                 continue
             # PHASE: Face Crop Enhancement
@@ -556,10 +638,10 @@ def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0
                     # Allow gfpgan_upscale to be the floor or ceiling
                     final_scale = max(int(gfpgan_upscale), calc_scale)
                     print(f"[RE-ENGINE] Face {i} is small ({short_side}px). Pre-upscaling x{final_scale} with RealESRGAN...", flush=True)
-                    temp_crop = realesrgan_manager.upscale(crop, scale=final_scale)
+                    temp_crop = get_realesrgan_manager().upscale(crop, scale=final_scale)
                 elif gfpgan_upscale > 1:
                     print(f"[RE-ENGINE] Pre-upscaling face {i} x{gfpgan_upscale} with RealESRGAN...", flush=True)
-                    temp_crop = realesrgan_manager.upscale(crop, scale=int(gfpgan_upscale))
+                    temp_crop = get_realesrgan_manager().upscale(crop, scale=int(gfpgan_upscale))
             
             # Step 2: Restore with GFPGAN / CodeFormer
             print(f"[RE-ENGINE] Restoring face {i} with {enhancer}...", flush=True)
@@ -569,16 +651,16 @@ def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0
                 out_crop = enhance_face_crop(temp_crop, level=enhance_level)
             elif enhancer == "GFPGAN":
                 # Note: internal upscale set to 1 since we already upscaled with ESRGAN
-                out_crop = gfpgan_manager.enhance_crop(temp_crop, upscale=1, whole=(crop_mode == "Portrait"))
+                out_crop = get_gfpgan_manager().enhance_crop(temp_crop, upscale=1, whole=(crop_mode == "Portrait"))
             elif enhancer == "GFPGAN+CodeFormer":
-                first = gfpgan_manager.enhance_crop(temp_crop, upscale=1, whole=(crop_mode == "Portrait"))
-                out_crop = codeformer_manager.refine_crop(first, fidelity=codeformer_w, upscale=1)
+                first = get_gfpgan_manager().enhance_crop(temp_crop, upscale=1, whole=(crop_mode == "Portrait"))
+                out_crop = get_codeformer_manager().refine_crop(first, fidelity=codeformer_w, upscale=1)
             else:
                 out_crop = temp_crop
             print(f"[RE-ENGINE] Face {i} processing complete. Input Shape: {crop.shape[:2]} -> Output Shape: {out_crop.shape[:2]}", flush=True)
             crops.append(out_crop)
             if compute_embeddings:
-                emb = embedder.embed(out_crop)
+                emb = get_embedder().embed(out_crop)
                 embeds_rows.append({"index": i, "len": int(emb.size), "norm": float(np.linalg.norm(emb)) if emb.size > 0 else 0.0, "first5": list(map(float, emb[:5])) if emb.size >= 5 else []})
 
     df = pd.DataFrame(
@@ -588,6 +670,42 @@ def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0
         ]
     )
     df_emb = pd.DataFrame(embeds_rows)
+
+    # --- 3D Structural Integration for core detect_faces ---
+    landmarks_3d_list = []
+    struct_vec_list = []
+    engine = get_realtime_engine()
+    if engine is not None:
+        print(f"[RE-ENGINE] Extracting 3D Landmarks for {len(boxes)} faces...", flush=True)
+        for i in range(len(boxes)):
+            x1, y1, x2, y2 = [int(v) for v in boxes[i].tolist()]
+            try:
+                # Use a 1.5x padded box for 3D context
+                c3x1, c3y1, c3x2, c3y2 = _compute_portrait_box(x1, y1, x2, y2, w, h, scale=1.5, margin=0.2)
+                face_for_3d = rgb[c3y1:c3y2, c3x1:c3x2]
+                if face_for_3d.size > 0:
+                    lmks_list = engine.extract_landmarks(face_for_3d)
+                    if lmks_list and len(lmks_list) > 0:
+                        lmks = lmks_list[0]
+                        landmarks_3d_list.append(lmks.tolist())
+                        sv = _extract_structural_vector(lmks)
+                        struct_vec_list.append(sv.tolist() if sv.size > 0 else [])
+                    else:
+                        landmarks_3d_list.append([])
+                        struct_vec_list.append([])
+                else:
+                    landmarks_3d_list.append([])
+                    struct_vec_list.append([])
+            except Exception:
+                landmarks_3d_list.append([])
+                struct_vec_list.append([])
+    else:
+        landmarks_3d_list = [[] for _ in range(len(boxes))]
+        struct_vec_list = [[] for _ in range(len(boxes))]
+
+    if len(landmarks_3d_list) == len(df):
+        df['landmarks_3d'] = landmarks_3d_list
+        df['struct_vec'] = struct_vec_list
 
     annotated = (rgb, anns)
     return annotated, crops, df, df_emb
