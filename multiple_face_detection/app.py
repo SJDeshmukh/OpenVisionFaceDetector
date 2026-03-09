@@ -171,26 +171,89 @@ class GFPGANManager:
             print(f"[GFPGAN] Loaded model: {model_path} on {self._get_device()} with upscale={upscale}", flush=True)
         return self._restorer
 
-    def enhance_crop(self, crop_rgb: np.ndarray, upscale: int = 2, whole: bool = False) -> np.ndarray:
+    def enhance_crop(self, crop_rgb: np.ndarray, upscale: int = 2, whole: bool = False, fidelity: float = 0.5, landmarks: np.ndarray = None) -> np.ndarray:
         if crop_rgb is None or crop_rgb.size == 0:
             return crop_rgb
+        
+        # Dual-Stage Strategy: If crop is low-res, use RealESRGAN first to provide a cleaner "pixel-hint"
+        processed_input = crop_rgb
+        h_c, w_c = crop_rgb.shape[:2]
+        if min(h_c, w_c) < 128:
+            try:
+                # Use global RealESRGAN if available
+                from .app import get_realesrgan_manager
+                re_mgr = get_realesrgan_manager()
+                if re_mgr:
+                    # Upscale at least to 256 for GFPGAN to see better features
+                    processed_input = re_mgr.upscale(crop_rgb, scale=2)
+                    print(f"[GFPGAN] Pre-upscaled small crop ({w_c}x{h_c}) with RealESRGAN.", flush=True)
+            except Exception:
+                pass
+
         try:
             restorer = self.load(upscale=upscale)
         except Exception:
             return crop_rgb
         if restorer is None:
             return crop_rgb
-        bgr = cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2BGR)
+        
+        bgr = cv2.cvtColor(processed_input, cv2.COLOR_RGB2BGR)
         try:
-            if whole:
-                _, _, restored_img = restorer.enhance(bgr, has_aligned=False, only_center_face=True, paste_back=True)
-                if restored_img is not None:
-                    return cv2.cvtColor(restored_img, cv2.COLOR_BGR2RGB)
+            # We ALWAYS use paste_back=True now for spatial alignment
+            _, _, restored_img = restorer.enhance(bgr, has_aligned=False, only_center_face=True, paste_back=True)
+            
+            if restored_img is not None:
+                out_rgb = cv2.cvtColor(restored_img, cv2.COLOR_BGR2RGB)
             else:
-                _, restored_faces, _ = restorer.enhance(bgr, has_aligned=False, only_center_face=True, paste_back=False)
-                if restored_faces and len(restored_faces) > 0:
-                    out = cv2.cvtColor(restored_faces[0], cv2.COLOR_BGR2RGB)
-                    return out
+                out_rgb = processed_input
+
+            # Final Blending with Fidelity and Optional Landmark-Guided Masking
+            # This ensures the AI doesn't "hallucinate" a new head shape/jawline
+            if fidelity < 1.0:
+                # Ensure sizes match before blending
+                if out_rgb.shape != crop_rgb.shape:
+                    orig_upscaled = cv2.resize(crop_rgb, (out_rgb.shape[1], out_rgb.shape[0]), interpolation=cv2.INTER_LANCZOS4)
+                else:
+                    orig_upscaled = crop_rgb
+                
+                # Masking logic
+                mask = None
+                if landmarks is not None and landmarks.size > 0:
+                    try:
+                        # Create a convex hull mask from landmarks to protect the jawline/edges
+                        # We use the landmarks to find the "inner face" area
+                        mask = np.zeros(out_rgb.shape[:2], dtype=np.float32)
+                        
+                        # Use landmarks (3D) projected to 2D
+                        pts = landmarks[:, :2].astype(np.int32)
+                        
+                        # Scale points if out_rgb was resized
+                        h_orig, w_orig = crop_rgb.shape[:2]
+                        h_new, w_new = out_rgb.shape[:2]
+                        if h_orig != h_new or w_orig != w_new:
+                            pts[:, 0] = pts[:, 0] * w_new / w_orig
+                            pts[:, 1] = pts[:, 1] * h_new / h_orig
+                            
+                        cv2.fillConvexPoly(mask, pts, 1.0)
+                        # Blur the mask slightly for smooth transition
+                        mask = cv2.GaussianBlur(mask, (21, 21), 11)
+                        # Expand dimensions for broadcasting
+                        mask = mask[:, :, np.newaxis]
+                    except Exception as e:
+                        print(f"[GFPGAN] Mask generation error: {e}", flush=True)
+                        mask = None
+
+                if mask is not None:
+                    # Blend: Result = (Fidelity-Based Blend within Mask) + (Original outside Mask)
+                    # This sharpens features (eyes/nose/mouth) but keeps original skin/jawline
+                    blend = out_rgb.astype(np.float32) * fidelity + orig_upscaled.astype(np.float32) * (1.0 - fidelity)
+                    out_rgb = (blend * mask + orig_upscaled.astype(np.float32) * (1.0 - mask)).astype(np.uint8)
+                else:
+                    # Standard global blend
+                    out_rgb = cv2.addWeighted(out_rgb, fidelity, orig_upscaled, 1.0 - fidelity, 0)
+            
+            return out_rgb
+
         except Exception as e:
             print(f"[GFPGAN] Enhance error: {e}", flush=True)
             pass
@@ -240,17 +303,19 @@ class RealESRGANManager:
                 device = "cuda" if torch.cuda.is_available() else ("mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu")
                 # x2plus model uses RRDBNet with 23 blocks
                 model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=2)
+                tile_val = int(os.environ.get("REAL_ESRGAN_TILE", "800"))
+                tile_pad_val = int(os.environ.get("REAL_ESRGAN_TILE_PAD", "10"))
                 self._upsampler = RealESRGANer(
                     scale=2,
                     model_path=model_path,
                     model=model,
-                    tile=400,
-                    tile_pad=10,
+                    tile=tile_val,
+                    tile_pad=tile_pad_val,
                     pre_pad=0,
                     half=False,
                     device=device
                 )
-                print(f"[RealESRGAN] Loaded model: {model_path} on {device}", flush=True)
+                print(f"[RealESRGAN] Loaded model: {model_path} on {device} (tile={tile_val})", flush=True)
             finally:
                 torch.load = _orig_load
             return self._upsampler
@@ -540,6 +605,22 @@ def _compute_portrait_box(x1, y1, x2, y2, w, h, scale: float = 3.0, margin: floa
     x1n, y1n, x2n, y2n = _clip_box(left, top, right, bottom, w, h)
     return x1n, y1n, x2n, y2n
 
+def _compute_centered_box(x1, y1, x2, y2, w, h, scale: float = 1.8):
+    """Computes a balanced square-ish box centered on the face box."""
+    face_w = max(1, x2 - x1)
+    face_h = max(1, y2 - y1)
+    cx = (x1 + x2) // 2
+    cy = (y1 + y2) // 2
+    side = int(max(face_w, face_h) * scale)
+    
+    left = max(0, cx - side // 2)
+    top = max(0, cy - side // 2)
+    right = left + side
+    bottom = top + side
+    
+    x1n, y1n, x2n, y2n = _clip_box(left, top, right, bottom, w, h)
+    return x1n, y1n, x2n, y2n
+
 def _clip_box(x1, y1, x2, y2, w, h):
     return int(max(0, x1)), int(max(0, y1)), int(min(w - 1, x2)), int(min(h - 1, y2))
 
@@ -570,15 +651,15 @@ def enhance_face_crop(crop: np.ndarray, level: float = 0.5) -> np.ndarray:
     if crop.size == 0:
         return crop
     h, w = crop.shape[:2]
+    # Simple high-quality resize if needed, but the primary enhancement happens via GFPGAN
     target_min = 256
     if min(h, w) < target_min:
         scale = target_min / float(min(h, w))
         crop = cv2.resize(crop, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_LANCZOS4)
-    denoise_h = max(1, int(5 * level))
-    crop = cv2.fastNlMeansDenoisingColored(crop, None, denoise_h, denoise_h, 7, 21)
-    crop = _clahe_luminance(crop, clip_limit=2.0 + 2.0 * level, tile_grid_size=8)
-    crop = _unsharp_mask(crop, strength=0.4 + 0.6 * level, kernel=5, sigma=1.2)
-    crop = _gamma(crop, gamma=1.0 - 0.2 * level)
+    
+    # Minimal clean enhancement
+    crop = _clahe_luminance(crop, clip_limit=1.5, tile_grid_size=8)
+    crop = _unsharp_mask(crop, strength=0.4 + 0.2 * level, kernel=3, sigma=1.0)
     return crop
 
 def enhance_whole_image(rgb: np.ndarray, level: float = 0.4) -> np.ndarray:
@@ -591,6 +672,44 @@ def enhance_whole_image(rgb: np.ndarray, level: float = 0.4) -> np.ndarray:
     out = _gamma(out, gamma=1.0 - 0.15 * level)
     return out
 
+
+def restore_from_reference(target_crop: np.ndarray, ref_image: np.ndarray, fidelity: float = 1.0) -> np.ndarray:
+    if target_crop is None or ref_image is None or target_crop.size == 0 or ref_image.size == 0:
+        return target_crop
+    engine = get_realtime_engine()
+    if engine is None:
+        return target_crop
+    t_lmks_list = engine.extract_landmarks(target_crop)
+    r_lmks_list = engine.extract_landmarks(ref_image)
+    if not t_lmks_list or not r_lmks_list:
+        return target_crop
+    t_pts = t_lmks_list[0][:, :2].astype(np.float32)
+    r_pts = r_lmks_list[0][:, :2].astype(np.float32)
+    matrix, inliers = cv2.estimateAffinePartial2D(r_pts, t_pts)
+    if matrix is None:
+        return target_crop
+    th, tw = target_crop.shape[:2]
+    warped_ref = cv2.warpAffine(ref_image, matrix, (tw, th), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REFLECT)
+    mask = np.zeros((th, tw), dtype=np.float32)
+    hull = cv2.convexHull(t_pts.astype(np.int32))
+    cv2.fillConvexPoly(mask, hull, 1.0)
+    k_size = max(31, int(min(th, tw) // 8)) | 1
+    mask = cv2.GaussianBlur(mask, (k_size, k_size), k_size // 2)
+    mask = np.clip(mask * 1.5, 0, 1)
+    mask = mask[:, :, np.newaxis]
+    combined = warped_ref.astype(np.float32) * mask + target_crop.astype(np.float32) * (1.0 - mask)
+    combined = np.clip(combined, 0, 255).astype(np.uint8)
+    gfp_mgr = get_gfpgan_manager()
+    if gfp_mgr:
+        restored = gfp_mgr.enhance_crop(combined, fidelity=max(0.7, fidelity), landmarks=t_lmks_list[0])
+        return restored
+    return combined
+
+def get_embedder():
+    global _embedder
+    if _embedder is None:
+        _embedder = FaceEmbedder()
+    return _embedder
 
 def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0.5, gfpgan_upscale: int = 2, codeformer_w: float = 0.5, compute_embeddings: bool = False, crop_mode: str = "Face", portrait_scale: float = 3.0, preclean_whole: bool = False, preclean_level: float = 0.4, det_max_side: int = 1280):
     rgb = _load_image(image_input)
@@ -609,6 +728,7 @@ def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0
         x1, y1, x2, y2 = boxes[i].tolist()
         s = float(scores[i])
         x1, y1, x2, y2 = _clip_box(x1, y1, x2, y2, w, h)
+        face_only = rgb[y1:y2, x1:x2]
         if crop_mode == "Portrait":
             px1, py1, px2, py2 = _compute_portrait_box(x1, y1, x2, y2, w, h, scale=float(portrait_scale), margin=0.5)
             anns.append(([px1, py1, px2, py2], f"{s:.2f}"))
@@ -620,7 +740,7 @@ def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0
             if min(crop.shape[0], crop.shape[1]) < 64:
                 crops.append(crop)
                 if compute_embeddings:
-                    emb = get_embedder().embed(crop)
+                    emb = get_embedder().embed(face_only if face_only.size > 0 else crop)
                     embeds_rows.append({"index": i, "len": int(emb.size), "norm": float(np.linalg.norm(emb)) if emb.size > 0 else 0.0, "first5": list(map(float, emb[:5])) if emb.size >= 5 else []})
                 continue
             # PHASE: Face Crop Enhancement
@@ -660,7 +780,7 @@ def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0
             print(f"[RE-ENGINE] Face {i} processing complete. Input Shape: {crop.shape[:2]} -> Output Shape: {out_crop.shape[:2]}", flush=True)
             crops.append(out_crop)
             if compute_embeddings:
-                emb = get_embedder().embed(out_crop)
+                emb = get_embedder().embed(face_only if face_only.size > 0 else out_crop)
                 embeds_rows.append({"index": i, "len": int(emb.size), "norm": float(np.linalg.norm(emb)) if emb.size > 0 else 0.0, "first5": list(map(float, emb[:5])) if emb.size >= 5 else []})
 
     df = pd.DataFrame(
@@ -687,7 +807,11 @@ def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0
                     lmks_list = engine.extract_landmarks(face_for_3d)
                     if lmks_list and len(lmks_list) > 0:
                         lmks = lmks_list[0]
-                        landmarks_3d_list.append(lmks.tolist())
+                        # PROJECT to Global Coordinates: Map points from the crop back to the original image
+                        lmks_global = lmks.copy()
+                        lmks_global[:, 0] += c3x1
+                        lmks_global[:, 1] += c3y1
+                        landmarks_3d_list.append(lmks_global.tolist())
                         sv = _extract_structural_vector(lmks)
                         struct_vec_list.append(sv.tolist() if sv.size > 0 else [])
                     else:

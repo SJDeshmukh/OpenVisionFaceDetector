@@ -399,7 +399,69 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                     # Pure face crop - NO padding, just the detector box
                     bx1 = max(0, bx1); by1 = max(0, by1)
                     bx2 = min(iw, bx2); by2 = min(ih, by2)
-                    pure_face = img_rgb[by1:by2, bx1:bx2]
+                    # Use a balanced centered box for the thumbnail crop
+                    cx1, cy1, cx2, cy2 = mfd_app._compute_centered_box(bx1, by1, bx2, by2, img_rgb.shape[1], img_rgb.shape[0], scale=1.8)
+                    pure_face = img_rgb[cy1:cy2, cx1:cx2]
+
+                    # Compute embedding and 3D from PURE face crop (the padded one)
+                    emb_vec_b64 = ''
+                    struct_vec_b64 = ''
+                    landmarks_3d = []
+                    try:
+                        if df is not None and hasattr(df, 'iloc') and i < len(df):
+                            row = df.iloc[i]
+                            if 'landmarks_3d' in row and isinstance(row['landmarks_3d'], list) and len(row['landmarks_3d']) > 0:
+                                landmarks_3d = row['landmarks_3d']
+                                # Draw on full annotated image (landmarks are now GLOBAL)
+                                for pt in landmarks_3d:
+                                    dx, dy = int(pt[0]), int(pt[1])
+                                    cv2.circle(draw, (dx, dy), 1, (0, 255, 0), -1)
+
+                        # Now professionally restore pure_face using GFPGAN for the thumbnail and embedding
+                        if pure_face.size > 0:
+                            lmks_local = None
+                            if landmarks_3d:
+                                try:
+                                    lmks_local = np.array(landmarks_3d).copy()
+                                    lmks_local[:, 0] -= cx1
+                                    lmks_local[:, 1] -= cy1
+                                except Exception:
+                                    pass
+                            
+                            # Revert to GFPGAN for the sharp, professional look the user prefers
+                            pure_face = mfd_app.get_gfpgan_manager().enhance_crop(pure_face, fidelity=0.9, upscale=2, landmarks=lmks_local)
+                            if min(pure_face.shape[:2]) < 512:
+                                scale_f = 512.0 / min(pure_face.shape[:2])
+                                pure_face = cv2.resize(pure_face, (int(pure_face.shape[1] * scale_f), int(pure_face.shape[0] * scale_f)), interpolation=cv2.INTER_LANCZOS4)
+
+                        emb = mfd_app.get_embedder().embed(pure_face)
+                        vcache = _ensure_vendor_emb_cache(vendor_id, class_year=class_year, division=division, branch=branch)
+                        
+                        # Store base64 for UI preview
+                        _, buffer = cv2.imencode('.jpg', cv2.cvtColor(pure_face, cv2.COLOR_RGB2BGR), [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+                        # face_b64 = base64.b64encode(buffer).decode('utf-8') # Removed redundant assignment
+
+                        # Compute structural vector if landmarks available
+                        struct_vec_val = None
+                        if landmarks_3d:
+                            try:
+                                lmks_local_sv = np.array(landmarks_3d).copy()
+                                lmks_local_sv[:, 0] -= cx1
+                                lmks_local_sv[:, 1] -= cy1
+                                struct_vec_val = _extract_structural_vector(lmks_local_sv)
+                                if struct_vec_val.size > 0:
+                                    struct_vec_b64 = base64.b64encode(struct_vec_val.astype(np.float32).tobytes()).decode('ascii')
+                            except Exception:
+                                pass
+
+                        emb_norm = _normalize_vec(emb)
+                        if emb_norm.size > 0:
+                            emb_vec_b64 = base64.b64encode(emb_norm.astype(np.float32).tobytes()).decode('ascii')
+                        
+                        sugg = _suggest_from_cache(emb, vcache, topk=3, struct_vec=struct_vec_val)
+                    except Exception:
+                        sugg = []
+
                     try:
                         px1, py1, px2, py2 = mfd_app._compute_portrait_box(bx1, by1, bx2, by2, img_rgb.shape[1], img_rgb.shape[0], scale=3.0, margin=0.5)
                         portrait = img_rgb[py1:py2, px1:px2]
@@ -408,7 +470,8 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                         else:
                             portrait_enh = mfd_app.get_gfpgan_manager().enhance_crop(portrait, upscale=gfp_up, whole=True) if portrait.size > 0 else portrait
                     except Exception:
-                        portrait_enh = crop_rgb
+                        portrait_enh = None
+
                     # Encode pure face crop as thumbs.face (used for display AND saving embeddings)
                     ok, buf = cv2.imencode('.jpg', cv2.cvtColor(pure_face, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
                     face_b64 = base64.b64encode(buf.tobytes()).decode('ascii') if ok else ''
@@ -417,49 +480,7 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                         port_b64 = base64.b64encode(bufp.tobytes()).decode('ascii') if okp else ''
                     else:
                         port_b64 = ''
-                    # Compute embedding from PURE face crop (no padding, no background)
-                    emb_vec_b64 = ''
-                    struct_vec_b64 = ''
-                    landmarks_3d = []
-                    try:
-                        emb = mfd_app.get_embedder().embed(pure_face)
-                        # Store the raw embedding so commit can reuse it exactly
-                        emb_norm = _normalize_vec(emb)
-                        if emb_norm.size > 0:
-                            emb_vec_b64 = base64.b64encode(emb_norm.astype(np.float32).tobytes()).decode('ascii')
-                        
-                        # --- 3DDFA-V3 Integration ---
-                        engine = get_realtime_engine()
-                        struct_vec_val = None
-                        if engine is not None:
-                            try:
-                                # Use a 1.5x padded box for 3D context - MTCNN needs background to detect keypoints
-                                c3x1, c3y1, c3x2, c3y2 = mfd_app._compute_portrait_box(bx1, by1, bx2, by2, img_rgb.shape[1], img_rgb.shape[0], scale=1.5, margin=0.2)
-                                face_for_3d = img_rgb[c3y1:c3y2, c3x1:c3x2]
-                                
-                                if face_for_3d.size > 0:
-                                    lmks_list = engine.extract_landmarks(face_for_3d)
-                                    if lmks_list and len(lmks_list) > 0:
-                                        lmks = lmks_list[0]
-                                        landmarks_3d = lmks.tolist()
-                                        
-                                        # Draw on full annotated image
-                                        for pt in landmarks_3d:
-                                            cx, cy = int(pt[0]) + c3x1, int(pt[1]) + c3y1
-                                            cv2.circle(draw, (cx, cy), 2, (0, 255, 0), -1)
-                                            
-                                        struct_vec_val = _extract_structural_vector(lmks)
-                                        if struct_vec_val.size > 0:
-                                            struct_vec_b64 = base64.b64encode(struct_vec_val.astype(np.float32).tobytes()).decode('ascii')
-                                    else:
-                                        pass # print(f"[3D_ENGINE] Face {i}: No landmarks found in 1.5x crop ({face_for_3d.shape})", flush=True)
-                            except Exception as e:
-                                pass # print(f"[3D_ENGINE] Error for face {i}: {e}", flush=True)
-                        
-                        sugg = _suggest_from_cache(emb, vcache, topk=3, struct_vec=struct_vec_val)
-                        pass # print(f"[EMB_DEBUG] face={i} box=({bx1},{by1},{bx2},{by2}) crop={pure_face.shape} emb_first5={emb_norm[:5].tolist() if emb_norm.size>0 else 'NONE'} sugg={[(s.get('name','?'), round(s.get('similarity',0)*100,1)) for s in sugg]}", flush=True)
-                    except Exception:
-                        sugg = []
+
                     faces.append({
                         "index": i,
                         "box": [bx1, by1, bx2, by2],
@@ -470,6 +491,7 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                         "struct_vec": struct_vec_b64,
                         "landmarks_3d": landmarks_3d
                     })
+
             ok2, ann = cv2.imencode('.jpg', draw, [cv2.IMWRITE_JPEG_QUALITY, 85])
             annotated_b64 = f"data:image/jpeg;base64,{base64.b64encode(ann.tobytes()).decode('ascii')}" if ok2 else ''
         else:

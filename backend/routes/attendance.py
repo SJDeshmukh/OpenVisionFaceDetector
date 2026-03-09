@@ -232,6 +232,8 @@ def class_batch_commit():
     except Exception:
         return jsonify({"error": "embedder unavailable"}), 500
     saved = 0
+    # Cache person names to reduce DB hits
+    person_name_cache = {}
     for a in assigns:
         try:
             item_id = a.get('item_id'); face_index = a.get('face_index'); person_id = a.get('person_id')
@@ -277,6 +279,24 @@ def class_batch_commit():
                 continue
             vec_blob = emb.astype(np.float32).tobytes()
             dim = int(emb.size)
+
+            # Update class_batch_items.faces_json to persist assignment for this face
+            try:
+                # Resolve person name (cache to avoid repeated lookups)
+                pid_key = int(person_id)
+                if pid_key not in person_name_cache:
+                    c.execute("SELECT name FROM faces WHERE id = ? AND vendor_id = ?", (pid_key, vendor_id))
+                    rname = c.fetchone()
+                    person_name_cache[pid_key] = (rname['name'] if isinstance(rname, sqlite3.Row) else (rname[0] if rname else '')) if rname else ''
+                assigned_name = person_name_cache.get(pid_key, '')
+                # Mutate face entry
+                face['assigned_person_id'] = int(person_id)
+                if assigned_name:
+                    face['assigned_name'] = assigned_name
+                # Write back
+                c.execute("UPDATE class_batch_items SET faces_json = ? WHERE id = ? AND batch_id = ?", (json.dumps(faces), item_id, bid))
+            except Exception:
+                pass
 
             struct_vec_b64 = face.get('struct_vec') or ''
             landmarks_3d = face.get('landmarks_3d') or []
@@ -3070,5 +3090,4 @@ def get_attendance():
         })
     
     return jsonify({"attendance": attendance})
-
 

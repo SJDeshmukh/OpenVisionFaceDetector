@@ -128,7 +128,7 @@ let frontendTunnel = null;
 let tmProc = null;
 let vite = null;
 let redisProc = null;
-let celeryProc = null;
+let celeryProcs = [];
 let shuttingDown = false;
 
 const REDIS_URL = "redis://127.0.0.1:6379/0";
@@ -154,35 +154,40 @@ async function startCeleryWorker() {
     process.stdout.write("Skipping Celery worker (Redis not available).\n");
     return;
   }
-  process.stdout.write("Starting Celery worker...\n");
+  process.stdout.write("Starting Celery workers (multi-tenant concurrency)...\n");
   try {
-    celeryProc = spawnProc("celery", [
-      "-A", "celery_app",
-      "worker",
-      "--loglevel=info",
-      "--concurrency=1",
-      "--pool=solo",
-      "-Q", "celery,default",
-      "--include", "tasks",
-    ], {
-      name: "celery",
-      stdio: "pipe",
-      cwd: process.cwd() + "/../backend",
-      env: {
-        ...process.env,
-        CELERY_BROKER_URL: REDIS_URL,
-        CELERY_RESULT_BACKEND: REDIS_URL,
-        DB_PATH: "../backend/face_db.sqlite",
-        KMP_DUPLICATE_LIB_OK: "TRUE",
-        OMP_NUM_THREADS: "1",
-        OPENCV_NUM_THREADS: "1",
-      },
-    });
+    const numWorkers = parseInt(process.env.CELERY_CONCURRENCY || "2", 10);
+    for (let i = 1; i <= numWorkers; i++) {
+      const proc = spawnProc("celery", [
+        "-A", "celery_app",
+        "worker",
+        "--loglevel=info",
+        "--concurrency=1",
+        "--pool=solo",
+        "-n", `worker${i}@%h`,
+        "-Q", "celery,default",
+        "--include", "tasks",
+      ], {
+        name: `celery${i}`,
+        stdio: "pipe",
+        cwd: process.cwd() + "/../backend",
+        env: {
+          ...process.env,
+          CELERY_BROKER_URL: REDIS_URL,
+          CELERY_RESULT_BACKEND: REDIS_URL,
+          DB_PATH: "../backend/face_db.sqlite",
+          KMP_DUPLICATE_LIB_OK: "TRUE",
+          OMP_NUM_THREADS: "1",
+          OPENCV_NUM_THREADS: "1",
+        },
+      });
+      celeryProcs.push(proc);
+    }
     // Give Celery a moment to connect
     await delay(2000);
-    process.stdout.write("Celery worker started (2 concurrent workers).\n");
+    process.stdout.write(`Celery workers started (${numWorkers} concurrent workers).\n`);
   } catch (e) {
-    process.stderr.write(`Failed to start Celery worker: ${String(e)}\n`);
+    process.stderr.write(`Failed to start Celery workers: ${String(e)}\n`);
   }
 }
 
@@ -429,7 +434,9 @@ function shutdown() {
     tmProc?.kill("SIGINT");
   } catch { }
   try {
-    celeryProc?.kill("SIGINT");
+    for (const p of celeryProcs) {
+      p?.kill("SIGINT");
+    }
   } catch { }
   try {
     backend?.kill("SIGINT");

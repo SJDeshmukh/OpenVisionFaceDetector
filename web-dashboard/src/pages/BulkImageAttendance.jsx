@@ -3,7 +3,7 @@ import Webcam from 'react-webcam';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { API_URL } from '../config';
-import { Upload, Check, Users, Camera, Loader2 } from 'lucide-react';
+import { Upload, Check, Users, Camera, Loader2, Wand2 } from 'lucide-react';
 
 const BulkImageAttendance = () => {
   const { user } = useAuth();
@@ -20,6 +20,9 @@ const BulkImageAttendance = () => {
   const webcamRef = useRef(null);
   const [simThreshold, setSimThreshold] = useState(0.6);
   const peopleById = useRef(null);
+  const [pendingFiles, setPendingFiles] = useState([]); // queued File objects to be scanned together
+  const [regenerating, setRegenerating] = useState({});
+  const overridesRef = useRef(new Map()); // key: `${itemId}:${faceIndex}` -> dataURL
   useEffect(() => {
     peopleById.current = new Map(people.map(p => [String(p.id), p.name]));
   }, [people]);
@@ -161,6 +164,13 @@ const BulkImageAttendance = () => {
           normFace.globalIndex = currentFaceIndex;
           normFace.itemId = newItem.id;
           normFace.faceIndex = typeof f.index === 'number' ? f.index : currentFaceIndex;
+          // Apply local override if present to survive polling refresh
+          const key = `${normFace.itemId}:${normFace.faceIndex}`;
+          const ov = overridesRef.current.get(key);
+          if (ov) {
+            normFace.thumbs = { ...(normFace.thumbs || {}), face: ov };
+            normFace.thumb = ov;
+          }
           newItem.mappedFaces.push(normFace);
           allFaces.push(normFace);
         });
@@ -175,9 +185,14 @@ const BulkImageAttendance = () => {
       const nextAssign = { ...prevAssign };
       allFaces.forEach(f => {
         if (nextAssign[f.globalIndex] === undefined) {
-          const top = Array.isArray(f.suggestions) && f.suggestions.length ? f.suggestions[0] : null;
-          const ok = top && typeof top.similarity === 'number' ? top.similarity >= simThreshold : !!top?.person_id;
-          nextAssign[f.globalIndex] = ok && top?.person_id ? String(top.person_id) : '';
+          // If backend already persisted an assignment, prefer it
+          if (f.assigned_person_id) {
+            nextAssign[f.globalIndex] = String(f.assigned_person_id);
+          } else {
+            const top = Array.isArray(f.suggestions) && f.suggestions.length ? f.suggestions[0] : null;
+            const ok = top && typeof top.similarity === 'number' ? top.similarity >= simThreshold : !!top?.person_id;
+            nextAssign[f.globalIndex] = ok && top?.person_id ? String(top.person_id) : '';
+          }
         }
       });
       return nextAssign;
@@ -294,6 +309,26 @@ const BulkImageAttendance = () => {
     }
   };
 
+  const addFilesToPending = (files) => {
+    const rawArr = Array.from(files || []).filter(f => f.type.startsWith('image/'));
+    if (rawArr.length === 0) return;
+    setPendingFiles(prev => [...prev, ...rawArr]);
+  };
+  const scanPendingFiles = async () => {
+    if (pendingFiles.length === 0) {
+      alert('Please add images to scan');
+      return;
+    }
+    if (!scopeSelected) {
+      alert('Select class scope first');
+      return;
+    }
+    try {
+      await onUploadImages(pendingFiles);
+      setPendingFiles([]);
+    } catch (e) { }
+  };
+
   const saveMappings = async () => {
     const id = localStorage.getItem('class_batch_id');
     if (!id) {
@@ -322,16 +357,7 @@ const BulkImageAttendance = () => {
       }, {
         headers: { Authorization: `Bearer ${user?.token}` }
       });
-      try {
-        const rRefresh = await axios.post(`${API_URL}/class-batch/refresh`, { batch_id: id }, { headers: { Authorization: `Bearer ${user?.token}` } });
-        if (rRefresh.data?.task_id) {
-          console.log('Batch refresh task started:', rRefresh.data.task_id);
-        }
-      } catch (_) { }
-      try {
-        await fetchBatchStatus(id);
-      } catch (_) { }
-      alert('Saved and refreshed suggestions');
+      alert('Saved embeddings successfully');
     } catch (e) {
       alert(e.response?.data?.error || e.message || 'Save failed');
     }
@@ -369,6 +395,58 @@ const BulkImageAttendance = () => {
     }
   };
 
+  const handleRegenerate = async (f) => {
+    const personId = assign[f.globalIndex];
+    if (!personId) {
+      alert('Assign a person first');
+      return;
+    }
+    setRegenerating(prev => ({ ...prev, [f.globalIndex]: true }));
+    try {
+      const resp = await axios.post(`${API_URL}/regenerate`, {
+        person_id: personId,
+        image: f.thumbs?.face || f.thumb,
+        fidelity: 1.0
+      }, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+
+      if (resp.data?.success && resp.data?.image) {
+        // Persist override so it survives polling refreshes
+        const key = `${f.itemId}:${f.faceIndex}`;
+        overridesRef.current.set(key, resp.data.image);
+
+        // Update the face image in the local state
+        setFaces(prevFaces => prevFaces.map(face => {
+          if (face.globalIndex === f.globalIndex) {
+            return { ...face, thumbs: { ...face.thumbs, face: resp.data.image }, thumb: resp.data.image };
+          }
+          return face;
+        }));
+
+        // Also update batch items for immediate visual update
+        setBatchItems(prevItems => prevItems.map(item => {
+          if (item.id === f.itemId) {
+            return {
+              ...item,
+              mappedFaces: item.mappedFaces.map(face => {
+                if (face.globalIndex === f.globalIndex) {
+                  return { ...face, thumbs: { ...face.thumbs, face: resp.data.image }, thumb: resp.data.image };
+                }
+                return face;
+              })
+            };
+          }
+          return item;
+        }));
+      }
+    } catch (e) {
+      alert(e.response?.data?.error || e.message || 'Restoration failed');
+    } finally {
+      setRegenerating(prev => ({ ...prev, [f.globalIndex]: false }));
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -393,7 +471,7 @@ const BulkImageAttendance = () => {
             ))}
           </select>
           <label className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 cursor-pointer disabled:opacity-50">
-            {loading ? 'Uploading...' : <><Upload size={18} /><span>Upload Images</span></>}
+            <><Upload size={18} /><span>Upload Images</span></>
             <input
               type="file"
               accept="image/*"
@@ -401,11 +479,19 @@ const BulkImageAttendance = () => {
               className="hidden"
               disabled={loading || !scopeSelected}
               onChange={(e) => {
-                if (e.target.files?.length > 0) onUploadImages(e.target.files);
+                if (e.target.files?.length > 0) addFilesToPending(e.target.files);
                 e.target.value = '';
               }}
             />
           </label>
+          <button
+            onClick={scanPendingFiles}
+            disabled={!scopeSelected || pendingFiles.length === 0}
+            className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+            title="Queue images one-by-one, then press to scan"
+          >
+            Scan Attendance ({pendingFiles.length})
+          </button>
           <div className="text-sm font-medium flex items-center gap-2">
             {batchItems.some(i => i.status === 'processing' || i.status === 'pending') ? (
               <span className="flex items-center gap-2 text-amber-600 bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200">
@@ -429,9 +515,16 @@ const BulkImageAttendance = () => {
             <Camera size={16} /> Live
           </button>
           <button
+            onClick={saveMappings}
+            disabled={faces.length === 0}
+            className="px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 inline-flex items-center gap-2"
+          >
+            Save Embeddings
+          </button>
+          <button
             onClick={markAll}
             disabled={faces.length === 0}
-            className="px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+            className="px-4 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
           >
             Mark Selected
           </button>
@@ -498,12 +591,6 @@ const BulkImageAttendance = () => {
                         className="w-16 p-1.5 border rounded"
                       />
                       <span className="text-xs text-slate-600">%</span>
-                      <button
-                        onClick={saveMappings}
-                        className="ml-auto px-3 py-1.5 rounded bg-emerald-600 text-white text-xs hover:bg-emerald-700"
-                      >
-                        Save Mappings
-                      </button>
                     </div>
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">
                       {item.mappedFaces.map(f => (
@@ -526,6 +613,18 @@ const BulkImageAttendance = () => {
                               <div className="absolute top-1 right-1 bg-emerald-600 border border-emerald-400 text-white text-[9px] font-bold px-1.5 py-0.5 rounded shadow">
                                 3D Ready
                               </div>
+                            )}
+
+                            {/* Re-generate Button overlay */}
+                            {assign[f.globalIndex] && (
+                              <button
+                                onClick={() => handleRegenerate(f)}
+                                disabled={regenerating[f.globalIndex]}
+                                className="absolute bottom-1 right-1 bg-indigo-600/90 hover:bg-indigo-700 text-white p-1.5 rounded-lg shadow-lg backdrop-blur transition-all transform hover:scale-105 disabled:opacity-50"
+                                title="Restore from reference HQ image"
+                              >
+                                {regenerating[f.globalIndex] ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
+                              </button>
                             )}
                           </div>
                           {assign[f.globalIndex] ? (

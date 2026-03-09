@@ -107,7 +107,9 @@ admin_bp = Blueprint('admin_bp', __name__)
 @admin_bp.route("/audit-logs", methods=["GET"])
 @super_admin_required
 def get_audit_logs():
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -135,7 +137,9 @@ def get_audit_logs():
 @admin_bp.route("/impersonate", methods=["POST"])
 @super_admin_required
 def impersonate_vendor():
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     data = request.json
     vendor_id = data.get('vendor_id')
     
@@ -185,7 +189,9 @@ def impersonate_vendor():
 @admin_bp.route("/vendors/<int:vendor_id>/devices", methods=["GET"])
 @super_admin_required
 def list_vendor_devices(vendor_id):
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     try:
         conn = get_db_connection()
         conn.row_factory = sqlite3.Row
@@ -215,7 +221,9 @@ def list_vendor_devices(vendor_id):
 @admin_bp.route("/vendors/<int:vendor_id>/devices/<device_id>", methods=["PUT"])
 @super_admin_required
 def update_vendor_device_name(vendor_id, device_id):
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     data = request.json or {}
     new_name = str(data.get("device_name") or "").strip()
     try:
@@ -265,7 +273,9 @@ def update_vendor_device_name(vendor_id, device_id):
 @admin_bp.route("/vendors/<int:vendor_id>/devices/<device_id>/assign-slot", methods=["POST"])
 @super_admin_required
 def admin_assign_device_slot(vendor_id, device_id):
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     data = request.json or {}
     slot_name = str(data.get("slot_name") or "").strip()
     try:
@@ -362,7 +372,9 @@ def admin_assign_device_slot(vendor_id, device_id):
 @admin_bp.route("/vendors/<int:vendor_id>/devices/<device_id>", methods=["DELETE"])
 @super_admin_required
 def delete_vendor_device(vendor_id, device_id):
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     try:
         conn = get_db_connection()
         c = conn.cursor()
@@ -405,7 +417,9 @@ def delete_vendor_device(vendor_id, device_id):
 @admin_bp.route("/vendors/<int:vendor_id>/devices/<device_id>/logout", methods=["POST"])
 @super_admin_required
 def logout_vendor_device(vendor_id, device_id):
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     try:
         conn = get_db_connection()
         c = conn.cursor()
@@ -437,7 +451,9 @@ def logout_vendor_device(vendor_id, device_id):
 @admin_bp.route("/vendors/<int:vendor_id>/device-slots", methods=["GET"])
 @super_admin_required
 def list_vendor_device_slots(vendor_id):
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     try:
         conn = get_db_connection()
         conn.row_factory = sqlite3.Row
@@ -466,7 +482,9 @@ def list_vendor_device_slots(vendor_id):
 @admin_bp.route("/vendors/<int:vendor_id>/device-slots", methods=["PUT"])
 @super_admin_required
 def set_vendor_device_slots(vendor_id):
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     data = request.json or {}
     slots = data.get("slots") or []
     if not isinstance(slots, list):
@@ -512,7 +530,9 @@ def set_vendor_device_slots(vendor_id):
 @admin_bp.route("/users/password", methods=["PUT"])
 @super_admin_required
 def reset_user_password():
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     data = request.json
     target_username = data.get("username")
     new_password = data.get("new_password")
@@ -606,7 +626,9 @@ def get_admin_stats():
 @admin_bp.route("/vendors", methods=["GET"])
 @super_admin_required
 def get_vendors():
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -703,7 +725,9 @@ def get_registration_templates():
 @admin_bp.route("/vendors/<int:vendor_id>/registration_config", methods=["PUT"])
 @super_admin_required
 def set_vendor_registration_config(vendor_id):
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     data = request.json or {}
     config = data.get("registration_config")
     if config is None:
@@ -791,7 +815,9 @@ def bulk_vendor_action():
 @admin_bp.route("/vendors/<int:vendor_id>/employees/export", methods=["GET"])
 @super_admin_required
 def export_employees(vendor_id):
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     import csv, io
     conn = get_db_connection()
     c = conn.cursor()
@@ -856,7 +882,9 @@ def import_employees(vendor_id):
 @track_metrics("admin_create_vendor")
 @rate_limit(limit=60, window=60)
 def create_vendor():
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     from utils import BUNDLE_FEATURES
     data = request.json
     company_name = data.get("company_name")
@@ -1018,7 +1046,9 @@ def create_vendor():
 @admin_bp.route("/vendors/<int:vendor_id>/suspend", methods=["POST"])
 @super_admin_required
 def suspend_vendor(vendor_id):
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     data = request.json
     action = data.get("action", "suspend") # suspend or activate
     status = 'suspended' if action == 'suspend' else 'active'
@@ -1047,7 +1077,9 @@ def suspend_vendor(vendor_id):
 @admin_bp.route("/vendors/<int:vendor_id>/toggle_web_login", methods=["POST"])
 @super_admin_required
 def toggle_web_login(vendor_id):
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     data = request.json
     enabled = data.get("enabled", True) # boolean
     
@@ -1069,7 +1101,9 @@ def toggle_web_login(vendor_id):
 @admin_bp.route("/vendors/<int:vendor_id>/subscription", methods=["GET"])
 @super_admin_required
 def get_vendor_subscription_admin(vendor_id):
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -1090,7 +1124,9 @@ def get_vendor_subscription_admin(vendor_id):
 @admin_bp.route("/vendors/<int:vendor_id>/subscription", methods=["PUT"])
 @super_admin_required
 def update_vendor_subscription(vendor_id):
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     from utils import BUNDLE_FEATURES
     data = request.json
     
@@ -1270,7 +1306,9 @@ def update_vendor_subscription(vendor_id):
 
 @admin_bp.route("/vendors/<int:vendor_id>/registration-config", methods=["GET"])
 def get_vendor_registration_config(vendor_id):
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     # Auth Check (SuperAdmin or Vendor Admin of same vendor)
     caller_vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -1320,7 +1358,9 @@ def get_vendor_registration_config(vendor_id):
 @admin_bp.route("/vendors/<int:vendor_id>/registration-config", methods=["PUT"])
 @super_admin_required
 def update_vendor_registration_config(vendor_id):
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     data = request.json
     config = data.get('config') # Expecting a list/object
     
@@ -1345,7 +1385,9 @@ def update_vendor_registration_config(vendor_id):
 @admin_bp.route("/vendors/<int:vendor_id>", methods=["PUT"])
 @super_admin_required
 def update_vendor_details(vendor_id):
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     from utils import BUNDLE_FEATURES
     data = request.json
     
@@ -1523,7 +1565,9 @@ def delete_vendor(vendor_id):
 @admin_bp.route("/vendors/<int:vendor_id>/invoices", methods=["GET"])
 @super_admin_required
 def get_vendor_invoices(vendor_id):
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -1541,7 +1585,9 @@ def get_vendor_invoices(vendor_id):
 @admin_bp.route("/archive/vendors", methods=["GET"])
 @super_admin_required
 def list_archived_vendors():
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     ensure_archive_table()
     company = request.args.get("company_name")
     email = request.args.get("email")
@@ -1580,7 +1626,9 @@ def list_archived_vendors():
 @admin_bp.route("/audit-logs", methods=["GET"])
 @super_admin_required
 def list_audit_logs():
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     ensure_audit_logs_table()
     conn = get_db_connection()
     c = conn.cursor()
@@ -1612,7 +1660,9 @@ def list_audit_logs():
 @admin_bp.route("/vendors/<int:vendor_id>/invoices/generate", methods=["POST"])
 @super_admin_required
 def generate_invoice(vendor_id):
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     from utils import create_job, complete_job, fail_job
     import eventlet
     is_async = request.args.get('async') == 'true'
@@ -1696,7 +1746,9 @@ def generate_invoice(vendor_id):
 @admin_bp.route("/invoices/<int:invoice_id>/status", methods=["PUT"])
 @super_admin_required
 def update_invoice_status(invoice_id):
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     data = request.json
     status = data.get("status") # paid, overdue, generated
     
@@ -1723,7 +1775,9 @@ def update_invoice_status(invoice_id):
 @admin_bp.route("/system/health", methods=["GET"])
 @super_admin_required
 def system_health():
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     status = {"db": "ok", "redis": "disabled", "active_sessions": 0}
     # DB check
     try:
@@ -1749,7 +1803,9 @@ def system_health():
 @admin_bp.route("/system/queues", methods=["GET"])
 @super_admin_required
 def system_queues():
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     data = {
         "broker": "unknown",
         "queues": {},
@@ -1788,7 +1844,9 @@ def system_queues():
 @admin_bp.route("/jobs/events", methods=["GET"])
 @super_admin_required
 def list_task_events():
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     ensure_task_events_table()
     conn = get_db_connection()
     c = conn.cursor()
@@ -1835,7 +1893,9 @@ def list_task_events():
 @admin_bp.route("/jobs/events/purge", methods=["POST"])
 @super_admin_required
 def purge_task_events():
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     ensure_task_events_table()
     conn = get_db_connection()
     c = conn.cursor()
@@ -1867,7 +1927,9 @@ def purge_task_events():
 @admin_bp.route("/jobs/metrics", methods=["GET"])
 @super_admin_required
 def jobs_metrics():
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     ensure_task_events_table()
     conn = get_db_connection()
     c = conn.cursor()
@@ -1943,7 +2005,9 @@ def jobs_metrics():
 @admin_bp.route("/vendors/restore", methods=["POST"])
 @super_admin_required
 def restore_vendor():
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     ensure_archive_table()
     data = request.json or {}
     company = data.get("company_name")
@@ -2034,7 +2098,9 @@ def restore_vendor():
 
 @admin_bp.route("/students/assign-parent", methods=["POST"])
 def assign_parent():
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     caller_vendor_id, error = authenticate_vendor_access()
     if error: return error
     auth_header = request.headers.get('Authorization')
@@ -2060,7 +2126,9 @@ def assign_parent():
 @admin_bp.route("/superadmin/subscription", methods=["POST", "PUT"])
 @super_admin_required
 def update_subscription():
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     data = request.json
     vendor_id = data.get("vendor_id")
     
@@ -2104,7 +2172,9 @@ def update_subscription():
 @admin_bp.route("/superadmin/employees", methods=["GET"])
 @super_admin_required
 def get_all_employees():
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    from app import get_db_connection, socketio, is_testing
+    from utils import ALL_FEATURES
+    from services.auth_service import authenticate_vendor_access
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()

@@ -1,10 +1,14 @@
 # Stage 1: Build Frontend
 FROM node:20-alpine AS frontend-builder
 WORKDIR /app/frontend
+
+# Optional build-time API base (used by Vite)
+ARG VITE_API_URL
+ENV VITE_API_URL=${VITE_API_URL}
+
 COPY web-dashboard/package*.json ./
 RUN npm install
 COPY web-dashboard/ ./
-# Build with relative path base to ensure it works when served from root
 RUN npm run build
 
 # Stage 2: Build Backend & Runtime
@@ -20,13 +24,14 @@ RUN apt-get update && apt-get install -y \
     cmake \
     libgl1 \
     libglib2.0-0 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 # 1. Install Backend Dependencies
-COPY backend/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+COPY backend/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r ./requirements.txt
 
 # 2. Install Torch (CPU-only for production compatibility)
 RUN pip install --no-cache-dir \
@@ -57,7 +62,8 @@ COPY entrypoint.sh ./
 RUN chmod +x entrypoint.sh
 
 # Environment Defaults
-ENV PORT=10000
+ARG APP_PORT=10000
+ENV PORT=${APP_PORT}
 ENV HOST=0.0.0.0
 ENV CELERY_BROKER_URL=redis://127.0.0.1:6379/0
 ENV CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/0
@@ -65,8 +71,16 @@ ENV REDIS_URL=redis://127.0.0.1:6379/0
 ENV CELERY_CONCURRENCY=1
 ENV PYTHONPATH=/app:/app/multiple_face_detection:/app/backend
 
+# Optional public URL for logs (entrypoint prints it)
+ARG PUBLIC_URL
+ENV PUBLIC_URL=${PUBLIC_URL}
+
 # Expose ports
 EXPOSE 10000 5001
+
+# Healthcheck for backend
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=5 \
+  CMD curl -fsS http://127.0.0.1:5001/api/ping || exit 1
 
 # Start via entrypoint
 CMD ["./entrypoint.sh"]

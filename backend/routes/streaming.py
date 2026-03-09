@@ -141,7 +141,7 @@ def view_stream_frame():
 def list_active_devices():
     from app import get_db_connection, socketio, is_testing, ALL_FEATURES
     from app import latest_frames, client_counts, device_status
-    from services.auth_service import extract_token, verify_token
+    from services.auth_service import extract_token, verify_token, authenticate_vendor_access
     """
     Returns a list of active devices (streams) for the authenticated vendor 
     or all vendors if SuperAdmin.

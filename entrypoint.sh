@@ -64,16 +64,19 @@ print("Backend did not start in time")
 sys.exit(1)
 PY
 
-# 4. Start Celery Worker in the background
-echo "Starting Celery worker (concurrency=$CELERY_CONCURRENCY)..."
-celery -A celery_app worker \
-  --loglevel=info \
-  --concurrency=1 \
-  --pool=solo \
-  -Q celery,default \
-  --include tasks \
-  --logfile=/dev/stdout &
-echo "Celery worker started."
+# 4. Start Celery Workers in the background
+echo "Starting Celery workers (concurrency=$CELERY_CONCURRENCY)..."
+for i in $(seq 1 "$CELERY_CONCURRENCY"); do
+  celery -A celery_app worker \
+    --loglevel=info \
+    --concurrency=1 \
+    --pool=solo \
+    -n "worker${i}@%h" \
+    -Q celery,default \
+    --include tasks \
+    --logfile=/dev/stdout &
+done
+echo "Celery workers started."
 
 # 5. Start Nginx in the foreground (so Docker keeps running)
 echo "Starting Nginx..."
