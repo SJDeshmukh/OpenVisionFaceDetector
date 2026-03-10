@@ -29,3 +29,4 @@ psycopg2-binary
 boto3
 awsgi
 huggingface_hub>=0.19.0
+qrcode
