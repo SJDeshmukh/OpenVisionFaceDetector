@@ -9,6 +9,10 @@ import secrets
 import qrcode
 from io import BytesIO
 from utils import _run
+try:
+    from celery_app import celery
+except Exception:
+    celery = None
 
 # Import from services
 from services.auth_service import verify_token, extract_token, hash_password, verify_password
