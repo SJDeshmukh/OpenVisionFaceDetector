@@ -8,6 +8,7 @@ import os
 import secrets
 import qrcode
 from io import BytesIO
+from utils import _run
 
 # Import from services
 from services.auth_service import verify_token, extract_token, hash_password, verify_password
@@ -1588,7 +1589,8 @@ def list_archived_vendors():
     from app import get_db_connection, socketio, is_testing
     from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
-    ensure_archive_table()
+    from app import ensure_archive_table as _ensure_archive_table
+    _ensure_archive_table()
     company = request.args.get("company_name")
     email = request.args.get("email")
     conn = get_db_connection()
@@ -1629,7 +1631,8 @@ def list_audit_logs():
     from app import get_db_connection, socketio, is_testing
     from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
-    ensure_audit_logs_table()
+    from app import ensure_audit_logs_table as _ensure_audit_logs_table
+    _ensure_audit_logs_table()
     conn = get_db_connection()
     c = conn.cursor()
     try:
