@@ -97,7 +97,7 @@ def view_stream_frame():
     from app import get_db_connection, socketio, is_testing
     from utils import ALL_FEATURES
     from app import latest_frames, client_counts, device_status
-    from services.auth_service import extract_token, verify_token
+    from services.auth_service import extract_token, verify_token, authenticate_vendor_access
     auth_vendor_id, error = authenticate_vendor_access()
     if error: return error
 
