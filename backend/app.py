@@ -32,6 +32,7 @@ from utils import (
     BUNDLE_FEATURES, ALL_FEATURES, REGISTRATION_TEMPLATES
 )
 import db_factory
+DB_TYPE = db_factory.DB_TYPE
 from db_factory import get_table_columns
 from services.attendance_service import calculate_daily_hours, calculate_arrival_status, calculate_expected_hours
 from services.face_service import (

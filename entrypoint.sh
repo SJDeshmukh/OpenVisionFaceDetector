@@ -35,11 +35,65 @@ echo "Starting Redis..."
 redis-server --daemonize yes --port 6379 --loglevel warning
 echo "Redis started on port 6379."
 
-# 3. Pre-flight Check: Auto-Download Models
+# 3. Start PostgreSQL in the background if no external DATABASE_URL is provided
+if [ -z "$DATABASE_URL" ]; then
+  echo "No external DATABASE_URL provided. Starting internal PostgreSQL..."
+  
+  # Ensure the data directory exists and has correct permissions
+  PGDATA="/var/lib/postgresql/data"
+  mkdir -p "$PGDATA"
+  chown -R postgres:postgres "$PGDATA"
+  
+  # Ensure the socket directory exists and has correct permissions
+  mkdir -p /var/run/postgresql
+  chown -R postgres:postgres /var/run/postgresql
+  chmod 2775 /var/run/postgresql
+
+  # Initialize DB if not already initialized
+  if [ ! -s "$PGDATA/PG_VERSION" ]; then
+    echo "Initializing PostgreSQL data directory..."
+    su - postgres -c "/usr/lib/postgresql/*/bin/initdb -D $PGDATA" || { echo "initdb failed"; exit 1; }
+  fi
+  
+  # Start PG
+  echo "Starting PostgreSQL..."
+  # Clear old logs
+  > /tmp/postgres.log
+  chown postgres:postgres /tmp/postgres.log
+  
+  su - postgres -c "/usr/lib/postgresql/*/bin/pg_ctl -D $PGDATA -l /tmp/postgres.log start"
+  
+  # Wait for PG to be ready
+  echo "Waiting for PostgreSQL to be ready..."
+  for i in {1..30}; do
+    if su - postgres -c "pg_isready" > /dev/null 2>&1; then
+      echo "PostgreSQL is ready."
+      break
+    fi
+    if [ $i -eq 30 ]; then
+      echo "PostgreSQL failed to start. Logs:"
+      cat /tmp/postgres.log
+      exit 1
+    fi
+    sleep 1
+  done
+  
+  # Create face_db if it doesn't exist
+  echo "Ensuring face_db exists..."
+  su - postgres -c "psql -tc \"SELECT 1 FROM pg_database WHERE datname = 'face_db'\" | grep -q 1 || psql -c \"CREATE DATABASE face_db\""
+  
+  # Set auto-connection URL for the backend
+  export DATABASE_URL="postgresql://postgres@localhost/face_db"
+  echo "DATABASE_URL auto-set to internal PostgreSQL: $DATABASE_URL"
+else
+  echo "Using external DATABASE_URL provided by environment: $DATABASE_URL"
+fi
+
+# 4. Pre-flight Check: Auto-Download Models
 echo "Verifying and downloading AI model weights..."
 python3 backend/download_models.py
 
-# 4. Start Backend (Gunicorn) in the background
+# 5. Start Backend (Gunicorn) in the background
 # We bind to 127.0.0.1:5001 because Nginx will proxy to it locally
 echo "Starting Gunicorn Backend..."
 cd backend
@@ -64,10 +118,10 @@ print("Backend did not start in time")
 sys.exit(1)
 PY
 
-# 4. Start Celery Workers in the background
+# 6. Start Celery Workers in the background
 echo "Starting Celery workers (concurrency=$CELERY_CONCURRENCY)..."
 for i in $(seq 1 "$CELERY_CONCURRENCY"); do
-  celery -A celery_app worker \
+  C_FORCE_ROOT=1 celery -A celery_app worker \
     --loglevel=info \
     --concurrency=1 \
     --pool=solo \
@@ -78,6 +132,6 @@ for i in $(seq 1 "$CELERY_CONCURRENCY"); do
 done
 echo "Celery workers started."
 
-# 5. Start Nginx in the foreground (so Docker keeps running)
+# 7. Start Nginx in the foreground (so Docker keeps running)
 echo "Starting Nginx..."
 nginx -g 'daemon off;'
