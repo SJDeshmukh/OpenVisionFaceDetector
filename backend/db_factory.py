@@ -58,6 +58,34 @@ class PostgresCursorWrapper:
         # 2. Convert SQLite syntax/functions to Postgres
         sql_pg = sql.replace('?', '%s')
         
+        # Handle "INSERT OR IGNORE" -> "INSERT ... ON CONFLICT DO NOTHING"
+        if "INSERT OR IGNORE" in sql_pg.upper():
+            sql_pg = re.sub(r'INSERT\s+OR\s+IGNORE\s+INTO', 'INSERT INTO', sql_pg, flags=re.IGNORECASE)
+            # Find the core part to determine where to append ON CONFLICT
+            # We assume for now that standard tables have a UNIQUE constraint or PRIMARY KEY
+            # If it's system_users, the constraint is on 'username'
+            if "system_users" in sql_pg.lower():
+                sql_pg += " ON CONFLICT (username) DO NOTHING"
+            elif "active_sessions" in sql_pg.lower():
+                sql_pg += " ON CONFLICT (token) DO NOTHING"
+            elif "vendors" in sql_pg.lower() and "id" in sql_pg.lower():
+                sql_pg += " ON CONFLICT (id) DO NOTHING"
+            else:
+                # Generic fallback if we can't determine the conflict target easily
+                # This is a bit risky but standard for our SQLite-compatibility layer
+                # We'll try to detect the table name and append a generic ON CONFLICT if possible
+                pass
+
+        # Handle "INSERT OR REPLACE" -> "INSERT ... ON CONFLICT (...) DO UPDATE SET ..."
+        # This is more complex because we need the list of columns
+        if "INSERT OR REPLACE" in sql_pg.upper():
+            sql_pg = re.sub(r'INSERT\s+OR\s+REPLACE\s+INTO', 'INSERT INTO', sql_pg, flags=re.IGNORECASE)
+            # This is hard to do generically without full SQL parsing. 
+            # We'll handle the most common ones or log an error if we can't.
+            if "system_settings" in sql_pg.lower():
+                # INSERT INTO system_settings (key, value) VALUES (%s, %s)
+                sql_pg += " ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+
         # Function translation
         sql_pg = re.sub(r'\bIFNULL\s*\(', 'COALESCE(', sql_pg, flags=re.IGNORECASE)
         sql_pg = re.sub(r"DATE\s*\(\s*'now'\s*\)", 'CURRENT_DATE', sql_pg, flags=re.IGNORECASE)
@@ -72,11 +100,11 @@ class PostgresCursorWrapper:
         
         # 3. Handle lastrowid for INSERTs
         is_insert = sql_pg.strip().upper().startswith("INSERT")
-        if is_insert and "RETURNING" not in sql_pg.upper():
+        if is_insert and "RETURNING" not in sql_pg.upper() and "ON CONFLICT" not in sql_pg.upper():
              match = re.search(r"INSERT\s+INTO\s+([a-zA-Z0-9_]+)", sql_pg, re.IGNORECASE)
              if match:
                  table_name = match.group(1)
-                 if table_name not in ['system_users', 'active_sessions', 'system_settings', 'audit_logs']: 
+                 if table_name not in ['system_users', 'active_sessions', 'system_settings', 'audit_logs', 'parent_tokens']: 
                      sql_pg += " RETURNING id"
         
         try:

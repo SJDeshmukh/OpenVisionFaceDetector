@@ -517,6 +517,7 @@ def bootstrap_db():
     db_factory.check_and_recover()
     
     # 3. Data seeding and performance tweaks
+    seed_superadmin()
     ensure_vendor_companies_and_subscription_features()
     add_performance_indexes()
     
@@ -531,6 +532,24 @@ def bootstrap_db():
         ensure_archive_table()
         ensure_audit_logs_table()
         # ensure_task_events_table is handled in init_schemas
+
+def seed_superadmin():
+    """Seeds the default superadmin account if it doesn't exist."""
+    from services.auth_service import hash_password
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        # We use INSERT OR IGNORE which is translated by our PostgresCursorWrapper 
+        # to ON CONFLICT DO NOTHING, preserving any existing superadmin password.
+        username = "superadmin"
+        default_password = hash_password("admin123")
+        c.execute("INSERT OR IGNORE INTO system_users (username, password, role, vendor_id) VALUES (?, ?, ?, ?)",
+                   (username, default_password, "super_admin", None))
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Error seeding superadmin: {e}")
+    finally:
+        conn.close()
 
 def ensure_vendor_companies_and_subscription_features():
     conn = get_db_connection()
