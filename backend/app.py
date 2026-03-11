@@ -1787,7 +1787,13 @@ except Exception as _e:
 app.register_blueprint(greeting_bp)
 
 from routes.public import public_bp
-app.register_blueprint(public_bp, url_prefix='/api')
+app.register_blueprint(public_bp, url_prefix='/api/public')
+
+# Legacy route for /api/config (used by some clients)
+@app.route('/api/config', methods=['GET'])
+def legacy_config():
+    from routes.public import get_config
+    return get_config()
 
 from routes.auth import auth_bp
 app.register_blueprint(auth_bp, url_prefix='/api/auth')
