@@ -10,7 +10,7 @@ from threading import Lock
 
 # --- Configuration & Globals ---
 DATABASE_URL = os.environ.get("DATABASE_URL")
-LOW_RAM_MODE = str(os.environ.get("LOW_RAM_MODE", "0")).strip().lower() in ("1", "true", "yes", "y")
+LOW_RAM_MODE = str(os.environ.get("LOW_RAM_MODE", "1")).strip().lower() in ("1", "true", "yes", "y")
 
 try:
     DET_MAX_SIDE_DEFAULT = int(os.environ.get("DET_MAX_SIDE", "640" if LOW_RAM_MODE else "1280"))

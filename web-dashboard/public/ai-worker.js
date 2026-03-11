@@ -52,8 +52,8 @@ async function initRecognition() {
     try {
         // Prefer local model; fallback to a public ArcFace ONNX if missing
         const candidates = [
-            '/models/arcface_ir_se50.onnx',
             '/models/mobilefacenet_arcface.onnx',
+            '/models/arcface_ir_se50.onnx',
             'https://github.com/onnx/models/raw/main/vision/body_analysis/arcface/model/arcfaceresnet100-8.onnx'
         ];
         let modelUrl = candidates[0];
@@ -72,9 +72,9 @@ async function initRecognition() {
             if (typeof navigator !== 'undefined' && navigator.gpu) {
                 providers.unshift('webgpu');
             }
-        } catch (_) {}
+        } catch (_) { }
         recognitionSession = await ort.InferenceSession.create(modelUrl, { executionProviders: providers, graphOptimizationLevel: 'all' });
-        console.log('[AI Worker] Recognition Session initialized with ir_se50.');
+        console.log('[AI Worker] Recognition Session initialized with: ' + modelUrl);
     } catch (e) {
         console.error('[AI Worker] Failed to init recognition:', e);
     }
@@ -84,10 +84,9 @@ self.onmessage = async (e) => {
     const { type, payload } = e.data;
 
     if (type === 'INIT') {
-        // Initialize subsystems independently; degrade gracefully if any fail
-        try { await initRecognition(); } catch (e) { console.warn('[AI Worker] Recognition init skipped:', e); }
+        // Initialize subsystems; detection is fast, recognition deferred to first use
         try { await initFaceDetection(); } catch (e) { console.warn('[AI Worker] Detection init skipped:', e); }
-        try { self.postMessage({ type: 'READY' }); } catch (_) {}
+        try { self.postMessage({ type: 'READY' }); } catch (_) { }
         return;
     }
 
@@ -99,6 +98,13 @@ self.onmessage = async (e) => {
 
         try {
             const { imageBitmap, originalFileId } = payload;
+
+            // Lazy load recognition model
+            if (!recognitionSession) {
+                console.log('[AI Worker] Lazy initializing recognition...');
+                await initRecognition();
+            }
+
             const width = imageBitmap.width;
             const height = imageBitmap.height;
 

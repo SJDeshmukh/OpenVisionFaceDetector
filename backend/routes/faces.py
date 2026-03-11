@@ -1050,18 +1050,13 @@ def delete_face_by_id(person_id):
         deleted_display_id = del_row[0] if del_row else None
         target_vendor_id = del_row[1] if del_row else None
 
-        # Delete
-        if vendor_id:
-            c.execute("DELETE FROM faces WHERE id = ? AND vendor_id = ?", (person_id, vendor_id))
-        else:
-            c.execute("DELETE FROM faces WHERE id = ?", (person_id,))
-        deleted_faces = c.rowcount
-
-        # Re-index remaining faces for this vendor
-        if deleted_faces > 0 and deleted_display_id is not None and target_vendor_id is not None:
-            c.execute("UPDATE faces SET display_id = display_id - 1 WHERE vendor_id = ? AND display_id > ?", (target_vendor_id, deleted_display_id))
+        # 1. Cleanup related records FIRST to avoid FK violations in PostgreSQL
         try:
             if target_vendor_id:
+                # person_id refers to the face being deleted
+                # We should NULL out person_id in attendance or DELETE attendance records?
+                # User wants to "delete" the person, keeping logs might be desired but the FK usually requires a decision.
+                # Current logic DELETES attendance. Let's stick to it but do it before face deletion.
                 c.execute("DELETE FROM attendance WHERE vendor_id = ? AND (person_id = ? OR (person_id IS NULL AND name = ?))", (target_vendor_id, person_id, name))
                 c.execute("DELETE FROM student_parents WHERE vendor_id = ? AND person_id = ?", (target_vendor_id, person_id))
                 c.execute("UPDATE parent_users SET selected_person_id = NULL WHERE vendor_id = ? AND selected_person_id = ?", (target_vendor_id, person_id))
@@ -1095,8 +1090,20 @@ def delete_face_by_id(person_id):
                         c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND contact_phone = ?", (target_vendor_id, str(phone).strip()))
                     except Exception:
                         pass
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error cleaning up relations for face {person_id}: {e}")
+
+        # 2. Finally delete the face record
+        if vendor_id:
+            c.execute("DELETE FROM faces WHERE id = ? AND vendor_id = ?", (person_id, vendor_id))
+        else:
+            c.execute("DELETE FROM faces WHERE id = ?", (person_id,))
+        deleted_faces = c.rowcount
+
+        # 3. Re-index remaining faces for this vendor
+        if deleted_faces > 0 and deleted_display_id is not None and target_vendor_id is not None:
+            c.execute("UPDATE faces SET display_id = display_id - 1 WHERE vendor_id = ? AND display_id > ?", (target_vendor_id, deleted_display_id))
+
         conn.commit()
         
         try:

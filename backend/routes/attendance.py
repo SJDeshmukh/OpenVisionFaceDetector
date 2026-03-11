@@ -2847,6 +2847,14 @@ def person_event():
     
     current_time = current_time_obj
     try:
+        # Validate person_id exists to prevent foreign key violations
+        if person_id:
+            c.execute("SELECT id FROM faces WHERE id = ?", (person_id,))
+            if not c.fetchone():
+                # Person ID not found (likely deleted/stale on client device)
+                # Fallback to name-based record or just set person_id to None
+                person_id = None
+
         # Insert with device_id if column exists, else fallback
         try:
             if current_device_id is not None:
@@ -2943,6 +2951,7 @@ def person_event():
                     except Exception:
                         pass
         except Exception as _e:
+            if conn and hasattr(conn, "rollback"): conn.rollback()
             pass
         try:
             conn.close()
@@ -2960,6 +2969,7 @@ def person_event():
             "person_id": person_id
         })
     except Exception as e:
+        if conn and hasattr(conn, "rollback"): conn.rollback()
         pass # print(f"Attendance insert error: {e}")
         try:
             conn.close()
@@ -3123,7 +3133,7 @@ def get_attendance():
             "id": row["id"],
             "person_id": row["person_id"] if "person_id" in row.keys() else None,
             "name": row["name"],
-            "timestamp": row["timestamp"],
+            "timestamp": row["timestamp"].strftime('%Y-%m-%d %H:%M:%S') if isinstance(row["timestamp"], datetime) else str(row["timestamp"]),
             "status": row["status"],
             "is_late": row["is_late"] if "is_late" in row.keys() else 0,
             "activity": row["activity"] if "activity" in row.keys() else "",
