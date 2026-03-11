@@ -13,9 +13,9 @@ MODELS = {
 
     # 3DDFA-V3 (Face Model Assets)
     'backend/standalone_live_mesh/3DDFA-V3/assets/face_model.npy':
-        'https://github.com/SJDeshmukh/OpenVisionFaceDetector/releases/download/v1.0.0/face_model.npy',
+        'https://huggingface.co/Zidu-Wang/3DDFA-V3/resolve/main/assets/face_model.npy',
     'backend/standalone_live_mesh/3DDFA-V3/assets/net_recon.pth':
-        'https://github.com/SJDeshmukh/OpenVisionFaceDetector/releases/download/v1.0.0/net_recon.pth',
+        'https://huggingface.co/Zidu-Wang/3DDFA-V3/resolve/main/assets/net_recon.pth',
 }
 
 def download_file(url, path):

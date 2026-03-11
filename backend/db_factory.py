@@ -38,6 +38,7 @@ DEFAULT_DB_PATH = os.path.join(os.path.dirname(__file__), "face_db.sqlite")
 DB_PATH = os.environ.get("DB_PATH", DEFAULT_DB_PATH)
 
 # Global state to track if we are in fallback mode
+DB_TYPE = 'postgres' if DATABASE_URL else 'sqlite'
 _IS_FALLBACK_MODE = False
 _LAST_PG_RETRY_TIME = 0
 _PG_COOLDOWN_SECONDS = 30 # Don't flood logs if PG is down

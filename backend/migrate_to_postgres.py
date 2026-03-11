@@ -126,7 +126,7 @@ def run_safe_migration():
          ['id', 'name', 'draft_timetable', 'live_timetable', 'last_modified_by', 'last_modified_at', 'published_by', 'published_at', 'shifts', 'working_hours', 'vendor_id'], 
          None, 'id'),
         ('faces', 
-         ['id', 'name', 'templates', 'face_image', 'department', 'designation', 'phone', 'shift', 'daily_wage', 'vendor_id', 'late_allowance_days', 'late_deduction_amount'], 
+         ['id', 'name', 'templates', 'face_image', 'department', 'designation', 'phone', 'shift', 'daily_wage', 'vendor_id', 'late_allowance_days', 'late_deduction_amount', 'display_id'], 
          None, 'id'),
         ('attendance', 
          ['id', 'name', 'timestamp', 'status', 'captured_image', 'activity', 'is_late', 'vendor_id', 'person_id'], 

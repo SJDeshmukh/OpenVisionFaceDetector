@@ -1719,11 +1719,23 @@ def export_payroll_daily():
         writer.writerow(["person_id","name","date","hours_payable","late_mark","deduction_applied"])
         for pid, records in user_records.items():
             info = persons.get(pid, {})
+            # Load timetable: Prioritize company-level live_timetable as fallback
             timetable = []
             try:
+                # 1. Try person-specific shift if it's a JSON array
                 tjson = info.get('shift') or ""
                 if tjson:
                     timetable = json.loads(tjson) if isinstance(tjson, str) else (tjson or [])
+                
+                # 2. If person-specific shift is empty/invalid, use the global company-level timetable
+                # Note: We should have pre-fetched company_row similar to the main payroll route
+                # For now, we'll use a local fallback or rely on calculate_daily_hours to handle empty list
+                if not timetable:
+                     # Re-fetch company row for vendor_id
+                     c.execute("SELECT live_timetable FROM companies WHERE vendor_id = ?", (vendor_id,))
+                     crow = c.fetchone()
+                     if crow and crow['live_timetable']:
+                         timetable = json.loads(crow['live_timetable'])
             except Exception:
                 timetable = []
             stats = calculate_daily_hours(records, timetable, date_str=datetime.now().strftime('%Y-%m-%d'))

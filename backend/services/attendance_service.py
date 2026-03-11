@@ -110,15 +110,16 @@ def calculate_daily_hours(records, timetable=None, date_str=None):
                     
                     if found_act:
                         # STRICT: Use the is_payable flag from the DB. 
-                        # If missing, default to False (safe).
-                        is_session_payable = found_act.get('is_payable', False)
+                        # If missing, default to True for 'Work' type to be more user-friendly.
+                        act_type = found_act.get('type', 'Work')
+                        is_session_payable = found_act.get('is_payable', act_type == 'Work')
                     else:
                         # Activity not found in timetable
-                        # Strict Fallback: If not defined by admin, it is NOT payable.
-                        is_session_payable = False
+                        # Default to payable if it's 'Work' type, otherwise False.
+                        is_session_payable = (session_activity_lower == 'work' or not session_activity_lower)
                 else:
-                    # No timetable -> No payable hours (Strict)
-                    is_session_payable = False
+                    # No timetable -> Default to payable if it's 'Work' type (Safe and user-friendly)
+                    is_session_payable = (session_activity_lower == 'work' or not session_activity_lower)
 
                 if is_session_payable:
                     total_seconds += duration
