@@ -59,15 +59,12 @@ def public_business_types():
     """
     logger.info(f"Public business-types requested from {current_app.name}")
     
-    # Default list of business types with their configurations
+    # Default list of business types exactly matching the Super Admin dashboard screenshot
     default_types = {
-        "School": {"value": "School", "label": "School", "allow_parent_login": True},
-        "College": {"value": "College", "label": "College", "allow_parent_login": True},
-        "Office": {"value": "Office", "label": "Office", "allow_parent_login": False},
-        "Factory": {"value": "Factory", "label": "Factory", "allow_parent_login": False},
-        "Hospital": {"value": "Hospital", "label": "Hospital", "allow_parent_login": False},
-        "Gym": {"value": "Gym", "label": "Gym", "allow_parent_login": False},
-        "Other": {"value": "Other", "label": "Other", "allow_parent_login": False}
+        "school": {"value": "school", "label": "School / College / Tuitions", "allow_parent_login": True},
+        "wages": {"value": "wages", "label": "Daily Wages / Workforce", "allow_parent_login": False},
+        "factory": {"value": "factory", "label": "Industrial / Manufacturing", "allow_parent_login": False},
+        "enterprise": {"value": "enterprise", "label": "Enterprise (Custom)", "allow_parent_login": False}
     }
 
     # Fetch unique verticals from the database
@@ -88,8 +85,7 @@ def public_business_types():
 
     # Merge database values into our map
     for v in db_verticals:
-        # Avoid duplicates and preserve case where possible, but use title case for label
-        key_norm = v.strip().capitalize()
+        key_norm = v.strip().lower()
         if key_norm not in default_types:
             default_types[key_norm] = {
                 "value": v,
@@ -98,6 +94,7 @@ def public_business_types():
             }
 
     # Convert mapping to a sorted list
+    # Preserve order similar to dashboard if possible, or just alpha
     final_list = sorted(default_types.values(), key=lambda x: x['label'])
     
     logger.info(f"Returning {len(final_list)} business types.")
