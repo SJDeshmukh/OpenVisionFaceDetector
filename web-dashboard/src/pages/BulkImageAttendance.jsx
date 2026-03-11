@@ -3,7 +3,8 @@ import Webcam from 'react-webcam';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { API_URL } from '../config';
-import { Upload, Check, Users, Camera, Loader2, Wand2 } from 'lucide-react';
+import { Upload, Check, Users, Camera, Loader2, Wand2, Cpu } from 'lucide-react';
+import modelManager from '../lib/model-manager';
 
 const BulkImageAttendance = () => {
   const { user } = useAuth();
@@ -23,6 +24,7 @@ const BulkImageAttendance = () => {
   const [pendingFiles, setPendingFiles] = useState([]); // queued File objects to be scanned together
   const [regenerating, setRegenerating] = useState({});
   const overridesRef = useRef(new Map()); // key: `${itemId}:${faceIndex}` -> dataURL
+  const [useClientAI, setUseClientAI] = useState(false);
   useEffect(() => {
     peopleById.current = new Map(people.map(p => [String(p.id), p.name]));
   }, [people]);
@@ -208,7 +210,14 @@ const BulkImageAttendance = () => {
         try {
           await fetchBatchStatus(batchId);
         } catch (e) {
-          // ignore transient errors; next tick will try again
+          // If batch was deleted or never created, clear stale ID to stop 404 spam
+          const status = e?.response?.status;
+          if (status === 404) {
+            try { localStorage.removeItem('class_batch_id'); } catch (_) {}
+            setBatchId('');
+            return;
+          }
+          // ignore other transient errors; next tick will try again
         }
       }
     };
@@ -233,6 +242,8 @@ const BulkImageAttendance = () => {
 
     setLoading(true);
     try {
+      // Client-side AI path disabled for now; always use server path
+
       const id = await ensureBatch();
       const fd = new FormData();
 
@@ -543,6 +554,7 @@ const BulkImageAttendance = () => {
           >
             End Session
           </button>
+          {/* Client-Side AI option disabled for now */}
         </div>
       </div>
 

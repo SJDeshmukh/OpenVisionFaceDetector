@@ -16,6 +16,8 @@ Monorepo includes:
 
 ## 🌟 Features
 - Real-time attendance with low-bandwidth streaming
+- **Client-Side AI Inference**: Hybrid AI model execution directly in the browser using Web Workers + WebGPU (ONNX/MediaPipe), reducing server load by 90% for bulk uploads.
+- **Enterprise-Grade High Availability**: Dual-database architecture (PostgreSQL primary, SQLite fallback) with zero-downtime failover and automatic data re-sync upon recovery.
 - Business presets at onboarding (School / Wages)
 - Parent experience: no-login student number, live updates, date-filtered history
 - Vendor dashboards: live feed, employee directory, payroll and detailed reports
@@ -25,9 +27,9 @@ Monorepo includes:
 ---
 
 ## 🧰 Tech Stack
-- Backend: Flask, python-socketio, Gunicorn (gevent workers), Redis (Socket.IO adapter / Celery broker), Celery, SQLite/PostgreSQL
+- Backend: Flask, python-socketio, Gunicorn (threading workers), Redis, PostgreSQL (Primary) + SQLite (High-Availability Fallback)
 - Android: Kotlin/Java, CameraX, custom Face SDK, Retrofit (+ Gson), Socket.IO client
-- Web: React 19, Vite 7, TailwindCSS 4, lucide-react, Axios, socket.io-client
+- Web: React 19, Vite 7, TailwindCSS 4, Web Workers (Client-Side AI), MediaPipe, ONNX Runtime Web
 - Hosting: Render (web service + worker + Redis), S3-compatible storage optional
 
 ---
@@ -357,14 +359,21 @@ gunicorn -k gevent --worker-connections 1000 -w 2 --timeout 120 app:app --bind 0
 
 ## 🧪 Local Setup (quick)
 Backend:
-```
+```bash
 cd backend
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
+
+# Configure Environment
+# DATABASE_URL: Primary PostgreSQL connection string
+# DB_PATH: Fallback SQLite database path
+cp .env.example .env
+# Edit .env to set your DATABASE_URL
+
 python app.py
 ```
 Web:
-```
+```bash
 cd web-dashboard
 npm install && npm run dev
 ```

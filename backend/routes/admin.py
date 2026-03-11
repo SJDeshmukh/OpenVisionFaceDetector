@@ -8,7 +8,11 @@ import os
 import secrets
 import qrcode
 from io import BytesIO
-from utils import _run
+from utils import (
+    _run, log_audit, ALL_FEATURES, BUNDLE_FEATURES, REGISTRATION_TEMPLATES,
+    cache_get, cache_set, create_job, complete_job, fail_job, get_db_connection
+)
+from db_factory import get_table_columns
 try:
     from celery_app import celery
 except Exception:
@@ -100,8 +104,6 @@ def track_metrics(endpoint_name):
     return decorator
 
 
-def log_audit(action, details, target_vendor_id=None, actor=None):
-    pass
 
 admin_bp = Blueprint('admin_bp', __name__)
 
@@ -113,7 +115,6 @@ admin_bp = Blueprint('admin_bp', __name__)
 @super_admin_required
 def get_audit_logs():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
@@ -143,7 +144,6 @@ def get_audit_logs():
 @super_admin_required
 def impersonate_vendor():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     data = request.json
     vendor_id = data.get('vendor_id')
@@ -156,7 +156,7 @@ def impersonate_vendor():
     c = conn.cursor()
     
     # Find the admin user for this vendor
-    c.execute("SELECT username, role FROM system_users WHERE vendor_id = ? AND role = 'admin' LIMIT 1", (vendor_id,))
+    c.execute("SELECT username, role FROM system_users WHERE vendor_id = ? AND role = 'vendor_admin' LIMIT 1", (vendor_id,))
     user = c.fetchone()
     
     if not user:
@@ -175,8 +175,8 @@ def impersonate_vendor():
     try:
         auth_header = request.headers.get('Authorization')
         if auth_header:
-            token = auth_header.split(" ")[1]
-            current_user = verify_token(token)
+            current_token = auth_header.split(" ")[1]
+            current_user = verify_token(current_token)
             actor = current_user['username'] if current_user else 'unknown'
         else:
             actor = 'system'
@@ -195,7 +195,6 @@ def impersonate_vendor():
 @super_admin_required
 def list_vendor_devices(vendor_id):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     try:
         conn = get_db_connection()
@@ -227,7 +226,6 @@ def list_vendor_devices(vendor_id):
 @super_admin_required
 def update_vendor_device_name(vendor_id, device_id):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     data = request.json or {}
     new_name = str(data.get("device_name") or "").strip()
@@ -279,7 +277,6 @@ def update_vendor_device_name(vendor_id, device_id):
 @super_admin_required
 def admin_assign_device_slot(vendor_id, device_id):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     data = request.json or {}
     slot_name = str(data.get("slot_name") or "").strip()
@@ -378,7 +375,6 @@ def admin_assign_device_slot(vendor_id, device_id):
 @super_admin_required
 def delete_vendor_device(vendor_id, device_id):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     try:
         conn = get_db_connection()
@@ -423,7 +419,6 @@ def delete_vendor_device(vendor_id, device_id):
 @super_admin_required
 def logout_vendor_device(vendor_id, device_id):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     try:
         conn = get_db_connection()
@@ -457,7 +452,6 @@ def logout_vendor_device(vendor_id, device_id):
 @super_admin_required
 def list_vendor_device_slots(vendor_id):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     try:
         conn = get_db_connection()
@@ -488,7 +482,6 @@ def list_vendor_device_slots(vendor_id):
 @super_admin_required
 def set_vendor_device_slots(vendor_id):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     data = request.json or {}
     slots = data.get("slots") or []
@@ -536,7 +529,6 @@ def set_vendor_device_slots(vendor_id):
 @super_admin_required
 def reset_user_password():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     data = request.json
     target_username = data.get("username")
@@ -570,7 +562,6 @@ def reset_user_password():
 @super_admin_required
 def get_admin_stats():
     from app import get_db_connection, socketio, is_testing, latest_frames
-    from utils import cache_get, cache_set, ALL_FEATURES
     cached = cache_get("admin_stats")
     if cached:
         return jsonify(cached)
@@ -632,7 +623,6 @@ def get_admin_stats():
 @super_admin_required
 def get_vendors():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
@@ -640,7 +630,7 @@ def get_vendors():
     
     # Get Vendors with Subscription Details
     try:
-        c.execute("PRAGMA table_info(subscriptions)")
+        cols = get_table_columns(conn, "subscriptions")
         subs_cols = [info[1] for info in c.fetchall()]
     except Exception:
         subs_cols = []
@@ -717,21 +707,18 @@ def get_vendors():
 @super_admin_required
 def get_available_features():
     from app import get_db_connection, socketio, is_testing
-    from utils import BUNDLE_FEATURES, ALL_FEATURES
     return jsonify({"features": ALL_FEATURES, "bundles": BUNDLE_FEATURES})
 
 @admin_bp.route("/registration/templates", methods=["GET"])
 @super_admin_required
 def get_registration_templates():
     from app import get_db_connection, socketio, is_testing
-    from utils import REGISTRATION_TEMPLATES
     return jsonify({"templates": REGISTRATION_TEMPLATES})
 
 @admin_bp.route("/vendors/<int:vendor_id>/registration_config", methods=["PUT"])
 @super_admin_required
 def set_vendor_registration_config(vendor_id):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     data = request.json or {}
     config = data.get("registration_config")
@@ -821,7 +808,6 @@ def bulk_vendor_action():
 @super_admin_required
 def export_employees(vendor_id):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     import csv, io
     conn = get_db_connection()
@@ -888,9 +874,7 @@ def import_employees(vendor_id):
 @rate_limit(limit=60, window=60)
 def create_vendor():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
-    from utils import BUNDLE_FEATURES
     data = request.json
     company_name = data.get("company_name")
     
@@ -908,6 +892,11 @@ def create_vendor():
                      VALUES (?, ?, ?, ?, ?, ?)""",
                   (company_name, data.get("contact_person"), data.get("phone"), data.get("email"), frontend_bundle_id, backend_service_id))
         vendor_id = c.lastrowid
+        try:
+            c.execute("UPDATE vendors SET web_login_enabled = 1 WHERE id = ?", (vendor_id,))
+            conn.commit()
+        except Exception:
+            pass
         if vertical:
             try:
                 c.execute("UPDATE vendors SET vertical = ? WHERE id = ?", (vertical, vendor_id))
@@ -968,7 +957,9 @@ def create_vendor():
                     features = BUNDLE_FEATURES.get(frontend_bundle_id, [])
                 import json
                 features_json = json.dumps(features)
-                c2.execute("PRAGMA table_info(subscriptions)")
+                # Note: c2 is a cursor, but get_table_columns needs a connection
+                # We can use the connection associated with c2 if possible, or just pass conn
+                cols_sub = get_table_columns(conn, "subscriptions")
                 subs_cols = [info[1] for info in c2.fetchall()]
                 cols = ["vendor_id", "plan_type", "start_date", "end_date", "max_users", "max_employees", "max_mobile_devices", "cost_per_user", "cost_per_employee", "setup_fee", "features"]
                 vals = [vendor_id, "custom", start_date, end_date, max_users, max_employees, max_mobile_devices, cost_per_user, cost_per_employee, 0, features_json]
@@ -1052,7 +1043,6 @@ def create_vendor():
 @super_admin_required
 def suspend_vendor(vendor_id):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     data = request.json
     action = data.get("action", "suspend") # suspend or activate
@@ -1083,7 +1073,6 @@ def suspend_vendor(vendor_id):
 @super_admin_required
 def toggle_web_login(vendor_id):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     data = request.json
     enabled = data.get("enabled", True) # boolean
@@ -1107,7 +1096,6 @@ def toggle_web_login(vendor_id):
 @super_admin_required
 def get_vendor_subscription_admin(vendor_id):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
@@ -1130,9 +1118,7 @@ def get_vendor_subscription_admin(vendor_id):
 @super_admin_required
 def update_vendor_subscription(vendor_id):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
-    from utils import BUNDLE_FEATURES
     data = request.json
     
     conn = get_db_connection()
@@ -1151,8 +1137,8 @@ def update_vendor_subscription(vendor_id):
             except Exception:
                 return default_val
 
-        # Check if subscription exists
-        c.execute("SELECT rowid FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+        # Check if subscription exists (use primary key 'id' for PG/SQLite compatibility)
+        c.execute("SELECT id FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
         if not c.fetchone():
             import json
             start_date = data.get("start_date") or date.today().isoformat()
@@ -1178,7 +1164,7 @@ def update_vendor_subscription(vendor_id):
                 features_val = json.dumps(features_val)
             setup_fee = data.get("setup_fee") or 0
             plan_type = data.get("plan_type") or "custom"
-            c.execute("PRAGMA table_info(subscriptions)")
+            cols = get_table_columns(conn, "subscriptions")
             subs_cols = [info[1] for info in c.fetchall()]
             cols = ["vendor_id", "plan_type", "start_date", "end_date", "max_users", "max_employees", "max_mobile_devices", "cost_per_user", "cost_per_employee", "setup_fee", "features"]
             vals = [vendor_id, plan_type, start_date, end_date, max_users, max_employees, max_mobile_devices, cost_per_user, cost_per_employee, setup_fee, features_val]
@@ -1312,7 +1298,6 @@ def update_vendor_subscription(vendor_id):
 @admin_bp.route("/vendors/<int:vendor_id>/registration-config", methods=["GET"])
 def get_vendor_registration_config(vendor_id):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     # Auth Check (SuperAdmin or Vendor Admin of same vendor)
     caller_vendor_id, error = authenticate_vendor_access()
@@ -1364,7 +1349,6 @@ def get_vendor_registration_config(vendor_id):
 @super_admin_required
 def update_vendor_registration_config(vendor_id):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     data = request.json
     config = data.get('config') # Expecting a list/object
@@ -1391,9 +1375,7 @@ def update_vendor_registration_config(vendor_id):
 @super_admin_required
 def update_vendor_details(vendor_id):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
-    from utils import BUNDLE_FEATURES
     data = request.json
     
     conn = get_db_connection()
@@ -1423,7 +1405,7 @@ def update_vendor_details(vendor_id):
             features_json = json.dumps(new_features)
             
             # Check if subscription exists
-            c.execute("SELECT rowid FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+            c.execute("SELECT id FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
             if c.fetchone():
                 c.execute("UPDATE subscriptions SET features = ? WHERE vendor_id = ?", (features_json, vendor_id))
             else:
@@ -1469,7 +1451,7 @@ def update_vendor_details(vendor_id):
         admin_password = data.get('admin_password')
         if admin_username or admin_password:
             # Check if admin user exists for this vendor
-            c.execute("SELECT rowid FROM system_users WHERE vendor_id = ? AND role = 'vendor_admin'", (vendor_id,))
+            c.execute("SELECT username FROM system_users WHERE vendor_id = ? AND role = 'vendor_admin' LIMIT 1", (vendor_id,))
             admin_user = c.fetchone()
             
             if admin_user:
@@ -1482,8 +1464,8 @@ def update_vendor_details(vendor_id):
                     update_query += "password = ?, "
                     update_params.append(hash_password(admin_password))
                 
-                update_query = update_query.rstrip(", ") + " WHERE rowid = ?"
-                update_params.append(admin_user[0])
+                update_query = update_query.rstrip(", ") + " WHERE username = ?"
+                update_params.append(admin_user[0] if not hasattr(admin_user, "keys") else admin_user["username"])
                 c.execute(update_query, update_params)
             else:
                 # Create if missing (Self-healing)
@@ -1495,7 +1477,7 @@ def update_vendor_details(vendor_id):
         user_password = data.get('user_password')
         if user_username or user_password:
             # Check if kiosk user exists for this vendor
-            c.execute("SELECT rowid FROM system_users WHERE vendor_id = ? AND role = 'user'", (vendor_id,))
+            c.execute("SELECT username FROM system_users WHERE vendor_id = ? AND role = 'user' LIMIT 1", (vendor_id,))
             kiosk_user = c.fetchone()
             
             if kiosk_user:
@@ -1508,8 +1490,8 @@ def update_vendor_details(vendor_id):
                     update_query += "password = ?, "
                     update_params.append(hash_password(user_password))
                 
-                update_query = update_query.rstrip(", ") + " WHERE rowid = ?"
-                update_params.append(kiosk_user[0])
+                update_query = update_query.rstrip(", ") + " WHERE username = ?"
+                update_params.append(kiosk_user[0] if not hasattr(kiosk_user, "keys") else kiosk_user["username"])
                 c.execute(update_query, update_params)
             else:
                 # Create if missing
@@ -1571,7 +1553,6 @@ def delete_vendor(vendor_id):
 @super_admin_required
 def get_vendor_invoices(vendor_id):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
@@ -1591,7 +1572,6 @@ def get_vendor_invoices(vendor_id):
 @super_admin_required
 def list_archived_vendors():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     from app import ensure_archive_table as _ensure_archive_table
     _ensure_archive_table()
@@ -1633,7 +1613,6 @@ def list_archived_vendors():
 @super_admin_required
 def list_audit_logs():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     from app import ensure_audit_logs_table as _ensure_audit_logs_table
     _ensure_audit_logs_table()
@@ -1668,9 +1647,7 @@ def list_audit_logs():
 @super_admin_required
 def generate_invoice(vendor_id):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
-    from utils import create_job, complete_job, fail_job
     import eventlet
     is_async = request.args.get('async') == 'true'
     conn = get_db_connection()
@@ -1754,7 +1731,6 @@ def generate_invoice(vendor_id):
 @super_admin_required
 def update_invoice_status(invoice_id):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     data = request.json
     status = data.get("status") # paid, overdue, generated
@@ -1783,7 +1759,6 @@ def update_invoice_status(invoice_id):
 @super_admin_required
 def system_health():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     status = {"db": "ok", "redis": "disabled", "active_sessions": 0}
     # DB check
@@ -1811,7 +1786,6 @@ def system_health():
 @super_admin_required
 def system_queues():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     data = {
         "broker": "unknown",
@@ -1852,7 +1826,6 @@ def system_queues():
 @super_admin_required
 def list_task_events():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     ensure_task_events_table()
     conn = get_db_connection()
@@ -1901,7 +1874,6 @@ def list_task_events():
 @super_admin_required
 def purge_task_events():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     ensure_task_events_table()
     conn = get_db_connection()
@@ -1935,7 +1907,6 @@ def purge_task_events():
 @super_admin_required
 def jobs_metrics():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     ensure_task_events_table()
     conn = get_db_connection()
@@ -2013,7 +1984,6 @@ def jobs_metrics():
 @super_admin_required
 def restore_vendor():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     ensure_archive_table()
     data = request.json or {}
@@ -2106,7 +2076,6 @@ def restore_vendor():
 @admin_bp.route("/students/assign-parent", methods=["POST"])
 def assign_parent():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     caller_vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -2134,7 +2103,6 @@ def assign_parent():
 @super_admin_required
 def update_subscription():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     data = request.json
     vendor_id = data.get("vendor_id")
@@ -2180,7 +2148,6 @@ def update_subscription():
 @super_admin_required
 def get_all_employees():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import authenticate_vendor_access
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row

@@ -10,7 +10,7 @@ from datetime import datetime
 import numpy as np
 import cv2
 from services.auth_service import authenticate_vendor_access, extract_token, verify_token, check_vendor_status
-from utils import get_db_connection, LOW_RAM_MODE, _VENDOR_EMB_CACHE, reset_sequence
+from utils import get_db_connection, LOW_RAM_MODE, _VENDOR_EMB_CACHE, reset_sequence, ALL_FEATURES
 from services.face_service import _ensure_vendor_emb_cache, _normalize_vec, _suggest_from_cache
 from storage import upload_base64_image, presigned_url_for_key, OBJECT_STORAGE_ENABLED
 import os
@@ -99,7 +99,6 @@ def track_metrics(endpoint_name):
 @require_feature("bulk_image_attendance")
 def detect_faces_basic():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import extract_token, verify_token
     vendor_id, error = authenticate_vendor_access()
     if error:
@@ -196,8 +195,8 @@ def detect_faces_basic():
                     # Pure face crop - NO padding, just the detector box
                     bx1 = max(0, bx1); by1 = max(0, by1)
                     bx2 = min(iw, bx2); by2 = min(ih, by2)
-                    # Use a balanced centered box for the thumbnail crop
-                    cx1, cy1, cx2, cy2 = mfd_app._compute_centered_box(bx1, by1, bx2, by2, iw, ih, scale=1.8)
+                    # Use a balanced centered box for the thumbnail crop (1.2x tight for embedding consistency)
+                    cx1, cy1, cx2, cy2 = mfd_app._compute_centered_box(bx1, by1, bx2, by2, iw, ih, scale=1.2)
                     pure_face = img_rgb[cy1:cy2, cx1:cx2]
 
 
@@ -241,15 +240,14 @@ def detect_faces_basic():
                                 scale_f = 512.0 / min(pure_face.shape[:2])
                                 pure_face = cv2.resize(pure_face, (int(pure_face.shape[1] * scale_f), int(pure_face.shape[0] * scale_f)), interpolation=cv2.INTER_LANCZOS4)
 
-                        face_only = img_rgb[by1:by2, bx1:bx2]
-                        if face_only is None or face_only.size == 0:
-                            face_only = pure_face
-                        emb = mfd_app.get_embedder().embed(face_only)
+                        # 3. Embedding and Suggestions (from enhanced face)
+                        # CRITICAL: Use pure_face (enhanced) to match face_service.py cache logic
+                        emb = mfd_app.get_embedder().embed(pure_face)
                         emb_norm = _normalize_vec(emb)
                         if emb_norm.size > 0:
                             emb_vec_b64 = base64.b64encode(emb_norm.astype(np.float32).tobytes()).decode('ascii')
                         
-                        sugg = _suggest_from_cache(emb, vcache, topk=3, struct_vec=struct_vec_val)
+                        sugg = _suggest_from_cache(emb_norm, vcache, topk=3, struct_vec=struct_vec_val)
                     except Exception:
                         pass
 
@@ -428,7 +426,6 @@ def detect_faces_batch_async():
 @faces_bp.route("/persons", methods=["GET"])
 def get_persons():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     vendor_id, error = authenticate_vendor_access()
     if error: return error
 
@@ -436,7 +433,7 @@ def get_persons():
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
-    query = "SELECT id, name, department, designation, shift, daily_wage, face_image, phone, custom_data FROM faces"
+    query = "SELECT id, display_id, name, department, designation, shift, daily_wage, face_image, phone, custom_data FROM faces"
     params = []
     
     if vendor_id:
@@ -466,7 +463,6 @@ def get_persons():
 @require_feature("mobile_app")
 def upload_face():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import extract_token, verify_token
     # Auth Check
     caller_vendor_id, error = authenticate_vendor_access()
@@ -667,6 +663,37 @@ def upload_face():
                 if (face_image is not None and face_image != "") or (templates_list and len(templates_list) > 0) or (templates is not None and templates != ""):
                     try:
                         c.execute("DELETE FROM person_embeddings WHERE person_id = ?", (person_id,))
+                        
+                        # PERSIST NEW EMBEDDINGS if templates provided
+                        target_templates = templates_list if (templates_list and len(templates_list) > 0) else None
+                        if not target_templates and templates:
+                            try:
+                                target_templates = json.loads(templates)
+                                if not isinstance(target_templates, list): target_templates = [templates]
+                            except Exception:
+                                target_templates = [templates]
+                        
+                        if target_templates:
+                            for t_item in target_templates:
+                                try:
+                                    # Handle both base64 strings and raw lists
+                                    if isinstance(t_item, str):
+                                        raw_bytes = base64.b64decode(t_item)
+                                        emb = np.frombuffer(raw_bytes, dtype=np.float32).copy()
+                                    elif isinstance(t_item, (list, tuple)):
+                                        emb = np.array(t_item, dtype=np.float32)
+                                    else:
+                                        continue
+                                    
+                                    from services.face_service import _normalize_vec
+                                    emb = _normalize_vec(emb)
+                                    if emb.size > 0:
+                                        vec_blob = emb.astype(np.float32).tobytes()
+                                        c.execute("""INSERT INTO person_embeddings (vendor_id, person_id, vec, dim) 
+                                                     VALUES (?, ?, ?, ?)""", (vendor_id or existing.get("vendor_id"), person_id, vec_blob, int(emb.size)))
+                                except Exception:
+                                    continue
+
                         # Invalidate cache
                         vid = existing.get("vendor_id") or vendor_id
                         prefix = f"{int(vid or 0)}_"
@@ -700,12 +727,45 @@ def upload_face():
                 to_store_templates = json.dumps(templates_list)
             else:
                 to_store_templates = templates or ""
-            c.execute("INSERT INTO faces (name, templates, face_image, phone, department, designation, shift, vendor_id, custom_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                      (name, to_store_templates, face_image, phone or "", department or "", designation or "", shift or "", vendor_id, custom_data))
+            # Get next display_id for this vendor
+            c.execute("SELECT COALESCE(MAX(display_id), 0) + 1 FROM faces WHERE vendor_id = ?", (vendor_id,))
+            next_display_id = c.fetchone()[0]
+
+            c.execute("INSERT INTO faces (name, templates, face_image, phone, department, designation, shift, vendor_id, custom_data, display_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                      (name, to_store_templates, face_image, phone or "", department or "", designation or "", shift or "", vendor_id, custom_data, next_display_id))
             new_id = c.lastrowid
             
-            # Invalidate cache for new insert as well
+            # Invalidate cache and persist embeddings for new insert
             try:
+                # PERSIST EMBEDDINGS if templates provided
+                target_templates = templates_list if (templates_list and len(templates_list) > 0) else None
+                if not target_templates and templates:
+                    try:
+                        target_templates = json.loads(templates)
+                        if not isinstance(target_templates, list): target_templates = [templates]
+                    except Exception:
+                        target_templates = [templates]
+                
+                if target_templates:
+                    for t_item in target_templates:
+                        try:
+                            if isinstance(t_item, str):
+                                raw_bytes = base64.b64decode(t_item)
+                                emb = np.frombuffer(raw_bytes, dtype=np.float32).copy()
+                            elif isinstance(t_item, (list, tuple)):
+                                emb = np.array(t_item, dtype=np.float32)
+                            else:
+                                continue
+                            
+                            from services.face_service import _normalize_vec
+                            emb = _normalize_vec(emb)
+                            if emb.size > 0:
+                                vec_blob = emb.astype(np.float32).tobytes()
+                                c.execute("""INSERT INTO person_embeddings (vendor_id, person_id, vec, dim) 
+                                             VALUES (?, ?, ?, ?)""", (vendor_id, new_id, vec_blob, int(emb.size)))
+                        except Exception:
+                            continue
+
                 prefix = f"{int(vendor_id or 0)}_"
                 keys_to_delete = [k for k in _VENDOR_EMB_CACHE.keys() if str(k).startswith(prefix)]
                 for k in keys_to_delete:
@@ -732,7 +792,6 @@ def upload_face():
 @rate_limit(limit=120, window=60)
 def download_faces():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import extract_token, verify_token
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -792,7 +851,6 @@ def download_faces():
 @require_feature("mobile_app")
 def delete_face(name):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import extract_token, verify_token
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -805,19 +863,41 @@ def delete_face(name):
     try:
         face_rows = []
         if vendor_id:
-            c.execute("SELECT id, vendor_id, phone, custom_data FROM faces WHERE name = ? AND vendor_id = ?", (name, vendor_id))
+            c.execute("SELECT id, vendor_id, display_id, phone, custom_data FROM faces WHERE name = ? AND vendor_id = ?", (name, vendor_id))
             face_rows = c.fetchall() or []
         else:
-            c.execute("SELECT id, vendor_id, phone, custom_data FROM faces WHERE name = ?", (name,))
+            c.execute("SELECT id, vendor_id, display_id, phone, custom_data FROM faces WHERE name = ?", (name,))
             face_rows = c.fetchall() or []
+        
         if not face_rows:
             return jsonify({"error": "User not found"}), 404
+
+        # Track affected vendors and their deleted display_ids for re-indexing
+        affected_vendors = {} # vendor_id -> list of deleted_display_ids
+        for r in face_rows:
+            v_id = r[1]
+            d_id = r[2]
+            if v_id not in affected_vendors: affected_vendors[v_id] = []
+            affected_vendors[v_id].append(d_id)
 
         if vendor_id:
             c.execute("DELETE FROM faces WHERE name = ? AND vendor_id = ?", (name, vendor_id))
         else:
             c.execute("DELETE FROM faces WHERE name = ?", (name,))
         deleted_faces = c.rowcount
+
+        # Re-index for each affected vendor
+        for v_id, deleted_ids in affected_vendors.items():
+            # For each deleted ID, we shift everything above it down.
+            # Shifting in reverse order of deleted_ids (highest first) avoids double-counting if we do it one by one, 
+            # but it's simpler to just do a full re-index if multiple were deleted, or just loop correctly.
+            # Best way: for each vendor, we know which IDs were removed. 
+            # We can run a single query like:
+            # UPDATE faces SET display_id = (SELECT COUNT(*) FROM faces f2 WHERE f2.vendor_id = faces.vendor_id AND f2.id <= faces.id) WHERE vendor_id = ?
+            # But that's O(N^2). 
+            # Better: just decrement for each deleted ID.
+            for d_id in sorted(deleted_ids, reverse=True):
+                c.execute("UPDATE faces SET display_id = display_id - 1 WHERE vendor_id = ? AND display_id > ?", (v_id, d_id))
 
         try:
             by_vendor = {}
@@ -925,7 +1005,6 @@ def delete_face(name):
 @require_feature("mobile_app")
 def delete_face_by_id(person_id):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import extract_token, verify_token
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -965,12 +1044,22 @@ def delete_face_by_id(person_id):
                     sn = str(cd.get("student_number") or cd.get("roll_number") or cd.get("admission_number") or "").strip()
         except Exception:
             sn = None
+        # Get display_id and vendor_id for re-indexing
+        c.execute("SELECT display_id, vendor_id FROM faces WHERE id = ?", (person_id,))
+        del_row = c.fetchone()
+        deleted_display_id = del_row[0] if del_row else None
+        target_vendor_id = del_row[1] if del_row else None
+
         # Delete
         if vendor_id:
             c.execute("DELETE FROM faces WHERE id = ? AND vendor_id = ?", (person_id, vendor_id))
         else:
             c.execute("DELETE FROM faces WHERE id = ?", (person_id,))
         deleted_faces = c.rowcount
+
+        # Re-index remaining faces for this vendor
+        if deleted_faces > 0 and deleted_display_id is not None and target_vendor_id is not None:
+            c.execute("UPDATE faces SET display_id = display_id - 1 WHERE vendor_id = ? AND display_id > ?", (target_vendor_id, deleted_display_id))
         try:
             if target_vendor_id:
                 c.execute("DELETE FROM attendance WHERE vendor_id = ? AND (person_id = ? OR (person_id IS NULL AND name = ?))", (target_vendor_id, person_id, name))

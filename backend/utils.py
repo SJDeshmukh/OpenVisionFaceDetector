@@ -37,6 +37,38 @@ def _now_ts():
     except Exception:
         return 0.0
 
+def parse_db_date(val):
+    if not val:
+        return None
+    # Ensure datetime is handled before date (datetime is a subclass of date)
+    if isinstance(val, datetime):
+        return val.date()
+    if isinstance(val, date):
+        return val
+    if isinstance(val, str):
+        try:
+            return datetime.strptime(val.split(' ')[0], '%Y-%m-%d').date()
+        except Exception:
+            return None
+    return None
+
+def parse_db_datetime(val):
+    if not val: return None
+    if isinstance(val, datetime):
+        return val
+    if isinstance(val, date):
+        return datetime.combine(val, datetime.min.time())
+    if isinstance(val, str):
+        # Standard SQLite/Postgres strings
+        # Handle ISO T separator or space
+        val_clean = val.replace('T', ' ')
+        for fmt in ('%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d'):
+            try:
+                return datetime.strptime(val_clean, fmt)
+            except ValueError:
+                continue
+    return None
+
 
 # --- Redis Client ---
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
@@ -123,16 +155,15 @@ def check_vendor_status(vendor_id):
         if vendor['status'] != 'active':
             return False, "Account Suspended"
             
-        # Check Subscription Expiry
         c.execute("SELECT end_date, grace_period_days FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
         sub = c.fetchone()
-        if not sub:
-            return False, "No active subscription"
-            
-        expiry = datetime.strptime(sub['end_date'], '%Y-%m-%d').date()
-        grace = sub['grace_period_days'] or 0
-        if date.today() > (expiry + timedelta(days=grace)):
-            return False, "Subscription Expired"
+        if sub:
+            ed = sub['end_date'] if isinstance(sub, dict) else sub[0]
+            grace = (sub['grace_period_days'] if isinstance(sub, dict) else sub[1]) or 0
+            ed_date = parse_db_date(ed)
+            if ed_date:
+                if date.today() > (ed_date + timedelta(days=grace)):
+                    return False, "Subscription Expired"
             
         # Check Overdue Invoices
         today = date.today().isoformat()
@@ -150,6 +181,17 @@ def check_vendor_status(vendor_id):
     finally:
         conn.close()
 
+def get_db_connection(timeout=30):
+    try:
+        from db_factory import get_db_connection as _get
+        return _get(timeout=timeout)
+    except ImportError:
+        # Fallback to simple sqlite if db_factory is not available or in path
+        db_path = os.environ.get("DB_PATH", "face_db.sqlite")
+        conn = sqlite3.connect(db_path, timeout=timeout)
+        conn.row_factory = sqlite3.Row
+        return conn
+
 def reset_sequence(table_name):
     """
     Resets the auto-increment sequence for a given table to MAX(id) + 1.
@@ -159,12 +201,8 @@ def reset_sequence(table_name):
         conn = get_db_connection()
         c = conn.cursor()
         
-        # Check if Postgres
-        is_pg = False
-        try:
-            is_pg = isinstance(conn, CompatConn) and getattr(conn, "_is_pg", False)
-        except Exception:
-            pass
+        # Check if Postgres using the _is_pg flag from db_factory wrappers
+        is_pg = getattr(conn, "_is_pg", False)
             
         if is_pg:
             # Postgres: setval
@@ -180,158 +218,206 @@ def reset_sequence(table_name):
     except Exception:
         pass
 
-def vendor_has_feature(vendor_id, feature_name):
+def _run(cur, sql, params=None):
+    if params is None:
+        params = []
+    # If the cursor belongs to a Postgres connection, adapt query
+    is_pg = False
     try:
-        if is_testing() and feature_name == "late_mark":
-            return True
+        # Check if it's our PostgresCursorWrapper or similar
+        if hasattr(cur, "cursor") and hasattr(cur.cursor, "mogrify"): # Raw psycopg2
+             is_pg = True
+        elif hasattr(cur, "_is_pg"): # Our wrapper
+             is_pg = cur._is_pg
     except Exception:
         pass
-    if not vendor_id:
-        return True
-    try:
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
-        row = c.fetchone()
-        conn.close()
-        if row and row[0]:
-            try:
-                features = json.loads(row[0])
-                return feature_name in features
-            except Exception:
-                return False
-        return False
-    except Exception:
-        return False
 
-# --- Schema Helpers ---
+    if is_pg:
+        sql = sql.replace("?", "%s")
+    cur.execute(sql, params)
+
 def _ensure_class_batch_tables(conn):
-    c = conn.cursor()
-    c.execute("""CREATE TABLE IF NOT EXISTS class_batches(
-        id TEXT PRIMARY KEY,
-        vendor_id INTEGER,
-        class_year TEXT,
-        division TEXT,
-        branch TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        status TEXT
-    )""")
-    c.execute("""CREATE TABLE IF NOT EXISTS class_batch_items(
-        id TEXT PRIMARY KEY,
-        batch_id TEXT,
-        seq INTEGER,
-        image_b64 TEXT,
-        annotated_b64 TEXT,
-        faces_json TEXT,
-        status TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )""")
-    conn.commit()
+    try:
+        c = conn.cursor()
+        is_pg = getattr(conn, "_is_pg", False)
+        
+        if is_pg:
+            _run(c, """
+                CREATE TABLE IF NOT EXISTS class_batches (
+                    id TEXT PRIMARY KEY,
+                    vendor_id INTEGER,
+                    class_year TEXT,
+                    division TEXT,
+                    branch TEXT,
+                    status TEXT DEFAULT 'active',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            _run(c, """
+                CREATE TABLE IF NOT EXISTS class_batch_items (
+                    id TEXT PRIMARY KEY,
+                    batch_id TEXT,
+                    seq INTEGER,
+                    image_b64 TEXT,
+                    annotated_b64 TEXT,
+                    faces_json TEXT,
+                    status TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+        else:
+            _run(c, """
+                CREATE TABLE IF NOT EXISTS class_batches (
+                    id TEXT PRIMARY KEY,
+                    vendor_id INTEGER,
+                    class_year TEXT,
+                    division TEXT,
+                    branch TEXT,
+                    status TEXT DEFAULT 'active',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            _run(c, """
+                CREATE TABLE IF NOT EXISTS class_batch_items (
+                    id TEXT PRIMARY KEY,
+                    batch_id TEXT,
+                    seq INTEGER,
+                    image_b64 TEXT,
+                    annotated_b64 TEXT,
+                    faces_json TEXT,
+                    status TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+        conn.commit()
+    except Exception:
+        pass
 
-_POSTGRES_AVAILABLE = None
 def postgres_available():
-    global _POSTGRES_AVAILABLE
-    if _POSTGRES_AVAILABLE is False:
-        return False
     if not (DATABASE_URL and DATABASE_URL.startswith(("postgres://", "postgresql://"))):
-        _POSTGRES_AVAILABLE = False
-        return False
-    if psycopg2 is None:
-        _POSTGRES_AVAILABLE = False
         return False
     try:
-        conn = psycopg2.connect(DATABASE_URL)
+        conn = psycopg2.connect(DATABASE_URL, connect_timeout=3)
         conn.close()
-        _POSTGRES_AVAILABLE = True
         return True
     except Exception:
-        _POSTGRES_AVAILABLE = False
         return False
 
-def get_db_connection(timeout=30):
-    if postgres_available():
-        try:
-            conn = psycopg2.connect(DATABASE_URL)
-            return CompatConn(conn, True)
-        except Exception:
-            pass
-    try:
-        from db_factory import get_db_connection as _get
-        return _get(timeout=timeout)
-    except ImportError:
-        # Fallback to simple sqlite if db_factory is not available or in path
-        db_path = os.environ.get("DATABASE_URL", "face_db.sqlite")
-        conn = sqlite3.connect(db_path, timeout=timeout)
-        conn.row_factory = sqlite3.Row
-        return conn
-
-class CompatCursor:
-    def __init__(self, conn, cur, is_pg):
-        self._conn = conn
-        self._cur = cur
-        self._is_pg = is_pg
-    def execute(self, sql, params=None):
-        if params is None:
-            params = []
-        # PostgreSQL doesn't like ? placeholder if we use regular psycopg2 without wrapper
-        # but db_factory already handles this. This is for direct usage if needed.
-        self._cur.execute(sql, params)
-    def executemany(self, sql, seq):
-        self._cur.executemany(sql, seq)
-    def fetchall(self):
-        return self._cur.fetchall()
-    def fetchone(self):
-        return self._cur.fetchone()
-    @property
-    def rowcount(self):
-        try:
-            return self._cur.rowcount
-        except Exception:
-            return None
-    def __getattr__(self, name):
-        return getattr(self._cur, name)
-
-class CompatConn:
-    def __init__(self, raw_conn, is_pg):
-        self._raw = raw_conn
-        self._is_pg = is_pg
-    def cursor(self):
-        if self._is_pg:
-            return CompatCursor(self, self._raw.cursor(cursor_factory=RealDictCursor), True)
-        return self._raw.cursor()
-    def commit(self):
-        return self._raw.commit()
-    def rollback(self):
-        return self._raw.rollback()
-    def close(self):
-        return self._raw.close()
-    def __getattr__(self, name):
-        return getattr(self._raw, name)
-
-def log_audit(action, details=None, target_vendor_id=None, actor="system"):
+def ensure_audit_logs_table():
     conn = get_db_connection()
     c = conn.cursor()
     try:
-        c.execute("INSERT INTO audit_logs (actor_username, action, target_vendor_id, details) VALUES (?, ?, ?, ?)",
-                  (actor, action, target_vendor_id, json.dumps(details or {})))
+        is_pg = getattr(conn, "_is_pg", False)
+        if is_pg:
+            _run(c, """
+                CREATE TABLE IF NOT EXISTS audit_logs (
+                    id SERIAL PRIMARY KEY,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    actor_username TEXT,
+                    actor_role TEXT,
+                    target_vendor_id INTEGER,
+                    action TEXT,
+                    details TEXT,
+                    ip TEXT
+                )
+            """)
+        else:
+            _run(c, """
+                CREATE TABLE IF NOT EXISTS audit_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    actor_username TEXT,
+                    actor_role TEXT,
+                    target_vendor_id INTEGER,
+                    action TEXT,
+                    details TEXT,
+                    ip TEXT
+                )
+            """)
+            
+            # Migration: Add missing columns if table existed from old version
+            try:
+                c.execute("PRAGMA table_info(audit_logs)")
+                cols = [info[1] for info in c.fetchall()]
+                if 'actor_role' not in cols:
+                    c.execute("ALTER TABLE audit_logs ADD COLUMN actor_role TEXT")
+                if 'ip' not in cols:
+                    c.execute("ALTER TABLE audit_logs ADD COLUMN ip TEXT")
+            except Exception:
+                pass
         conn.commit()
     except Exception:
         pass
     finally:
         conn.close()
 
-def _pg_cursor(conn):
-    return conn.cursor(cursor_factory=RealDictCursor)
+def log_audit(action, details=None, target_vendor_id=None, status="success", actor=None):
+    try:
+        from flask import request
+        from services.auth_service import verify_token
+        
+        ensure_audit_logs_table()
+        conn = get_db_connection()
+        c = conn.cursor()
+        actor_username = actor
+        actor_role = None
+        
+        if not actor_username:
+            try:
+                auth_header = request.headers.get('Authorization')
+                if auth_header:
+                    token = auth_header.split(" ")[1]
+                    user_data = verify_token(token)
+                    if user_data:
+                        actor_username = user_data.get('username')
+                        actor_role = user_data.get('role')
+            except Exception:
+                pass
+        
+        if not actor_username:
+            actor_username = 'system'
 
-def _adapt_query_for_pg(sql):
-    return sql.replace("?", "%s")
+        try:
+            ip = request.remote_addr
+        except:
+            ip = '0.0.0.0'
 
-def _run(cur, sql, params=None):
-    if params is None:
-        params = []
-    if isinstance(cur, CompatCursor) and getattr(cur, "_is_pg", False):
-        sql = _adapt_query_for_pg(sql)
-    cur.execute(sql, params)
+        payload = {"status": status}
+        if isinstance(details, dict):
+            payload.update(details)
+        elif isinstance(details, str):
+            payload["message"] = details
+            
+        _run(c, "INSERT INTO audit_logs (actor_username, actor_role, target_vendor_id, action, details, ip) VALUES (?, ?, ?, ?, ?, ?)",
+             (actor_username, actor_role, target_vendor_id, action, json.dumps(payload), ip))
+        conn.commit()
+        conn.close()
+    except Exception:
+        try:
+            conn.close()
+        except:
+            pass
+
+def vendor_has_feature(vendor_id, feature_name):
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        _run(c, "SELECT features FROM subscriptions WHERE vendor_id = ? LIMIT 1", (vendor_id,))
+        row = c.fetchone()
+        conn.close()
+        if row:
+            raw = row['features'] if isinstance(row, dict) else row[0]
+            if not raw:
+                return False
+            import json
+            try:
+                features = json.loads(raw) if isinstance(raw, str) else list(raw)
+            except Exception:
+                features = []
+            return feature_name in features
+        return False
+    except Exception:
+        return False
 
 # --- Feature & Template Constants ---
 BUNDLE_FEATURES = {

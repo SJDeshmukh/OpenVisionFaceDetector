@@ -59,13 +59,13 @@ if celery:
             c2.execute("""INSERT INTO system_users (username, password, role, vendor_id)
                           VALUES (?, ?, 'vendor_admin', ?)""",
                        (admin_username, admin_password, vendor_id))
-        except sqlite3.IntegrityError:
+        except Exception:
             pass
         try:
             c2.execute("""INSERT INTO system_users (username, password, role, vendor_id)
                           VALUES (?, ?, 'user', ?)""",
                        (user_username, user_password, vendor_id))
-        except sqlite3.IntegrityError:
+        except Exception:
             pass
         c2.execute("INSERT INTO companies (name, shifts, draft_timetable, live_timetable, vendor_id) VALUES (?, ?, ?, ?, ?)", 
                    (company_name, '[]', '[]', '[]', vendor_id))
@@ -73,6 +73,32 @@ if celery:
         conn2.close()
         log_audit('create_vendor', details={'company_name': company_name}, target_vendor_id=vendor_id, actor="system")
         socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
+
+def process_delete_vendor_task(vendor_id):
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        # Delete associated data first (Postgres has FKs, but SQLite might need manual order)
+        c.execute("DELETE FROM attendance WHERE vendor_id = ?", (vendor_id,))
+        c.execute("DELETE FROM faces WHERE vendor_id = ?", (vendor_id,))
+        c.execute("DELETE FROM companies WHERE vendor_id = ?", (vendor_id,))
+        c.execute("DELETE FROM system_users WHERE vendor_id = ?", (vendor_id,))
+        c.execute("DELETE FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+        c.execute("DELETE FROM active_sessions WHERE vendor_id = ?", (vendor_id,))
+        c.execute("DELETE FROM vendor_devices WHERE vendor_id = ?", (vendor_id,))
+        c.execute("DELETE FROM invoices WHERE vendor_id = ?", (vendor_id,))
+        c.execute("DELETE FROM vendors WHERE id = ?", (vendor_id,))
+        conn.commit()
+        log_audit('delete_vendor', details={'vendor_id': vendor_id}, target_vendor_id=vendor_id, actor="system")
+        socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
+    except Exception as e:
+        if conn: conn.rollback()
+        logger.error(f"Error in delete_vendor_task: {e}")
+    finally:
+        if conn: conn.close()
+
+if celery:
+    process_delete_vendor_task = celery.task(name="tasks.process_delete_vendor")(process_delete_vendor_task)
 
 def ensure_task_events_table():
     conn = get_db_connection()
@@ -118,12 +144,24 @@ def _store_task_event(payload):
     conn = get_db_connection()
     c = conn.cursor()
     try:
+        # Stringify all payload fields to avoid adapt issues with complex objects (like Celery's Consumer)
+        task_id = str(payload.get("task_id")) if payload.get("task_id") is not None else None
+        name = str(payload.get("name")) if payload.get("name") is not None else None
+        queue = str(payload.get("queue")) if payload.get("queue") is not None else None
+        worker = str(payload.get("worker")) if payload.get("worker") is not None else None
+        status = str(payload.get("status")) if payload.get("status") is not None else None
+        args = str(payload.get("args")) if payload.get("args") is not None else None
+        kwargs = str(payload.get("kwargs")) if payload.get("kwargs") is not None else None
+        result = str(payload.get("result")) if payload.get("result") is not None else None
+        error = str(payload.get("error")) if payload.get("error") is not None else None
+        trace = str(payload.get("trace")) if payload.get("trace") is not None else None
+        
         c.execute("""INSERT INTO task_events (task_id, name, queue, worker, status, received_at, started_at, finished_at, runtime, retries, eta, args, kwargs, result, error, trace)
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (
-            payload.get("task_id"), payload.get("name"), payload.get("queue"), payload.get("worker"),
-            payload.get("status"), payload.get("received_at"), payload.get("started_at"), payload.get("finished_at"),
-            payload.get("runtime"), payload.get("retries"), payload.get("eta"), payload.get("args"),
-            payload.get("kwargs"), payload.get("result"), payload.get("error"), payload.get("trace")
+            task_id, name, queue, worker, status, 
+            payload.get("received_at"), payload.get("started_at"), payload.get("finished_at"),
+            payload.get("runtime"), payload.get("retries"), payload.get("eta"), 
+            args, kwargs, result, error, trace
         ))
         c.execute("SELECT COUNT(*) FROM task_events")
         row = c.fetchone()
@@ -147,7 +185,7 @@ def _on_task_received(sender=None, headers=None, body=None, **kwargs):
             "task_id": headers.get("id") if headers else None,
             "name": headers.get("task") if headers else None,
             "queue": headers.get("queue") if headers else None,
-            "worker": sender,
+            "worker": str(sender),
             "status": "received",
             "received_at": datetime.utcnow().isoformat(),
             "retries": headers.get("retries", 0) if headers else 0,

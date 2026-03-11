@@ -15,10 +15,14 @@ from utils import (
     is_testing, vendor_has_feature, BUNDLE_FEATURES, ALL_FEATURES,
     REGISTRATION_TEMPLATES, _ensure_class_batch_tables,
     cache_get, cache_set, create_job, get_job, complete_job, fail_job,
-    check_vendor_status, CompatConn,
+    check_vendor_status,
+    parse_db_date, parse_db_datetime,
     _VENDOR_EMB_CACHE
 )
-from services.face_service import _normalize_vec, _decode_data_uri_to_rgb
+from db_factory import get_table_columns
+from services.face_service import (
+    _normalize_vec, _decode_data_uri_to_rgb, _ensure_vendor_emb_cache, _suggest_from_cache
+)
 from flask import current_app as app, Blueprint, request, jsonify, send_file
 # Assuming socketio is initialized elsewhere and accessible
 # In a modular setup, you might need a way to access the socketio instance
@@ -171,6 +175,72 @@ def class_batch_add():
         t.start()
         
     return jsonify({"ok": True, "created": created})
+
+
+@attendance_bp.route("/class-batch/add-inferred", methods=["POST"])
+def class_batch_add_inferred():
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+    
+    data = request.get_json(silent=True) or {}
+    bid = data.get('batch_id')
+    items_data = data.get('items') or []
+    
+    if not bid:
+        return jsonify({"error": "batch_id required"}), 400
+    if not items_data:
+        return jsonify({"error": "No items provided"}), 400
+
+    conn = get_db_connection()
+    _ensure_class_batch_tables(conn)
+    c = conn.cursor()
+    
+    # Verify batch
+    c.execute("SELECT id, class_year, division, branch FROM class_batches WHERE id = ? AND vendor_id = ?", (bid, vendor_id))
+    batch_row = c.fetchone()
+    if not batch_row:
+        conn.close()
+        return jsonify({"error": "batch not found"}), 404
+    
+    class_year, division, branch = batch_row[1], batch_row[2], batch_row[3]
+    
+    # Prepare cache for suggestions
+    vcache = _ensure_vendor_emb_cache(vendor_id, class_year=class_year, division=division, branch=branch)
+    
+    created_ids = []
+    for item in items_data:
+        image_b64 = item.get('image_b64')
+        faces_inferred = item.get('faces') or []
+        seq = item.get('seq') or int(time.time())
+        item_id = uuid.uuid4().hex[:12]
+        
+        # Process faces: add server-side suggestions
+        processed_faces = []
+        for f in faces_inferred:
+            emb = f.get('embedding')
+            if emb and len(emb) > 0:
+                vec = np.array(emb, dtype=np.float32)
+                suggestions = _suggest_from_cache(vec, vcache, topk=3)
+                f['suggestions'] = suggestions
+                # Convert embedding to base64 to match standard faces_json format if needed
+                f['emb_vec'] = base64.b64encode(vec.tobytes()).decode('ascii')
+            
+            # Map box format [x1, y1, x2, y2]
+            processed_faces.append(f)
+            
+        faces_json = json.dumps(processed_faces)
+        
+        c.execute(
+            "INSERT INTO class_batch_items (id, batch_id, seq, image_b64, annotated_b64, faces_json, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (item_id, bid, seq, image_b64, '', faces_json, 'done')
+        )
+        created_ids.append(item_id)
+        
+    conn.commit()
+    conn.close()
+    
+    return jsonify({"ok": True, "created": created_ids})
 
 
 @attendance_bp.route("/class-batch/commit", methods=["POST"])
@@ -494,7 +564,7 @@ def get_analytics():
             FROM attendance a
             JOIN faces f ON (a.person_id IS NOT NULL AND a.person_id = f.id) OR (a.person_id IS NULL AND a.name = f.name AND a.vendor_id = f.vendor_id)
             WHERE date(a.timestamp) = ? AND a.status = 'CHECK_IN' AND a.vendor_id = ?
-            GROUP BY COALESCE(a.person_id, f.id)
+            GROUP BY COALESCE(a.person_id, f.id), f.shift
         """, (target_date_str, vendor_id))
         
         records = c.fetchall()
@@ -544,11 +614,9 @@ def get_analytics():
                     h, m = map(int, work_start.split(':'))
                     threshold_mins = h * 60 + m + grace_period
                     
-                    # Parse timestamp
-                    if '.' in ts_str:
-                         ts = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S.%f')
-                    else:
-                         ts = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S')
+                    # Parse timestamp (Robust for PG/SQLite)
+                    ts = parse_db_datetime(ts_str)
+                    if not ts: continue
                     
                     checkin_mins = ts.hour * 60 + ts.minute
                     
@@ -689,8 +757,7 @@ def export_report():
     dynamic_fields = []
     if vendor_id:
         try:
-            c.execute("PRAGMA table_info(vendors)")
-            vcols = [info[1] for info in c.fetchall()]
+            vcols = get_table_columns(conn, "vendors")
         except Exception:
             vcols = []
         reg_select = "registration_config" if "registration_config" in vcols else "NULL AS registration_config"
@@ -776,8 +843,7 @@ def export_report():
     # (dynamic_fields already fetched above)
 
     try:
-        c.execute("PRAGMA table_info(attendance)")
-        acols = [info[1] for info in c.fetchall()]
+        acols = get_table_columns(conn, "attendance")
     except Exception:
         acols = []
     person_sel = "a.person_id" if "person_id" in acols else "NULL AS person_id"
@@ -849,10 +915,8 @@ def export_report():
                     break
             if should_skip:
                 continue
-        try:
-            ts = datetime.strptime(row['timestamp'], '%Y-%m-%d %H:%M:%S.%f')
-        except ValueError:
-            ts = datetime.strptime(row['timestamp'], '%Y-%m-%d %H:%M:%S')
+        ts = parse_db_datetime(row['timestamp'])
+        if not ts: continue
             
         date_str = ts.strftime('%Y-%m-%d')
         time_str = ts.strftime('%I:%M %p')
@@ -984,8 +1048,7 @@ def get_report_filters():
     enabled_fields = []
     if vendor_id:
         try:
-            c.execute("PRAGMA table_info(vendors)")
-            vcols = [info[1] for info in c.fetchall()]
+            vcols = get_table_columns(conn, "vendors")
         except Exception:
             vcols = []
         reg_select = "registration_config" if "registration_config" in vcols else "NULL AS registration_config"
@@ -1028,8 +1091,7 @@ def get_report_filters():
     params = []
     query = "SELECT name, department, designation, shift, phone, custom_data FROM faces"
     try:
-        c.execute("PRAGMA table_info(faces)")
-        fcols = [info[1] for info in c.fetchall()]
+        fcols = get_table_columns(conn, "faces")
         if 'custom_data' not in fcols:
             c.execute("ALTER TABLE faces ADD COLUMN custom_data TEXT DEFAULT NULL")
             conn.commit()
@@ -1394,8 +1456,7 @@ def get_payroll_report():
     # 1. Fetch Timetable and Working Hours
     if vendor_id:
         try:
-            c.execute("PRAGMA table_info(companies)")
-            ccols = [info[1] for info in c.fetchall()]
+            ccols = get_table_columns(conn, "companies")
         except Exception:
             ccols = []
         wh_select = "working_hours" if "working_hours" in ccols else "NULL AS working_hours"
@@ -1424,8 +1485,7 @@ def get_payroll_report():
     # 2. Fetch Persons (to get wages and late config)
     if vendor_id:
         try:
-            c.execute("PRAGMA table_info(faces)")
-            fcols = [info[1] for info in c.fetchall()]
+            fcols = get_table_columns(conn, "faces")
         except Exception:
             fcols = []
         extra = []
@@ -1531,17 +1591,11 @@ def get_payroll_report():
         # Scan raw records for is_late=1 in the requested range
         for r in records:
             if r.get('is_late') == 1:
-                try:
-                    r_ts = r['timestamp']
-                    if '.' in r_ts:
-                         r_dt = datetime.strptime(r_ts, '%Y-%m-%d %H:%M:%S.%f').date()
-                    else:
-                         r_dt = datetime.strptime(r_ts, '%Y-%m-%d %H:%M:%S').date()
+                r_dt = parse_db_date(r['timestamp'])
+                if r_dt:
                     
                     if start_dt_req <= r_dt <= end_dt_req:
                         late_dates.add(r_dt)
-                except:
-                    pass
         
         late_marks_count = len(late_dates)
         if not late_enabled:
@@ -1685,16 +1739,9 @@ def export_payroll_daily():
             late_dates = []
             for r in records:
                 if r.get('is_late') == 1:
-                    try:
-                        r_ts = r['timestamp']
-                        if '.' in r_ts:
-                            r_dt = datetime.strptime(r_ts, '%Y-%m-%d %H:%M:%S.%f').date()
-                        else:
-                            r_dt = datetime.strptime(r_ts, '%Y-%m-%d %H:%M:%S').date()
-                        if start_dt_req <= r_dt <= end_dt_req:
-                            late_dates.append(r_dt)
-                    except Exception:
-                        pass
+                    r_dt = parse_db_date(r['timestamp'])
+                    if r_dt and start_dt_req <= r_dt <= end_dt_req:
+                        late_dates.append(r_dt)
             late_dates = sorted(set(late_dates))
             allowance = info.get('late_allowance_days')
             deduction_amt = info.get('late_deduction_amount')
@@ -2132,8 +2179,7 @@ def person_event():
 
     # Ensure attendance has device_id column (SQLite safe migration)
     try:
-        c.execute("PRAGMA table_info(attendance)")
-        cols = [row[1] if isinstance(row, (list, tuple)) else row['name'] for row in c.fetchall() or []]
+        cols = get_table_columns(conn, "attendance")
         if 'device_id' not in cols:
             try:
                 c.execute("ALTER TABLE attendance ADD COLUMN device_id TEXT")
@@ -2197,23 +2243,18 @@ def person_event():
     expected_status = 'CHECK_IN'
     if last_record and last_record['status'] == 'CHECK_IN':
         expected_status = 'CHECK_OUT'
-        
         # Check for Stale Check-In (e.g. forgot to check out yesterday)
         try:
-            ts_str = last_record['timestamp']
-            last_ts = None
-            if '.' in ts_str:
-                last_ts = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S.%f')
-            else:
-                last_ts = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S')
+            # Calculate duration since last check-in (Robust for PG/SQLite)
+            last_ts = parse_db_datetime(last_record['timestamp'])
+            if last_ts:
+                # Calculate duration since last check-in
+                # If > 16 hours, assume stale and reset to CHECK_IN
+                duration_hours = (current_time_obj - last_ts).total_seconds() / 3600
                 
-            # Calculate duration since last check-in
-            # If > 16 hours, assume stale and reset to CHECK_IN
-            duration_hours = (current_time_obj - last_ts).total_seconds() / 3600
-            
-            if duration_hours > 16:
-                pass # print(f"Stale Check-In detected for {name} ({duration_hours:.1f}h ago). Resetting to CHECK_IN.")
-                expected_status = 'CHECK_IN'
+                if duration_hours > 16:
+                    pass # print(f"Stale Check-In detected for {name} ({duration_hours:.1f}h ago). Resetting to CHECK_IN.")
+                    expected_status = 'CHECK_IN'
         except Exception as e:
             pass # print(f"Error checking stale status: {e}")
 
@@ -2606,41 +2647,37 @@ def person_event():
     # --- Cooldown Check ---
     try:
         if last_record:
-            last_ts_str = last_record['timestamp']
-            # Parse timestamp (handle both with and without microseconds)
-            if '.' in last_ts_str:
-                last_ts = datetime.strptime(last_ts_str, '%Y-%m-%d %H:%M:%S.%f')
-            else:
-                last_ts = datetime.strptime(last_ts_str, '%Y-%m-%d %H:%M:%S')
-            
-            # Get cooldown setting
-            c.execute("SELECT value FROM system_settings WHERE key='cooldown'")
-            row = c.fetchone()
-            cooldown_seconds = int(row['value']) if row else 30
-            
-            # Calculate time difference
-            # Use abs() to handle cases where DB has "future" timestamps due to timezone mixups
-            # (e.g. if DB has IST but server checks against UTC)
-            delta_seconds = (datetime.now() - last_ts).total_seconds()
-            pass # print(f"Cooldown Check: Name={name}, Last={last_ts}, Now={datetime.now()}, Delta={delta_seconds}s, Limit={cooldown_seconds}s")
-            
-            if 0 <= delta_seconds < cooldown_seconds:
-                pass # print(f"Cooldown active for {name}. Skipping.")
-                conn.close()
-                return jsonify({"speak": False})
-            elif delta_seconds < 0:
-                 # Last record is in the future.
-                 # If it's just a few seconds (clock skew), treat as cooldown.
-                 # If it's large (timezone mismatch), we should probably allow it to correct the drift, 
-                 # OR block it if we want to enforce strictness. 
-                 # Given the issues, let's allow it if it's > 60 seconds in future (assume data error/timezone),
-                 # but block if it's within 0 to -60 seconds (likely just double scan with clock skew).
-                 if abs(delta_seconds) < 60:
-                     pass # print(f"Cooldown active (future skew) for {name}. Skipping.")
-                     conn.close()
-                     return jsonify({"speak": False})
-                 else:
-                     pass # print(f"Ignoring future timestamp (timezone mismatch?) for {name}. Allowing entry.")
+            # Parse timestamp (Robust for PG/SQLite)
+            last_ts = parse_db_datetime(last_record['timestamp'])
+            if last_ts:
+                # Get cooldown setting
+                c.execute("SELECT value FROM system_settings WHERE key='cooldown'")
+                row = c.fetchone()
+                cooldown_seconds = int(row['value']) if row else 30
+                
+                # Calculate time difference
+                # Use abs() to handle cases where DB has "future" timestamps due to timezone mixups
+                # (e.g. if DB has IST but server checks against UTC)
+                delta_seconds = (datetime.now() - last_ts).total_seconds()
+                pass # print(f"Cooldown Check: Name={name}, Last={last_ts}, Now={datetime.now()}, Delta={delta_seconds}s, Limit={cooldown_seconds}s")
+                
+                if 0 <= delta_seconds < cooldown_seconds:
+                    pass # print(f"Cooldown active for {name}. Skipping.")
+                    conn.close()
+                    return jsonify({"speak": False})
+                elif delta_seconds < 0:
+                    # Last record is in the future.
+                    # If it's just a few seconds (clock skew), treat as cooldown.
+                    # If it's large (timezone mismatch), we should probably allow it to correct the drift, 
+                    # OR block it if we want to enforce strictness. 
+                    # Given the issues, let's allow it if it's > 60 seconds in future (assume data error/timezone),
+                    # but block if it's within 0 to -60 seconds (likely just double scan with clock skew).
+                    if abs(delta_seconds) < 60:
+                        pass # print(f"Cooldown active (future skew) for {name}. Skipping.")
+                        conn.close()
+                        return jsonify({"speak": False})
+                    else:
+                        pass # print(f"Ignoring future timestamp (timezone mismatch?) for {name}. Allowing entry.")
 
     except Exception as e:
         pass # print(f"Cooldown Error: {e}" )
@@ -3090,4 +3127,3 @@ def get_attendance():
         })
     
     return jsonify({"attendance": attendance})
-

@@ -2,6 +2,8 @@ import os
 import uuid
 from itsdangerous import URLSafeTimedSerializer
 from werkzeug.security import generate_password_hash, check_password_hash
+from datetime import date, datetime, timedelta
+from utils import parse_db_date
 
 # Secret key Configuration
 SECRET_KEY = os.environ.get('SECRET_KEY', 'super_secret_key_change_this_in_prod')
@@ -18,7 +20,10 @@ def generate_token_with_claims(username, role, extra_claims):
     return serializer.dumps(payload)
 
 def hash_password(raw_password):
-    return generate_password_hash(str(raw_password))
+    try:
+        return generate_password_hash(str(raw_password))
+    except Exception:
+        return str(raw_password)
 
 def is_testing():
     try:
@@ -190,9 +195,9 @@ def check_vendor_status(vendor_id):
     if not vendor_id:
         return True, "SuperAdmin"
         
-    from app import get_db_connection, CompatConn
+    from app import get_db_connection
     conn = get_db_connection()
-    if not isinstance(conn, CompatConn):
+    if not getattr(conn, "_is_pg", False):
         conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
@@ -227,15 +232,15 @@ def check_vendor_status(vendor_id):
     
     if sub and sub['end_date']:
         try:
-            # Robust parsing (handle optional time)
-            end_date_str = sub['end_date'].split(' ')[0]
-            end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
-            grace = sub['grace_period_days'] or 0
-            limit_date = end_date + timedelta(days=grace)
-            
-            if date.today() > end_date:
-                return False, "Subscription Expired"
-        except ValueError as e:
-            return False, "Invalid Date Format"
+            # Robust parsing (handle both PG datetime objects and SQLite strings)
+            end_date = parse_db_date(sub['end_date'])
+            if end_date:
+                grace = sub['grace_period_days'] or 0
+                limit_date = end_date + timedelta(days=grace)
+                
+                if date.today() > limit_date:
+                    return False, "Subscription Expired"
+        except Exception as e:
+            return False, f"Date Parsing Error: {e}"
             
     return True, "Active"

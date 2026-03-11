@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, date, timedelta
+from utils import parse_db_datetime
 
 def calculate_daily_hours(records, timetable=None, date_str=None):
     """
@@ -21,14 +22,10 @@ def calculate_daily_hours(records, timetable=None, date_str=None):
         status = record['status']
         activity_name = record.get('activity', 'Work')
         
-        try:
-            ts = datetime.strptime(record['timestamp'], '%Y-%m-%d %H:%M:%S.%f')
-        except ValueError:
-            # Fallback for timestamps without microseconds
-            try:
-                ts = datetime.strptime(record['timestamp'], '%Y-%m-%d %H:%M:%S')
-            except:
-                continue # Skip invalid
+        # Robust parsing (handle PG datetime objects vs SQLite strings)
+        ts = parse_db_datetime(record['timestamp'])
+        if not ts:
+            continue # Skip invalid
 
         if status == 'CHECK_IN':
             if current_checkin is None:

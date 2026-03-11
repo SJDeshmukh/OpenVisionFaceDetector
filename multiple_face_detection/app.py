@@ -608,7 +608,7 @@ def _compute_portrait_box(x1, y1, x2, y2, w, h, scale: float = 3.0, margin: floa
     x1n, y1n, x2n, y2n = _clip_box(left, top, right, bottom, w, h)
     return x1n, y1n, x2n, y2n
 
-def _compute_centered_box(x1, y1, x2, y2, w, h, scale: float = 1.8):
+def _compute_centered_box(x1, y1, x2, y2, w, h, scale: float = 1.2):
     """Computes a balanced square-ish box centered on the face box."""
     face_w = max(1, x2 - x1)
     face_h = max(1, y2 - y1)
@@ -728,7 +728,8 @@ def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0
     embeds_rows: List[dict] = []
 
     for i in range(len(boxes)):
-        x1, y1, x2, y2 = boxes[i].tolist()
+        bx1, by1, bx2, by2 = [int(v) for v in boxes[i].tolist()]
+        x1, y1, x2, y2 = bx1, by1, bx2, by2
         s = float(scores[i])
         x1, y1, x2, y2 = _clip_box(x1, y1, x2, y2, w, h)
         face_only = rgb[y1:y2, x1:x2]
@@ -747,10 +748,38 @@ def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0
                     embeds_rows.append({"index": i, "len": int(emb.size), "norm": float(np.linalg.norm(emb)) if emb.size > 0 else 0.0, "first5": list(map(float, emb[:5])) if emb.size >= 5 else []})
                 continue
             # PHASE: Face Crop Enhancement
+            # Use out_crop (enhanced) if available, otherwise fallback to face_only
+            # CRITICAL: Always use a tight 1.2x crop for embeddings to ensure consistency
+            f1x1, f1y1, f1x2, f1y2 = _compute_centered_box(bx1, by1, bx2, by2, w, h, scale=1.2)
+            face_only_tight = rgb[f1y1:f1y2, f1x1:f1x2]
+            
+            # Prepare local landmarks for the tight crop (for better alignment)
+            lmks_local_emb = None
+            engine = get_realtime_engine()
+            if engine is not None:
+                try:
+                    # Use a 1.5x padded box for 3D context similar to below
+                    c3x1, c3y1, c3x2, c3y2 = _compute_portrait_box(bx1, by1, bx2, by2, w, h, scale=1.5, margin=0.2)
+                    face_for_3d = rgb[c3y1:c3y2, c3x1:c3x2]
+                    if face_for_3d.size > 0:
+                        lmks_list_emb = engine.extract_landmarks(face_for_3d)
+                        if lmks_list_emb and len(lmks_list_emb) > 0:
+                            lmks_item_emb = lmks_list_emb[0]
+                            # Project to tight crop coordinates
+                            # First project to global:
+                            lmks_global_emb = lmks_item_emb.copy()
+                            lmks_global_emb[:, 0] += c3x1
+                            lmks_global_emb[:, 1] += c3y1
+                            # Then to tight crop:
+                            lmks_local_emb = lmks_global_emb.copy()
+                            lmks_local_emb[:, 0] -= f1x1
+                            lmks_local_emb[:, 1] -= f1y1
+                except Exception:
+                    pass
+
             # User Pipeline: Face Crop -> RealESRGAN (Upscale) -> GFPGAN / CodeFormer
             
             # Step 1: Intelligent Upscale with RealESRGAN
-            # Goal: Make short side at least 256px if enhancement enabled
             temp_crop = crop
             if enhancer != "None":
                 h_c, w_c = crop.shape[:2]
@@ -758,7 +787,6 @@ def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0
                 target_res = 256
                 if short_side < target_res and short_side > 0:
                     calc_scale = max(2, int(np.ceil(target_res / short_side)))
-                    # Allow gfpgan_upscale to be the floor or ceiling
                     final_scale = max(int(gfpgan_upscale), calc_scale)
                     print(f"[RE-ENGINE] Face {i} is small ({short_side}px). Pre-upscaling x{final_scale} with RealESRGAN...", flush=True)
                     temp_crop = get_realesrgan_manager().upscale(crop, scale=final_scale)
@@ -773,7 +801,6 @@ def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0
             elif enhancer == "OpenCV":
                 out_crop = enhance_face_crop(temp_crop, level=enhance_level)
             elif enhancer == "GFPGAN":
-                # Note: internal upscale set to 1 since we already upscaled with ESRGAN
                 out_crop = get_gfpgan_manager().enhance_crop(temp_crop, upscale=1, whole=(crop_mode == "Portrait"))
             elif enhancer == "GFPGAN+CodeFormer":
                 first = get_gfpgan_manager().enhance_crop(temp_crop, upscale=1, whole=(crop_mode == "Portrait"))
@@ -782,8 +809,21 @@ def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0
                 out_crop = temp_crop
             print(f"[RE-ENGINE] Face {i} processing complete. Input Shape: {crop.shape[:2]} -> Output Shape: {out_crop.shape[:2]}", flush=True)
             crops.append(out_crop)
+            
             if compute_embeddings:
-                emb = get_embedder().embed(face_only if face_only.size > 0 else out_crop)
+                # For embeddings, we MUST use the same tight 1.2x crop, enhanced if possible
+                emb_crop = face_only_tight
+                if enhancer != "None" and face_only_tight.size > 0:
+                    # Match backend routes: upscale=2, fidelity=0.9, and pass landmarks for alignment
+                    # Note: We use upscale=2 here because that's what faces.py does for pure_face thumbnails/embeddings
+                    emb_crop = get_gfpgan_manager().enhance_crop(face_only_tight, upscale=2, whole=False, fidelity=0.9, landmarks=lmks_local_emb)
+                    
+                    # MANDATORY: Resize to 512px minimum for consistent embedding extraction across all resolutions
+                    if min(emb_crop.shape[:2]) < 512:
+                        scale_f = 512.0 / min(emb_crop.shape[:2])
+                        emb_crop = cv2.resize(emb_crop, (int(emb_crop.shape[1] * scale_f), int(emb_crop.shape[0] * scale_f)), interpolation=cv2.INTER_LANCZOS4)
+                
+                emb = get_embedder().embed(emb_crop)
                 embeds_rows.append({"index": i, "len": int(emb.size), "norm": float(np.linalg.norm(emb)) if emb.size > 0 else 0.0, "first5": list(map(float, emb[:5])) if emb.size >= 5 else []})
 
     df = pd.DataFrame(
@@ -801,21 +841,21 @@ def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0
     if engine is not None:
         print(f"[RE-ENGINE] Extracting 3D Landmarks for {len(boxes)} faces...", flush=True)
         for i in range(len(boxes)):
-            x1, y1, x2, y2 = [int(v) for v in boxes[i].tolist()]
+            x1_3, y1_3, x2_3, y2_3 = int(boxes[i][0]), int(boxes[i][1]), int(boxes[i][2]), int(boxes[i][3])
             try:
                 # Use a 1.5x padded box for 3D context
-                c3x1, c3y1, c3x2, c3y2 = _compute_portrait_box(x1, y1, x2, y2, w, h, scale=1.5, margin=0.2)
+                c3x1, c3y1, c3x2, c3y2 = _compute_portrait_box(x1_3, y1_3, x2_3, y2_3, w, h, scale=1.5, margin=0.2)
                 face_for_3d = rgb[c3y1:c3y2, c3x1:c3x2]
                 if face_for_3d.size > 0:
                     lmks_list = engine.extract_landmarks(face_for_3d)
                     if lmks_list and len(lmks_list) > 0:
-                        lmks = lmks_list[0]
-                        # PROJECT to Global Coordinates: Map points from the crop back to the original image
-                        lmks_global = lmks.copy()
+                        lmks_item = lmks_list[0]
+                        # PROJECT to Global Coordinates
+                        lmks_global = lmks_item.copy()
                         lmks_global[:, 0] += c3x1
                         lmks_global[:, 1] += c3y1
                         landmarks_3d_list.append(lmks_global.tolist())
-                        sv = _extract_structural_vector(lmks)
+                        sv = _extract_structural_vector(lmks_item)
                         struct_vec_list.append(sv.tolist() if sv.size > 0 else [])
                     else:
                         landmarks_3d_list.append([])

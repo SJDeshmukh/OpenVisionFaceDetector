@@ -7,6 +7,7 @@ import io
 import time
 from datetime import datetime, date, timedelta
 from services.auth_service import authenticate_vendor_access, extract_token, verify_token
+from utils import parse_db_date
 
 # Mock Auth Decorators
 def vendor_required(f):
@@ -62,13 +63,11 @@ def require_feature(feature_name):
     
 vendor_bp = Blueprint('vendor_bp', __name__)
 
-def log_audit(action, details, target_vendor_id=None, actor=None):
-    pass
+from utils import ALL_FEATURES, log_audit
 
 @vendor_bp.route("/logo.png", methods=["GET"])
 def get_logo_png():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import extract_token, verify_token
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     logo_dir = os.path.join(base_dir, "logo")
@@ -81,7 +80,6 @@ def get_logo_png():
 @vendor_bp.route("/mobile/device-slots", methods=["GET"])
 def mobile_list_slots():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import extract_token, verify_token
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -114,7 +112,6 @@ def mobile_list_slots():
 @vendor_bp.route("/mobile/device-info", methods=["GET"])
 def mobile_device_info():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import extract_token, verify_token
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -156,7 +153,6 @@ def mobile_device_info():
 @vendor_bp.route("/mobile/assign-slot", methods=["POST"])
 def mobile_assign_slot():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import extract_token, verify_token
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -236,7 +232,6 @@ def mobile_assign_slot():
 @vendor_bp.route("/vendor/subscription", methods=["GET"])
 def get_vendor_subscription():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import extract_token, verify_token
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -281,13 +276,17 @@ def get_vendor_subscription():
     
     # Calculate days left
     days_left = 0
-    if sub_dict.get('end_date'):
-        try:
-            end_date_str = str(sub_dict['end_date']).split(' ')[0]
-            end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
-            days_left = (end_date - date.today()).days
-        except Exception:
-            days_left = 0
+    if sub_dict and sub_dict['end_date']:
+            # Robust parsing (handle PG objects vs SQLite strings)
+            end_date = parse_db_date(sub_dict['end_date'])
+            if end_date:
+                # The original code calculated days_left here, let's re-add that logic
+                days_left = (end_date - date.today()).days
+                # The instruction snippet included these lines, but they don't seem to be used later in the provided context.
+                # features = json.loads(sub_dict['features']) if sub_dict['features'] else []
+                # is_expired = date.today() > end_date
+            else:
+                days_left = 0 # If end_date parsing fails, default to 0
     sub_dict['days_left'] = days_left
 
     try:
@@ -313,7 +312,6 @@ def get_vendor_subscription():
 @vendor_bp.route("/companies", methods=["GET"])
 def get_companies():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import extract_token, verify_token
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -345,7 +343,6 @@ def get_companies():
 @vendor_bp.route("/companies", methods=["POST"])
 def create_company():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import extract_token, verify_token
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -385,7 +382,6 @@ def create_company():
 @vendor_bp.route("/companies/<int:company_id>", methods=["PUT"])
 def update_company_settings(company_id):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import extract_token, verify_token
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -448,7 +444,6 @@ def update_company_settings(company_id):
 @vendor_bp.route("/companies/<int:company_id>", methods=["GET"])
 def get_company_details(company_id):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import extract_token, verify_token
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -489,7 +484,6 @@ def get_company_details(company_id):
 @require_feature("shifts")
 def update_draft_timetable(company_id):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import extract_token, verify_token
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -533,7 +527,6 @@ def update_draft_timetable(company_id):
 @require_feature("shifts")
 def publish_timetable(company_id):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import extract_token, verify_token
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -568,7 +561,6 @@ def publish_timetable(company_id):
 @vendor_bp.route("/classes", methods=["GET"])
 def list_classes():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     vendor_id, error = authenticate_vendor_access()
     if error:
         return error
@@ -608,7 +600,6 @@ def list_classes():
 @vendor_bp.route("/classes", methods=["POST"])
 def create_class():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import extract_token, verify_token
     vendor_id, error = authenticate_vendor_access()
     if error:
@@ -643,7 +634,6 @@ def create_class():
 @vendor_bp.route("/classes/<int:cid>", methods=["PUT"])
 def update_class(cid: int):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import extract_token, verify_token
     vendor_id, error = authenticate_vendor_access()
     if error:
@@ -678,7 +668,6 @@ def update_class(cid: int):
 @vendor_bp.route("/classes/<int:cid>", methods=["DELETE"])
 def delete_class(cid: int):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import extract_token, verify_token
     vendor_id, error = authenticate_vendor_access()
     if error:
@@ -701,7 +690,6 @@ def delete_class(cid: int):
 @vendor_bp.route("/vendor/invoices", methods=["GET"])
 def get_my_invoices():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import extract_token, verify_token
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -728,7 +716,6 @@ def get_my_invoices():
 @require_feature("payroll")
 def update_global_late_config():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import extract_token, verify_token
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -766,7 +753,6 @@ def update_global_late_config():
 @vendor_bp.route("/settings", methods=["GET"])
 def get_settings():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import extract_token, verify_token
     allowed_keys = {'threshold', 'cooldown', 'work_start_time', 'late_threshold', 'late_grace_period', 'auto_checkout', 'voice_greeting', 'admin_alerts'}
     auth_header = request.headers.get('Authorization')
@@ -826,7 +812,6 @@ def get_settings():
 @vendor_bp.route("/settings", methods=["POST"])
 def update_settings():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import extract_token, verify_token
     auth_header = request.headers.get('Authorization')
     if not auth_header:
@@ -888,7 +873,6 @@ def update_settings():
 @vendor_bp.route("/users", methods=["GET"])
 def get_users():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import extract_token, verify_token
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -915,7 +899,6 @@ def get_users():
 @vendor_bp.route("/users", methods=["POST"])
 def create_user():
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import extract_token, verify_token
     return register_user() # Reuse register logic
 
@@ -923,7 +906,6 @@ def create_user():
 @vendor_bp.route("/users/<username>", methods=["PUT"])
 def update_user(username):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import extract_token, verify_token
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -974,7 +956,6 @@ def update_user(username):
 @vendor_bp.route("/users/<username>", methods=["DELETE"])
 def delete_user(username):
     from app import get_db_connection, socketio, is_testing
-    from utils import ALL_FEATURES
     from services.auth_service import extract_token, verify_token
     vendor_id, error = authenticate_vendor_access()
     if error: return error

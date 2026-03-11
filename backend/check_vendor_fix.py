@@ -14,9 +14,9 @@ def check_vendor_status(vendor_id):
     if not vendor_id:
         return True, "SuperAdmin"
         
-    from app import get_db_connection, CompatConn
+    from app import get_db_connection
     conn = get_db_connection()
-    if not isinstance(conn, CompatConn):
+    if not getattr(conn, "_is_pg", False):
         conn.row_factory = sqlite3.Row
     c = conn.cursor()
     

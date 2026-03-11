@@ -10,6 +10,7 @@ from threading import Lock
 # In a real refactor, these caches should probably live here.
 
 from utils import get_db_connection, _VENDOR_EMB_CACHE, _now_ts, USE_FAISS, _faiss, _FAISS_LOCK, LOW_RAM_MODE
+from db_factory import get_table_columns
 
 def get_realtime_engine():
     from app import get_realtime_engine as _get
@@ -79,6 +80,12 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
             sig_row = c.fetchone()
             current_sig = f"{sig_row[0]}_{sig_row[1]}" if sig_row and sig_row[0] is not None else "0_0"
         except Exception:
+            # Table may not exist yet in Postgres; rollback aborted txn before DDL
+            try:
+                if hasattr(conn, "rollback"): 
+                    conn.rollback()
+            except Exception:
+                pass
             current_sig = "0_0"
 
         ent = _VENDOR_EMB_CACHE.get(key)
@@ -87,60 +94,6 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
             return ent
             
         from multiple_face_detection import app as mfd_app
-        try:
-            c.execute("""CREATE TABLE IF NOT EXISTS person_embeddings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                vendor_id INTEGER,
-                person_id INTEGER,
-                class_year TEXT,
-                division TEXT,
-                branch TEXT,
-                vec BLOB,
-                dim INTEGER,
-                struct_vec BLOB,
-                landmarks_3d TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )""")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_person_embeddings_vid ON person_embeddings(vendor_id)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_person_embeddings_classes ON person_embeddings(class_year, division, branch)")
-            
-            # Migration: drop old UNIQUE constraint if present
-            try:
-                c.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='person_embeddings'")
-                trow = c.fetchone()
-                if trow:
-                    tsql = trow[0] if isinstance(trow, (list, tuple)) else trow['sql']
-                    if tsql and 'UNIQUE' in str(tsql):
-                        c.execute("ALTER TABLE person_embeddings RENAME TO _person_embeddings_old")
-                        c.execute("""CREATE TABLE person_embeddings (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            vendor_id INTEGER,
-                            person_id INTEGER,
-                            class_year TEXT,
-                            division TEXT,
-                            branch TEXT,
-                            vec BLOB,
-                            dim INTEGER,
-                            struct_vec BLOB,
-                            landmarks_3d TEXT,
-                            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                        )""")
-                        # Need exact column mapping since struct_vec/landmarks_3d may not exist
-                        try:
-                            c.execute("INSERT INTO person_embeddings (id, vendor_id, person_id, class_year, division, branch, vec, dim, created_at) SELECT id, vendor_id, person_id, class_year, division, branch, vec, dim, created_at FROM _person_embeddings_old")
-                        except Exception:
-                            c.execute("INSERT INTO person_embeddings SELECT * FROM _person_embeddings_old")
-                        c.execute("DROP TABLE _person_embeddings_old")
-                        conn.commit()
-                    elif tsql and 'struct_vec' not in str(tsql):
-                        c.execute("ALTER TABLE person_embeddings ADD COLUMN struct_vec BLOB")
-                        try: c.execute("ALTER TABLE person_embeddings ADD COLUMN landmarks_3d TEXT")
-                        except Exception: pass
-                        conn.commit()
-            except Exception:
-                pass
-        except Exception:
-            pass
         items = []
         try:
             q = "SELECT person_id, vec, dim, struct_vec FROM person_embeddings WHERE vendor_id = ?"
@@ -193,15 +146,14 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
                     pass
         except Exception:
             pass
-        c.execute("PRAGMA table_info(faces)")
-        cols = [r[1] if isinstance(r, (list, tuple)) else r['name'] for r in c.fetchall() or []]
-        face_img_col = 'face_image'
-        has_face_img = face_img_col in cols
+        # Check if face_image column exists
+        cols = get_table_columns(conn, "faces")
+        has_face_img = 'face_image' in cols
         # Build set of person_ids that already have pre-computed embeddings
         emb_pid_set = set(it['person_id'] for it in items)
         # Load people from faces table if face_image column exists, skipping those with pre-computed embeddings
         if has_face_img:
-            base_query = f"SELECT id, name, {face_img_col}, department, custom_data FROM faces"
+            base_query = f"SELECT id, name, face_image, department, custom_data FROM faces"
             params = []
             where = []
             if vendor_id:
@@ -226,11 +178,12 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
                     if pid in emb_pid_set:
                         continue  # already have pre-computed embedding
                     nm = r['name'] if isinstance(r, sqlite3.Row) else r[1]
-                    uri = r[face_img_col] if isinstance(r, sqlite3.Row) else r[2]
+                    uri = r['face_image'] if isinstance(r, sqlite3.Row) else r[2]
                     img_rgb = _decode_data_uri_to_rgb(uri)
                     if img_rgb is None:
                         continue
                     try:
+                        # Ensure we use 'Face' crop mode to match real-time detection
                         det_ann, det_crops, _, _ = mfd_app.detect_faces(
                             image_input=img_rgb,
                             enhancer="GFPGAN",
@@ -238,7 +191,7 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
                             gfpgan_upscale=1,
                             codeformer_w=0.5,
                             compute_embeddings=False,
-                            crop_mode="Portrait",
+                            crop_mode="Face",
                             portrait_scale=3.0,
                             preclean_whole=False,
                             preclean_level=0.2,
@@ -247,6 +200,7 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
                         crop = det_crops[0] if (isinstance(det_crops, list) and len(det_crops) > 0) else img_rgb
                     except Exception:
                         crop = img_rgb
+
                     emb = mfd_app.get_embedder().embed(crop)
                     emb = _normalize_vec(emb)
                     if emb.size > 0:
@@ -399,8 +353,8 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                     # Pure face crop - NO padding, just the detector box
                     bx1 = max(0, bx1); by1 = max(0, by1)
                     bx2 = min(iw, bx2); by2 = min(ih, by2)
-                    # Use a balanced centered box for the thumbnail crop
-                    cx1, cy1, cx2, cy2 = mfd_app._compute_centered_box(bx1, by1, bx2, by2, img_rgb.shape[1], img_rgb.shape[0], scale=1.8)
+                    # Use a balanced centered box for the thumbnail crop (1.2x tight for embedding consistency)
+                    cx1, cy1, cx2, cy2 = mfd_app._compute_centered_box(bx1, by1, bx2, by2, img_rgb.shape[1], img_rgb.shape[0], scale=1.2)
                     pure_face = img_rgb[cy1:cy2, cx1:cx2]
 
                     # Compute embedding and 3D from PURE face crop (the padded one)
@@ -458,7 +412,7 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                         if emb_norm.size > 0:
                             emb_vec_b64 = base64.b64encode(emb_norm.astype(np.float32).tobytes()).decode('ascii')
                         
-                        sugg = _suggest_from_cache(emb, vcache, topk=3, struct_vec=struct_vec_val)
+                        sugg = _suggest_from_cache(emb_norm, vcache, topk=3, struct_vec=struct_vec_val)
                     except Exception:
                         sugg = []
 

@@ -25,10 +25,14 @@ load_dotenv()
 # --- Internal Imports (Now safe since paths are set) ---
 from utils import (
     LOW_RAM_MODE, DET_MAX_SIDE_DEFAULT, USE_FAISS, _faiss, _FAISS_LOCK, 
-    _VENDOR_EMB_CACHE, get_db_connection, CompatConn, CompatCursor, 
-    _pg_cursor, _adapt_query_for_pg, _run, postgres_available, DATABASE_URL,
-    log_audit, _now_ts
+    _VENDOR_EMB_CACHE, get_db_connection, 
+    _run, postgres_available, DATABASE_URL,
+    log_audit, ensure_audit_logs_table, vendor_has_feature, 
+    _ensure_class_batch_tables, _now_ts, check_vendor_status,
+    BUNDLE_FEATURES, ALL_FEATURES, REGISTRATION_TEMPLATES
 )
+import db_factory
+from db_factory import get_table_columns
 from services.attendance_service import calculate_daily_hours, calculate_arrival_status, calculate_expected_hours
 from services.face_service import (
     _detect_faces_from_bytes, _ensure_vendor_emb_cache, _suggest_from_cache, 
@@ -127,68 +131,6 @@ except Exception:
 from functools import wraps
 from storage import upload_base64_image, presigned_url_for_key, OBJECT_STORAGE_ENABLED
 from werkzeug.security import generate_password_hash, check_password_hash
-def ensure_task_events_table():
-    try:
-        conn = get_db_connection()
-        c = conn.cursor()
-        is_pg = isinstance(conn, CompatConn) and getattr(conn, "_is_pg", False)
-        if is_pg:
-            _run(c, """
-                CREATE TABLE IF NOT EXISTS task_events (
-                    id SERIAL PRIMARY KEY,
-                    task_id TEXT,
-                    name TEXT,
-                    queue TEXT,
-                    worker TEXT,
-                    status TEXT,
-                    received_at TIMESTAMP,
-                    started_at TIMESTAMP,
-                    finished_at TIMESTAMP,
-                    runtime REAL,
-                    retries INTEGER,
-                    eta TIMESTAMP,
-                    args TEXT,
-                    kwargs TEXT,
-                    result TEXT,
-                    error TEXT,
-                    trace TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-        else:
-            _run(c, """
-                CREATE TABLE IF NOT EXISTS task_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    task_id TEXT,
-                    name TEXT,
-                    queue TEXT,
-                    worker TEXT,
-                    status TEXT,
-                    received_at DATETIME,
-                    started_at DATETIME,
-                    finished_at DATETIME,
-                    runtime REAL,
-                    retries INTEGER,
-                    eta DATETIME,
-                    args TEXT,
-                    kwargs TEXT,
-                    result TEXT,
-                    error TEXT,
-                    trace TEXT,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-        _run(c, "CREATE INDEX IF NOT EXISTS idx_task_events_status ON task_events(status)")
-        _run(c, "CREATE INDEX IF NOT EXISTS idx_task_events_name ON task_events(name)")
-        _run(c, "CREATE INDEX IF NOT EXISTS idx_task_events_queue ON task_events(queue)")
-        _run(c, "CREATE INDEX IF NOT EXISTS idx_task_events_finished ON task_events(finished_at)")
-        conn.commit()
-        conn.close()
-    except Exception:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
 try:
     from celery_app import celery
 except Exception:
@@ -218,7 +160,6 @@ BACKEND_URL = os.environ.get("BACKEND_URL", "http://127.0.0.1:5001")
 BASE_URL = BACKEND_URL # Alias for compatibility
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
 
-from utils import LOW_RAM_MODE, DET_MAX_SIDE_DEFAULT, USE_FAISS, _faiss, _FAISS_LOCK, _VENDOR_EMB_CACHE, get_db_connection, CompatConn, CompatCursor, _pg_cursor, _adapt_query_for_pg, _run, postgres_available, DATABASE_URL
 try:
     if _faiss is not None:
         _FAISS_THREADS = int(os.environ.get("FAISS_NUM_THREADS", "1") or "1")
@@ -566,250 +507,29 @@ def handle_join_student_number(data=None):
 # Ensure database is always accessed from the same location (backend directory)
 # Database utilities imported from utils
 
-def ensure_postgres_schema():
-    if not postgres_available():
-        return
-    conn = get_db_connection()
-    if not isinstance(conn, CompatConn):
-        try:
-            conn.close()
-        except Exception:
-            pass
-        return
-    c = conn.cursor()
-    try:
-        _run(c, """
-            CREATE TABLE IF NOT EXISTS system_users (
-                username TEXT PRIMARY KEY,
-                password TEXT,
-                role TEXT,
-                vendor_id INTEGER
-            )
-        """)
-        _run(c, """
-            CREATE TABLE IF NOT EXISTS system_settings (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )
-        """)
-        _run(c, """
-            CREATE TABLE IF NOT EXISTS vendors (
-                id SERIAL PRIMARY KEY,
-                company_name TEXT NOT NULL UNIQUE,
-                contact_person TEXT,
-                phone TEXT,
-                email TEXT,
-                status TEXT DEFAULT 'active',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                web_login_enabled INTEGER DEFAULT 1,
-                frontend_bundle_id TEXT DEFAULT 'default_attendance',
-                backend_service_id TEXT DEFAULT 'default_api',
-                config TEXT DEFAULT '{}',
-                registration_config TEXT,
-                vertical TEXT
-            )
-        """)
-        _run(c, """
-            CREATE TABLE IF NOT EXISTS subscriptions (
-                id SERIAL PRIMARY KEY,
-                vendor_id INTEGER UNIQUE,
-                plan_type TEXT DEFAULT 'basic',
-                start_date DATE,
-                end_date DATE,
-                grace_period_days INTEGER DEFAULT 7,
-                max_users INTEGER DEFAULT 10,
-                max_employees INTEGER DEFAULT 50,
-                max_mobile_devices INTEGER DEFAULT 1,
-                max_web_sessions INTEGER DEFAULT 1,
-                cost_per_user REAL DEFAULT 199.0,
-                cost_per_employee REAL DEFAULT 50.0,
-                setup_fee REAL DEFAULT 0.0,
-                setup_fee_paid BOOLEAN DEFAULT FALSE,
-                features TEXT DEFAULT '[]'
-            )
-        """)
-        _run(c, """
-            CREATE TABLE IF NOT EXISTS invoices (
-                id SERIAL PRIMARY KEY,
-                vendor_id INTEGER,
-                invoice_date DATE,
-                due_date DATE,
-                amount REAL,
-                status TEXT DEFAULT 'generated',
-                details TEXT,
-                generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                paid_at TIMESTAMP
-            )
-        """)
-        _run(c, """
-            CREATE TABLE IF NOT EXISTS active_sessions (
-                token TEXT PRIMARY KEY,
-                username TEXT,
-                vendor_id INTEGER,
-                device_id TEXT,
-                platform TEXT,
-                last_active TIMESTAMP,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        _run(c, """
-            CREATE TABLE IF NOT EXISTS faces (
-                id SERIAL PRIMARY KEY,
-                name TEXT,
-                templates TEXT,
-                face_image TEXT,
-                department TEXT,
-                designation TEXT,
-                phone TEXT,
-                shift TEXT,
-                daily_wage REAL DEFAULT 0,
-                late_allowance_days INTEGER,
-                late_deduction_amount REAL DEFAULT 0,
-                vendor_id INTEGER,
-                custom_data TEXT
-            )
-        """)
-        _run(c, """
-            CREATE TABLE IF NOT EXISTS attendance (
-                id SERIAL PRIMARY KEY,
-                name TEXT,
-                timestamp TIMESTAMP,
-                status TEXT,
-                captured_image TEXT,
-                activity TEXT,
-                is_late INTEGER DEFAULT 0,
-                vendor_id INTEGER,
-                person_id INTEGER
-            )
-        """)
-        _run(c, """
-            CREATE TABLE IF NOT EXISTS companies (
-                id SERIAL PRIMARY KEY,
-                name TEXT,
-                working_hours REAL DEFAULT 8.0,
-                shifts TEXT DEFAULT '[]',
-                draft_timetable TEXT DEFAULT '[]',
-                live_timetable TEXT DEFAULT '[]',
-                last_modified_by TEXT,
-                last_modified_at TIMESTAMP,
-                published_by TEXT,
-                published_at TIMESTAMP,
-                vendor_id INTEGER
-            )
-        """)
-        _run(c, "CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_vendor_name ON companies(vendor_id, name)")
-        _run(c, """
-            CREATE TABLE IF NOT EXISTS parent_users (
-                id SERIAL PRIMARY KEY,
-                vendor_id INTEGER,
-                username TEXT UNIQUE,
-                password TEXT,
-                contact_email TEXT,
-                contact_phone TEXT,
-                student_number TEXT,
-                selected_person_id INTEGER,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        _run(c, """
-            CREATE TABLE IF NOT EXISTS student_parents (
-                id SERIAL PRIMARY KEY,
-                vendor_id INTEGER,
-                person_id INTEGER,
-                parent_id INTEGER,
-                UNIQUE(vendor_id, person_id, parent_id)
-            )
-        """)
-        ensure_archive_table()
-        ensure_audit_logs_table()
-        ensure_task_events_table()
-        add_vendor_devices_table()
-        conn.commit()
-    except Exception:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        raise
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-
-def ensure_postgres_defaults():
-    if not postgres_available():
-        return
-    conn = get_db_connection()
-    if not isinstance(conn, CompatConn):
-        try:
-            conn.close()
-        except Exception:
-            pass
-        return
-    c = conn.cursor()
-    try:
-        default_settings = {
-            "threshold": "0.6",
-            "cooldown": "30",
-            "work_start_time": "09:00",
-            "late_threshold": "09:30",
-            "late_grace_period": "15",
-            "activity_tolerance": "30",
-            "auto_checkout": "false",
-            "voice_greeting": "true",
-            "admin_alerts": "false",
-            "global_late_allowance": "7",
-            "global_late_deduction": "0.0"
-        }
-        for key, val in default_settings.items():
-            _run(c, "SELECT 1 FROM system_settings WHERE key = ?", (key,))
-            if not c.fetchone():
-                _run(c, "INSERT INTO system_settings (key, value) VALUES (?, ?)", (key, val))
-
-        _run(c, "SELECT 1 FROM system_users WHERE username = ?", ('admin',))
-        if not c.fetchone():
-            _run(c, "INSERT INTO system_users (username, password, role, vendor_id) VALUES (?, ?, ?, ?)", ('admin', hash_password('admin123'), 'admin', None))
-        _run(c, "SELECT 1 FROM system_users WHERE username = ?", ('kiosk',))
-        if not c.fetchone():
-            _run(c, "INSERT INTO system_users (username, password, role, vendor_id) VALUES (?, ?, ?, ?)", ('kiosk', hash_password('kiosk123'), 'user', None))
-        _run(c, "SELECT 1 FROM system_users WHERE username = ?", ('superadmin',))
-        if not c.fetchone():
-            _run(c, "INSERT INTO system_users (username, password, role, vendor_id) VALUES (?, ?, ?, ?)", ('superadmin', hash_password('super123'), 'super_admin', None))
-
-        _run(c, "SELECT 1 FROM companies WHERE name = ? AND vendor_id IS NULL", ('Open Vision',))
-        if not c.fetchone():
-            _run(c, "INSERT INTO companies (name, shifts, draft_timetable, live_timetable, vendor_id) VALUES (?, ?, ?, ?, ?)", ('Open Vision', '[]', '[]', '[]', None))
-
-        conn.commit()
-    except Exception:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        raise
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-
+# Database schema initialization moved to db_factory.py
 def bootstrap_db():
-    if postgres_available():
-        ensure_postgres_schema()
-        ensure_postgres_defaults()
-        ensure_vendor_companies_and_subscription_features()
-        add_performance_indexes()
-        return
-    init_db()
-    migrate_faces_pk()
-    add_missing_columns()
-    add_vendor_devices_table()
-    ensure_archive_table()
-    ensure_audit_logs_table()
-    ensure_task_events_table()
+    # 1. Initialize schemas (PostgreSQL and SQLite fallback)
+    db_factory.init_schemas()
+    
+    # 2. Check for recovery (if SQLite has data and PG is available)
+    db_factory.check_and_recover()
+    
+    # 3. Data seeding and performance tweaks
     ensure_vendor_companies_and_subscription_features()
     add_performance_indexes()
+    
+    # Legacy migration helpers for SQLite (keep for compatibility if needed)
+    # Using DATABASE_URL from db_factory to check if PG is configured
+    from db_factory import is_fallback_mode
+    if not DATABASE_URL or is_fallback_mode():
+        init_db()
+        migrate_faces_pk()
+        add_missing_columns()
+        add_vendor_devices_table()
+        ensure_archive_table()
+        ensure_audit_logs_table()
+        # ensure_task_events_table is handled in init_schemas
 
 def ensure_vendor_companies_and_subscription_features():
     conn = get_db_connection()
@@ -905,7 +625,7 @@ def ensure_archive_table():
     c = conn.cursor()
     try:
         # Generic archive storage to keep full row snapshots per table
-        is_pg = isinstance(conn, CompatConn) and getattr(conn, "_is_pg", False)
+        is_pg = getattr(conn, "_is_pg", False)
         if is_pg:
             _run(c, """
                 CREATE TABLE IF NOT EXISTS archive_objects (
@@ -937,104 +657,12 @@ def ensure_archive_table():
     finally:
         conn.close()
 
-def ensure_audit_logs_table():
-    conn = get_db_connection()
-    c = conn.cursor()
-    try:
-        is_pg = isinstance(conn, CompatConn) and getattr(conn, "_is_pg", False)
-        if is_pg:
-            _run(c, """
-                CREATE TABLE IF NOT EXISTS audit_logs (
-                    id SERIAL PRIMARY KEY,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    actor_username TEXT,
-                    actor_role TEXT,
-                    target_vendor_id INTEGER,
-                    action TEXT,
-                    details TEXT,
-                    ip TEXT
-                )
-            """)
-        else:
-            _run(c, """
-                CREATE TABLE IF NOT EXISTS audit_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    actor_username TEXT,
-                    actor_role TEXT,
-                    target_vendor_id INTEGER,
-                    action TEXT,
-                    details TEXT,
-                    ip TEXT
-                )
-            """)
-            
-            # Migration: Add missing columns if table existed from old version
-            try:
-                c.execute("PRAGMA table_info(audit_logs)")
-                cols = [info[1] for info in c.fetchall()]
-                if 'actor_role' not in cols:
-                    c.execute("ALTER TABLE audit_logs ADD COLUMN actor_role TEXT")
-                if 'ip' not in cols:
-                    c.execute("ALTER TABLE audit_logs ADD COLUMN ip TEXT")
-            except Exception:
-                pass
 
-        conn.commit()
-    except Exception:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-    finally:
-        conn.close()
-
-def log_audit(action, details=None, target_vendor_id=None, status="success", actor=None):
-    try:
-        ensure_audit_logs_table()
-        conn = get_db_connection()
-        c = conn.cursor()
-        actor_username = actor
-        actor_role = None
-        
-        if not actor_username:
-            try:
-                auth_header = request.headers.get('Authorization')
-                if auth_header:
-                    token = auth_header.split(" ")[1]
-                    user_data = verify_token(token)
-                    if user_data:
-                        actor_username = user_data.get('username')
-                        actor_role = user_data.get('role')
-            except Exception:
-                pass
-        
-        if not actor_username:
-            actor_username = 'system'
-
-        try:
-            ip = request.remote_addr
-        except:
-            ip = '0.0.0.0'
-
-        payload = {"status": status}
-        if isinstance(details, dict):
-            payload.update(details)
-        elif isinstance(details, str):
-            payload["message"] = details
-            
-        import json
-        _run(c, "INSERT INTO audit_logs (actor_username, actor_role, target_vendor_id, action, details, ip) VALUES (?, ?, ?, ?, ?, ?)",
-             (actor_username, actor_role, target_vendor_id, action, json.dumps(payload), ip))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        pass # print(f"Audit Log Error: {e}")
 def add_vendor_devices_table():
     conn = get_db_connection()
     c = conn.cursor()
     try:
-        is_pg = isinstance(conn, CompatConn) and getattr(conn, "_is_pg", False)
+        is_pg = getattr(conn, "_is_pg", False)
         if is_pg:
             _run(c, """
                 CREATE TABLE IF NOT EXISTS vendor_devices (
@@ -1048,9 +676,15 @@ def add_vendor_devices_table():
                 )
             """)
         else:
-            c.execute("PRAGMA journal_mode=WAL")
-            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='vendor_devices'")
-            if not c.fetchone():
+            table_exists = False
+            try:
+                # Database-agnostic check or just let CREATE TABLE IF NOT EXISTS handle it
+                # But the logic below uses a manual CREATE TABLE, so let's stick to the check
+                table_exists = bool(get_table_columns(conn, "vendor_devices"))
+            except Exception:
+                table_exists = False
+                
+            if not table_exists:
                 pass # print("MIGRATION: Creating vendor_devices table...")
                 c.execute('''CREATE TABLE vendor_devices
                              (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1083,8 +717,7 @@ def add_missing_columns():
             pass # Already exists
 
         # 2. Add Late Deduction Columns to faces table
-        c.execute("PRAGMA table_info(faces)")
-        cols = [info[1] for info in c.fetchall()]
+        cols = get_table_columns(conn, "faces")
         
         if 'late_allowance_days' not in cols:
             pass # print("MIGRATION: Adding late_allowance_days to faces table...")
@@ -1095,8 +728,7 @@ def add_missing_columns():
             c.execute("ALTER TABLE faces ADD COLUMN late_deduction_amount REAL DEFAULT NULL")
 
         # 3. Add Global Defaults to system_settings
-        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='system_settings'")
-        if c.fetchone():
+        if get_table_columns(conn, "system_settings"):
             c.execute("SELECT key FROM system_settings WHERE key IN ('global_late_allowance', 'global_late_deduction')")
             existing_keys = {row[0] for row in c.fetchall()}
             
@@ -1107,8 +739,7 @@ def add_missing_columns():
                 c.execute("INSERT INTO system_settings (key, value) VALUES (?, ?)", ('global_late_deduction', '0.0'))
 
         # 4. Add max_mobile_devices to subscriptions
-        c.execute("PRAGMA table_info(subscriptions)")
-        sub_cols = [info[1] for info in c.fetchall()]
+        sub_cols = get_table_columns(conn, "subscriptions")
         if 'max_mobile_devices' not in sub_cols:
             pass # print("MIGRATION: Adding max_mobile_devices to subscriptions...")
             c.execute("ALTER TABLE subscriptions ADD COLUMN max_mobile_devices INTEGER DEFAULT 1")
@@ -1171,8 +802,7 @@ def add_missing_columns():
                       created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
 
         # Check parent_users columns
-        c.execute("PRAGMA table_info(parent_users)")
-        p_cols = [info[1] for info in c.fetchall()]
+        p_cols = get_table_columns(conn, "parent_users")
         if 'device_id' not in p_cols:
             pass # print("MIGRATION: Adding device_id to parent_users...")
             try:
@@ -1186,45 +816,18 @@ def add_missing_columns():
             except Exception as e:
                 pass # print(f"Error adding fcm_token: {e}")
         if 'session_version' not in p_cols:
-            pass # print("MIGRATION: Adding session_version to parent_users...")
             try:
                 c.execute("ALTER TABLE parent_users ADD COLUMN session_version INTEGER DEFAULT 1")
             except Exception as e:
-                pass # print(f"Error adding session_version: {e}")
-        try:
-            c.execute("UPDATE parent_users SET session_version = 1 WHERE session_version IS NULL")
-        except Exception:
-            pass
-        c.execute('''CREATE TABLE IF NOT EXISTS student_parents
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      vendor_id INTEGER,
-                      person_id INTEGER,
-                      parent_id INTEGER,
-                      UNIQUE(vendor_id, person_id, parent_id))''')
-        # 8. Add registration_config to vendors
-        c.execute("PRAGMA table_info(vendors)")
-        vendor_cols = [info[1] for info in c.fetchall()]
-        if 'registration_config' not in vendor_cols:
-            pass # print("MIGRATION: Adding registration_config to vendors table...")
-            c.execute("ALTER TABLE vendors ADD COLUMN registration_config TEXT DEFAULT NULL") # JSON Schema
-        if 'vertical' not in vendor_cols:
-            pass # print("MIGRATION: Adding vertical to vendors table...")
-            c.execute("ALTER TABLE vendors ADD COLUMN vertical TEXT DEFAULT NULL") # Business vertical: school, industry, hospital
-
-        # 9. Add custom_data to faces
-        c.execute("PRAGMA table_info(faces)")
-        faces_cols = [info[1] for info in c.fetchall()]
-        if 'custom_data' not in faces_cols:
-            pass # print("MIGRATION: Adding custom_data to faces table...")
-            c.execute("ALTER TABLE faces ADD COLUMN custom_data TEXT DEFAULT NULL") # JSON Values
-
+                pass
         conn.commit()
         conn.close()
     except Exception as e:
-        pass # print(f"Schema Update Error: {e}")
-import time
-# Utility functions moved to utils.py
-from utils import cache_get, cache_set, create_job, complete_job, fail_job, get_job
+        try:
+            conn.close()
+        except:
+            pass
+
 def add_performance_indexes():
     try:
         conn = get_db_connection()
@@ -1243,7 +846,6 @@ def add_performance_indexes():
         conn.close()
     except Exception as e:
         pass # print(f"Index Setup Error: {e}")
-from utils import check_vendor_status
 
 def authenticate_vendor_access():
     """
@@ -1379,12 +981,12 @@ def migrate_faces_pk():
         return
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("PRAGMA journal_mode=WAL")
+    if not postgres_available():
+        c.execute("PRAGMA journal_mode=WAL")
     
     try:
         # Check if 'id' column exists
-        c.execute("PRAGMA table_info(faces)")
-        cols = [info[1] for info in c.fetchall()]
+        cols = get_table_columns(conn, "faces")
         
         if 'id' not in cols:
             pass # print("MIGRATION: Converting faces table to use ID as Primary Key...")
@@ -1494,15 +1096,13 @@ def init_db():
                  (username TEXT PRIMARY KEY, password TEXT, role TEXT)''')
     
     # Check for vendor_id in faces table
-    c.execute("PRAGMA table_info(faces)")
-    faces_cols = [info[1] for info in c.fetchall()]
+    faces_cols = get_table_columns(conn, "faces")
     if 'vendor_id' not in faces_cols:
         pass # print("Migrating: Adding vendor_id to faces table")
         c.execute("ALTER TABLE faces ADD COLUMN vendor_id INTEGER")
 
     # Check for vendor_id in attendance table
-    c.execute("PRAGMA table_info(attendance)")
-    attendance_columns = [info[1] for info in c.fetchall()]
+    attendance_columns = get_table_columns(conn, "attendance")
     if 'vendor_id' not in attendance_columns:
         pass # print("Migrating: Adding vendor_id column to attendance table")
         c.execute("ALTER TABLE attendance ADD COLUMN vendor_id INTEGER")
@@ -1517,8 +1117,7 @@ def init_db():
 
 
     # Check for captured_image column in attendance table and add if missing
-    c.execute("PRAGMA table_info(attendance)")
-    attendance_columns = [info[1] for info in c.fetchall()]
+    attendance_columns = get_table_columns(conn, "attendance")
     if 'captured_image' not in attendance_columns:
         pass # print("Migrating: Adding captured_image column to attendance table")
         c.execute("ALTER TABLE attendance ADD COLUMN captured_image TEXT")
@@ -1528,8 +1127,7 @@ def init_db():
         c.execute("ALTER TABLE attendance ADD COLUMN device_id TEXT")
 
     # Check for extra columns in faces table (department, designation, phone)
-    c.execute("PRAGMA table_info(faces)")
-    faces_columns = [info[1] for info in c.fetchall()]
+    faces_columns = get_table_columns(conn, "faces")
     
     if 'department' not in faces_columns:
         pass # print("Migrating: Adding department column to faces table")
@@ -1560,8 +1158,7 @@ def init_db():
         c.execute("ALTER TABLE faces ADD COLUMN late_deduction_amount REAL DEFAULT 0")
 
     # Check for activity column in attendance table and add if missing
-    c.execute("PRAGMA table_info(attendance)")
-    attendance_columns = [info[1] for info in c.fetchall()]
+    attendance_columns = get_table_columns(conn, "attendance")
     if 'activity' not in attendance_columns:
         pass # print("Migrating: Adding activity column to attendance table")
         c.execute("ALTER TABLE attendance ADD COLUMN activity TEXT")
@@ -1583,8 +1180,7 @@ def init_db():
                   published_at DATETIME)''')
 
     # Check for working_hours in companies table
-    c.execute("PRAGMA table_info(companies)")
-    companies_columns = [info[1] for info in c.fetchall()]
+    companies_columns = get_table_columns(conn, "companies")
     if 'working_hours' not in companies_columns:
         pass # print("Migrating: Adding working_hours column to companies table")
         c.execute("ALTER TABLE companies ADD COLUMN working_hours REAL DEFAULT 8.0")
@@ -1608,8 +1204,7 @@ def init_db():
                   ('superadmin', hash_password('super123'), 'super_admin'))
 
     # Check for vendor_id in system_users table
-    c.execute("PRAGMA table_info(system_users)")
-    system_users_columns = [info[1] for info in c.fetchall()]
+    system_users_columns = get_table_columns(conn, "system_users")
     if 'vendor_id' not in system_users_columns:
         pass # print("Migrating: Adding vendor_id column to system_users table")
         c.execute("ALTER TABLE system_users ADD COLUMN vendor_id INTEGER")
@@ -1622,8 +1217,7 @@ def init_db():
                   ('Open Vision', '[]', '[]', '[]'))
     
     # Check for shifts column in companies table and add if missing
-    c.execute("PRAGMA table_info(companies)")
-    companies_columns = [info[1] for info in c.fetchall()]
+    companies_columns = get_table_columns(conn, "companies")
     if 'shifts' not in companies_columns:
         pass # print("Migrating: Adding shifts column to companies table")
         c.execute("ALTER TABLE companies ADD COLUMN shifts TEXT DEFAULT '[]'")
@@ -1696,8 +1290,7 @@ def init_db():
                   FOREIGN KEY(vendor_id) REFERENCES vendors(id))''')
 
     # Check for features column in subscriptions table (Migration)
-    c.execute("PRAGMA table_info(subscriptions)")
-    subs_columns = [info[1] for info in c.fetchall()]
+    subs_columns = get_table_columns(conn, "subscriptions")
     if 'features' not in subs_columns:
         pass # print("Migrating: Adding features column to subscriptions table")
         c.execute("ALTER TABLE subscriptions ADD COLUMN features TEXT DEFAULT '[]'")
@@ -1733,8 +1326,7 @@ def init_db():
     # --- Migrations for SaaS Tables (Ensure columns exist if table was created previously) ---
     
     # Subscriptions Migration
-    c.execute("PRAGMA table_info(subscriptions)")
-    sub_cols = [info[1] for info in c.fetchall()]
+    sub_cols = get_table_columns(conn, "subscriptions")
     
     if 'plan_type' not in sub_cols:
          pass # print("Migrating: Adding plan_type to subscriptions")
@@ -1768,8 +1360,7 @@ def init_db():
          c.execute("ALTER TABLE subscriptions ADD COLUMN setup_fee_paid BOOLEAN DEFAULT 0")
 
     # Vendors Migration
-    c.execute("PRAGMA table_info(vendors)")
-    vendor_cols = [info[1] for info in c.fetchall()]
+    vendor_cols = get_table_columns(conn, "vendors")
     
     if 'name' in vendor_cols and 'company_name' not in vendor_cols:
         pass # print("Migrating: Renaming vendors.name to vendors.company_name")
@@ -1799,8 +1390,7 @@ def init_db():
         c.execute("ALTER TABLE vendors ADD COLUMN config TEXT DEFAULT '{}'")
 
     # Update system_users for multi-tenancy
-    c.execute("PRAGMA table_info(system_users)")
-    user_cols = [info[1] for info in c.fetchall()]
+    user_cols = get_table_columns(conn, "system_users")
     if 'vendor_id' not in user_cols:
         pass # print("Migrating: Adding vendor_id to system_users")
         c.execute("ALTER TABLE system_users ADD COLUMN vendor_id INTEGER")
@@ -1829,7 +1419,10 @@ def generate_token_with_claims(username, role, extra_claims):
     return serializer.dumps(payload)
 
 def hash_password(raw_password):
-    return generate_password_hash(str(raw_password))
+    try:
+        return generate_password_hash(str(raw_password))
+    except Exception:
+        return str(raw_password)
 
 def verify_password(raw_password, stored_password):
     if stored_password is None:
@@ -1942,7 +1535,6 @@ def require_feature(feature_name):
         return decorated_function
     return decorator
 
-from utils import vendor_has_feature
 
 greeting_bp = Blueprint("greeting", __name__, url_prefix="/api")
 
@@ -1976,7 +1568,6 @@ greeting_bp = Blueprint("greeting", __name__, url_prefix="/api")
 
 
 
-from utils import BUNDLE_FEATURES, ALL_FEATURES, REGISTRATION_TEMPLATES
 
 
 try:
@@ -1992,7 +1583,6 @@ except Exception:
 
 
 
-from utils import _ensure_class_batch_tables
 
 
 
@@ -2120,7 +1710,7 @@ def check_subscriptions_periodically():
         try:
             with app.app_context():
                 conn = get_db_connection()
-                if not isinstance(conn, CompatConn):
+                if not getattr(conn, "_is_pg", False):
                     conn.row_factory = sqlite3.Row
                 c = conn.cursor()
                 c.execute("SELECT id, company_name FROM vendors WHERE status = 'active'")
