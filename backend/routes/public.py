@@ -47,7 +47,13 @@ def public_vendors():
 @public_bp.route('/business-types', methods=['GET'])
 def public_business_types():
     return jsonify({
-        "types": [
-            "School", "College", "Office", "Factory", "Hospital", "Gym", "Other"
+        "business_types": [
+            {"value": "School", "label": "School"},
+            {"value": "College", "label": "College"},
+            {"value": "Office", "label": "Office"},
+            {"value": "Factory", "label": "Factory"},
+            {"value": "Hospital", "label": "Hospital"},
+            {"value": "Gym", "label": "Gym"},
+            {"value": "Other", "label": "Other"}
         ]
     })
