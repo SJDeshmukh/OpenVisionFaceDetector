@@ -29,6 +29,10 @@ dump.rdb
 *.weights
 *.pb
 
+# Specific models to include
+!backend/standalone_live_mesh/3DDFA-V3/assets/net_recon.pth
+!backend/standalone_live_mesh/3DDFA-V3/assets/net_recon_mbnet.pth
+
 # Multi-face detection (Local Package)
 # Allow the wrapper and our sdk improvements
 multiple_face_detection/*
