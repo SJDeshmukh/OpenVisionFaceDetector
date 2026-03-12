@@ -1,4 +1,42 @@
+# Core web framework
 flask
-requests
 flask-cors
+flask-socketio
+Flask-Compress
 gunicorn
+eventlet
+python-dotenv
+itsdangerous
+requests
+Pillow
+
+# Data processing
+numpy
+opencv-python-headless
+pandas
+
+# Task queue & caching
+celery
+redis
+
+# Monitoring
+prometheus-client
+
+# Database (Postgres support)
+psycopg2-binary
+
+# AWS (S3 storage + Lambda)
+boto3
+awsgi
+huggingface_hub>=0.19.0
+qrcode
+
+# AI and Face Processing
+torch>=2.0.0
+torchvision
+facenet-pytorch
+facexlib
+gfpgan
+basicsr
+faiss-cpu
+onnxruntime
