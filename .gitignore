@@ -26,3 +26,10 @@ multiple_face_detection/models/
 gfpgan/weights/
 facexlib/weights/
 realesrgan/weights/
+
+# Mobile development
+multiple_face_detection/mobile-expo/
+
+# Backup files
+backend/*.sqlite
+backend/*.db
