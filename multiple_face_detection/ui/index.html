@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Enterprise Admin</title>
+    <link rel="stylesheet" href="./styles/index.css" />
+  </head>
+  <body class="dark font-sans antialiased text-slate-600">
+    <div class="gradient-bg"></div>
+    <div id="loader" class="loader hidden">
+      <div class="spinner"></div>
+      <div class="loader-text">Loading</div>
+    </div>
+    <div id="app" class="layout">
+      <aside class="sidebar bg-white border-r border-slate-200 shadow-sm">
+        <div class="sidebar-header">
+          <div class="brand">
+            <span class="brand-icon"></span>
+            <span class="brand-title text-slate-800">Admin</span>
+          </div>
+          <button class="sidebar-toggle btn-icon" aria-label="Toggle sidebar" id="sidebarToggle">
+            <span class="icon-menu"></span>
+          </button>
+        </div>
+        <nav class="nav">
+          <div class="nav-group">
+            <div class="nav-group-label text-slate-500">Admin</div>
+            <a href="#/dashboard" class="nav-item" data-icon="LayoutDashboard">Dashboard</a>
+            <a href="#/attendance" class="nav-item" data-icon="CalendarCheck">Attendance</a>
+            <a href="#/registered" class="nav-item" data-icon="Users">Registered Users</a>
+          </div>
+        </nav>
+      </aside>
+      <main class="content">
+        <header class="page-header">
+          <div class="page-titles">
+            <h1 id="pageTitle" class="text-2xl font-bold text-slate-800">Dashboard</h1>
+            <p id="pageSubtitle" class="text-slate-500">Overview of activity and KPIs</p>
+          </div>
+          <div class="page-actions" id="pageActions">
+            <input type="file" id="uploadInput" class="input" accept="image/*" />
+            <button class="btn btn-primary" id="uploadSend">Analyze</button>
+          </div>
+        </header>
+        <section id="pageTabs" class="tabbar-container" aria-label="Page tabs"></section>
+        <section id="pageContent" class="grid gap-6 page-transition"></section>
+      </main>
+    </div>
+    <div id="modalRoot"></div>
+    <div id="cursor" class="cursor"></div>
+    <script type="module" src="./scripts/app.js"></script>
+    <script type="module" src="./scripts/effects.js"></script>
+    <script type="module" src="./scripts/api.js"></script>
+  </body>
+  </html>
