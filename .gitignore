@@ -5,15 +5,24 @@
 __pycache__/
 *.pyc
 *.db
+.pytest_cache/
+.ruff_cache/
+venv/
 
 # Node
 node_modules/
 dist/
 
-# Android
+# Android (Excluded for AWS Deploy)
+FaceRecognition-Android/
 *.apk
 *.aab
 .gradle/
 build/
 local.properties
 
+# AI Model weights (Downloaded on demand)
+multiple_face_detection/models/
+gfpgan/weights/
+facexlib/weights/
+realesrgan/weights/
