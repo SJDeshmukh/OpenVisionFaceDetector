@@ -6,7 +6,7 @@ import base64
 import time
 import os
 from threading import Lock
-
+print("Start")
 # Local imports to avoid circular dependencies where needed
 # In a real refactor, these caches should probably live here.
 
