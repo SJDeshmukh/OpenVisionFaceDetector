@@ -105,7 +105,7 @@ const People = () => {
         const img = new Image();
         img.onload = () => {
           let { width, height } = img;
-          const maxDim = 800;
+          const maxDim = 640;
           if (width > maxDim || height > maxDim) {
             if (width > height) {
               height = Math.round((height * maxDim) / width);
@@ -120,7 +120,7 @@ const People = () => {
           canvas.height = height;
           const ctx = canvas.getContext('2d');
           ctx.drawImage(img, 0, 0, width, height);
-          resolve(canvas.toDataURL('image/jpeg', 0.8));
+          resolve(canvas.toDataURL('image/webp', 0.6));
         };
         img.onerror = reject;
 
@@ -397,7 +397,7 @@ const People = () => {
                         )}
                         <div>
                           <div className="text-sm font-medium text-slate-900">{user.name}</div>
-                          <div className="text-xs text-slate-500 font-mono">{user.id}</div>
+                          <div className="text-xs text-slate-500 font-mono">#{user.display_id || user.id}</div>
                           <div className="text-xs text-slate-500">
                             {(user.custom_data && (user.custom_data.student_number || user.custom_data.roll_number || user.custom_data.admission_number)) || ""}
                           </div>

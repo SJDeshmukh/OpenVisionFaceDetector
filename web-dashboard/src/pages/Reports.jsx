@@ -1,22 +1,22 @@
-  import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
-import { 
-  FileText, 
-  Download, 
-  Calendar, 
+import {
+  FileText,
+  Download,
+  Calendar,
   Filter,
   BarChart2,
   PieChart as PieChartIcon,
   RefreshCw
 } from 'lucide-react';
-import { 
-  BarChart, 
-  Bar, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
   ResponsiveContainer,
   PieChart,
   Pie,
@@ -62,7 +62,7 @@ const Reports = () => {
     fetchAnalytics();
     fetchFilters(filtersRef.current);
   }, []);
-  
+
   useEffect(() => {
     const t = setTimeout(() => fetchFilters(filtersRef.current), 250);
     return () => clearTimeout(t);
@@ -130,7 +130,7 @@ const Reports = () => {
   const handleDownload = (days = 30) => {
     const endDate = new Date().toISOString().split('T')[0];
     const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-    
+
     let url = `${API_URL}/reports/export?start_date=${startDate}&end_date=${endDate}`;
     if (user?.token) {
       url += `&token=${user.token}`;
@@ -152,45 +152,71 @@ const Reports = () => {
         params.append(`dynamic_${key}`, value);
       }
     });
-    
+
     if (user?.token) {
       params.append('token', user.token);
     }
-    
+
     window.location.href = `${API_URL}/reports/export?${params.toString()}`;
   };
 
   return (
     <div className="space-y-8">
+      {/* Branding Header */}
+      <div className="flex flex-col sm:flex-row justify-between items-center bg-white p-6 rounded-2xl border border-slate-200 shadow-sm mb-6 bg-gradient-to-r from-white to-blue-50/30">
+        <div className="flex items-center space-x-4">
+          <div className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center shadow-blue-200 shadow-lg">
+            <FileText className="text-white" size={28} />
+          </div>
+          <div>
+            <h2 className="text-xl font-extrabold text-slate-900 tracking-tight">{filterOptions.vendor_name || "Enterprise"}</h2>
+            <div className="flex items-center space-x-2">
+              <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+              <p className="text-xs font-medium text-slate-500 uppercase tracking-widest">Active Report Session</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center space-x-4 mt-6 sm:mt-0 bg-slate-50/50 p-3 rounded-xl border border-slate-100">
+          <div className="text-right hidden sm:block border-r border-slate-200 pr-4">
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] mb-0.5">Powered By</p>
+            <p className="text-sm font-black text-blue-600 tracking-tight">OpenVisionX</p>
+          </div>
+          <div className="w-12 h-12 bg-white rounded-xl flex items-center justify-center p-2 shadow-sm border border-slate-100">
+            <img src="/openVisionXLogo.png" alt="OpenVisionX" className="w-full h-full object-contain" />
+          </div>
+        </div>
+      </div>
+
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-800">System Reports</h1>
           <p className="text-slate-500">Real-time attendance analytics and data export.</p>
         </div>
         <div className="flex space-x-3">
-          <button 
+          <button
             onClick={() => fetchAnalytics()}
             className="flex items-center space-x-2 px-4 py-2 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 font-medium transition-colors"
           >
             <RefreshCw size={18} className={loading ? "animate-spin" : ""} />
             <span>Refresh</span>
           </button>
-          <button 
+          <button
             onClick={() => handleDownload(30)}
             className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium transition-colors shadow-sm"
           >
             <Download size={18} />
-            <span>Export CSV</span>
+            <span>Export Report</span>
           </button>
         </div>
       </div>
 
       {error && (
         <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg flex items-center gap-2">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-            </svg>
-            <span className="font-medium">{error}</span>
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+          </svg>
+          <span className="font-medium">{error}</span>
         </div>
       )}
 
@@ -225,16 +251,16 @@ const Reports = () => {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
               <div className="flex items-center justify-between mb-6">
-                 <h3 className="text-lg font-bold text-slate-800">Weekly Attendance Trend</h3>
+                <h3 className="text-lg font-bold text-slate-800">Weekly Attendance Trend</h3>
               </div>
               <div className="h-80 w-full">
                 <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={200}>
                   <BarChart data={analytics.bar_data} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#64748b'}} />
-                    <YAxis axisLine={false} tickLine={false} tick={{fill: '#64748b'}} />
-                    <Tooltip 
-                      cursor={{fill: 'transparent'}}
+                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#64748b' }} />
+                    <YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b' }} />
+                    <Tooltip
+                      cursor={{ fill: 'transparent' }}
                       contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
                     />
                     <Legend />
@@ -264,7 +290,7 @@ const Reports = () => {
                       ))}
                     </Pie>
                     <Tooltip />
-                    <Legend verticalAlign="bottom" height={36}/>
+                    <Legend verticalAlign="bottom" height={36} />
                   </PieChart>
                 </ResponsiveContainer>
               </div>
@@ -277,28 +303,28 @@ const Reports = () => {
               <Filter size={20} className="text-blue-600" />
               Advanced Report Generation
             </h3>
-            
+
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 items-end">
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Start Date</label>
-                <input 
-                  type="date" 
+                <input
+                  type="date"
                   value={filters.startDate}
-                  onChange={(e) => setFilters({...filters, startDate: e.target.value})}
+                  onChange={(e) => setFilters({ ...filters, startDate: e.target.value })}
                   className="w-full rounded-lg border-slate-200 text-sm focus:ring-blue-500 focus:border-blue-500"
                 />
               </div>
-              
+
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">End Date</label>
-                <input 
-                  type="date" 
+                <input
+                  type="date"
                   value={filters.endDate}
-                  onChange={(e) => setFilters({...filters, endDate: e.target.value})}
+                  onChange={(e) => setFilters({ ...filters, endDate: e.target.value })}
                   className="w-full rounded-lg border-slate-200 text-sm focus:ring-blue-500 focus:border-blue-500"
                 />
               </div>
-              
+
               {(filterOptions.visible_standard_filters?.department ?? false) && (
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">Department</label>
@@ -362,15 +388,15 @@ const Reports = () => {
                   </select>
                 </div>
               )}
-              
+
               {/* Dynamic Filters */}
               {Object.entries(filterOptions.dynamic_filters || {}).map(([key, config]) => (
                 <div key={key}>
                   <label className="block text-sm font-medium text-slate-700 mb-1">{config.label}</label>
-                  <select 
+                  <select
                     value={filters.dynamic[key] || ''}
                     onChange={(e) => setFilters({
-                      ...filters, 
+                      ...filters,
                       dynamic: { ...filters.dynamic, [key]: e.target.value }
                     })}
                     className="w-full rounded-lg border-slate-200 text-sm focus:ring-blue-500 focus:border-blue-500"
@@ -382,12 +408,12 @@ const Reports = () => {
                   </select>
                 </div>
               ))}
-              
+
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Report Type</label>
-                <select 
+                <select
                   value={filters.type}
-                  onChange={(e) => setFilters({...filters, type: e.target.value})}
+                  onChange={(e) => setFilters({ ...filters, type: e.target.value })}
                   className="w-full rounded-lg border-slate-200 text-sm focus:ring-blue-500 focus:border-blue-500"
                 >
                   {(user?.features?.includes('report_detailed') || !user?.features) && (
@@ -398,8 +424,8 @@ const Reports = () => {
                   )}
                 </select>
               </div>
-              
-              <button 
+
+              <button
                 onClick={handleCustomExport}
                 className="w-full flex items-center justify-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium transition-colors shadow-sm h-[38px]"
               >
@@ -425,7 +451,7 @@ const Reports = () => {
                     <p className="text-xs text-slate-500">CSV Format • Includes Check-in/out times</p>
                   </div>
                 </div>
-                <button 
+                <button
                   onClick={() => handleDownload(30)}
                   className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
                   title="Download CSV"
@@ -444,7 +470,7 @@ const Reports = () => {
                     <p className="text-xs text-slate-500">CSV Format • Last 7 days activity</p>
                   </div>
                 </div>
-                <button 
+                <button
                   onClick={() => handleDownload(7)}
                   className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
                   title="Download CSV"

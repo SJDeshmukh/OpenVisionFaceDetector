@@ -30,27 +30,40 @@ def get_s3():
         params["config"] = Config(signature_version="s3v4")
     return boto3.client("s3", **params)
 
+def compress_image(body, format="WEBP", quality=60, max_size=640):
+    if Image is None:
+        return body
+    try:
+        img = Image.open(BytesIO(body))
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        img.thumbnail((max_size, max_size))
+        buf = BytesIO()
+        # WebP is generally much smaller than JPEG
+        img.save(buf, format=format, quality=quality, optimize=True)
+        return buf.getvalue()
+    except Exception:
+        return body
+
 def upload_base64_image(name, b64_data):
     s3 = get_s3()
     if not s3:
         return None
-    key = f"faces/{name}.jpg"
+    
+    # Prefer WebP for better compression
+    ext = "webp"
+    content_type = "image/webp"
+    
+    key = f"faces/{name}.{ext}"
     data = b64_data.split(",")[-1] if "," in b64_data else b64_data
     body = base64.b64decode(data)
+    
     if Image is not None:
-        try:
-            img = Image.open(BytesIO(body))
-            if img.mode not in ("RGB", "L"):
-                img = img.convert("RGB")
-            max_size = int(os.environ.get("IMAGE_MAX_SIZE", "640"))
-            img.thumbnail((max_size, max_size))
-            buf = BytesIO()
-            quality = int(os.environ.get("IMAGE_JPEG_QUALITY", "70"))
-            img.save(buf, format="JPEG", quality=quality, optimize=True)
-            body = buf.getvalue()
-        except Exception:
-            pass
-    s3.put_object(Bucket=S3_BUCKET, Key=key, Body=body, ContentType="image/jpeg", ACL="private")
+        max_size = int(os.environ.get("IMAGE_MAX_SIZE", "640"))
+        quality = int(os.environ.get("IMAGE_QUALITY", "60"))
+        body = compress_image(body, format="WEBP", quality=quality, max_size=max_size)
+    
+    s3.put_object(Bucket=S3_BUCKET, Key=key, Body=body, ContentType=content_type, ACL="private")
     return f"s3://{S3_BUCKET}/{key}"
 
 def presigned_url_for_key(s3_url, expires_seconds=3600):

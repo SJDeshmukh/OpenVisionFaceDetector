@@ -9,6 +9,8 @@ import sys
 import base64
 import json
 import sqlite3
+import threading
+import time
 from dotenv import load_dotenv
 
 # --- Basic Path Setup ---
@@ -516,22 +518,24 @@ def bootstrap_db():
     # 2. Check for recovery (if SQLite has data and PG is available)
     db_factory.check_and_recover()
     
-    # 3. Data seeding and performance tweaks
+    # Data seeding and performance tweaks
     seed_superadmin()
     ensure_vendor_companies_and_subscription_features()
     add_performance_indexes()
     
+    # Run schema migrations/checks for all database types (Primary & Fallback)
+    # This ensures new columns like 'retention_days' are added to PostgreSQL
+    add_missing_columns()
+    ensure_audit_logs_table()
+    
     # Legacy migration helpers for SQLite (keep for compatibility if needed)
-    # Using DATABASE_URL from db_factory to check if PG is configured
     from db_factory import is_fallback_mode
     if not DATABASE_URL or is_fallback_mode():
         init_db()
         migrate_faces_pk()
-        add_missing_columns()
         add_vendor_devices_table()
         ensure_archive_table()
-        ensure_audit_logs_table()
-        # ensure_task_events_table is handled in init_schemas
+        # ensure_audit_logs_table() is now called globally above
 
 def seed_superadmin():
     """Seeds the default superadmin account if it doesn't exist."""
@@ -724,122 +728,158 @@ def add_vendor_devices_table():
 
 def add_missing_columns():
     try:
-        if postgres_available():
-            return
         conn = get_db_connection()
         c = conn.cursor()
+        is_pg = getattr(conn, "_is_pg", False)
         
         # 1. Add is_late to attendance if missing
-        try:
-            c.execute("ALTER TABLE attendance ADD COLUMN is_late INTEGER DEFAULT 0")
-            pass # print("Added column 'is_late' to attendance table.")
-        except sqlite3.OperationalError:
-            pass # Already exists
+        att_cols = get_table_columns(conn, "attendance")
+        if 'is_late' not in att_cols:
+            try:
+                c.execute("ALTER TABLE attendance ADD COLUMN is_late INTEGER DEFAULT 0")
+                conn.commit()
+            except Exception:
+                if is_pg: conn.rollback()
 
         # 2. Add Late Deduction Columns to faces table
-        cols = get_table_columns(conn, "faces")
-        
-        if 'late_allowance_days' not in cols:
-            pass # print("MIGRATION: Adding late_allowance_days to faces table...")
-            c.execute("ALTER TABLE faces ADD COLUMN late_allowance_days INTEGER DEFAULT NULL")
-            
-        if 'late_deduction_amount' not in cols:
-            pass # print("MIGRATION: Adding late_deduction_amount to faces table...")
-            c.execute("ALTER TABLE faces ADD COLUMN late_deduction_amount REAL DEFAULT NULL")
+        faces_cols = get_table_columns(conn, "faces")
+        if 'late_allowance_days' not in faces_cols:
+            try:
+                c.execute("ALTER TABLE faces ADD COLUMN late_allowance_days INTEGER DEFAULT NULL")
+                conn.commit()
+            except Exception:
+                if is_pg: conn.rollback()
+        if 'late_deduction_amount' not in faces_cols:
+            try:
+                c.execute("ALTER TABLE faces ADD COLUMN late_deduction_amount REAL DEFAULT NULL")
+                conn.commit()
+            except Exception:
+                if is_pg: conn.rollback()
+
+        # 2b. Add retention_days to vendors table
+        vendor_cols = get_table_columns(conn, "vendors")
+        if 'retention_days' not in vendor_cols:
+            try:
+                c.execute("ALTER TABLE vendors ADD COLUMN retention_days INTEGER DEFAULT 90")
+                conn.commit()
+            except Exception:
+                if is_pg: conn.rollback()
 
         # 3. Add Global Defaults to system_settings
         if get_table_columns(conn, "system_settings"):
-            c.execute("SELECT key FROM system_settings WHERE key IN ('global_late_allowance', 'global_late_deduction')")
-            existing_keys = {row[0] for row in c.fetchall()}
-            
-            if 'global_late_allowance' not in existing_keys:
-                c.execute("INSERT INTO system_settings (key, value) VALUES (?, ?)", ('global_late_allowance', '7'))
-                
-            if 'global_late_deduction' not in existing_keys:
-                c.execute("INSERT INTO system_settings (key, value) VALUES (?, ?)", ('global_late_deduction', '0.0'))
+            try:
+                c.execute("SELECT key FROM system_settings WHERE key IN ('global_late_allowance', 'global_late_deduction')")
+                existing_keys = {row[0] for row in c.fetchall()}
+                if 'global_late_allowance' not in existing_keys:
+                    c.execute("INSERT INTO system_settings (key, value) VALUES (?, ?)", ('global_late_allowance', '7'))
+                if 'global_late_deduction' not in existing_keys:
+                    c.execute("INSERT INTO system_settings (key, value) VALUES (?, ?)", ('global_late_deduction', '0.0'))
+                conn.commit()
+            except Exception:
+                if is_pg: conn.rollback()
 
-        # 4. Add max_mobile_devices to subscriptions
+        # 4. Add columns to subscriptions
         sub_cols = get_table_columns(conn, "subscriptions")
-        if 'max_mobile_devices' not in sub_cols:
-            pass # print("MIGRATION: Adding max_mobile_devices to subscriptions...")
-            c.execute("ALTER TABLE subscriptions ADD COLUMN max_mobile_devices INTEGER DEFAULT 1")
-        if 'max_web_sessions' not in sub_cols:
-            pass # print("MIGRATION: Adding max_web_sessions to subscriptions...")
-            c.execute("ALTER TABLE subscriptions ADD COLUMN max_web_sessions INTEGER DEFAULT 1")
+        for col_name, col_def in [
+            ('max_mobile_devices', 'INTEGER DEFAULT 1'),
+            ('max_web_sessions', 'INTEGER DEFAULT 1'),
+            ('max_employees', 'INTEGER DEFAULT 50'),
+            ('cost_per_employee', 'REAL DEFAULT 0')
+        ]:
+            if col_name not in sub_cols:
+                try:
+                    c.execute(f"ALTER TABLE subscriptions ADD COLUMN {col_name} {col_def}")
+                    conn.commit()
+                except Exception:
+                    if is_pg: conn.rollback()
+        
         try:
             c.execute("UPDATE subscriptions SET max_web_sessions = 1 WHERE max_web_sessions IS NULL OR max_web_sessions < 1")
+            conn.commit()
         except Exception:
-            pass
-            
-        if 'max_employees' not in sub_cols:
-            pass # print("MIGRATION: Adding max_employees to subscriptions...")
-            c.execute("ALTER TABLE subscriptions ADD COLUMN max_employees INTEGER DEFAULT 50")
-
-        if 'cost_per_employee' not in sub_cols:
-            pass # print("MIGRATION: Adding cost_per_employee to subscriptions...")
-            c.execute("ALTER TABLE subscriptions ADD COLUMN cost_per_employee REAL DEFAULT 0")
+            if is_pg: conn.rollback()
 
         # 5. Create active_sessions table
-        c.execute('''CREATE TABLE IF NOT EXISTS active_sessions
-                     (token TEXT PRIMARY KEY,
-                      username TEXT,
-                      vendor_id INTEGER,
-                      device_id TEXT,
-                      platform TEXT, -- 'web' or 'mobile'
-                      last_active DATETIME,
-                      created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+        try:
+            c.execute('''CREATE TABLE IF NOT EXISTS active_sessions
+                         (token TEXT PRIMARY KEY,
+                          username TEXT,
+                          vendor_id INTEGER,
+                          device_id TEXT,
+                          platform TEXT, -- 'web' or 'mobile'
+                          last_active DATETIME,
+                          created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+            conn.commit()
+        except Exception:
+            if is_pg: conn.rollback()
 
-        # 6. Create invoices table if not exists
-        c.execute('''CREATE TABLE IF NOT EXISTS invoices
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      vendor_id INTEGER,
-                      amount REAL,
-                      status TEXT DEFAULT 'generated', -- generated, paid, overdue, cancelled
-                      due_date DATE,
-                      generated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                      paid_at DATETIME,
-                      FOREIGN KEY(vendor_id) REFERENCES vendors(id))''')
+        # 6. Create invoices table
+        try:
+            c.execute('''CREATE TABLE IF NOT EXISTS invoices
+                         (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          vendor_id INTEGER,
+                          amount REAL,
+                          status TEXT DEFAULT 'generated',
+                          due_date DATE,
+                          generated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                          paid_at DATETIME,
+                          FOREIGN KEY(vendor_id) REFERENCES vendors(id))''')
+            conn.commit()
+        except Exception:
+            if is_pg: conn.rollback()
 
-        # 7. Create audit_logs table
-        c.execute('''CREATE TABLE IF NOT EXISTS audit_logs
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      actor_username TEXT,
-                      action TEXT,
-                      target_vendor_id INTEGER,
-                      details TEXT, -- JSON string
-                      timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+        # 7. Create audit_logs
+        try:
+            c.execute('''CREATE TABLE IF NOT EXISTS audit_logs
+                         (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          actor_username TEXT,
+                          action TEXT,
+                          target_vendor_id INTEGER,
+                          details TEXT,
+                          timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+            conn.commit()
+        except Exception:
+            if is_pg: conn.rollback()
 
-        # 7b. Create parent_users and student_parents tables
-        c.execute('''CREATE TABLE IF NOT EXISTS parent_users
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      vendor_id INTEGER,
-                      username TEXT UNIQUE,
-                      password TEXT,
-                      contact_email TEXT,
-                      contact_phone TEXT,
-                      student_number TEXT,
-                      selected_person_id INTEGER,
-                      created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+        # 7b. Create parent_users
+        try:
+            c.execute('''CREATE TABLE IF NOT EXISTS parent_users
+                         (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          vendor_id INTEGER,
+                          username TEXT UNIQUE,
+                          password TEXT,
+                          contact_email TEXT,
+                          contact_phone TEXT,
+                          student_number TEXT,
+                          selected_person_id INTEGER,
+                          created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+            conn.commit()
+        except Exception:
+            if is_pg: conn.rollback()
 
         # Check parent_users columns
         p_cols = get_table_columns(conn, "parent_users")
-        if 'device_id' not in p_cols:
-            pass # print("MIGRATION: Adding device_id to parent_users...")
+        for col_name, col_def in [
+            ('device_id', 'TEXT'),
+            ('fcm_token', 'TEXT'),
+            ('session_version', 'INTEGER DEFAULT 1')
+        ]:
+            if col_name not in p_cols:
+                try:
+                    c.execute(f"ALTER TABLE parent_users ADD COLUMN {col_name} {col_def}")
+                    conn.commit()
+                except Exception:
+                    if is_pg: conn.rollback()
+
+        # 8. Add attendance_type to vendors table
+        v_cols = get_table_columns(conn, "vendors")
+        if 'attendance_type' not in v_cols:
             try:
-                c.execute("ALTER TABLE parent_users ADD COLUMN device_id TEXT")
-            except Exception as e:
-                pass # print(f"Error adding device_id: {e}")
-        if 'fcm_token' not in p_cols:
-            pass # print("MIGRATION: Adding fcm_token to parent_users...")
-            try:
-                c.execute("ALTER TABLE parent_users ADD COLUMN fcm_token TEXT")
-            except Exception as e:
-                pass # print(f"Error adding fcm_token: {e}")
-        if 'session_version' not in p_cols:
-            try:
-                c.execute("ALTER TABLE parent_users ADD COLUMN session_version INTEGER DEFAULT 1")
-            except Exception as e:
-                pass
+                c.execute("ALTER TABLE vendors ADD COLUMN attendance_type TEXT DEFAULT 'total_time'")
+                conn.commit()
+            except Exception:
+                if is_pg: conn.rollback()
+
         conn.commit()
         conn.close()
     except Exception as e:
@@ -1830,8 +1870,25 @@ def serve_frontend(path):
     # Fallback to index.html for SPA routing
     return send_from_directory(static_folder, 'index.html')
 
+def start_archival_thread():
+    def archival_loop():
+        from services.archival_service import run_archival
+        # Wait a bit after startup
+        time.sleep(60)
+        while True:
+            try:
+                run_archival()
+            except Exception as e:
+                print(f"Archival Background Error: {e}")
+            # Run once every 24 hours
+            time.sleep(86400)
+    
+    t = threading.Thread(target=archival_loop, daemon=True)
+    t.start()
+
 if __name__ == "__main__":
     bootstrap_db()
+    start_archival_thread()
     debug_flag = os.environ.get("FLASK_DEBUG") or os.environ.get("DEBUG") or ""
     debug = str(debug_flag).lower() in ("1", "true", "yes", "on")
     port = int(os.environ.get("PORT", "5001"))

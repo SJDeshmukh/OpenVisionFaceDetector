@@ -724,8 +724,17 @@ def export_report():
     from collections import defaultdict
     
     conn = get_db_connection()
-    conn.row_factory = sqlite3.Row
     c = conn.cursor()
+
+    vendor_name = "Vendor"
+    if vendor_id:
+        try:
+            c.execute("SELECT company_name FROM vendors WHERE id = ?", (vendor_id,))
+            v_row = c.fetchone()
+            if v_row:
+                vendor_name = v_row['company_name'] or "Vendor"
+        except Exception as e:
+            print(f"Error fetching vendor name: {e}")
 
     def normalize_registration_config(raw):
         out = []
@@ -801,8 +810,103 @@ def export_report():
         except Exception:
             pass
         payroll = data.get('payroll', [])
+        # Export to Excel instead of CSV if openpyxl is available
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, Alignment
+            from openpyxl.drawing.image import Image as OpenpyxlImage
+            has_openpyxl = True
+        except ImportError:
+            has_openpyxl = False
+
+        if has_openpyxl:
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Payroll Summary"
+
+            # Headers
+            headers = ['Employee Name']
+            for f in standard_fields:
+                headers.append(f["label"])
+            headers += [
+                'Days Present', 'Total Hours (Formatted)', 'Total Payable Hours',
+                'Standard Daily Hours', 'Daily Wage', 'Hourly Rate', 'Total Estimated Wage'
+            ]
+            for field in dynamic_fields:
+                headers.append(field["label"])
+
+            # Calculate Document Width
+            total_cols = len(headers)
+            from openpyxl.utils import get_column_letter
+            last_col = get_column_letter(total_cols)
+            mid_col = get_column_letter(max(1, total_cols // 2))
+            ovx_col = get_column_letter(max(1, total_cols // 2) + 1)
+
+            # Row 1: Header Row Height
+            ws.row_dimensions[1].height = 40
+
+            # Branding Header
+            # Row 1: Vendor Name (Left) | OpenVisionX (Right)
+            ws.merge_cells(f'A1:{mid_col}1')
+            ws['A1'] = vendor_name
+            ws['A1'].font = Font(bold=True, size=16)
+            ws['A1'].alignment = Alignment(horizontal='left', vertical='center')
+
+            ws.merge_cells(f'{ovx_col}1:{last_col}1')
+            ws[ovx_col + '1'] = "OpenVisionX"
+            ws[ovx_col + '1'].font = Font(bold=True, size=14, color="3b82f6") # Blue-600 approx
+            ws[ovx_col + '1'].alignment = Alignment(horizontal='right', vertical='center')
+
+            # Add Logo if available
+            logo_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "openVisionXLogo.png")
+            if os.path.exists(logo_path):
+                img = OpenpyxlImage(logo_path)
+                img.width = 120
+                img.height = 40
+                ws.add_image(img, last_col + '1')
+
+            # Set Column Widths
+            for i in range(1, total_cols + 1):
+                ws.column_dimensions[get_column_letter(i)].width = 15
+
+            ws.append([]) # Gap
+            ws.append(headers)
+            header_row = ws.max_row
+            for cell in ws[header_row]:
+                cell.font = Font(bold=True)
+                cell.alignment = Alignment(horizontal='center')
+
+            for p in payroll:
+                row_data = [p.get('name')]
+                for f in standard_fields:
+                    row_data.append(p.get(f["key"]) or '')
+                row_data += [
+                    p.get('days_present', 0),
+                    p.get('total_hours_str', ''),
+                    p.get('total_hours', 0),
+                    p.get('company_working_hours', 8.0),
+                    p.get('daily_wage', 0),
+                    p.get('hourly_rate', 0),
+                    p.get('total_cost', 0),
+                ]
+                for field in dynamic_fields:
+                    row_data.append(p.get(field["key"]) or '-')
+                ws.append(row_data)
+
+            output = io.BytesIO()
+            wb.save(output)
+            excel_data = output.getvalue()
+            conn.close()
+            return Response(
+                excel_data,
+                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers={"Content-disposition": f"attachment; filename=payroll_summary_{start_date_str}_to_{end_date_str}.xlsx"}
+            )
+
+        # Fallback to CSV if openpyxl not found
         output = io.StringIO()
         writer = csv.writer(output)
+        
         headers = ['Employee Name']
         for f in standard_fields:
             headers.append(f["label"])
@@ -813,17 +917,16 @@ def export_report():
         for field in dynamic_fields:
             headers.append(field["label"])
         writer.writerow(headers)
+
         for p in payroll:
-            row_data = [
-                p.get('name'),
-            ]
+            row_data = [p.get('name')]
             for f in standard_fields:
                 row_data.append(p.get(f["key"]) or '')
             row_data += [
                 p.get('days_present', 0),
                 p.get('total_hours_str', ''),
                 p.get('total_hours', 0),
-                p.get('standard_daily_hours', 8.0),
+                p.get('company_working_hours', 8.0),
                 p.get('daily_wage', 0),
                 p.get('hourly_rate', 0),
                 p.get('total_cost', 0),
@@ -831,8 +934,9 @@ def export_report():
             for field in dynamic_fields:
                 row_data.append(p.get(field["key"]) or '-')
             writer.writerow(row_data)
-        output.seek(0)
+
         csv_data = output.getvalue()
+        conn.close()
         return Response(
             csv_data,
             mimetype="text/csv",
@@ -876,11 +980,145 @@ def export_report():
         
     query += " ORDER BY a.timestamp DESC"
     
+    # Use a new connection for safety if needed, or ensure the current one is open
+    # But since we didn't close it yet, it's fine.
     c.execute(query, params)
     rows = c.fetchall()
     conn.close()
-    
-    # Create CSV in memory
+
+    # --- Branded Excel Export for Detailed Log ---
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, Alignment
+        from openpyxl.drawing.image import Image as OpenpyxlImage
+        has_openpyxl = True
+    except ImportError:
+        has_openpyxl = False
+
+    if has_openpyxl:
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Attendance Log"
+
+        headers = ['Name', 'Date', 'Time', 'Status']
+        for f in standard_fields:
+            headers.append(f["label"])
+        for field in dynamic_fields:
+            headers.append(field["label"])
+
+        # Calculate Document Width
+        total_cols = len(headers)
+        from openpyxl.utils import get_column_letter
+        last_col = get_column_letter(total_cols)
+        mid_col = get_column_letter(max(1, total_cols // 2))
+        ovx_col = get_column_letter(max(1, total_cols // 2) + 1)
+
+        # Row 1: Header Row Height
+        ws.row_dimensions[1].height = 40
+
+        # Branding Header
+        ws.merge_cells(f'A1:{mid_col}1')
+        ws['A1'] = vendor_name
+        ws['A1'].font = Font(bold=True, size=16)
+        ws['A1'].alignment = Alignment(horizontal='left', vertical='center')
+
+        ws.merge_cells(f'{ovx_col}1:{last_col}1')
+        ws[ovx_col + '1'] = "OpenVisionX"
+        ws[ovx_col + '1'].font = Font(bold=True, size=14, color="3b82f6")
+        ws[ovx_col + '1'].alignment = Alignment(horizontal='right', vertical='center')
+
+        # Add Logo if available
+        logo_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "openVisionXLogo.png")
+        if os.path.exists(logo_path):
+            img = OpenpyxlImage(logo_path)
+            img.width = 120
+            img.height = 40
+            ws.add_image(img, last_col + '1')
+
+        # Set Column Widths
+        for i in range(1, total_cols + 1):
+            ws.column_dimensions[get_column_letter(i)].width = 15
+
+        ws.append([]) # Gap
+        
+        ws.append(headers)
+        header_row = ws.max_row
+        for cell in ws[header_row]:
+            cell.font = Font(bold=True)
+            cell.alignment = Alignment(horizontal='center')
+
+        # Filter and add data
+        for row in rows:
+            if dynamic_filters:
+                try:
+                    import json
+                    cd = json.loads(row['custom_data']) if row['custom_data'] else {}
+                except Exception:
+                    cd = {}
+                should_skip = False
+                for dk, dv in dynamic_filters.items():
+                    val = cd.get(dk)
+                    if val is None:
+                        fallback_key = None
+                        for f in dynamic_fields:
+                            if f['key'] == dk:
+                                fallback_key = f['label']
+                                break
+                        if fallback_key:
+                            val = cd.get(fallback_key)
+                    if str(val) != str(dv):
+                        should_skip = True
+                        break
+                if should_skip:
+                    continue
+            ts = parse_db_datetime(row['timestamp'])
+            if not ts: continue
+                
+            date_str = ts.strftime('%Y-%m-%d')
+            time_str = ts.strftime('%I:%M %p')
+            
+            status_str = row['status']
+            if row['status'] == 'CHECK_IN' and 'is_late' in row.keys() and row['is_late'] == 1:
+                status_str = 'Late'
+                
+            row_data = [row['name'], date_str, time_str, status_str]
+            for f in standard_fields:
+                row_data.append(row[f["key"]] or 'N/A')
+            
+            custom_data = {}
+            if row['custom_data']:
+                try:
+                    custom_data = json.loads(row['custom_data'])
+                except:
+                    pass
+            for field in dynamic_fields:
+                val = custom_data.get(field["key"]) or custom_data.get(field["label"]) or '-'
+                row_data.append(val)
+                
+            ws.append(row_data)
+
+        output = io.BytesIO()
+        wb.save(output)
+        excel_data2 = output.getvalue()
+        
+        if is_async:
+            job_id = create_job(content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ttl=600)
+            def _bg_excel():
+                try:
+                    complete_job(job_id, excel_data2)
+                    socketio.emit('job_completed', {'job_id': job_id, 'type': 'report_export', 'vendor_id': vendor_id})
+                except Exception as e:
+                    fail_job(job_id, e)
+            eventlet.spawn_n(_bg_excel)
+            return jsonify({"success": True, "job_id": job_id, "processing": True})
+
+        return Response(
+            excel_data2,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-disposition": f"attachment; filename=attendance_log_{start_date_str}_to_{end_date_str}.xlsx"}
+        )
+
+    # --- Fallback to CSV if openpyxl not found ---
     output = io.StringIO()
     writer = csv.writer(output)
     
@@ -1080,12 +1318,11 @@ def get_report_filters():
     selected_dynamic = {}
     try:
         for k, v in request.args.items():
-            if v is None or str(v).strip() == "":
-                continue
-            if k.startswith("dynamic_"):
-                selected_dynamic[k[len("dynamic_"):]] = str(v).strip()
+            if k.startswith('dynamic_') and v:
+                dynamic_key = k[len('dynamic_'):]
+                dynamic_filters[dynamic_key] = v
     except Exception:
-        selected_dynamic = {}
+        dynamic_filters = {}
 
     faces = []
     params = []
@@ -1180,15 +1417,22 @@ def get_report_filters():
             else:
                 dynamic_filters[field_key] = {"label": field_label, "options": sorted(list(unique_values))[:200]}
 
+    vendor_name = "Vendor"
+    if vendor_id:
+        c.execute("SELECT company_name FROM vendors WHERE id = ?", (vendor_id,))
+        v_row = c.fetchone()
+        if v_row:
+            vendor_name = v_row['company_name'] or "Vendor"
     conn.close()
-    
+
     result = {
         "departments": departments,
         "designations": designations,
         "shifts": shifts,
         "phones": phones,
         "visible_standard_filters": visible_standard_filters,
-        "dynamic_filters": dynamic_filters
+        "dynamic_filters": dynamic_filters,
+        "vendor_name": vendor_name
     }
     cache_set(cache_key, result, 15)
     return jsonify(result)
@@ -1242,6 +1486,13 @@ def get_attendance_filters():
     STANDARD_PERSON_FIELDS = {"department", "designation", "shift", "phone"}
     enabled_fields = []
     if vendor_id:
+        c.execute("SELECT company_name, working_hours, attendance_type FROM vendors JOIN companies ON vendors.id = companies.vendor_id WHERE vendors.id = ?", (vendor_id,))
+        v_row = c.fetchone()
+        company_working_hours = 8.0
+        if v_row:
+            vendor_name = v_row['company_name'] or "Vendor"
+            attendance_type = v_row['attendance_type'] or 'total_time'
+            company_working_hours = float(v_row['working_hours']) if v_row['working_hours'] else 8.0
         c.execute("SELECT registration_config FROM vendors WHERE id = ?", (vendor_id,))
         row = c.fetchone()
         enabled_fields = normalize_registration_config(row['registration_config'] if row else None)
@@ -1494,7 +1745,7 @@ def get_payroll_report():
         if "late_deduction_amount" in fcols:
             extra.append("late_deduction_amount")
         extra_select = ", " + ", ".join(extra) if extra else ""
-        c.execute(f"SELECT id, name, daily_wage, department, designation, face_image, phone{extra_select} FROM faces WHERE vendor_id = ?", (vendor_id,))
+        c.execute(f"SELECT id, name, daily_wage, department, designation, face_image, phone, display_id, custom_data{extra_select} FROM faces WHERE vendor_id = ?", (vendor_id,))
     else:
         c.execute("SELECT id, name, daily_wage, department, designation, face_image, phone FROM faces")
     
@@ -1663,7 +1914,9 @@ def get_payroll_report():
             "late_deduction": total_deduction,
             "final_payout": final_payout,
             "total_cost": final_payout, # Keep for backward compatibility, but UI should likely show breakdown
-            "company_working_hours": company_working_hours
+            "company_working_hours": company_working_hours,
+            "display_id": person_info.get('display_id'),
+            "custom_data": json.loads(person_info.get('custom_data') or '{}') if isinstance(person_info.get('custom_data'), str) else person_info.get('custom_data')
         })
     
     return jsonify({
@@ -1686,9 +1939,14 @@ def export_payroll_daily():
     end_date = request.args.get("end_date")
     if not start_date or not end_date:
         return jsonify({"error": "start_date and end_date required"}), 400
-    conn = get_db_connection()
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
+    c.execute("SELECT company_name, working_hours, attendance_type FROM vendors JOIN companies ON vendors.id = companies.vendor_id WHERE vendors.id = ?", (vendor_id,))
+    v_row = c.fetchone()
+    company_working_hours = 8.0
+    if v_row:
+        vendor_name = v_row['company_name'] or "Vendor"
+        attendance_type = v_row['attendance_type'] or 'total_time'
+        company_working_hours = float(v_row['working_hours']) if v_row['working_hours'] else 8.0
+
     try:
         _run(c, "SELECT * FROM attendance WHERE vendor_id = ?", (vendor_id,))
         rows = c.fetchall()
@@ -1763,8 +2021,112 @@ def export_payroll_daily():
                 lm = 1 if d in late_dates else 0
                 idx = late_dates.index(d) + 1 if d in late_dates else 0
                 deduct = deduction_amt if (lm == 1 and idx > allowance) else 0.0
-                writer.writerow([pid, info.get('name'), d.isoformat(), round(mins/60.0,2), lm, deduct])
+                daily_wage = float(info.get('daily_wage') or 0.0)
+                hourly_rate = daily_wage / company_working_hours if daily_wage and company_working_hours > 0 else 0
+                base_wage_for_day = round((mins / 60.0) * hourly_rate, 2)
+                net_wage = base_wage_for_day - deduct
+                
+                writer.writerow([pid, info.get('name'), d.isoformat(), round(mins/60.0,2), lm, deduct, net_wage])
         return output.getvalue(), 200, {"Content-Type": "text/csv"}
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+@attendance_bp.route("/reports/payroll/export-excel", methods=["GET"])
+def export_payroll_excel():
+    from utils import get_db_connection
+    from services.auth_service import authenticate_vendor_access
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+    start_date = request.args.get("start_date")
+    end_date = request.args.get("end_date")
+    if not start_date or not end_date:
+        return jsonify({"error": "start_date and end_date required"}), 400
+
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+
+    try:
+        c.execute("SELECT company_name, working_hours, attendance_type FROM vendors JOIN companies ON vendors.id = companies.vendor_id WHERE vendors.id = ?", (vendor_id,))
+        v_row = c.fetchone()
+        company_working_hours = 8.0
+        if v_row:
+            vendor_name = v_row['company_name'] or "Vendor"
+            attendance_type = v_row['attendance_type'] or 'total_time'
+            company_working_hours = float(v_row['working_hours']) if v_row['working_hours'] else 8.0
+
+        _run(c, "SELECT * FROM attendance WHERE vendor_id = ?", (vendor_id,))
+        rows = c.fetchall()
+        from collections import defaultdict
+        user_records = defaultdict(list)
+        for row in rows:
+            d = dict(row)
+            pid = d.get('person_id')
+            if pid:
+                user_records[pid].append(d)
+        
+        persons = {}
+        _run(c, "SELECT id as person_id, name, department, designation, phone, shift, custom_data, daily_wage, late_allowance_days, late_deduction_amount FROM faces WHERE vendor_id = ?", (vendor_id,))
+        p_rows = c.fetchall()
+        for pr in p_rows:
+            persons[pr['person_id']] = dict(pr)
+
+        c.execute("SELECT key, value FROM system_settings WHERE key IN ('global_late_allowance', 'global_late_deduction')")
+        s_rows = c.fetchall()
+        s_map = {r['key']: r['value'] for r in s_rows}
+        global_allowance = int(s_map.get('global_late_allowance', 7))
+        global_deduction = float(s_map.get('global_late_deduction', 0.0))
+
+        # Build Excel
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, Alignment
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Daily Payroll"
+        
+        headers = ["Person ID", "Name", "Date", "Working Hours", "Is Late", "Deduction", "Net Wage"]
+        ws.append(headers)
+        for cell in ws[1]:
+            cell.font = Font(bold=True)
+            cell.alignment = Alignment(horizontal="center")
+
+        start_dt_req = datetime.fromisoformat(start_date).date()
+        end_dt_req = datetime.fromisoformat(end_date).date()
+
+        for pid, records in user_records.items():
+            if pid not in persons: continue
+            info = persons[pid]
+            res = calculate_daily_hours(records, attendance_type=attendance_type)
+            sessions = res.get('sessions', [])
+            per_day = {}
+            for s in sessions:
+                try:
+                    sd = datetime.fromisoformat(s['start_ts']).date()
+                    if start_dt_req <= sd <= end_dt_req and s.get('is_payable', False):
+                        per_day[sd] = per_day.get(sd, 0) + (s.get('duration_mins', 0) or 0)
+                except Exception: continue
+            
+            late_dates = sorted(set(parse_db_date(r['timestamp']) for r in records if r.get('is_late') == 1 and parse_db_date(r['timestamp']) and start_dt_req <= parse_db_date(r['timestamp']) <= end_dt_req))
+            allowance = info.get('late_allowance_days') if info.get('late_allowance_days') is not None else global_allowance
+            deduction_amt = info.get('late_deduction_amount') if info.get('late_deduction_amount') is not None else global_deduction
+            
+            for d, mins in sorted(per_day.items()):
+                lm = 1 if d in late_dates else 0
+                idx = late_dates.index(d) + 1 if d in late_dates else 0
+                deduct = deduction_amt if (lm == 1 and idx > allowance) else 0.0
+                daily_wage = float(info.get('daily_wage') or 0.0)
+                hourly_rate = daily_wage / company_working_hours if daily_wage and company_working_hours > 0 else 0
+                base_wage_for_day = round((mins / 60.0) * hourly_rate, 2)
+                net_wage = base_wage_for_day - deduct
+                ws.append([pid, info.get('name'), d.isoformat(), round(mins/60.0, 2), lm, deduct, net_wage])
+
+        import io
+        out = io.BytesIO()
+        wb.save(out)
+        out.seek(0)
+        return send_file(out, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name=f"payroll_daily_{start_date}_{end_date}.xlsx")
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:

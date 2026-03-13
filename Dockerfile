@@ -14,8 +14,13 @@ RUN npm run build
 # Stage 2: Build Backend & Runtime
 FROM python:3.10-slim
 
-# Install Nginx, Redis, and system dependencies including build tools for C++ extensions
-RUN apt-get update && apt-get install -y \
+# Labels for CI/CD
+LABEL maintainer="OpenVision"
+LABEL version="1.1"
+LABEL description="Face Detection and Attendance System (Optimized)"
+
+# Install System Dependencies (Consolidated)
+RUN apt-get update && apt-get install -y --no-install-recommends \
     nginx \
     redis-server \
     postgresql \
@@ -27,40 +32,40 @@ RUN apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
     curl \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# 1. Install Backend Dependencies
+# 1. Install Backend Dependencies & Torch (CPU)
 COPY backend/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r ./requirements.txt
+RUN pip install --no-cache-dir -r ./requirements.txt && \
+    pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
-# 2. Install Torch (CPU-only for production compatibility)
-RUN pip install --no-cache-dir \
-    torch torchvision --index-url https://download.pytorch.org/whl/cpu
-
-# 3. Copy & Install Local Face Detection Package (multiple_face_detection)
-# We copy the local version to preserve our bugfixes (RealESRGAN, GFPGAN weights logic)
+# 2. Copy Local Packages & Install local links
 COPY multiple_face_detection ./multiple_face_detection
 RUN cd multiple_face_detection/third_party/BasicSR && pip install --no-cache-dir -e . 2>/dev/null || true && \
     cd ../facexlib && pip install --no-cache-dir -e . 2>/dev/null || true && \
     cd ../GFPGAN && pip install --no-cache-dir -e . 2>/dev/null || true && \
     cd ../Real-ESRGAN && pip install --no-cache-dir -e . 2>/dev/null || true
 
-# 4. Copy Backend Code (including standalone_live_mesh)
+# 3. Copy Backend Code & 3DDFA Requirements
 COPY backend/ ./backend
-
-# 5. Install 3DDFA-V3 dependencies (for 3D mesh)
 RUN pip install --no-cache-dir -r backend/standalone_live_mesh/requirements.txt
 
-# 6. Copy Frontend Build from Stage 1
+# 4. PRE-DOWNLOAD AI MODELS (IMPORTANT: This caches weights in the image)
+# We need to set PYTHONPATH so download_models.py can find internal modules if needed
+ENV PYTHONPATH=/app/backend:/app:/app/multiple_face_detection
+RUN python3 backend/download_models.py
+
+# 5. Copy Frontend Build from Stage 1
+# Ensure path matches Nginx config
+RUN mkdir -p /var/www/face-detection/web-dashboard/
 COPY --from=frontend-builder /app/frontend/dist /var/www/face-detection/web-dashboard/dist
 
-# Copy Configs
+# Copy Configs & Entrypoint
 COPY nginx.conf /etc/nginx/sites-available/default
 COPY entrypoint.sh ./
-
-# Make entrypoint executable
 RUN chmod +x entrypoint.sh
 
 # Environment Defaults
@@ -71,18 +76,13 @@ ENV CELERY_BROKER_URL=redis://127.0.0.1:6379/0
 ENV CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/0
 ENV REDIS_URL=redis://127.0.0.1:6379/0
 ENV CELERY_CONCURRENCY=1
-# Ensure backend comes first so `import app` resolves to backend/app.py, not multiple_face_detection/app.py
-ENV PYTHONPATH=/app/backend:/app:/app/multiple_face_detection
-
-# Optional public URL for logs (entrypoint prints it)
-ARG PUBLIC_URL
-ENV PUBLIC_URL=${PUBLIC_URL}
+ENV PYTHONUNBUFFERED=1
 
 # Expose ports
 EXPOSE 10000 5001
 
 # Healthcheck for backend
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=5 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
   CMD curl -fsS http://127.0.0.1:5001/api/ping || exit 1
 
 # Start via entrypoint

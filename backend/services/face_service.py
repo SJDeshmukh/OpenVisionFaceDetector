@@ -224,14 +224,14 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
                 pass
         if LOW_RAM_MODE:
             try:
-                max_items = int(os.environ.get("EMB_CACHE_MAX_ITEMS", "200") or "200")
+                max_items = int(os.environ.get("EMB_CACHE_MAX_ITEMS", "1000") or "1000")
             except Exception:
-                max_items = 200
+                max_items = 1000
             _VENDOR_EMB_CACHE[key]['items'] = _VENDOR_EMB_CACHE[key]['items'][:max_items]
             try:
-                max_vendors = int(os.environ.get("EMB_CACHE_MAX_VENDORS", "20") or "20")
+                max_vendors = int(os.environ.get("EMB_CACHE_MAX_VENDORS", "300") or "300")
             except Exception:
-                max_vendors = 20
+                max_vendors = 300
             if len(_VENDOR_EMB_CACHE) > max_vendors:
                 ks = sorted(_VENDOR_EMB_CACHE.items(), key=lambda kv: kv[1].get('ts', 0.0))
                 for kdrop, _ in ks[:-max_vendors]:
@@ -422,7 +422,7 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                         if lr:
                             portrait_enh = portrait
                         else:
-                            portrait_enh = mfd_app.get_gfpgan_manager().enhance_crop(portrait, upscale=gfp_up, whole=True) if portrait.size > 0 else portrait
+                            portrait_enh = mfd_app.get_gfpgan_manager().enhance_crop(portrait, upscale=gfp_up, whole=True, fidelity=0.7) if portrait.size > 0 else portrait
                     except Exception:
                         portrait_enh = None
 

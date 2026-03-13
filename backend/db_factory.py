@@ -43,6 +43,9 @@ _IS_FALLBACK_MODE = False
 _LAST_PG_RETRY_TIME = 0
 _PG_COOLDOWN_SECONDS = 30 # Don't flood logs if PG is down
 
+# Backup Database Configuration
+DB_BACKUP_PATH = os.environ.get("DB_BACKUP_PATH", os.path.join(os.path.dirname(__file__), "backup_faces.db"))
+
 class PostgresCursorWrapper:
     def __init__(self, cursor):
         self.cursor = cursor
@@ -214,6 +217,18 @@ def get_db_connection(timeout=30):
         logger.error(f"SQLite Connection failed: {e}")
         raise e
 
+def get_backup_db_connection(timeout=20):
+    """Returns a connection to the backup SQLite database."""
+    try:
+        conn = sqlite3.connect(DB_BACKUP_PATH, timeout=timeout, check_same_thread=False)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.row_factory = sqlite3.Row
+        return conn
+    except Exception as e:
+        logger.error(f"Backup SQLite Connection failed: {e}")
+        raise e
+
 def is_fallback_mode():
     return _IS_FALLBACK_MODE
 
@@ -234,17 +249,26 @@ def init_schemas():
     # Init fallback
     try:
         conn = sqlite3.connect(DB_PATH)
-        _init_sqlite_schema_on_conn(conn)
+        init_sqlite_schema(conn)
         conn.close()
         logger.info("SQLite Schema initialized.")
     except Exception as e:
         logger.error(f"Could not initialize SQLite schema: {e}")
 
+    # Init backup
+    try:
+        conn = get_backup_db_connection()
+        _init_backup_schema_on_conn(conn)
+        conn.close()
+        logger.info("Backup SQLite Schema initialized.")
+    except Exception as e:
+        logger.error(f"Could not initialize Backup SQLite schema: {e}")
+
 def _init_pg_schema_on_conn(conn):
     cur = conn.cursor()
     # Using the existing DDL from init_postgres_schema
     queries = [
-        "CREATE TABLE IF NOT EXISTS vendors (id SERIAL PRIMARY KEY, company_name TEXT NOT NULL, email TEXT, phone TEXT, address TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, status TEXT DEFAULT 'active', registration_config TEXT, contact_person TEXT, web_login_enabled INTEGER DEFAULT 1, frontend_bundle_id TEXT, backend_service_id TEXT, vertical TEXT)",
+        "CREATE TABLE IF NOT EXISTS vendors (id SERIAL PRIMARY KEY, company_name TEXT NOT NULL, email TEXT, phone TEXT, address TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, status TEXT DEFAULT 'active', registration_config TEXT, contact_person TEXT, web_login_enabled INTEGER DEFAULT 1, frontend_bundle_id TEXT, backend_service_id TEXT, vertical TEXT, attendance_type TEXT DEFAULT 'total_time', retention_days INTEGER DEFAULT 90)",
         "CREATE TABLE IF NOT EXISTS companies (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), name TEXT, working_hours REAL, shifts TEXT, draft_timetable TEXT, live_timetable TEXT, last_modified_by TEXT, last_modified_at TIMESTAMP, published_by TEXT, published_at TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS faces (id SERIAL PRIMARY KEY, name TEXT, templates TEXT, face_image TEXT, department TEXT, designation TEXT, phone TEXT, shift TEXT, daily_wage REAL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount REAL DEFAULT 0, vendor_id INTEGER REFERENCES vendors(id), custom_data TEXT, display_id INTEGER)",
         "CREATE TABLE IF NOT EXISTS attendance (id SERIAL PRIMARY KEY, name TEXT, timestamp TIMESTAMP, status TEXT, captured_image TEXT, activity TEXT, is_late INTEGER DEFAULT 0, device_id TEXT, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id))",
@@ -267,11 +291,11 @@ def _init_pg_schema_on_conn(conn):
     conn.commit()
     cur.close()
 
-def _init_sqlite_schema_on_conn(conn):
+def init_sqlite_schema(conn):
     cur = conn.cursor()
     # Simplified SQLite versions (using INTEGER PRIMARY KEY AUTOINCREMENT)
     queries = [
-        "CREATE TABLE IF NOT EXISTS vendors (id INTEGER PRIMARY KEY AUTOINCREMENT, company_name TEXT NOT NULL, email TEXT, phone TEXT, address TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, status TEXT DEFAULT 'active', registration_config TEXT, contact_person TEXT, web_login_enabled INTEGER DEFAULT 1, frontend_bundle_id TEXT, backend_service_id TEXT, vertical TEXT)",
+        "CREATE TABLE IF NOT EXISTS vendors (id INTEGER PRIMARY KEY AUTOINCREMENT, company_name TEXT NOT NULL, email TEXT, phone TEXT, address TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, status TEXT DEFAULT 'active', registration_config TEXT, contact_person TEXT, web_login_enabled INTEGER DEFAULT 1, frontend_bundle_id TEXT, backend_service_id TEXT, vertical TEXT, attendance_type TEXT DEFAULT 'total_time', retention_days INTEGER DEFAULT 90)",
         "CREATE TABLE IF NOT EXISTS companies (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, name TEXT, working_hours REAL, shifts TEXT, draft_timetable TEXT, live_timetable TEXT, last_modified_by TEXT, last_modified_at DATETIME, published_by TEXT, published_at DATETIME)",
         "CREATE TABLE IF NOT EXISTS faces (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, templates TEXT, face_image TEXT, department TEXT, designation TEXT, phone TEXT, shift TEXT, daily_wage REAL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount REAL DEFAULT 0, vendor_id INTEGER, custom_data TEXT, display_id INTEGER)",
         "CREATE TABLE IF NOT EXISTS attendance (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, timestamp DATETIME, status TEXT, captured_image TEXT, activity TEXT, is_late INTEGER DEFAULT 0, device_id TEXT, vendor_id INTEGER, person_id INTEGER)",
@@ -288,6 +312,18 @@ def _init_sqlite_schema_on_conn(conn):
         "CREATE TABLE IF NOT EXISTS person_embeddings (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, person_id INTEGER, class_year TEXT, division TEXT, branch TEXT, vec BLOB, dim INTEGER, struct_vec BLOB, landmarks_3d TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS class_batches (id TEXT PRIMARY KEY, vendor_id INTEGER, class_year TEXT, division TEXT, branch TEXT, status TEXT DEFAULT 'active', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS class_batch_items (id TEXT PRIMARY KEY, batch_id TEXT, seq INTEGER, image_b64 TEXT, annotated_b64 TEXT, faces_json TEXT, status TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)"
+    ]
+    for q in queries:
+        cur.execute(q)
+    conn.commit()
+    cur.close()
+
+def _init_backup_schema_on_conn(conn):
+    cur = conn.cursor()
+    # Backup DB only needs data tables for archival
+    queries = [
+        "CREATE TABLE IF NOT EXISTS attendance (id INTEGER PRIMARY KEY, name TEXT, timestamp DATETIME, status TEXT, captured_image TEXT, activity TEXT, is_late INTEGER DEFAULT 0, device_id TEXT, vendor_id INTEGER, person_id INTEGER, archived_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS backup_metadata (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, start_date DATETIME, end_date DATETIME, record_count INTEGER, status TEXT, archived_by TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)"
     ]
     for q in queries:
         cur.execute(q)

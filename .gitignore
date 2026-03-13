@@ -8,6 +8,9 @@ __pycache__/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+.venv/
+venv/
+env/
 
 # Node
 node_modules/

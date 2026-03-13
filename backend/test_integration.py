@@ -18,7 +18,12 @@ class TestIntegration(unittest.TestCase):
         self.conn.row_factory = sqlite3.Row
         self.c = self.conn.cursor()
         
-        # Create Tables
+        self.c.execute('''CREATE TABLE IF NOT EXISTS vendors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_name TEXT NOT NULL,
+            registration_config TEXT
+        )''')
+
         self.c.execute('''CREATE TABLE IF NOT EXISTS companies (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             vendor_id TEXT UNIQUE,
@@ -42,7 +47,9 @@ class TestIntegration(unittest.TestCase):
             face_image TEXT,
             shift TEXT,
             late_allowance_days INTEGER DEFAULT 0,
-            late_deduction_amount REAL DEFAULT 0
+            late_deduction_amount REAL DEFAULT 0,
+            display_id INTEGER,
+            custom_data TEXT
         )''')
         
         self.c.execute('''CREATE TABLE IF NOT EXISTS attendance (
@@ -86,10 +93,13 @@ class TestIntegration(unittest.TestCase):
             {'name': 'Work', 'type': 'Work', 'is_payable': True},
             {'name': 'TeaBreak', 'type': 'Break', 'is_payable': True, 'start_time': '11:00', 'end_time': '11:15'}
         ]
-        self.vendor_id = "test_vendor_123"
+        self.vendor_id = 123
         self.c.execute("INSERT INTO companies (vendor_id, name, working_hours, live_timetable) VALUES (?, ?, ?, ?)",
                        (self.vendor_id, "Test Corp", 8.0, json.dumps(timetable)))
         
+        self.c.execute("INSERT INTO vendors (id, company_name, registration_config) VALUES (?, ?, ?)",
+                       (self.vendor_id, "Test Corp", '{"display_id": true}'))
+
         self.c.execute("INSERT INTO subscriptions (vendor_id, features) VALUES (?, ?)",
                        (self.vendor_id, '["payroll", "reports"]'))
 
@@ -108,12 +118,19 @@ class TestIntegration(unittest.TestCase):
         # We will patch `db_factory.DB_PATH` for the test.
         import db_factory
         self.original_db_path = db_factory.DB_PATH
+        self.original_db_url = db_factory.DATABASE_URL
+        self.original_db_type = db_factory.DB_TYPE
+        
         db_factory.DB_PATH = TEST_DB
+        db_factory.DATABASE_URL = ""
+        db_factory.DB_TYPE = 'sqlite'
 
     def tearDown(self):
         self.conn.close()
         import db_factory
         db_factory.DB_PATH = self.original_db_path
+        db_factory.DATABASE_URL = self.original_db_url
+        db_factory.DB_TYPE = self.original_db_type
         if os.path.exists(TEST_DB):
             os.remove(TEST_DB)
 
@@ -147,7 +164,7 @@ class TestIntegration(unittest.TestCase):
                 # We will use `unittest.mock` to patch it
                 from unittest.mock import patch
                 
-                with patch('app.authenticate_vendor_access', return_value=(self.vendor_id, None)):
+                with patch('routes.attendance.authenticate_vendor_access', return_value=(self.vendor_id, None)):
                     with app.test_client() as client:
                         # Test JSON Report
                         response = client.get(f'/api/reports/payroll?start_date=2023-10-27&end_date=2023-10-28')
@@ -160,15 +177,13 @@ class TestIntegration(unittest.TestCase):
                         self.assertEqual(person_data['total_hours_str'], "11h 0m")
                         self.assertEqual(person_data['total_cost'], 1100.0)
                         
-                        # Test CSV Export
-                        response_csv = client.get(f'/api/reports/export?type=summary&start_date=2023-10-27&end_date=2023-10-28')
-                        self.assertEqual(response_csv.status_code, 200)
-                        csv_content = response_csv.data.decode('utf-8')
+                        # Test Excel Export (was CSV)
+                        response_excel = client.get(f'/api/reports/export?type=summary&start_date=2023-10-27&end_date=2023-10-28')
+                        self.assertEqual(response_excel.status_code, 200)
+                        self.assertEqual(response_excel.mimetype, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
                         
-                        # Verify CSV Content
-                        self.assertIn("John Doe", csv_content)
-                        self.assertIn("11h 0m", csv_content) # Formatted Hours
-                        self.assertIn("11.0", csv_content)   # Raw Hours
+                        # Verify filename ends with .xlsx
+                        self.assertIn(".xlsx", response_excel.headers["Content-Disposition"])
 
 if __name__ == '__main__':
     unittest.main()

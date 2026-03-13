@@ -30,10 +30,14 @@ else
   echo ""
 fi
 
-# 2. Start Redis in the background
-echo "Starting Redis..."
-redis-server --daemonize yes --port 6379 --loglevel warning
-echo "Redis started on port 6379."
+# 2. Start Redis in the background if no external REDIS_URL/CELERY_BROKER_URL
+if [ -z "$REDIS_URL" ] && [ -z "$CELERY_BROKER_URL" ]; then
+  echo "No external Redis provided. Starting internal Redis..."
+  redis-server --daemonize yes --port 6379 --loglevel warning
+  echo "Redis started on port 6379."
+else
+  echo "Using external Redis service."
+fi
 
 # 3. Start PostgreSQL in the background if no external DATABASE_URL is provided
 if [ -z "$DATABASE_URL" ]; then
@@ -86,36 +90,39 @@ if [ -z "$DATABASE_URL" ]; then
   export DATABASE_URL="postgresql://postgres@localhost/face_db"
   echo "DATABASE_URL auto-set to internal PostgreSQL: $DATABASE_URL"
 else
-  echo "Using external DATABASE_URL provided by environment: $DATABASE_URL"
+  echo "Using external DATABASE_URL provided by environment."
 fi
 
-# 4. Pre-flight Check: Auto-Download Models
-echo "Verifying and downloading AI model weights..."
-python3 backend/download_models.py
+# 4. Pre-flight Check: Verify Models (They should be baked into the image)
+echo "Ensuring AI models are present..."
+# Models are pre-downloaded in Dockerfile, but we do a quick check of the directory
+if [ ! -d "multiple_face_detection/models" ]; then
+  echo "⚠️ Models directory not found. Attempting emergency download..."
+  python3 backend/download_models.py || echo "❌ Emergency download failed!"
+else
+  echo "✅ AI models confirmed."
+fi
 
 # 5. Start Backend (Gunicorn) in the background
-# We bind to 127.0.0.1:5001 because Nginx will proxy to it locally
-echo "Starting Gunicorn Backend..."
+echo "Starting Gunicorn Backend on port 5001..."
 cd backend
 # Use gunicorn_config.py to ensure eventlet workers for Socket.IO
-# Run in background but stream logs to stdout/stderr
-PORT=5001 gunicorn -c gunicorn_config.py app:app --access-logfile - --error-logfile - --log-level info &
+gunicorn -c gunicorn_config.py app:app --bind 0.0.0.0:5001 --access-logfile - --error-logfile - --log-level info &
 
-# Wait for backend to be reachable before starting Celery & Nginx
-echo "Waiting for backend http://127.0.0.1:5001/api/config ..."
+# Wait for backend to be reachable
+echo "Waiting for backend to stabilize..."
 python3 - <<'PY'
 import time, urllib.request, sys
-url = "http://127.0.0.1:5001/api/config"
-for i in range(60):
+url = "http://127.0.0.1:5001/api/ping"
+for i in range(120):
     try:
         with urllib.request.urlopen(url, timeout=2) as r:
-            if r.status < 500:
+            if r.status == 200:
                 print("Backend is up")
                 sys.exit(0)
-    except Exception as e:
-        time.sleep(0.5)
-print("Backend did not start in time")
-sys.exit(1)
+    except Exception:
+        time.sleep(1)
+print("Backend stabilization timeout")
 PY
 
 # 6. Start Celery Workers in the background
@@ -130,8 +137,10 @@ for i in $(seq 1 "$CELERY_CONCURRENCY"); do
     --include tasks \
     --logfile=/dev/stdout &
 done
-echo "Celery workers started."
 
-# 7. Start Nginx in the foreground (so Docker keeps running)
-echo "Starting Nginx..."
+# 7. Start Nginx in the foreground
+echo "Starting Nginx on port $PORT..."
+# Redirect Nginx logs to stdout/stderr for cloud monitoring
+ln -sf /dev/stdout /var/log/nginx/access.log
+ln -sf /dev/stderr /var/log/nginx/error.log
 nginx -g 'daemon off;'

@@ -1,13 +1,75 @@
-import { spawn } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 import net from "node:net";
 import process from "node:process";
 import readline from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
+import fs from "node:fs";
+import path from "node:path";
 
 const defaultPort = Number.parseInt(process.env.FRONTEND_PORT ?? "5173", 10);
 const host = process.env.FRONTEND_HOST ?? "127.0.0.1";
 const backendPort = Number.parseInt(process.env.BACKEND_PORT ?? "5001", 10);
 const backendHost = process.env.BACKEND_HOST ?? "127.0.0.1";
+
+async function cleanupPorts() {
+  const ports = [6379, backendPort, defaultPort];
+  process.stdout.write(`Cleaning up ports: ${ports.join(", ")}...\n`);
+  for (const port of ports) {
+    try {
+      // macOS/Linux approach to kill process on port
+      const pidOutput = execSync(`lsof -t -i:${port}`).toString().trim();
+      if (pidOutput) {
+        const pids = pidOutput.split(/\s+/).filter(Boolean);
+        process.stdout.write(`Killing processes ${pids.join(", ")} on port ${port}...\n`);
+        for (const pid of pids) {
+          try {
+            execSync(`kill -9 ${pid}`);
+          } catch (e) {
+            // Might have already exited
+          }
+        }
+      }
+    } catch {
+      // Port is already free or command failed
+    }
+  }
+  // Short delay to ensure OS releases ports
+  await delay(1000);
+}
+
+async function performAudit() {
+  const pythonPath = process.platform === "win32" ? "../backend/.venv/Scripts/python.exe" : "../backend/.venv/bin/python3";
+  const pipPath = process.platform === "win32" ? "../backend/.venv/Scripts/pip.exe" : "../backend/.venv/bin/pip";
+  const pythonCmd = fs.existsSync(path.resolve(process.cwd(), pythonPath)) ? pythonPath : "python3";
+  const pipCmd = fs.existsSync(path.resolve(process.cwd(), pipPath)) ? pipPath : "pip3";
+
+  process.stdout.write("--- Step 1: Auditing Dependencies ---\n");
+  try {
+    execSync(`${pipCmd} install -r ../backend/requirements.txt`, { stdio: "inherit" });
+    process.stdout.write("Dependencies up to date.\n");
+  } catch (e) {
+    process.stderr.write(`Warning: Dependency audit failed: ${e.message}\n`);
+  }
+
+  process.stdout.write("\n--- Step 2: Auditing AI Models ---\n");
+  try {
+    execSync(`${pythonCmd} ../backend/download_models.py`, { stdio: "inherit" });
+    process.stdout.write("Model audit complete.\n");
+  } catch (e) {
+    process.stderr.write(`Warning: Model audit failed: ${e.message}\n`);
+  }
+
+  process.stdout.write("\n--- Step 3: AI Environment Health Check ---\n");
+  try {
+    const checkScript = "import torch; import tensorflow; print(f'Torch {torch.__version__} OK, TF {tensorflow.__version__} OK')";
+    execSync(`${pythonCmd} -c "${checkScript}"`, { stdio: "inherit" });
+    process.stdout.write("Health check passed.\n\n");
+  } catch (e) {
+    process.stderr.write(`Critical: AI environment health check failed! ${e.message}\n`);
+    process.stderr.write("Please ensure torch and tensorflow are correctly installed in the venv.\n");
+    // We don't exit here, but the backend likely won't start correctly if this fails.
+  }
+}
 
 function spawnProc(command, args, { name, env, cwd, stdio } = {}) {
   const child = spawn(command, args, {
@@ -157,8 +219,11 @@ async function startCeleryWorker() {
   process.stdout.write("Starting Celery workers (multi-tenant concurrency)...\n");
   try {
     const numWorkers = parseInt(process.env.CELERY_CONCURRENCY || "1", 10);
+    const celeryPath = process.platform === "win32" ? "../backend/.venv/Scripts/celery.exe" : "../backend/.venv/bin/celery";
+    const celeryCmd = fs.existsSync(path.resolve(process.cwd(), celeryPath)) ? celeryPath : "celery";
+
     for (let i = 1; i <= numWorkers; i++) {
-      const proc = spawnProc("celery", [
+      const proc = spawnProc(celeryCmd, [
         "-A", "celery_app",
         "worker",
         "--loglevel=info",
@@ -201,12 +266,11 @@ async function startBackendIfNeeded() {
   await startRedis();
 
   process.stdout.write(`Starting backend (http://${backendHost}:${backendPort})...\n`);
-  if (await isBackendReachable()) {
-    process.stdout.write("Backend already running.\n");
-    return;
-  }
 
-  backend = spawnProc("python", ["../backend/app.py"], {
+  const pythonPath = process.platform === "win32" ? "../backend/.venv/Scripts/python.exe" : "../backend/.venv/bin/python3";
+  const pythonCmd = fs.existsSync(path.resolve(process.cwd(), pythonPath)) ? pythonPath : "python3";
+
+  backend = spawnProc(pythonCmd, ["../backend/app.py"], {
     name: "backend",
     stdio: "inherit",
     env: {
@@ -233,23 +297,21 @@ async function startBackendIfNeeded() {
 }
 
 async function startFrontend() {
+  await cleanupPorts();
+  await performAudit();
   const backendPromise = startBackendIfNeeded();
 
-  const { port, alreadyRunning } = await findFrontendPort();
+  const { port } = await findFrontendPort();
 
-  if (!alreadyRunning) {
-    process.stdout.write(`Starting frontend (http://${host}:${port})...\n`);
-    vite = spawnProc(
-      "vite",
-      ["--host", host, "--port", String(port), "--strictPort"],
-      {
-        name: "vite",
-        stdio: "inherit",
-      }
-    );
-  } else {
-    process.stdout.write(`Frontend already running (http://${host}:${port})...\n`);
-  }
+  process.stdout.write(`Starting frontend (http://${host}:${port})...\n`);
+  vite = spawnProc(
+    "vite",
+    ["--host", host, "--port", String(port), "--strictPort"],
+    {
+      name: "vite",
+      stdio: "inherit",
+    }
+  );
 
   try {
     await waitForHttpReady(`http://${host}:${port}/`);

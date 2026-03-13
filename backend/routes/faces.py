@@ -12,7 +12,7 @@ import cv2
 from services.auth_service import authenticate_vendor_access, extract_token, verify_token, check_vendor_status
 from utils import get_db_connection, LOW_RAM_MODE, _VENDOR_EMB_CACHE, reset_sequence, ALL_FEATURES
 from services.face_service import _ensure_vendor_emb_cache, _normalize_vec, _suggest_from_cache
-from storage import upload_base64_image, presigned_url_for_key, OBJECT_STORAGE_ENABLED
+from storage import upload_base64_image, presigned_url_for_key, OBJECT_STORAGE_ENABLED, compress_image
 import os
 from concurrent.futures import ThreadPoolExecutor
 def _extract_structural_vector(lmks):
@@ -73,6 +73,18 @@ def rate_limit(*args, **kwargs):
     return decorator
 
 faces_bp = Blueprint('faces_bp', __name__)
+
+def reindex_vendor_faces(conn, vendor_id):
+    """Re-assigns display_id for all faces in a vendor to be gapless [1, 2, 3...]."""
+    if not vendor_id:
+        return
+    c = conn.cursor()
+    # Get all faces for this vendor ordered by creation (id)
+    c.execute("SELECT id FROM faces WHERE vendor_id = ? ORDER BY id ASC", (vendor_id,))
+    faces = [r[0] for r in c.fetchall()]
+    for idx, fid in enumerate(faces):
+        c.execute("UPDATE faces SET display_id = ? WHERE id = ?", (idx + 1, fid))
+    conn.commit()
 
 def vendor_required(f):
     from functools import wraps
@@ -478,9 +490,17 @@ def upload_face():
     department = data.get("department")
     designation = data.get("designation")
     shift = data.get("shift")
+    landmarks_3d = data.get("landmarks_3d")
+    landmarks_3d_list = data.get("landmarks_3d_list")
+    struct_vec = data.get("struct_vec")
+    struct_vec_list = data.get("struct_vec_list")
     
     # Extract Custom Data (Dynamic Fields)
-    standard_fields = {'person_id', 'name', 'templates', 'face_image', 'phone', 'department', 'designation', 'shift', 'vendor_id'}
+    standard_fields = {
+        'person_id', 'name', 'templates', 'templates_list', 'face_image', 'phone', 
+        'department', 'designation', 'shift', 'vendor_id', 
+        'landmarks_3d', 'landmarks_3d_list', 'struct_vec', 'struct_vec_list'
+    }
     custom_dict = {k: v for k, v in data.items() if k not in standard_fields}
     custom_data = json.dumps(custom_dict) if custom_dict else None
 
@@ -587,14 +607,21 @@ def upload_face():
                 conn.close()
                 return jsonify({"error": f"Employee Limit Reached ({max_employees}). Upgrade your plan."}), 403
 
-        image_url = None
-        if face_image and OBJECT_STORAGE_ENABLED:
+        if face_image:
             try:
-                s3_url = upload_base64_image(name or f"face_{datetime.now().timestamp()}", face_image)
-                if s3_url:
-                    image_url = presigned_url_for_key(s3_url, expires_seconds=3600)
-                    face_image = image_url
-            except Exception:
+                # Always compress, regardless of storage backend
+                data_part = face_image.split(",")[-1] if "," in face_image else face_image
+                raw_body = base64.b64decode(data_part)
+                processed_body = compress_image(raw_body)
+                face_image = base64.b64encode(processed_body).decode('utf-8')
+                
+                if OBJECT_STORAGE_ENABLED:
+                    s3_url = upload_base64_image(name or f"face_{datetime.now().timestamp()}", face_image)
+                    if s3_url:
+                        image_url = presigned_url_for_key(s3_url, expires_seconds=3600)
+                        face_image = image_url
+            except Exception as e:
+                print(f"Image processing error: {e}")
                 pass
         if person_id:
             if caller_vendor_id:
@@ -674,7 +701,7 @@ def upload_face():
                                 target_templates = [templates]
                         
                         if target_templates:
-                            for t_item in target_templates:
+                            for idx, t_item in enumerate(target_templates):
                                 try:
                                     # Handle both base64 strings and raw lists
                                     if isinstance(t_item, str):
@@ -689,8 +716,39 @@ def upload_face():
                                     emb = _normalize_vec(emb)
                                     if emb.size > 0:
                                         vec_blob = emb.astype(np.float32).tobytes()
-                                        c.execute("""INSERT INTO person_embeddings (vendor_id, person_id, vec, dim) 
-                                                     VALUES (?, ?, ?, ?)""", (vendor_id or existing.get("vendor_id"), person_id, vec_blob, int(emb.size)))
+                                        
+                                        # Handle associated features
+                                        cur_struct_blob = None
+                                        cur_lmks_json = None
+                                        
+                                        # Try to get corresponding indexed feature
+                                        sv = None
+                                        if struct_vec_list and idx < len(struct_vec_list):
+                                            sv = struct_vec_list[idx]
+                                        elif idx == 0 and struct_vec:
+                                            sv = struct_vec
+                                            
+                                        if sv:
+                                            try:
+                                                if isinstance(sv, str):
+                                                    cur_struct_blob = base64.b64decode(sv)
+                                                else:
+                                                    cur_struct_blob = np.array(sv, dtype=np.float32).tobytes()
+                                            except Exception: pass
+                                            
+                                        lm = None
+                                        if landmarks_3d_list and idx < len(landmarks_3d_list):
+                                            lm = landmarks_3d_list[idx]
+                                        elif idx == 0 and landmarks_3d:
+                                            lm = landmarks_3d
+                                            
+                                        if lm:
+                                            try: cur_lmks_json = json.dumps(lm)
+                                            except Exception: pass
+
+                                        c.execute("""INSERT INTO person_embeddings (vendor_id, person_id, vec, dim, struct_vec, landmarks_3d) 
+                                                     VALUES (?, ?, ?, ?, ?, ?)""", 
+                                                  (vendor_id or existing.get("vendor_id"), person_id, vec_blob, int(emb.size), cur_struct_blob, cur_lmks_json))
                                 except Exception:
                                     continue
 
@@ -747,7 +805,7 @@ def upload_face():
                         target_templates = [templates]
                 
                 if target_templates:
-                    for t_item in target_templates:
+                    for idx, t_item in enumerate(target_templates):
                         try:
                             if isinstance(t_item, str):
                                 raw_bytes = base64.b64decode(t_item)
@@ -761,8 +819,37 @@ def upload_face():
                             emb = _normalize_vec(emb)
                             if emb.size > 0:
                                 vec_blob = emb.astype(np.float32).tobytes()
-                                c.execute("""INSERT INTO person_embeddings (vendor_id, person_id, vec, dim) 
-                                             VALUES (?, ?, ?, ?)""", (vendor_id, new_id, vec_blob, int(emb.size)))
+                                
+                                # Handle associated features
+                                cur_struct_blob = None
+                                cur_lmks_json = None
+                                
+                                sv = None
+                                if struct_vec_list and idx < len(struct_vec_list):
+                                    sv = struct_vec_list[idx]
+                                elif idx == 0 and struct_vec:
+                                    sv = struct_vec
+                                    
+                                if sv:
+                                    try:
+                                        if isinstance(sv, str):
+                                            cur_struct_blob = base64.b64decode(sv)
+                                        else:
+                                            cur_struct_blob = np.array(sv, dtype=np.float32).tobytes()
+                                    except Exception: pass
+                                    
+                                lm = None
+                                if landmarks_3d_list and idx < len(landmarks_3d_list):
+                                    lm = landmarks_3d_list[idx]
+                                elif idx == 0 and landmarks_3d:
+                                    lm = landmarks_3d
+                                    
+                                if lm:
+                                    try: cur_lmks_json = json.dumps(lm)
+                                    except Exception: pass
+
+                                c.execute("""INSERT INTO person_embeddings (vendor_id, person_id, vec, dim, struct_vec, landmarks_3d) 
+                                             VALUES (?, ?, ?, ?, ?, ?)""", (vendor_id, new_id, vec_blob, int(emb.size), cur_struct_blob, cur_lmks_json))
                         except Exception:
                             continue
 
@@ -824,6 +911,7 @@ def download_faces():
     for row in rows:
         face_item = {
             "id": row["id"],
+            "display_id": row["display_id"] if "display_id" in row.keys() else row["id"],
             "name": row["name"],
             "templates": row["templates"] if row["templates"] else None,
             "face_image": row["face_image"] if row["face_image"] else None,
@@ -981,6 +1069,9 @@ def delete_face(name):
             
         conn.commit()
         try:
+            # Re-index all affected vendors
+            for vid in by_vendor.keys():
+                reindex_vendor_faces(conn, vid)
             reset_sequence("faces")
         except Exception:
             pass
@@ -1101,8 +1192,8 @@ def delete_face_by_id(person_id):
         deleted_faces = c.rowcount
 
         # 3. Re-index remaining faces for this vendor
-        if deleted_faces > 0 and deleted_display_id is not None and target_vendor_id is not None:
-            c.execute("UPDATE faces SET display_id = display_id - 1 WHERE vendor_id = ? AND display_id > ?", (target_vendor_id, deleted_display_id))
+        if deleted_faces > 0 and target_vendor_id is not None:
+            reindex_vendor_faces(conn, target_vendor_id)
 
         conn.commit()
         

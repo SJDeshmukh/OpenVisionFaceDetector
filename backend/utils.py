@@ -40,16 +40,36 @@ def _now_ts():
 def parse_db_date(val):
     if not val:
         return None
-    # Ensure datetime is handled before date (datetime is a subclass of date)
     if isinstance(val, datetime):
         return val.date()
     if isinstance(val, date):
         return val
     if isinstance(val, str):
+        val = val.strip().replace('T', ' ')
+        fmts = [
+            '%Y-%m-%d', '%d/%m/%Y', '%Y/%m/%d',
+            '%a, %d %b %Y %H:%M:%S %Z',
+            '%a, %d %b %Y %H:%M:%S',
+            '%d %b %Y', '%b %d, %Y',
+            '%a, %d %b %Y'
+        ]
+        for fmt in fmts:
+            try:
+                return datetime.strptime(val, fmt).date()
+            except Exception:
+                pass
+            if ' ' in val:
+                try:
+                    return datetime.strptime(val.split(' ')[0], fmt).date()
+                except Exception:
+                    pass
+        
+        # Final fallback for HTTP/RFC formats
         try:
-            return datetime.strptime(val.split(' ')[0], '%Y-%m-%d').date()
+            from email.utils import parsedate_to_datetime
+            return parsedate_to_datetime(val).date()
         except Exception:
-            return None
+            pass
     return None
 
 def parse_db_datetime(val):
@@ -59,14 +79,19 @@ def parse_db_datetime(val):
     if isinstance(val, date):
         return datetime.combine(val, datetime.min.time())
     if isinstance(val, str):
-        # Standard SQLite/Postgres strings
-        # Handle ISO T separator or space
-        val_clean = val.replace('T', ' ')
-        for fmt in ('%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d'):
+        val_clean = val.strip().replace('T', ' ')
+        for fmt in ('%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d', '%a, %d %b %Y %H:%M:%S %Z'):
             try:
                 return datetime.strptime(val_clean, fmt)
-            except ValueError:
+            except Exception:
                 continue
+        
+        # Final fallback for HTTP/RFC formats
+        try:
+            from email.utils import parsedate_to_datetime
+            return parsedate_to_datetime(val_clean)
+        except Exception:
+            pass
     return None
 
 
@@ -205,8 +230,16 @@ def reset_sequence(table_name):
         is_pg = getattr(conn, "_is_pg", False)
             
         if is_pg:
-            # Postgres: setval
-            sql = f"SELECT setval(pg_get_serial_sequence('{table_name}', 'id'), COALESCE((SELECT MAX(id) FROM {table_name}), 0))"
+            # Postgres: setval(seq, val, is_called)
+            # If table is empty, set val=1, is_called=false so nextval returns 1
+            # If table has max(id)=N, set val=N, is_called=true so nextval returns N+1
+            sql = f"""
+                SELECT setval(
+                    pg_get_serial_sequence('{table_name}', 'id'), 
+                    COALESCE((SELECT MAX(id) FROM {table_name}), 1), 
+                    EXISTS (SELECT 1 FROM {table_name})
+                )
+            """
             _run(c, sql)
         else:
             # SQLite: UPDATE sqlite_sequence

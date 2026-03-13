@@ -20,6 +20,7 @@ except Exception:
 
 # Import from services
 from services.auth_service import verify_token, extract_token, hash_password, verify_password
+from services.restoration_service import run_restore
 
 # Authentication decorators - these might be defined in app.py, so we will import them locally or they might need to be resolved.
 def super_admin_required(f):
@@ -857,8 +858,12 @@ def import_employees(vendor_id):
             shift = row.get("shift")
             daily_wage = float(row.get("daily_wage") or 0)
             custom_data = row.get("custom_data")
-            _run(c, """INSERT INTO faces (name, phone, department, designation, shift, daily_wage, vendor_id, custom_data)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""", (name, phone, department, designation, shift, daily_wage, vendor_id, custom_data))
+            # Get next display_id for this vendor
+            c.execute("SELECT COALESCE(MAX(display_id), 0) + 1 FROM faces WHERE vendor_id = ?", (vendor_id,))
+            next_display_id = c.fetchone()[0]
+
+            _run(c, """INSERT INTO faces (name, phone, department, designation, shift, daily_wage, vendor_id, custom_data, display_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", (name, phone, department, designation, shift, daily_wage, vendor_id, custom_data, next_display_id))
             count += 1
         conn.commit()
         log_audit("employees_import", {"count": count}, target_vendor_id=vendor_id)
@@ -888,9 +893,9 @@ def create_vendor():
         frontend_bundle_id = data.get("frontend_bundle_id", "default_attendance")
         backend_service_id = data.get("backend_service_id", "default_api")
         vertical = data.get("vertical")
-        c.execute("""INSERT INTO vendors (company_name, contact_person, phone, email, frontend_bundle_id, backend_service_id) 
-                     VALUES (?, ?, ?, ?, ?, ?)""",
-                  (company_name, data.get("contact_person"), data.get("phone"), data.get("email"), frontend_bundle_id, backend_service_id))
+        c.execute("""INSERT INTO vendors (company_name, contact_person, phone, email, frontend_bundle_id, backend_service_id, attendance_type, retention_days) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                  (company_name, data.get("contact_person"), data.get("phone"), data.get("email"), frontend_bundle_id, backend_service_id, data.get("attendance_type", "total_time"), data.get("retention_days", 90)))
         vendor_id = c.lastrowid
         try:
             c.execute("UPDATE vendors SET web_login_enabled = 1 WHERE id = ?", (vendor_id,))
@@ -1140,9 +1145,14 @@ def update_vendor_subscription(vendor_id):
         # Check if subscription exists (use primary key 'id' for PG/SQLite compatibility)
         c.execute("SELECT id FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
         if not c.fetchone():
-            import json
-            start_date = data.get("start_date") or date.today().isoformat()
-            end_date = data.get("end_date") or (date.today() + timedelta(days=14)).isoformat()
+            from utils import parse_db_date
+            sd_raw = data.get("start_date")
+            ed_raw = data.get("end_date")
+            parsed_sd = parse_db_date(sd_raw)
+            parsed_ed = parse_db_date(ed_raw)
+            
+            start_date = parsed_sd.isoformat() if parsed_sd else (date.today().isoformat())
+            end_date = parsed_ed.isoformat() if parsed_ed else (date.today() + timedelta(days=14)).isoformat()
             max_users = to_int_min(data.get("max_users"), 5, 1)
             max_employees = to_int_min(data.get("max_employees"), 50, 0)
             max_mobile_devices = data.get("max_mobile_devices")
@@ -1164,8 +1174,7 @@ def update_vendor_subscription(vendor_id):
                 features_val = json.dumps(features_val)
             setup_fee = data.get("setup_fee") or 0
             plan_type = data.get("plan_type") or "custom"
-            cols = get_table_columns(conn, "subscriptions")
-            subs_cols = [info[1] for info in c.fetchall()]
+            subs_cols = get_table_columns(conn, "subscriptions")
             cols = ["vendor_id", "plan_type", "start_date", "end_date", "max_users", "max_employees", "max_mobile_devices", "cost_per_user", "cost_per_employee", "setup_fee", "features"]
             vals = [vendor_id, plan_type, start_date, end_date, max_users, max_employees, max_mobile_devices, cost_per_user, cost_per_employee, setup_fee, features_val]
             if "max_web_sessions" in subs_cols:
@@ -1213,6 +1222,13 @@ def update_vendor_subscription(vendor_id):
                     data[field] = to_int_min(data[field], 50, 0)
                 if field == 'max_mobile_devices':
                     data[field] = to_int_min(data[field], data.get('max_users') or 5, 1)
+                
+                if field in ('start_date', 'end_date'):
+                    from utils import parse_db_date
+                    parsed = parse_db_date(data[field])
+                    if parsed:
+                        data[field] = parsed.isoformat()
+
                 query += f"{field} = ?, "
                 params.append(data[field])
         
@@ -1391,7 +1407,7 @@ def update_vendor_details(vendor_id):
         query = "UPDATE vendors SET "
         params = []
         
-        fields = ['company_name', 'contact_person', 'phone', 'email', 'frontend_bundle_id', 'backend_service_id', 'vertical']
+        fields = ['company_name', 'contact_person', 'phone', 'email', 'frontend_bundle_id', 'backend_service_id', 'vertical', 'attendance_type', 'retention_days']
         for field in fields:
             if field in data:
                 query += f"{field} = ?, "
@@ -1499,6 +1515,23 @@ def update_vendor_details(vendor_id):
                           (user_username or f"user_{vendor_id}", hash_password(user_password or "user123"), vendor_id))
 
         conn.commit()
+        
+        # Real-time UI updates
+        try:
+            c.execute("""
+                SELECT s.features 
+                FROM subscriptions s 
+                WHERE s.vendor_id = ?
+            """, (vendor_id,))
+            row = c.fetchone()
+            feats = []
+            if row and row[0]:
+                feats = json.loads(row[0])
+            socketio.emit('features_updated', {'vendor_id': vendor_id, 'features': feats}, room=f"vendor_{vendor_id}")
+            socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
+        except Exception:
+            pass
+
         return jsonify({"success": True})
         
     except sqlite3.IntegrityError:
@@ -2060,8 +2093,12 @@ def restore_vendor():
         _run(c, "SELECT row_json FROM archive_objects WHERE table_name='faces' AND vendor_id = ?", (target_vendor_id,))
         for (row_json,) in c.fetchall():
             f = json.loads(row_json)
-            _run(c, """INSERT INTO faces (name, templates, face_image, phone, department, designation, shift, vendor_id, custom_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                 (f.get("name"), f.get("templates"), f.get("face_image"), f.get("phone"), f.get("department"), f.get("designation"), f.get("shift"), new_vendor_id, f.get("custom_data")))
+            # Get next display_id for this vendor
+            c.execute("SELECT COALESCE(MAX(display_id), 0) + 1 FROM faces WHERE vendor_id = ?", (new_vendor_id,))
+            next_display_id = c.fetchone()[0]
+
+            _run(c, """INSERT INTO faces (name, templates, face_image, phone, department, designation, shift, vendor_id, custom_data, display_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 (f.get("name"), f.get("templates"), f.get("face_image"), f.get("phone"), f.get("department"), f.get("designation"), f.get("shift"), new_vendor_id, f.get("custom_data"), next_display_id))
         conn.commit()
         return jsonify({"success": True, "new_vendor_id": new_vendor_id})
     except Exception as e:
@@ -2189,3 +2226,79 @@ def get_all_employees():
         })
         
     return jsonify({"employees": employees})
+
+
+@admin_bp.route("/archival/run", methods=["POST"])
+@super_admin_required
+def trigger_archival():
+    from services.archival_service import run_archival
+    count = run_archival()
+    return jsonify({"success": True, "archived_count": count})
+
+
+@admin_bp.route("/archival/download", methods=["GET"])
+@super_admin_required
+def download_archival_database():
+    from db_factory import DB_BACKUP_PATH
+    if not os.path.exists(DB_BACKUP_PATH):
+        return jsonify({"error": "No backup database found"}), 404
+    return send_file(DB_BACKUP_PATH, as_attachment=True, download_name="backup_faces.db")
+
+
+@admin_bp.route("/archival/vendors/<int:vendor_id>", methods=["DELETE"])
+@super_admin_required
+def delete_vendor_archive(vendor_id):
+    from db_factory import get_backup_db_connection
+    try:
+        conn = get_backup_db_connection()
+        c = conn.cursor()
+        c.execute("DELETE FROM attendance WHERE vendor_id = ?", (vendor_id,))
+        c.execute("DELETE FROM backup_metadata WHERE vendor_id = ?", (vendor_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True, "message": f"Archived data for vendor {vendor_id} deleted permanently."})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@admin_bp.route("/database/restore", methods=["POST"])
+@super_admin_required
+def restore_database():
+    if 'file' not in request.files:
+        return jsonify({"error": "No file part"}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "No selected file"}), 400
+    
+    if not file.filename.endswith('.db') and not file.filename.endswith('.sqlite'):
+        return jsonify({"error": "Invalid file type. Please upload a .db or .sqlite file"}), 400
+    
+    temp_path = os.path.join("/tmp", f"restore_{secrets.token_hex(8)}.sqlite")
+    try:
+        file.save(temp_path)
+        stats = run_restore(temp_path)
+        log_audit("RESTORE_DATABASE", f"Merged data from {file.filename}")
+        return jsonify({"success": True, "message": "Database restored/merged successfully", "stats": stats})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+@admin_bp.route("/database/backup", methods=["GET"])
+@super_admin_required
+def backup_database():
+    from services.restoration_service import run_backup
+    import secrets
+    import os
+    
+    temp_path = os.path.join("/tmp", f"full_backup_{secrets.token_hex(4)}.db")
+    try:
+        stats = run_backup(temp_path)
+        log_audit("BACKUP_DATABASE", "Generated full system backup")
+        return send_file(temp_path, as_attachment=True, download_name="full_system_backup.db")
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    # Note: We should ideally delete the temp file after sending, 
+    # but send_file doesn't make that easy without a wrapper.
+    # Flask's after_this_request can do it or just let /tmp clean up.

@@ -61,12 +61,12 @@ def get_realtime_engine():
 
 def init_third_party_paths(base_dir: str):
     tp = os.path.join(base_dir, "third_party")
-    # Priority paths for libraries
-    subs = ["BasicSR", "facexlib", "Real-ESRGAN", "GFPGAN"]
-    for sub in subs:
-        p = os.path.join(tp, sub)
-        if os.path.isdir(p) and p not in sys.path:
-            sys.path.insert(0, p)
+    # Priority paths for libraries - DISABLED to favor pip installed versions
+    # subs = ["BasicSR", "facexlib", "Real-ESRGAN", "GFPGAN"]
+    # for sub in subs:
+    #     p = os.path.join(tp, sub)
+    #     if os.path.isdir(p) and p not in sys.path:
+    #         sys.path.insert(0, p)
     
     # Try to verify imports early
     try:
@@ -174,7 +174,7 @@ class GFPGANManager:
             print(f"[GFPGAN] Loaded model: {model_path} on {self._get_device()} with upscale={upscale}", flush=True)
         return self._restorer
 
-    def enhance_crop(self, crop_rgb: np.ndarray, upscale: int = 2, whole: bool = False, fidelity: float = 0.5, landmarks: np.ndarray = None) -> np.ndarray:
+    def enhance_crop(self, crop_rgb: np.ndarray, upscale: int = 2, whole: bool = False, fidelity: float = 0.8, landmarks: np.ndarray = None) -> np.ndarray:
         if crop_rgb is None or crop_rgb.size == 0:
             return crop_rgb
         
@@ -238,6 +238,9 @@ class GFPGANManager:
                             pts[:, 1] = pts[:, 1] * h_new / h_orig
                             
                         cv2.fillConvexPoly(mask, pts, 1.0)
+                        # Expand the mask slightly to include hair/edges
+                        kernel_size = max(3, int(min(h_new, w_new) // 15)) | 1
+                        mask = cv2.dilate(mask, np.ones((kernel_size, kernel_size), np.uint8), iterations=2)
                         # Blur the mask slightly for smooth transition
                         mask = cv2.GaussianBlur(mask, (21, 21), 11)
                         # Expand dimensions for broadcasting
