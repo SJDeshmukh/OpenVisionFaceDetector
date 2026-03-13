@@ -1,0 +1,1 @@
+{"items": [{"id": "5fd3e4013eaf", "name": "ABC Engg", "address": "", "contact_email": "", "subscription_plan": "Basic", "max_students": 0, "max_faculty": 0, "max_sessions_per_month": 0, "ai_threshold": 0.85, "is_active": true, "model_version": "", "gpu_priority": 0, "max_concurrent_sessions": 1, "created_at": 1772613546.483815}]}
