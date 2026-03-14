@@ -92,6 +92,7 @@ class GFPGANManager:
         self._base = os.path.abspath(base_dir)
         self._restorer = None
         self._weights_dir = os.path.join(self._base, "models", "gfpgan")
+        self._last_used = 0
         os.makedirs(self._weights_dir, exist_ok=True)
 
     def _get_device(self) -> str:
@@ -134,6 +135,7 @@ class GFPGANManager:
         return ""
 
     def load(self, upscale: int = 2):
+        self._last_used = time.time()
         # Reload if scale factor changed
         if self._restorer is not None:
             if getattr(self._restorer, 'upscale', 2) == upscale:
@@ -271,6 +273,7 @@ class RealESRGANManager:
         self._weights_dir = os.path.join(self._base, "models", "realesrgan")
         os.makedirs(self._weights_dir, exist_ok=True)
         self._upsampler = None
+        self._last_used = 0
 
     def _ensure_weights(self) -> str:
         dst = os.path.join(self._weights_dir, "RealESRGAN_x2plus.pth")
@@ -333,6 +336,7 @@ class RealESRGANManager:
 
     def upscale(self, rgb: np.ndarray, scale: int = 2) -> np.ndarray:
         if rgb is None or rgb.size == 0: return rgb
+        self._last_used = time.time()
         try:
             if scale <= 1: return rgb
             upsampler = self.load()
@@ -350,6 +354,8 @@ class RealESRGANManager:
 _realesrgan_manager = None
 def get_realesrgan_manager():
     global _realesrgan_manager
+    from utils import LOW_RAM_MODE
+    if LOW_RAM_MODE: _check_and_unload_models()
     if _realesrgan_manager is None:
         _realesrgan_manager = RealESRGANManager(base_dir=os.path.dirname(__file__))
     return _realesrgan_manager
@@ -406,6 +412,7 @@ class FaceEmbedder:
         self._available = None
         self._mode = "arcface"
         self._device = "cpu"
+        self._last_used = 0
 
     def _check_available(self) -> bool:
         if self._available is not None:
@@ -463,6 +470,7 @@ class FaceEmbedder:
     def embed(self, crop_rgb: np.ndarray) -> np.ndarray:
         if crop_rgb is None or crop_rgb.size == 0:
             return np.zeros((0,), dtype=np.float32)
+        self._last_used = time.time()
         m = self._load()
         if m is None:
             return np.zeros((0,), dtype=np.float32)
@@ -525,6 +533,39 @@ _codeformer_manager = None
 _embedder = None
 _retina_det = None
 
+# Unload TTL for LOW_RAM_MODE (5 minutes)
+_UNLOAD_TTL = 300 
+
+def _check_and_unload_models():
+    \"\"\"Release memory by unloading models that haven't been used recently.\"\"\"
+    global _gfpgan_manager, _embedder, _realesrgan_manager, _mesh_engine
+    now = time.time()
+    
+    # Check GFPGAN
+    if _gfpgan_manager and _gfpgan_manager._restorer and (now - _gfpgan_manager._last_used > _UNLOAD_TTL):
+        _gfpgan_manager._restorer = None
+        print(\"[MEM] Unloaded GFPGAN model to free RAM\")
+        
+    # Check Embedder
+    if _embedder and _embedder._model and (now - _embedder._last_used > _UNLOAD_TTL):
+        _embedder._model = None
+        print(\"[MEM] Unloaded FaceEmbedder model to free RAM\")
+
+    # Check RealESRGAN
+    if _realesrgan_manager and _realesrgan_manager._upsampler and (now - _realesrgan_manager._last_used > _UNLOAD_TTL):
+        _realesrgan_manager._upsampler = None
+        print(\"[MEM] Unloaded RealESRGAN model to free RAM\")
+        
+    # Periodic GC if anything was unloaded
+    import gc
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
 def get_detector():
     global _detector
     if _detector is None:
@@ -533,6 +574,8 @@ def get_detector():
 
 def get_gfpgan_manager():
     global _gfpgan_manager
+    from utils import LOW_RAM_MODE
+    if LOW_RAM_MODE: _check_and_unload_models()
     if _gfpgan_manager is None:
         _gfpgan_manager = GFPGANManager(base_dir=os.path.dirname(__file__))
     return _gfpgan_manager

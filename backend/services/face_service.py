@@ -224,14 +224,16 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
                 pass
         if LOW_RAM_MODE:
             try:
-                max_items = int(os.environ.get("EMB_CACHE_MAX_ITEMS", "1000") or "1000")
+                # Lower defaults for 512MB RAM instances
+                max_items = int(os.environ.get("EMB_CACHE_MAX_ITEMS", "200") or "200")
             except Exception:
-                max_items = 1000
+                max_items = 200
             _VENDOR_EMB_CACHE[key]['items'] = _VENDOR_EMB_CACHE[key]['items'][:max_items]
             try:
-                max_vendors = int(os.environ.get("EMB_CACHE_MAX_VENDORS", "300") or "300")
+                # Lower defaults for 512MB RAM instances
+                max_vendors = int(os.environ.get("EMB_CACHE_MAX_VENDORS", "10") or "10")
             except Exception:
-                max_vendors = 300
+                max_vendors = 10
             if len(_VENDOR_EMB_CACHE) > max_vendors:
                 ks = sorted(_VENDOR_EMB_CACHE.items(), key=lambda kv: kv[1].get('ts', 0.0))
                 for kdrop, _ in ks[:-max_vendors]:
