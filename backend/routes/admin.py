@@ -1424,6 +1424,7 @@ def update_vendor_details(vendor_id):
         # Sync Features if frontend_bundle_id is updated
         if 'frontend_bundle_id' in data:
             new_bundle_id = data['frontend_bundle_id']
+            new_features = BUNDLE_FEATURES.get(new_bundle_id, [])
             features_json = json.dumps(new_features)
             
             # Check if subscription exists
