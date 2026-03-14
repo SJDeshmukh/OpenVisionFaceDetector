@@ -268,7 +268,6 @@ def _on_task_retry(request=None, reason=None, einfo=None, **kwargs):
 def process_class_batch_items(batch_id, vendor_id, params):
     from app import _detect_faces_from_bytes, get_db_connection
     import base64
-    import json
     
     conn = get_db_connection()
     c = conn.cursor()
@@ -319,7 +318,6 @@ if celery:
 def refresh_class_batch_items(batch_id, vendor_id, params):
     from app import _detect_faces_from_bytes, get_db_connection
     import base64
-    import json
     conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT id, image_b64 FROM class_batch_items WHERE batch_id = ? ORDER BY seq ASC", (batch_id,))
@@ -375,8 +373,7 @@ def detect_faces_task(img_b64, params, vendor_id):
     resp = {"faces": faces, "annotated_b64": annotated_b64}
     if redis_client:
         try:
-            import json as _json
-            redis_client.setex(cache_key, cache_ttl, _json.dumps(resp))
+            redis_client.setex(cache_key, cache_ttl, json.dumps(resp))
         except Exception:
             pass
     return resp

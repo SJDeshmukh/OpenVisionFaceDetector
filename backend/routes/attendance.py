@@ -1051,7 +1051,6 @@ def export_report():
         for row in rows:
             if dynamic_filters:
                 try:
-                    import json
                     cd = json.loads(row['custom_data']) if row['custom_data'] else {}
                 except Exception:
                     cd = {}
@@ -1133,7 +1132,6 @@ def export_report():
     for row in rows:
         if dynamic_filters:
             try:
-                import json
                 cd = json.loads(row['custom_data']) if row['custom_data'] else {}
             except Exception:
                 cd = {}
@@ -1177,7 +1175,6 @@ def export_report():
         custom_data = {}
         if row['custom_data']:
             try:
-                import json
                 custom_data = json.loads(row['custom_data'])
             except:
                 pass
@@ -2186,7 +2183,6 @@ def public_attendance_by_student():
     try:
         c.execute("SELECT id, vendor_id, name, custom_data FROM faces WHERE custom_data IS NOT NULL")
         rows = c.fetchall()
-        import json
         person_id = None
         vendor_id = None
         for r in rows:
@@ -2257,7 +2253,6 @@ def public_register_token():
         if not vendor_id:
             c.execute("SELECT vendor_id, custom_data FROM faces WHERE custom_data IS NOT NULL")
             rows = c.fetchall()
-            import json
             for r in rows:
                 try:
                     cd = json.loads(r[1])
@@ -2302,7 +2297,6 @@ def get_attendance_summary():
     company_row = c.fetchone()
     
     if company_row and company_row['live_timetable']:
-        import json
         try:
             timetable = json.loads(company_row['live_timetable'])
         except:

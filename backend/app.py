@@ -494,7 +494,6 @@ def handle_join_student_number(data=None):
                 if not vendor_id:
                     c.execute("SELECT vendor_id, custom_data FROM faces WHERE custom_data IS NOT NULL")
                     rows = c.fetchall()
-                    import json
                     for r in rows:
                         try:
                             cd = json.loads(r[1])
@@ -586,7 +585,6 @@ def ensure_vendor_companies_and_subscription_features():
             pass
         return
     try:
-        import json
         from datetime import date
         today = date.today().isoformat()
         far_future = "2099-12-31"
@@ -1613,7 +1611,6 @@ def require_feature(feature_name):
                 has_feature = False
                 if row and row[0]:
                     try:
-                        import json
                         features = json.loads(row[0])
                         if feature_name in features:
                             has_feature = True

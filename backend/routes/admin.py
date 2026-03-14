@@ -676,7 +676,6 @@ def get_vendors():
         # Calculate status based on subscription
         if v.get('features'):
             try:
-                import json
                 v['features'] = json.loads(v['features'])
             except:
                 v['features'] = []
@@ -728,8 +727,7 @@ def set_vendor_registration_config(vendor_id):
     try:
         # Validate JSON array
         if isinstance(config, str):
-            import json as _json
-            config = _json.loads(config)
+            config = json.loads(config)
         if not isinstance(config, list):
             return jsonify({"error": "registration_config must be a list"}), 400
         conn = get_db_connection()
@@ -960,7 +958,6 @@ def create_vendor():
                 features = data.get("features")
                 if features is None:
                     features = BUNDLE_FEATURES.get(frontend_bundle_id, [])
-                import json
                 features_json = json.dumps(features)
                 # Note: c2 is a cursor, but get_table_columns needs a connection
                 # We can use the connection associated with c2 if possible, or just pass conn
@@ -1192,7 +1189,6 @@ def update_vendor_subscription(vendor_id):
         
         # Handle aliases or logic
         if 'features' in data:
-            import json
             query += "features = ?, "
             features_val = data['features']
             if isinstance(features_val, list):
@@ -1416,8 +1412,6 @@ def update_vendor_details(vendor_id):
         # Sync Features if frontend_bundle_id is updated
         if 'frontend_bundle_id' in data:
             new_bundle_id = data['frontend_bundle_id']
-            new_features = BUNDLE_FEATURES.get(new_bundle_id, [])
-            import json
             features_json = json.dumps(new_features)
             
             # Check if subscription exists
@@ -1719,7 +1713,6 @@ def generate_invoice(vendor_id):
         
     total_amount = monthly_cost + setup_fee
     
-    import json
     details = {
         "max_employees": max_employees_count,
         "cost_per_employee": cost_per_employee,
@@ -1779,7 +1772,6 @@ def update_invoice_status(invoice_id):
         c.execute("SELECT details, vendor_id FROM invoices WHERE id = ?", (invoice_id,))
         invoice = c.fetchone()
         if invoice:
-            import json
             details = json.loads(invoice['details'])
             if details.get('setup_fee', 0) > 0:
                 c.execute("UPDATE subscriptions SET setup_fee_paid = 1 WHERE vendor_id = ?", (invoice['vendor_id'],))

@@ -445,7 +445,6 @@ def vendor_has_feature(vendor_id, feature_name):
             raw = row['features'] if isinstance(row, dict) else row[0]
             if not raw:
                 return False
-            import json
             try:
                 features = json.loads(raw) if isinstance(raw, str) else list(raw)
             except Exception:

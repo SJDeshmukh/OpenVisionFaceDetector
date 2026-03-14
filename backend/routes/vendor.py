@@ -417,8 +417,8 @@ def update_company_settings(company_id):
             has_shifts = False
             if sub_row and sub_row[0]:
                 try:
-                    import json
-                    feats = json.loads(sub_row[0])
+                    features_str = sub_row[0]
+                    feats = json.loads(features_str) if features_str else []
                     if "shifts" in feats:
                         has_shifts = True
                 except:
@@ -428,7 +428,6 @@ def update_company_settings(company_id):
                 conn.close()
                 return jsonify({"error": "Feature 'shifts' is not enabled for your plan."}), 403
 
-        import json
         if isinstance(shifts, list):
             shifts = json.dumps(shifts)
         c.execute("UPDATE companies SET shifts = ? WHERE id = ?", (shifts, company_id))
@@ -470,7 +469,6 @@ def get_company_details(company_id):
     conn.close()
     
     data = dict(row)
-    import json
     for key in ['shifts', 'draft_timetable', 'live_timetable']:
         if data.get(key):
             try:
@@ -510,7 +508,6 @@ def update_draft_timetable(company_id):
         conn.close()
         return jsonify({"error": "draft_timetable is required"}), 400
 
-    import json
     if isinstance(draft_timetable, list):
         draft_timetable = json.dumps(draft_timetable)
 
