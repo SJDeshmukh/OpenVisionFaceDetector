@@ -82,4 +82,7 @@ dependencies {
         exclude group: 'org.json', module: 'json'
     }
     implementation 'androidx.work:work-runtime-ktx:2.9.0'
+    
+    // WebRTC
+    implementation "io.getstream:stream-webrtc-android:1.3.10"
 }

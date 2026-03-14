@@ -427,6 +427,24 @@ def handle_stream_frame(data=None):
     except Exception as e:
         return {'error': str(e)}, 500
 
+@socketio.on('webrtc_signal')
+def handle_webrtc_signal(data=None):
+    """Relays WebRTC signaling messages (offers, answers, candidates) to the appropriate room."""
+    try:
+        if not data or not isinstance(data, dict):
+            return {'error': 'invalid payload'}, 400
+            
+        target_room = data.get('target_room')
+        if not target_room:
+             return {'error': 'target_room required'}, 400
+             
+        # Relay the payload to the target room
+        # The payload contains 'type' (offer/answer/candidate) and 'signal' (SDP/candidate data)
+        socketio.emit('webrtc_signal', data, room=target_room)
+        return {'status': 'ok'}
+    except Exception as e:
+        return {'error': str(e)}, 500
+
 @socketio.on('join_parent')
 def handle_join_parent(data=None):
     try:

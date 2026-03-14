@@ -134,6 +134,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     private long lastStreamTime = 0L;
     private int frameCounter = 0;
     private boolean highPerformanceMode = false;
+    private WebRTCManager webrtcManager;
 
     @Nullable
     @Override
@@ -172,6 +173,12 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                     } catch (Exception ignored) {}
                 });
                 mSocket.connect();
+
+                // WebRTC Signaling initialization
+                String deviceId = Settings.Secure.getString(requireContext().getContentResolver(), Settings.Secure.ANDROID_ID);
+                int vendorId = sharedPref.getInt("vendor_id", 0);
+                webrtcManager = new WebRTCManager(requireContext().getApplicationContext(), mSocket, vendorId, deviceId);
+
             } catch (Exception e) {
                 e.printStackTrace();
             }
@@ -282,6 +289,10 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     @Override
     public void onDestroy() {
         super.onDestroy();
+        if (webrtcManager != null) {
+            webrtcManager.dispose();
+            webrtcManager = null;
+        }
         if (mSocket != null) {
             mSocket.disconnect();
             mSocket.off();
@@ -707,37 +718,9 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     }
 
     private void sendStreamFrame(Bitmap originalBitmap) {
-        Context context = getContext();
-        if (context == null || mSocket == null || !mSocket.connected()) return;
-
-        new Thread(() -> {
-            try {
-                // Resize to reduce bandwidth (e.g., width 320px)
-                int width = 320;
-                int height = (int) (originalBitmap.getHeight() * ((float) width / originalBitmap.getWidth()));
-                Bitmap scaled = Bitmap.createScaledBitmap(originalBitmap, width, height, false);
-
-                ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
-                scaled.compress(Bitmap.CompressFormat.JPEG, 60, byteArrayOutputStream);
-                byte[] byteArray = byteArrayOutputStream.toByteArray();
-                String encoded = Base64.encodeToString(byteArray, Base64.NO_WRAP);
-                String base64Image = "data:image/jpeg;base64," + encoded;
-
-                String deviceId = Settings.Secure.getString(context.getContentResolver(), Settings.Secure.ANDROID_ID);
-                int vendorId = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE).getInt("vendor_id", 0);
-                String deviceName = "Mobile " + deviceId.substring(0, 8);
-
-                JSONObject data = new JSONObject();
-                data.put("image", base64Image);
-                data.put("vendor_id", vendorId);
-                data.put("device_id", deviceId);
-                data.put("device_name", deviceName);
-                mSocket.emit("stream_frame", data);
-
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        }).start();
+        if (webrtcManager != null) {
+            webrtcManager.onNewFrame(originalBitmap);
+        }
     }
 
     @OptIn(markerClass = ExperimentalGetImage.class)
