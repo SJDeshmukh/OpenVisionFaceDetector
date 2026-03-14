@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 auth_bp = Blueprint('auth_bp', __name__)
 
-@auth_bp.route("/login", methods=["POST"])
+@auth_bp.route("/auth/login", methods=["POST"])
 def login():
     from app import get_db_connection, socketio, is_testing, ALL_FEATURES
     data = request.json or {}
@@ -349,7 +349,7 @@ def login():
     else:
         return jsonify({"error": "Invalid credentials"}), 401
 
-@auth_bp.route("/register", methods=["POST"])
+@auth_bp.route("/auth/register", methods=["POST"])
 def register_user():
     from app import get_db_connection, socketio, is_testing, ALL_FEATURES
     caller_vendor_id, error = authenticate_vendor_access()
@@ -907,7 +907,7 @@ def parent_select_student():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@auth_bp.route("/logout", methods=["POST"])
+@auth_bp.route("/auth/logout", methods=["POST"])
 def logout():
     from app import get_db_connection, socketio, is_testing, ALL_FEATURES
     # Attempt to get token
