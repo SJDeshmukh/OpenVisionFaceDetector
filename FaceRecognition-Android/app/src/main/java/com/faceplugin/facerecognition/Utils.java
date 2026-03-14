@@ -127,6 +127,7 @@ public class Utils {
             e.printStackTrace();
         }
         return null;
+    }
 
     public static float getBatteryLevel(Context context) {
         try {
