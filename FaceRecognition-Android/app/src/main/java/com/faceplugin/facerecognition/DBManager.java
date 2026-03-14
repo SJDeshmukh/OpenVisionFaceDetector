@@ -158,6 +158,10 @@ public class DBManager extends SQLiteOpenHelper {
             }
         }
 
+        if (face == null || face.isRecycled()) {
+            return;
+        }
+
         ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
         face.compress(Bitmap.CompressFormat.PNG, 100, byteArrayOutputStream);
         byte[] faceJpg = byteArrayOutputStream.toByteArray();
@@ -382,8 +386,16 @@ public class DBManager extends SQLiteOpenHelper {
 
         while(res.isAfterLast() == false){
             String name = res.getString(res.getColumnIndexOrThrow("name"));
-            byte[] faceJpg = res.getBlob(res.getColumnIndexOrThrow("face"));
-            byte[] templates = res.getBlob(res.getColumnIndexOrThrow("templates"));
+            byte[] faceJpg = null;
+            try { faceJpg = res.getBlob(res.getColumnIndexOrThrow("face")); } catch (Exception ignored) {}
+            
+            byte[] templates = null;
+            try { templates = res.getBlob(res.getColumnIndexOrThrow("templates")); } catch (Exception ignored) {}
+            
+            if (faceJpg == null || templates == null) {
+                res.moveToNext();
+                continue;
+            }
             
             String localUid = "";
             int localUidIdx = res.getColumnIndex("local_uid");
@@ -429,7 +441,15 @@ public class DBManager extends SQLiteOpenHelper {
             int syncedIdx = res.getColumnIndex("synced");
             if (syncedIdx != -1) synced = res.getInt(syncedIdx) == 1;
 
-            Bitmap face = BitmapFactory.decodeByteArray(faceJpg, 0, faceJpg.length);
+            Bitmap face = null;
+            try {
+                face = BitmapFactory.decodeByteArray(faceJpg, 0, faceJpg.length);
+            } catch (Exception ignored) {}
+
+            if (face == null) {
+                res.moveToNext();
+                continue;
+            }
 
             Person person = new Person(localUid, id, name, face, templates, phone, department, designation, shift, customData);
             person.synced = synced;

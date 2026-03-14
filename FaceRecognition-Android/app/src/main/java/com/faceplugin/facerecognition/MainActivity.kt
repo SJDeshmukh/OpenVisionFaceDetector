@@ -107,7 +107,7 @@ class MainActivity : AppCompatActivity() {
 
         // Initialize FaceSDK
         android.util.Log.e("AppCrash", "Initializing FaceSDK")
-        var ret = FaceSDK.setActivation(
+        var ret = FaceSDKWrapper.setActivation(
             "Fqk7LKLbzfSCBor1Oidf0+aPu7OsAJgjxU5m6EQMP3WQ4JZ0Rt44C8T7auT27jjx9iwYmG/8l3TB\n" +
                     "9MBZuaQKCKMiBvwu+JGfbyrQPrs0vyunAZplg0qUm3MUjz/ko1oJNDzh90jOvsdy8C+SGFWgLULQ\n" +
                     "rA6K0dipo5B0v8uPXHkGliNVRuxdKg86iaGHpVzE9V+oqecdXqiuJyRloIqC+vWEYObQkJAocnwR\n" +
@@ -116,7 +116,7 @@ class MainActivity : AppCompatActivity() {
         )
 
         if (ret == FaceSDK.SDK_SUCCESS) {
-            ret = FaceSDK.init(assets)
+            ret = FaceSDKWrapper.init(assets)
         }
 
         if (ret != FaceSDK.SDK_SUCCESS) {

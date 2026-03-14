@@ -44,6 +44,12 @@ public class FaceView extends View {
     private List<FaceBox> faceBoxes;
     private String recognizedName = null;
     private List<String> recognizedNames;
+    private boolean meshEnabled = true;
+
+    public void setMeshEnabled(boolean enabled) {
+        this.meshEnabled = enabled;
+        invalidate();
+    }
 
     private static final int[] LANDMARK_EDGES_68 = new int[] {
             0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 15, 15, 16,
@@ -268,7 +274,7 @@ public class FaceView extends View {
                         canvas.drawRect(rect, realPaint);
                     }
 
-                    if (faceBox.landmarks_68 != null && faceBox.landmarks_68.length >= 136) {
+                    if (meshEnabled && faceBox.landmarks_68 != null && faceBox.landmarks_68.length >= 136) {
                         int edgeCount = LANDMARK_EDGES_68.length / 2;
                         for (int e = 0; e < edgeCount; e++) {
                             int a = LANDMARK_EDGES_68[e * 2];

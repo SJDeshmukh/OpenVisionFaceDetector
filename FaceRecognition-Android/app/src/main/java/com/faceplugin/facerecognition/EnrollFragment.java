@@ -255,7 +255,7 @@ public class EnrollFragment extends Fragment {
 
     private void processImage(Bitmap bitmap) {
         // Run Face Detection
-        List<FaceBox> faceBoxes = FaceSDK.faceDetection(bitmap, null);
+        List<FaceBox> faceBoxes = FaceSDKWrapper.INSTANCE.faceDetection(bitmap, null);
 
         if (faceBoxes == null || faceBoxes.isEmpty()) {
             Toast.makeText(getContext(), getString(R.string.no_face_detected), Toast.LENGTH_SHORT).show();
@@ -264,7 +264,12 @@ public class EnrollFragment extends Fragment {
         } else {
             FaceBox faceBox = faceBoxes.get(0);
             Bitmap faceImage = Utils.cropFace(bitmap, faceBox);
-            byte[] templates = FaceSDK.templateExtraction(bitmap, faceBox);
+            byte[] templates = FaceSDKWrapper.INSTANCE.templateExtraction(bitmap, faceBox);
+            
+            if (templates == null) {
+                Toast.makeText(getContext(), "Failed to extract face template", Toast.LENGTH_SHORT).show();
+                return;
+            }
 
             String name = etName.getText().toString().trim();
             if (name.isEmpty()) {
@@ -279,7 +284,7 @@ public class EnrollFragment extends Fragment {
             float maxSimilarity = 0f;
             for (Person p : DBManager.personList) {
                 try {
-                    float s = FaceSDK.similarityCalculation(templates, p.templates);
+                    float s = FaceSDKWrapper.INSTANCE.similarityCalculation(templates, p.templates);
                     if (s > maxSimilarity) maxSimilarity = s;
                 } catch (Exception ignored) {}
             }

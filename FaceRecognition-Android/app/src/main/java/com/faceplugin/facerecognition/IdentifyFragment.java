@@ -130,8 +130,10 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     private static final int UNKNOWN_THRESHOLD = 3;
 
     private String lastProcessedPersonId = null;
-    private long lastStreamTime = 0;
-    private long resumeTime = 0;
+    private long resumeTime = 0L;
+    private long lastStreamTime = 0L;
+    private int frameCounter = 0;
+    private boolean highPerformanceMode = false;
 
     @Nullable
     @Override
@@ -202,6 +204,11 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             requestPermissions(new String[]{Manifest.permission.CAMERA}, 1);
         } else {
             viewFinder.post(this::setUpCamera);
+        }
+
+        highPerformanceMode = SettingsActivity.isHighPerformanceMode(requireContext());
+        if (faceView != null) {
+            faceView.setMeshEnabled(!highPerformanceMode);
         }
 
         return view;
@@ -576,13 +583,15 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     private void showVerifyOverlay() {
         if (getActivity() == null) return;
         getActivity().runOnUiThread(() -> {
-            if (ivStatusOverlay != null) {
+            if (ivStatusOverlay != null && isAdded()) {
                 ivStatusOverlay.setImageResource(R.drawable.ic_check_in_success);
                 ivStatusOverlay.clearColorFilter();
                 ivStatusOverlay.setVisibility(View.VISIBLE);
                 ivStatusOverlay.setAlpha(1f);
                 ivStatusOverlay.animate().alpha(0f).setDuration(800).withEndAction(() -> {
-                    ivStatusOverlay.setVisibility(View.GONE);
+                    if (ivStatusOverlay != null) {
+                        ivStatusOverlay.setVisibility(View.GONE);
+                    }
                 }).start();
             }
             if (tvStatusOverlay != null) {
@@ -755,10 +764,12 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             uBuffer.get(nv21, ySize + vSize, uSize);
 
             int cameraMode = 7;
-            if (SettingsActivity.getCameraLens(requireContext()) == CameraSelector.LENS_FACING_BACK) {
-                cameraMode = 6;
-            }
-            Bitmap bitmap = FaceSDK.yuv2Bitmap(nv21, image.getWidth(), image.getHeight(), cameraMode);
+            try {
+                if (SettingsActivity.getCameraLens(requireContext()) == CameraSelector.LENS_FACING_BACK) {
+                    cameraMode = 6;
+                }
+            } catch (Exception ignored) {}
+            Bitmap bitmap = FaceSDKWrapper.INSTANCE.yuv2Bitmap(nv21, image.getWidth(), image.getHeight(), cameraMode);
 
             // --- Streaming Logic ---
             long currentTime = System.currentTimeMillis();
@@ -776,8 +787,10 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
 
             FaceDetectionParam faceDetectionParam = new FaceDetectionParam();
             faceDetectionParam.check_liveness = true;
-            faceDetectionParam.check_liveness_level = SettingsActivity.getLivenessLevel(requireContext());
-            List<FaceBox> faceBoxes = FaceSDK.faceDetection(bitmap, faceDetectionParam);
+            try {
+                faceDetectionParam.check_liveness_level = SettingsActivity.getLivenessLevel(requireContext());
+            } catch (Exception ignored) {}
+            List<FaceBox> faceBoxes = FaceSDKWrapper.INSTANCE.faceDetection(bitmap, faceDetectionParam);
 
             if (getActivity() != null) {
                 getActivity().runOnUiThread(() -> {
@@ -814,9 +827,21 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 });
             }
 
+            // --- Performance Optimization: Frame Skipping ---
+            frameCounter++;
+            if (highPerformanceMode && frameCounter % 3 != 0 && faceBoxes.size() > 0) {
+                imageProxy.close();
+                return;
+            }
+            // ------------------------------------------------
+
             if (faceBoxes.size() > 0) {
-                float livenessThreshold = SettingsActivity.getLivenessThreshold(requireContext());
-                float identifyThreshold = SettingsActivity.getIdentifyThreshold(requireContext());
+                float livenessThreshold = 0.8f;
+                float identifyThreshold = 0.8f;
+                try {
+                    livenessThreshold = SettingsActivity.getLivenessThreshold(requireContext());
+                    identifyThreshold = SettingsActivity.getIdentifyThreshold(requireContext());
+                } catch (Exception ignored) {}
                 List<String> namesForBoxes = new java.util.ArrayList<>();
                 float bestSimilarity = 0f;
                 Person bestPerson = null;
@@ -829,15 +854,17 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                     String nameForBox = "Unknown";
 
                     if (faceBox.liveness > livenessThreshold) {
-                        byte[] templates = FaceSDK.templateExtraction(bitmap, faceBox);
+                        byte[] templates = FaceSDKWrapper.INSTANCE.templateExtraction(bitmap, faceBox);
 
                         float maxSimilarityForBox = 0f;
                         Person bestForBox = null;
-                        for (Person person : DBManager.personList) {
-                            float similarity = FaceSDK.similarityCalculation(templates, person.templates);
-                            if (similarity > maxSimilarityForBox) {
-                                maxSimilarityForBox = similarity;
-                                bestForBox = person;
+                        if (templates != null) {
+                            for (Person person : DBManager.personList) {
+                                float similarity = FaceSDKWrapper.INSTANCE.similarityCalculation(templates, person.templates);
+                                if (similarity > maxSimilarityForBox) {
+                                    maxSimilarityForBox = similarity;
+                                    bestForBox = person;
+                                }
                             }
                         }
 

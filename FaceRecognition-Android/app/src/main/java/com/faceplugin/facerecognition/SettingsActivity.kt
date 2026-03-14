@@ -91,6 +91,12 @@ class SettingsActivity : AppCompatActivity() {
             val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
             return sharedPreferences.getString("mouthopen_threshold", SettingsActivity.DEFAULT_MOUTHOPEN_THRESHOLD)!!.toFloat()
         }
+
+        @JvmStatic
+        fun isHighPerformanceMode(context: Context): Boolean {
+            val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
+            return sharedPreferences.getBoolean("high_performance_mode", false)
+        }
     }
 
     lateinit var dbManager: DBManager

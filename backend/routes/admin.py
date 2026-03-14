@@ -1860,6 +1860,7 @@ def system_queues():
 def list_task_events():
     from app import get_db_connection, socketio, is_testing
     from services.auth_service import authenticate_vendor_access
+    from tasks import ensure_task_events_table
     ensure_task_events_table()
     conn = get_db_connection()
     c = conn.cursor()
@@ -1908,6 +1909,7 @@ def list_task_events():
 def purge_task_events():
     from app import get_db_connection, socketio, is_testing
     from services.auth_service import authenticate_vendor_access
+    from tasks import ensure_task_events_table
     ensure_task_events_table()
     conn = get_db_connection()
     c = conn.cursor()
@@ -1941,6 +1943,7 @@ def purge_task_events():
 def jobs_metrics():
     from app import get_db_connection, socketio, is_testing
     from services.auth_service import authenticate_vendor_access
+    from tasks import ensure_task_events_table
     ensure_task_events_table()
     conn = get_db_connection()
     c = conn.cursor()

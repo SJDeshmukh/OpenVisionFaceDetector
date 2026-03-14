@@ -78,6 +78,15 @@
     </PreferenceCategory>
 
     <PreferenceCategory
+        app:title="Performance">
+        <SwitchPreferenceCompat
+            app:defaultValue="false"
+            app:key="high_performance_mode"
+            app:title="High Performance Mode"
+            app:summary="Disables intensive mesh animations for faster identification" />
+    </PreferenceCategory>
+
+    <PreferenceCategory
         app:icon="@drawable/ic_reset"
         app:title="@string/reset">
 
