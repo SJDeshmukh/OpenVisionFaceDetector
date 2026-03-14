@@ -34,7 +34,8 @@ fi
 if [ -z "$REDIS_URL" ] && [ -z "$CELERY_BROKER_URL" ]; then
   echo "No external Redis provided. Starting internal Redis..."
   redis-server --daemonize yes --port 6379 --loglevel warning
-  echo "Redis started on port 6379."
+  export REDIS_URL="redis://127.0.0.1:6379/0"
+  echo "Redis started on port 6379 and REDIS_URL exported."
 else
   echo "Using external Redis service."
 fi
