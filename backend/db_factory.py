@@ -71,12 +71,11 @@ class PostgresCursorWrapper:
                 sql_pg += " ON CONFLICT (username) DO NOTHING"
             elif "active_sessions" in sql_pg.lower():
                 sql_pg += " ON CONFLICT (token) DO NOTHING"
+            elif "subscriptions" in sql_pg.lower():
+                 sql_pg += " ON CONFLICT (vendor_id) DO NOTHING"
             elif "vendors" in sql_pg.lower() and "id" in sql_pg.lower():
                 sql_pg += " ON CONFLICT (id) DO NOTHING"
             else:
-                # Generic fallback if we can't determine the conflict target easily
-                # This is a bit risky but standard for our SQLite-compatibility layer
-                # We'll try to detect the table name and append a generic ON CONFLICT if possible
                 pass
 
         # Handle "INSERT OR REPLACE" -> "INSERT ... ON CONFLICT (...) DO UPDATE SET ..."
@@ -273,7 +272,7 @@ def _init_pg_schema_on_conn(conn):
         "CREATE TABLE IF NOT EXISTS faces (id SERIAL PRIMARY KEY, name TEXT, templates TEXT, face_image TEXT, department TEXT, designation TEXT, phone TEXT, shift TEXT, daily_wage REAL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount REAL DEFAULT 0, vendor_id INTEGER REFERENCES vendors(id), custom_data TEXT, display_id INTEGER)",
         "CREATE TABLE IF NOT EXISTS attendance (id SERIAL PRIMARY KEY, name TEXT, timestamp TIMESTAMP, status TEXT, captured_image TEXT, activity TEXT, is_late INTEGER DEFAULT 0, device_id TEXT, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id))",
         "CREATE TABLE IF NOT EXISTS system_users (username TEXT PRIMARY KEY, password TEXT, role TEXT, vendor_id INTEGER REFERENCES vendors(id))",
-        "CREATE TABLE IF NOT EXISTS subscriptions (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), plan_type TEXT, start_date TIMESTAMP, end_date TIMESTAMP, status TEXT DEFAULT 'active', max_users INTEGER, max_employees INTEGER, cost_per_user REAL, setup_fee REAL, setup_fee_paid INTEGER, features TEXT, max_mobile_devices INTEGER DEFAULT 1, cost_per_employee REAL DEFAULT 0, grace_period_days INTEGER DEFAULT 0, max_web_sessions INTEGER DEFAULT 1)",
+        "CREATE TABLE IF NOT EXISTS subscriptions (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id) UNIQUE, plan_type TEXT, start_date TIMESTAMP, end_date TIMESTAMP, status TEXT DEFAULT 'active', max_users INTEGER, max_employees INTEGER, cost_per_user REAL, setup_fee REAL, setup_fee_paid INTEGER, features TEXT, max_mobile_devices INTEGER DEFAULT 1, cost_per_employee REAL DEFAULT 0, grace_period_days INTEGER DEFAULT 0, max_web_sessions INTEGER DEFAULT 1)",
         "CREATE TABLE IF NOT EXISTS vendor_devices (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), device_id TEXT, device_name TEXT, registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, last_login_at TIMESTAMP, UNIQUE(vendor_id, device_id))",
         "CREATE TABLE IF NOT EXISTS active_sessions (token TEXT PRIMARY KEY, username TEXT, vendor_id INTEGER, device_id TEXT, platform TEXT, last_active TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS invoices (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), amount REAL, status TEXT DEFAULT 'generated', due_date DATE, generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, paid_at TIMESTAMP, invoice_date DATE, details TEXT)",
@@ -300,7 +299,7 @@ def init_sqlite_schema(conn):
         "CREATE TABLE IF NOT EXISTS faces (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, templates TEXT, face_image TEXT, department TEXT, designation TEXT, phone TEXT, shift TEXT, daily_wage REAL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount REAL DEFAULT 0, vendor_id INTEGER, custom_data TEXT, display_id INTEGER)",
         "CREATE TABLE IF NOT EXISTS attendance (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, timestamp DATETIME, status TEXT, captured_image TEXT, activity TEXT, is_late INTEGER DEFAULT 0, device_id TEXT, vendor_id INTEGER, person_id INTEGER)",
         "CREATE TABLE IF NOT EXISTS system_users (username TEXT PRIMARY KEY, password TEXT, role TEXT, vendor_id INTEGER)",
-        "CREATE TABLE IF NOT EXISTS subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, plan_type TEXT, start_date DATETIME, end_date DATETIME, status TEXT DEFAULT 'active', max_users INTEGER, max_employees INTEGER, cost_per_user REAL, setup_fee REAL, setup_fee_paid INTEGER, features TEXT, max_mobile_devices INTEGER DEFAULT 1, cost_per_employee REAL DEFAULT 0, grace_period_days INTEGER DEFAULT 0, max_web_sessions INTEGER DEFAULT 1)",
+        "CREATE TABLE IF NOT EXISTS subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER UNIQUE, plan_type TEXT, start_date DATETIME, end_date DATETIME, status TEXT DEFAULT 'active', max_users INTEGER, max_employees INTEGER, cost_per_user REAL, setup_fee REAL, setup_fee_paid INTEGER, features TEXT, max_mobile_devices INTEGER DEFAULT 1, cost_per_employee REAL DEFAULT 0, grace_period_days INTEGER DEFAULT 0, max_web_sessions INTEGER DEFAULT 1)",
         "CREATE TABLE IF NOT EXISTS vendor_devices (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, device_id TEXT, device_name TEXT, registered_at DATETIME DEFAULT CURRENT_TIMESTAMP, last_login_at DATETIME, UNIQUE(vendor_id, device_id))",
         "CREATE TABLE IF NOT EXISTS active_sessions (token TEXT PRIMARY KEY, username TEXT, vendor_id INTEGER, device_id TEXT, platform TEXT, last_active DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS invoices (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, amount REAL, status TEXT DEFAULT 'generated', due_date DATE, generated_at DATETIME DEFAULT CURRENT_TIMESTAMP, paid_at DATETIME, invoice_date DATE, details TEXT)",

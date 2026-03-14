@@ -813,6 +813,20 @@ def add_missing_columns():
         
         try:
             c.execute("UPDATE subscriptions SET max_web_sessions = 1 WHERE max_web_sessions IS NULL OR max_web_sessions < 1")
+            
+            # Add UNIQUE constraint if missing in PG
+            if is_pg:
+                # Check if unique_vendor_subscription exists
+                c.execute("""
+                    SELECT count(*) FROM pg_constraint 
+                    WHERE conname = 'unique_vendor_subscription'
+                """)
+                if c.fetchone()[0] == 0:
+                    c.execute("ALTER TABLE subscriptions ADD CONSTRAINT unique_vendor_subscription UNIQUE (vendor_id)")
+            else:
+                # SQLite doesn't support adding constraints easily, but we'll try an index
+                c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_vendor_sub ON subscriptions(vendor_id)")
+            
             conn.commit()
         except Exception:
             if is_pg: conn.rollback()

@@ -52,27 +52,33 @@ if celery:
         cost_per_employee = payload.get("cost_per_employee") or 0
         features = payload.get("features") or BUNDLE_FEATURES.get(frontend_bundle_id, [])
         features_json = json.dumps(features)
-        c2.execute("""INSERT INTO subscriptions (vendor_id, plan_type, start_date, end_date, max_users, max_employees, max_mobile_devices, max_web_sessions, cost_per_user, cost_per_employee, setup_fee, features)
-                      VALUES (?, 'custom', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)""",
-                   (vendor_id, start_date, end_date, max_users, max_employees, max_mobile_devices, max_web_sessions, cost_per_user, cost_per_employee, features_json))
         try:
-            c2.execute("""INSERT INTO system_users (username, password, role, vendor_id)
+            # Use INSERT OR IGNORE for all three to ensure task is re-runnable/robust
+            c2.execute("""INSERT OR IGNORE INTO subscriptions (vendor_id, plan_type, start_date, end_date, max_users, max_employees, max_mobile_devices, max_web_sessions, cost_per_user, cost_per_employee, setup_fee, features)
+                          VALUES (?, 'custom', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)""",
+                       (vendor_id, start_date, end_date, max_users, max_employees, max_mobile_devices, max_web_sessions, cost_per_user, cost_per_employee, features_json))
+            
+            c2.execute("""INSERT OR IGNORE INTO system_users (username, password, role, vendor_id)
                           VALUES (?, ?, 'vendor_admin', ?)""",
                        (admin_username, admin_password, vendor_id))
-        except Exception:
-            pass
-        try:
-            c2.execute("""INSERT INTO system_users (username, password, role, vendor_id)
+            
+            c2.execute("""INSERT OR IGNORE INTO system_users (username, password, role, vendor_id)
                           VALUES (?, ?, 'user', ?)""",
                        (user_username, user_password, vendor_id))
-        except Exception:
-            pass
-        c2.execute("INSERT INTO companies (name, shifts, draft_timetable, live_timetable, vendor_id) VALUES (?, ?, ?, ?, ?)", 
-                   (company_name, '[]', '[]', '[]', vendor_id))
-        conn2.commit()
-        conn2.close()
-        log_audit('create_vendor', details={'company_name': company_name}, target_vendor_id=vendor_id, actor="system")
-        socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
+            
+            c2.execute("INSERT OR IGNORE INTO companies (name, shifts, draft_timetable, live_timetable, vendor_id) VALUES (?, ?, ?, ?, ?)", 
+                       (company_name, '[]', '[]', '[]', vendor_id))
+            
+            conn2.commit()
+            log_audit('create_vendor', details={'company_name': company_name}, target_vendor_id=vendor_id, actor="system")
+            socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
+        except Exception as e:
+            if conn2: conn2.rollback()
+            # Log the error but don't обязательно crash the worker if it's a known issue
+            print(f"Error in process_vendor_creation_task: {e}")
+            raise e
+        finally:
+            if conn2: conn2.close()
 
 def process_delete_vendor_task(vendor_id):
     conn = get_db_connection()
