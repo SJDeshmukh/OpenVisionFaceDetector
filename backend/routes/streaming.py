@@ -121,10 +121,10 @@ def view_stream_frame():
     if not request.args.get('device_id') and not frame_data and vendor_frames:
         frame_data = next(iter(vendor_frames.values()))
 
-    # Check if frame is stale (older than 10 seconds)
+    # Check if frame is stale (older than 30 seconds)
     if frame_data and frame_data.get("timestamp"):
         delta = datetime.now() - frame_data["timestamp"]
-        if delta.total_seconds() > 10:
+        if delta.total_seconds() > 30:
             return jsonify({"status": "offline", "image": None})
             
     if frame_data and frame_data.get("data"):

@@ -721,6 +721,43 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         if (webrtcManager != null) {
             webrtcManager.onNewFrame(originalBitmap);
         }
+
+        // --- Restored: Direct upload for Dashboard visibility ---
+        new Thread(() -> {
+            try {
+                // Resize for speed (e.g., 320px width)
+                int width = 320;
+                int height = (int) (originalBitmap.getHeight() * ((float) width / originalBitmap.getWidth()));
+                Bitmap scaled = Bitmap.createScaledBitmap(originalBitmap, width, height, false);
+
+                ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+                scaled.compress(Bitmap.CompressFormat.JPEG, 60, byteArrayOutputStream);
+                byte[] byteArray = byteArrayOutputStream.toByteArray();
+                String encoded = Base64.encodeToString(byteArray, Base64.NO_WRAP);
+                String base64Image = "data:image/jpeg;base64," + encoded;
+
+                // Get Vendor ID
+                if (getContext() == null) return;
+                android.content.SharedPreferences prefs = getContext().getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE);
+                int vendorId = prefs.getInt("vendor_id", -1);
+                Integer vendorIdObj = (vendorId != -1) ? vendorId : null;
+
+                float batteryLevel = Utils.getBatteryLevel(getContext());
+                String deviceId = android.provider.Settings.Secure.getString(getContext().getContentResolver(), android.provider.Settings.Secure.ANDROID_ID);
+                String deviceName = prefs.getString("device_name", "Mobile Device");
+
+                StreamRequest request = new StreamRequest(base64Image, vendorIdObj, deviceId, deviceName, batteryLevel);
+                RetrofitClient.getService().uploadStreamFrame(request).enqueue(new Callback<Void>() {
+                    @Override
+                    public void onResponse(Call<Void> call, Response<Void> response) {}
+                    @Override
+                    public void onFailure(Call<Void> call, Throwable t) {}
+                });
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }).start();
+        // --------------------------------------------------------
     }
 
     @OptIn(markerClass = ExperimentalGetImage.class)
