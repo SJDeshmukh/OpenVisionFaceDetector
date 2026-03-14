@@ -50,6 +50,20 @@ class MainActivity : AppCompatActivity() {
     private var tvNetworkStatus: TextView? = null
     private val networkStatusInterval: Long = 1500
     private val settingsInterval: Long = 60000
+    private val heartbeatInterval: Long = 120000 // 2 minutes
+
+    private val heartbeatRunnable = object : Runnable {
+        override fun run() {
+            try {
+                if (NetworkUtils.isOnline(applicationContext)) {
+                    sendHeartbeat()
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+            handler.postDelayed(this, heartbeatInterval)
+        }
+    }
 
     private val syncRunnable = object : Runnable {
         override fun run() {
@@ -345,6 +359,8 @@ class MainActivity : AppCompatActivity() {
         handler.post(networkStatusRunnable)
         handler.removeCallbacks(settingsRunnable)
         handler.post(settingsRunnable)
+        handler.removeCallbacks(heartbeatRunnable)
+        handler.post(heartbeatRunnable)
         try {
             fetchCooldownSettings()
         } catch (_: Exception) {}
@@ -392,6 +408,7 @@ class MainActivity : AppCompatActivity() {
         handler.removeCallbacks(syncRunnable) // Stop sync when backgrounded
         handler.removeCallbacks(networkStatusRunnable)
         handler.removeCallbacks(settingsRunnable)
+        handler.removeCallbacks(heartbeatRunnable)
     }
 
     private fun updateNetworkStatusBadge() {
@@ -577,6 +594,34 @@ class MainActivity : AppCompatActivity() {
                 }
                 override fun onFailure(call: Call<SyncResponse>, t: Throwable) {
                     t.printStackTrace()
+                }
+            })
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    private fun sendHeartbeat() {
+        try {
+            val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+            val token = prefs.getString("token", null)
+            if (token.isNullOrBlank()) return
+
+            val battery = Utils.getBatteryLevel(applicationContext)
+            val did = android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.ANDROID_ID)
+            
+            val body = JsonObject()
+            body.addProperty("device_id", did)
+            body.addProperty("battery_level", battery)
+
+            RetrofitClient.getService().sendHeartbeat(body).enqueue(object : Callback<JsonObject> {
+                override fun onResponse(call: Call<JsonObject>, response: Response<JsonObject>) {
+                    if (response.isSuccessful) {
+                        android.util.Log.d("Heartbeat", "Sent successfully: $battery%")
+                    }
+                }
+                override fun onFailure(call: Call<JsonObject>, t: Throwable) {
+                    android.util.Log.e("Heartbeat", "Failed to send heartbeat", t)
                 }
             })
         } catch (e: Exception) {

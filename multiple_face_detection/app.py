@@ -537,24 +537,24 @@ _retina_det = None
 _UNLOAD_TTL = 300 
 
 def _check_and_unload_models():
-    \"\"\"Release memory by unloading models that haven't been used recently.\"\"\"
+    """Release memory by unloading models that haven't been used recently."""
     global _gfpgan_manager, _embedder, _realesrgan_manager, _mesh_engine
     now = time.time()
     
     # Check GFPGAN
     if _gfpgan_manager and _gfpgan_manager._restorer and (now - _gfpgan_manager._last_used > _UNLOAD_TTL):
         _gfpgan_manager._restorer = None
-        print(\"[MEM] Unloaded GFPGAN model to free RAM\")
+        print("[MEM] Unloaded GFPGAN model to free RAM")
         
     # Check Embedder
     if _embedder and _embedder._model and (now - _embedder._last_used > _UNLOAD_TTL):
         _embedder._model = None
-        print(\"[MEM] Unloaded FaceEmbedder model to free RAM\")
+        print("[MEM] Unloaded FaceEmbedder model to free RAM")
 
     # Check RealESRGAN
     if _realesrgan_manager and _realesrgan_manager._upsampler and (now - _realesrgan_manager._last_used > _UNLOAD_TTL):
         _realesrgan_manager._upsampler = None
-        print(\"[MEM] Unloaded RealESRGAN model to free RAM\")
+        print("[MEM] Unloaded RealESRGAN model to free RAM")
         
     # Periodic GC if anything was unloaded
     import gc

@@ -89,4 +89,7 @@ public interface GreetingService {
 
     @GET("api/mobile/device-info")
     Call<com.google.gson.JsonObject> getMobileDeviceInfo();
+
+    @POST("api/mobile/heartbeat")
+    Call<com.google.gson.JsonObject> sendHeartbeat(@Body com.google.gson.JsonObject body);
 }

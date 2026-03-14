@@ -127,5 +127,17 @@ public class Utils {
             e.printStackTrace();
         }
         return null;
+
+    public static float getBatteryLevel(Context context) {
+        try {
+            android.content.Intent bat = context.registerReceiver(null, new android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED));
+            if (bat == null) return -1f;
+            int level = bat.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1);
+            int scale = bat.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, -1);
+            if (level == -1 || scale == -1) return -1f;
+            return ((float) level / (float) scale) * 100.0f;
+        } catch (Exception e) {
+            return -1f;
+        }
     }
 }

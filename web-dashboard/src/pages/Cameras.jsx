@@ -1,14 +1,16 @@
 import { API_URL } from '../config';
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { 
-  Plus, 
-  Wifi, 
-  WifiOff, 
-  RefreshCw, 
-  Settings, 
+import {
+  Plus,
+  Wifi,
+  WifiOff,
+  RefreshCw,
+  Settings,
   Trash2,
-  Video
+  Video,
+  Battery,
+  Activity
 } from 'lucide-react';
 
 const Cameras = () => {
@@ -36,7 +38,8 @@ const Cameras = () => {
         location: 'Terminal',
         status: 'Online',
         lastActive: d.last_seen ? new Date(d.last_seen).toLocaleString() : 'Live Now',
-        ip: d.source_ip || 'Unknown'
+        ip: d.source_ip || 'Unknown',
+        battery: d.battery_level
       })));
     } catch (e) {
       setCameras([]);
@@ -103,19 +106,19 @@ const Cameras = () => {
             {/* Camera Preview Placeholder */}
             <div className="h-48 bg-slate-900 relative flex items-center justify-center overflow-hidden">
               {cam.status === 'Online' ? (
-                 <div className="absolute inset-0 bg-slate-800 flex items-center justify-center">
-                    {/* Live Video Feed */}
-                    {liveImages[cam.device_id] ? (
-                        <img src={liveImages[cam.device_id]} alt="Live Stream" className="w-full h-full object-cover" />
-                    ) : (
-                        <Video size={48} className="text-slate-600" />
-                    )}
-                    
-                    <div className="absolute top-3 left-3 bg-black/60 px-2 py-1 rounded text-xs text-white font-mono flex items-center">
-                      <div className="w-2 h-2 bg-red-500 rounded-full mr-2 animate-pulse"></div>
-                      REC
-                    </div>
-                 </div>
+                <div className="absolute inset-0 bg-slate-800 flex items-center justify-center">
+                  {/* Live Video Feed */}
+                  {liveImages[cam.device_id] ? (
+                    <img src={liveImages[cam.device_id]} alt="Live Stream" className="w-full h-full object-cover" />
+                  ) : (
+                    <Video size={48} className="text-slate-600" />
+                  )}
+
+                  <div className="absolute top-3 left-3 bg-black/60 px-2 py-1 rounded text-xs text-white font-mono flex items-center">
+                    <div className="w-2 h-2 bg-red-500 rounded-full mr-2 animate-pulse"></div>
+                    REC
+                  </div>
+                </div>
               ) : (
                 <div className="text-slate-500 flex flex-col items-center">
                   <WifiOff size={32} className="mb-2" />
@@ -130,17 +133,26 @@ const Cameras = () => {
                   <h3 className="text-lg font-bold text-slate-800">{cam.name}</h3>
                   <p className="text-sm text-slate-500">{cam.location}</p>
                 </div>
-                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                  cam.status === 'Online' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
-                }`}>
+                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${cam.status === 'Online' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+                  }`}>
                   {cam.status === 'Online' ? <Wifi size={12} className="mr-1" /> : <WifiOff size={12} className="mr-1" />}
                   {cam.status}
                 </span>
               </div>
 
               <div className="flex items-center justify-between text-xs text-slate-400 mb-6">
-                <span>IP: {cam.ip}</span>
-                <span>Last active: {cam.lastActive}</span>
+                <div className="flex flex-col gap-1">
+                  <span>IP: {cam.ip}</span>
+                  <span>Last active: {cam.lastActive}</span>
+                </div>
+                {cam.battery !== undefined && cam.battery !== null && (
+                  <div className="flex items-center gap-1 bg-slate-50 px-2 py-1 rounded border border-slate-100">
+                    <Battery size={14} className={cam.battery < 20 ? 'text-red-500' : 'text-slate-400'} />
+                    <span className={`font-mono font-bold ${cam.battery < 20 ? 'text-red-600' : 'text-slate-600'}`}>
+                      {Math.round(cam.battery)}%
+                    </span>
+                  </div>
+                )}
               </div>
 
               <div className="flex space-x-2 border-t border-slate-100 pt-4">

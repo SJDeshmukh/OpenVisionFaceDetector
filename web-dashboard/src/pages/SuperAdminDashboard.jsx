@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { Plus, Check, X, Shield, User, Lock, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight, Search, Filter, ArrowLeft, ArrowRight, Eye, Settings, Trash2, Database, Download, RefreshCw, Layers, Upload } from 'lucide-react';
+import { Plus, Check, X, Shield, User, Lock, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight, Search, Filter, ArrowLeft, ArrowRight, Eye, Settings, Trash2, Database, Download, RefreshCw, Layers, Upload, Activity, Battery, WifiOff } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { API_URL, FRONTEND_BUNDLES, BASE_URL } from '../config';
 import { useSocket } from '../context/SocketContext';
@@ -141,8 +141,8 @@ const SuperAdminDashboard = () => {
 
     socket.on('vendor_updated', (data) => {
       console.log("Vendor Updated:", data);
-      fetchVendors(); // Refresh vendor list (limits, usage)
-      fetchStats(); // Refresh global stats
+      fetchVendors();
+      fetchStats();
       if (selectedVendorForDetail?.id) {
         fetchVendorEmployees(selectedVendorForDetail.id);
         if (detailViewMode === 'employee' && selectedEmployeeForDetail) {
@@ -159,6 +159,17 @@ const SuperAdminDashboard = () => {
       } catch (_) { }
     });
 
+    socket.on('device_health_update', (data) => {
+      console.log("Device Health Update:", data);
+      if (selectedVendorForDetail?.id === data.vendor_id) {
+        setVendorDevices(prev => prev.map(d =>
+          d.device_id === data.device_id
+            ? { ...d, last_active_at: data.last_active_at, battery_level: data.battery_level }
+            : d
+        ));
+      }
+    });
+
     socket.on('active_devices_update', (data) => {
       console.log("Active Devices Update:", data);
       setStats(prev => ({
@@ -167,18 +178,20 @@ const SuperAdminDashboard = () => {
       }));
     });
 
-    socket.on('device_heartbeat', (data) => {
-      // Optional: Toast notification or just rely on periodic stats update
-      // console.log("Device Heartbeat:", data);
-    });
-
     return () => {
       socket.off('connect', doJoin);
       socket.off('vendor_updated');
+      socket.off('device_health_update');
       socket.off('active_devices_update');
-      socket.off('device_heartbeat');
     };
-  }, [socket, selectedVendorForDetail, detailViewMode, selectedEmployeeForDetail, reportDateRange, editingVendor]);
+  }, [socket, selectedVendorForDetail?.id, detailViewMode, selectedEmployeeForDetail, reportDateRange, editingVendor?.id]);
+
+  const isOnline = (lastActiveAt) => {
+    if (!lastActiveAt) return false;
+    const last = new Date(lastActiveAt);
+    const now = new Date();
+    return (now - last) < 5 * 60 * 1000; // 5 minutes threshold
+  };
 
   const fetchStats = async () => {
     try {
@@ -1028,12 +1041,26 @@ const SuperAdminDashboard = () => {
 
       {activeTab === 'overview' && (
         <>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
             <StatCard label="Total Vendors" value={stats.total_vendors} icon={<Shield className="text-blue-600" size={24} />} />
             <StatCard label="Active Vendors" value={stats.active_vendors} icon={<Check className="text-green-600" size={24} />} />
             <StatCard label="Total Employees" value={stats.total_employees} icon={<User className="text-purple-600" size={24} />} />
-            <StatCard label="Active Devices" value={stats.active_streaming_devices} icon={<ToggleLeft className="text-orange-600" size={24} />} />
             <StatCard label="Monthly Revenue" value={`₹${(stats.monthly_recurring_revenue || 0).toLocaleString()}`} icon={<DollarSign className="text-emerald-600" size={24} />} />
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
+            <StatCard label="Live Streams" value={stats.active_streaming_devices} icon={<Activity className="text-orange-600" size={24} />} />
+            <StatCard
+              label="Offline Devices"
+              value={stats.offline_devices}
+              icon={<WifiOff className="text-slate-400" size={24} />}
+              color={stats.offline_devices > 0 ? "text-amber-600" : ""}
+            />
+            <StatCard
+              label="Low Battery"
+              value={stats.low_battery_devices}
+              icon={<Battery className="text-red-500" size={24} />}
+              color={stats.low_battery_devices > 0 ? "text-red-600" : ""}
+            />
           </div>
 
           {/* Filters Section */}
@@ -1439,25 +1466,44 @@ const SuperAdminDashboard = () => {
                         <tr className="text-left text-slate-500">
                           <th className="p-2">Device ID</th>
                           <th className="p-2">Place</th>
+                          <th className="p-2">Status</th>
+                          <th className="p-2">Battery</th>
                           <th className="p-2">Registered</th>
-                          <th className="p-2">Last Login</th>
+                          <th className="p-2">Last Active</th>
                           <th className="p-2"></th>
                         </tr>
                       </thead>
                       <tbody>
                         {vendorDevices.length === 0 ? (
                           <tr>
-                            <td colSpan="5" className="p-3 text-slate-400">No devices discovered yet.</td>
+                            <td colSpan="7" className="p-3 text-slate-400">No devices discovered yet.</td>
                           </tr>
                         ) : vendorDevices.map(d => {
+                          const online = isOnline(d.last_active_at);
                           return (
                             <tr key={d.id || d.device_id} className="border-t border-slate-100">
                               <td className="p-2 font-mono">{d.device_id}</td>
                               <td className="p-2">
                                 <div className="w-full p-2 border rounded text-sm bg-slate-50 text-slate-700">{d.device_name || '-'}</div>
                               </td>
+                              <td className="p-2">
+                                <div className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium w-fit ${online ? 'bg-green-50 text-green-700 border border-green-100' : 'bg-slate-50 text-slate-500 border border-slate-100'}`}>
+                                  <div className={`w-1.5 h-1.5 rounded-full ${online ? 'bg-green-500 animate-pulse' : 'bg-slate-300'}`}></div>
+                                  {online ? 'Online' : 'Offline'}
+                                </div>
+                              </td>
+                              <td className="p-2">
+                                {d.battery_level !== null && d.battery_level !== undefined ? (
+                                  <div className="flex items-center gap-1 text-slate-600">
+                                    <Battery size={14} className={d.battery_level < 20 ? 'text-red-500' : 'text-slate-400'} />
+                                    <span className={d.battery_level < 20 ? 'text-red-600 font-bold' : ''}>{Math.round(d.battery_level)}%</span>
+                                  </div>
+                                ) : '-'}
+                              </td>
                               <td className="p-2 text-slate-500">{d.registered_at || '-'}</td>
-                              <td className="p-2 text-slate-500">{d.last_login_at || '-'}</td>
+                              <td className="p-2 text-slate-500" title={d.last_active_at || d.last_login_at}>
+                                {d.last_active_at ? new Date(d.last_active_at).toLocaleTimeString() : (d.last_login_at || '-')}
+                              </td>
                               <td className="p-2">
                                 <div className="flex items-center gap-2">
                                   <button
@@ -2485,12 +2531,12 @@ const SuperAdminDashboard = () => {
   );
 };
 
-const StatCard = ({ label, value, icon }) => (
+const StatCard = ({ label, value, icon, color }) => (
   <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center gap-4">
     <div className="p-3 bg-slate-50 rounded-lg">{icon}</div>
     <div>
       <div className="text-slate-500 text-sm font-medium">{label}</div>
-      <div className="text-2xl font-bold text-slate-800">{value}</div>
+      <div className={`text-2xl font-bold ${color || 'text-slate-800'}`}>{value}</div>
     </div>
   </div>
 );

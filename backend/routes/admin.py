@@ -585,7 +585,17 @@ def get_admin_stats():
     c.execute("SELECT COUNT(*) FROM vendor_devices")
     total_devices = c.fetchone()[0]
     
-    # 5. Revenue (Simple Sum of monthly costs for active subscriptions)
+    # 5. Device Health Stats
+    # Offline: last_active_at < 5 minutes ago or null
+    five_mins_ago = (datetime.now() - timedelta(minutes=5)).strftime('%Y-%m-%d %H:%M:%S')
+    c.execute("SELECT COUNT(*) FROM vendor_devices WHERE last_active_at < ? OR last_active_at IS NULL", (five_mins_ago,))
+    offline_devices = c.fetchone()[0]
+    
+    # Low Battery: battery_level < 20
+    c.execute("SELECT COUNT(*) FROM vendor_devices WHERE battery_level < 20")
+    low_battery_devices = c.fetchone()[0]
+    
+    # 6. Revenue (Simple Sum of monthly costs for active subscriptions)
     # This is an estimate based on active plans
     c.execute("""
         SELECT SUM(
@@ -614,6 +624,8 @@ def get_admin_stats():
         "active_vendors": active_vendors,
         "total_employees": total_employees,
         "total_devices": total_devices,
+        "offline_devices": offline_devices,
+        "low_battery_devices": low_battery_devices,
         "active_streaming_devices": active_streaming_devices,
         "monthly_recurring_revenue": monthly_revenue
     }

@@ -1020,3 +1020,61 @@ def get_class_threshold():
             pass
         return jsonify({"error": str(e)}), 500
 
+@vendor_bp.route("/mobile/heartbeat", methods=["POST"])
+def mobile_heartbeat():
+    from app import get_db_connection, socketio
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+    
+    data = request.json or {}
+    device_id = data.get("device_id")
+    battery_level = data.get("battery_level")
+    
+    if not device_id:
+        # Fallback: resolve from session if possible
+        auth_header = request.headers.get('Authorization')
+        token = extract_token(auth_header)
+        if token:
+            try:
+                conn_s = get_db_connection()
+                c_s = conn_s.cursor()
+                c_s.execute("SELECT device_id FROM active_sessions WHERE token = ? LIMIT 1", (token,))
+                row = c_s.fetchone()
+                if row:
+                    device_id = row[0] if not hasattr(row, 'keys') else row['device_id']
+                conn_s.close()
+            except Exception:
+                pass
+
+    if not device_id:
+        return jsonify({"error": "device_id required"}), 400
+        
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        now = datetime.now()
+        
+        # Update device health
+        c.execute("""
+            UPDATE vendor_devices 
+            SET last_active_at = ?, battery_level = ? 
+            WHERE vendor_id = ? AND device_id = ?
+        """, (now, battery_level, vendor_id, device_id))
+        
+        conn.commit()
+        
+        # Emit real-time update
+        payload = {
+            "vendor_id": vendor_id,
+            "device_id": device_id,
+            "last_active_at": now.isoformat(),
+            "battery_level": battery_level,
+            "status": "online"
+        }
+        socketio.emit("device_health_update", payload, room=f"vendor_{vendor_id}")
+        socketio.emit("device_health_update", payload, room="super_admin")
+        
+        conn.close()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500

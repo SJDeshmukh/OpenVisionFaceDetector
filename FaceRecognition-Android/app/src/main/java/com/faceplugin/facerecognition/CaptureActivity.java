@@ -520,7 +520,11 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
                 int vendorId = prefs.getInt("vendor_id", -1);
                 Integer vendorIdObj = (vendorId != -1) ? vendorId : null;
 
-                StreamRequest request = new StreamRequest(base64Image, vendorIdObj);
+                float batteryLevel = Utils.getBatteryLevel(context);
+                String deviceId = android.provider.Settings.Secure.getString(context.getContentResolver(), android.provider.Settings.Secure.ANDROID_ID);
+                String deviceName = prefs.getString("device_name", "Mobile Device");
+
+                StreamRequest request = new StreamRequest(base64Image, vendorIdObj, deviceId, deviceName, batteryLevel);
                 RetrofitClient.getService().uploadStreamFrame(request).enqueue(new Callback<Void>() {
                     @Override
                     public void onResponse(Call<Void> call, Response<Void> response) {}

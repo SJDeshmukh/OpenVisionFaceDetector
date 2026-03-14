@@ -74,7 +74,8 @@ def upload_stream_frame():
             "data": image_data,
             "timestamp": datetime.now(),
             "source_ip": request.headers.get('X-Forwarded-For', request.remote_addr),
-            "device_name": data.get("device_name", f"Device {device_id}")
+            "device_name": data.get("device_name", f"Device {device_id}"),
+            "battery_level": data.get("battery_level")
         }
         payload = {
             "vendor_id": vendor_id,
@@ -167,7 +168,8 @@ def list_active_devices():
                         "device_id": did,
                         "device_name": data.get("device_name", f"Device {did}"),
                         "last_seen": data['timestamp'].isoformat(),
-                        "source_ip": data.get("source_ip")
+                        "source_ip": data.get("source_ip"),
+                        "battery_level": data.get("battery_level")
                     })
                     
     return jsonify({"devices": active_list})
