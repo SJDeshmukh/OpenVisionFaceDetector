@@ -8,12 +8,18 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 from celery import Celery
 
-BROKER_URL = os.environ.get("CELERY_BROKER_URL")
-RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND") or os.environ.get("CELERY_BROKER_URL")
+import logging
+logger = logging.getLogger(__name__)
+
+BROKER_URL = os.environ.get("CELERY_BROKER_URL") or os.environ.get("REDIS_URL")
+RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND") or BROKER_URL
 
 def make_celery():
     if not BROKER_URL:
+        print("[CELERY] No BROKER_URL found. Background tasks disabled.")
         return None
+    
+    print(f"[CELERY] Initializing with broker: {BROKER_URL}")
     app = Celery("face_backend", broker=BROKER_URL, backend=RESULT_BACKEND)
     app.conf.update(
         task_serializer="json",

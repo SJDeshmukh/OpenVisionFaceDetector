@@ -96,11 +96,14 @@ def parse_db_datetime(val):
 
 
 # --- Redis Client ---
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+REDIS_URL = os.environ.get("REDIS_URL")
 try:
-    redis_client = redis.from_url(REDIS_URL)
-    # Ping to check if actually available
-    redis_client.ping()
+    if REDIS_URL:
+        redis_client = redis.from_url(REDIS_URL)
+        # Ping to check if actually available
+        redis_client.ping()
+    else:
+        redis_client = None
 except Exception:
     redis_client = None
 
