@@ -90,6 +90,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     private TextToSpeech tts;
 
     private ExecutorService cameraExecutorService;
+    private ExecutorService streamingExecutor;
     private PreviewView viewFinder;
     private Preview preview = null;
     private ImageAnalysis imageAnalyzer = null;
@@ -204,6 +205,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         }
 
         cameraExecutorService = Executors.newFixedThreadPool(1);
+        streamingExecutor = Executors.newSingleThreadExecutor();
         tts = new TextToSpeech(requireContext(), this);
 
         if (ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.CAMERA)
@@ -303,6 +305,9 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         if (cameraExecutorService != null) {
             cameraExecutorService.shutdown();
         }
+        if (streamingExecutor != null) {
+            streamingExecutor.shutdown();
+        }
         if (powerSaveHandler != null) {
             powerSaveHandler.removeCallbacks(powerSaveRunnable);
         }
@@ -345,9 +350,18 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 .setTargetRotation(rotation)
                 .build();
 
+        int targetWidth = PREVIEW_WIDTH;
+        int targetHeight = PREVIEW_HEIGHT;
+        
+        // Efficiency: Reduce resolution for analysis in high performance mode/low-RAM
+        if (highPerformanceMode) {
+            targetWidth = 480;
+            targetHeight = 640;
+        }
+
         imageAnalyzer = new ImageAnalysis.Builder()
                 .setBackpressureStrategy(STRATEGY_KEEP_ONLY_LATEST)
-                .setTargetResolution(new Size(PREVIEW_WIDTH, PREVIEW_HEIGHT))
+                .setTargetResolution(new Size(targetWidth, targetHeight))
                 .setTargetRotation(rotation)
                 .build();
 
@@ -723,10 +737,13 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         }
 
         // --- Restored: Direct upload for Dashboard visibility ---
-        new Thread(() -> {
+        streamingExecutor.execute(() -> {
             try {
-                // Resize for speed (e.g., 320px width)
-                int width = 320;
+                Context context = getContext();
+                if (context == null) return;
+
+                // Resize for speed (e.g., 240px width for low RAM)
+                int width = highPerformanceMode ? 240 : 320;
                 int height = (int) (originalBitmap.getHeight() * ((float) width / originalBitmap.getWidth()));
                 Bitmap scaled = Bitmap.createScaledBitmap(originalBitmap, width, height, false);
 
@@ -736,14 +753,13 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 String encoded = Base64.encodeToString(byteArray, Base64.NO_WRAP);
                 String base64Image = "data:image/jpeg;base64," + encoded;
 
-                // Get Vendor ID
-                if (getContext() == null) return;
-                android.content.SharedPreferences prefs = getContext().getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE);
+                // Get Vendor ID from a safe context
+                android.content.SharedPreferences prefs = context.getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE);
                 int vendorId = prefs.getInt("vendor_id", -1);
                 Integer vendorIdObj = (vendorId != -1) ? vendorId : null;
 
-                float batteryLevel = Utils.getBatteryLevel(getContext());
-                String deviceId = android.provider.Settings.Secure.getString(getContext().getContentResolver(), android.provider.Settings.Secure.ANDROID_ID);
+                float batteryLevel = Utils.getBatteryLevel(context);
+                String deviceId = android.provider.Settings.Secure.getString(context.getContentResolver(), android.provider.Settings.Secure.ANDROID_ID);
                 String deviceName = prefs.getString("device_name", "Mobile Device");
 
                 StreamRequest request = new StreamRequest(base64Image, vendorIdObj, deviceId, deviceName, batteryLevel);
@@ -756,7 +772,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             } catch (Exception e) {
                 e.printStackTrace();
             }
-        }).start();
+        });
         // --------------------------------------------------------
     }
 
