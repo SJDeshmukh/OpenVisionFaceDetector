@@ -1,6 +1,7 @@
 package com.faceplugin.facerecognition;
 
 import android.app.Activity;
+import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -221,7 +222,17 @@ public class EnrollFragment extends Fragment {
     @Override
     public void onResume() {
         super.onResume();
-        fetchRegistrationConfig();
+        if (!isHidden()) {
+            fetchRegistrationConfig();
+        }
+    }
+
+    @Override
+    public void onHiddenChanged(boolean hidden) {
+        super.onHiddenChanged(hidden);
+        if (!hidden) {
+            fetchRegistrationConfig();
+        }
     }
 
     private void applyCachedRegistrationConfigOrDefault() {
@@ -334,11 +345,16 @@ public class EnrollFragment extends Fragment {
                  if (key.equalsIgnoreCase("shift")) shift = value;
             }
             
-            if (!NetworkUtils.INSTANCE.isOnline(requireContext().getApplicationContext())) {
-                Toast.makeText(getContext(), "Internet required for registration", Toast.LENGTH_LONG).show();
-                return;
+            // NEW: Always save locally first with synced=false
+            String localUid = dbManager.insertLocalPerson(name, bitmap, templates, phone, department, designation, shift, dynamicData.toString());
+            dbManager.loadPerson(); // Refresh to make recognizable immediately
+
+            if (NetworkUtils.INSTANCE.isOnline(requireContext().getApplicationContext()) &&
+                    "true".equalsIgnoreCase(requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE).getString("cloud_sync", "true"))) {
+                syncToBackend(name, templates, faceImage, phone, department, designation, shift, dynamicData, localUid);
+            } else {
+                Toast.makeText(getContext(), "Registered locally (offline)", Toast.LENGTH_SHORT).show();
             }
-            syncToBackend(name, templates, faceImage, phone, department, designation, shift, dynamicData);
             
             // Clear inputs
             etName.setText("");
@@ -815,7 +831,7 @@ public class EnrollFragment extends Fragment {
         }
     }
 
-    private void syncToBackend(String name, byte[] templates, Bitmap faceImage, String phone, String department, String designation, String shift, JsonObject dynamicData) {
+    private void syncToBackend(String name, byte[] templates, Bitmap faceImage, String phone, String department, String designation, String shift, JsonObject dynamicData, String localUid) {
         String templatesBase64 = Base64.encodeToString(templates, Base64.NO_WRAP);
         ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
         faceImage.compress(Bitmap.CompressFormat.JPEG, 100, byteArrayOutputStream);
@@ -848,12 +864,7 @@ public class EnrollFragment extends Fragment {
                     } catch (Exception ignored) {}
                     Toast.makeText(getContext(), "Synced to Cloud", Toast.LENGTH_SHORT).show();
                     if (dbManager != null && newId != null && !newId.isEmpty()) {
-                        String phoneVal = phone;
-                        String deptVal = department;
-                        String desigVal = designation;
-                        String shiftVal = shift;
-                        String customDataStr = dynamicData.toString();
-                        dbManager.insertPerson(newId, name, faceImage, templates, phoneVal, deptVal, desigVal, shiftVal, customDataStr, true);
+                        dbManager.updatePersonAfterSyncByLocalUid(localUid, newId);
                         try { dbManager.loadPerson(); } catch (Exception ignored) {}
                     }
                 } else {

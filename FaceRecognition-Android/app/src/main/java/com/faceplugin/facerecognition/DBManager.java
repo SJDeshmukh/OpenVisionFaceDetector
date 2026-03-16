@@ -16,8 +16,6 @@ import java.util.UUID;
 public class DBManager extends SQLiteOpenHelper {
 
     public static ArrayList<Person> personList = new ArrayList<Person>();
-    private static java.util.Map<String, String> personIdCache = new java.util.concurrent.ConcurrentHashMap<>();
-    private static java.util.Map<String, String> attendanceStatusCache = new java.util.concurrent.ConcurrentHashMap<>();
 
     public DBManager(Context context) {
         super(context, "mydb" , null, 12);
@@ -203,10 +201,6 @@ public class DBManager extends SQLiteOpenHelper {
         Person p = new Person(effectiveLocalUid, id, name, face, templates, phone, department, designation, shift, customData);
         p.synced = synced;
         personList.add(p);
-        
-        if (effectiveLocalUid != null) {
-            personIdCache.put(effectiveLocalUid, id != null ? id : "");
-        }
     }
 
     public void insertPerson (String id, String name, Bitmap face, byte[] templates, String phone, String department, String designation, String shift, String customData, boolean synced) {
@@ -288,7 +282,6 @@ public class DBManager extends SQLiteOpenHelper {
             if (p.localUid != null && p.localUid.equals(localUid)) {
                 p.id = id;
                 p.synced = true;
-                personIdCache.put(localUid, id);
                 break;
             }
         }
@@ -386,8 +379,6 @@ public class DBManager extends SQLiteOpenHelper {
 
     public void loadPerson() {
         personList.clear();
-        personIdCache.clear();
-        attendanceStatusCache.clear();
 
         SQLiteDatabase db = this.getReadableDatabase();
         Cursor res =  db.rawQuery( "select rowid, * from person", null );
@@ -572,12 +563,11 @@ public class DBManager extends SQLiteOpenHelper {
     }
 
     public String getLastAttendanceTimestamp(String personId, String localUid, String name) {
-        String key = makeAttendanceStateKey(personId, localUid, name);
-        if (key == null) return null;
-
         SQLiteDatabase db = this.getReadableDatabase();
         Cursor c = null;
         try {
+            String key = makeAttendanceStateKey(personId, localUid, name);
+            if (key == null) return null;
             c = db.rawQuery("select last_timestamp from attendance_state where id_key = ? limit 1", new String[]{key});
             if (c.moveToFirst()) {
                 return c.getString(0);
@@ -592,40 +582,28 @@ public class DBManager extends SQLiteOpenHelper {
     }
 
     public void upsertAttendanceState(String personId, String localUid, String name, String status, String timestamp) {
+        SQLiteDatabase db = this.getWritableDatabase();
         String key = makeAttendanceStateKey(personId, localUid, name);
         if (key == null) return;
-        
-        String normalized = normalizeAttendanceStatus(status);
-        if (normalized != null) {
-            attendanceStatusCache.put(key, normalized);
-        }
-
-        SQLiteDatabase db = this.getWritableDatabase();
         ContentValues cv = new ContentValues();
         cv.put("id_key", key);
         cv.put("person_id", personId);
         cv.put("local_uid", localUid);
         cv.put("name", name);
-        cv.put("last_status", normalized);
+        cv.put("last_status", normalizeAttendanceStatus(status));
         cv.put("last_timestamp", timestamp);
         db.insertWithOnConflict("attendance_state", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
     }
 
     public String getAttendanceStateStatus(String personId, String localUid, String name) {
-        String key = makeAttendanceStateKey(personId, localUid, name);
-        if (key == null) return null;
-        
-        String cached = attendanceStatusCache.get(key);
-        if (cached != null) return cached;
-
         SQLiteDatabase db = this.getReadableDatabase();
         Cursor c = null;
         try {
+            String key = makeAttendanceStateKey(personId, localUid, name);
+            if (key == null) return null;
             c = db.rawQuery("select last_status from attendance_state where id_key = ? limit 1", new String[]{key});
             if (c.moveToFirst()) {
-                String status = normalizeAttendanceStatus(c.getString(0));
-                if (status != null) attendanceStatusCache.put(key, status);
-                return status;
+                return normalizeAttendanceStatus(c.getString(0));
             }
         } catch (Exception ignored) {
         } finally {
@@ -708,11 +686,6 @@ public class DBManager extends SQLiteOpenHelper {
     }
 
     public String resolvePersonId(String localUid) {
-        if (localUid == null || localUid.isEmpty()) return null;
-        
-        String cached = personIdCache.get(localUid);
-        if (cached != null) return cached.isEmpty() ? null : cached;
-
         try {
             SQLiteDatabase db = this.getReadableDatabase();
             if (localUid != null && !localUid.isEmpty()) {
@@ -720,10 +693,7 @@ public class DBManager extends SQLiteOpenHelper {
                 try {
                     if (c.moveToFirst()) {
                         String id = c.getString(0);
-                        personIdCache.put(localUid, id != null ? id : "");
                         if (id != null && !id.isEmpty()) return id;
-                    } else {
-                        personIdCache.put(localUid, "");
                     }
                 } finally {
                     c.close();

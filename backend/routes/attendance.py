@@ -2512,17 +2512,42 @@ def person_event():
         })
 
     # Case 3: Person detected and recognized
-    try:
-        if person_id:
-            conn_name = get_db_connection()
-            c_name = conn_name.cursor()
-            c_name.execute("SELECT name FROM faces WHERE id = ? LIMIT 1", (person_id,))
-            r_name = c_name.fetchone()
-            conn_name.close()
-            if r_name and r_name[0]:
-                name = r_name[0]
-    except Exception:
-        pass
+    # --- Robust person_id Resolution ---
+    resolved_person_id = person_id
+    if recognized:
+        conn_res = get_db_connection()
+        c_res = conn_res.cursor()
+        
+        # Case A: person_id is a local:UUID string
+        if isinstance(resolved_person_id, str) and resolved_person_id.startswith("local:"):
+            local_uid_val = resolved_person_id.replace("local:", "")
+            c_res.execute("SELECT id, name FROM faces WHERE local_uid = ? LIMIT 1", (local_uid_val,))
+            res_row = c_res.fetchone()
+            if res_row:
+                resolved_person_id = res_row[0]
+                if not name: name = res_row[1]
+        
+        # Case B: person_id is missing but name is present
+        if not resolved_person_id and name and vendor_id_to_check:
+            c_res.execute("SELECT id FROM faces WHERE name = ? AND vendor_id = ? LIMIT 1", (name, vendor_id_to_check))
+            res_row = c_res.fetchone()
+            if res_row:
+                resolved_person_id = res_row[0]
+        
+        # Case C: Double check person_id exists and get name if missing
+        if resolved_person_id:
+            c_res.execute("SELECT name, vendor_id FROM faces WHERE id = ? LIMIT 1", (resolved_person_id,))
+            res_row = c_res.fetchone()
+            if res_row:
+                if not name: name = res_row[0]
+                if not vendor_id_to_check: vendor_id_to_check = res_row[1]
+            else:
+                # Malformed or stale ID
+                resolved_person_id = None
+        
+        conn_res.close()
+
+    person_id = resolved_person_id # Update local variable for downstream logic
     name = name or ""
     
     # If this is just an identification check (e.g. from Admin panel), do not record attendance
@@ -2532,8 +2557,12 @@ def person_event():
             "speak": True,
             "text": f"Identified: {name} (Admin Mode)"
         })
+    
     # Enforce: person_id required for recognized attendance
     if recognized and not person_id:
+        # Fallback: If we still don't have a person_id, but we have a name, 
+        # we might want to allow it IF it's a known person, but for parents 
+        # to see it, it MUST have a person_id linked.
         return jsonify({
             "error": "person_id required for attendance. Re-register or sync device.",
             "speak": True,

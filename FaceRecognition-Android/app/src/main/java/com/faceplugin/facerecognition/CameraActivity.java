@@ -433,6 +433,11 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
 
                     boolean isRecognized = maxSimiarlity > SettingsActivity.getIdentifyThreshold(this);
                     String personName = isRecognized ? maximiarlityPerson.name : null;
+                    String personId = isRecognized ? maximiarlityPerson.id : null;
+                    String localUid = isRecognized ? maximiarlityPerson.localUid : null;
+                    if (isRecognized && (personId == null || personId.isEmpty())) {
+                        personId = "local:" + (localUid != null ? localUid : "unknown");
+                    }
 
                     // Update UI with recognized name
                     runOnUiThread(() -> {
@@ -443,7 +448,7 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
                     boolean isSamePerson = (personName != null && personName.equals(lastPersonName)) || (personName == null && lastPersonName == null);
                     
                     if (!isSamePerson || (currentTime - lastApiCallTime > 5000)) {
-                        sendPersonEvent(true, isRecognized, personName, personName, maxSimiarlity, bitmap);
+                        sendPersonEvent(true, isRecognized, personId, personName, maxSimiarlity, bitmap);
                         lastApiCallTime = currentTime;
                         lastPersonName = personName;
                     }

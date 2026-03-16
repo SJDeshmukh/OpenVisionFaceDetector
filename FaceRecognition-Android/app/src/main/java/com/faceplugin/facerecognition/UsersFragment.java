@@ -140,7 +140,17 @@ public class UsersFragment extends Fragment {
     @Override
     public void onResume() {
         super.onResume();
-        refreshList();
+        if (!isHidden()) {
+            refreshList();
+        }
+    }
+
+    @Override
+    public void onHiddenChanged(boolean hidden) {
+        super.onHiddenChanged(hidden);
+        if (!hidden) {
+            refreshList();
+        }
     }
 
     public void refreshList() {

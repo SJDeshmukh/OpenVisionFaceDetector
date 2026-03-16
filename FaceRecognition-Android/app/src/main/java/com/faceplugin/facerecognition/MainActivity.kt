@@ -65,6 +65,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private var enrollFragment: EnrollFragment? = null
+    private var identifyFragment: IdentifyFragment? = null
+    private var usersFragment: UsersFragment? = null
+    private var activeFragment: Fragment? = null
+    private var lastClickTime: Long = 0
+    private val clickDebounce: Long = 400 // ms
+
     private val syncRunnable = object : Runnable {
         override fun run() {
             try {
@@ -187,17 +194,26 @@ class MainActivity : AppCompatActivity() {
         } catch (_: Exception) {}
         
         bottomNav.setOnItemSelectedListener { item ->
+            val now = System.currentTimeMillis()
+            if (now - lastClickTime < clickDebounce) {
+                return@setOnItemSelectedListener false
+            }
+            lastClickTime = now
+
             when (item.itemId) {
                 R.id.nav_enroll -> {
-                    loadFragment(EnrollFragment())
+                    if (enrollFragment == null) enrollFragment = EnrollFragment()
+                    switchFragment(enrollFragment!!)
                     true
                 }
                 R.id.nav_identify -> {
-                    loadFragment(IdentifyFragment())
+                    if (identifyFragment == null) identifyFragment = IdentifyFragment()
+                    switchFragment(identifyFragment!!)
                     true
                 }
                 R.id.nav_users -> {
-                    loadFragment(UsersFragment())
+                    if (usersFragment == null) usersFragment = UsersFragment()
+                    switchFragment(usersFragment!!)
                     true
                 }
                 else -> false
@@ -206,7 +222,11 @@ class MainActivity : AppCompatActivity() {
 
         // Load default fragment
         if (savedInstanceState == null) {
-            loadFragment(IdentifyFragment())
+            identifyFragment = IdentifyFragment()
+            activeFragment = identifyFragment
+            supportFragmentManager.beginTransaction()
+                .add(R.id.fragment_container, identifyFragment!!, "identify")
+                .commit()
             bottomNav.selectedItemId = R.id.nav_identify
         }
 
@@ -326,6 +346,31 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         mSocket?.disconnect()
         mSocket?.off()
+    }
+
+    private fun switchFragment(fragment: Fragment) {
+        if (activeFragment == fragment) return
+        
+        val transaction = supportFragmentManager.beginTransaction()
+        
+        // Hide the active fragment
+        activeFragment?.let { transaction.hide(it) }
+        
+        // Show or add the new fragment
+        if (!fragment.isAdded) {
+            val tag = when (fragment) {
+                is IdentifyFragment -> "identify"
+                is EnrollFragment -> "enroll"
+                is UsersFragment -> "users"
+                else -> null
+            }
+            transaction.add(R.id.fragment_container, fragment, tag)
+        } else {
+            transaction.show(fragment)
+        }
+        
+        transaction.commit()
+        activeFragment = fragment
     }
 
     private fun loadFragment(fragment: Fragment) {

@@ -44,7 +44,7 @@ public class FaceView extends View {
     private List<FaceBox> faceBoxes;
     private String recognizedName = null;
     private List<String> recognizedNames;
-    private boolean meshEnabled = true;
+    private boolean meshEnabled = false;
 
     public void setMeshEnabled(boolean enabled) {
         this.meshEnabled = enabled;

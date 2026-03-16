@@ -90,7 +90,6 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     private TextToSpeech tts;
 
     private ExecutorService cameraExecutorService;
-    private ExecutorService streamingExecutor;
     private PreviewView viewFinder;
     private Preview preview = null;
     private ImageAnalysis imageAnalyzer = null;
@@ -205,7 +204,6 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         }
 
         cameraExecutorService = Executors.newFixedThreadPool(1);
-        streamingExecutor = Executors.newSingleThreadExecutor();
         tts = new TextToSpeech(requireContext(), this);
 
         if (ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.CAMERA)
@@ -217,7 +215,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
 
         highPerformanceMode = SettingsActivity.isHighPerformanceMode(requireContext());
         if (faceView != null) {
-            faceView.setMeshEnabled(!highPerformanceMode);
+            faceView.setMeshEnabled(false);
         }
 
         return view;
@@ -226,6 +224,22 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     @Override
     public void onResume() {
         super.onResume();
+        if (!isHidden()) {
+            resumeResources();
+        }
+    }
+
+    @Override
+    public void onHiddenChanged(boolean hidden) {
+        super.onHiddenChanged(hidden);
+        if (hidden) {
+            pauseResources();
+        } else {
+            resumeResources();
+        }
+    }
+
+    private void resumeResources() {
         try {
             if (dbManager != null) {
                 dbManager.loadPerson();
@@ -249,6 +263,27 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 }
             }
         } catch (Exception ignored) {}
+        
+        // Re-bind camera if provider is available
+        if (cameraProvider != null) {
+            bindCameraUseCases();
+        }
+    }
+
+    private void pauseResources() {
+        if (faceView != null) {
+            faceView.setFaceBoxes(null);
+        }
+        if (tts != null) {
+            tts.stop();
+        }
+        if (powerSaveHandler != null) {
+            powerSaveHandler.removeCallbacks(powerSaveRunnable);
+            isPowerSaveTimerRunning = false;
+        }
+        if (cameraProvider != null) {
+            cameraProvider.unbindAll();
+        }
     }
 
     private boolean isVendorVerifyOnlyMode() {
@@ -276,16 +311,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     @Override
     public void onPause() {
         super.onPause();
-        if (faceView != null) {
-            faceView.setFaceBoxes(null);
-        }
-        if (tts != null) {
-            tts.stop();
-        }
-        if (powerSaveHandler != null) {
-            powerSaveHandler.removeCallbacks(powerSaveRunnable);
-            isPowerSaveTimerRunning = false;
-        }
+        pauseResources();
     }
 
     @Override
@@ -304,9 +330,6 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         }
         if (cameraExecutorService != null) {
             cameraExecutorService.shutdown();
-        }
-        if (streamingExecutor != null) {
-            streamingExecutor.shutdown();
         }
         if (powerSaveHandler != null) {
             powerSaveHandler.removeCallbacks(powerSaveRunnable);
@@ -350,18 +373,9 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 .setTargetRotation(rotation)
                 .build();
 
-        int targetWidth = PREVIEW_WIDTH;
-        int targetHeight = PREVIEW_HEIGHT;
-        
-        // Efficiency: Reduce resolution for analysis in high performance mode/low-RAM
-        if (highPerformanceMode) {
-            targetWidth = 480;
-            targetHeight = 640;
-        }
-
         imageAnalyzer = new ImageAnalysis.Builder()
                 .setBackpressureStrategy(STRATEGY_KEEP_ONLY_LATEST)
-                .setTargetResolution(new Size(targetWidth, targetHeight))
+                .setTargetResolution(new Size(PREVIEW_WIDTH, PREVIEW_HEIGHT))
                 .setTargetRotation(rotation)
                 .build();
 
@@ -379,9 +393,9 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         }
     }
 
-    private void sendPersonEvent(boolean detected, boolean recognized, String personId, String localUid, String name, float confidence, Bitmap image) {
+    private void sendPersonEvent(boolean detected, boolean recognized, String personId, String localUid, String name, float confidence, Bitmap bitmap) {
         GreetingService service = RetrofitClient.getService();
-        String imageBase64 = Utils.bitmapToBase64(image);
+        String imageBase64 = Utils.bitmapToBase64(bitmap);
 
         boolean isAttendance = true;
 
@@ -393,18 +407,27 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         try {
             online = NetworkUtils.INSTANCE.isOnline(requireContext().getApplicationContext());
         } catch (Exception ignored) {}
-        String effectivePersonId = personId;
-        if ((effectivePersonId == null || effectivePersonId.isEmpty()) && localUid != null && !localUid.isEmpty()) {
+        String resolvedBackendId = personId;
+        if ((resolvedBackendId == null || resolvedBackendId.isEmpty()) && localUid != null && !localUid.isEmpty()) {
             try {
-                effectivePersonId = dbManager.resolvePersonId(localUid);
-            } catch (Exception ignored) {}
+                String resolved = dbManager.resolvePersonId(localUid);
+                if (resolved != null && !resolved.isEmpty()) {
+                    resolvedBackendId = resolved;
+                } else {
+                    resolvedBackendId = "local:" + localUid;
+                }
+            } catch (Exception ignored) {
+                resolvedBackendId = "local:" + localUid;
+            }
         }
 
+        final String finalPersonId = resolvedBackendId;
+
         if (!online) {
-            if (effectivePersonId != null && !effectivePersonId.isEmpty()) {
+            if (resolvedBackendId != null && !resolvedBackendId.isEmpty()) {
                 if (isAttendance) {
-                    String predicted = dbManager.predictNextAttendanceStatus(effectivePersonId, localUid, name);
-                    dbManager.insertAttendanceQueue(effectivePersonId, localUid, name, timestamp, predicted, image, false);
+                    String predicted = dbManager.predictNextAttendanceStatus(resolvedBackendId, localUid, name);
+                    dbManager.insertAttendanceQueue(resolvedBackendId, localUid, name, timestamp, predicted, bitmap, false);
                     playAttendanceSound(predicted);
                     showStatusOverlay(predicted);
                     showAttendanceToast(name, predicted);
@@ -427,7 +450,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             return;
         }
 
-        final String finalPersonId = effectivePersonId;
+
         PersonEventRequest request = new PersonEventRequest(detected, recognized, finalPersonId, name, confidence, imageBase64, isAttendance, timestamp);
         try {
             String deviceId = Settings.Secure.getString(requireContext().getContentResolver(), Settings.Secure.ANDROID_ID);
@@ -517,7 +540,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                     getActivity().runOnUiThread(() -> {
                         if (isAttendance) {
                             String predicted = dbManager.predictNextAttendanceStatus(finalPersonId, localUid, name);
-                            dbManager.insertAttendanceQueue(finalPersonId, localUid, name, timestamp, predicted, image, false);
+                            dbManager.insertAttendanceQueue(finalPersonId, localUid, name, timestamp, predicted, bitmap, false);
                             playAttendanceSound(predicted);
                             showStatusOverlay(predicted);
                             showAttendanceToast(name, predicted);
@@ -737,13 +760,10 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         }
 
         // --- Restored: Direct upload for Dashboard visibility ---
-        streamingExecutor.execute(() -> {
+        new Thread(() -> {
             try {
-                Context context = getContext();
-                if (context == null) return;
-
-                // Resize for speed (e.g., 240px width for low RAM)
-                int width = highPerformanceMode ? 240 : 320;
+                // Resize for speed (e.g., 320px width)
+                int width = 320;
                 int height = (int) (originalBitmap.getHeight() * ((float) width / originalBitmap.getWidth()));
                 Bitmap scaled = Bitmap.createScaledBitmap(originalBitmap, width, height, false);
 
@@ -753,13 +773,14 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 String encoded = Base64.encodeToString(byteArray, Base64.NO_WRAP);
                 String base64Image = "data:image/jpeg;base64," + encoded;
 
-                // Get Vendor ID from a safe context
-                android.content.SharedPreferences prefs = context.getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE);
+                // Get Vendor ID
+                if (getContext() == null) return;
+                android.content.SharedPreferences prefs = getContext().getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE);
                 int vendorId = prefs.getInt("vendor_id", -1);
                 Integer vendorIdObj = (vendorId != -1) ? vendorId : null;
 
-                float batteryLevel = Utils.getBatteryLevel(context);
-                String deviceId = android.provider.Settings.Secure.getString(context.getContentResolver(), android.provider.Settings.Secure.ANDROID_ID);
+                float batteryLevel = Utils.getBatteryLevel(getContext());
+                String deviceId = android.provider.Settings.Secure.getString(getContext().getContentResolver(), android.provider.Settings.Secure.ANDROID_ID);
                 String deviceName = prefs.getString("device_name", "Mobile Device");
 
                 StreamRequest request = new StreamRequest(base64Image, vendorIdObj, deviceId, deviceName, batteryLevel);
@@ -772,20 +793,20 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             } catch (Exception e) {
                 e.printStackTrace();
             }
-        });
+        }).start();
         // --------------------------------------------------------
     }
 
     @OptIn(markerClass = ExperimentalGetImage.class)
     private void analyzeImage(ImageProxy imageProxy) {
         try {
-            Image image = imageProxy.getImage();
-            if (image == null) {
+            android.media.Image inputMediaImage = imageProxy.getImage();
+            if (inputMediaImage == null) {
                 imageProxy.close();
                 return;
             }
 
-            Image.Plane[] planes = image.getPlanes();
+            android.media.Image.Plane[] planes = inputMediaImage.getPlanes();
             ByteBuffer yBuffer = planes[0].getBuffer();
             ByteBuffer uBuffer = planes[1].getBuffer();
             ByteBuffer vBuffer = planes[2].getBuffer();
@@ -805,13 +826,13 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                     cameraMode = 6;
                 }
             } catch (Exception ignored) {}
-            Bitmap bitmap = FaceSDKWrapper.INSTANCE.yuv2Bitmap(nv21, image.getWidth(), image.getHeight(), cameraMode);
+            final Bitmap processedFrameBitmap = FaceSDKWrapper.INSTANCE.yuv2Bitmap(nv21, inputMediaImage.getWidth(), inputMediaImage.getHeight(), cameraMode);
 
             // --- Streaming Logic ---
             long currentTime = System.currentTimeMillis();
             if (currentTime - lastStreamTime > 1000) { // 1 FPS
                 lastStreamTime = currentTime;
-                sendStreamFrame(bitmap);
+                sendStreamFrame(processedFrameBitmap);
             }
             // -----------------------
 
@@ -826,11 +847,11 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             try {
                 faceDetectionParam.check_liveness_level = SettingsActivity.getLivenessLevel(requireContext());
             } catch (Exception ignored) {}
-            List<FaceBox> faceBoxes = FaceSDKWrapper.INSTANCE.faceDetection(bitmap, faceDetectionParam);
+            List<FaceBox> faceBoxes = FaceSDKWrapper.INSTANCE.faceDetection(processedFrameBitmap, faceDetectionParam);
 
             if (getActivity() != null) {
                 getActivity().runOnUiThread(() -> {
-                    faceView.setFrameSize(new Size(bitmap.getWidth(), bitmap.getHeight()));
+                    faceView.setFrameSize(new Size(processedFrameBitmap.getWidth(), processedFrameBitmap.getHeight()));
                     faceView.setFaceBoxes(faceBoxes);
                     
                     if (faceBoxes.size() > 0) {
@@ -890,7 +911,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                     String nameForBox = "Unknown";
 
                     if (faceBox.liveness > livenessThreshold) {
-                        byte[] templates = FaceSDKWrapper.INSTANCE.templateExtraction(bitmap, faceBox);
+                        byte[] templates = FaceSDKWrapper.INSTANCE.templateExtraction(processedFrameBitmap, faceBox);
 
                         float maxSimilarityForBox = 0f;
                         Person bestForBox = null;
@@ -901,6 +922,12 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                                     maxSimilarityForBox = similarity;
                                     bestForBox = person;
                                 }
+                            }
+                            
+                            if (bestForBox != null) {
+                                Log.d("IdentifyFragment", "Best match for box: " + bestForBox.name + " similarity: " + maxSimilarityForBox);
+                            } else {
+                                Log.d("IdentifyFragment", "No match found for box, max similarity: " + maxSimilarityForBox);
                             }
                         }
 
@@ -1003,7 +1030,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                         } catch (Exception ignored) {}
                         if (!withinCooldown) {
                             String predicted = dbManager.predictNextAttendanceStatus(personId, localUid, bestPerson.name);
-                            dbManager.insertAttendanceQueue(personId, localUid, bestPerson.name, timestamp, predicted, bitmap, false);
+                            dbManager.insertAttendanceQueue(personId, localUid, bestPerson.name, timestamp, predicted, processedFrameBitmap, false);
                             playAttendanceSound(predicted);
                             showStatusOverlay(predicted);
                             if (getActivity() != null) {
@@ -1067,7 +1094,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                             });
                         }
 
-                        sendPersonEvent(true, true, personId, localUid, bestPerson.name, bestSimilarity, bitmap);
+                        sendPersonEvent(true, true, personId, localUid, bestPerson.name, bestSimilarity, processedFrameBitmap);
                         try { lastEventSentAtMs.put(key, System.currentTimeMillis()); } catch (Exception ignored) {}
                     } else {
                         if (getActivity() != null) {
