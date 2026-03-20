@@ -52,9 +52,17 @@ export const SocketProvider = ({ children }) => {
       try {
         if (!data || !data.vendor_id) return;
         if (String(data.vendor_id) !== String(user.vendor_id)) return;
-        const feats = await refreshFeatures();
+        await refreshFeatures();
         setToastMsg("Plan updated");
         setTimeout(() => setToastMsg(null), 3000);
+      } catch (e) {}
+    });
+
+    s.on('vendor_updated', async (data) => {
+      try {
+        if (!data || !data.vendor_id) return;
+        if (String(data.vendor_id) !== String(user.vendor_id)) return;
+        await refreshUserData();
       } catch (e) {}
     });
 

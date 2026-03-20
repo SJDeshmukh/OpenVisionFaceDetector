@@ -2234,6 +2234,49 @@ def get_all_employees():
         })
         
     return jsonify({"employees": employees})
+    
+@admin_bp.route("/vendors/<int:vendor_id>/employees", methods=["GET"])
+@super_admin_required
+def get_vendor_employees(vendor_id):
+    from app import get_db_connection, socketio, is_testing
+    from services.auth_service import authenticate_vendor_access
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    # Same logic as get_all_employees but for a specific vendor
+    query = """
+        SELECT f.*, v.company_name, su.username as student_username, su.password_plain,
+               (SELECT status FROM attendance a WHERE a.person_id = f.id ORDER BY timestamp DESC LIMIT 1) as last_status,
+               (SELECT timestamp FROM attendance a WHERE a.person_id = f.id ORDER BY timestamp DESC LIMIT 1) as last_seen
+        FROM faces f
+        LEFT JOIN vendors v ON f.vendor_id = v.id
+        LEFT JOIN system_users su ON f.id = su.person_id AND su.role = 'user'
+        WHERE f.vendor_id = ?
+    """
+    
+    c.execute(query, (vendor_id,))
+    rows = c.fetchall()
+    conn.close()
+    
+    employees = []
+    for row in rows:
+        employees.append({
+            "id": row["id"],
+            "name": row["name"],
+            "vendor_id": row["vendor_id"],
+            "company_name": row["company_name"],
+            "department": row["department"],
+            "designation": row["designation"],
+            "face_image": row["face_image"],
+            "last_status": row["last_status"],
+            "last_seen": row["last_seen"],
+            "phone": row["phone"],
+            "student_username": row["student_username"],
+            "password_plain": row["password_plain"]
+        })
+        
+    return jsonify({"employees": employees})
 
 
 @admin_bp.route("/archival/run", methods=["POST"])
@@ -2310,3 +2353,44 @@ def backup_database():
     # Note: We should ideally delete the temp file after sending, 
     # but send_file doesn't make that easy without a wrapper.
     # Flask's after_this_request can do it or just let /tmp clean up.
+@admin_bp.route("/vendors/<int:vendor_id>/leave/students", methods=["GET"])
+@super_admin_required
+def get_vendor_leave_students(vendor_id):
+    conn = get_db_connection()
+    try:
+        if not getattr(conn, "_is_pg", False):
+            conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        
+        # Link system_users with faces to get names
+        c.execute("""
+            SELECT 
+                su.username,
+                su.password_plain,
+                su.role,
+                f.name,
+                f.phone as face_phone
+            FROM system_users su
+            LEFT JOIN faces f ON su.person_id = f.id
+            WHERE su.vendor_id = ? AND su.role = 'user'
+        """, (vendor_id,))
+        
+        students = []
+        for row in c.fetchall():
+            r = dict(row)
+            # Determine status
+            # If password_plain matches face_phone, it's probably the default
+            is_default = (r['password_plain'] == r['face_phone']) if r['face_phone'] else False
+            students.append({
+                "name": r['name'] or "Unknown Student",
+                "student_id": r['username'],
+                "phone": r['face_phone'],
+                "password_plain": r['password_plain'],
+                "status": "Default" if is_default else "Changed"
+            })
+            
+        return jsonify({"students": students})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()

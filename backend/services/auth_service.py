@@ -9,9 +9,11 @@ from utils import parse_db_date
 SECRET_KEY = os.environ.get('SECRET_KEY', 'super_secret_key_change_this_in_prod')
 serializer = URLSafeTimedSerializer(SECRET_KEY)
 
-def generate_token(username, role):
-    # Add a random nonce to ensure uniqueness even within the same second
-    return serializer.dumps({'username': username, 'role': role, 'nonce': str(uuid.uuid4())})
+def generate_token(username, role, vendor_id=None):
+    payload = {'username': username, 'role': role, 'nonce': str(uuid.uuid4())}
+    if vendor_id:
+        payload['vendor_id'] = vendor_id
+    return serializer.dumps(payload)
 
 def generate_token_with_claims(username, role, extra_claims):
     payload = {'username': username, 'role': role, 'nonce': str(uuid.uuid4())}

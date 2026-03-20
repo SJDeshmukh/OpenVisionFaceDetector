@@ -39,6 +39,7 @@ const People = () => {
   });
   const [submitting, setSubmitting] = useState(false);
   const [vendorConfig, setVendorConfig] = useState([]);
+  const [vendorDepartments, setVendorDepartments] = useState([]);
 
   const { socket, joinVendor } = useSocket();
   useEffect(() => {
@@ -50,6 +51,14 @@ const People = () => {
         axios.get(`${API_URL}/admin/vendors/${user.vendor_id}/registration-config`)
           .then(res => setVendorConfig(res.data.config || []))
           .catch(() => setVendorConfig([]));
+
+        // Fetch Leave Departments
+        axios.get(`${API_URL}/api/leave/admin/departments`, {
+          params: { vendor_id: user.vendor_id },
+          headers: { Authorization: `Bearer ${user?.token}` }
+        })
+          .then(res => setVendorDepartments(res.data.departments || []))
+          .catch(() => setVendorDepartments([]));
       }
 
       if (socket) {
@@ -527,6 +536,10 @@ const People = () => {
                           {fieldKey === 'shift' ? (
                             shifts.map((s, sIdx) => (
                               <option key={sIdx} value={s.name}>{s.name} ({s.start_time} - {s.end_time})</option>
+                            ))
+                          ) : fieldKey === 'department' && vendorDepartments.length > 0 ? (
+                            vendorDepartments.map((dept, dIdx) => (
+                              <option key={dIdx} value={dept}>{dept}</option>
                             ))
                           ) : (
                             col.options && col.options.map((opt, oId) => (

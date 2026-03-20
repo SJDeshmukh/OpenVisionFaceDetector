@@ -6,6 +6,7 @@ const AuthContext = createContext();
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
+  const [staffSession, setStaffSession] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -17,6 +18,15 @@ export const AuthProvider = ({ children }) => {
       if (parsedUser.token) {
         axios.defaults.headers.common['Authorization'] = `Bearer ${parsedUser.token}`;
       }
+      // If student and person_id is missing, force a refresh
+      if (parsedUser.role === 'user' && !parsedUser.person_id) {
+        refreshUserData().catch(() => {});
+      }
+    }
+
+    const storedStaff = localStorage.getItem('staffSession');
+    if (storedStaff) {
+      setStaffSession(JSON.parse(storedStaff));
     }
     // Remove ngrok-specific header handling
     delete axios.defaults.headers.common['ngrok-skip-browser-warning'];
@@ -39,17 +49,9 @@ export const AuthProvider = ({ children }) => {
              logout();
              window.location.href = '/login'; // Force redirect
           } else if (status === 403 && isFeatureMissing) {
-             // Feature removed from plan: refresh features and continue (no logout)
+             // Feature removed from plan: refresh profile and continue (no logout)
              try {
-               axios.get(`${API_URL}/vendor/subscription`).then(res => {
-                 const features = res.data?.features || [];
-                 setUser((prev) => {
-                   if (!prev) return prev;
-                   const next = { ...prev, features };
-                   localStorage.setItem('user', JSON.stringify(next));
-                   return next;
-                 });
-               }).catch(() => {});
+               refreshUserData().catch(() => {});
              } catch (e) {}
           }
         }
@@ -63,7 +65,7 @@ export const AuthProvider = ({ children }) => {
   }, []);
 
 
-  const login = async (username, password) => {
+  const login = async (username, password, secondary_password = null) => {
     try {
       let deviceId = localStorage.getItem('web_device_id');
       if (!deviceId) {
@@ -73,12 +75,22 @@ export const AuthProvider = ({ children }) => {
       const response = await axios.post(`${API_URL}/auth/login`, {
         username,
         password,
+        secondary_password,
         device_id: deviceId,
         platform: 'web'
       });
 
       if (response.data.status === 'success') {
+        if (response.data.needs_student_password) {
+          return {
+            success: true,
+            status: 'success',
+            needs_student_password: true,
+            username: response.data.username
+          };
+        }
         const userData = {
+          id: response.data.username,
           username: response.data.username,
           role: response.data.role,
           token: response.data.token,
@@ -88,12 +100,18 @@ export const AuthProvider = ({ children }) => {
           backend_service_id: response.data.backend_service_id,
           vendor_config: response.data.vendor_config,
           features: response.data.features || [],
-          vertical: response.data.vertical
+          vertical: response.data.vertical,
+          person_id: response.data.person_id
         };
         setUser(userData);
         localStorage.setItem('user', JSON.stringify(userData));
         axios.defaults.headers.common['Authorization'] = `Bearer ${userData.token}`;
-        return { success: true, role: userData.role, redirect_url: response.data.redirect_url };
+        return { 
+          success: true, 
+          role: userData.role, 
+          redirect_url: response.data.redirect_url,
+          force_password_change: response.data.force_password_change || false
+        };
       } else {
         // Handle case where status is not success but no error was thrown
         return { success: false, error: response.data.error || "Unexpected response from server" };
@@ -112,28 +130,84 @@ export const AuthProvider = ({ children }) => {
       axios.post(`${API_URL}/auth/logout`, { username, device_id: deviceId }).catch(() => {});
     } catch (e) {}
     setUser(null);
+    setStaffSession(null);
     localStorage.removeItem('user');
+    localStorage.removeItem('staffSession');
     delete axios.defaults.headers.common['Authorization'];
   };
 
-  const refreshFeatures = async () => {
+  const loginAsStaff = async (pin) => {
+    if (!user?.vendor_id) return { success: false, error: "Not logged in" };
     try {
-      const res = await axios.get(`${API_URL}/vendor/subscription`);
-      const features = res.data?.features || [];
+      const res = await axios.post(`${API_URL}/leave/admin/verify-pin`, {
+        vendor_id: user.vendor_id,
+        pin
+      });
+      if (res.data.status === 'success') {
+        const staffData = res.data.staff;
+        setStaffSession(staffData);
+        localStorage.setItem('staffSession', JSON.stringify(staffData));
+        return { success: true, staff: staffData };
+      }
+      return { success: false, error: "Invalid PIN" };
+    } catch (e) {
+      return { success: false, error: e.response?.data?.error || "Verification failed" };
+    }
+  };
+
+  const logoutStaff = () => {
+    setStaffSession(null);
+    localStorage.removeItem('staffSession');
+  };
+
+  const refreshUserData = async () => {
+    try {
+      const res = await axios.get(`${API_URL}/auth/me`);
+      const data = res.data;
+      if (!data) return null;
+      
       setUser((prev) => {
         if (!prev) return prev;
-        const next = { ...prev, features };
+        const next = { 
+          ...prev, 
+          username: data.username,
+          role: data.role,
+          vendor_id: data.vendor_id,
+          frontend_bundle_id: data.frontend_bundle_id,
+          backend_service_id: data.backend_service_id,
+          vendor_config: data.vendor_config,
+          features: data.features || [],
+          vertical: data.vertical,
+          web_login_enabled: data.web_login_enabled,
+          person_id: data.person_id,
+          id: data.username
+        };
+
+        // If web login is disabled for this vendor, force logout
+        if (data.web_login_enabled === 0 && data.role !== 'super_admin') {
+           console.log("Web login disabled for vendor, logging out...");
+           logout();
+           window.location.href = '/login';
+           return null;
+        }
+
         localStorage.setItem('user', JSON.stringify(next));
         return next;
       });
-      return features;
+      return data;
     } catch (e) {
+      console.error("Refresh User Data failed:", e);
       return null;
     }
   };
 
+  const refreshFeatures = refreshUserData; // Keep alias for compatibility
+
   return (
-    <AuthContext.Provider value={{ user, login, logout, loading, refreshFeatures }}>
+    <AuthContext.Provider value={{ 
+      user, staffSession, login, logout, loginAsStaff, logoutStaff, 
+      loading, refreshFeatures, refreshUserData 
+    }}>
       {!loading && children}
     </AuthContext.Provider>
   );

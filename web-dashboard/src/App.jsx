@@ -22,6 +22,7 @@ import JobsDashboard from './pages/JobsDashboard';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { SocketProvider } from './context/SocketContext';
 import Faces from './pages/Faces';
+import LeaveManagement from './pages/LeaveManagement';
 
 // Protected Route Component
 const ProtectedRoute = ({ allowedRoles }) => {
@@ -66,8 +67,8 @@ function App() {
                 <Route path="/admin/jobs" element={<JobsDashboard />} />
               </Route>
 
-              {/* Admin Routes */}
-              <Route element={<ProtectedRoute allowedRoles={['admin', 'vendor_admin']} />}>
+              {/* Admin/Rector/HOD Routes */}
+              <Route element={<ProtectedRoute allowedRoles={['admin', 'vendor_admin', 'rector', 'hod', 'user']} />}>
                 <Route path="/" element={<Navigate to="/dashboard" replace />} />
                 <Route path="/dashboard" element={<Dashboard />} />
                 <Route path="/people" element={<People />} />
@@ -80,6 +81,7 @@ function App() {
                 <Route path="/bulk-image-attendance" element={<BulkImageAttendance />} />
                 <Route path="/classes" element={<Classes />} />
                 <Route path="/faces" element={<Faces />} />
+                <Route path="/leave-management" element={<LeaveManagement />} />
               </Route>
 
               {/* Shared/User Routes */}

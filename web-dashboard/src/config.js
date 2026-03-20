@@ -40,7 +40,8 @@ export const FEATURE_TO_SIDEBAR_MAP = {
   'api_access': 'Settings',
   'audit_logs': 'Audit Logs',
   'classes': 'Classes',
-  'faces': 'Faces'
+  'faces': 'Faces',
+  'leave_management': 'Leave Management'
 };
 
 // Items that are ALWAYS visible regardless of features (Base System)

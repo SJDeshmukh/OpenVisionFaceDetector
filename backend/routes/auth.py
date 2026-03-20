@@ -13,6 +13,77 @@ logger = logging.getLogger(__name__)
 
 
 auth_bp = Blueprint('auth_bp', __name__)
+@auth_bp.route("/auth/me", methods=["GET"])
+def get_current_user():
+    from app import get_db_connection
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+    
+    auth_header = request.headers.get('Authorization')
+    token = extract_token(auth_header)
+    data = verify_token(token)
+    if not data:
+        return jsonify({"error": "Invalid token"}), 401
+    
+    username = data['username']
+    conn = get_db_connection()
+    try:
+        if not getattr(conn, "_is_pg", False):
+            conn.row_factory = sqlite3.Row
+    except Exception:
+        pass
+    c = conn.cursor()
+    c.execute("SELECT * FROM system_users WHERE username = ?", (username,))
+    user = c.fetchone()
+    if not user:
+        conn.close()
+        return jsonify({"error": "User not found"}), 404
+    
+    user_dict = dict(user)
+    # Remove password
+    if 'password' in user_dict: del user_dict['password']
+    # Get Vendor Details
+    vendor_id = user_dict.get('vendor_id')
+    features = []
+    frontend_bundle_id = 'default_attendance'
+    backend_service_id = 'default_api'
+    vendor_config = []
+    vendor_vertical = None
+    web_login_enabled = 1
+    
+    if vendor_id:
+        c.execute("SELECT web_login_enabled, frontend_bundle_id, backend_service_id, registration_config, vertical FROM vendors WHERE id = ?", (vendor_id,))
+        v_row = c.fetchone()
+        if v_row:
+            web_login_enabled = v_row[0]
+            frontend_bundle_id = v_row[1] or 'default_attendance'
+            backend_service_id = v_row[2] or 'default_api'
+            vendor_config = json.loads(v_row[3]) if v_row[3] else []
+            vendor_vertical = v_row[4]
+            
+        c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+        s_row = c.fetchone()
+        if s_row and s_row[0]:
+            try:
+                features = json.loads(s_row[0])
+            except:
+                features = []
+                
+    conn.close()
+    
+    return jsonify({
+        "username": username,
+        "role": user_dict['role'],
+        "vendor_id": vendor_id,
+        "person_id": user_dict.get('person_id'),
+        "frontend_bundle_id": frontend_bundle_id,
+        "backend_service_id": backend_service_id,
+        "vendor_config": vendor_config,
+        "features": features,
+        "vertical": vendor_vertical,
+        "web_login_enabled": web_login_enabled
+    })
+
 
 @auth_bp.route("/auth/login", methods=["POST"])
 def login():
@@ -116,29 +187,143 @@ def login():
             user = c.fetchone()
         except Exception:
             pass
+    # Handle Student Login Auto-Creation
+    if not user and username:
+        try:
+            is_pg = getattr(conn, "_is_pg", False)
+            if is_pg:
+                c.execute("SELECT id, name, phone, vendor_id, custom_data FROM faces WHERE custom_data::jsonb->>'student_number' = %s OR custom_data::jsonb->>'admission_number' = %s OR custom_data::jsonb->>'roll_number' = %s", (username, username, username))
+            else:
+                c.execute("SELECT id, name, phone, vendor_id, custom_data FROM faces WHERE json_extract(custom_data, '$.student_number') = ? OR json_extract(custom_data, '$.admission_number') = ? OR json_extract(custom_data, '$.roll_number') = ?", (username, username, username))
             
+            face = c.fetchone()
+            if face:
+                face_row = face if hasattr(face, 'keys') else dict(zip(['id', 'name', 'phone', 'vendor_id', 'custom_data'], face))
+                student_phone = face_row.get('phone')
+                
+                if str(password) == str(student_phone) and student_phone:
+                    # SECURE HASHING: Hash the password being stored
+                    c.execute(
+                        "INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (?, ?, ?, 'user', ?, ?)",
+                        (username, hash_password(password), password, face_row['vendor_id'], face_row['id'])
+                    )
+                    conn.commit()
+                    c.execute("SELECT * FROM system_users WHERE username = ?", (username,))
+                    user = c.fetchone()
+                    if user:
+                        # Ensure user is a dict for the next steps
+                        user = dict(user) if not isinstance(user, dict) else user
+                        user['force_password_change'] = True
+        except Exception as e:
+            logger.error(f"Failed student auto-login check: {e}")
+
     conn.close()
 
-    if user and username == "superadmin" and is_testing():
+    if not user:
+        return jsonify({"error": "Invalid username or password"}), 401
+
+    # Convert to dict for easier access
+    if hasattr(user, 'keys'):
+        user = dict(user)
+    elif not isinstance(user, dict):
+        # Fallback if it's a tuple/list from a different cursor type
+        return jsonify({"error": "Internal database error"}), 500
+
+    if username == "superadmin" and is_testing():
         pass_condition = True
     else:
-        pass_condition = user and verify_password(password, user.get("password") if hasattr(user, "get") else user["password"])
+        stored_pw = user.get("password")
+        stored_plain = user.get("password_plain")
+        
+        # Check if student is using their "base" mobile number but has a custom password set
+        is_student = user.get('role') == 'user'
+        stored_pw = user.get("password")
+        stored_plain = user.get("password_plain")
+        
+        # PROACTIVE FIX: If stored_plain is missing for student, try to resolve it from faces
+        if is_student and not stored_plain:
+            try:
+                person_id = user.get('person_id')
+                if person_id:
+                    conn_f = get_db_connection()
+                    cf = conn_f.cursor()
+                    cf.execute("SELECT phone FROM faces WHERE id = ?", (person_id,))
+                    frow = cf.fetchone()
+                    if frow:
+                        stored_plain = frow[0]
+                        # Update the user record so we don't do this every time
+                        cf.execute("UPDATE system_users SET password_plain = ? WHERE username = ?", (stored_plain, username))
+                        conn_f.commit()
+                        logger.info(f"Restored missing password_plain for student {username}")
+                    conn_f.close()
+            except Exception as e:
+                logger.error(f"Error restoring student plain password: {e}")
+
+        # Normalize comparison: remove leading 0 or +91 if necessary
+        def normalize_phone(p):
+            if not p: return ""
+            p = str(p).strip().replace("+91", "").replace(" ", "").replace("-", "")
+            if p.startswith("0") and len(p) > 10: p = p[1:]
+            return p
+        
+        normalized_input = normalize_phone(password)
+        normalized_stored = normalize_phone(stored_plain)
+        
+        # Identity verification logic:
+        # 1. They are a student
+        # 2. They entered their mobile number in the first screen
+        # 3. They have a custom password set (stored_pw doesn't match stored_plain)
+        
+        is_entering_mobile = stored_plain and (password == stored_plain or normalized_input == normalized_stored)
+        has_set_password = user.get('has_set_password') == 1
+        
+        logger.info(f"Login trace for {username}: is_student={is_student}, input_match_mobile={is_entering_mobile}, has_set_password={has_set_password}, stored_plain_exists={bool(stored_plain)}")
+        
+        if is_student and is_entering_mobile and has_set_password:
+            # They entered ID + Mobile, but they have a custom password.
+            # Check if they also provided the secondary password
+            secondary_password = request.json.get('secondary_password')
+            if not secondary_password:
+                logger.info(f"Triggering student password modal for {username}")
+                return jsonify({
+                    "status": "success",
+                    "needs_student_password": True,
+                    "username": username,
+                    "role": "user",
+                    "vendor_id": user.get('vendor_id')
+                })
+            
+            # Verify secondary password
+            if verify_password(secondary_password, stored_pw):
+                pass_condition = True
+            else:
+                return jsonify({"error": "Invalid custom password"}), 401
+        
+        elif password == stored_pw or (stored_plain and password == stored_plain):
+            pass_condition = True
+        else:
+            pass_condition = verify_password(password, stored_pw)
         
     if pass_condition:
         try:
-            stored_pw = user.get("password") if hasattr(user, "get") else user["password"]
-            if stored_pw == password:
+            if user.get("password") == password:
+                # Password was plain text, migrate to hash
                 conn_u = get_db_connection()
                 cu = conn_u.cursor()
-                cu.execute("UPDATE system_users SET password = ? WHERE username = ?", (hash_password(password), username))
+                cu.execute("UPDATE system_users SET password = ?, password_plain = NULL WHERE username = ?", 
+                           (hash_password(password), password, username))
                 conn_u.commit()
                 conn_u.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Migration error: {e}")
             
+        # If it's a student and they haven't set a custom password yet, force them to set one
+        if is_student and not has_set_password:
+            user['force_password_change'] = True
+            logger.info(f"Forcing student password set for {username} (first login or reset)")
+
         vendor_vertical = None
-        user_keys = user.keys() if hasattr(user, "keys") else []
-        user_vendor_id = user['vendor_id'] if ('vendor_id' in user_keys and user['vendor_id']) else None
+        user_vendor_id = user.get('vendor_id')
         
         if user_vendor_id:
             is_allowed, reason = check_vendor_status(user_vendor_id)
@@ -224,7 +409,7 @@ def login():
 
             if not is_allowed:
                 if reason == "Subscription Expired" and web_login_enabled:
-                     token = generate_token(user['username'], user['role'])
+                     token = generate_token(user['username'], user['role'], user.get('vendor_id'))
                      return jsonify({
                         "status": "success",
                         "role": user["role"],
@@ -251,7 +436,7 @@ def login():
             vendor_config = {}
             features = ALL_FEATURES
 
-        token = generate_token(user['username'], user['role'])
+        token = generate_token(user['username'], user['role'], user.get('vendor_id'))
         
         company_id = None
         if user_vendor_id:
@@ -337,6 +522,7 @@ def login():
             "username": user["username"],
             "token": token,
             "vendor_id": user_vendor_id,
+            "person_id": user.get("person_id"),
             "company_id": company_id,
             "frontend_bundle_id": frontend_bundle_id,
             "backend_service_id": backend_service_id,
@@ -344,7 +530,8 @@ def login():
             "features": features,
             "vertical": vendor_vertical,
             "device_slot_required": bool(locals().get('device_slot_required', False)),
-            "available_slots": locals().get('available_slots', [])
+            "available_slots": locals().get('available_slots', []),
+            "force_password_change": user.get('force_password_change', False)
         })
     else:
         return jsonify({"error": "Invalid credentials"}), 401
@@ -373,8 +560,8 @@ def register_user():
     c = conn.cursor()
     try:
         c.execute(
-            "INSERT INTO system_users (username, password, role, vendor_id) VALUES (?, ?, ?, ?)",
-            (username, hash_password(password), role, target_vendor_id),
+            "INSERT INTO system_users (username, password, password_plain, role, vendor_id) VALUES (?, ?, ?, ?, ?)",
+            (username, hash_password(password), password, role, target_vendor_id),
         )
         conn.commit()
         return jsonify({"status": "success", "message": "User created"})
@@ -486,7 +673,7 @@ def parent_login():
             except Exception:
                 pass
             return None
-        c.execute("SELECT id, vendor_id, device_id, contact_phone, session_version FROM parent_users WHERE student_number = ?", (student_id,))
+        c.execute("SELECT id, vendor_id, device_id, contact_phone, session_version, face_template FROM parent_users WHERE student_number = ?", (student_id,))
         candidates = c.fetchall() or []
         for r in candidates:
             cp = _row_get(r, 3, "contact_phone")
@@ -570,7 +757,7 @@ def parent_login():
                     username = f"parent_{actual_vendor_id}_{student_id}"
                     c.execute("INSERT OR IGNORE INTO parent_users (vendor_id, username, student_number, contact_phone, created_at) VALUES (?, ?, ?, ?, ?)", (actual_vendor_id, username, student_id, mobile_number, datetime.now()))
                     conn.commit()
-                    c.execute("SELECT id, vendor_id, device_id, contact_phone, session_version FROM parent_users WHERE student_number = ? AND vendor_id = ?", (student_id, actual_vendor_id))
+                    c.execute("SELECT id, vendor_id, device_id, contact_phone, session_version, face_template FROM parent_users WHERE student_number = ? AND vendor_id = ?", (student_id, actual_vendor_id))
                     row = c.fetchone()
                 except Exception as e:
                     row = None
@@ -592,49 +779,22 @@ def parent_login():
         stored_device_id = _row_get(row, 2, "device_id")
         stored_mobile = _row_get(row, 3, "contact_phone")
         session_version = _row_get(row, 4, "session_version") or 1
+        face_template = _row_get(row, 5, "face_template")
         if mobile_tail and _digits(stored_mobile)[-10:] != mobile_tail:
             conn.close()
             return jsonify({"error": "Mobile number mismatch"}), 401
         if resolved_person_id is None:
             resolved_person_id = _find_student_person_id(actual_vendor_id)
-        if resolved_person_id is None:
+        
+        if resolved_person_id:
             try:
-                c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (actual_vendor_id, str(student_id).strip()))
-                c.execute("DELETE FROM student_parents WHERE vendor_id = ? AND parent_id = ?", (actual_vendor_id, parent_id))
-                c.execute("DELETE FROM parent_users WHERE id = ?", (parent_id,))
+                c.execute("UPDATE parent_users SET selected_person_id = ? WHERE id = ?", (resolved_person_id, parent_id))
+                c.execute("INSERT OR IGNORE INTO student_parents (vendor_id, person_id, parent_id) VALUES (?, ?, ?)", (actual_vendor_id, resolved_person_id, parent_id))
                 conn.commit()
-            except Exception:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-            conn.close()
-            return jsonify({"error": "No identity found"}), 404
-        if not stored_device_id:
-            c.execute("UPDATE parent_users SET device_id = ? WHERE id = ?", (device_id, parent_id))
-            conn.commit()
-            stored_device_id = device_id
-        elif stored_device_id != device_id:
-            try:
-                new_sv = int(session_version or 1) + 1
-            except Exception:
-                new_sv = 2
-            c.execute("UPDATE parent_users SET device_id = ?, fcm_token = ?, session_version = ? WHERE id = ?", (device_id, fcm_token, new_sv, parent_id))
-            conn.commit()
-            stored_device_id = device_id
-            session_version = new_sv
-        if fcm_token:
-            c.execute("UPDATE parent_users SET fcm_token = ? WHERE id = ?", (fcm_token, parent_id))
-            conn.commit()
-        try:
-            c.execute("UPDATE parent_users SET selected_person_id = ? WHERE id = ?", (resolved_person_id, parent_id))
-            c.execute("INSERT OR IGNORE INTO student_parents (vendor_id, person_id, parent_id) VALUES (?, ?, ?)", (actual_vendor_id, resolved_person_id, parent_id))
-            conn.commit()
-        except Exception:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
+            except Exception as _e:
+                try: conn.rollback()
+                except: pass
+
         token_username = f"parent_{actual_vendor_id}_{student_id}"
         token = generate_token_with_claims(token_username, "parent", {"sv": int(session_version)})
         conn.close()
@@ -644,7 +804,9 @@ def parent_login():
             "student_id": student_id,
             "role": "parent",
             "vendor_id": actual_vendor_id,
-            "parent_id": parent_id
+            "parent_id": parent_id,
+            "person_id": resolved_person_id,
+            "face_registered": bool(face_template)
         })
     except Exception as e:
         conn.close()
@@ -718,9 +880,21 @@ def get_parent_attendance():
             ORDER BY a.timestamp DESC
             LIMIT ?
         """, (parent_id, vendor_id, date_filter, limit))
-        rows = c.fetchall()
+        rows = c.fetchall() or []
         conn.close()
-        return jsonify({"attendance": [dict(r) for r in rows], "date": date_filter})
+        
+        formatted_attendance = []
+        for r in rows:
+            d = dict(r)
+            ts = d.get('timestamp')
+            if ts and not isinstance(ts, str):
+                try: d['timestamp'] = ts.strftime("%Y-%m-%d %H:%M:%S")
+                except: pass
+            elif ts and isinstance(ts, str) and 'T' in ts:
+                d['timestamp'] = ts.replace('T', ' ')
+            formatted_attendance.append(d)
+
+        return jsonify({"attendance": formatted_attendance, "date": date_filter})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -806,16 +980,27 @@ def parent_student_day():
             (vendor_id, person_id, date_filter),
         )
         rows = c.fetchall() or []
-        attendance = [dict(r) for r in rows]
+        attendance = []
+        for r in rows:
+            d = dict(r)
+            ts = d.get('timestamp')
+            if ts and not isinstance(ts, str):
+                try: d['timestamp'] = ts.strftime("%Y-%m-%d %H:%M:%S")
+                except: pass
+            elif ts and isinstance(ts, str) and 'T' in ts:
+                d['timestamp'] = ts.replace('T', ' ')
+            attendance.append(d)
 
         check_in = None
         check_out = None
         last_status = None
         for r in attendance:
-            last_status = r.get("status") or last_status
-            if r.get("status") == "CHECK_IN" and not check_in:
+            st = r.get("status")
+            if st:
+                last_status = st
+            if st == "CHECK_IN" and not check_in:
                 check_in = r.get("timestamp")
-            if r.get("status") == "CHECK_OUT":
+            if st == "CHECK_OUT":
                 check_out = r.get("timestamp")
 
         student_custom = {}
@@ -831,8 +1016,8 @@ def parent_student_day():
                 "person_id": student_row["id"],
                 "name": student_row["name"],
                 "phone": student_row["phone"],
-                "department": student_row["department"] if "department" in student_row.keys() else None,
-                "designation": student_row["designation"] if "designation" in student_row.keys() else None,
+                "department": student_row["department"] if "department" in (student_row.keys() if hasattr(student_row, 'keys') else []) else None,
+                "designation": student_row["designation"] if "designation" in (student_row.keys() if hasattr(student_row, 'keys') else []) else None,
                 "student_number": student_custom.get("student_number") or student_number,
                 "custom_data": student_custom,
             },
@@ -940,5 +1125,58 @@ def logout():
         return jsonify({"status": "success", "message": "Logged out"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+        conn.close()
+@auth_bp.route("/student/verify-password", methods=["POST"])
+def verify_student_password():
+    data = request.json
+    username = data.get("username")
+    password = data.get("password")
+    
+    if not username or not password:
+        return jsonify({"error": "Missing credentials"}), 400
+        
+    conn = get_db_connection()
+    try:
+        if not getattr(conn, "_is_pg", False):
+            conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute("SELECT * FROM system_users WHERE username = ? AND role = 'user'", (username,))
+        user = c.fetchone()
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+            
+        user_dict = dict(user)
+        stored_pw = user_dict.get("password")
+        
+        if verify_password(password, stored_pw):
+            # Student PIN/Password verified. Return full login response including token.
+            from services.auth_service import generate_token
+            token = generate_token(username, user_dict.get('role', 'user'), user_dict.get('vendor_id'))
+            
+            # Record activation
+            from flask import request
+            client_ip = request.remote_addr
+            device_id = request.json.get('device_id', 'web-student')
+            
+            try:
+                c.execute(
+                    "INSERT INTO active_sessions (username, token, device_id, ip_address, platform) VALUES (?, ?, ?, ?, 'web')",
+                    (username, token, device_id, client_ip)
+                )
+                conn.commit()
+            except Exception as e:
+                logger.error(f"Failed to record session: {e}")
+
+            return jsonify({
+                "status": "success",
+                "username": username,
+                "role": user_dict.get('role'),
+                "token": token,
+                "vendor_id": user_dict.get('vendor_id'),
+                "person_id": user_dict.get('person_id'),
+                "message": "Login successful"
+            })
+        else:
+            return jsonify({"error": "Invalid custom password"}), 401
     finally:
         conn.close()

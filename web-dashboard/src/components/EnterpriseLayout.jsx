@@ -17,7 +17,8 @@ import {
   DollarSign,
   Activity,
   Menu,
-  X
+  X,
+  FileCheck
 } from 'lucide-react';
 import { Image as ImageIcon } from 'lucide-react';
 
@@ -35,6 +36,7 @@ const adminNavItems = [
   { name: 'Reports', path: '/reports', icon: FileText },
   { name: 'Settings', path: '/settings', icon: Settings },
   { name: 'Audit Logs', path: '/audit-logs', icon: Shield },
+  { name: 'Leave Management', path: '/leave-management', icon: FileCheck },
 ];
 
 const superAdminNavItems = [
@@ -47,10 +49,11 @@ const superAdminNavItems = [
 
 const userNavItems = [
   { name: 'Attendance', path: '/attendance', icon: ClipboardList },
+  { name: 'Leave Management', path: '/leave-management', icon: FileCheck },
 ];
 
 export const Sidebar = ({ isOpen, onClose }) => {
-  const { user, logout } = useAuth();
+  const { user, staffSession, logout } = useAuth();
   const navigate = useNavigate();
   const [liveFeedUnlocked, setLiveFeedUnlocked] = useState(false);
   const [seqIndex, setSeqIndex] = useState(0);
@@ -90,7 +93,20 @@ export const Sidebar = ({ isOpen, onClose }) => {
       return true;
     });
   } else if (user?.role === 'admin' || user?.role === 'vendor_admin') {
-    navItems = adminNavItems;
+    // Staff Session Handling (Leave Management Roles)
+    if (staffSession) {
+      if (staffSession.role === 'hod') {
+        // HOD only sees Leave Management and Dashboard
+        navItems = adminNavItems.filter(item => 
+          item.name === 'Leave Management' || item.name === 'Dashboard'
+        );
+      } else {
+        // Rector or other roles (Full Access as requested)
+        navItems = adminNavItems;
+      }
+    } else {
+      navItems = adminNavItems;
+    }
   } else {
     navItems = userNavItems;
   }
@@ -186,7 +202,7 @@ export const Sidebar = ({ isOpen, onClose }) => {
 };
 
 export const Topbar = ({ onToggleSidebar }) => {
-  const { user } = useAuth();
+  const { user, staffSession } = useAuth();
 
   return (
     <header className="fixed top-0 left-0 lg:left-64 right-0 h-16 bg-white border-b border-slate-200 z-30 flex items-center justify-between px-4 lg:px-8 shadow-sm transition-all duration-300">
@@ -216,8 +232,13 @@ export const Topbar = ({ onToggleSidebar }) => {
 
         <div className="flex items-center space-x-3 pl-6 border-l border-slate-200">
           <div className="text-right hidden sm:block">
-            <p className="text-sm font-bold text-slate-800 capitalize">{user?.username || 'Guest'}</p>
-            <p className="text-xs text-slate-500 capitalize">{user?.role === 'admin' ? 'Administrator' : 'TapInX User'}</p>
+            <p className="text-sm font-bold text-slate-800 capitalize">
+              {staffSession ? staffSession.name : (user?.username || 'Guest')}
+            </p>
+            <p className="text-xs text-slate-500 capitalize">
+              {staffSession ? `${staffSession.role.toUpperCase()} ${staffSession.department ? `(${staffSession.department})` : ''}` : 
+               (user?.role === 'admin' ? 'Administrator' : 'TapInX User')}
+            </p>
           </div>
           <div className="w-10 h-10 rounded-full bg-slate-200 flex items-center justify-center text-slate-600 font-bold border-2 border-white shadow-sm">
             {user?.username?.charAt(0).toUpperCase() || 'U'}

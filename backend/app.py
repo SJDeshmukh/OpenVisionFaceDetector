@@ -853,7 +853,30 @@ def add_missing_columns():
                           due_date DATE,
                           generated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                           paid_at DATETIME,
-                          FOREIGN KEY(vendor_id) REFERENCES vendors(id))''')
+                          invoice_date DATE,
+                          details TEXT)''')
+            conn.commit()
+        except Exception:
+            if is_pg: conn.rollback()
+
+        # 8. Ensure leave_requests table exists
+        try:
+            # Use SQLite syntax, PostgresCursorWrapper will translate it to SERIAL if on PG
+            c.execute('''CREATE TABLE IF NOT EXISTS leave_requests
+                         (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          vendor_id INTEGER,
+                          student_id INTEGER,
+                          leave_type TEXT,
+                          reason TEXT,
+                          start_date DATE,
+                          end_date DATE,
+                          start_time TEXT,
+                          end_time TEXT,
+                          parent_status TEXT DEFAULT 'pending',
+                          rector_status TEXT DEFAULT 'pending',
+                          hod_status TEXT DEFAULT 'pending',
+                          final_status TEXT DEFAULT 'pending',
+                          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
             conn.commit()
         except Exception:
             if is_pg: conn.rollback()
@@ -887,25 +910,63 @@ def add_missing_columns():
         except Exception:
             if is_pg: conn.rollback()
 
-        # Check parent_users columns
+        # 7c. Create leave_staff
+        try:
+            c.execute('''CREATE TABLE IF NOT EXISTS leave_staff
+                         (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          vendor_id INTEGER,
+                          name TEXT,
+                          role TEXT,
+                          pin TEXT,
+                          department TEXT,
+                          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+            conn.commit()
+        except Exception:
+            if is_pg: conn.rollback()
+        # 9. Check parent_users columns (Consolidated)
         p_cols = get_table_columns(conn, "parent_users")
-        for col_name, col_def in [
-            ('device_id', 'TEXT'),
-            ('fcm_token', 'TEXT'),
-            ('session_version', 'INTEGER DEFAULT 1')
-        ]:
-            if col_name not in p_cols:
-                try:
-                    c.execute(f"ALTER TABLE parent_users ADD COLUMN {col_name} {col_def}")
-                    conn.commit()
-                except Exception:
-                    if is_pg: conn.rollback()
+        if p_cols:
+            for col_name, col_def in [
+                ('device_id', 'TEXT'),
+                ('fcm_token', 'TEXT'),
+                ('session_version', 'INTEGER DEFAULT 1'),
+                ('face_image', 'TEXT'),
+                ('face_template', 'TEXT'),
+                ('vendor_id', 'INTEGER')
+            ]:
+                if col_name not in p_cols:
+                    try:
+                        c.execute(f"ALTER TABLE parent_users ADD COLUMN {col_name} {col_def}")
+                        conn.commit()
+                    except Exception:
+                        if is_pg: conn.rollback()
 
         # 8. Add attendance_type to vendors table
         v_cols = get_table_columns(conn, "vendors")
         if 'attendance_type' not in v_cols:
             try:
                 c.execute("ALTER TABLE vendors ADD COLUMN attendance_type TEXT DEFAULT 'total_time'")
+                conn.commit()
+            except Exception:
+                if is_pg: conn.rollback()
+        
+        for col_name, col_def in [
+            ('num_rectors', 'INTEGER DEFAULT 0'),
+            ('num_hods', 'INTEGER DEFAULT 0'),
+            ('departments', 'TEXT')
+        ]:
+            if col_name not in v_cols:
+                try:
+                    c.execute(f"ALTER TABLE vendors ADD COLUMN {col_name} {col_def}")
+                    conn.commit()
+                except Exception:
+                    if is_pg: conn.rollback()
+
+        # 10. Check system_users columns
+        u_cols = get_table_columns(conn, "system_users")
+        if u_cols and 'password_plain' not in u_cols:
+            try:
+                c.execute("ALTER TABLE system_users ADD COLUMN password_plain TEXT")
                 conn.commit()
             except Exception:
                 if is_pg: conn.rollback()
@@ -1884,6 +1945,9 @@ app.register_blueprint(streaming_bp, url_prefix='/api')
 
 from routes.tasks import tasks_bp
 app.register_blueprint(tasks_bp, url_prefix='/api')
+
+from routes.leave_routes import leave_bp
+app.register_blueprint(leave_bp, url_prefix='/api/leave')
 
 # --- Serve Frontend (SPA) ---
 @app.route("/", defaults={'path': ''})

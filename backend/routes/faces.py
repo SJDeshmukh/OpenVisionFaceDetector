@@ -9,7 +9,7 @@ import time
 from datetime import datetime
 import numpy as np
 import cv2
-from services.auth_service import authenticate_vendor_access, extract_token, verify_token, check_vendor_status
+from services.auth_service import authenticate_vendor_access, extract_token, verify_token, check_vendor_status, hash_password
 from utils import get_db_connection, LOW_RAM_MODE, _VENDOR_EMB_CACHE, reset_sequence, ALL_FEATURES
 from services.face_service import _ensure_vendor_emb_cache, _normalize_vec, _suggest_from_cache
 from storage import upload_base64_image, presigned_url_for_key, OBJECT_STORAGE_ENABLED, compress_image
@@ -776,6 +776,40 @@ def upload_face():
                             "UPDATE parent_users SET contact_phone = ?, device_id = NULL, fcm_token = NULL, session_version = COALESCE(session_version, 1) + 1 WHERE vendor_id = ? AND student_number = ?",
                             (phone, existing.get("vendor_id"), student_number_for_parent),
                         )
+                    
+                    # --- Automated Student Login Sync on Update ---
+                    c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (existing.get("vendor_id"),))
+                    s_row = c.fetchone()
+                    features = json.loads(s_row[0]) if s_row and s_row[0] else []
+                    
+                    if 'leave_management' in features:
+                        # If phone or ID changed, we might need to update the login
+                        cd_old_obj = json.loads(existing.get("custom_data") or "{}") if existing.get("custom_data") else {}
+                        old_sid = str(cd_old_obj.get("student_number") or cd_old_obj.get("roll_number") or cd_old_obj.get("admission_number") or "").strip()
+                        new_sid = student_number_for_parent
+                        new_phone = str(phone or "").strip()
+                        
+                        if new_sid and new_phone:
+                            # Check if a login exists for this person_id
+                            c.execute("SELECT username, password_plain FROM system_users WHERE person_id = ?", (person_id,))
+                            login_row = c.fetchone()
+                            
+                            if login_row:
+                                old_username = login_row[0]
+                                old_plain = login_row[1]
+                                
+                                # If the username (student ID) changed, update it
+                                if old_username != new_sid:
+                                    c.execute("UPDATE system_users SET username = ? WHERE person_id = ?", (new_sid, person_id))
+                                
+                                # If the password was still the old phone number, update it to the new one
+                                if old_plain == str(existing.get("phone") or "").strip():
+                                    c.execute("UPDATE system_users SET password = ?, password_plain = ? WHERE person_id = ?", 
+                                              (new_phone, new_phone, person_id))
+                            else:
+                                # Proactively create it if it didn't exist
+                                c.execute("INSERT OR IGNORE INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (?, ?, ?, 'user', ?, ?)",
+                                          (new_sid, new_phone, new_phone, existing.get("vendor_id"), person_id))
             except Exception:
                 pass
         else:
@@ -792,6 +826,33 @@ def upload_face():
             c.execute("INSERT INTO faces (name, templates, face_image, phone, department, designation, shift, vendor_id, custom_data, display_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                       (name, to_store_templates, face_image, phone or "", department or "", designation or "", shift or "", vendor_id, custom_data, next_display_id))
             new_id = c.lastrowid
+            
+            # --- Automated Student Login Creation ("Inking") ---
+            try:
+                # Check if leave management is enabled for this vendor
+                c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+                s_row = c.fetchone()
+                features = json.loads(s_row[0]) if s_row and s_row[0] else []
+                
+                if 'leave_management' in features:
+                    # Extract student ID from custom_data
+                    cd_obj = json.loads(custom_data) if custom_data else {}
+                    student_id = str(cd_obj.get("student_number") or cd_obj.get("roll_number") or cd_obj.get("admission_number") or "").strip()
+                    student_phone = str(phone or "").strip()
+                    
+                    if student_id and student_phone:
+                        # Check if user already exists
+                        c.execute("SELECT username FROM system_users WHERE username = ?", (student_id,))
+                        if not c.fetchone():
+                            # Create system user
+                            # Using phone as initial password
+                            c.execute(
+                                "INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (?, ?, ?, 'user', ?, ?)",
+                                (student_id, student_phone, student_phone, vendor_id, new_id)
+                            )
+                            # We don't need to commit here if the outer transaction commits
+            except Exception as e:
+                pass # Non-critical if auto-creation fails 
             
             # Invalidate cache and persist embeddings for new insert
             try:
@@ -1142,45 +1203,57 @@ def delete_face_by_id(person_id):
         target_vendor_id = del_row[1] if del_row else None
 
         # 1. Cleanup related records FIRST to avoid FK violations in PostgreSQL
+        import logging
+        logger = logging.getLogger(__name__)
         try:
-            if target_vendor_id:
-                # person_id refers to the face being deleted
-                # We should NULL out person_id in attendance or DELETE attendance records?
-                # User wants to "delete" the person, keeping logs might be desired but the FK usually requires a decision.
-                # Current logic DELETES attendance. Let's stick to it but do it before face deletion.
-                c.execute("DELETE FROM attendance WHERE vendor_id = ? AND (person_id = ? OR (person_id IS NULL AND name = ?))", (target_vendor_id, person_id, name))
-                c.execute("DELETE FROM student_parents WHERE vendor_id = ? AND person_id = ?", (target_vendor_id, person_id))
-                c.execute("UPDATE parent_users SET selected_person_id = NULL WHERE vendor_id = ? AND selected_person_id = ?", (target_vendor_id, person_id))
-                c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND selected_person_id = ?", (target_vendor_id, person_id))
-                # Delete all embeddings for the deleted person
-                c.execute("DELETE FROM person_embeddings WHERE vendor_id = ? AND person_id = ?", (target_vendor_id, person_id))
-                # Invalidate embedding cache for this vendor
-                for k in list(_VENDOR_EMB_CACHE.keys()):
-                    if isinstance(k, (int, str)) and str(k).startswith(str(target_vendor_id)):
-                        del _VENDOR_EMB_CACHE[k]
-                    elif isinstance(k, tuple) and len(k) > 0 and k[0] == target_vendor_id:
-                        del _VENDOR_EMB_CACHE[k]
-                if sn:
-                    c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (target_vendor_id, sn))
-                    c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND student_number = ?", (target_vendor_id, sn))
-                if phone:
-                    try:
-                        c.execute("SELECT id, student_number FROM parent_users WHERE vendor_id = ? AND contact_phone = ?", (target_vendor_id, str(phone).strip()))
-                        rows_pu = c.fetchall() or []
-                        parent_ids = [row[0] for row in rows_pu if row and row[0] is not None]
-                        if parent_ids:
-                            ph_placeholders = ",".join(["?"] * len(parent_ids))
-                            c.execute(f"DELETE FROM student_parents WHERE vendor_id = ? AND parent_id IN ({ph_placeholders})", [target_vendor_id, *parent_ids])
-                        for pu_row in rows_pu:
-                            try:
-                                sn_val = pu_row[1]
-                                if sn_val:
-                                    c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (target_vendor_id, str(sn_val).strip()))
-                            except Exception:
-                                pass
-                        c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND contact_phone = ?", (target_vendor_id, str(phone).strip()))
-                    except Exception:
-                        pass
+            # Cleanup using person_id (which is a unique PK for the face)
+            logger.info(f"Cleaning up associated records for person_id={person_id}")
+            
+            c.execute("DELETE FROM attendance WHERE person_id = ?", (person_id,))
+            c.execute("DELETE FROM student_parents WHERE person_id = ?", (person_id,))
+            c.execute("UPDATE parent_users SET selected_person_id = NULL WHERE selected_person_id = ?", (person_id,))
+            c.execute("DELETE FROM parent_users WHERE selected_person_id = ?", (person_id,))
+            
+            # Cleanup leave requests and system users associated with this person
+            c.execute("DELETE FROM leave_requests WHERE student_id = ?", (person_id,))
+            c.execute("DELETE FROM system_users WHERE person_id = ?", (person_id,))
+            if sn:
+                c.execute("DELETE FROM system_users WHERE username = ?", (sn,))
+            
+            # Delete all embeddings for the deleted person
+            c.execute("DELETE FROM person_embeddings WHERE person_id = ?", (person_id,))
+            
+            logger.info("Cleanup successful for person_id=%s", person_id)
+        except Exception as cleanup_err:
+            logger.error(f"Cleanup failed for person_id={person_id}: {cleanup_err}")
+
+        try:
+            for k in list(_VENDOR_EMB_CACHE.keys()):
+                if isinstance(k, (int, str)) and str(k).startswith(str(target_vendor_id)):
+                    del _VENDOR_EMB_CACHE[k]
+                elif isinstance(k, tuple) and len(k) > 0 and k[0] == target_vendor_id:
+                    del _VENDOR_EMB_CACHE[k]
+            if sn:
+                c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (target_vendor_id, sn))
+                c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND student_number = ?", (target_vendor_id, sn))
+            if phone:
+                try:
+                    c.execute("SELECT id, student_number FROM parent_users WHERE vendor_id = ? AND contact_phone = ?", (target_vendor_id, str(phone).strip()))
+                    rows_pu = c.fetchall() or []
+                    parent_ids = [row[0] for row in rows_pu if row and row[0] is not None]
+                    if parent_ids:
+                        ph_placeholders = ",".join(["?"] * len(parent_ids))
+                        c.execute(f"DELETE FROM student_parents WHERE vendor_id = ? AND parent_id IN ({ph_placeholders})", [target_vendor_id, *parent_ids])
+                    for pu_row in rows_pu:
+                        try:
+                            sn_val = pu_row[1]
+                            if sn_val:
+                                c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (target_vendor_id, str(sn_val).strip()))
+                        except Exception:
+                            pass
+                    c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND contact_phone = ?", (target_vendor_id, str(phone).strip()))
+                except Exception:
+                    pass
         except Exception as e:
             logger.error(f"Error cleaning up relations for face {person_id}: {e}")
 

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { Plus, Check, X, Shield, User, Lock, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight, Search, Filter, ArrowLeft, ArrowRight, Eye, Settings, Trash2, Database, Download, RefreshCw, Layers, Upload, Activity, Battery, WifiOff } from 'lucide-react';
+import { Plus, Check, X, Shield, User, Users, Lock, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight, Search, Filter, ArrowLeft, ArrowRight, Eye, Settings, Trash2, Database, Download, RefreshCw, Layers, Upload, Activity, Battery, WifiOff } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { API_URL, FRONTEND_BUNDLES, BASE_URL } from '../config';
 import { useSocket } from '../context/SocketContext';
@@ -35,7 +35,7 @@ const SuperAdminDashboard = () => {
       value: 'school', label: 'School / College / Tuitions', default_frontend_bundle_id: 'attendance_ui', default_registration_config: [
         { field: 'student_number', label: 'Student ID', type: 'text', required: true, options: [] },
         { field: 'phone', label: 'Parent Mobile Number', type: 'text', required: true, options: [] },
-        { field: 'department', label: 'Class/Section', type: 'text', required: false, options: [] }
+        { field: 'department', label: 'Class/Section (Dept)', type: 'select', required: true, options: [] }
       ]
     },
     {
@@ -65,10 +65,22 @@ const SuperAdminDashboard = () => {
   // Features Config
   const [availableFeatures, setAvailableFeatures] = useState([]);
   const [bundleConfig, setBundleConfig] = useState({});
+  const [vendorEmployees, setVendorEmployees] = useState([]);
+  const [vendorStudentLogins, setVendorStudentLogins] = useState([]);
   const [vendorDevices, setVendorDevices] = useState([]);
   const [deviceEdits, setDeviceEdits] = useState({});
   const [deviceSlots, setDeviceSlots] = useState([]);
   const [newSlotName, setNewSlotName] = useState('');
+
+  // --- Leave Management Configuration State ---
+  const [showLeaveConfigModal, setShowLeaveConfigModal] = useState(false);
+  const [leaveDepts, setLeaveDepts] = useState([]);
+  const [leaveStaff, setLeaveStaff] = useState([]);
+  const [leaveStudents, setLeaveStudents] = useState([]);
+  const [loadingLeaveData, setLoadingLeaveData] = useState(false);
+  const [newDept, setNewDept] = useState('');
+  const [newStaff, setNewStaff] = useState({ name: '', role: 'rector', pin: '', department: '' });
+  const [configLoading, setConfigLoading] = useState(false);
 
   // Stats State
   const [stats, setStats] = useState({
@@ -96,7 +108,6 @@ const SuperAdminDashboard = () => {
   const [activeTab, setActiveTab] = useState('overview'); // 'overview' | 'vendor_details'
   const [detailViewMode, setDetailViewMode] = useState('list'); // 'list' | 'vendor' | 'employee'
   const [selectedVendorForDetail, setSelectedVendorForDetail] = useState(null);
-  const [vendorEmployees, setVendorEmployees] = useState([]);
   const [selectedEmployeeForDetail, setSelectedEmployeeForDetail] = useState(null);
   const [employeeReport, setEmployeeReport] = useState(null);
   const [reportDateRange, setReportDateRange] = useState({
@@ -145,6 +156,7 @@ const SuperAdminDashboard = () => {
       fetchStats();
       if (selectedVendorForDetail?.id) {
         fetchVendorEmployees(selectedVendorForDetail.id);
+        fetchVendorStudentLogins(selectedVendorForDetail.id);
         if (detailViewMode === 'employee' && selectedEmployeeForDetail) {
           fetchEmployeeReport(selectedVendorForDetail.id, selectedEmployeeForDetail);
         }
@@ -211,6 +223,86 @@ const SuperAdminDashboard = () => {
       });
       setRegistrationTemplates(res.data.templates || {});
     } catch (e) { }
+  };
+
+  const fetchVendorStudentLogins = async (vendorId) => {
+    try {
+      const resp = await axios.get(`${API_URL}/admin/vendors/${vendorId}/student-logins`, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      setVendorStudentLogins(resp.data.logins || []);
+    } catch (e) { console.error(e); }
+  };
+
+  const fetchLeaveConfig = async (vendorId) => {
+    setConfigLoading(true);
+    try {
+      const deptsRes = await axios.get(`${API_URL}/leave/admin/departments`, {
+        params: { vendor_id: vendorId },
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      const staffRes = await axios.get(`${API_URL}/leave/admin/staff`, {
+        params: { vendor_id: vendorId },
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      setLeaveDepts(deptsRes.data.departments || []);
+      setLeaveStaff(staffRes.data.staff || []);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setConfigLoading(false);
+    }
+  };
+
+  const handleAddDept = async (vendorId) => {
+    if (!newDept.trim()) return;
+    try {
+      await axios.post(`${API_URL}/leave/admin/departments`, {
+        vendor_id: vendorId,
+        name: newDept.trim()
+      }, { 
+        params: { vendor_id: vendorId },
+        headers: { Authorization: `Bearer ${user?.token}` } 
+      });
+      setNewDept('');
+      fetchLeaveConfig(vendorId);
+    } catch (e) { alert(e.response?.data?.error || e.message); }
+  };
+
+  const handleDeleteDept = async (vendorId, dept) => {
+    if (!window.confirm(`Delete department "${dept}"?`)) return;
+    try {
+      await axios.delete(`${API_URL}/leave/admin/departments`, {
+        params: { vendor_id: vendorId, name: dept },
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      fetchLeaveConfig(vendorId);
+    } catch (e) { alert(e.response?.data?.error || e.message); }
+  };
+
+  const handleAddStaff = async (vendorId) => {
+    try {
+      await axios.post(`${API_URL}/leave/admin/staff`, {
+        vendor_id: vendorId,
+        ...newStaff
+      }, { 
+        params: { vendor_id: vendorId },
+        headers: { Authorization: `Bearer ${user?.token}` } 
+      });
+      setNewStaff({ name: '', role: 'rector', pin: '', department: '' });
+      fetchLeaveConfig(vendorId);
+    } catch (e) { alert(e.response?.data?.error || e.message); }
+  };
+
+  const handleDeleteStaff = async (vendorId, staffId) => {
+    if (!window.confirm("Delete this staff member?")) return;
+    try {
+      await axios.delete(`${API_URL}/leave/admin/staff`, {
+        params: { vendor_id: vendorId, id: staffId },
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      fetchLeaveConfig(vendorId);
+    } catch (e) { alert(e.response?.data?.error || e.message); }
   };
 
   const fetchVendorDevices = async (vendorId) => {
@@ -313,6 +405,69 @@ const SuperAdminDashboard = () => {
       alert(msg);
     }
   };
+
+  const fetchLeaveStaff = async (vendorId) => {
+    try {
+      const res = await axios.get(`${API_URL}/api/leave/admin/staff`, {
+        params: { vendor_id: vendorId },
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      setLeaveStaff(res.data.staff || []);
+    } catch (e) {
+      console.error("Error fetching staff:", e);
+    }
+  };
+
+  const fetchVendorDepts = async (vendorId) => {
+    try {
+      const res = await axios.get(`${API_URL}/api/leave/admin/departments`, {
+        params: { vendor_id: vendorId },
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      setVendorDepts(res.data.departments || []);
+    } catch (e) {
+      console.error("Error fetching depts:", e);
+    }
+  };
+  const fetchLeaveStudents = async (vendorId) => {
+    try {
+      const res = await axios.get(`${API_URL}/admin/vendors/${vendorId}/leave/students`, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      setLeaveStudents(res.data.students || []);
+    } catch (e) {
+      console.error("Error fetching leave students:", e);
+    }
+  };
+
+  const handleOpenLeaveConfig = async (vendor) => {
+    setEditingVendor(vendor);
+    setShowLeaveConfigModal(true);
+    setLoadingLeaveData(true);
+    try {
+      await Promise.all([
+        fetchVendorDepts(vendor.id),
+        fetchLeaveStaff(vendor.id),
+        fetchLeaveStudents(vendor.id)
+      ]);
+    } finally {
+      setLoadingLeaveData(false);
+    }
+  };
+
+  const handleCreateStaff = async (vendorId) => {
+    try {
+      await axios.post(`${API_URL}/api/leave/admin/staff`, 
+        { ...newStaff, vendor_id: vendorId },
+        { headers: { Authorization: `Bearer ${user?.token}` } }
+      );
+      fetchLeaveStaff(vendorId);
+      setNewStaff({ name: '', role: 'hod', pin: '', department: '' });
+    } catch (e) {
+      alert(e.response?.data?.error || "Failed to create staff");
+    }
+  };
+
 
   const deletePlaceSlot = async (vendorId, slotName) => {
     if (!slotName) return;
@@ -819,11 +974,10 @@ const SuperAdminDashboard = () => {
   const fetchVendorEmployees = async (vendorId) => {
     setLoading(true);
     try {
-      const response = await axios.get(`${API_URL}/persons`, {
-        params: { vendor_id: vendorId },
+      const response = await axios.get(`${API_URL}/admin/vendors/${vendorId}/employees`, {
         headers: { Authorization: `Bearer ${user?.token}` }
       });
-      setVendorEmployees(response.data.persons);
+      setVendorEmployees(response.data.employees || []);
       setDetailViewMode('vendor');
     } catch (error) {
       alert("Error fetching employees: " + (error.response?.data?.error || error.message));
@@ -1595,6 +1749,78 @@ const SuperAdminDashboard = () => {
                   </div>
                 </>
               )}
+
+              <div className="mt-12 pt-8 border-t border-slate-200">
+                <div className="flex items-center justify-between mb-6">
+                  <div>
+                    <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                      <Lock size={20} className="text-blue-600" />
+                      Student Web Logins
+                    </h3>
+                    <p className="text-sm text-slate-500 mt-1">View and manage student credentials (plain-text passwords visible here)</p>
+                  </div>
+                  <button
+                    onClick={() => fetchVendorStudentLogins(selectedVendorForDetail.id)}
+                    className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg border border-slate-200 transition-all font-medium text-sm"
+                  >
+                    <RefreshCw size={14} /> Refresh Logins
+                  </button>
+                </div>
+
+                {vendorStudentLogins.length === 0 ? (
+                  <div className="text-center py-16 text-slate-400 bg-slate-50/50 rounded-2xl border border-dashed border-slate-200">
+                    <User size={48} className="mx-auto mb-3 opacity-20" />
+                    <p>No student logins generated yet for this vendor.</p>
+                  </div>
+                ) : (
+                  <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-sm">
+                        <thead>
+                          <tr className="bg-slate-50/50 text-slate-600 border-b border-slate-200">
+                            <th className="p-4 font-bold uppercase tracking-wider text-[10px]">Student ID</th>
+                            <th className="p-4 font-bold uppercase tracking-wider text-[10px]">Full Name</th>
+                            <th className="p-4 font-bold uppercase tracking-wider text-[10px]">Initial Password</th>
+                            <th className="p-4 font-bold uppercase tracking-wider text-[10px]">Last Login</th>
+                            <th className="p-4 font-bold uppercase tracking-wider text-[10px]">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {vendorStudentLogins.map((login, idx) => (
+                            <tr key={idx} className="hover:bg-blue-50/30 transition-colors group">
+                              <td className="p-4">
+                                <span className="font-mono font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded">{login.username}</span>
+                              </td>
+                              <td className="p-4 font-medium text-slate-700">{login.full_name || '-'}</td>
+                              <td className="p-4">
+                                <div className="flex items-center gap-2">
+                                  <code className="bg-amber-50 text-amber-700 px-2 py-1 rounded font-mono font-bold text-xs border border-amber-100">
+                                    {login.password_plain || '********'}
+                                  </code>
+                                </div>
+                              </td>
+                              <td className="p-4 text-slate-500 font-mono text-xs">{login.last_login || 'Never'}</td>
+                              <td className="p-4">
+                                {login.password_plain ? (
+                                  <span className="flex items-center gap-1.5 text-amber-600 text-xs font-bold">
+                                    <div className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></div>
+                                    First Login Pending
+                                  </span>
+                                ) : (
+                                  <span className="flex items-center gap-1.5 text-green-600 text-xs font-bold">
+                                    <div className="w-1.5 h-1.5 rounded-full bg-green-500"></div>
+                                    Password Changed
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -1647,7 +1873,7 @@ const SuperAdminDashboard = () => {
                       } catch (e) { reg = []; }
                       return reg && reg.length > 0 ? (
                         reg
-                          .filter(field => field.enabled !== false)
+                          .filter(field => field.enabled !== false && field.field !== 'student_number')
                           .map((field, index) => {
                             const val = (() => {
                               let custom = {};
@@ -1686,9 +1912,33 @@ const SuperAdminDashboard = () => {
                         </>
                       );
                     })()}
-                    <div className="flex justify-between items-center pb-1">
-                      <span className="text-slate-500 text-sm">Vendor</span>
-                      <span className="font-semibold text-slate-700">{selectedVendorForDetail.company_name}</span>
+                    <div className="mt-4 pt-4 border-t border-slate-100">
+                      <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Student Login Credentials</h4>
+                      <div className="space-y-3">
+                        <div className="flex justify-between items-center">
+                          <span className="text-slate-500 text-sm">Student ID (Username)</span>
+                          <span className="font-mono font-bold text-blue-700 bg-blue-100 px-3 py-1 rounded border border-blue-200 shadow-sm">
+                            {selectedEmployeeForDetail.student_username || '-'}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-slate-500 text-sm">Password (Visible)</span>
+                          <span className="font-mono font-bold text-amber-700 bg-amber-100 px-3 py-1 rounded border border-amber-200 shadow-sm">
+                            {selectedEmployeeForDetail.password_plain || '-'}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-slate-500 text-sm">Mobile Number</span>
+                          <span className="font-semibold text-slate-700 text-sm">{selectedEmployeeForDetail.phone || '-'}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 pt-4 border-t border-slate-100">
+                      <div className="flex justify-between items-center pb-1">
+                        <span className="text-slate-500 text-sm">Vendor Name</span>
+                        <span className="font-semibold text-slate-700">{selectedVendorForDetail.company_name}</span>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -2431,6 +2681,20 @@ const SuperAdminDashboard = () => {
                           className="rounded text-indigo-600 focus:ring-indigo-500"
                         />
                         <span className="text-sm capitalize">{feature.replace('_', ' ')}</span>
+                        {feature === 'leave_management' && newVendor.features?.includes('leave_management') && editingVendor && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              fetchLeaveConfig(editingVendor.id);
+                              setShowLeaveConfigModal(true);
+                            }}
+                            className="ml-auto text-[10px] bg-blue-600 text-white px-2 py-0.5 rounded hover:bg-blue-700 transition-colors flex items-center gap-1"
+                          >
+                            <Settings size={10} /> Config
+                          </button>
+                        )}
                       </label>
                     ))}
                   </div>
@@ -2524,6 +2788,268 @@ const SuperAdminDashboard = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Leave Management Configuration Modal */}
+      {showLeaveConfigModal && editingVendor && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-[60]">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col border border-slate-200 animate-in fade-in zoom-in duration-200">
+            {/* Modal Header */}
+            <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+              <div>
+                <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                  <Shield size={20} className="text-blue-600" />
+                  Leave Management Configuration
+                </h2>
+                <p className="text-sm text-slate-500 mt-0.5">Setup departments and assigning staff for {editingVendor.company_name}</p>
+              </div>
+              <button 
+                onClick={() => setShowLeaveConfigModal(false)}
+                className="p-2 hover:bg-slate-200 rounded-full text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Modal Content */}
+            <div className="flex-1 overflow-y-auto p-8 grid grid-cols-1 lg:grid-cols-2 gap-8 bg-white">
+              {/* Left Column: Departments */}
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                    <Layers size={18} className="text-indigo-600" />
+                    Department Registry
+                  </h3>
+                  <span className="text-xs bg-indigo-50 text-indigo-700 px-2 py-1 rounded-full font-bold">
+                    {leaveDepts.length} Departments
+                  </span>
+                </div>
+                
+                <div className="flex gap-2 p-1 bg-slate-50 rounded-xl border border-slate-100 shadow-sm focus-within:ring-2 focus-within:ring-indigo-500/20 transition-all">
+                  <input
+                    type="text"
+                    placeholder="Class name (e.g. 10th A, CSE 1)"
+                    className="flex-1 bg-transparent border-none focus:ring-0 text-sm px-3 outline-none"
+                    value={newDept}
+                    onChange={(e) => setNewDept(e.target.value)}
+                  />
+                  <button 
+                    onClick={() => handleAddDept(editingVendor.id)}
+                    className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-indigo-700 transition-colors shadow-sm"
+                  >
+                    Add
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 gap-2">
+                  {leaveDepts.length === 0 ? (
+                    <div className="text-center py-12 border-2 border-dashed border-slate-100 rounded-2xl text-slate-400">
+                      <p className="text-sm">No departments registered yet.</p>
+                    </div>
+                  ) : (
+                    leaveDepts.map((dept, idx) => (
+                      <div key={idx} className="flex items-center justify-between p-3 bg-white border border-slate-100 rounded-xl hover:shadow-md transition-shadow group">
+                        <span className="font-medium text-slate-700">{dept}</span>
+                        <button 
+                          onClick={() => handleDeleteDept(editingVendor.id, dept)}
+                          className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-md transition-all opacity-0 group-hover:opacity-100"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              {/* Right Column: Staff Members */}
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                    <Users size={18} className="text-emerald-600" />
+                    Leave Staff (Rector/HOD)
+                  </h3>
+                  <span className="text-xs bg-emerald-50 text-emerald-700 px-2 py-1 rounded-full font-bold">
+                    {leaveStaff.length} Members
+                  </span>
+                </div>
+
+                <div className="bg-slate-50 p-6 rounded-2xl border border-slate-100 space-y-4 shadow-inner">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-[10px] uppercase font-bold text-slate-400 mb-1 ml-1">Staff Name</label>
+                      <input 
+                        type="text" 
+                        placeholder="Full Name" 
+                        className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500/20 outline-none transition-all shadow-sm"
+                        value={newStaff.name}
+                        onChange={e => setNewStaff({ ...newStaff, name: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] uppercase font-bold text-slate-400 mb-1 ml-1">Role</label>
+                      <select 
+                        className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500/20 outline-none transition-all shadow-sm"
+                        value={newStaff.role}
+                        onChange={e => setNewStaff({ ...newStaff, role: e.target.value })}
+                      >
+                        <option value="rector">Rector</option>
+                        <option value="hod">HOD</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-[10px] uppercase font-bold text-slate-400 mb-1 ml-1">PIN Code (4 digits)</label>
+                      <input 
+                        type="text" 
+                        maxLength={4}
+                        placeholder="e.g. 1234" 
+                        className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-sm font-mono tracking-widest focus:ring-2 focus:ring-emerald-500/20 outline-none transition-all shadow-sm"
+                        value={newStaff.pin}
+                        onChange={e => setNewStaff({ ...newStaff, pin: e.target.value.replace(/\D/g, '') })}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] uppercase font-bold text-slate-400 mb-1 ml-1">Department (HOD Only)</label>
+                      <select 
+                        className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500/20 outline-none transition-all shadow-sm disabled:opacity-50"
+                        value={newStaff.department}
+                        disabled={newStaff.role !== 'hod'}
+                        onChange={e => setNewStaff({ ...newStaff, department: e.target.value })}
+                      >
+                        <option value="">Select Department</option>
+                        {leaveDepts.map((d, i) => (
+                          <option key={i} value={d}>{d}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={() => handleCreateStaff(editingVendor.id)}
+                    className="w-full bg-emerald-600 text-white py-3 rounded-xl text-sm font-bold hover:bg-emerald-700 transition-all shadow-md shadow-emerald-600/20 flex items-center justify-center gap-2"
+                  >
+                    <Plus size={18} />
+                    Register Staff Member
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 gap-3 overflow-y-auto max-h-[300px] pr-2">
+                  {leaveStaff.length === 0 ? (
+                    <div className="text-center py-12 border-2 border-dashed border-slate-100 rounded-2xl text-slate-400">
+                      <p className="text-sm">No rectors or Hods registered yet.</p>
+                    </div>
+                  ) : (
+                    leaveStaff.map(staff => (
+                      <div key={staff.id} className="flex items-center justify-between p-4 bg-white border border-slate-100 rounded-2xl shadow-sm hover:shadow-md transition-all group">
+                        <div className="flex items-center gap-3">
+                          <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold ${staff.role === 'rector' ? 'bg-blue-100 text-blue-600' : 'bg-purple-100 text-purple-600'}`}>
+                            {staff.name.charAt(0).toUpperCase()}
+                          </div>
+                          <div>
+                            <p className="font-bold text-slate-800 text-sm">{staff.name}</p>
+                            <p className="text-[10px] text-slate-500 uppercase font-medium">
+                              {staff.role} {staff.department ? `• ${staff.department}` : ''}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-4">
+                          <div className="text-right">
+                            <p className="text-[10px] text-slate-400 font-bold uppercase">PIN Code</p>
+                            <p className="font-mono font-bold text-slate-800 tracking-widest">{staff.pin}</p>
+                          </div>
+                          <button 
+                            onClick={() => handleDeleteStaff(editingVendor.id, staff.id)}
+                            className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all opacity-0 group-hover:opacity-100"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Bottom Section: Student Web Logins */}
+            <div className="p-8 border-t border-slate-100 bg-slate-50/10">
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                    <User className="text-blue-600" size={18} />
+                    Student Web Logins
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-1">Review student account credentials and password status</p>
+                </div>
+                <button 
+                  onClick={() => fetchLeaveStudents(editingVendor.id)}
+                  className="p-2 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition-all shadow-sm"
+                  title="Refresh List"
+                >
+                  <RefreshCw size={16} />
+                </button>
+              </div>
+
+              {leaveStudents.length === 0 ? (
+                <div className="bg-white p-12 text-center rounded-3xl border-2 border-dashed border-slate-200 text-slate-400">
+                  <User size={48} className="mx-auto mb-3 opacity-20" />
+                  <p className="font-medium">No student logins found for this vendor.</p>
+                  <p className="text-xs mt-1">Students are added automatically on login.</p>
+                </div>
+              ) : (
+                <div className="overflow-hidden bg-white rounded-2xl border border-slate-200 shadow-sm">
+                  <div className="overflow-x-auto max-h-[300px]">
+                    <table className="w-full text-left border-collapse sticky-header">
+                      <thead className="sticky top-0 bg-slate-50 text-slate-500 z-10">
+                        <tr className="border-b border-slate-100">
+                          <th className="p-4 text-[10px] font-bold uppercase">Student Name</th>
+                          <th className="p-4 text-[10px] font-bold uppercase">Username (ID)</th>
+                          <th className="p-4 text-[10px] font-bold uppercase">Phone (Initial Pass)</th>
+                          <th className="p-4 text-[10px] font-bold uppercase">Status</th>
+                          <th className="p-4 text-[10px] font-bold uppercase">Current Pass (Plain)</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-50">
+                        {leaveStudents.map((stu, i) => (
+                          <tr key={i} className="hover:bg-slate-50/50 transition-colors">
+                            <td className="p-4">
+                              <p className="text-sm font-bold text-slate-800">{stu.name}</p>
+                            </td>
+                            <td className="p-4">
+                              <span className="text-xs font-mono bg-slate-100 text-slate-700 px-2 py-1 rounded">
+                                {stu.student_id}
+                              </span>
+                            </td>
+                            <td className="p-4 text-sm text-slate-600">{stu.phone || 'N/A'}</td>
+                            <td className="p-4">
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                                stu.status === 'Changed' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
+                              }`}>
+                                {stu.status.toUpperCase()}
+                              </span>
+                            </td>
+                            <td className="p-4 text-sm font-mono text-slate-500">{stu.password_plain}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-6 border-t border-slate-100 bg-slate-50/50 flex justify-end">
+              <button 
+                onClick={() => setShowLeaveConfigModal(false)}
+                className="bg-slate-900 text-white px-8 py-3 rounded-xl font-bold hover:bg-black transition-all shadow-lg shadow-slate-200"
+              >
+                Close & Save
+              </button>
+            </div>
           </div>
         </div>
       )}
