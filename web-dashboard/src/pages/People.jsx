@@ -53,7 +53,7 @@ const People = () => {
           .catch(() => setVendorConfig([]));
 
         // Fetch Leave Departments
-        axios.get(`${API_URL}/api/leave/admin/departments`, {
+        axios.get(`${API_URL}/leave/admin/departments`, {
           params: { vendor_id: user.vendor_id },
           headers: { Authorization: `Bearer ${user?.token}` }
         })

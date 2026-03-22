@@ -12,16 +12,19 @@ import {
   MapPin,
   ShieldCheck,
   Search,
-  Users
+  Users,
+  RotateCcw
 } from 'lucide-react';
 
 const LeaveManagement = () => {
-  const { user, staffSession, loginAsStaff } = useAuth();
+  const { user, staffSession, loginAsStaff, logout } = useAuth();
   const [activeTab, setActiveTab] = useState('pending');
   const [requests, setRequests] = useState([]);
   const [parents, setParents] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [dateFilter, setDateFilter] = useState('');
   const [generating, setGenerating] = useState(false);
   const [showPinModal, setShowPinModal] = useState(false);
   const [pin, setPin] = useState('');
@@ -68,12 +71,21 @@ const LeaveManagement = () => {
         }
         const res = await axios.get(url);
         setRequests(res.data.requests || []);
+      } else if (activeTab === 'history') {
+        let url;
+        if (user?.role === 'user' && !staffSession) {
+          url = `${API_URL}/leave/student/history`;
+        } else {
+          url = `${API_URL}/leave/admin/history?role=${currentRole}&status=${statusFilter}`;
+          if (staffSession?.department) {
+            url += `&department=${encodeURIComponent(staffSession.department)}`;
+          }
+        }
+        const res = await axios.get(url);
+        setRequests(res.data.history || res.data.requests || []);
       } else if (activeTab === 'parents') {
         const res = await axios.get(`${API_URL}/leave/parent-faces`);
         setParents(res.data.parents || []);
-      } else if (activeTab === 'history' && user?.role === 'user') {
-        const res = await axios.get(`${API_URL}/leave/student/history`);
-        setRequests(res.data.requests || []);
       }
     } catch (err) {
       console.error("Error fetching leave data:", err);
@@ -84,7 +96,7 @@ const LeaveManagement = () => {
 
   useEffect(() => {
     fetchData();
-  }, [activeTab, currentRole]);
+  }, [activeTab, currentRole, statusFilter]);
 
   const handleAction = async (requestId, action) => {
     try {
@@ -149,14 +161,30 @@ const LeaveManagement = () => {
     }
   };
 
+  const handleResetPassword = async () => {
+    if (!window.confirm("This will reset your password to your registered mobile number and LOG YOU OUT. Are you sure?")) return;
+    
+    try {
+      const token = user?.token;
+      await axios.post(`${API_URL}/auth/student/reset-to-default`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      alert("Password reset successfully! Please login again with your mobile number.");
+      logout();
+    } catch (err) {
+      alert("Error resetting password: " + (err.response?.data?.error || err.message));
+    }
+  };
+
   const filteredRequests = requests.filter(req => 
     (req.student_name || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
     (req.reason || "").toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   const filteredParents = parents.filter(p => 
-    p.username?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    p.student_number?.toLowerCase().includes(searchTerm.toLowerCase())
+    (p.username?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+     p.student_number?.toLowerCase().includes(searchTerm.toLowerCase())) &&
+    (dateFilter === '' || (p.created_at && p.created_at.startsWith(dateFilter)))
   );
 
   return (
@@ -200,43 +228,68 @@ const LeaveManagement = () => {
               >
                 Parent Validation
               </button>
+              <button
+                onClick={() => setActiveTab('history')}
+                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === 'history' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}
+              >
+                Leave History
+              </button>
             </>
           )}
         </div>
 
-        {user?.role !== 'user' && (
-          <div className="flex gap-2">
-            <button
-              onClick={() => setShowPinModal(true)}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg shadow-sm transition-all focus:ring-2 focus:ring-blue-500/20 text-sm font-medium ${staffSession ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'}`}
-            >
-              <ShieldCheck size={18} />
-              {staffSession ? `${staffSession.name} (${staffSession.role.toUpperCase()})` : "Enter PIN / Switch Role"}
-            </button>
-            <button
-              onClick={handleGenerateLogins}
-              disabled={generating}
-              className="flex items-center gap-2 px-4 py-2 bg-slate-800 text-white hover:bg-slate-900 rounded-lg shadow-sm transition-all disabled:opacity-50 text-sm font-medium"
-            >
-              <Users size={18} className="text-blue-400" />
-              {generating ? "Generating..." : "Generate Logins"}
-            </button>
-          </div>
-        )}
       </div>
 
-      {/* Search Bar */}
-      <div className="relative">
-        <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-slate-400">
-          <Search size={18} />
-        </span>
-        <input
-          type="text"
-          placeholder={activeTab === 'pending' ? "Search student or reason..." : "Search parent or student ID..."}
-          className="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-        />
+      {/* Search Bar & Filters */}
+      <div className="flex flex-col md:flex-row gap-4">
+        <div className="relative flex-1">
+          <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-slate-400">
+            <Search size={18} />
+          </span>
+          <input
+            type="text"
+            placeholder={activeTab === 'parents' ? "Search parent or student ID..." : "Search student or reason..."}
+            className="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+          />
+        </div>
+        
+        {activeTab === 'history' && user?.role !== 'user' && (
+          <div className="flex items-center gap-2">
+            <label className="text-sm font-medium text-slate-700">Status:</label>
+            <select
+              className="p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm bg-white"
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+            >
+              <option value="all">All Status</option>
+              <option value="pending">Pending</option>
+              <option value="approved">Approved</option>
+              <option value="rejected">Rejected</option>
+            </select>
+          </div>
+        )}
+        
+        {(activeTab === 'parents' || activeTab === 'history') && (
+          <div className="flex items-center gap-2">
+            <Calendar size={18} className="text-slate-400" />
+            <input
+              type="date"
+              className="p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm"
+              value={dateFilter}
+              onChange={(e) => setDateFilter(e.target.value)}
+            />
+            {dateFilter && (
+              <button 
+                onClick={() => setDateFilter('')}
+                className="text-xs text-blue-600 font-bold hover:underline"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {loading ? (
@@ -325,6 +378,24 @@ const LeaveManagement = () => {
                   {loading ? "Submitting..." : "Submit Leave Request"}
                 </button>
               </form>
+
+              {/* Reset Password section for students */}
+              <div className="mt-8 pt-6 border-t border-slate-100 italic">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                  <div>
+                    <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                       <RotateCcw size={16} className="text-slate-400" /> Security Settings
+                    </h4>
+                    <p className="text-xs text-slate-500 mt-1">Reset your custom password back to your mobile number</p>
+                  </div>
+                  <button
+                    onClick={handleResetPassword}
+                    className="flex items-center gap-2 px-4 py-2 text-slate-600 hover:bg-slate-50 rounded-lg border border-slate-200 transition-colors text-xs font-bold uppercase tracking-wider"
+                  >
+                    Reset Password
+                  </button>
+                </div>
+              </div>
             </div>
           ) : activeTab === 'pending' ? (
             filteredRequests.length > 0 ? (
@@ -383,9 +454,25 @@ const LeaveManagement = () => {
                 requests.map(req => (
                   <div key={req.id} className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
                     <div className="flex justify-between items-start mb-4">
-                      <div>
-                        <h3 className="font-bold text-slate-800">{req.leave_type === 'home' ? 'Home Visit' : 'Night Out'}</h3>
-                        <p className="text-sm text-slate-500">{req.start_date} to {req.end_date}</p>
+                      <div className="flex items-center gap-3">
+                        {user?.role !== 'user' && (
+                          <div className="p-2 bg-blue-50 text-blue-600 rounded-full shrink-0">
+                            <User size={20} />
+                          </div>
+                        )}
+                        <div>
+                          <h3 className="font-bold text-slate-800">
+                            {user?.role !== 'user' ? req.student_name : (req.leave_type === 'home' ? 'Home Visit' : 'Night Out')}
+                          </h3>
+                          <div className="flex items-center gap-3 text-sm text-slate-500">
+                            {user?.role !== 'user' && (
+                              <span className="font-mono bg-slate-100 px-1.5 py-0.5 rounded text-[11px] uppercase tracking-tighter">
+                                {req.leave_type === 'home' ? 'Home Visit' : 'Night Out'}
+                              </span>
+                            )}
+                            <p className="text-sm text-slate-500">{req.start_date} to {req.end_date}</p>
+                          </div>
+                        </div>
                       </div>
                       <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${req.final_status === 'approved' ? 'bg-green-100 text-green-700' : req.final_status === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
                         {req.final_status}
@@ -424,7 +511,7 @@ const LeaveManagement = () => {
               ) : (
                 <div className="text-center py-12 bg-slate-50 rounded-xl border border-dashed border-slate-300">
                   <Clock size={48} className="mx-auto text-slate-300 mb-2" />
-                  <p className="text-slate-500">Your leave request history will appear here.</p>
+                  <p className="text-slate-500">{user?.role === 'user' ? "Your leave request history will appear here." : "No leave history records match your filters."}</p>
                 </div>
               )}
             </div>
@@ -451,17 +538,25 @@ const LeaveManagement = () => {
                       </div>
                     </div>
                     <div className="p-4 space-y-2">
-                      <h3 className="font-bold text-slate-800">{parent.username}</h3>
+                      <div className="flex justify-between items-start">
+                        <h3 className="font-bold text-slate-800">{parent.username}</h3>
+                        <span className="text-[10px] text-slate-400 font-mono">{parent.created_at?.split('T')[0]}</span>
+                      </div>
                       <div className="text-xs text-slate-500 space-y-1">
-                        <p className="flex items-center gap-1 uppercase tracking-tighter">
-                          <Users size={12} /> Student ID: <span className="text-slate-800 font-medium">{parent.student_number}</span>
-                        </p>
-                        <p className="flex items-center gap-1">
-                          <Clock size={12} /> Phone: <span className="text-slate-800">{parent.contact_phone}</span>
+                        <div className="p-2 bg-slate-50 rounded-lg border border-slate-100">
+                          <p className="text-[10px] uppercase font-bold text-slate-400 mb-1">Student Linked</p>
+                          <p className="font-bold text-slate-800 flex items-center gap-1">
+                            <User size={12} className="text-blue-600" />
+                            {parent.student_name || 'Not Found'}
+                          </p>
+                          <p className="text-[10px] font-mono text-slate-500">{parent.student_number}</p>
+                        </div>
+                        <p className="flex items-center gap-1 pt-1">
+                          <Clock size={12} /> Phone: <span className="text-slate-800">{parent.contact_phone || '-'}</span>
                         </p>
                       </div>
                       <button className="w-full mt-2 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 rounded-md border border-slate-200 transition-colors">
-                        View Details
+                        View History
                       </button>
                     </div>
                   </div>

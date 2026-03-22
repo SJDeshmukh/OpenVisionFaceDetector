@@ -28,6 +28,7 @@ class BusinessSelectActivity : AppCompatActivity() {
     private var allBusinesses: List<BusinessTypeItem> = emptyList()
     private lateinit var businessAdapter: BusinessTypeCardAdapter
     private val legacyLocalUrl = "http://192.0.0.2:5001/"
+    private val legacyLocalUrl2 = "http://192.168.1.2:5001/"
     private val currentLocalUrl = BuildConfig.BASE_URL
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -44,7 +45,7 @@ class BusinessSelectActivity : AppCompatActivity() {
 
         val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
         var initialUrl = prefs.getString("server_url", null)
-        if (initialUrl == legacyLocalUrl) {
+        if (initialUrl == legacyLocalUrl || initialUrl == legacyLocalUrl2) {
             initialUrl = RetrofitClient.getBaseUrl()
             prefs.edit().putString("server_url", initialUrl).apply()
         }
@@ -205,8 +206,16 @@ class BusinessSelectActivity : AppCompatActivity() {
             override fun onResponse(call: Call<JsonObject>, response: Response<JsonObject>) {
                 progress.visibility = View.GONE
                 if (!response.isSuccessful || response.body() == null) {
-                    tvError.visibility = View.VISIBLE
                     val base = RetrofitClient.getBaseUrl()
+                    val remote = BuildConfig.REMOTE_BASE_URL
+                    if (base != remote) {
+                        tvError.text = "Local offline ($base), trying Remote..."
+                        RetrofitClient.setBaseUrl(remote)
+                        prefs.edit().putString("server_url", remote).apply()
+                        fetchBusinessTypes(progress, tvError, prefs)
+                        return
+                    }
+                    tvError.visibility = View.VISIBLE
                     tvError.text = if (allBusinesses.isNotEmpty()) "Server unreachable ($base). Using cached list. Tap Server to change." else "Server unreachable ($base)."
                     return
                 }
@@ -253,8 +262,17 @@ class BusinessSelectActivity : AppCompatActivity() {
 
             override fun onFailure(call: Call<JsonObject>, t: Throwable) {
                 progress.visibility = View.GONE
-                tvError.visibility = View.VISIBLE
                 val base = RetrofitClient.getBaseUrl()
+                val remote = BuildConfig.REMOTE_BASE_URL
+                if (base != remote) {
+                    tvError.visibility = View.VISIBLE
+                    tvError.text = "Local offline ($base), trying Remote..."
+                    RetrofitClient.setBaseUrl(remote)
+                    prefs.edit().putString("server_url", remote).apply()
+                    fetchBusinessTypes(progress, tvError, prefs)
+                    return
+                }
+                tvError.visibility = View.VISIBLE
                 tvError.text = if (allBusinesses.isNotEmpty()) "Server unreachable ($base). Using cached list. Tap Server to change." else "Server unreachable ($base)."
             }
         })

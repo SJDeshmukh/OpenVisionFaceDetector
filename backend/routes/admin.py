@@ -1421,19 +1421,25 @@ def update_vendor_details(vendor_id):
                 query += f"{field} = ?, "
                 params.append(data[field])
         
-        # Sync Features if frontend_bundle_id is updated
-        if 'frontend_bundle_id' in data:
+        # Sync Features: Prioritize granular features if provided, otherwise fallback to bundle defaults
+        features_json = None
+        if 'features' in data:
+            features_val = data['features']
+            if isinstance(features_val, list):
+                features_json = json.dumps(features_val)
+        elif 'frontend_bundle_id' in data:
             new_bundle_id = data['frontend_bundle_id']
             new_features = BUNDLE_FEATURES.get(new_bundle_id, [])
             features_json = json.dumps(new_features)
-            
+
+        if features_json:
             # Check if subscription exists
             c.execute("SELECT id FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
             if c.fetchone():
                 c.execute("UPDATE subscriptions SET features = ? WHERE vendor_id = ?", (features_json, vendor_id))
             else:
-                # Should create one? Maybe not here.
-                pass
+                # Create if missing (Self-healing)
+                c.execute("INSERT INTO subscriptions (vendor_id, features) VALUES (?, ?)", (vendor_id, features_json))
         
         if 'config' in data:
             config = data['config']
@@ -1575,14 +1581,63 @@ def delete_vendor(vendor_id):
             for r in fetched:
                 row = r if isinstance(r, dict) else {cols[i]: r[i] for i in range(len(cols))}
                 _run(c, "INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES (?, ?, ?)", (vendor_id, table, json.dumps(row)))
-        tables = ["subscriptions", "invoices", "system_users", "companies", "faces", "attendance", "active_sessions"]
-        for t in tables: archive_table(t)
+        tables = [
+            "class_batches", "attendance", "leave_requests", "student_parents", 
+            "person_embeddings", "system_users", "parent_tokens", "parent_users", 
+            "faces", "leave_staff", "vendor_device_slots", "vendor_devices", 
+            "active_sessions", "invoices", "subscriptions", "companies", "audit_logs"
+        ]
+        for t in tables:
+            key = "target_vendor_id" if t == "audit_logs" else "vendor_id"
+            archive_table(t, key=key)
+        
+        # Manual handle for class_batch_items (referenced by class_batches)
+        try:
+            _run(c, "SELECT * FROM class_batch_items WHERE batch_id IN (SELECT id FROM class_batches WHERE vendor_id = ?)", (vendor_id,))
+            cols = [d[0] for d in c.description] if hasattr(c, "description") and c.description else []
+            fetched = c.fetchall()
+            for r in fetched:
+                row = r if isinstance(r, dict) else {cols[i]: r[i] for i in range(len(cols))}
+                _run(c, "INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES (?, ?, ?)", (vendor_id, "class_batch_items", json.dumps(row)))
+            _run(c, "DELETE FROM class_batch_items WHERE batch_id IN (SELECT id FROM class_batches WHERE vendor_id = ?)", (vendor_id,))
+        except Exception:
+            pass
+
         vcols = [d[0] for d in c.description] if hasattr(c, "description") and c.description else []
         vdict = vendor_row if isinstance(vendor_row, dict) else {vcols[i]: vendor_row[i] for i in range(len(vcols))}
         _run(c, "INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES (?, ?, ?)", (vendor_id, "vendors", json.dumps(vdict)))
-        for t in tables: _run(c, f"DELETE FROM {t} WHERE vendor_id = ?", (vendor_id,))
+        
+        # Delete in reverse order of foreign key dependency
+        for t in tables:
+            key = "target_vendor_id" if t == "audit_logs" else "vendor_id"
+            _run(c, f"DELETE FROM {t} WHERE {key} = ?", (vendor_id,))
         _run(c, "DELETE FROM vendors WHERE id = ?", (vendor_id,))
+        
+        # Reset sequences if no vendors left (optional, as requested)
+        try:
+            _run(c, "SELECT COUNT(*) FROM vendors")
+            row = c.fetchone()
+            count = row[0] if row else 0
+            if count == 0:
+                is_pg = getattr(conn, "_is_pg", False)
+                reset_tables = tables + ["vendors"]
+                for t in reset_tables:
+                    try:
+                        if is_pg:
+                            _run(c, f"ALTER SEQUENCE {t}_id_seq RESTART WITH 1")
+                        else:
+                            _run(c, f"DELETE FROM sqlite_sequence WHERE name='{t}'")
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
         conn.commit()
+        try:
+            from app import socketio
+            socketio.emit('force_logout', {'vendor_id': vendor_id, 'reason': 'Vendor account deleted'}, room=f"vendor_{vendor_id}")
+        except Exception:
+            pass
         return jsonify({"success": True, "message": "Vendor archived and deleted"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -2195,7 +2250,8 @@ def get_all_employees():
     from app import get_db_connection, socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     conn = get_db_connection()
-    conn.row_factory = sqlite3.Row
+    if not getattr(conn, "_is_pg", False):
+        conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
     # Join Faces with Vendors and Attendance
@@ -2203,7 +2259,10 @@ def get_all_employees():
     query = """
         SELECT f.*, v.company_name,
                (SELECT status FROM attendance a WHERE a.person_id = f.id ORDER BY timestamp DESC LIMIT 1) as last_status,
-               (SELECT timestamp FROM attendance a WHERE a.person_id = f.id ORDER BY timestamp DESC LIMIT 1) as last_seen
+               (SELECT timestamp FROM attendance a WHERE a.person_id = f.id ORDER BY timestamp DESC LIMIT 1) as last_seen,
+               (SELECT p.face_image FROM student_parents sp JOIN parent_users p ON sp.parent_id = p.id WHERE sp.person_id = f.id LIMIT 1) as parent_face,
+               (SELECT p.username FROM student_parents sp JOIN parent_users p ON sp.parent_id = p.id WHERE sp.person_id = f.id LIMIT 1) as parent_name,
+               (SELECT p.contact_phone FROM student_parents sp JOIN parent_users p ON sp.parent_id = p.id WHERE sp.person_id = f.id LIMIT 1) as parent_phone
         FROM faces f
         LEFT JOIN vendors v ON f.vendor_id = v.id
     """
@@ -2230,7 +2289,10 @@ def get_all_employees():
             "designation": row["designation"],
             "face_image": row["face_image"],
             "last_status": row["last_status"],
-            "last_seen": row["last_seen"]
+            "last_seen": row["last_seen"],
+            "parent_face": row["parent_face"],
+            "parent_name": row["parent_name"],
+            "parent_phone": row["parent_phone"]
         })
         
     return jsonify({"employees": employees})
@@ -2241,14 +2303,18 @@ def get_vendor_employees(vendor_id):
     from app import get_db_connection, socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     conn = get_db_connection()
-    conn.row_factory = sqlite3.Row
+    if not getattr(conn, "_is_pg", False):
+        conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
     # Same logic as get_all_employees but for a specific vendor
     query = """
         SELECT f.*, v.company_name, su.username as student_username, su.password_plain,
                (SELECT status FROM attendance a WHERE a.person_id = f.id ORDER BY timestamp DESC LIMIT 1) as last_status,
-               (SELECT timestamp FROM attendance a WHERE a.person_id = f.id ORDER BY timestamp DESC LIMIT 1) as last_seen
+               (SELECT timestamp FROM attendance a WHERE a.person_id = f.id ORDER BY timestamp DESC LIMIT 1) as last_seen,
+               (SELECT p.face_image FROM student_parents sp JOIN parent_users p ON sp.parent_id = p.id WHERE sp.person_id = f.id LIMIT 1) as parent_face,
+               (SELECT p.username FROM student_parents sp JOIN parent_users p ON sp.parent_id = p.id WHERE sp.person_id = f.id LIMIT 1) as parent_name,
+               (SELECT p.contact_phone FROM student_parents sp JOIN parent_users p ON sp.parent_id = p.id WHERE sp.person_id = f.id LIMIT 1) as parent_phone
         FROM faces f
         LEFT JOIN vendors v ON f.vendor_id = v.id
         LEFT JOIN system_users su ON f.id = su.person_id AND su.role = 'user'
@@ -2273,7 +2339,10 @@ def get_vendor_employees(vendor_id):
             "last_seen": row["last_seen"],
             "phone": row["phone"],
             "student_username": row["student_username"],
-            "password_plain": row["password_plain"]
+            "password_plain": row["password_plain"],
+            "parent_face": row["parent_face"],
+            "parent_name": row["parent_name"],
+            "parent_phone": row["parent_phone"]
         })
         
     return jsonify({"employees": employees})

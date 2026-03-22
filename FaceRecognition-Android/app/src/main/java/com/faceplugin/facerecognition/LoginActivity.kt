@@ -124,11 +124,15 @@ class LoginActivity : AppCompatActivity() {
                              val token = response.body()?.token
                              val role = response.body()?.role
                              val vId = response.body()?.vendorId
+                             val faceRegistered = response.body()?.faceRegistered ?: false
+                             val faceTemplate = response.body()?.faceTemplate
                              
                              val editor = prefs.edit()
                              if (token != null) editor.putString("token", token)
                              if (role != null) editor.putString("role", role)
                              if (vId != null) editor.putInt("vendor_id", vId)
+                             editor.putBoolean("face_registered", faceRegistered)
+                             if (faceTemplate != null) editor.putString("parent_face_template", faceTemplate)
                              editor.putString("student_id", studentId)
                              editor.putString("parent_student_number", studentId)
                              editor.putString("parent_mobile_number", mobile)
@@ -433,27 +437,37 @@ class LoginActivity : AppCompatActivity() {
                 shine.postDelayed({
                     shine.visibility = View.GONE
                     val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
-                    val role = prefs.getString("role", null)
-                    val target = if (role == "parent") ParentActivity::class.java else MainActivity::class.java
+                    val target = getTargetActivity(prefs)
                     val intent = Intent(this@LoginActivity, target)
                     startActivity(intent)
                     finish()
                 }, 650)
             } else {
                 val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
-                val role = prefs.getString("role", null)
-                val target = if (role == "parent") ParentActivity::class.java else MainActivity::class.java
+                val target = getTargetActivity(prefs)
                 val intent = Intent(this@LoginActivity, target)
                 startActivity(intent)
                 finish()
             }
         } catch (_: Exception) {
             val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
-            val role = prefs.getString("role", null)
-            val target = if (role == "parent") ParentActivity::class.java else MainActivity::class.java
+            val target = getTargetActivity(prefs)
             val intent = Intent(this@LoginActivity, target)
             startActivity(intent)
             finish()
+        }
+    }
+
+    private fun getTargetActivity(prefs: android.content.SharedPreferences): Class<*> {
+        val role = prefs.getString("role", null)
+        return if (role == "parent") {
+            if (prefs.getBoolean("face_registered", false)) {
+                ParentActivity::class.java
+            } else {
+                ParentFaceRegistrationActivity::class.java
+            }
+        } else {
+            MainActivity::class.java
         }
     }
 

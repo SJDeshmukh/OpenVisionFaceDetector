@@ -6,7 +6,7 @@ import { useAuth } from './AuthContext';
 const SocketContext = createContext(null);
 
 export const SocketProvider = ({ children }) => {
-  const { user, logout, refreshFeatures } = useAuth();
+  const { user, logout, refreshFeatures, refreshUserData } = useAuth();
   const [socket, setSocket] = useState(null);
   const [toastMsg, setToastMsg] = useState(null);
 

@@ -71,10 +71,10 @@ if celery:
             
             conn2.commit()
             log_audit('create_vendor', details={'company_name': company_name}, target_vendor_id=vendor_id, actor="system")
+            socketio.emit('force_logout', {'vendor_id': vendor_id, 'reason': 'Vendor account deleted'}, room=f"vendor_{vendor_id}")
             socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
         except Exception as e:
             if conn2: conn2.rollback()
-            # Log the error but don't обязательно crash the worker if it's a known issue
             print(f"Error in process_vendor_creation_task: {e}")
             raise e
         finally:
@@ -84,22 +84,77 @@ def process_delete_vendor_task(vendor_id):
     conn = get_db_connection()
     c = conn.cursor()
     try:
-        # Delete associated data first (Postgres has FKs, but SQLite might need manual order)
+        # 0. Audit Logs and Batch Items
+        c.execute("DELETE FROM audit_logs WHERE target_vendor_id = ?", (vendor_id,))
+        try:
+            c.execute("DELETE FROM class_batch_items WHERE batch_id IN (SELECT id FROM class_batches WHERE vendor_id = ?)", (vendor_id,))
+            c.execute("DELETE FROM class_batches WHERE vendor_id = ?", (vendor_id,))
+        except Exception:
+            pass
+
+        # 1. Attendance, Leave, etc.
         c.execute("DELETE FROM attendance WHERE vendor_id = ?", (vendor_id,))
-        c.execute("DELETE FROM faces WHERE vendor_id = ?", (vendor_id,))
-        c.execute("DELETE FROM companies WHERE vendor_id = ?", (vendor_id,))
+        c.execute("DELETE FROM leave_requests WHERE vendor_id = ?", (vendor_id,))
+        c.execute("DELETE FROM person_embeddings WHERE vendor_id = ?", (vendor_id,))
+        
+        # 2. Users and Parents
         c.execute("DELETE FROM system_users WHERE vendor_id = ?", (vendor_id,))
+        c.execute("DELETE FROM student_parents WHERE vendor_id = ?", (vendor_id,))
+        
+        # 3. Devices
+        c.execute("DELETE FROM vendor_device_slots WHERE vendor_id = ?", (vendor_id,))
+        c.execute("DELETE FROM vendor_devices WHERE vendor_id = ?", (vendor_id,))
+        
+        # 4. Parent Tokens and Users
+        c.execute("DELETE FROM parent_tokens WHERE vendor_id = ?", (vendor_id,))
+        c.execute("DELETE FROM parent_users WHERE vendor_id = ?", (vendor_id,))
+        
+        # 5. Faces (now that all references are gone)
+        c.execute("DELETE FROM faces WHERE vendor_id = ?", (vendor_id,))
+        
+        # 6. Other vendor-specific data
+        c.execute("DELETE FROM leave_staff WHERE vendor_id = ?", (vendor_id,))
+        c.execute("DELETE FROM companies WHERE vendor_id = ?", (vendor_id,))
         c.execute("DELETE FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
         c.execute("DELETE FROM active_sessions WHERE vendor_id = ?", (vendor_id,))
-        c.execute("DELETE FROM vendor_devices WHERE vendor_id = ?", (vendor_id,))
         c.execute("DELETE FROM invoices WHERE vendor_id = ?", (vendor_id,))
+        
+        # 7. Finally the vendor itself
         c.execute("DELETE FROM vendors WHERE id = ?", (vendor_id,))
+        
+        # Reset sequences if no vendors left
+        try:
+            c.execute("SELECT COUNT(*) FROM vendors")
+            row = c.fetchone()
+            count = row[0] if row else 0
+            if count == 0:
+                is_pg = getattr(conn, "_is_pg", False)
+                tables = [
+                    "class_batches", "attendance", "leave_requests", "student_parents", 
+                    "person_embeddings", "system_users", "parent_tokens", "parent_users", 
+                    "faces", "leave_staff", "vendor_device_slots", "vendor_devices", 
+                    "active_sessions", "invoices", "subscriptions", "companies", "audit_logs", "vendors"
+                ]
+                for t in tables:
+                    try:
+                        if is_pg:
+                            c.execute(f"ALTER SEQUENCE {t}_id_seq RESTART WITH 1")
+                        else:
+                            c.execute(f"DELETE FROM sqlite_sequence WHERE name='{t}'")
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
         conn.commit()
-        log_audit('delete_vendor', details={'vendor_id': vendor_id}, target_vendor_id=vendor_id, actor="system")
+        # No audit log for the vendor deletion itself as we've deleted all logs for this vendor!
+        # Actually, maybe we should log it but without target_vendor_id?
+        # Let's log it globally.
+        socketio.emit('force_logout', {'vendor_id': vendor_id, 'reason': 'Vendor account deleted'}, room=f"vendor_{vendor_id}")
         socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
     except Exception as e:
         if conn: conn.rollback()
-        logger.error(f"Error in delete_vendor_task: {e}")
+        print(f"Error in delete_vendor_task: {e}")
     finally:
         if conn: conn.close()
 

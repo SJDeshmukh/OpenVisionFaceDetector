@@ -69,12 +69,16 @@ class PostgresCursorWrapper:
             # If it's system_users, the constraint is on 'username'
             if "system_users" in sql_pg.lower():
                 sql_pg += " ON CONFLICT (username) DO NOTHING"
+            elif "parent_users" in sql_pg.lower():
+                sql_pg += " ON CONFLICT (username) DO NOTHING"
             elif "active_sessions" in sql_pg.lower():
                 sql_pg += " ON CONFLICT (token) DO NOTHING"
             elif "subscriptions" in sql_pg.lower():
                  sql_pg += " ON CONFLICT (vendor_id) DO NOTHING"
             elif "vendors" in sql_pg.lower() and "id" in sql_pg.lower():
                 sql_pg += " ON CONFLICT (id) DO NOTHING"
+            elif "student_parents" in sql_pg.lower():
+                sql_pg += " ON CONFLICT (person_id, parent_id) DO NOTHING"
             else:
                 pass
 
@@ -271,7 +275,7 @@ def _init_pg_schema_on_conn(conn):
         "CREATE TABLE IF NOT EXISTS companies (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), name TEXT, working_hours REAL, shifts TEXT, draft_timetable TEXT, live_timetable TEXT, last_modified_by TEXT, last_modified_at TIMESTAMP, published_by TEXT, published_at TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS faces (id SERIAL PRIMARY KEY, name TEXT, templates TEXT, face_image TEXT, department TEXT, designation TEXT, phone TEXT, shift TEXT, daily_wage REAL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount REAL DEFAULT 0, vendor_id INTEGER REFERENCES vendors(id), custom_data TEXT, display_id INTEGER)",
         "CREATE TABLE IF NOT EXISTS attendance (id SERIAL PRIMARY KEY, name TEXT, timestamp TIMESTAMP, status TEXT, captured_image TEXT, activity TEXT, is_late INTEGER DEFAULT 0, device_id TEXT, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id))",
-        "CREATE TABLE IF NOT EXISTS system_users (username TEXT PRIMARY KEY, password TEXT, password_plain TEXT, role TEXT, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id), has_set_password INTEGER DEFAULT 0)",
+        "CREATE TABLE IF NOT EXISTS system_users (username TEXT PRIMARY KEY, password TEXT, password_plain TEXT, role TEXT, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id), has_set_password INTEGER DEFAULT 0, last_active_at TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS subscriptions (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id) UNIQUE, plan_type TEXT, start_date TIMESTAMP, end_date TIMESTAMP, status TEXT DEFAULT 'active', max_users INTEGER, max_employees INTEGER, cost_per_user REAL, setup_fee REAL, setup_fee_paid INTEGER, features TEXT, max_mobile_devices INTEGER DEFAULT 1, cost_per_employee REAL DEFAULT 0, grace_period_days INTEGER DEFAULT 0, max_web_sessions INTEGER DEFAULT 1)",
         "CREATE TABLE IF NOT EXISTS vendor_devices (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), device_id TEXT, device_name TEXT, registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, last_login_at TIMESTAMP, last_active_at TIMESTAMP, battery_level REAL, UNIQUE(vendor_id, device_id))",
         "CREATE TABLE IF NOT EXISTS active_sessions (token TEXT PRIMARY KEY, username TEXT, vendor_id INTEGER, device_id TEXT, platform TEXT, last_active TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
@@ -280,7 +284,7 @@ def _init_pg_schema_on_conn(conn):
         "CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT)",
         "CREATE TABLE IF NOT EXISTS parent_users (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), username TEXT UNIQUE, password TEXT, contact_email TEXT, contact_phone TEXT, student_number TEXT, selected_person_id INTEGER, device_id TEXT, fcm_token TEXT, session_version INTEGER DEFAULT 1, face_image TEXT, face_template TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS leave_requests (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), student_id INTEGER REFERENCES faces(id), leave_type TEXT, reason TEXT, start_date DATE, end_date DATE, start_time TEXT, end_time TEXT, parent_status TEXT DEFAULT 'pending', rector_status TEXT DEFAULT 'pending', hod_status TEXT DEFAULT 'pending', final_status TEXT DEFAULT 'pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
-        "CREATE TABLE IF NOT EXISTS student_parents (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id), parent_id INTEGER REFERENCES parent_users(id), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS student_parents (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id), parent_id INTEGER REFERENCES parent_users(id), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(person_id, parent_id))",
         "CREATE TABLE IF NOT EXISTS parent_tokens (token TEXT PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), student_number TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS person_embeddings (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id), class_year TEXT, division TEXT, branch TEXT, vec BYTEA, dim INTEGER, struct_vec BYTEA, landmarks_3d TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS class_batches (id TEXT PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), class_year TEXT, division TEXT, branch TEXT, status TEXT DEFAULT 'active', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
@@ -315,7 +319,8 @@ def _init_pg_schema_on_conn(conn):
         ("vendors", "departments", "TEXT"),
         ("system_users", "person_id", "INTEGER"),
         ("system_users", "password_plain", "TEXT"),
-        ("system_users", "has_set_password", "INTEGER DEFAULT 0")
+        ("system_users", "has_set_password", "INTEGER DEFAULT 0"),
+        ("system_users", "last_active_at", "TIMESTAMP")
     ]
     
     for table, col, col_type in cols:
@@ -323,6 +328,13 @@ def _init_pg_schema_on_conn(conn):
             run_migration(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {col_type}", f"Add {col} to {table}")
         else:
             run_migration(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}", f"Add {col} to {table}")
+
+    # 1b. PostgreSQL specific unique constraints
+    if is_pg:
+        # First clean up duplicates to avoid migration failure
+        run_migration("DELETE FROM student_parents a USING student_parents b WHERE a.id < b.id AND a.person_id = b.person_id AND a.parent_id = b.parent_id", "Cleanup student_parents duplicates")
+        # Try to add unique constraint (will fail if already exists, but run_migration handles that)
+        run_migration("ALTER TABLE student_parents ADD CONSTRAINT student_parents_unique_person_parent UNIQUE (person_id, parent_id)", "Add unique constraint to student_parents")
 
     # 2. Data Migrations
     if is_pg:
@@ -402,7 +414,7 @@ def init_sqlite_schema(conn):
         "CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT)",
         "CREATE TABLE IF NOT EXISTS parent_users (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, username TEXT UNIQUE, password TEXT, contact_email TEXT, contact_phone TEXT, student_number TEXT, selected_person_id INTEGER, device_id TEXT, fcm_token TEXT, session_version INTEGER DEFAULT 1, face_image TEXT, face_template TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS leave_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, student_id INTEGER, leave_type TEXT, reason TEXT, start_date DATE, end_date DATE, start_time TEXT, end_time TEXT, parent_status TEXT DEFAULT 'pending', rector_status TEXT DEFAULT 'pending', hod_status TEXT DEFAULT 'pending', final_status TEXT DEFAULT 'pending', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
-        "CREATE TABLE IF NOT EXISTS student_parents (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, person_id INTEGER, parent_id INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS student_parents (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, person_id INTEGER, parent_id INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(person_id, parent_id))",
         "CREATE TABLE IF NOT EXISTS parent_tokens (token TEXT PRIMARY KEY, vendor_id INTEGER, student_number TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS person_embeddings (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, person_id INTEGER, class_year TEXT, division TEXT, branch TEXT, vec BLOB, dim INTEGER, struct_vec BLOB, landmarks_3d TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS class_batches (id TEXT PRIMARY KEY, vendor_id INTEGER, class_year TEXT, division TEXT, branch TEXT, status TEXT DEFAULT 'active', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
@@ -425,6 +437,10 @@ def init_sqlite_schema(conn):
     
     # Migration: system_users
     try:
+        cur.execute("ALTER TABLE system_users ADD COLUMN password_plain TEXT")
+    except Exception:
+        pass
+    try:
         cur.execute("ALTER TABLE system_users ADD COLUMN has_set_password INTEGER DEFAULT 0")
     except Exception:
         pass
@@ -432,8 +448,11 @@ def init_sqlite_schema(conn):
         cur.execute("ALTER TABLE system_users ADD COLUMN person_id INTEGER")
     except Exception:
         pass
-    
-    cur.execute("UPDATE system_users SET has_set_password = 1 WHERE role = 'user' AND password != password_plain AND password_plain IS NOT NULL")
+
+    try:
+        cur.execute("UPDATE system_users SET has_set_password = 1 WHERE role = 'user' AND password != password_plain AND password_plain IS NOT NULL")
+    except Exception:
+        pass
     
     for col in ["face_image TEXT", "face_template TEXT", "vendor_id INTEGER"]:
         try:
@@ -447,11 +466,6 @@ def init_sqlite_schema(conn):
         except Exception:
             pass
             
-    try:
-        cur.execute("ALTER TABLE system_users ADD COLUMN password_plain TEXT")
-    except Exception:
-        pass
-
     conn.commit()
     cur.close()
 

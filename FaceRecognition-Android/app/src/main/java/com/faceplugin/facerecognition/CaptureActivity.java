@@ -87,6 +87,8 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
     private boolean isCaptureOnly = false;
     private long lastStreamTime = 0;
 
+    private boolean forceFrontCamera = false;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -94,6 +96,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
 
         context = this;
         isCaptureOnly = getIntent().getBooleanExtra("is_capture_only", false);
+        forceFrontCamera = getIntent().getBooleanExtra("force_front_camera", false);
 
         viewFinder = findViewById(R.id.preview);
         captureView = findViewById(R.id.captureView);
@@ -202,7 +205,12 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
     {
         int rotation = viewFinder.getDisplay().getRotation();
 
-        cameraSelector = new CameraSelector.Builder().requireLensFacing(SettingsActivity.getCameraLens(this)).build();
+        int defaultLens = SettingsActivity.getCameraLens(this);
+        if (forceFrontCamera) {
+            defaultLens = CameraSelector.LENS_FACING_FRONT;
+        }
+
+        cameraSelector = new CameraSelector.Builder().requireLensFacing(defaultLens).build();
 
         preview = new Preview.Builder()
                 .setTargetResolution(new Size(PREVIEW_WIDTH, PREVIEW_HEIGHT))

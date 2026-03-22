@@ -139,8 +139,14 @@ def authenticate_vendor_access():
         conn.row_factory = __import__('sqlite3').Row
         c = conn.cursor()
         
+        # Check system_users first
         c.execute("SELECT vendor_id, role FROM system_users WHERE username = ?", (username,))
         user = c.fetchone()
+        
+        # If not found in system_users, check parent_users if the role is parent
+        if not user and role == 'parent':
+            c.execute("SELECT vendor_id, 'parent' as role FROM parent_users WHERE username = ?", (username,))
+            user = c.fetchone()
         
         conn.close()
         

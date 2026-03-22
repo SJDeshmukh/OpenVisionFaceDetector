@@ -94,8 +94,10 @@ def run_archival():
                 # Delete from primary only after successful backup
                 if DATABASE_URL and not getattr(conn, "_is_fallback", False):
                     c.execute("DELETE FROM attendance WHERE vendor_id = %s AND timestamp < %s", (vendor_id, cutoff_date))
+                    c.execute("DELETE FROM leave_requests WHERE vendor_id = %s AND created_at < %s", (vendor_id, cutoff_date))
                 else:
                     c.execute("DELETE FROM attendance WHERE vendor_id = ? AND timestamp < ?", (vendor_id, cutoff_str))
+                    c.execute("DELETE FROM leave_requests WHERE vendor_id = ? AND created_at < ?", (vendor_id, cutoff_str))
 
                 total_archived += len(records)
                 logger.info(f"Archived {len(records)} records for vendor {vendor_id}")

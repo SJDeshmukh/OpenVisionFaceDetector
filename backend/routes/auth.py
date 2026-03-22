@@ -270,16 +270,19 @@ def login():
         normalized_stored = normalize_phone(stored_plain)
         
         # Identity verification logic:
-        # 1. They are a student
-        # 2. They entered their mobile number in the first screen
-        # 3. They have a custom password set (stored_pw doesn't match stored_plain)
+        # If they enter their custom password (matching the hash), let them in directly.
+        # If they enter their mobile number (matching stored_plain) AND have a custom password, trigger modal.
         
         is_entering_mobile = stored_plain and (password == stored_plain or normalized_input == normalized_stored)
         has_set_password = user.get('has_set_password') == 1
         
-        logger.info(f"Login trace for {username}: is_student={is_student}, input_match_mobile={is_entering_mobile}, has_set_password={has_set_password}, stored_plain_exists={bool(stored_plain)}")
+        logger.info(f"Login trace for {username}: is_student={is_student}, has_set_password={has_set_password}, stored_plain_exists={bool(stored_plain)}")
         
-        if is_student and is_entering_mobile and has_set_password:
+        # 1. Try verifiable password (Hash) FIRST
+        if verify_password(password, stored_pw):
+            pass_condition = True
+        # 2. If it didn't match hash, check if it's the mobile number and they HAVE a custom password set
+        elif is_student and is_entering_mobile and has_set_password:
             # They entered ID + Mobile, but they have a custom password.
             # Check if they also provided the secondary password
             secondary_password = request.json.get('secondary_password')
@@ -293,12 +296,13 @@ def login():
                     "vendor_id": user.get('vendor_id')
                 })
             
-            # Verify secondary password
+            # Verify secondary password (modal input)
             if verify_password(secondary_password, stored_pw):
                 pass_condition = True
             else:
                 return jsonify({"error": "Invalid custom password"}), 401
         
+        # 3. Fallback for non-modal cases (e.g. first login with mobile number)
         elif password == stored_pw or (stored_plain and password == stored_plain):
             pass_condition = True
         else:
@@ -311,7 +315,7 @@ def login():
                 conn_u = get_db_connection()
                 cu = conn_u.cursor()
                 cu.execute("UPDATE system_users SET password = ?, password_plain = NULL WHERE username = ?", 
-                           (hash_password(password), password, username))
+                           (hash_password(password), username))
                 conn_u.commit()
                 conn_u.close()
         except Exception as e:
@@ -653,8 +657,16 @@ def parent_login():
                 cd = None
             sn_val = ""
             if isinstance(cd, dict):
-                sn_val = str(cd.get("student_number") or cd.get("roll_number") or cd.get("admission_number") or "").strip()
-            if not sn_val and fallback_search_text and str(student_id) in str(fallback_search_text):
+                # Check multiple possible keys for student ID
+                sn_val = str(
+                    cd.get("student_number") or 
+                    cd.get("roll_number") or 
+                    cd.get("admission_number") or 
+                    cd.get("student_id") or 
+                    cd.get("id_number") or
+                    ""
+                ).strip()
+            if not sn_val and fallback_search_text and str(student_id).lower() in str(fallback_search_text).lower():
                 sn_val = str(student_id).strip()
             return sn_val
         def _find_student_person_id(vendor_to_check):
@@ -666,14 +678,15 @@ def parent_login():
                         pid2 = _row_get(st, 0, "id")
                         c_data2 = _row_get(st, 2, "custom_data")
                         sn2 = _extract_student_number_from_custom_data(c_data2, fallback_search_text=c_data2)
-                        if sn2 == str(student_id).strip():
+                        if sn2.lower() == str(student_id).strip().lower():
                             return int(pid2) if pid2 is not None else None
                     except Exception:
                         continue
             except Exception:
                 pass
             return None
-        c.execute("SELECT id, vendor_id, device_id, contact_phone, session_version, face_template FROM parent_users WHERE student_number = ?", (student_id,))
+        # Case-insensitive search for student_number in parent_users
+        c.execute("SELECT id, vendor_id, device_id, contact_phone, session_version, face_template FROM parent_users WHERE LOWER(student_number) = LOWER(?)", (str(student_id).strip(),))
         candidates = c.fetchall() or []
         for r in candidates:
             cp = _row_get(r, 3, "contact_phone")
@@ -693,14 +706,14 @@ def parent_login():
                         if not c_data:
                             continue
                         sn = _extract_student_number_from_custom_data(c_data, fallback_search_text=c_data)
-                        if sn == str(student_id).strip():
+                        if sn.lower() == str(student_id).strip().lower():
                             exists = True
                             break
                     except Exception:
                         continue
                 if not exists:
                     stale_parent_id = _row_get(row, 0, "id")
-                    c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (actual_vendor_id, str(student_id).strip()))
+                    c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND LOWER(student_number) = LOWER(?)", (actual_vendor_id, str(student_id).strip()))
                     c.execute("DELETE FROM student_parents WHERE vendor_id = ? AND parent_id = ?", (actual_vendor_id, stale_parent_id))
                     c.execute("DELETE FROM parent_users WHERE id = ?", (stale_parent_id,))
                     conn.commit()
@@ -720,7 +733,7 @@ def parent_login():
                     try:
                         cd = _row_get(st, 1, "custom_data")
                         sn = _extract_student_number_from_custom_data(cd, fallback_search_text=cd)
-                        if sn == str(student_id).strip():
+                        if sn.lower() == str(student_id).strip().lower():
                             ok = True
                             resolved_person_id = _row_get(st, 0, "id")
                             break
@@ -741,36 +754,58 @@ def parent_login():
                 row = None
                 actual_vendor_id = None
         if not row:
+            # Search faces with the provided vendor_id first
             c.execute("SELECT id, vendor_id, phone, custom_data FROM faces WHERE vendor_id = ? AND phone LIKE ?", (vendor_id, f"%{mobile_tail}%"))
             potential_students = c.fetchall() or []
-            potential_students = [
-                s for s in potential_students
-                if (lambda _cd: (lambda cd: isinstance(cd, dict) and str(cd.get('student_number') or cd.get('roll_number') or cd.get('admission_number') or '').strip() == str(student_id).strip())(
-                    (json.loads(_cd) if isinstance(_cd, str) else _cd) if _cd else {}
-                ))(_row_get(s, 3, 'custom_data'))
-            ]
+            
+            # If not found with that vendor_id, try searching ALL vendors (for convenience)
+            if not potential_students:
+                c.execute("SELECT id, vendor_id, phone, custom_data FROM faces WHERE phone LIKE ?", (f"%{mobile_tail}%",))
+                potential_students = c.fetchall() or []
+
+            def _check_student_match(st_row):
+                try:
+                    c_data_raw = _row_get(st_row, 3, 'custom_data')
+                    if not c_data_raw: return False
+                    
+                    # If it's already a dict, use it; otherwise parse JSON
+                    cd = c_data_raw if isinstance(c_data_raw, dict) else json.loads(c_data_raw)
+                    
+                    # Extract ID from custom data
+                    sn = str(
+                        cd.get("student_number") or 
+                        cd.get("roll_number") or 
+                        cd.get("admission_number") or 
+                        cd.get("student_id") or 
+                        cd.get("id_number") or
+                        ""
+                    ).strip().lower()
+                    
+                    return sn == str(student_id).strip().lower()
+                except Exception:
+                    return False
+
+            potential_students = [s for s in potential_students if _check_student_match(s)]
+            
             if potential_students:
                 try:
                     s = potential_students[0]
                     actual_vendor_id = _row_get(s, 1, "vendor_id")
                     resolved_person_id = int(_row_get(s, 0, "id"))
                     username = f"parent_{actual_vendor_id}_{student_id}"
-                    c.execute("INSERT OR IGNORE INTO parent_users (vendor_id, username, student_number, contact_phone, created_at) VALUES (?, ?, ?, ?, ?)", (actual_vendor_id, username, student_id, mobile_number, datetime.now()))
+                    
+                    # Ensure parent_users record exists for this vendor/student combo
+                    c.execute("INSERT OR IGNORE INTO parent_users (vendor_id, username, student_number, contact_phone, created_at) VALUES (?, ?, ?, ?, ?)", 
+                              (actual_vendor_id, username, student_id, mobile_number, datetime.now()))
                     conn.commit()
-                    c.execute("SELECT id, vendor_id, device_id, contact_phone, session_version, face_template FROM parent_users WHERE student_number = ? AND vendor_id = ?", (student_id, actual_vendor_id))
+                    
+                    # Fetch the newly created or existing record
+                    c.execute("SELECT id, vendor_id, device_id, contact_phone, session_version, face_template FROM parent_users WHERE LOWER(student_number) = LOWER(?) AND vendor_id = ?", 
+                              (str(student_id).strip(), actual_vendor_id))
                     row = c.fetchone()
                 except Exception as e:
+                    logger.error(f"Error creating parent record: {e}")
                     row = None
-            if not row:
-                try:
-                    c.execute("DELETE FROM parent_users WHERE student_number = ? AND contact_phone LIKE ?", (str(student_id).strip(), f"%{mobile_tail}%"))
-                    c.execute("DELETE FROM parent_tokens WHERE student_number = ?", (str(student_id).strip(),))
-                    conn.commit()
-                except Exception:
-                    try:
-                        conn.rollback()
-                    except Exception:
-                        pass
         if not row:
             conn.close()
             return jsonify({"error": "No identity found"}), 404
@@ -806,7 +841,8 @@ def parent_login():
             "vendor_id": actual_vendor_id,
             "parent_id": parent_id,
             "person_id": resolved_person_id,
-            "face_registered": bool(face_template)
+            "face_registered": bool(face_template),
+            "face_template": face_template
         })
     except Exception as e:
         conn.close()
@@ -1178,5 +1214,66 @@ def verify_student_password():
             })
         else:
             return jsonify({"error": "Invalid custom password"}), 401
+    finally:
+        conn.close()
+
+@auth_bp.route("/auth/student/reset-to-default", methods=["POST"])
+def reset_student_password_to_default():
+    from services.auth_service import extract_token, verify_token, hash_password
+    from app import get_db_connection
+    
+    auth_header = request.headers.get('Authorization')
+    if not auth_header:
+        return jsonify({"error": "Missing Authorization Header"}), 401
+    
+    token = extract_token(auth_header)
+    data = verify_token(token)
+    if not data or data.get('role') != 'user':
+        return jsonify({"error": "Unauthorized: Student access required"}), 401
+    
+    username = data['username']
+    
+    conn = get_db_connection()
+    try:
+        if not getattr(conn, "_is_pg", False):
+            conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        
+        # 1. Get student's person_id from system_users
+        c.execute("SELECT person_id, vendor_id FROM system_users WHERE username = ?", (username,))
+        user_row = c.fetchone()
+        if not user_row:
+            return jsonify({"error": "User record not found"}), 404
+        
+        user_dict = dict(user_row)
+        person_id = user_dict.get('person_id')
+        
+        if not person_id:
+            return jsonify({"error": "Student profile not linked. Contact Admin."}), 400
+            
+        # 2. Get registered mobile number from faces table
+        c.execute("SELECT phone FROM faces WHERE id = ?", (person_id,))
+        face_row = c.fetchone()
+        if not face_row:
+            return jsonify({"error": "Student identity profile not found"}), 404
+            
+        face_dict = dict(face_row)
+        phone = face_dict.get('phone')
+        if not phone:
+             return jsonify({"error": "No mobile number found in your profile"}), 400
+             
+        # 3. Reset password back to the mobile number
+        hashed_pw = hash_password(phone)
+        c.execute(
+            "UPDATE system_users SET password = ?, password_plain = ?, has_set_password = 0 WHERE username = ?", 
+            (hashed_pw, phone, username)
+        )
+        conn.commit()
+        
+        logger.info(f"Student {username} reset password to default (mobile: {phone})")
+        return jsonify({"status": "success", "message": "Password reset to registered mobile number. Please login again."})
+    except Exception as e:
+        logger.error(f"Error resetting student password: {e}")
+        return jsonify({"error": str(e)}), 500
     finally:
         conn.close()

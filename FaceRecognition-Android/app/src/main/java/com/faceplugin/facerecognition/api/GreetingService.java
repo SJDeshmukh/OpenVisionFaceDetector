@@ -75,6 +75,21 @@ public interface GreetingService {
     @POST("api/parents/logout")
     Call<com.google.gson.JsonObject> parentLogout();
 
+    @POST("api/leave/parent/register-face")
+    Call<com.google.gson.JsonObject> parentRegisterFace(@Body ParentRegisterFaceRequest request);
+
+    @GET("api/leave/parent/pending")
+    Call<com.google.gson.JsonObject> getParentPendingLeaves(@Query("student_number") String studentNumber);
+
+    @POST("api/leave/parent/approve")
+    Call<com.google.gson.JsonObject> parentApproveLeave(@Body com.google.gson.JsonObject request);
+
+    @POST("api/leave/request")
+    Call<com.google.gson.JsonObject> createLeaveRequest(@Body LeaveRequest request);
+
+    @POST("api/leave/parent/reject")
+    Call<com.google.gson.JsonObject> parentRejectLeave(@Body com.google.gson.JsonObject request);
+
     @GET("api/public/attendance-by-student")
     Call<com.google.gson.JsonObject> attendanceByStudent(@Query("student_number") String studentNumber);
     @GET("api/public/attendance-by-student")

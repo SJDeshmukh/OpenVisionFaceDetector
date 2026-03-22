@@ -23,8 +23,26 @@ android {
         ndk {
             abiFilters 'arm64-v8a', 'armeabi-v7a'
         }
-        buildConfigField "String", "BASE_URL", "\"https://tapinx--openvisionfacedetector--g4rz8tx5rcc5.code.run/\""
-        buildConfigField "String", "WEB_LOGIN_URL", "\"https://tapinx--openvisionfacedetector--g4rz8tx5rcc5.code.run/login\""
+        buildConfigField "String", "BASE_URL", "\"http://192.168.1.7:5001/\""
+        buildConfigField "String", "WEB_LOGIN_URL", "\"http://192.168.1.7:5001/login\""
+    }
+
+    flavorDimensions "env"
+    productFlavors {
+        local {
+            dimension "env"
+            buildConfigField "String", "BASE_URL", "\"http://192.168.1.7:5001/\""
+            buildConfigField "String", "LOCAL_BASE_URL", "\"http://192.168.1.7:5001/\""
+            buildConfigField "String", "REMOTE_BASE_URL", "\"https://tapinx--openvisionfacedetector--g4rz8tx5rcc5.code.run/\""
+            buildConfigField "String", "WEB_LOGIN_URL", "\"http://192.168.1.7:5001/login\""
+        }
+        remote {
+            dimension "env"
+            buildConfigField "String", "BASE_URL", "\"https://tapinx--openvisionfacedetector--g4rz8tx5rcc5.code.run/\""
+            buildConfigField "String", "LOCAL_BASE_URL", "\"http://192.168.1.7:5001/\""
+            buildConfigField "String", "REMOTE_BASE_URL", "\"https://tapinx--openvisionfacedetector--g4rz8tx5rcc5.code.run/\""
+            buildConfigField "String", "WEB_LOGIN_URL", "\"https://tapinx--openvisionfacedetector--g4rz8tx5rcc5.code.run/login\""
+        }
     }
 
     buildTypes {
@@ -34,8 +52,7 @@ android {
             signingConfig signingConfigs.debug
         }
         debug {
-            buildConfigField "String", "BASE_URL", "\"https://tapinx--openvisionfacedetector--g4rz8tx5rcc5.code.run/\""
-            buildConfigField "String", "WEB_LOGIN_URL", "\"https://tapinx--openvisionfacedetector--g4rz8tx5rcc5.code.run/login\""
+            // Default debug uses the flavor's fields
         }
     }
     compileOptions {
@@ -55,6 +72,7 @@ dependencies {
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
     implementation 'androidx.preference:preference:1.2.0'
     implementation 'androidx.preference:preference-ktx:1.2.0'
+    implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.1.0'
 
     implementation "androidx.camera:camera-core:1.0.0-beta12"
     implementation "androidx.camera:camera-camera2:1.0.0-beta12"

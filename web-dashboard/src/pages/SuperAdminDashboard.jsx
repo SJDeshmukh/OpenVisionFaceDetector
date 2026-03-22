@@ -67,6 +67,7 @@ const SuperAdminDashboard = () => {
   const [bundleConfig, setBundleConfig] = useState({});
   const [vendorEmployees, setVendorEmployees] = useState([]);
   const [vendorStudentLogins, setVendorStudentLogins] = useState([]);
+  const [vendorParents, setVendorParents] = useState([]);
   const [vendorDevices, setVendorDevices] = useState([]);
   const [deviceEdits, setDeviceEdits] = useState({});
   const [deviceSlots, setDeviceSlots] = useState([]);
@@ -157,6 +158,7 @@ const SuperAdminDashboard = () => {
       if (selectedVendorForDetail?.id) {
         fetchVendorEmployees(selectedVendorForDetail.id);
         fetchVendorStudentLogins(selectedVendorForDetail.id);
+        fetchVendorParents(selectedVendorForDetail.id);
         if (detailViewMode === 'employee' && selectedEmployeeForDetail) {
           fetchEmployeeReport(selectedVendorForDetail.id, selectedEmployeeForDetail);
         }
@@ -227,45 +229,32 @@ const SuperAdminDashboard = () => {
 
   const fetchVendorStudentLogins = async (vendorId) => {
     try {
-      const resp = await axios.get(`${API_URL}/admin/vendors/${vendorId}/student-logins`, {
+      const resp = await axios.get(`${API_URL}/leave/admin/vendors/${vendorId}/student-logins`, {
         headers: { Authorization: `Bearer ${user?.token}` }
       });
       setVendorStudentLogins(resp.data.logins || []);
     } catch (e) { console.error(e); }
   };
 
-  const fetchLeaveConfig = async (vendorId) => {
-    setConfigLoading(true);
+  const fetchVendorParents = async (vendorId) => {
     try {
-      const deptsRes = await axios.get(`${API_URL}/leave/admin/departments`, {
-        params: { vendor_id: vendorId },
+      const resp = await axios.get(`${API_URL}/leave/admin/vendors/${vendorId}/parents`, {
         headers: { Authorization: `Bearer ${user?.token}` }
       });
-      const staffRes = await axios.get(`${API_URL}/leave/admin/staff`, {
-        params: { vendor_id: vendorId },
-        headers: { Authorization: `Bearer ${user?.token}` }
-      });
-      setLeaveDepts(deptsRes.data.departments || []);
-      setLeaveStaff(staffRes.data.staff || []);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setConfigLoading(false);
-    }
+      setVendorParents(resp.data.parents || []);
+    } catch (e) { console.error(e); }
   };
 
   const handleAddDept = async (vendorId) => {
     if (!newDept.trim()) return;
     try {
-      await axios.post(`${API_URL}/leave/admin/departments`, {
-        vendor_id: vendorId,
+      await axios.post(`${API_URL}/leave/admin/departments?vendor_id=${vendorId}`, {
         name: newDept.trim()
       }, { 
-        params: { vendor_id: vendorId },
         headers: { Authorization: `Bearer ${user?.token}` } 
       });
       setNewDept('');
-      fetchLeaveConfig(vendorId);
+      fetchVendorDepts(vendorId);
     } catch (e) { alert(e.response?.data?.error || e.message); }
   };
 
@@ -276,21 +265,7 @@ const SuperAdminDashboard = () => {
         params: { vendor_id: vendorId, name: dept },
         headers: { Authorization: `Bearer ${user?.token}` }
       });
-      fetchLeaveConfig(vendorId);
-    } catch (e) { alert(e.response?.data?.error || e.message); }
-  };
-
-  const handleAddStaff = async (vendorId) => {
-    try {
-      await axios.post(`${API_URL}/leave/admin/staff`, {
-        vendor_id: vendorId,
-        ...newStaff
-      }, { 
-        params: { vendor_id: vendorId },
-        headers: { Authorization: `Bearer ${user?.token}` } 
-      });
-      setNewStaff({ name: '', role: 'rector', pin: '', department: '' });
-      fetchLeaveConfig(vendorId);
+      fetchVendorDepts(vendorId);
     } catch (e) { alert(e.response?.data?.error || e.message); }
   };
 
@@ -301,7 +276,7 @@ const SuperAdminDashboard = () => {
         params: { vendor_id: vendorId, id: staffId },
         headers: { Authorization: `Bearer ${user?.token}` }
       });
-      fetchLeaveConfig(vendorId);
+      fetchLeaveStaff(vendorId);
     } catch (e) { alert(e.response?.data?.error || e.message); }
   };
 
@@ -408,7 +383,7 @@ const SuperAdminDashboard = () => {
 
   const fetchLeaveStaff = async (vendorId) => {
     try {
-      const res = await axios.get(`${API_URL}/api/leave/admin/staff`, {
+      const res = await axios.get(`${API_URL}/leave/admin/staff`, {
         params: { vendor_id: vendorId },
         headers: { Authorization: `Bearer ${user?.token}` }
       });
@@ -420,11 +395,11 @@ const SuperAdminDashboard = () => {
 
   const fetchVendorDepts = async (vendorId) => {
     try {
-      const res = await axios.get(`${API_URL}/api/leave/admin/departments`, {
+      const res = await axios.get(`${API_URL}/leave/admin/departments`, {
         params: { vendor_id: vendorId },
         headers: { Authorization: `Bearer ${user?.token}` }
       });
-      setVendorDepts(res.data.departments || []);
+      setLeaveDepts(res.data.departments || []);
     } catch (e) {
       console.error("Error fetching depts:", e);
     }
@@ -444,6 +419,8 @@ const SuperAdminDashboard = () => {
     setEditingVendor(vendor);
     setShowLeaveConfigModal(true);
     setLoadingLeaveData(true);
+    setNewStaff({ name: '', role: 'rector', pin: '', department: '' });
+    setNewDept('');
     try {
       await Promise.all([
         fetchVendorDepts(vendor.id),
@@ -457,12 +434,12 @@ const SuperAdminDashboard = () => {
 
   const handleCreateStaff = async (vendorId) => {
     try {
-      await axios.post(`${API_URL}/api/leave/admin/staff`, 
-        { ...newStaff, vendor_id: vendorId },
+      await axios.post(`${API_URL}/leave/admin/staff?vendor_id=${vendorId}`, 
+        { ...newStaff },
         { headers: { Authorization: `Bearer ${user?.token}` } }
       );
       fetchLeaveStaff(vendorId);
-      setNewStaff({ name: '', role: 'hod', pin: '', department: '' });
+      setNewStaff({ name: '', role: 'rector', pin: '', department: '' });
     } catch (e) {
       alert(e.response?.data?.error || "Failed to create staff");
     }
@@ -904,6 +881,7 @@ const SuperAdminDashboard = () => {
         headers: { Authorization: `Bearer ${user?.token}` }
       });
       setVendors(prev => prev.filter(v => v.id !== vendor.id));
+      fetchStats(); // Refresh dashboard counts
     } catch (error) {
       alert("Error deleting vendor: " + (error.response?.data?.error || error.message));
     }
@@ -1155,7 +1133,9 @@ const SuperAdminDashboard = () => {
                 features: [],
                 vertical: '',
                 frontend_bundle_id: 'default_attendance',
-                backend_service_id: 'default_api'
+                backend_service_id: 'default_api',
+                attendance_type: 'total_time',
+                retention_days: '90'
               });
               setRegistrationConfig([]);
               setShowModal(true);
@@ -1400,6 +1380,15 @@ const SuperAdminDashboard = () => {
                       </td>
                       <td className="p-4">
                         <div className="flex gap-2">
+                          {vendor.features?.includes('leave_management') && (
+                            <button
+                              onClick={() => handleOpenLeaveConfig(vendor)}
+                              className="p-1.5 rounded hover:bg-slate-200 text-indigo-600"
+                              title="Leave Management Configuration"
+                            >
+                              <Shield size={16} />
+                            </button>
+                          )}
                           <button
                             onClick={() => handleEditClick(vendor)}
                             className="p-1.5 rounded hover:bg-slate-200 text-slate-600"
@@ -1458,6 +1447,8 @@ const SuperAdminDashboard = () => {
                     onClick={() => {
                       setSelectedVendorForDetail(vendor);
                       fetchVendorEmployees(vendor.id);
+                      fetchVendorStudentLogins(vendor.id);
+                      fetchVendorParents(vendor.id);
                       fetchVendorDevices(vendor.id);
                       fetchVendorDeviceSlots(vendor.id);
                     }}
@@ -1821,6 +1812,75 @@ const SuperAdminDashboard = () => {
                   </div>
                 )}
               </div>
+
+              <div className="mt-12 pt-8 border-t border-slate-200">
+                <div className="flex items-center justify-between mb-6">
+                  <div>
+                    <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                      <Users size={20} className="text-indigo-600" />
+                      Registered Parents
+                    </h3>
+                    <p className="text-sm text-slate-500 mt-1">View parents who have registered their faces for leave validation</p>
+                  </div>
+                  <button
+                    onClick={() => fetchVendorParents(selectedVendorForDetail.id)}
+                    className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg border border-slate-200 transition-all font-medium text-sm"
+                  >
+                    <RefreshCw size={14} /> Refresh Parents
+                  </button>
+                </div>
+
+                {vendorParents.length === 0 ? (
+                  <div className="text-center py-16 text-slate-400 bg-slate-50/50 rounded-2xl border border-dashed border-slate-200">
+                    <Users size={48} className="mx-auto mb-3 opacity-20" />
+                    <p>No parents registered yet for this vendor.</p>
+                  </div>
+                ) : (
+                  <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-sm">
+                        <thead>
+                          <tr className="bg-slate-50/50 text-slate-600 border-b border-slate-200">
+                            <th className="p-4 font-bold uppercase tracking-wider text-[10px]">Parent Name</th>
+                            <th className="p-4 font-bold uppercase tracking-wider text-[10px]">Student Linked</th>
+                            <th className="p-4 font-bold uppercase tracking-wider text-[10px]">Contact Phone</th>
+                            <th className="p-4 font-bold uppercase tracking-wider text-[10px]">Registration Date</th>
+                            <th className="p-4 font-bold uppercase tracking-wider text-[10px]">Photo</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {vendorParents.map((parent, idx) => (
+                            <tr key={idx} className="hover:bg-indigo-50/30 transition-colors group">
+                              <td className="p-4">
+                                <span className="font-medium text-slate-700">{parent.username}</span>
+                              </td>
+                              <td className="p-4">
+                                <div className="flex flex-col">
+                                  <span className="font-bold text-slate-800">{parent.student_name || 'Unknown'}</span>
+                                  <span className="text-xs text-slate-500 font-mono">{parent.student_number}</span>
+                                </div>
+                              </td>
+                              <td className="p-4 text-slate-600">{parent.contact_phone || '-'}</td>
+                              <td className="p-4 text-slate-500 font-mono text-xs">{parent.created_at || '-'}</td>
+                              <td className="p-4">
+                                {parent.face_image ? (
+                                  <div className="w-10 h-10 rounded-lg overflow-hidden border border-slate-200">
+                                    <img src={parent.face_image} alt={parent.username} className="w-full h-full object-cover" />
+                                  </div>
+                                ) : (
+                                  <div className="w-10 h-10 rounded-lg bg-slate-100 flex items-center justify-center text-slate-400">
+                                    <User size={16} />
+                                  </div>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -1933,6 +1993,28 @@ const SuperAdminDashboard = () => {
                         </div>
                       </div>
                     </div>
+
+                    {/* Parent Section */}
+                    {selectedEmployeeForDetail.parent_face && (
+                      <div className="mt-4 pt-4 border-t border-slate-100">
+                        <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Parent/Guardian Face</h4>
+                        <div className="flex gap-4 items-center">
+                          <div className="w-24 h-24 rounded-xl overflow-hidden bg-slate-100 border border-slate-100 shadow-sm">
+                            <img 
+                              src={selectedEmployeeForDetail.parent_face.startsWith('data:') ? selectedEmployeeForDetail.parent_face : `data:image/jpeg;base64,${selectedEmployeeForDetail.parent_face}`} 
+                              alt="Parent" 
+                              className="w-full h-full object-cover" 
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <div className="text-xs text-slate-400 font-bold uppercase tracking-tight">Name</div>
+                            <div className="font-bold text-slate-800">{selectedEmployeeForDetail.parent_name || 'N/A'}</div>
+                            <div className="text-xs text-slate-400 font-bold uppercase tracking-tight mt-1">Phone</div>
+                            <div className="text-sm font-medium text-slate-600">{selectedEmployeeForDetail.parent_phone || 'N/A'}</div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
 
                     <div className="mt-4 pt-4 border-t border-slate-100">
                       <div className="flex justify-between items-center pb-1">
@@ -2414,7 +2496,12 @@ const SuperAdminDashboard = () => {
                       const bt = businessTypes.find(x => x.value === v);
                       let bundleId = bt?.default_frontend_bundle_id || newVendor.frontend_bundle_id || 'default_attendance';
                       const presetFeatures = bundleConfig[bundleId] || [];
-                      const presetReg = bt?.default_registration_config?.length ? bt.default_registration_config : registrationConfig;
+                      
+                      // Auto-populate registration fields if available for this vertical
+                      const presetReg = bt?.default_registration_config?.length 
+                        ? [...bt.default_registration_config] 
+                        : registrationConfig;
+                      
                       setRegistrationConfig(presetReg);
                       setNewVendor({
                         ...newVendor,
@@ -2634,7 +2721,7 @@ const SuperAdminDashboard = () => {
                   <label className="block text-sm font-medium text-slate-700 mb-2">Enabled Features (Multi-Select)</label>
                   <div className="grid grid-cols-2 gap-2">
                     {availableFeatures.map(feature => (
-                      <label key={feature} className="flex items-center space-x-2 p-2 border rounded cursor-pointer hover:bg-slate-50">
+                      <label key={feature} className="flex items-center gap-2 p-2 border rounded cursor-pointer hover:bg-slate-50 transition-all">
                         <input
                           type="checkbox"
                           checked={newVendor.features?.includes(feature)}
@@ -2680,19 +2767,28 @@ const SuperAdminDashboard = () => {
                           }}
                           className="rounded text-indigo-600 focus:ring-indigo-500"
                         />
-                        <span className="text-sm capitalize">{feature.replace('_', ' ')}</span>
-                        {feature === 'leave_management' && newVendor.features?.includes('leave_management') && editingVendor && (
+                        <span className="text-sm capitalize flex-1">{feature.replace('_', ' ')}</span>
+                        {feature === 'leave_management' && newVendor.features?.includes('leave_management') && (
                           <button
                             type="button"
                             onClick={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
-                              fetchLeaveConfig(editingVendor.id);
-                              setShowLeaveConfigModal(true);
+                              if (editingVendor) {
+                                handleOpenLeaveConfig(editingVendor);
+                              } else {
+                                alert("Please save the vendor first before configuring leave management.");
+                              }
                             }}
-                            className="ml-auto text-[10px] bg-blue-600 text-white px-2 py-0.5 rounded hover:bg-blue-700 transition-colors flex items-center gap-1"
+                            className={`ml-auto text-[10px] px-2 py-1 rounded transition-colors flex items-center gap-1.5 shadow-sm ${
+                              editingVendor 
+                                ? "bg-indigo-600 text-white hover:bg-indigo-700" 
+                                : "bg-slate-200 text-slate-500 cursor-not-allowed"
+                            }`}
+                            title={editingVendor ? "Configure Leave Management" : "Save vendor first to configure"}
                           >
-                            <Settings size={10} /> Config
+                            <Settings size={12} />
+                            <span className="font-bold">CONFIG</span>
                           </button>
                         )}
                       </label>
@@ -2806,7 +2902,11 @@ const SuperAdminDashboard = () => {
                 <p className="text-sm text-slate-500 mt-0.5">Setup departments and assigning staff for {editingVendor.company_name}</p>
               </div>
               <button 
-                onClick={() => setShowLeaveConfigModal(false)}
+                onClick={() => {
+                  setShowLeaveConfigModal(false);
+                  setNewStaff({ name: '', role: 'rector', pin: '', department: '' });
+                  setNewDept('');
+                }}
                 className="p-2 hover:bg-slate-200 rounded-full text-slate-400 hover:text-slate-600 transition-colors"
               >
                 <X size={20} />
@@ -3044,7 +3144,11 @@ const SuperAdminDashboard = () => {
             {/* Modal Footer */}
             <div className="p-6 border-t border-slate-100 bg-slate-50/50 flex justify-end">
               <button 
-                onClick={() => setShowLeaveConfigModal(false)}
+                onClick={() => {
+                  setShowLeaveConfigModal(false);
+                  setNewStaff({ name: '', role: 'rector', pin: '', department: '' });
+                  setNewDept('');
+                }}
                 className="bg-slate-900 text-white px-8 py-3 rounded-xl font-bold hover:bg-black transition-all shadow-lg shadow-slate-200"
               >
                 Close & Save

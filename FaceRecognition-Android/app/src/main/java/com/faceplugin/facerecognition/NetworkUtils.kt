@@ -10,7 +10,6 @@ object NetworkUtils {
         val network = cm.activeNetwork ?: return false
         val caps = cm.getNetworkCapabilities(network) ?: return false
         val hasInternet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-        val validated = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-        return hasInternet && validated
+        return hasInternet
     }
 }

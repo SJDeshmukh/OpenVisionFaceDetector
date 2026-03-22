@@ -44,4 +44,13 @@ public class LoginResponse {
     public String getError() { return error; }
     public Boolean getDeviceSlotRequired() { return deviceSlotRequired; }
     public JsonElement getAvailableSlots() { return availableSlots; }
+
+    @SerializedName("face_registered")
+    private Boolean faceRegistered;
+
+    @SerializedName("face_template")
+    private String faceTemplate;
+
+    public Boolean getFaceRegistered() { return faceRegistered; }
+    public String getFaceTemplate() { return faceTemplate; }
 }

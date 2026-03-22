@@ -38,43 +38,69 @@ def create_leave_request():
     conn = get_db_connection()
     c = conn.cursor()
     try:
-        # Resolve student_id if it's a string (username) instead of an integer (person_id)
-        if isinstance(student_id, str) and not student_id.isdigit():
-            is_pg = getattr(conn, "_is_pg", False)
+        is_pg = getattr(conn, "_is_pg", False)
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"Creating leave request for student_id={student_id}, vendor_id={vendor_id}")
+
+        # Resolve student_id to faces.id if it's a string (student number/username/ID)
+        if isinstance(student_id, str):
             if is_pg:
                 c.execute("""
                     SELECT id FROM faces 
                     WHERE vendor_id = %s AND (
-                        custom_data::jsonb->>'student_number' = %s OR 
-                        custom_data::jsonb->>'admission_number' = %s OR 
-                        custom_data::jsonb->>'roll_number' = %s
+                        LOWER(TRIM(custom_data::jsonb->>'student_number')) = LOWER(TRIM(%s)) OR 
+                        LOWER(TRIM(custom_data::jsonb->>'admission_number')) = LOWER(TRIM(%s)) OR 
+                        LOWER(TRIM(custom_data::jsonb->>'roll_number')) = LOWER(TRIM(%s)) OR
+                        id::text = %s
                     )
-                """, (vendor_id, student_id, student_id, student_id))
+                """, (vendor_id, student_id, student_id, student_id, student_id))
             else:
                 c.execute("""
                     SELECT id FROM faces 
                     WHERE vendor_id = ? AND (
-                        json_extract(custom_data, '$.student_number') = ? OR 
-                        json_extract(custom_data, '$.admission_number') = ? OR 
-                        json_extract(custom_data, '$.roll_number') = ?
+                        LOWER(TRIM(json_extract(custom_data, '$.student_number'))) = LOWER(TRIM(?)) OR 
+                        LOWER(TRIM(json_extract(custom_data, '$.admission_number'))) = LOWER(TRIM(?)) OR 
+                        LOWER(TRIM(json_extract(custom_data, '$.roll_number'))) = LOWER(TRIM(?)) OR
+                        CAST(id AS TEXT) = ?
                     )
-                """, (vendor_id, student_id, student_id, student_id))
+                """, (vendor_id, student_id, student_id, student_id, student_id))
             
             row = c.fetchone()
             if row:
-                student_id = row[0]
+                if hasattr(row, 'keys') and 'id' in row.keys():
+                    student_id = row['id']
+                else:
+                    student_id = row[0]
+                logger.info(f"Resolved student_number {data.get('student_id')} to faces.id={student_id}")
             else:
-                return jsonify({"error": f"Student with ID {student_id} not found in face records"}), 404
+                # If we couldn't resolve it and it's not numeric, it's definitely missing
+                if not student_id.isdigit():
+                    logger.error(f"Student {student_id} not found in faces table")
+                    return jsonify({"error": f"Student with ID {student_id} not found in face records"}), 404
+                # If it IS numeric, it might already be the faces.id (person_id) passed from frontend
+                # We'll allow it to proceed as an integer
+                student_id = int(student_id)
+                logger.info(f"Using numeric student_id={student_id} directly")
 
-        c.execute("""
-            INSERT INTO leave_requests 
-            (vendor_id, student_id, leave_type, reason, start_date, end_date, start_time, end_time) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (vendor_id, student_id, leave_type, reason, start_date, end_date, start_time, end_time))
+        if is_pg:
+            c.execute("""
+                INSERT INTO leave_requests 
+                (vendor_id, student_id, leave_type, reason, start_date, end_date, start_time, end_time) 
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (vendor_id, student_id, leave_type, reason, start_date, end_date, start_time, end_time))
+        else:
+            c.execute("""
+                INSERT INTO leave_requests 
+                (vendor_id, student_id, leave_type, reason, start_date, end_date, start_time, end_time) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (vendor_id, student_id, leave_type, reason, start_date, end_date, start_time, end_time))
+        
         conn.commit()
         request_id = c.lastrowid
         return jsonify({"status": "success", "request_id": request_id})
     except Exception as e:
+        if is_pg: conn.rollback()
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
@@ -91,22 +117,43 @@ def get_parent_pending_requests():
     conn = get_db_connection()
     c = conn.cursor()
     try:
-        c.execute("SELECT id, custom_data FROM faces WHERE vendor_id = ?", (vendor_id,))
-        faces = c.fetchall()
-        student_id = None
-        for f in faces:
-            row = get_row_dict(f)
-            cd = json.loads(row.get('custom_data') or '{}')
-            if str(cd.get('student_number') or cd.get('roll_number') or cd.get('admission_number')) == str(student_number):
-                student_id = row['id']
-                break
+        is_pg = getattr(conn, "_is_pg", False)
+        # 1. Resolve student_id efficiently using JSON extraction
+        if is_pg:
+            c.execute("""
+                SELECT id FROM faces 
+                WHERE vendor_id = %s AND (
+                    LOWER(TRIM(custom_data::jsonb->>'student_number')) = LOWER(TRIM(%s)) OR 
+                    LOWER(TRIM(custom_data::jsonb->>'admission_number')) = LOWER(TRIM(%s)) OR 
+                    LOWER(TRIM(custom_data::jsonb->>'roll_number')) = LOWER(TRIM(%s))
+                )
+            """, (vendor_id, student_number, student_number, student_number))
+        else:
+            c.execute("""
+                SELECT id FROM faces 
+                WHERE vendor_id = ? AND (
+                    LOWER(TRIM(json_extract(custom_data, '$.student_number'))) = LOWER(TRIM(?)) OR 
+                    LOWER(TRIM(json_extract(custom_data, '$.admission_number'))) = LOWER(TRIM(?)) OR 
+                    LOWER(TRIM(json_extract(custom_data, '$.roll_number'))) = LOWER(TRIM(?))
+                )
+            """, (vendor_id, student_number, student_number, student_number))
         
-        if not student_id:
+        row = c.fetchone()
+        if not row:
             return jsonify({"requests": []})
+        
+        student_id = row[0]
 
-        c.execute("SELECT * FROM leave_requests WHERE student_id = ? AND vendor_id = ? AND parent_status = 'pending'", (student_id, vendor_id))
+        # 2. Get pending requests
+        if is_pg:
+            c.execute("SELECT * FROM leave_requests WHERE student_id = %s AND vendor_id = %s AND parent_status = 'pending' ORDER BY created_at DESC", (student_id, vendor_id))
+        else:
+            c.execute("SELECT * FROM leave_requests WHERE student_id = ? AND vendor_id = ? AND parent_status = 'pending' ORDER BY created_at DESC", (student_id, vendor_id))
+        
         rows = c.fetchall()
         return jsonify({"requests": [get_row_dict(r) for r in rows]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
 
@@ -118,18 +165,61 @@ def parent_register_face():
     data = request.json
     student_number = data.get("student_number")
     face_image = data.get("face_image")
+    face_template = data.get("face_template") # Base64 from Android FaceSDK
     
     if not student_number or not face_image:
         return jsonify({"error": "student_number and face_image required"}), 400
 
-    from multiple_face_detection import app as mfd_app
-    img_rgb = _decode_data_uri_to_rgb(face_image)
-    if img_rgb is None:
-        return jsonify({"error": "Invalid image"}), 400
+    conn = get_db_connection()
+    c = conn.cursor()
+    
+    # 1. Unique Registration Rule: Check if this face already exists as a student/employee
+    if face_template:
+        try:
+            new_emb = np.frombuffer(base64.b64decode(face_template), dtype=np.float32)
+            
+            # Get all faces for this vendor to compare
+            c.execute("SELECT id, templates, name FROM faces WHERE vendor_id = ?", (vendor_id,))
+            rows = c.fetchall()
+            
+            for row in rows:
+                r = get_row_dict(row)
+                if not r.get('templates'): continue
+                
+                stored_emb = np.frombuffer(base64.b64decode(r['templates']), dtype=np.float32)
+                # Simple dot product for normalized embeddings
+                similarity = float(np.dot(new_emb, stored_emb))
+                
+                if similarity > 0.8: # Use same threshold as mobile
+                    conn.close()
+                    return jsonify({"error": f"Violation: Face already registered as student '{r['name']}'"}), 409
+        except Exception as e:
+            print(f"Error in unique check: {e}")
 
+    # 2. Proceed with registration
     try:
+        if face_template:
+            c.execute("UPDATE parent_users SET face_image = ?, face_template = ? WHERE student_number = ? AND vendor_id = ?", 
+                      (face_image, face_template, student_number, vendor_id))
+            if c.rowcount == 0:
+                # Try without vendor_id check as a fallback if the token's vendor_id is somehow different
+                c.execute("UPDATE parent_users SET face_image = ?, face_template = ?, vendor_id = ? WHERE student_number = ?", 
+                          (face_image, face_template, vendor_id, student_number))
+            
+            conn.commit()
+            conn.close()
+            return jsonify({"status": "success"})
+
+        # Fallback to backend processing (e.g. for web portals registering parents)
+        from multiple_face_detection import app as mfd_app
+        img_rgb = _decode_data_uri_to_rgb(face_image)
+        if img_rgb is None:
+            conn.close()
+            return jsonify({"error": "Invalid image"}), 400
+
         det_ann, det_crops, _, _ = mfd_app.detect_faces(img_rgb, compute_embeddings=False, crop_mode="Face")
         if not det_crops:
+             conn.close()
              return jsonify({"error": "No face detected"}), 400
         
         crop = det_crops[0]
@@ -137,14 +227,13 @@ def parent_register_face():
         emb = _normalize_vec(emb)
         face_template = base64.b64encode(emb.astype(np.float32).tobytes()).decode('ascii')
 
-        conn = get_db_connection()
-        c = conn.cursor()
         c.execute("UPDATE parent_users SET face_image = ?, face_template = ? WHERE student_number = ? AND vendor_id = ?", 
                   (face_image, face_template, student_number, vendor_id))
         conn.commit()
         conn.close()
         return jsonify({"status": "success"})
     except Exception as e:
+        if conn: conn.close()
         return jsonify({"error": str(e)}), 500
 
 @leave_bp.route("/parent/approve", methods=["POST"])
@@ -157,13 +246,24 @@ def parent_approve_request():
     student_number = data.get("student_number")
     captured_face = data.get("captured_face")
     action = data.get("action")
+    local_verified = data.get("local_verified", False)
     
-    if not all([request_id, student_number, captured_face, action]):
+    if not all([request_id, student_number, action]):
         return jsonify({"error": "Missing fields"}), 400
 
     conn = get_db_connection()
     c = conn.cursor()
     try:
+        # If locally verified via Android FaceSDK, just update the status
+        if local_verified:
+             c.execute("UPDATE leave_requests SET parent_status = ? WHERE id = ? AND vendor_id = ?", 
+                       (action, request_id, vendor_id))
+             conn.commit()
+             return jsonify({"status": "success", "similarity": 1.0})
+
+        if not captured_face:
+             return jsonify({"error": "Missing captured_face for backend verification"}), 400
+
         c.execute("SELECT face_template FROM parent_users WHERE student_number = ? AND vendor_id = ?", (student_number, vendor_id))
         parent = get_row_dict(c.fetchone())
         if not parent or not parent.get('face_template'):
@@ -202,30 +302,126 @@ def get_admin_pending_requests():
     conn = get_db_connection()
     c = conn.cursor()
     try:
+        is_pg = getattr(conn, "_is_pg", False)
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"Admin pending fetch: role={role}, dept={dept}, vendor_id={vendor_id}")
+
         if role == 'rector':
-            c.execute("""
-                SELECT lr.*, f.name as student_name 
-                FROM leave_requests lr
-                JOIN faces f ON lr.student_id = f.id
-                WHERE lr.vendor_id = ? AND lr.parent_status = 'approved' AND lr.rector_status = 'pending'
-            """, (vendor_id,))
+            if is_pg:
+                c.execute("""
+                    SELECT lr.*, f.name as student_name 
+                    FROM leave_requests lr
+                    JOIN faces f ON lr.student_id = f.id
+                    WHERE lr.vendor_id = %s AND lr.parent_status = 'approved' AND lr.rector_status = 'pending'
+                """, (vendor_id,))
+            else:
+                c.execute("""
+                    SELECT lr.*, f.name as student_name 
+                    FROM leave_requests lr
+                    JOIN faces f ON lr.student_id = f.id
+                    WHERE lr.vendor_id = ? AND lr.parent_status = 'approved' AND lr.rector_status = 'pending'
+                """, (vendor_id,))
         elif role == 'hod':
             if not dept:
                 return jsonify({"error": "Department required for HOD"}), 400
-            c.execute("""
-                SELECT lr.*, f.name as student_name 
-                FROM leave_requests lr
-                JOIN faces f ON lr.student_id = f.id
-                WHERE lr.vendor_id = ? 
-                AND lr.rector_status = 'approved' 
-                AND lr.hod_status = 'pending'
-                AND f.department = ?
-            """, (vendor_id, dept))
+            
+            # Use case-insensitive and trimmed department matching, searching both column and custom_data
+            if is_pg:
+                c.execute("""
+                    SELECT lr.*, f.name as student_name 
+                    FROM leave_requests lr
+                    JOIN faces f ON lr.student_id = f.id
+                    WHERE lr.vendor_id = %s 
+                    AND lr.rector_status = 'approved' 
+                    AND lr.hod_status = 'pending'
+                    AND (
+                        LOWER(TRIM(f.department)) = LOWER(TRIM(%s)) OR
+                        LOWER(TRIM(f.custom_data::jsonb->>'department')) = LOWER(TRIM(%s))
+                    )
+                """, (vendor_id, dept, dept))
+            else:
+                c.execute("""
+                    SELECT lr.*, f.name as student_name 
+                    FROM leave_requests lr
+                    JOIN faces f ON lr.student_id = f.id
+                    WHERE lr.vendor_id = ? 
+                    AND lr.rector_status = 'approved' 
+                    AND lr.hod_status = 'pending'
+                    AND (
+                        LOWER(TRIM(f.department)) = LOWER(TRIM(?)) OR
+                        LOWER(TRIM(json_extract(f.custom_data, '$.department'))) = LOWER(TRIM(?))
+                    )
+                """, (vendor_id, dept, dept))
         else:
             return jsonify({"error": "Invalid role"}), 400
             
         rows = c.fetchall()
         return jsonify({"requests": [get_row_dict(r) for r in rows]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+@leave_bp.route("/admin/history", methods=["GET"])
+def get_admin_leave_history():
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+    
+    role = request.args.get("role")
+    dept = request.args.get("department")
+    status = request.args.get("status", "all")
+    
+    if not role:
+        return jsonify({"error": "Role required"}), 400
+        
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        is_pg = getattr(conn, "_is_pg", False)
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"Admin leave history fetch: role={role}, dept={dept}, status={status}, vendor_id={vendor_id}")
+
+        query = """
+            SELECT lr.*, f.name as student_name 
+            FROM leave_requests lr
+            JOIN faces f ON lr.student_id = f.id
+            WHERE lr.vendor_id = ?
+        """
+        params = [vendor_id]
+
+        if role == 'hod':
+            if not dept:
+                return jsonify({"error": "Department required for HOD history"}), 400
+            
+            if is_pg:
+                query += """ AND (
+                    LOWER(TRIM(f.department)) = LOWER(TRIM(%s)) OR
+                    LOWER(TRIM(f.custom_data::jsonb->>'department')) = LOWER(TRIM(%s))
+                )"""
+            else:
+                query += """ AND (
+                    LOWER(TRIM(f.department)) = LOWER(TRIM(?)) OR
+                    LOWER(TRIM(json_extract(f.custom_data, '$.department'))) = LOWER(TRIM(?))
+                )"""
+            params.extend([dept, dept])
+        elif role != 'rector':
+            return jsonify({"error": "Invalid role"}), 400
+
+        if status != "all":
+            query += " AND lr.final_status = ?"
+            params.append(status)
+        
+        # Invert parameters if Postgres
+        if is_pg:
+            query = query.replace('?', '%s')
+
+        c.execute(query, tuple(params))
+        rows = c.fetchall()
+        return jsonify({"history": [get_row_dict(r) for r in rows]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
 
@@ -245,29 +441,51 @@ def admin_approve_request():
     conn = get_db_connection()
     c = conn.cursor()
     try:
+        is_pg = getattr(conn, "_is_pg", False)
         if role == 'hod':
             # Verify Rector already approved
-            c.execute("SELECT rector_status FROM leave_requests WHERE id = ?", (request_id,))
+            if is_pg:
+                c.execute("SELECT rector_status FROM leave_requests WHERE id = %s", (request_id,))
+            else:
+                c.execute("SELECT rector_status FROM leave_requests WHERE id = ?", (request_id,))
             res = c.fetchone()
             if not res or get_row_dict(res).get('rector_status') != 'approved':
                 return jsonify({"error": "Wait for Rector's approval first"}), 400
             
             column = "hod_status"
-            c.execute(f"UPDATE leave_requests SET {column} = ? WHERE id = ? AND vendor_id = ?", 
-                      (action, request_id, vendor_id))
+            if is_pg:
+                c.execute(f"UPDATE leave_requests SET {column} = %s WHERE id = %s AND vendor_id = %s", 
+                          (action, request_id, vendor_id))
+            else:
+                c.execute(f"UPDATE leave_requests SET {column} = ? WHERE id = ? AND vendor_id = ?", 
+                          (action, request_id, vendor_id))
+                
             if action == 'approved':
-                c.execute("UPDATE leave_requests SET final_status = 'approved' WHERE id = ?", (request_id,))
+                if is_pg:
+                    c.execute("UPDATE leave_requests SET final_status = 'approved' WHERE id = %s", (request_id,))
+                else:
+                    c.execute("UPDATE leave_requests SET final_status = 'approved' WHERE id = ?", (request_id,))
         else:
             # Rector approval
             column = "rector_status"
-            c.execute(f"UPDATE leave_requests SET {column} = ? WHERE id = ? AND vendor_id = ?", 
-                      (action, request_id, vendor_id))
+            if is_pg:
+                c.execute(f"UPDATE leave_requests SET {column} = %s WHERE id = %s AND vendor_id = %s", 
+                          (action, request_id, vendor_id))
+            else:
+                c.execute(f"UPDATE leave_requests SET {column} = ? WHERE id = ? AND vendor_id = ?", 
+                          (action, request_id, vendor_id))
             
         if action == 'rejected':
-            c.execute("UPDATE leave_requests SET final_status = 'rejected' WHERE id = ?", (request_id,))
+            if is_pg:
+                c.execute("UPDATE leave_requests SET final_status = 'rejected' WHERE id = %s", (request_id,))
+            else:
+                c.execute("UPDATE leave_requests SET final_status = 'rejected' WHERE id = ?", (request_id,))
             
         conn.commit()
         return jsonify({"status": "success"})
+    except Exception as e:
+        if is_pg: conn.rollback()
+        return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
 
@@ -279,8 +497,12 @@ def generate_student_logins():
     conn = get_db_connection()
     c = conn.cursor()
     try:
+        is_pg = getattr(conn, "_is_pg", False)
         # Get all faces for this vendor
-        c.execute("SELECT id, name, custom_data FROM faces WHERE vendor_id = ?", (vendor_id,))
+        if is_pg:
+            c.execute("SELECT id, name, phone, custom_data FROM faces WHERE vendor_id = %s", (vendor_id,))
+        else:
+            c.execute("SELECT id, name, phone, custom_data FROM faces WHERE vendor_id = ?", (vendor_id,))
         faces = c.fetchall()
         
         created_count = 0
@@ -296,7 +518,10 @@ def generate_student_logins():
                 continue
                 
             # Check if user already exists
-            c.execute("SELECT username FROM system_users WHERE username = ?", (student_number,))
+            if is_pg:
+                c.execute("SELECT username FROM system_users WHERE username = %s", (student_number,))
+            else:
+                c.execute("SELECT username FROM system_users WHERE username = ?", (student_number,))
             if c.fetchone():
                 skipped_count += 1
                 continue
@@ -304,10 +529,16 @@ def generate_student_logins():
             # Create system user
             # Default password is the student's phone number
             phone = row.get('phone') or ""
-            c.execute(
-                "INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (?, ?, ?, 'user', ?, ?)",
-                (student_number, hash_password(phone), phone, vendor_id, row.get('id'))
-            )
+            if is_pg:
+                c.execute(
+                    "INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (%s, %s, %s, 'user', %s, %s)",
+                    (student_number, hash_password(phone), phone, vendor_id, row.get('id'))
+                )
+            else:
+                c.execute(
+                    "INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (?, ?, ?, 'user', ?, ?)",
+                    (student_number, hash_password(phone), phone, vendor_id, row.get('id'))
+                )
             created_count += 1
             
         conn.commit()
@@ -318,6 +549,7 @@ def generate_student_logins():
             "message": f"Successfully created {created_count} student logins. Default password is 'student' followed by student number."
         })
     except Exception as e:
+        if is_pg: conn.rollback()
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
@@ -336,17 +568,22 @@ def verify_staff_pin():
     conn = get_db_connection()
     c = conn.cursor()
     try:
-        c.execute("SELECT id, name, role, department FROM leave_staff WHERE vendor_id = ? AND pin = ?", (vendor_id, pin))
+        is_pg = getattr(conn, "_is_pg", False)
+        if is_pg:
+            c.execute("SELECT id, name, role, department FROM leave_staff WHERE vendor_id = %s AND pin = %s", (vendor_id, pin))
+        else:
+            c.execute("SELECT id, name, role, department FROM leave_staff WHERE vendor_id = ? AND pin = ?", (vendor_id, pin))
         staff = c.fetchone()
         if staff:
             res = get_row_dict(staff)
             return jsonify({"status": "success", "staff": res})
-        else:
-            return jsonify({"error": "Invalid PIN"}), 401
+        return jsonify({"error": "Invalid PIN"}), 401
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
 
-@leave_bp.route("/admin/staff", methods=["GET", "POST", "DELETE"])
+@leave_bp.route("/admin/staff", methods=["GET", "POST", "DELETE"], strict_slashes=False)
 def manage_staff():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -354,8 +591,12 @@ def manage_staff():
     conn = get_db_connection()
     c = conn.cursor()
     try:
+        is_pg = getattr(conn, "_is_pg", False)
         if request.method == "GET":
-            c.execute("SELECT id, name, role, pin, department FROM leave_staff WHERE vendor_id = ?", (vendor_id,))
+            if is_pg:
+                c.execute("SELECT id, name, role, pin, department FROM leave_staff WHERE vendor_id = %s", (vendor_id,))
+            else:
+                c.execute("SELECT id, name, role, pin, department FROM leave_staff WHERE vendor_id = ?", (vendor_id,))
             staff = c.fetchall()
             return jsonify({"staff": [get_row_dict(s) for s in staff]})
             
@@ -373,31 +614,46 @@ def manage_staff():
             if role == 'hod':
                 if not department:
                     return jsonify({"error": "Department required for HOD"}), 400
-                c.execute("SELECT id FROM leave_staff WHERE vendor_id = ? AND department = ? AND role = 'hod'", (vendor_id, department))
+                if is_pg:
+                    c.execute("SELECT id FROM leave_staff WHERE vendor_id = %s AND LOWER(TRIM(department)) = LOWER(TRIM(%s)) AND role = 'hod'", (vendor_id, department))
+                else:
+                    c.execute("SELECT id FROM leave_staff WHERE vendor_id = ? AND LOWER(TRIM(department)) = LOWER(TRIM(?)) AND role = 'hod'", (vendor_id, department))
                 if c.fetchone():
                     return jsonify({"error": f"An HOD is already assigned to {department}"}), 409
 
             # Check for duplicate PIN
-            c.execute("SELECT id FROM leave_staff WHERE vendor_id = ? AND pin = ?", (vendor_id, pin))
+            if is_pg:
+                c.execute("SELECT id FROM leave_staff WHERE vendor_id = %s AND pin = %s", (vendor_id, pin))
+            else:
+                c.execute("SELECT id FROM leave_staff WHERE vendor_id = ? AND pin = ?", (vendor_id, pin))
             if c.fetchone():
                 return jsonify({"error": "This PIN is already assigned to someone else"}), 409
 
-            c.execute(
-                "INSERT INTO leave_staff (vendor_id, name, role, pin, department) VALUES (?, ?, ?, ?, ?)",
-                (vendor_id, name, role, pin, department)
-            )
+            if is_pg:
+                c.execute(
+                    "INSERT INTO leave_staff (vendor_id, name, role, pin, department) VALUES (%s, %s, %s, %s, %s)",
+                    (vendor_id, name, role, pin, department)
+                )
+            else:
+                c.execute(
+                    "INSERT INTO leave_staff (vendor_id, name, role, pin, department) VALUES (?, ?, ?, ?, ?)",
+                    (vendor_id, name, role, pin, department)
+                )
             conn.commit()
             return jsonify({"status": "success", "message": "Staff added successfully"})
             
         elif request.method == "DELETE":
             staff_id = request.args.get("id")
-            c.execute("DELETE FROM leave_staff WHERE id = ? AND vendor_id = ?", (staff_id, vendor_id))
+            if is_pg:
+                c.execute("DELETE FROM leave_staff WHERE id = %s AND vendor_id = %s", (staff_id, vendor_id))
+            else:
+                c.execute("DELETE FROM leave_staff WHERE id = ? AND vendor_id = ?", (staff_id, vendor_id))
             conn.commit()
             return jsonify({"status": "success"})
     finally:
         conn.close()
 
-@leave_bp.route("/admin/departments", methods=["GET", "POST", "DELETE"])
+@leave_bp.route("/admin/departments", methods=["GET", "POST", "DELETE"], strict_slashes=False)
 def manage_departments():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -405,8 +661,12 @@ def manage_departments():
     conn = get_db_connection()
     c = conn.cursor()
     try:
+        is_pg = getattr(conn, "_is_pg", False)
         if request.method == "GET":
-            c.execute("SELECT departments FROM vendors WHERE id = ?", (vendor_id,))
+            if is_pg:
+                c.execute("SELECT departments FROM vendors WHERE id = %s", (vendor_id,))
+            else:
+                c.execute("SELECT departments FROM vendors WHERE id = ?", (vendor_id,))
             res = c.fetchone()
             depts = json.loads(res[0] or '[]') if res and res[0] else []
             return jsonify({"departments": depts})
@@ -415,7 +675,10 @@ def manage_departments():
             dept_name = request.json.get("name")
             if not dept_name: return jsonify({"error": "Name required"}), 400
             
-            c.execute("SELECT departments FROM vendors WHERE id = ?", (vendor_id,))
+            if is_pg:
+                c.execute("SELECT departments FROM vendors WHERE id = %s", (vendor_id,))
+            else:
+                c.execute("SELECT departments FROM vendors WHERE id = ?", (vendor_id,))
             res = c.fetchone()
             depts = json.loads(res[0] or '[]') if res and res[0] else []
             
@@ -423,19 +686,28 @@ def manage_departments():
                 return jsonify({"error": "Department already exists"}), 409
                 
             depts.append(dept_name)
-            c.execute("UPDATE vendors SET departments = ? WHERE id = ?", (json.dumps(depts), vendor_id))
+            if is_pg:
+                c.execute("UPDATE vendors SET departments = %s WHERE id = %s", (json.dumps(depts), vendor_id))
+            else:
+                c.execute("UPDATE vendors SET departments = ? WHERE id = ?", (json.dumps(depts), vendor_id))
             conn.commit()
             return jsonify({"status": "success", "departments": depts})
             
         elif request.method == "DELETE":
             dept_name = request.args.get("name")
-            c.execute("SELECT departments FROM vendors WHERE id = ?", (vendor_id,))
+            if is_pg:
+                c.execute("SELECT departments FROM vendors WHERE id = %s", (vendor_id,))
+            else:
+                c.execute("SELECT departments FROM vendors WHERE id = ?", (vendor_id,))
             res = c.fetchone()
             depts = json.loads(res[0] or '[]') if res and res[0] else []
             
             if dept_name in depts:
                 depts.remove(dept_name)
-                c.execute("UPDATE vendors SET departments = ? WHERE id = ?", (json.dumps(depts), vendor_id))
+                if is_pg:
+                    c.execute("UPDATE vendors SET departments = %s WHERE id = %s", (json.dumps(depts), vendor_id))
+                else:
+                    c.execute("UPDATE vendors SET departments = ? WHERE id = ?", (json.dumps(depts), vendor_id))
                 conn.commit()
             return jsonify({"status": "success", "departments": depts})
     finally:
@@ -471,34 +743,97 @@ def student_change_password():
 @leave_bp.route('/admin/vendors/<int:vendor_id>/student-logins', methods=['GET'])
 def get_vendor_student_logins(vendor_id):
     # This is for SuperAdmin to see student passwords
-    # In a real app, you'd check if the requester is a superadmin
-    db = get_db()
-    # Join with faces to get full name if available
-    query = """
-    SELECT u.username, u.password_plain, u.last_login, f.name 
-    FROM system_users u
-    LEFT JOIN faces f ON u.username = f.student_number AND f.vendor_id = u.vendor_id
-    WHERE u.vendor_id = %s AND u.role = 'user'
-    """
-    params = (vendor_id,)
-    
-    if isinstance(db, sqlite3.Connection):
-        query = query.replace('%s', '?')
-        
-    cursor = db.cursor()
-    cursor.execute(query, params)
-    rows = cursor.fetchall()
-    
-    logins = []
-    for row in rows:
-        logins.append({
-            "username": row[0],
-            "password_plain": row[1],
-            "last_login": row[2],
-            "full_name": row[3]
-        })
-        
-    return jsonify({"status": "success", "logins": logins})
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        is_pg = getattr(conn, "_is_pg", False)
+        if is_pg:
+            # PostgreSQL uses ->> operator for JSONB
+            c.execute("""
+                SELECT u.username, u.password_plain, u.last_active_at, f.name, u.has_set_password
+                FROM system_users u
+                LEFT JOIN faces f ON (
+                    LOWER(TRIM(f.custom_data::jsonb->>'student_number')) = LOWER(TRIM(u.username)) OR 
+                    LOWER(TRIM(f.custom_data::jsonb->>'admission_number')) = LOWER(TRIM(u.username)) OR 
+                    LOWER(TRIM(f.custom_data::jsonb->>'roll_number')) = LOWER(TRIM(u.username))
+                ) AND f.vendor_id = u.vendor_id
+                WHERE u.vendor_id = %s AND u.role = 'user'
+            """, (vendor_id,))
+        else:
+            # SQLite uses json_extract
+            c.execute("""
+                SELECT u.username, u.password_plain, u.last_active_at, f.name, u.has_set_password
+                FROM system_users u
+                LEFT JOIN faces f ON (
+                    LOWER(TRIM(json_extract(f.custom_data, '$.student_number'))) = LOWER(TRIM(u.username)) OR 
+                    LOWER(TRIM(json_extract(f.custom_data, '$.admission_number'))) = LOWER(TRIM(u.username)) OR 
+                    LOWER(TRIM(json_extract(f.custom_data, '$.roll_number'))) = LOWER(TRIM(u.username))
+                ) AND f.vendor_id = u.vendor_id
+                WHERE u.vendor_id = ? AND u.role = 'user'
+            """, (vendor_id,))
+            
+        rows = c.fetchall()
+        logins = []
+        for row in rows:
+            r = get_row_dict(row)
+            logins.append({
+                "username": r.get('username'),
+                "password_plain": r.get('password_plain'),
+                "last_login": r.get('last_active_at'),
+                "full_name": r.get('name') or "Unknown Student",
+                "status": "CHANGED" if r.get('has_set_password') == 1 else "DEFAULT"
+            })
+            
+        return jsonify({"status": "success", "logins": logins})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+@leave_bp.route('/admin/vendors/<int:vendor_id>/parents', methods=['GET'])
+def get_vendor_parents(vendor_id):
+    # This is for SuperAdmin to see registered parents
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        is_pg = getattr(conn, "_is_pg", False)
+        if is_pg:
+            # PostgreSQL uses ->> operator for JSONB
+            c.execute("""
+                SELECT p.id, p.username, p.student_number, p.contact_phone, p.face_image, p.created_at, f.name as student_name
+                FROM parent_users p
+                LEFT JOIN faces f ON (
+                    LOWER(f.custom_data::jsonb->>'student_number') = LOWER(p.student_number) OR 
+                    LOWER(f.custom_data::jsonb->>'roll_number') = LOWER(p.student_number)
+                ) AND f.vendor_id = p.vendor_id
+                WHERE p.vendor_id = %s AND p.face_image IS NOT NULL
+            """, (vendor_id,))
+        else:
+            # SQLite uses json_extract
+            c.execute("""
+                SELECT p.id, p.username, p.student_number, p.contact_phone, p.face_image, p.created_at, f.name as student_name
+                FROM parent_users p
+                LEFT JOIN faces f ON (
+                    LOWER(json_extract(f.custom_data, '$.student_number')) = LOWER(p.student_number) OR 
+                    LOWER(json_extract(f.custom_data, '$.roll_number')) = LOWER(p.student_number)
+                ) AND f.vendor_id = p.vendor_id
+                WHERE p.vendor_id = ? AND p.face_image IS NOT NULL
+            """, (vendor_id,))
+        rows = c.fetchall()
+        return jsonify({"status": "success", "parents": [get_row_dict(r) for r in rows]})
+    except Exception as e:
+        # Final fallback: just get parents without joining student names if anything else fails
+        try:
+            if is_pg:
+                c.execute("SELECT * FROM parent_users WHERE vendor_id = %s AND face_image IS NOT NULL", (vendor_id,))
+            else:
+                c.execute("SELECT * FROM parent_users WHERE vendor_id = ? AND face_image IS NOT NULL", (vendor_id,))
+            rows = c.fetchall()
+            return jsonify({"status": "success", "parents": [get_row_dict(r) for r in rows]})
+        except Exception as e2:
+            return jsonify({"error": str(e2)}), 500
+    finally:
+        conn.close()
 
 @leave_bp.route("/parent-faces", methods=["GET"])
 def get_parent_faces():
@@ -508,19 +843,36 @@ def get_parent_faces():
     conn = get_db_connection()
     c = conn.cursor()
     try:
-        # Use public. prefix just in case there's schema ambiguity, and SELECT * to avoid individual column issues temporarily if needed
-        # But we'll try to keep the explicit columns first
-        c.execute("SELECT id, username, student_number, contact_phone, face_image FROM public.parent_users WHERE vendor_id = %s AND face_image IS NOT NULL", (vendor_id,))
+        is_pg = getattr(conn, "_is_pg", False)
+        if is_pg:
+            # Join with faces to get student name
+            c.execute("""
+                SELECT p.id, p.username, p.student_number, p.contact_phone, p.face_image, p.created_at, f.name as student_name
+                FROM public.parent_users p
+                LEFT JOIN faces f ON (f.custom_data::jsonb->>'student_number' = p.student_number OR f.custom_data::jsonb->>'roll_number' = p.student_number) AND f.vendor_id = p.vendor_id
+                WHERE p.vendor_id = %s AND p.face_image IS NOT NULL
+            """, (vendor_id,))
+        else:
+            # Fallback for SQLite
+            c.execute("""
+                SELECT p.id, p.username, p.student_number, p.contact_phone, p.face_image, p.created_at, f.name as student_name
+                FROM parent_users p
+                LEFT JOIN faces f ON (json_extract(f.custom_data, '$.student_number') = p.student_number OR json_extract(f.custom_data, '$.roll_number') = p.student_number) AND f.vendor_id = p.vendor_id
+                WHERE p.vendor_id = ? AND p.face_image IS NOT NULL
+            """, (vendor_id,))
         rows = c.fetchall()
         return jsonify({"parents": [get_row_dict(r) for r in rows]})
     except Exception as e:
-        # Fallback to SELECT * if explicit columns still fail (sanity check)
+        # Final fallback: just get parents without joining student names if anything else fails
         try:
-            c.execute("SELECT * FROM public.parent_users WHERE vendor_id = %s AND face_image IS NOT NULL", (vendor_id,))
+            if is_pg:
+                c.execute("SELECT * FROM parent_users WHERE vendor_id = %s AND face_image IS NOT NULL", (vendor_id,))
+            else:
+                c.execute("SELECT * FROM parent_users WHERE vendor_id = ? AND face_image IS NOT NULL", (vendor_id,))
             rows = c.fetchall()
             return jsonify({"parents": [get_row_dict(r) for r in rows]})
-        except:
-             return jsonify({"error": str(e)}), 500
+        except Exception as e2:
+            return jsonify({"error": str(e2)}), 500
     finally:
         conn.close()
 
@@ -551,26 +903,33 @@ def get_student_history():
             c.execute("""
                 SELECT id FROM faces 
                 WHERE vendor_id = %s AND (
-                    custom_data::jsonb->>'student_number' = %s OR 
-                    custom_data::jsonb->>'admission_number' = %s OR 
-                    custom_data::jsonb->>'roll_number' = %s
+                    LOWER(TRIM(custom_data::jsonb->>'student_number')) = LOWER(TRIM(%s)) OR 
+                    LOWER(TRIM(custom_data::jsonb->>'admission_number')) = LOWER(TRIM(%s)) OR 
+                    LOWER(TRIM(custom_data::jsonb->>'roll_number')) = LOWER(TRIM(%s))
                 )
             """, (vendor_id, student_number, student_number, student_number))
         else:
             c.execute("""
                 SELECT id FROM faces 
                 WHERE vendor_id = ? AND (
-                    json_extract(custom_data, '$.student_number') = ? OR 
-                    json_extract(custom_data, '$.admission_number') = ? OR 
-                    json_extract(custom_data, '$.roll_number') = ?
+                    LOWER(TRIM(json_extract(custom_data, '$.student_number'))) = LOWER(TRIM(?)) OR 
+                    LOWER(TRIM(json_extract(custom_data, '$.admission_number'))) = LOWER(TRIM(?)) OR 
+                    LOWER(TRIM(json_extract(custom_data, '$.roll_number'))) = LOWER(TRIM(?))
                 )
             """, (vendor_id, student_number, student_number, student_number))
         
         face_row = c.fetchone()
         if not face_row:
+            logger.error(f"Student history fetch failed: student_number={student_number} not found in faces table")
             return jsonify({"requests": []})
         
-        person_id = face_row[0]
+        # If row is a dict (Postgres DictRow or similar), use key 'id'
+        if hasattr(face_row, 'keys') and 'id' in face_row.keys():
+            person_id = face_row['id']
+        else:
+            person_id = face_row[0]
+        
+        logger.info(f"Resolved history student_number={student_number} to person_id={person_id}")
         
         # Now fetch all requests for this person_id with student name
         if is_pg:

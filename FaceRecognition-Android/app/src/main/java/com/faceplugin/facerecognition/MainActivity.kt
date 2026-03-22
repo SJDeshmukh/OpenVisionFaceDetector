@@ -126,36 +126,6 @@ class MainActivity : AppCompatActivity() {
         // Keep Screen On Always
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        // Initialize FaceSDK
-        android.util.Log.e("AppCrash", "Initializing FaceSDK")
-        var ret = FaceSDKWrapper.setActivation(
-            "Fqk7LKLbzfSCBor1Oidf0+aPu7OsAJgjxU5m6EQMP3WQ4JZ0Rt44C8T7auT27jjx9iwYmG/8l3TB\n" +
-                    "9MBZuaQKCKMiBvwu+JGfbyrQPrs0vyunAZplg0qUm3MUjz/ko1oJNDzh90jOvsdy8C+SGFWgLULQ\n" +
-                    "rA6K0dipo5B0v8uPXHkGliNVRuxdKg86iaGHpVzE9V+oqecdXqiuJyRloIqC+vWEYObQkJAocnwR\n" +
-                    "M51gg1HHqFYZ0RS9PI5DVzRNHHT4X/ws7e1tc2R0LgU22gd/4SHDYfoV8gHtyi/QdMthKgyzcJrN\n" +
-                    "p0lS+CrpoQuOzWl1toECPoSfcrbmmNP6v67ISA=="
-        )
-
-        if (ret == FaceSDK.SDK_SUCCESS) {
-            ret = FaceSDKWrapper.init(assets)
-        }
-
-        if (ret != FaceSDK.SDK_SUCCESS) {
-            var msg = "SDK Init Failed"
-            if (ret == FaceSDK.SDK_LICENSE_KEY_ERROR) {
-                msg = "Invalid license!"
-            } else if (ret == FaceSDK.SDK_LICENSE_APPID_ERROR) {
-                msg = "Invalid error!"
-            } else if (ret == FaceSDK.SDK_LICENSE_EXPIRED) {
-                msg = "License expired!"
-            } else if (ret == FaceSDK.SDK_NO_ACTIVATED) {
-                msg = "No activated!"
-            } else if (ret == FaceSDK.SDK_INIT_ERROR) {
-                msg = "Init error!"
-            }
-            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
-        }
-
         // Initialize DB and Sync
         android.util.Log.e("AppCrash", "Initializing DBManager")
         dbManager = DBManager(applicationContext)

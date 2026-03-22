@@ -15,6 +15,8 @@ import android.view.animation.AnimationUtils;
 import android.widget.ImageView;
 import android.widget.TextView;
 import com.faceplugin.facerecognition.api.RetrofitClient;
+import com.ocp.facesdk.FaceSDK;
+
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -27,6 +29,7 @@ public class SplashActivity extends AppCompatActivity {
     private static final String LOCAL_URL = BuildConfig.BASE_URL;
     private static final String RENDER_URL = BuildConfig.BASE_URL;
     private static final String LEGACY_LOCAL_URL = "http://192.0.0.2:5001/";
+    private static final String LEGACY_LOCAL_URL_2 = "http://192.168.1.2:5001/";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -40,6 +43,35 @@ public class SplashActivity extends AppCompatActivity {
 
         MyGlobal.context = getApplicationContext();
         tvStatus = findViewById(R.id.tvStatus);
+
+        // Initialize FaceSDK
+        int ret = FaceSDKWrapper.INSTANCE.setActivation(
+            "Fqk7LKLbzfSCBor1Oidf0+aPu7OsAJgjxU5m6EQMP3WQ4JZ0Rt44C8T7auT27jjx9iwYmG/8l3TB\n" +
+                    "9MBZuaQKCKMiBvwu+JGfbyrQPrs0vyunAZplg0qUm3MUjz/ko1oJNDzh90jOvsdy8C+SGFWgLULQ\n" +
+                    "rA6K0dipo5B0v8uPXHkGliNVRuxdKg86iaGHpVzE9V+oqecdXqiuJyRloIqC+vWEYObQkJAocnwR\n" +
+                    "M51gg1HHqFYZ0RS9PI5DVzRNHHT4X/ws7e1tc2R0LgU22gd/4SHDYfoV8gHtyi/QdMthKgyzcJrN\n" +
+                    "p0lS+CrpoQuOzWl1toECPoSfcrbmmNP6v67ISA=="
+        );
+
+        if (ret == FaceSDK.SDK_SUCCESS) {
+            ret = FaceSDKWrapper.INSTANCE.init(getAssets());
+        }
+
+        if (ret != FaceSDK.SDK_SUCCESS) {
+            String msg = "SDK Init Failed";
+            if (ret == FaceSDK.SDK_LICENSE_KEY_ERROR) {
+                msg = "Invalid license!";
+            } else if (ret == FaceSDK.SDK_LICENSE_APPID_ERROR) {
+                msg = "Invalid error!";
+            } else if (ret == FaceSDK.SDK_LICENSE_EXPIRED) {
+                msg = "License expired!";
+            } else if (ret == FaceSDK.SDK_NO_ACTIVATED) {
+                msg = "No activated!";
+            } else if (ret == FaceSDK.SDK_INIT_ERROR) {
+                msg = "Init error!";
+            }
+            android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_LONG).show();
+        }
 
         // Start Connection Process
         connectToBackend();
@@ -55,8 +87,8 @@ public class SplashActivity extends AppCompatActivity {
                 targetUrl = RetrofitClient.getBaseUrl();
                 prefs.edit().putString("server_url", targetUrl).apply();
             }
-            if (LEGACY_LOCAL_URL.equals(targetUrl)) {
-                targetUrl = RetrofitClient.getBaseUrl();
+            if (LEGACY_LOCAL_URL.equals(targetUrl) || LEGACY_LOCAL_URL_2.equals(targetUrl) || BuildConfig.REMOTE_BASE_URL.equals(targetUrl)) {
+                targetUrl = BuildConfig.BASE_URL;
                 prefs.edit().putString("server_url", targetUrl).apply();
             }
             try {
@@ -87,6 +119,25 @@ public class SplashActivity extends AppCompatActivity {
                     proceedToNextScreen();
                 });
             } else {
+                // Fallback logic
+                String remoteUrl = BuildConfig.REMOTE_BASE_URL;
+                if (!targetUrl.equals(remoteUrl)) {
+                    final String originalUrl = targetUrl;
+                    runOnUiThread(() -> tvStatus.setText("Local offline, trying Remote..."));
+                    RetrofitClient.setBaseUrl(remoteUrl);
+                    if (pingServer(remoteUrl, 15000)) {
+                        prefs.edit().putString("server_url", remoteUrl).apply();
+                        runOnUiThread(() -> {
+                            tvStatus.setText("Connected to Remote");
+                            proceedToNextScreen();
+                        });
+                        return;
+                    } else {
+                        // Restore original if even remote fails
+                        RetrofitClient.setBaseUrl(originalUrl);
+                    }
+                }
+                
                 runOnUiThread(() -> tvStatus.setText("Server Unreachable"));
                 mainHandler.postDelayed(this::proceedToNextScreen, 1200);
             }
@@ -100,6 +151,8 @@ public class SplashActivity extends AppCompatActivity {
             int code = resp.code();
             return code >= 200 && code < 400 && resp.body() != null;
         } catch (Exception e) {
+            final String err = e.getMessage();
+            runOnUiThread(() -> android.widget.Toast.makeText(SplashActivity.this, "Ping to " + baseUrl + " failed: " + err, android.widget.Toast.LENGTH_LONG).show());
             return false;
         }
     }
@@ -139,7 +192,11 @@ public class SplashActivity extends AppCompatActivity {
         if (token != null) {
             String role = prefs.getString("role", null);
             if ("parent".equals(role)) {
-                intent = new Intent(SplashActivity.this, ParentActivity.class);
+                if (prefs.getBoolean("face_registered", false)) {
+                    intent = new Intent(SplashActivity.this, ParentActivity.class);
+                } else {
+                    intent = new Intent(SplashActivity.this, ParentFaceRegistrationActivity.class);
+                }
             } else {
                 intent = new Intent(SplashActivity.this, MainActivity.class);
             }
