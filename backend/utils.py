@@ -607,8 +607,8 @@ def log_audit(action, details=None, target_vendor_id=None, status="success", act
         from flask import request
         from services.auth_service import verify_token
         
-        ensure_audit_logs_table()
         conn = get_db_connection()
+        ensure_audit_logs_table(conn)
         c = conn.cursor()
         actor_username = actor
         actor_role = None

@@ -402,7 +402,12 @@ def _init_pg_schema_on_conn(conn):
         ("system_users", "person_id", "INTEGER"),
         ("system_users", "password_plain", "TEXT"),
         ("system_users", "has_set_password", "INTEGER DEFAULT 0"),
-        ("system_users", "last_active_at", "TIMESTAMP")
+        ("system_users", "last_active_at", "TIMESTAMP"),
+        ("subscriptions", "max_web_sessions", "INTEGER DEFAULT 1"),
+        ("subscriptions", "grace_period_days", "INTEGER DEFAULT 0"),
+        ("subscriptions", "cost_per_employee", "REAL DEFAULT 0"),
+        ("subscriptions", "setup_fee", "REAL DEFAULT 0"),
+        ("subscriptions", "setup_fee_paid", "INTEGER DEFAULT 0")
     ]
     
     for table, col, col_type in cols:
@@ -554,6 +559,12 @@ def init_sqlite_schema(conn):
     for col in ["num_rectors INTEGER DEFAULT 0", "num_hods INTEGER DEFAULT 0", "departments TEXT"]:
         try:
             cur.execute(f"ALTER TABLE vendors ADD COLUMN {col}")
+        except Exception:
+            pass
+            
+    for col in ["max_web_sessions INTEGER DEFAULT 1", "grace_period_days INTEGER DEFAULT 0", "cost_per_employee REAL DEFAULT 0", "setup_fee REAL DEFAULT 0", "setup_fee_paid INTEGER DEFAULT 0"]:
+        try:
+            cur.execute(f"ALTER TABLE subscriptions ADD COLUMN {col}")
         except Exception:
             pass
             

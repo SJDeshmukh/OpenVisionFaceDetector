@@ -919,156 +919,105 @@ def create_vendor():
         backend_service_id = data.get("backend_service_id", "default_api")
         vertical = data.get("vertical")
         registration_config = data.get("registration_config")
+        
+        # 1. Create Vendor
         c.execute("""INSERT INTO vendors (company_name, contact_person, phone, email, frontend_bundle_id, backend_service_id, attendance_type, retention_days, registration_config) 
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                   (company_name, data.get("contact_person"), data.get("phone"), data.get("email"), frontend_bundle_id, backend_service_id, data.get("attendance_type", "total_time"), data.get("retention_days", 90), json.dumps(registration_config) if registration_config else None))
         vendor_id = c.lastrowid
-        try:
-            c.execute("UPDATE vendors SET web_login_enabled = 1 WHERE id = ?", (vendor_id,))
-            conn.commit()
-        except Exception:
-            pass
-        if vertical:
-            try:
-                c.execute("UPDATE vendors SET vertical = ? WHERE id = ?", (vertical, vendor_id))
-                if str(vertical).strip().lower() == "school":
-                    try:
-                        rc = json.dumps([
-                            {"field": "student_number", "label": "Student ID", "type": "text", "required": True, "options": []},
-                            {"field": "phone", "label": "Mobile Number", "type": "text", "required": True, "options": []},
-                            {"field": "department", "label": "Class/Section", "type": "text", "required": False, "options": []}
-                        ])
-                        c.execute("UPDATE vendors SET registration_config = ? WHERE id = ? AND (registration_config IS NULL OR TRIM(registration_config) = '')", (rc, vendor_id))
-                    except Exception:
-                        pass
-                conn.commit()
-            except Exception:
-                pass
-        conn.commit()
+        
+        # 2. Setup Subscription (Synchronous now to avoid "Infinity" on first load)
+        from datetime import date, timedelta
+        start_date = data.get("start_date") or date.today().isoformat()
+        end_date = data.get("end_date") or (date.today() + timedelta(days=14)).isoformat()
+        max_users = data.get("max_users") or 5
+        max_employees = data.get("max_employees") or 50
+        max_mobile_devices = data.get("max_mobile_devices")
+        if max_mobile_devices is None:
+            max_mobile_devices = max_users
+        max_web_sessions = int(data.get("max_web_sessions") or 1)
+        if max_web_sessions < 1:
+            max_web_sessions = 1
+        cost_per_user = data.get("cost_per_user") or 0
+        cost_per_employee = data.get("cost_per_employee") or 0
+        features = data.get("features")
+        if features is None:
+            from utils import BUNDLE_FEATURES
+            features = BUNDLE_FEATURES.get(frontend_bundle_id, [])
+        
+        features_json = json.dumps(features)
+        
+        # Get columns to handle schema variations
+        from db_factory import get_table_columns
+        subs_cols = get_table_columns(conn, "subscriptions")
+        
+        s_cols = ["vendor_id", "plan_type", "start_date", "end_date", "max_users", "max_employees", "max_mobile_devices", "cost_per_user", "cost_per_employee", "setup_fee", "features"]
+        s_vals = [vendor_id, "custom", start_date, end_date, max_users, max_employees, max_mobile_devices, cost_per_user, cost_per_employee, 0, features_json]
+        
+        if "max_web_sessions" in subs_cols:
+            s_cols.append("max_web_sessions")
+            s_vals.append(max_web_sessions)
+        if "grace_period_days" in subs_cols:
+            s_cols.append("grace_period_days")
+            s_vals.append(0)
+            
+        placeholders = ", ".join(["?"] * len(s_cols))
+        c.execute(f"INSERT INTO subscriptions ({', '.join(s_cols)}) VALUES ({placeholders})", tuple(s_vals))
+        
+        # 3. Create Admin & User Accounts
         admin_username = data.get("admin_username") or f"admin_{vendor_id}"
         admin_password = data.get("admin_password") or "default123"
         user_username = data.get("user_username") or f"user_{vendor_id}"
         user_password = data.get("user_password") or "user123"
-        payload = {
-            "vendor_id": vendor_id,
-            "company_name": company_name,
-            "frontend_bundle_id": frontend_bundle_id,
-            "admin_username": admin_username,
-            "admin_password": admin_password,
-            "user_username": user_username,
-            "user_password": user_password,
-            "start_date": data.get("start_date"),
-            "end_date": data.get("end_date"),
-            "max_users": data.get("max_users"),
-            "max_employees": data.get("max_employees"),
-            "max_mobile_devices": data.get("max_mobile_devices"),
-            "max_web_sessions": data.get("max_web_sessions"),
-            "cost_per_user": data.get("cost_per_user"),
-            "cost_per_employee": data.get("cost_per_employee"),
-            "features": data.get("features")
-        }
-        def _process():
-            try:
-                conn2 = get_db_connection()
-                c2 = conn2.cursor()
-                start_date = data.get("start_date") or date.today().isoformat()
-                end_date = data.get("end_date") or (date.today() + timedelta(days=14)).isoformat()
-                max_users = data.get("max_users") or 5
-                max_employees = data.get("max_employees") or 50
-                max_mobile_devices = data.get("max_mobile_devices")
-                if max_mobile_devices is None:
-                    max_mobile_devices = max_users
-                max_web_sessions = int(data.get("max_web_sessions") or 1)
-                if max_web_sessions < 1:
-                    max_web_sessions = 1
-                cost_per_user = data.get("cost_per_user") or 0
-                cost_per_employee = data.get("cost_per_employee") or 0
-                features = data.get("features")
-                if features is None:
-                    features = BUNDLE_FEATURES.get(frontend_bundle_id, [])
-                
-                # Lazy trigger heavy model download if this feature is selected
-                trigger_model_download_if_needed(features)
-
-                features_json = json.dumps(features)
-                # Note: c2 is a cursor, but get_table_columns needs a connection
-                # We can use the connection associated with c2 if possible, or just pass conn
-                cols_sub = get_table_columns(conn, "subscriptions")
-                subs_cols = cols_sub
-                cols = ["vendor_id", "plan_type", "start_date", "end_date", "max_users", "max_employees", "max_mobile_devices", "cost_per_user", "cost_per_employee", "setup_fee", "features"]
-                vals = [vendor_id, "custom", start_date, end_date, max_users, max_employees, max_mobile_devices, cost_per_user, cost_per_employee, 0, features_json]
-                if "max_web_sessions" in subs_cols:
-                    cols.insert(7, "max_web_sessions")
-                    vals.insert(7, max_web_sessions)
-                placeholders = ", ".join(["?"] * len(cols))
-                c2.execute(f"INSERT INTO subscriptions ({', '.join(cols)}) VALUES ({placeholders})", tuple(vals))
-                try:
-                    c2.execute("""INSERT INTO system_users (username, password, role, vendor_id)
-                                  VALUES (?, ?, 'vendor_admin', ?)""",
-                               (admin_username, hash_password(admin_password), vendor_id))
-                except sqlite3.IntegrityError:
-                    pass
-                try:
-                    c2.execute("""INSERT INTO system_users (username, password, role, vendor_id)
-                                  VALUES (?, ?, 'user', ?)""",
-                               (user_username, hash_password(user_password), vendor_id))
-                except sqlite3.IntegrityError:
-                    pass
-                c2.execute("INSERT INTO companies (name, shifts, draft_timetable, live_timetable, vendor_id) VALUES (?, ?, ?, ?, ?)", 
-                           (company_name, '[]', '[]', '[]', vendor_id))
-                conn2.commit()
-                conn2.close()
-                log_audit('create_vendor', {'company_name': company_name}, target_vendor_id=vendor_id)
-                socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
-            except Exception as e:
-                print(f"[_process ERROR] {str(e)}", flush=True)
-                import traceback
-                traceback.print_exc()
-                try:
-                    conn2.close()
-                except Exception:
-                    pass
-        if celery and not is_testing():
-            try:
-                celery.send_task("tasks.process_vendor_creation", args=[payload])
-            except Exception:
-                _run_in_native_thread(_process)
-        else:
-            _process()
-        # Ensure vendor admin exists
+        
+        from services.auth_service import hash_password
+        c.execute("""INSERT INTO system_users (username, password, role, vendor_id)
+                      VALUES (?, ?, 'vendor_admin', ?)""",
+                   (admin_username, hash_password(admin_password), vendor_id))
+        c.execute("""INSERT INTO system_users (username, password, role, vendor_id)
+                      VALUES (?, ?, 'user', ?)""",
+                   (user_username, hash_password(user_password), vendor_id))
+        
+        # 4. Create Default Company
+        c.execute("INSERT INTO companies (name, shifts, draft_timetable, live_timetable, vendor_id) VALUES (?, ?, ?, ?, ?)", 
+                   (company_name, '[]', '[]', '[]', vendor_id))
+        
+        # 5. Handle Vertical Spcifics
+        if vertical:
+            c.execute("UPDATE vendors SET vertical = ? WHERE id = ?", (vertical, vendor_id))
+            if str(vertical).strip().lower() == "school":
+                rc = json.dumps([
+                    {"field": "student_number", "label": "Student ID", "type": "text", "required": True, "options": []},
+                    {"field": "phone", "label": "Mobile Number", "type": "text", "required": True, "options": []},
+                    {"field": "department", "label": "Class/Section", "type": "text", "required": False, "options": []}
+                ])
+                c.execute("UPDATE vendors SET registration_config = ? WHERE id = ?", (rc, vendor_id))
+        
+        # 6. Finalize Transaction
+        conn.commit()
+        
+        # 7. Non-critical background tasks
         try:
-            conn3 = get_db_connection()
-            c3 = conn3.cursor()
-            c3.execute("SELECT username FROM system_users WHERE vendor_id = ? AND role = 'vendor_admin' LIMIT 1", (vendor_id,))
-            row_admin = c3.fetchone()
-            if not row_admin:
-                c3.execute("INSERT INTO system_users (username, password, role, vendor_id) VALUES (?, ?, 'vendor_admin', ?)", (admin_username, hash_password(admin_password), vendor_id))
-                conn3.commit()
-            conn3.close()
-        except Exception:
-            try:
-                conn3.close()
-            except Exception:
-                pass
+            from utils import log_audit
+            log_audit('create_vendor', {'company_name': company_name}, target_vendor_id=vendor_id)
+        except Exception: pass
+        
+        try:
+            trigger_model_download_if_needed(features)
+        except Exception: pass
+        
+        socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
+        
         return jsonify({
-            "success": True, 
+            "success": True,
             "vendor_id": vendor_id,
             "admin_credentials": {"username": admin_username, "password": admin_password},
-            "user_credentials": {"username": user_username, "password": user_password},
-            "processing": True
+            "user_credentials": {"username": user_username, "password": user_password}
         })
-        
-    except sqlite3.IntegrityError as e:
-        try:
-            pass # print(f"Create Vendor Exception: {e}")
-        except Exception:
-            pass
-        return jsonify({"error": f"Database Error: {str(e)}"}), 400
     except Exception as e:
-        try:
-            pass # print(f"Create Vendor Exception: {e}")
-        except Exception:
-            pass
+        conn.rollback()
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
