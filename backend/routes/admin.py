@@ -601,8 +601,10 @@ def get_admin_stats():
     
     # 5. Device Health Stats
     # Offline: last_active_at < 5 minutes ago or null
+    is_pg = getattr(conn, "_is_pg", False)
     five_mins_ago = (datetime.now() - timedelta(minutes=5)).strftime('%Y-%m-%d %H:%M:%S')
-    c.execute("SELECT COUNT(*) FROM vendor_devices WHERE last_active_at < ? OR last_active_at IS NULL", (five_mins_ago,))
+    placeholder = '%s' if is_pg else '?'
+    c.execute(f"SELECT COUNT(*) FROM vendor_devices WHERE last_active_at < {placeholder} OR last_active_at IS NULL", (five_mins_ago,))
     offline_devices = c.fetchone()[0]
     
     # Low Battery: battery_level < 20
@@ -611,14 +613,24 @@ def get_admin_stats():
     
     # 6. Revenue (Simple Sum of monthly costs for active subscriptions)
     # This is an estimate based on active plans
-    c.execute("""
-        SELECT SUM(
-            (IFNULL(cost_per_user, 0) * IFNULL(max_users, 0)) + 
-            (IFNULL(cost_per_employee, 0) * IFNULL(max_employees, 0))
-        ) 
-        FROM subscriptions 
-        WHERE end_date >= DATE('now')
-    """)
+    if is_pg:
+        c.execute("""
+            SELECT SUM(
+                (COALESCE(cost_per_user, 0) * COALESCE(max_users, 0)) + 
+                (COALESCE(cost_per_employee, 0) * COALESCE(max_employees, 0))
+            ) 
+            FROM subscriptions 
+            WHERE end_date >= CURRENT_DATE
+        """)
+    else:
+        c.execute("""
+            SELECT SUM(
+                (IFNULL(cost_per_user, 0) * IFNULL(max_users, 0)) + 
+                (IFNULL(cost_per_employee, 0) * IFNULL(max_employees, 0))
+            ) 
+            FROM subscriptions 
+            WHERE end_date >= DATE('now')
+        """)
     monthly_revenue = c.fetchone()[0] or 0
     
     conn.close()
@@ -2157,10 +2169,10 @@ def restore_vendor():
         is_pg = getattr(conn, "_is_pg", False)
         
         # 1. Restore Vendor
-        sql_insert_vendor = """INSERT INTO vendors (company_name, contact_person, phone, email, frontend_bundle_id, backend_service_id, registration_config, vertical, attendance_type, retention_days) 
-                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""" if is_pg else \
-                            """INSERT INTO vendors (company_name, contact_person, phone, email, frontend_bundle_id, backend_service_id, registration_config, vertical, attendance_type, retention_days) 
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+        sql_insert_vendor = """INSERT INTO vendors (company_name, contact_person, phone, email, frontend_bundle_id, backend_service_id, registration_config, vertical, attendance_type, retention_days, status, created_at) 
+                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""" if is_pg else \
+                            """INSERT INTO vendors (company_name, contact_person, phone, email, frontend_bundle_id, backend_service_id, registration_config, vertical, attendance_type, retention_days, status, created_at) 
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
         
         c.execute(sql_insert_vendor, (
             vendor_snapshot.get("company_name"),
@@ -2172,7 +2184,9 @@ def restore_vendor():
             vendor_snapshot.get("registration_config"),
             vendor_snapshot.get("vertical"),
             vendor_snapshot.get("attendance_type") or "total_time",
-            vendor_snapshot.get("retention_days") or 90
+            vendor_snapshot.get("retention_days") or 90,
+            vendor_snapshot.get("status") or "active",
+            vendor_snapshot.get("created_at") or datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         ))
         
         new_vendor_id = None
@@ -2431,6 +2445,11 @@ def restore_vendor():
         
         # Invalidate cache
         cache_delete("admin_stats")
+        
+        try:
+            socketio.emit('admin_stats_updated', room='super_admin')
+        except Exception:
+            pass
         
         return jsonify({"success": True, "new_vendor_id": new_vendor_id, "message": "Vendor and all related data restored successfully"})
     except Exception as e:
