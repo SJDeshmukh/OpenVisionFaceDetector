@@ -1,6 +1,5 @@
 import os
 import sys
-import torch
 import numpy as np
 from PIL import Image
 import cv2
@@ -17,6 +16,7 @@ _REALTIME_ENGINE = None
 
 class RealTimeEngine:
     def __init__(self, device="cpu"):
+        import torch
         print("[inference] Initializing RealTimeEngine...")
         class Args:
             def __init__(self):
@@ -66,7 +66,8 @@ class RealTimeEngine:
             landmarks[:, -1] = H - 1 - landmarks[:, -1]
             
             trans_params, im, _, _ = align_img(img_pil, landmarks, self.lm3d_std)
-            im_tensor = torch.tensor(np.array(im)/255., dtype=torch.float32).permute(2, 0, 1).unsqueeze(0)
+        import torch
+        im_tensor = torch.tensor(np.array(im)/255., dtype=torch.float32).permute(2, 0, 1).unsqueeze(0)
             
             self.recon_model.input_img = im_tensor.to(self.args.device)
             results = self.recon_model.forward()
@@ -134,6 +135,7 @@ class RealTimeEngine:
             landmarks[:, -1] = H - 1 - landmarks[:, -1]
             
             trans_params, im, _, _ = align_img(img_pil, landmarks, self.lm3d_std)
+            import torch
             im_tensor = torch.tensor(np.array(im)/255., dtype=torch.float32).permute(2, 0, 1).unsqueeze(0)
             
             self.recon_model.input_img = im_tensor.to(self.args.device)

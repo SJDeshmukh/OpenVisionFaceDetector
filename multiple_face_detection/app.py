@@ -8,7 +8,7 @@ try:
 except Exception:
     gr = None
 import numpy as np
-import pandas as pd
+
 import json
 import time
 import urllib.request
@@ -108,17 +108,11 @@ def init_third_party_paths(base_dir: str):
     except Exception:
         pass
 
-# Initialize immediately
+# Initialize immediately (LIGHTWEIGHT ONLY)
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-init_third_party_paths(_BASE_DIR)
+# init_third_party_paths(_BASE_DIR) # DEFERRED to save memory
 
-# PATCH: RealESRGAN missing version fix
-try:
-    import realesrgan
-    if not hasattr(realesrgan, '__version__'):
-        realesrgan.__version__ = '0.2.5.0'
-except Exception:
-    pass
+# PATCH: RealESRGAN missing version fix (DEFERRED)
 
 class GFPGANManager:
     def __init__(self, base_dir: str):
@@ -171,6 +165,7 @@ class GFPGANManager:
         if not is_bulk_attendance_allowed():
             print("[GFPGAN] Bulk attendance feature not enabled for any vendor. Skipping model load.", flush=True)
             return None
+        init_third_party_paths(_BASE_DIR)
         self._last_used = time.time()
         # Reload if scale factor changed
         if self._restorer is not None:
@@ -331,6 +326,14 @@ class RealESRGANManager:
         if not is_bulk_attendance_allowed():
             print("[RealESRGAN] Bulk attendance feature not enabled for any vendor. Skipping model load.", flush=True)
             return None
+        init_third_party_paths(_BASE_DIR)
+        # PATCH: RealESRGAN missing version fix
+        try:
+            import realesrgan
+            if not hasattr(realesrgan, '__version__'):
+                realesrgan.__version__ = '0.2.5.0'
+        except Exception:
+            pass
         if self._upsampler is not None:
             return self._upsampler
         model_path = self._ensure_weights()
@@ -470,6 +473,7 @@ class FaceEmbedder:
         if not is_bulk_attendance_allowed():
             print("[FaceEmbedder] Bulk attendance feature not enabled for any vendor. Skipping model load.", flush=True)
             return None
+        init_third_party_paths(_BASE_DIR)
         if self._model is not None:
             return self._model
         if not self._check_available():
@@ -803,6 +807,7 @@ def get_embedder():
     return _embedder
 
 def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0.5, gfpgan_upscale: int = 2, codeformer_w: float = 0.5, compute_embeddings: bool = False, crop_mode: str = "Face", portrait_scale: float = 3.0, preclean_whole: bool = False, preclean_level: float = 0.4, det_max_side: int = 1280):
+    import pandas as pd
     rgb = _load_image(image_input)
     if rgb is None:
         return None, [], pd.DataFrame([]), pd.DataFrame([])

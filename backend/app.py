@@ -153,7 +153,7 @@ except Exception:
     psycopg2 = None
     class RealDictCursor: pass
 
-from socket_handlers import register_socket_handlers, start_socket_background_tasks
+from socket_handlers import register_socket_handlers, start_socket_background_tasks, latest_frames
 from background_tasks import start_background_tasks, start_archival_thread
 from database.bootstrap import bootstrap_db
 from middleware.handlers import setup_middleware, track_metrics, rate_limit
