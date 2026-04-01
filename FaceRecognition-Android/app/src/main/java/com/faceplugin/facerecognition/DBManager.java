@@ -162,9 +162,11 @@ public class DBManager extends SQLiteOpenHelper {
             return;
         }
 
+        // Use JPEG instead of PNG for 70-80% smaller database and memory footprint
         ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
-        face.compress(Bitmap.CompressFormat.PNG, 100, byteArrayOutputStream);
+        face.compress(Bitmap.CompressFormat.JPEG, 80, byteArrayOutputStream);
         byte[] faceJpg = byteArrayOutputStream.toByteArray();
+        try { byteArrayOutputStream.close(); } catch (Exception ignored) {}
 
         String effectiveLocalUid = ensureLocalUid(existingLocalUid != null ? existingLocalUid : localUid);
 

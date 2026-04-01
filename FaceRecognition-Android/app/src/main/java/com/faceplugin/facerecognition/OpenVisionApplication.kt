@@ -21,8 +21,14 @@ class OpenVisionApplication : Application() {
 
     override fun onLowMemory() {
         super.onLowMemory()
-        Log.w("OpenVision", "Low Memory Warning! Clearing cache...")
+        Log.w("OpenVision", "Low Memory Warning! Clearing cache and person list...")
         clearAppCache()
+        
+        // Clear static memory-intensive list to prevent OOM
+        try {
+            DBManager.personList.clear()
+            System.gc() // Suggest GC
+        } catch (e: Exception) {}
     }
 
     override fun onTrimMemory(level: Int) {
@@ -30,6 +36,12 @@ class OpenVisionApplication : Application() {
         Log.i("OpenVision", "onTrimMemory level: $level")
         if (level >= TRIM_MEMORY_MODERATE) {
             clearAppCache()
+            
+            // Clear static list to free up significant RAM
+            try {
+                DBManager.personList.clear()
+                System.gc()
+            } catch (e: Exception) {}
         }
     }
 

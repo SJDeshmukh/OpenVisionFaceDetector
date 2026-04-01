@@ -61,7 +61,26 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
 
                 val templates = Base64.decode(templatesB64, Base64.NO_WRAP)
                 val faceImageBytes = Base64.decode(faceB64, Base64.NO_WRAP)
-                val faceBitmap = BitmapFactory.decodeByteArray(faceImageBytes, 0, faceImageBytes.size) ?: continue
+                
+                // Use BitmapFactory.Options for memory-efficient decoding
+                val options = BitmapFactory.Options()
+                options.inJustDecodeBounds = true
+                BitmapFactory.decodeByteArray(faceImageBytes, 0, faceImageBytes.size, options)
+                
+                // Scale down if image is too large (max 400px)
+                val maxDim = 400
+                var inSampleSize = 1
+                if (options.outHeight > maxDim || options.outWidth > maxDim) {
+                    val halfHeight = options.outHeight / 2
+                    val halfWidth = options.outWidth / 2
+                    while (halfHeight / inSampleSize >= maxDim && halfWidth / inSampleSize >= maxDim) {
+                        inSampleSize *= 2
+                    }
+                }
+                
+                options.inJustDecodeBounds = false
+                options.inSampleSize = inSampleSize
+                val faceBitmap = BitmapFactory.decodeByteArray(faceImageBytes, 0, faceImageBytes.size, options) ?: continue
 
                 val phone = faceData.phone ?: ""
                 val dept = faceData.department ?: ""

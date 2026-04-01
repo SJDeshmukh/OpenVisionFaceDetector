@@ -37,9 +37,22 @@ class FaceSyncWorker(appContext: Context, params: WorkerParameters) : Worker(app
                 val json = JsonObject()
                 json.addProperty("name", p.name ?: "")
                 json.addProperty("templates", Base64.encodeToString(p.templates, Base64.NO_WRAP))
+                
+                // Resize bitmap to a smaller version (max 400px) before syncing to save RAM
+                val original = p.face as Bitmap
+                val maxDim = 400
+                val scaled = if (original.width > maxDim || original.height > maxDim) {
+                    val ratio = original.width.toFloat() / original.height.toFloat()
+                    val (w, h) = if (ratio > 1) (maxDim to (maxDim / ratio).toInt()) else ((maxDim * ratio).toInt() to maxDim)
+                    Bitmap.createScaledBitmap(original, w, h, true)
+                } else original
+
                 val baos = ByteArrayOutputStream()
-                (p.face as Bitmap).compress(Bitmap.CompressFormat.JPEG, 100, baos)
+                scaled.compress(Bitmap.CompressFormat.JPEG, 80, baos)
                 json.addProperty("face_image", Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP))
+                
+                if (scaled !== original) scaled.recycle() // Clean up the scaled copy
+                baos.close()
                 json.addProperty("phone", p.phone ?: "")
                 json.addProperty("department", p.department ?: "")
                 json.addProperty("designation", p.designation ?: "")
