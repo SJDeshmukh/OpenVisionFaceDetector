@@ -1585,6 +1585,7 @@ def delete_vendor(vendor_id):
         return jsonify({"success": True, "task_id": task.id, "message": "Vendor deletion/archiving in background"}), 202
 
     from app import get_db_connection, socketio
+    from db_factory import ensure_archive_table
     ensure_archive_table()
     conn = get_db_connection()
     c = conn.cursor()
@@ -1679,7 +1680,7 @@ def get_vendor_invoices(vendor_id):
 def list_archived_vendors():
     from app import get_db_connection, socketio, is_testing
     from services.auth_service import authenticate_vendor_access
-    from app import ensure_archive_table as _ensure_archive_table
+    from db_factory import ensure_archive_table as _ensure_archive_table
     _ensure_archive_table()
     company = request.args.get("company_name")
     email = request.args.get("email")
@@ -2092,6 +2093,7 @@ def jobs_metrics():
 def restore_vendor():
     from app import get_db_connection, socketio, is_testing
     from services.auth_service import authenticate_vendor_access
+    from db_factory import ensure_archive_table
     ensure_archive_table()
     data = request.json or {}
     company = data.get("company_name")

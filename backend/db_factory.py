@@ -346,6 +346,7 @@ def _init_pg_schema_on_conn(conn):
         "CREATE TABLE IF NOT EXISTS class_batches (id TEXT PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), class_year TEXT, division TEXT, branch TEXT, status TEXT DEFAULT 'active', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS class_batch_items (id TEXT PRIMARY KEY, batch_id TEXT REFERENCES class_batches(id), seq INTEGER, image_b64 TEXT, annotated_b64 TEXT, faces_json TEXT, status TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS leave_staff (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), name TEXT, role TEXT, pin TEXT, department TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS archive_objects (id SERIAL PRIMARY KEY, vendor_id INTEGER, table_name TEXT, row_json TEXT, archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, restored_at TIMESTAMP)",
         
         # --- Performance Indices ---
         "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_time ON attendance(vendor_id, timestamp)",
@@ -501,6 +502,7 @@ def init_sqlite_schema(conn):
         "CREATE TABLE IF NOT EXISTS class_batches (id TEXT PRIMARY KEY, vendor_id INTEGER, class_year TEXT, division TEXT, branch TEXT, status TEXT DEFAULT 'active', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS class_batch_items (id TEXT PRIMARY KEY, batch_id TEXT, seq INTEGER, image_b64 TEXT, annotated_b64 TEXT, faces_json TEXT, status TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS leave_staff (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, name TEXT, role TEXT, pin TEXT, department TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS archive_objects (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, table_name TEXT, row_json TEXT, archived_at DATETIME DEFAULT CURRENT_TIMESTAMP, restored_at DATETIME)",
         
         # --- Performance Indices ---
         "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_time ON attendance(vendor_id, timestamp)",
@@ -619,3 +621,41 @@ def check_and_recover():
                 logger.error(f"Recovery failed: {e}")
     except Exception as e:
         logger.error(f"Error during recovery check: {e}")
+
+def ensure_archive_table():
+    """Ensures the archive_objects table exists for vendor soft-archives."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        # Check if DATABASE_URL is set and we're not in fallback
+        is_pg = DATABASE_URL and not getattr(conn, "_is_fallback", False)
+        if is_pg:
+            # Postgres
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS archive_objects (
+                    id SERIAL PRIMARY KEY,
+                    vendor_id INTEGER,
+                    table_name TEXT,
+                    row_json TEXT,
+                    archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    restored_at TIMESTAMP
+                )
+            """)
+        else:
+            # SQLite
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS archive_objects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    vendor_id INTEGER,
+                    table_name TEXT,
+                    row_json TEXT,
+                    archived_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    restored_at DATETIME
+                )
+            """)
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Error ensuring archive_table: {e}")
+        if hasattr(conn, "rollback"): conn.rollback()
+    finally:
+        conn.close()
