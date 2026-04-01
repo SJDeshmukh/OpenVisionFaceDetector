@@ -84,43 +84,63 @@ def process_delete_vendor_task(vendor_id):
     conn = get_db_connection()
     c = conn.cursor()
     try:
-        # 0. Audit Logs and Batch Items
-        c.execute("DELETE FROM audit_logs WHERE target_vendor_id = ?", (vendor_id,))
-        try:
-            c.execute("DELETE FROM class_batch_items WHERE batch_id IN (SELECT id FROM class_batches WHERE vendor_id = ?)", (vendor_id,))
-            c.execute("DELETE FROM class_batches WHERE vendor_id = ?", (vendor_id,))
-        except Exception:
-            pass
+        is_pg = getattr(conn, "_is_pg", False)
+        placeholder = "%s" if is_pg else "?"
+        
+        def safe_delete(table, key="vendor_id"):
+            try:
+                if is_pg:
+                    c.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = %s)", (table,))
+                    row = c.fetchone()
+                    if not row or not row[0]: return
+                else:
+                    c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,))
+                    if not c.fetchone(): return
+                
+                c.execute(f"DELETE FROM {table} WHERE {key} = {placeholder}", (vendor_id,))
+            except Exception as e:
+                print(f"Error deleting from {table}: {e}")
 
-        # 1. Attendance, Leave, etc.
-        c.execute("DELETE FROM attendance WHERE vendor_id = ?", (vendor_id,))
-        c.execute("DELETE FROM leave_requests WHERE vendor_id = ?", (vendor_id,))
-        c.execute("DELETE FROM person_embeddings WHERE vendor_id = ?", (vendor_id,))
+        # 1. Clear class batches and items
+        try:
+            sql_batches = f"SELECT id FROM class_batches WHERE vendor_id = {placeholder}"
+            c.execute(sql_batches, (vendor_id,))
+            batch_ids = [r[0] for r in c.fetchall()]
+            if batch_ids:
+                item_placeholders = ', '.join([placeholder] * len(batch_ids))
+                c.execute(f"DELETE FROM class_batch_items WHERE batch_id IN ({item_placeholders})", tuple(batch_ids))
+        except Exception: pass
+        
+        safe_delete("class_batches")
+        safe_delete("attendance")
+        safe_delete("leave_requests")
+        safe_delete("person_embeddings")
         
         # 2. Users and Parents
-        c.execute("DELETE FROM system_users WHERE vendor_id = ?", (vendor_id,))
-        c.execute("DELETE FROM student_parents WHERE vendor_id = ?", (vendor_id,))
+        safe_delete("system_users")
+        safe_delete("student_parents")
         
         # 3. Devices
-        c.execute("DELETE FROM vendor_device_slots WHERE vendor_id = ?", (vendor_id,))
-        c.execute("DELETE FROM vendor_devices WHERE vendor_id = ?", (vendor_id,))
+        safe_delete("vendor_device_slots")
+        safe_delete("vendor_devices")
         
         # 4. Parent Tokens and Users
-        c.execute("DELETE FROM parent_tokens WHERE vendor_id = ?", (vendor_id,))
-        c.execute("DELETE FROM parent_users WHERE vendor_id = ?", (vendor_id,))
+        safe_delete("parent_tokens")
+        safe_delete("parent_users")
         
         # 5. Faces (now that all references are gone)
-        c.execute("DELETE FROM faces WHERE vendor_id = ?", (vendor_id,))
+        safe_delete("faces")
         
         # 6. Other vendor-specific data
-        c.execute("DELETE FROM leave_staff WHERE vendor_id = ?", (vendor_id,))
-        c.execute("DELETE FROM companies WHERE vendor_id = ?", (vendor_id,))
-        c.execute("DELETE FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
-        c.execute("DELETE FROM active_sessions WHERE vendor_id = ?", (vendor_id,))
-        c.execute("DELETE FROM invoices WHERE vendor_id = ?", (vendor_id,))
+        safe_delete("leave_staff")
+        safe_delete("companies")
+        safe_delete("subscriptions")
+        safe_delete("active_sessions")
+        safe_delete("invoices")
+        safe_delete("audit_logs", key="target_vendor_id")
         
         # 7. Finally the vendor itself
-        c.execute("DELETE FROM vendors WHERE id = ?", (vendor_id,))
+        c.execute(f"DELETE FROM vendors WHERE id = {placeholder}", (vendor_id,))
         
         # 8. Commit the deletion FIRST so it's permanent
         conn.commit()

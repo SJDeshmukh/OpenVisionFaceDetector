@@ -1570,11 +1570,15 @@ def delete_vendor(vendor_id):
             try:
                 # Check if table exists first to avoid error
                 if is_pg:
-                    c.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = %s)", (table,))
+                    # PostgreSQL SELECT EXISTS always returns (True,) or (False,)
+                    c.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = %s)", (table,))
+                    row = c.fetchone()
+                    if not row or not row[0]:
+                        return
                 else:
                     c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,))
-                if not c.fetchone():
-                    return
+                    if not c.fetchone():
+                        return
 
                 sql_target = f"SELECT * FROM {table} WHERE {key} = %s" if is_pg else f"SELECT * FROM {table} WHERE {key} = ?"
                 c.execute(sql_target, (vendor_id,))
@@ -1636,11 +1640,14 @@ def delete_vendor(vendor_id):
             try:
                 # Check if table exists
                 if is_pg:
-                    c.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = %s)", (t,))
+                    c.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = %s)", (t,))
+                    row = c.fetchone()
+                    if not row or not row[0]:
+                        continue
                 else:
                     c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (t,))
-                if not c.fetchone():
-                    continue
+                    if not c.fetchone():
+                        continue
 
                 key = "target_vendor_id" if t == "audit_logs" else "vendor_id"
                 sql_delete = f"DELETE FROM {t} WHERE {key} = %s" if is_pg else f"DELETE FROM {t} WHERE {key} = ?"
