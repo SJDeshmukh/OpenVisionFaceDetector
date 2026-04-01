@@ -902,7 +902,8 @@ def import_employees(vendor_id):
 @track_metrics("admin_create_vendor")
 @rate_limit(limit=60, window=60)
 def create_vendor():
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
+    from db_factory import get_db_connection
     from services.auth_service import authenticate_vendor_access
     data = request.json
     company_name = data.get("company_name")
@@ -917,9 +918,10 @@ def create_vendor():
         frontend_bundle_id = data.get("frontend_bundle_id", "default_attendance")
         backend_service_id = data.get("backend_service_id", "default_api")
         vertical = data.get("vertical")
-        c.execute("""INSERT INTO vendors (company_name, contact_person, phone, email, frontend_bundle_id, backend_service_id, attendance_type, retention_days) 
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                  (company_name, data.get("contact_person"), data.get("phone"), data.get("email"), frontend_bundle_id, backend_service_id, data.get("attendance_type", "total_time"), data.get("retention_days", 90)))
+        registration_config = data.get("registration_config")
+        c.execute("""INSERT INTO vendors (company_name, contact_person, phone, email, frontend_bundle_id, backend_service_id, attendance_type, retention_days, registration_config) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  (company_name, data.get("contact_person"), data.get("phone"), data.get("email"), frontend_bundle_id, backend_service_id, data.get("attendance_type", "total_time"), data.get("retention_days", 90), json.dumps(registration_config) if registration_config else None))
         vendor_id = c.lastrowid
         try:
             c.execute("UPDATE vendors SET web_login_enabled = 1 WHERE id = ?", (vendor_id,))
@@ -992,7 +994,7 @@ def create_vendor():
                 # Note: c2 is a cursor, but get_table_columns needs a connection
                 # We can use the connection associated with c2 if possible, or just pass conn
                 cols_sub = get_table_columns(conn, "subscriptions")
-                subs_cols = [info[1] for info in c2.fetchall()]
+                subs_cols = cols_sub
                 cols = ["vendor_id", "plan_type", "start_date", "end_date", "max_users", "max_employees", "max_mobile_devices", "cost_per_user", "cost_per_employee", "setup_fee", "features"]
                 vals = [vendor_id, "custom", start_date, end_date, max_users, max_employees, max_mobile_devices, cost_per_user, cost_per_employee, 0, features_json]
                 if "max_web_sessions" in subs_cols:
