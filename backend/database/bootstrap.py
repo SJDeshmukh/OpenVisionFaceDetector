@@ -31,6 +31,7 @@ def bootstrap_db():
 def seed_superadmin():
     """Seeds the default superadmin account if it doesn't exist."""
     from services.auth_service import hash_password
+    conn = get_db_connection()
     try:
         username = "superadmin"
         default_password = hash_password("admin123")
@@ -41,10 +42,12 @@ def seed_superadmin():
         else:
             query = "INSERT OR IGNORE INTO system_users (username, password, role, vendor_id) VALUES (?, ?, ?, ?)"
         
-        _run(query, (username, default_password, "super_admin", None))
+        _run(conn, query, (username, default_password, "super_admin", None))
         logger.info("Superadmin seeded or already exists.")
     except Exception as e:
         logger.error(f"Error seeding superadmin: {e}")
+    finally:
+        conn.close()
 
 def ensure_vendor_companies_and_subscription_features():
     """Ensures each vendor has a corresponding company and subscription record."""
