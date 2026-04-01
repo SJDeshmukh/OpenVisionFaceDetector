@@ -31,19 +31,20 @@ def bootstrap_db():
 def seed_superadmin():
     """Seeds the default superadmin account if it doesn't exist."""
     from services.auth_service import hash_password
-    conn = get_db_connection()
-    c = conn.cursor()
     try:
         username = "superadmin"
         default_password = hash_password("admin123")
-        # Use ON CONFLICT or INSERT OR IGNORE via wrapper
-        c.execute("INSERT OR IGNORE INTO system_users (username, password, role, vendor_id) VALUES (?, ?, ?, ?)",
-                   (username, default_password, "super_admin", None))
-        conn.commit()
+        # Use _run for cross-DB placeholder handling
+        # Postgres ON CONFLICT vs SQLite INSERT OR IGNORE
+        if "postgresql" in (os.environ.get("DATABASE_URL") or "").lower():
+            query = "INSERT INTO system_users (username, password, role, vendor_id) VALUES (?, ?, ?, ?) ON CONFLICT (username) DO NOTHING"
+        else:
+            query = "INSERT OR IGNORE INTO system_users (username, password, role, vendor_id) VALUES (?, ?, ?, ?)"
+        
+        _run(query, (username, default_password, "super_admin", None))
+        logger.info("Superadmin seeded or already exists.")
     except Exception as e:
         logger.error(f"Error seeding superadmin: {e}")
-    finally:
-        conn.close()
 
 def ensure_vendor_companies_and_subscription_features():
     """Ensures each vendor has a corresponding company and subscription record."""

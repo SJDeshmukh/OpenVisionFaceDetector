@@ -278,12 +278,12 @@ register_socket_handlers(socketio)
 # Ensure database is always accessed from the same location (backend directory)
 # Database utilities imported from utils
 
-# Database schema initialization moved to db_factory.py
-# Database bootstrap logic moved to database/bootstrap.py
-
-
-# Migrations moved to modular files
-
+# Database schema initialization and bootstrap
+# We run this on import so it executes under Gunicorn/Docker workers
+try:
+    bootstrap_db()
+except Exception as e:
+    print(f"Database bootstrap failed: {e}", flush=True)
 
 # Ghost code and redundant functions removed.
 # Database and Auth logic moved to modular files.
@@ -371,7 +371,6 @@ def serve_frontend(path):
     return send_from_directory(static_folder, 'index.html')
 
 if __name__ == "__main__":
-    bootstrap_db()
     start_archival_thread()
     debug_flag = os.environ.get("FLASK_DEBUG") or os.environ.get("DEBUG") or ""
     debug = str(debug_flag).lower() in ("1", "true", "yes", "on")

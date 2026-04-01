@@ -96,13 +96,24 @@ def get_db_connection(timeout=30):
     return _get_conn(timeout)
 
 def _run(conn, sql, params=None):
-    """Helper to run a SQL command and commit."""
+    """Helper to run a SQL command and commit, handling cross-DB compatibility."""
+    is_pg = getattr(conn, "_is_pg", False)
+    if is_pg:
+        # Convert ? placeholders to %s for PostgreSQL
+        if params and "?" in sql:
+            sql = sql.replace("?", "%s")
+        # Handle 'INSERT OR IGNORE' -> 'INSERT ... ON CONFLICT DO NOTHING'
+        if "INSERT OR IGNORE" in sql.upper():
+            sql = sql.upper().replace("INSERT OR IGNORE", "INSERT") + " ON CONFLICT DO NOTHING"
+            # Note: This is a simplistic replacement; assumes the target table has a UNIQUE constraint/PK
+            # and that 'INSERT' was the first word. In practice, our queries follow this pattern.
+
     c = conn.cursor()
     try:
         c.execute(sql, params or ())
         conn.commit()
     except Exception as e:
-        if getattr(conn, "_is_pg", False): conn.rollback()
+        if is_pg: conn.rollback()
         raise e
     finally:
         c.close()

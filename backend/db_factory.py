@@ -356,7 +356,19 @@ def _init_pg_schema_on_conn(conn):
         "CREATE INDEX IF NOT EXISTS idx_active_sessions_user ON active_sessions(username)"
     ]
     for q in queries:
-        cur.execute(q)
+        try:
+            cur.execute(q)
+        except Exception as e:
+            # If a table already exists or something similar, it might fail if not using IF NOT EXISTS
+            # but Postgres IF NOT EXISTS should be fine.
+            logger.warning(f"Error executing schema query: {e}")
+            if getattr(conn, "_is_pg", False): conn.rollback()
+            cur = conn.cursor()
+    
+    # COMMIT early: Ensure tables are created before starting migrations
+    if getattr(conn, "_is_pg", False):
+        conn.commit()
+    cur = conn.cursor()
     
     # --- Migrations: Add columns and update data individually for robustness ---
     is_pg = "psycopg2" in str(type(conn)) or getattr(conn, "_is_pg", False)
@@ -364,11 +376,16 @@ def _init_pg_schema_on_conn(conn):
     def run_migration(query, msg, params=None):
         try:
             cur.execute(query, params)
-            if not is_pg: conn.commit() # SQLite needs manual commit if not handled by context manager? Actually we commit at the end.
+            if is_pg: conn.commit() # Commit each migration independently
+            else: conn.commit()
         except Exception as e:
             if is_pg: conn.rollback()
             # Suppress "already exists" errors for columns
-            if "already exists" not in str(e).lower() and "duplicate column" not in str(e).lower():
+            err_msg = str(e).lower()
+            if "already exists" in err_msg or "duplicate column" in err_msg or "already a constraint" in err_msg:
+                # logger.debug(f"Migration skip ({msg}): {e}")
+                pass
+            else:
                 logger.error(f"Migration error ({msg}): {e}")
 
     # 1. Add missing columns
