@@ -176,11 +176,6 @@ def process_delete_vendor_task(vendor_id):
         print(f"Error in delete_vendor_task: {e}")
     finally:
         if conn: conn.close()
-    except Exception as e:
-        if conn: conn.rollback()
-        print(f"Error in delete_vendor_task: {e}")
-    finally:
-        if conn: conn.close()
 
 if celery:
     process_delete_vendor_task = celery.task(name="tasks.process_delete_vendor")(process_delete_vendor_task)
