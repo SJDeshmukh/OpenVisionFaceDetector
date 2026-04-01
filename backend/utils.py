@@ -7,6 +7,49 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from datetime import date, timedelta, datetime
 from threading import Lock
+import cachetools
+import logging
+from functools import wraps
+from flask import request, jsonify
+
+# --- Logging Setup ---
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("backend")
+
+# --- Path Setup ---
+_BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_BACKEND_DIR)
+
+# --- Feature & Template Constants ---
+BUNDLE_FEATURES = {
+    'attendance_ui': ['reports', 'report_detailed', 'mobile_app', 'live_attendance', 'cameras', 'enable_attendance', 'geofencing'],
+    'attendance_payroll_ui': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'whatsapp_alerts'],
+    'enterprise_custom_ui': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'api_access', 'white_labeling'],
+    'default_attendance': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing'],
+    'class_attendance_ui': ['reports', 'report_detailed', 'bulk_image_attendance', 'live_attendance', 'cameras', 'enable_attendance', 'classes']
+}
+
+ALL_FEATURES = ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'api_access', 'white_labeling', 'late_mark', 'bulk_image_attendance', 'classes', 'leave_management']
+
+REGISTRATION_TEMPLATES = {
+    "school": [
+        {"field": "student_id", "label": "Student ID", "enabled": True},
+        {"field": "student_phone", "label": "Phone Number of Student", "enabled": True}
+    ],
+    "hostel": [
+        {"field": "student_id", "label": "Student ID", "enabled": True},
+        {"field": "student_phone", "label": "Phone Number of Student", "enabled": True}
+    ],
+    "class_attendance": [
+        {"field": "student_number", "label": "Student Number", "enabled": True},
+        {"field": "class_section", "label": "Class/Section", "enabled": True},
+        {"field": "phone", "label": "Parent Mobile Number", "enabled": False}
+    ],
+    "factory": [
+        {"field": "employee_id", "label": "Employee ID", "enabled": True},
+        {"field": "department", "label": "Department", "enabled": True}
+    ]
+}
 
 # --- Configuration & Globals ---
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -27,8 +70,72 @@ _FAISS_LOCK = Lock() if USE_FAISS else None
 
 import uuid
 import redis
+import sqlite3
 
-_VENDOR_EMB_CACHE = {}
+# --- Database Utilities ---
+def get_table_columns(conn, table_name):
+    """Returns a list of column names for a given table."""
+    c = conn.cursor()
+    is_pg = getattr(conn, "_is_pg", False)
+    try:
+        if is_pg:
+            c.execute("SELECT column_name FROM information_schema.columns WHERE table_name = %s", (table_name,))
+            return [str(r[0]) for r in c.fetchall()]
+        else:
+            c.execute(f"PRAGMA table_info({table_name})")
+            return [str(r[1]) for r in c.fetchall()]
+    except Exception:
+        if is_pg and hasattr(conn, "rollback"): conn.rollback()
+        return []
+    finally:
+        c.close()
+
+def get_db_connection(timeout=30):
+    """Proxy to db_factory.get_db_connection to avoid circular imports."""
+    from db_factory import get_db_connection as _get_conn
+    return _get_conn(timeout)
+
+def _run(conn, sql, params=None):
+    """Helper to run a SQL command and commit."""
+    c = conn.cursor()
+    try:
+        c.execute(sql, params or ())
+        conn.commit()
+    except Exception as e:
+        if getattr(conn, "_is_pg", False): conn.rollback()
+        raise e
+    finally:
+        c.close()
+
+def ensure_audit_logs_table(conn):
+    """Ensures that the audit_logs table exists."""
+    is_pg = getattr(conn, "_is_pg", False)
+    if is_pg:
+        sql = """CREATE TABLE IF NOT EXISTS audit_logs (
+                    id SERIAL PRIMARY KEY,
+                    actor_username TEXT,
+                    actor_role TEXT,
+                    target_vendor_id INTEGER,
+                    action TEXT,
+                    details TEXT,
+                    ip TEXT,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )"""
+    else:
+        sql = """CREATE TABLE IF NOT EXISTS audit_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    actor_username TEXT,
+                    actor_role TEXT,
+                    target_vendor_id INTEGER,
+                    action TEXT,
+                    details TEXT,
+                    ip TEXT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                )"""
+    _run(conn, sql)
+
+# Bounded cache for embeddings: max 20 vendors, 10 min TTL
+_VENDOR_EMB_CACHE = cachetools.TTLCache(maxsize=20, ttl=600)
 
 def _now_ts():
     try:
@@ -95,6 +202,32 @@ def parse_db_datetime(val):
     return None
 
 
+# --- Observability & Security Decorators ---
+def rate_limit(limit=60, window=60):
+    """Placeholder for rate limiting logic. Can be integrated with Redis."""
+    def decorator(f):
+        @wraps(f)
+        def wrapped(*args, **kwargs):
+            # In a real implementation, you'd check Redis or a memory store here.
+            return f(*args, **kwargs)
+        return wrapped
+    return decorator
+
+def track_metrics(name):
+    """Decorator to track function execution metrics."""
+    def decorator(f):
+        @wraps(f)
+        def wrapped(*args, **kwargs):
+            start_time = time.time()
+            try:
+                result = f(*args, **kwargs)
+                return result
+            finally:
+                duration = time.time() - start_time
+                # logger.info(f"METRIC: {name} took {duration:.4f}s")
+        return wrapped
+    return decorator
+
 # --- Redis Client ---
 REDIS_URL = os.environ.get("REDIS_URL")
 try:
@@ -111,8 +244,9 @@ except Exception:
 def is_testing():
     return os.environ.get("FLASK_ENV") == "testing" or os.environ.get("PYTEST_CURRENT_TEST") is not None
 
-# --- Internal Cache ---
-CACHE = {}
+# --- Internal Bounded Cache ---
+# max 2000 items, 5 min TTL
+CACHE = cachetools.TTLCache(maxsize=2000, ttl=300)
 def cache_get(key):
     try:
         if redis_client:
@@ -121,21 +255,49 @@ def cache_get(key):
                 return json.loads(val)
     except Exception:
         pass
-    v = CACHE.get(key)
-    if not v:
+    try:
+        return CACHE.get(key)
+    except Exception:
         return None
-    if v["e"] < time.time():
-        return None
-    return v["v"]
 
-def cache_set(key, value, ttl):
+def cache_set(key, value, ttl=300):
     try:
         if redis_client:
             redis_client.setex(f"cache:{key}", ttl, json.dumps(value))
             return
     except Exception:
         pass
-    CACHE[key] = {"v": value, "e": time.time() + ttl}
+    try:
+        CACHE[key] = value
+    except Exception:
+        pass
+
+def cache_delete(key):
+    try:
+        if redis_client:
+            redis_client.delete(f"cache:{key}")
+    except Exception:
+        pass
+    if key in CACHE:
+        del CACHE[key]
+
+def cache_delete_vendor_prefix(vendor_id):
+    """Delete all cache keys starting with vendor:{vendor_id}:"""
+    prefix = f"vendor:{vendor_id}:"
+    try:
+        if redis_client:
+            # Note: redis.keys is O(N), for large datasets scan is better. 
+            # But for a typical app, this is fine.
+            keys = redis_client.keys(f"cache:{prefix}*")
+            if keys:
+                redis_client.delete(*keys)
+    except Exception:
+        pass
+    
+    # Clean in-memory cache
+    to_del = [k for k in CACHE.keys() if k.startswith(prefix)]
+    for k in to_del:
+        del CACHE[k]
 
 # --- Job Registry ---
 JOBS = {}
@@ -253,6 +415,48 @@ def reset_sequence(table_name):
         conn.close()
     except Exception:
         pass
+
+def require_feature(feature_name):
+    from functools import wraps
+    from flask import request, jsonify
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            if request.method == 'OPTIONS':
+                return jsonify({}), 200
+
+            # Authenticate & Get Vendor ID
+            from services.auth_service import authenticate_vendor_access
+            vendor_id, error = authenticate_vendor_access()
+            if error: return error
+            
+            # Check Feature (Only for Vendor Context)
+            if vendor_id:
+                if feature_name == "mobile_app":
+                    return f(*args, **kwargs)
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+                row = c.fetchone()
+                conn.close()
+                
+                has_feature = False
+                features = []
+                if row and row[0]:
+                    try:
+                        features = json.loads(row[0])
+                        if feature_name in features:
+                            has_feature = True
+                    except:
+                        pass
+                
+                print(f"[REQUIRE_FEATURE TRACE] checking feature '{feature_name}' for vendor {vendor_id}. Has feature? {has_feature}. Features array: {features}", flush=True)
+                if not has_feature:
+                     return jsonify({"error": f"Feature '{feature_name}' is not enabled for your plan."}), 403
+
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
 
 def _run(cur, sql, params=None):
     if params is None:
@@ -453,31 +657,3 @@ def vendor_has_feature(vendor_id, feature_name):
         return False
     except Exception:
         return False
-
-# --- Feature & Template Constants ---
-BUNDLE_FEATURES = {
-    'attendance_ui': ['reports', 'report_detailed', 'mobile_app', 'live_attendance', 'cameras', 'enable_attendance', 'geofencing'],
-    'attendance_payroll_ui': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'whatsapp_alerts'],
-    'enterprise_custom_ui': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'api_access', 'white_labeling'],
-    'default_attendance': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing'],
-    'class_attendance_ui': ['reports', 'report_detailed', 'bulk_image_attendance', 'live_attendance', 'cameras', 'enable_attendance', 'classes']
-}
-
-ALL_FEATURES = ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'api_access', 'white_labeling', 'late_mark', 'bulk_image_attendance', 'classes', 'leave_management']
-
-REGISTRATION_TEMPLATES = {
-    "school": [
-        {"field": "student_number", "label": "Student Number", "enabled": True},
-        {"field": "class_section", "label": "Class/Section", "enabled": True},
-        {"field": "father_name", "label": "Father's Name", "enabled": True}
-    ],
-    "class_attendance": [
-        {"field": "student_number", "label": "Student Number", "enabled": True},
-        {"field": "class_section", "label": "Class/Section", "enabled": True},
-        {"field": "phone", "label": "Parent Mobile Number", "enabled": False}
-    ],
-    "factory": [
-        {"field": "employee_id", "label": "Employee ID", "enabled": True},
-        {"field": "department", "label": "Department", "enabled": True}
-    ]
-}

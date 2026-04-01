@@ -231,6 +231,8 @@ def login():
 
     if username == "superadmin" and is_testing():
         pass_condition = True
+        is_student = False
+        has_set_password = False
     else:
         stored_pw = user.get("password")
         stored_plain = user.get("password_plain")
@@ -359,7 +361,10 @@ def login():
                 c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (user['vendor_id'],))
                 sub_row = c.fetchone()
                 if sub_row:
-                    raw = sub_row[0] if not hasattr(sub_row, "keys") else sub_row.get("features")
+                    try:
+                        raw = sub_row[0] if not hasattr(sub_row, "keys") else dict(sub_row).get("features")
+                    except Exception:
+                        raw = sub_row[0]
                     if raw:
                         try:
                             features = json.loads(raw) if isinstance(raw, str) else list(raw)
@@ -508,6 +513,30 @@ def login():
                             return jsonify({"error": f"Web session limit reached ({max_web})."}), 403
                 except Exception:
                     pass
+
+            # Student single-device restriction
+            if user['role'] == 'user':
+                try:
+                    # Clean up expired sessions first (older than 24h)
+                    is_pg = getattr(conn, "_is_pg", False)
+                    if is_pg:
+                        c.execute("DELETE FROM active_sessions WHERE username = ? AND last_active < (NOW() - INTERVAL '1 day')", (username,))
+                    else:
+                        c.execute("DELETE FROM active_sessions WHERE username = ? AND last_active < datetime('now','-1 day')", (username,))
+                    
+                    c.execute("SELECT device_id FROM active_sessions WHERE username = ?", (username,))
+                    existing_session = c.fetchone()
+                    if existing_session:
+                        existing_device_id = existing_session[0]
+                        # If there's an active session on a DIFFERENT device, block login
+                        if existing_device_id and device_id and existing_device_id != device_id:
+                            conn.close()
+                            return jsonify({"error": "You are already logged in on another device. Please logout first to use this device."}), 403
+                        elif existing_device_id and not device_id:
+                            conn.close()
+                            return jsonify({"error": "You are already logged in on another device. Please logout first to use this device."}), 403
+                except Exception as e:
+                    logger.error(f"Error checking existing student session: {e}")
 
             try:
                 c.execute("CREATE TABLE IF NOT EXISTS active_sessions (token TEXT PRIMARY KEY, username TEXT, vendor_id INTEGER, device_id TEXT, platform TEXT, last_active DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
@@ -1191,13 +1220,31 @@ def verify_student_password():
             
             # Record activation
             from flask import request
-            client_ip = request.remote_addr
             device_id = request.json.get('device_id', 'web-student')
+
+            # Single-device restriction check
+            try:
+                # Clean up expired sessions first (older than 24h)
+                is_pg = getattr(conn, "_is_pg", False)
+                if is_pg:
+                    c.execute("DELETE FROM active_sessions WHERE username = ? AND last_active < (NOW() - INTERVAL '1 day')", (username,))
+                else:
+                    c.execute("DELETE FROM active_sessions WHERE username = ? AND last_active < datetime('now','-1 day')", (username,))
+                
+                c.execute("SELECT device_id FROM active_sessions WHERE username = ?", (username,))
+                existing_session = c.fetchone()
+                if existing_session:
+                    existing_device_id = existing_session[0]
+                    # If there's an active session on a DIFFERENT device, block login
+                    if existing_device_id and device_id and existing_device_id != device_id:
+                        return jsonify({"error": "You are already logged in on another device. Please logout first to use this device."}), 403
+            except Exception as e:
+                logger.error(f"Error checking existing student session: {e}")
             
             try:
                 c.execute(
-                    "INSERT INTO active_sessions (username, token, device_id, ip_address, platform) VALUES (?, ?, ?, ?, 'web')",
-                    (username, token, device_id, client_ip)
+                    "INSERT INTO active_sessions (token, username, vendor_id, device_id, platform, last_active) VALUES (?, ?, ?, ?, 'web', ?)",
+                    (token, username, user_dict.get('vendor_id'), device_id, datetime.now())
                 )
                 conn.commit()
             except Exception as e:

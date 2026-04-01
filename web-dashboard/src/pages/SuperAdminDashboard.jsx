@@ -33,9 +33,14 @@ const SuperAdminDashboard = () => {
   const [businessTypes, setBusinessTypes] = useState([
     {
       value: 'school', label: 'School / College / Tuitions', default_frontend_bundle_id: 'attendance_ui', default_registration_config: [
-        { field: 'student_number', label: 'Student ID', type: 'text', required: true, options: [] },
-        { field: 'phone', label: 'Parent Mobile Number', type: 'text', required: true, options: [] },
-        { field: 'department', label: 'Class/Section (Dept)', type: 'select', required: true, options: [] }
+        { field: 'student_id', label: 'Student ID', type: 'text', required: true, options: [] },
+        { field: 'student_phone', label: 'Phone Number of Student', type: 'text', required: true, options: [] }
+      ]
+    },
+    {
+      value: 'hostel', label: 'Hostel / Accommodation', default_frontend_bundle_id: 'attendance_ui', default_registration_config: [
+        { field: 'student_id', label: 'Student ID', type: 'text', required: true, options: [] },
+        { field: 'student_phone', label: 'Phone Number of Student', type: 'text', required: true, options: [] }
       ]
     },
     {
@@ -63,42 +68,71 @@ const SuperAdminDashboard = () => {
   const [editingVendor, setEditingVendor] = useState(null);
 
   // Features Config
-  const [availableFeatures, setAvailableFeatures] = useState([]);
-  const [bundleConfig, setBundleConfig] = useState({});
-  const [vendorEmployees, setVendorEmployees] = useState([]);
-  const [vendorStudentLogins, setVendorStudentLogins] = useState([]);
-  const [vendorParents, setVendorParents] = useState([]);
-  const [vendorDevices, setVendorDevices] = useState([]);
-  const [deviceEdits, setDeviceEdits] = useState({});
-  const [deviceSlots, setDeviceSlots] = useState([]);
-  const [newSlotName, setNewSlotName] = useState('');
-
-  // --- Leave Management Configuration State ---
-  const [showLeaveConfigModal, setShowLeaveConfigModal] = useState(false);
-  const [leaveDepts, setLeaveDepts] = useState([]);
-  const [leaveStaff, setLeaveStaff] = useState([]);
-  const [leaveStudents, setLeaveStudents] = useState([]);
-  const [loadingLeaveData, setLoadingLeaveData] = useState(false);
-  const [newDept, setNewDept] = useState('');
-  const [newStaff, setNewStaff] = useState({ name: '', role: 'rector', pin: '', department: '' });
-  const [configLoading, setConfigLoading] = useState(false);
-
-  // Stats State
-  const [stats, setStats] = useState({
-    total_vendors: 0,
-    active_vendors: 0,
-    total_employees: 0,
-    total_devices: 0,
-    active_streaming_devices: 0,
-    monthly_recurring_revenue: 0
+  const [availableFeatures, setAvailableFeatures] = useState([
+    'reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 
+    'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 
+    'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'api_access', 'white_labeling', 
+    'late_mark', 'bulk_image_attendance', 'classes', 'leave_management'
+  ]);
+  const [bundleConfig, setBundleConfig] = useState({
+    'attendance_ui': ['reports', 'report_detailed', 'mobile_app', 'live_attendance', 'cameras', 'enable_attendance', 'geofencing'],
+    'attendance_payroll_ui': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'whatsapp_alerts'],
+    'enterprise_custom_ui': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'api_access', 'white_labeling'],
+    'default_attendance': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing'],
+    'class_attendance_ui': ['reports', 'report_detailed', 'bulk_image_attendance', 'live_attendance', 'cameras', 'enable_attendance', 'classes']
   });
+  const [registrationTemplates, setRegistrationTemplates] = useState({
+     "school": [
+         {"field": "student_id", "label": "Student ID", "enabled": true},
+         {"field": "student_phone", "label": "Phone Number of Student", "enabled": true}
+     ],
+     "hostel": [
+         {"field": "student_id", "label": "Student ID", "enabled": true},
+         {"field": "student_phone", "label": "Phone Number of Student", "enabled": true}
+     ],
+     "class_attendance": [
+         {"field": "student_number", "label": "Student Number", "enabled": true},
+         {"field": "class_section", "label": "Class/Section", "enabled": true},
+         {"field": "phone", "label": "Parent Mobile Number", "enabled": false}
+     ],
+     "factory": [
+         {"field": "employee_id", "label": "Employee ID", "enabled": true},
+         {"field": "department", "label": "Department", "enabled": true}
+     ]
+   });
+   const [vendorEmployees, setVendorEmployees] = useState([]);
+   const [vendorStudentLogins, setVendorStudentLogins] = useState([]);
+   const [vendorParents, setVendorParents] = useState([]);
+   const [vendorDevices, setVendorDevices] = useState([]);
+   const [deviceEdits, setDeviceEdits] = useState({});
+   const [deviceSlots, setDeviceSlots] = useState([]);
+   const [newSlotName, setNewSlotName] = useState('');
 
-  // Filter States
-  const [searchTerm, setSearchTerm] = useState('');
-  const [statusFilter, setStatusFilter] = useState('all');
-  const [subscriptionFilter, setSubscriptionFilter] = useState('all');
-  const [selectedVendorIds, setSelectedVendorIds] = useState([]);
-  const [registrationTemplates, setRegistrationTemplates] = useState({});
+   // --- Leave Management Configuration State ---
+   const [showLeaveConfigModal, setShowLeaveConfigModal] = useState(false);
+   const [leaveDepts, setLeaveDepts] = useState([]);
+   const [leaveStaff, setLeaveStaff] = useState([]);
+   const [leaveStudents, setLeaveStudents] = useState([]);
+   const [loadingLeaveData, setLoadingLeaveData] = useState(false);
+   const [newDept, setNewDept] = useState('');
+   const [newStaff, setNewStaff] = useState({ name: '', role: 'rector', pin: '', department: '' });
+   const [configLoading, setConfigLoading] = useState(false);
+
+   // Stats State
+   const [stats, setStats] = useState({
+     total_vendors: 0,
+     active_vendors: 0,
+     total_employees: 0,
+     total_devices: 0,
+     active_streaming_devices: 0,
+     monthly_recurring_revenue: 0
+   });
+
+   // Filter States
+   const [searchTerm, setSearchTerm] = useState('');
+   const [statusFilter, setStatusFilter] = useState('all');
+   const [subscriptionFilter, setSubscriptionFilter] = useState('all');
+   const [selectedVendorIds, setSelectedVendorIds] = useState([]);
   const normalizePositiveInt = (value, fallback) => {
     const n = Number(value);
     if (!Number.isFinite(n) || n < 1) return fallback;
@@ -138,6 +172,8 @@ const SuperAdminDashboard = () => {
   const maxEmployeesRef = useRef(null);
   const maxWebSessionsRef = useRef(null);
   useEffect(() => {
+    if (!user || user.role !== 'super_admin') return;
+
     fetchVendors();
     fetchFeatures();
     fetchStats();
@@ -198,7 +234,7 @@ const SuperAdminDashboard = () => {
       socket.off('device_health_update');
       socket.off('active_devices_update');
     };
-  }, [socket, selectedVendorForDetail?.id, detailViewMode, selectedEmployeeForDetail, reportDateRange, editingVendor?.id]);
+  }, [socket, user, selectedVendorForDetail?.id, detailViewMode, selectedEmployeeForDetail, reportDateRange, editingVendor?.id]);
 
   const isOnline = (lastActiveAt) => {
     if (!lastActiveAt) return false;
@@ -223,8 +259,17 @@ const SuperAdminDashboard = () => {
       const res = await axios.get(`${API_URL}/admin/registration/templates`, {
         headers: { Authorization: `Bearer ${user?.token}` }
       });
-      setRegistrationTemplates(res.data.templates || {});
-    } catch (e) { }
+      const templates = res.data.templates || {};
+      setRegistrationTemplates(templates);
+      
+      if (Object.keys(templates).length > 0) {
+        localStorage.setItem('admin_registration_templates', JSON.stringify(templates));
+      }
+    } catch (e) {
+      console.error("Error fetching templates:", e);
+      const cachedTemplates = localStorage.getItem('admin_registration_templates');
+      if (cachedTemplates) setRegistrationTemplates(JSON.parse(cachedTemplates));
+    }
   };
 
   const fetchVendorStudentLogins = async (vendorId) => {
@@ -498,10 +543,25 @@ const SuperAdminDashboard = () => {
       const response = await axios.get(`${API_URL}/admin/features`, {
         headers: { Authorization: `Bearer ${user?.token}` }
       });
-      setAvailableFeatures(response.data.features || []);
-      setBundleConfig(response.data.bundles || {});
+      const features = response.data.features || [];
+      const bundles = response.data.bundles || {};
+      setAvailableFeatures(features);
+      setBundleConfig(bundles);
+      
+      // Persist to local storage as fallback
+      if (features.length > 0) {
+        localStorage.setItem('admin_available_features', JSON.stringify(features));
+      }
+      if (Object.keys(bundles).length > 0) {
+        localStorage.setItem('admin_bundle_config', JSON.stringify(bundles));
+      }
     } catch (error) {
       console.error("Error fetching features:", error);
+      // Try to load from local storage fallback
+      const cachedFeatures = localStorage.getItem('admin_available_features');
+      const cachedBundles = localStorage.getItem('admin_bundle_config');
+      if (cachedFeatures) setAvailableFeatures(JSON.parse(cachedFeatures));
+      if (cachedBundles) setBundleConfig(JSON.parse(cachedBundles));
     }
   };
 

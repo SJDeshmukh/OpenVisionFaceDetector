@@ -91,10 +91,24 @@ public class Utils {
 
     public static String bitmapToBase64(Bitmap bitmap) {
         if (bitmap == null) return null;
-        java.io.ByteArrayOutputStream byteArrayOutputStream = new java.io.ByteArrayOutputStream();
-        bitmap.compress(Bitmap.CompressFormat.JPEG, 80, byteArrayOutputStream);
-        byte[] byteArray = byteArrayOutputStream.toByteArray();
-        return android.util.Base64.encodeToString(byteArray, android.util.Base64.NO_WRAP);
+        java.io.ByteArrayOutputStream byteArrayOutputStream = null;
+        try {
+            byteArrayOutputStream = new java.io.ByteArrayOutputStream();
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 80, byteArrayOutputStream);
+            byte[] byteArray = byteArrayOutputStream.toByteArray();
+            return android.util.Base64.encodeToString(byteArray, android.util.Base64.NO_WRAP);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
+        } finally {
+            if (byteArrayOutputStream != null) {
+                try {
+                    byteArrayOutputStream.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
     }
 
     public static Bitmap resizeBitmap(Bitmap image, int maxWidth) {
@@ -109,7 +123,12 @@ public class Utils {
         float ratio = (float) width / height;
         int newHeight = (int) (maxWidth / ratio);
         
-        return Bitmap.createScaledBitmap(image, maxWidth, newHeight, false);
+        try {
+            return Bitmap.createScaledBitmap(image, maxWidth, newHeight, false);
+        } catch (OutOfMemoryError e) {
+            // If OOM, return original or null
+            return image;
+        }
     }
 
     public static Uri saveBitmapToCache(Context context, Bitmap bitmap) {

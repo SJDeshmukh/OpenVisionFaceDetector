@@ -53,7 +53,10 @@ class TestSuperAdminLimits(unittest.TestCase):
                       features TEXT DEFAULT '[]')''')
         
         c.execute('''CREATE TABLE IF NOT EXISTS system_users 
-                     (id INTEGER PRIMARY KEY, username TEXT, password TEXT, role TEXT, vendor_id INTEGER)''')
+                     (id INTEGER PRIMARY KEY, username TEXT, password TEXT,
+            password_plain TEXT,
+            person_id INTEGER,
+            has_set_password INTEGER DEFAULT 0, role TEXT, vendor_id INTEGER)''')
                      
         c.execute('''CREATE TABLE IF NOT EXISTS companies 
                      (id INTEGER PRIMARY KEY, name TEXT, shifts TEXT, draft_timetable TEXT, 

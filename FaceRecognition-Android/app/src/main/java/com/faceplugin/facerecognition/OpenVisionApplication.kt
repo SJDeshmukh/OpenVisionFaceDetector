@@ -19,6 +19,49 @@ class OpenVisionApplication : Application() {
         }
     }
 
+    override fun onLowMemory() {
+        super.onLowMemory()
+        Log.w("OpenVision", "Low Memory Warning! Clearing cache...")
+        clearAppCache()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        Log.i("OpenVision", "onTrimMemory level: $level")
+        if (level >= TRIM_MEMORY_MODERATE) {
+            clearAppCache()
+        }
+    }
+
+    private fun clearAppCache() {
+        try {
+            val cacheDir = cacheDir
+            if (cacheDir != null && cacheDir.isDirectory) {
+                deleteDir(cacheDir)
+            }
+        } catch (e: Exception) {
+            Log.e("OpenVision", "Failed to clear cache", e)
+        }
+    }
+
+    private fun deleteDir(dir: java.io.File?): Boolean {
+        if (dir != null && dir.isDirectory) {
+            val children = dir.list()
+            if (children != null) {
+                for (i in children.indices) {
+                    val success = deleteDir(java.io.File(dir, children[i]))
+                    if (!success) {
+                        return false
+                    }
+                }
+            }
+            return dir.delete()
+        } else if (dir != null && dir.isFile) {
+            return dir.delete()
+        }
+        return false
+    }
+
     private fun handleGlobalCrash(thread: Thread, throwable: Throwable, defaultHandler: Thread.UncaughtExceptionHandler?) {
         try {
             Log.e("OpenVisionCrash", "FATAL EXCEPTION in thread ${thread.name}", throwable)

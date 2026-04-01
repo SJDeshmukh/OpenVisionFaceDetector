@@ -229,18 +229,7 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
             except Exception:
                 max_items = 200
             _VENDOR_EMB_CACHE[key]['items'] = _VENDOR_EMB_CACHE[key]['items'][:max_items]
-            try:
-                # Lower defaults for 512MB RAM instances
-                max_vendors = int(os.environ.get("EMB_CACHE_MAX_VENDORS", "10") or "10")
-            except Exception:
-                max_vendors = 10
-            if len(_VENDOR_EMB_CACHE) > max_vendors:
-                ks = sorted(_VENDOR_EMB_CACHE.items(), key=lambda kv: kv[1].get('ts', 0.0))
-                for kdrop, _ in ks[:-max_vendors]:
-                    try:
-                        del _VENDOR_EMB_CACHE[kdrop]
-                    except Exception:
-                        pass
+        return _VENDOR_EMB_CACHE[key]
         return _VENDOR_EMB_CACHE[key]
     except Exception:
         return None

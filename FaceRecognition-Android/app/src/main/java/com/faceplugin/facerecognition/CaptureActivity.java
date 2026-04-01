@@ -50,6 +50,7 @@ import com.faceplugin.facerecognition.api.StreamRequest;
 import retrofit2.Call;
 import retrofit2.Callback;
 import retrofit2.Response;
+import io.socket.client.Socket;
 
 public class CaptureActivity extends AppCompatActivity implements CaptureView.ViewModeChanged{
 
@@ -88,6 +89,8 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
     private long lastStreamTime = 0;
 
     private boolean forceFrontCamera = false;
+    private WebRTCManager webrtcManager;
+    private Socket mSocket;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -97,6 +100,32 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
         context = this;
         isCaptureOnly = getIntent().getBooleanExtra("is_capture_only", false);
         forceFrontCamera = getIntent().getBooleanExtra("force_front_camera", false);
+
+        // --- Socket.IO & WebRTC Init ---
+        android.content.SharedPreferences sharedPref = getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
+        String serverUrl = sharedPref.getString("server_url", null);
+        if (serverUrl == null || serverUrl.isEmpty()) {
+            serverUrl = RetrofitClient.getBaseUrl();
+        }
+        if (serverUrl != null && !serverUrl.isEmpty()) {
+            try {
+                io.socket.client.IO.Options options = new io.socket.client.IO.Options();
+                options.reconnection = true;
+                java.util.Map<String, java.util.List<String>> headers = new java.util.HashMap<>();
+                headers.put("User-Agent", java.util.Collections.singletonList("openvisionx-android"));
+                options.extraHeaders = headers;
+                if (serverUrl.endsWith("/")) serverUrl = serverUrl.substring(0, serverUrl.length() - 1);
+                mSocket = io.socket.client.IO.socket(serverUrl, options);
+                mSocket.connect();
+
+                String deviceId = android.provider.Settings.Secure.getString(getContentResolver(), android.provider.Settings.Secure.ANDROID_ID);
+                int vendorId = sharedPref.getInt("vendor_id", 0);
+                webrtcManager = new WebRTCManager(getApplicationContext(), mSocket, vendorId, deviceId);
+            } catch (Exception e) {
+                android.util.Log.e(TAG, "Socket/WebRTC initialization failed", e);
+            }
+        }
+        // ----------------------
 
         viewFinder = findViewById(R.id.preview);
         captureView = findViewById(R.id.captureView);
@@ -162,8 +191,23 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
     @Override
     public void onPause() {
         super.onPause();
-
         captureView.setFaceBoxes(null);
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (webrtcManager != null) {
+            webrtcManager.dispose();
+            webrtcManager = null;
+        }
+        if (mSocket != null) {
+            mSocket.disconnect();
+            mSocket.off();
+        }
+        if (cameraExecutorService != null) {
+            cameraExecutorService.shutdown();
+        }
     }
 
     @Override
@@ -510,6 +554,10 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
     }
 
     private void sendStreamFrame(Bitmap originalBitmap) {
+        if (webrtcManager != null) {
+            webrtcManager.onNewFrame(originalBitmap);
+        }
+
         new Thread(() -> {
             try {
                 // Resize for speed (e.g., 320px width)

@@ -59,7 +59,10 @@ class PayrollEndpointTest(unittest.TestCase):
                       live_timetable TEXT, draft_timetable TEXT)''')
         
         c.execute('''CREATE TABLE IF NOT EXISTS system_users 
-                     (id INTEGER PRIMARY KEY, username TEXT, password TEXT, role TEXT, vendor_id INTEGER)''')
+                     (id INTEGER PRIMARY KEY, username TEXT, password TEXT,
+            password_plain TEXT,
+            person_id INTEGER,
+            has_set_password INTEGER DEFAULT 0, role TEXT, vendor_id INTEGER)''')
 
         c.execute('''CREATE TABLE IF NOT EXISTS system_settings 
                      (id INTEGER PRIMARY KEY, vendor_id INTEGER, key TEXT, value TEXT)''')

@@ -10,12 +10,12 @@ except Exception:
 
 try:
     # Prefer explicit backend.app to avoid collision with multiple_face_detection.app
-    from backend.app import get_db_connection, socketio, log_audit, BUNDLE_FEATURES
-    from backend.app import redis_client
+    from backend.app import socketio
+    from backend.utils import get_db_connection, log_audit, BUNDLE_FEATURES, redis_client
 except Exception:
     # Fallback to plain 'app' if module pathing already configured
-    from app import get_db_connection, socketio, log_audit, BUNDLE_FEATURES
-    from app import redis_client
+    from app import socketio
+    from utils import get_db_connection, log_audit, BUNDLE_FEATURES, redis_client
 import json
 from datetime import date, timedelta, datetime
 import sqlite3
@@ -321,7 +321,8 @@ def _on_task_retry(request=None, reason=None, einfo=None, **kwargs):
 
 
 def process_class_batch_items(batch_id, vendor_id, params):
-    from app import _detect_faces_from_bytes, get_db_connection
+    from services.face_service import _detect_faces_from_bytes
+    from utils import get_db_connection
     import base64
     
     conn = get_db_connection()
@@ -371,7 +372,8 @@ if celery:
     process_class_batch_items = celery.task(name="tasks.process_class_batch_items")(process_class_batch_items)
 
 def refresh_class_batch_items(batch_id, vendor_id, params):
-    from app import _detect_faces_from_bytes, get_db_connection
+    from services.face_service import _detect_faces_from_bytes
+    from utils import get_db_connection
     import base64
     conn = get_db_connection()
     c = conn.cursor()
@@ -402,7 +404,7 @@ if celery:
     refresh_class_batch_items = celery.task(name="tasks.refresh_class_batch_items")(refresh_class_batch_items)
 
 def detect_faces_task(img_b64, params, vendor_id):
-    from app import _detect_faces_from_bytes
+    from services.face_service import _detect_faces_from_bytes
     if not img_b64:
         return {"faces": [], "annotated_b64": ""}
     header, encoded = img_b64.split(',', 1) if ',' in img_b64 else ('', img_b64)

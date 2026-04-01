@@ -1,11 +1,13 @@
 import os
 import sqlite3
 import psycopg2
+import psycopg2.pool
 from psycopg2.extras import DictCursor
 import re
 import logging
 from datetime import datetime
 import time
+from database.models import db
 
 def get_table_columns(conn, table_name):
     """Returns a list of column names for a given table."""
@@ -45,6 +47,46 @@ _PG_COOLDOWN_SECONDS = 30 # Don't flood logs if PG is down
 
 # Backup Database Configuration
 DB_BACKUP_PATH = os.environ.get("DB_BACKUP_PATH", os.path.join(os.path.dirname(__file__), "backup_faces.db"))
+
+_PG_POOL = None
+
+def get_pg_pool():
+    global _PG_POOL
+    if _PG_POOL is None and DATABASE_URL:
+        try:
+            # ThreadedConnectionPool for eventlet/threading compatibility
+            minconn = int(os.environ.get("DB_MIN_CONN", "1"))
+            maxconn = int(os.environ.get("DB_MAX_CONN", "20"))
+            _PG_POOL = psycopg2.pool.ThreadedConnectionPool(minconn, maxconn, DATABASE_URL)
+            logger.info(f"PostgreSQL connection pool initialized (min={minconn}, max={maxconn})")
+        except Exception as e:
+            logger.error(f"Failed to initialize PostgreSQL pool: {e}")
+    return _PG_POOL
+
+def init_db_sqlalchemy(app):
+    """Initializes SQLAlchemy with the Flask app."""
+    if DATABASE_URL:
+        # Use PostgreSQL
+        app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
+        # Connection pool settings for SQLAlchemy
+        app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+            "pool_size": int(os.environ.get("DB_MIN_CONN", "5")),
+            "max_overflow": int(os.environ.get("DB_MAX_CONN", "20")) - int(os.environ.get("DB_MIN_CONN", "5")),
+            "pool_recycle": 1800,
+            "pool_pre_ping": True,
+        }
+    else:
+        # Fallback to SQLite
+        # Ensure the path is absolute for SQLAlchemy
+        abs_db_path = os.path.abspath(DB_PATH)
+        app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{abs_db_path}"
+        app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+            "connect_args": {"check_same_thread": False},
+        }
+    
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    db.init_app(app)
+    logger.info(f"SQLAlchemy initialized with {DB_TYPE} backend.")
 
 class PostgresCursorWrapper:
     def __init__(self, cursor):
@@ -162,7 +204,15 @@ class PostgresConnectionWrapper:
         self.conn.commit()
 
     def close(self):
-        self.conn.close()
+        pool = get_pg_pool()
+        if pool:
+            try:
+                pool.putconn(self.conn)
+            except Exception as e:
+                logger.error(f"Error returning connection to pool: {e}")
+                self.conn.close()
+        else:
+            self.conn.close()
         
     def rollback(self):
         self.conn.rollback()
@@ -183,8 +233,14 @@ def get_db_connection(timeout=30):
     
     if should_try_pg:
         try:
-            conn = psycopg2.connect(DATABASE_URL, connect_timeout=timeout)
+            pool = get_pg_pool()
+            if pool:
+                conn = pool.getconn()
+            else:
+                conn = psycopg2.connect(DATABASE_URL, connect_timeout=timeout)
+            
             try:
+                # If it's a new connection or we want to ensure settings
                 conn.autocommit = False
                 cur = conn.cursor()
                 cur.execute("SET statement_timeout TO 60000")
@@ -289,7 +345,15 @@ def _init_pg_schema_on_conn(conn):
         "CREATE TABLE IF NOT EXISTS person_embeddings (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id), class_year TEXT, division TEXT, branch TEXT, vec BYTEA, dim INTEGER, struct_vec BYTEA, landmarks_3d TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS class_batches (id TEXT PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), class_year TEXT, division TEXT, branch TEXT, status TEXT DEFAULT 'active', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS class_batch_items (id TEXT PRIMARY KEY, batch_id TEXT REFERENCES class_batches(id), seq INTEGER, image_b64 TEXT, annotated_b64 TEXT, faces_json TEXT, status TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
-        "CREATE TABLE IF NOT EXISTS leave_staff (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), name TEXT, role TEXT, pin TEXT, department TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+        "CREATE TABLE IF NOT EXISTS leave_staff (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), name TEXT, role TEXT, pin TEXT, department TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        
+        # --- Performance Indices ---
+        "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_time ON attendance(vendor_id, timestamp)",
+        "CREATE INDEX IF NOT EXISTS idx_attendance_person ON attendance(person_id)",
+        "CREATE INDEX IF NOT EXISTS idx_faces_vendor ON faces(vendor_id)",
+        "CREATE INDEX IF NOT EXISTS idx_system_users_vendor ON system_users(vendor_id)",
+        "CREATE INDEX IF NOT EXISTS idx_active_sessions_vendor ON active_sessions(vendor_id)",
+        "CREATE INDEX IF NOT EXISTS idx_active_sessions_user ON active_sessions(username)"
     ]
     for q in queries:
         cur.execute(q)
@@ -419,7 +483,15 @@ def init_sqlite_schema(conn):
         "CREATE TABLE IF NOT EXISTS person_embeddings (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, person_id INTEGER, class_year TEXT, division TEXT, branch TEXT, vec BLOB, dim INTEGER, struct_vec BLOB, landmarks_3d TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS class_batches (id TEXT PRIMARY KEY, vendor_id INTEGER, class_year TEXT, division TEXT, branch TEXT, status TEXT DEFAULT 'active', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS class_batch_items (id TEXT PRIMARY KEY, batch_id TEXT, seq INTEGER, image_b64 TEXT, annotated_b64 TEXT, faces_json TEXT, status TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
-        "CREATE TABLE IF NOT EXISTS leave_staff (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, name TEXT, role TEXT, pin TEXT, department TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)"
+        "CREATE TABLE IF NOT EXISTS leave_staff (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, name TEXT, role TEXT, pin TEXT, department TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        
+        # --- Performance Indices ---
+        "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_time ON attendance(vendor_id, timestamp)",
+        "CREATE INDEX IF NOT EXISTS idx_attendance_person ON attendance(person_id)",
+        "CREATE INDEX IF NOT EXISTS idx_faces_vendor ON faces(vendor_id)",
+        "CREATE INDEX IF NOT EXISTS idx_system_users_vendor ON system_users(vendor_id)",
+        "CREATE INDEX IF NOT EXISTS idx_active_sessions_vendor ON active_sessions(vendor_id)",
+        "CREATE INDEX IF NOT EXISTS idx_active_sessions_user ON active_sessions(username)"
     ]
     for q in queries:
         cur.execute(q)

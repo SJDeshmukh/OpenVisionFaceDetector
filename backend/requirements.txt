@@ -9,6 +9,9 @@ python-dotenv
 itsdangerous
 requests
 Pillow
+flask-sqlalchemy
+pydantic
+sqlalchemy
 
 # Data processing
 numpy<2.0.0
@@ -22,6 +25,8 @@ redis
 
 # Monitoring
 prometheus-client
+psutil
+cachetools
 
 # Database (Postgres support)
 psycopg2-binary

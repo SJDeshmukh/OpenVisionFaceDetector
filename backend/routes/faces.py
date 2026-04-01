@@ -10,7 +10,7 @@ from datetime import datetime
 import numpy as np
 import cv2
 from services.auth_service import authenticate_vendor_access, extract_token, verify_token, check_vendor_status, hash_password
-from utils import get_db_connection, LOW_RAM_MODE, _VENDOR_EMB_CACHE, reset_sequence, ALL_FEATURES
+from utils import get_db_connection, LOW_RAM_MODE, _VENDOR_EMB_CACHE, reset_sequence, ALL_FEATURES, cache_delete_vendor_prefix, cache_delete, require_feature, cache_get, cache_set
 from services.face_service import _ensure_vendor_emb_cache, _normalize_vec, _suggest_from_cache
 from storage import upload_base64_image, presigned_url_for_key, OBJECT_STORAGE_ENABLED, compress_image
 import os
@@ -53,16 +53,7 @@ _INFER_MAX_WORKERS = int(os.environ.get("INFER_THREADS", "2"))
 _INFER_EXECUTOR = ThreadPoolExecutor(max_workers=_INFER_MAX_WORKERS) if eventlet is None else None
 
 
-def require_feature(feature_name):
-    def decorator(f):
-        from functools import wraps
-        @wraps(f)
-        def decorated(*args, **kwargs):
-            return f(*args, **kwargs)
-        return decorated
-    return decorator
-
-
+# require_feature imported from utils.py
 def rate_limit(*args, **kwargs):
     def decorator(f):
         from functools import wraps
@@ -441,6 +432,13 @@ def get_persons():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
 
+    # Cache based on vendor and request parameters
+    cache_params = sorted(request.args.items())
+    cache_key = f"vendor:{vendor_id}:persons_list:{hash(tuple(cache_params))}"
+    cached = cache_get(cache_key)
+    if cached:
+        return jsonify(cached)
+
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -468,7 +466,10 @@ def get_persons():
     persons = []
     for row in rows:
         persons.append(dict(row))
-    return jsonify({"persons": persons})
+    
+    result = {"persons": persons}
+    cache_set(cache_key, result, 300) # 5 min cache
+    return jsonify(result)
 
 
 @faces_bp.route("/sync/upload", methods=["POST"])
@@ -923,6 +924,11 @@ def upload_face():
 
         conn.commit()
         
+        # Invalidate vendor-specific caches and global stats
+        if vendor_id:
+            cache_delete_vendor_prefix(vendor_id)
+        cache_delete("admin_stats")
+        
         # Real-time update for Vendor Dashboard (People List) and SuperAdmin (Limits)
         socketio.emit('persons_updated', {'vendor_id': vendor_id}, room=f"vendor_{vendor_id}")
         socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
@@ -1269,6 +1275,11 @@ def delete_face_by_id(person_id):
             reindex_vendor_faces(conn, target_vendor_id)
 
         conn.commit()
+        
+        # Invalidate vendor-specific caches and global stats
+        if vendor_id:
+            cache_delete_vendor_prefix(vendor_id)
+        cache_delete("admin_stats")
         
         try:
             reset_sequence("faces")

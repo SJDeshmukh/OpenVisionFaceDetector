@@ -10,7 +10,7 @@ import qrcode
 from io import BytesIO
 from utils import (
     _run, log_audit, ALL_FEATURES, BUNDLE_FEATURES, REGISTRATION_TEMPLATES,
-    cache_get, cache_set, create_job, complete_job, fail_job, get_db_connection
+    cache_get, cache_set, cache_delete, reset_sequence, create_job, complete_job, fail_job, get_db_connection
 )
 from db_factory import get_table_columns
 try:
@@ -21,6 +21,20 @@ except Exception:
 # Import from services
 from services.auth_service import verify_token, extract_token, hash_password, verify_password
 from services.restoration_service import run_restore
+
+def trigger_model_download_if_needed(features):
+    """Background task to ensure heavy AI models are downloaded if bulk_image_attendance is selected."""
+    if not features:
+        return
+    if 'bulk_image_attendance' in features:
+        try:
+            # We use a thread or separate process to not block the API response
+            import threading
+            from download_models import run_full_download
+            print(f"[ADMIN] Feature 'bulk_image_attendance' detected. Triggering AI model pre-download...", flush=True)
+            threading.Thread(target=run_full_download, daemon=True).start()
+        except Exception as e:
+            print(f"[ADMIN] Error triggering model download: {e}", flush=True)
 
 # Authentication decorators - these might be defined in app.py, so we will import them locally or they might need to be resolved.
 def super_admin_required(f):
@@ -629,7 +643,7 @@ def get_admin_stats():
         "active_streaming_devices": active_streaming_devices,
         "monthly_recurring_revenue": monthly_revenue
     }
-    cache_set("admin_stats", result, 2)
+    cache_set("admin_stats", result, 300) # 5 min cache
     return jsonify(result)
 
 @admin_bp.route("/vendors", methods=["GET"])
@@ -970,6 +984,10 @@ def create_vendor():
                 features = data.get("features")
                 if features is None:
                     features = BUNDLE_FEATURES.get(frontend_bundle_id, [])
+                
+                # Lazy trigger heavy model download if this feature is selected
+                trigger_model_download_if_needed(features)
+
                 features_json = json.dumps(features)
                 # Note: c2 is a cursor, but get_table_columns needs a connection
                 # We can use the connection associated with c2 if possible, or just pass conn
@@ -1000,19 +1018,19 @@ def create_vendor():
                 conn2.close()
                 log_audit('create_vendor', {'company_name': company_name}, target_vendor_id=vendor_id)
                 socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
-            except Exception:
+            except Exception as e:
+                print(f"[_process ERROR] {str(e)}", flush=True)
+                import traceback
+                traceback.print_exc()
                 try:
                     conn2.close()
                 except Exception:
                     pass
-        if celery:
+        if celery and not is_testing():
             try:
                 celery.send_task("tasks.process_vendor_creation", args=[payload])
             except Exception:
-                if app.config.get('TESTING'):
-                    _process()
-                else:
-                    _run_in_native_thread(_process)
+                _run_in_native_thread(_process)
         else:
             _process()
         # Ensure vendor admin exists
@@ -1426,10 +1444,13 @@ def update_vendor_details(vendor_id):
         if 'features' in data:
             features_val = data['features']
             if isinstance(features_val, list):
+                # Trigger model download if new feature set includes bulk attendance
+                trigger_model_download_if_needed(features_val)
                 features_json = json.dumps(features_val)
         elif 'frontend_bundle_id' in data:
             new_bundle_id = data['frontend_bundle_id']
             new_features = BUNDLE_FEATURES.get(new_bundle_id, [])
+            trigger_model_download_if_needed(new_features)
             features_json = json.dumps(new_features)
 
         if features_json:
@@ -1613,24 +1634,14 @@ def delete_vendor(vendor_id):
             _run(c, f"DELETE FROM {t} WHERE {key} = ?", (vendor_id,))
         _run(c, "DELETE FROM vendors WHERE id = ?", (vendor_id,))
         
-        # Reset sequences if no vendors left (optional, as requested)
-        try:
-            _run(c, "SELECT COUNT(*) FROM vendors")
-            row = c.fetchone()
-            count = row[0] if row else 0
-            if count == 0:
-                is_pg = getattr(conn, "_is_pg", False)
-                reset_tables = tables + ["vendors"]
-                for t in reset_tables:
-                    try:
-                        if is_pg:
-                            _run(c, f"ALTER SEQUENCE {t}_id_seq RESTART WITH 1")
-                        else:
-                            _run(c, f"DELETE FROM sqlite_sequence WHERE name='{t}'")
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+        # Reset sequences for all relevant tables
+        is_pg = getattr(conn, "_is_pg", False)
+        reset_tables = tables + ["vendors"]
+        for t in reset_tables:
+            try:
+                reset_sequence(t)
+            except Exception:
+                pass
 
         conn.commit()
         try:

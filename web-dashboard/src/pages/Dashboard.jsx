@@ -57,6 +57,20 @@ const Dashboard = () => {
   };
 
   useEffect(() => {
+    // Load initial data from localStorage for instant loading
+    const cachedData = localStorage.getItem(`dashboard_cache_${user?.vendor_id}`);
+    if (cachedData) {
+      try {
+        const parsed = JSON.parse(cachedData);
+        setStats(parsed.stats);
+        setChartData(parsed.chartData);
+        setDeptData(parsed.deptData);
+        setRecentActivity(parsed.recentActivity);
+      } catch (e) {
+        console.error("Error parsing dashboard cache:", e);
+      }
+    }
+
     const fetchData = async () => {
       try {
         const [analyticsRes, attendanceRes] = await Promise.all([
@@ -68,17 +82,27 @@ const Dashboard = () => {
         const { summary, bar_data, dept_data } = analyticsRes.data;
         const attendance = attendanceRes.data.attendance || [];
 
-        setStats({
+        const newStats = {
           total: summary.total_users,
           present: summary.present_today,
           absent: summary.absent_today,
           late: summary.late_today,
+          overdue_leaves_count: summary.overdue_leaves_count || 0,
           activeCameras: 1
-        });
+        };
 
+        setStats(newStats);
         setChartData(bar_data || []);
         setDeptData(dept_data || []);
         setRecentActivity(attendance.slice(0, 5));
+
+        // Save to cache
+        localStorage.setItem(`dashboard_cache_${user?.vendor_id}`, JSON.stringify({
+          stats: newStats,
+          chartData: bar_data || [],
+          deptData: dept_data || [],
+          recentActivity: attendance.slice(0, 5)
+        }));
 
       } catch (error) {
         console.error("Error fetching data:", error);
@@ -198,6 +222,28 @@ const Dashboard = () => {
         <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg flex items-center gap-2">
           <AlertTriangle size={20} />
           <span className="font-medium">{error} - Logging out...</span>
+        </div>
+      )}
+
+      {stats.overdue_leaves_count > 0 && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 px-6 py-4 rounded-xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 animate-in fade-in slide-in-from-top-4 duration-500 shadow-sm">
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-amber-500 text-white rounded-full shadow-lg shadow-amber-200">
+              <AlertTriangle size={24} />
+            </div>
+            <div>
+              <h3 className="font-bold text-lg">Leave Return Alerts</h3>
+              <p className="text-sm text-amber-700/80">
+                {stats.overdue_leaves_count} {personLabel}{stats.overdue_leaves_count > 1 ? 's have' : ' has'} not returned after their approved leave ended.
+              </p>
+            </div>
+          </div>
+          <button 
+            onClick={() => window.location.hash = '#/leave-management'}
+            className="flex items-center gap-2 px-6 py-2.5 bg-amber-600 text-white rounded-lg font-bold hover:bg-amber-700 transition-all shadow-md shadow-amber-100 whitespace-nowrap"
+          >
+            Track Returns <Zap size={16} />
+          </button>
         </div>
       )}
 

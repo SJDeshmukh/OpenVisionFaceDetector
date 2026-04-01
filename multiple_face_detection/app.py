@@ -15,6 +15,36 @@ import urllib.request
 import urllib.parse
 import base64
 
+def is_bulk_attendance_allowed() -> bool:
+    """Checks if ANY active vendor has bulk_image_attendance enabled."""
+    try:
+        # Use existing backend utils if possible
+        # We need to find the project root to import backend modules
+        root = os.path.dirname(_BASE_DIR)
+        if root not in sys.path:
+            sys.path.append(root)
+        
+        from backend.utils import get_db_connection
+        conn = get_db_connection()
+        c = conn.cursor()
+        # Check if ANY vendor has the feature in subscriptions
+        c.execute("SELECT features FROM subscriptions")
+        rows = c.fetchall()
+        conn.close()
+        
+        for row in rows:
+            try:
+                features = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+                if 'bulk_image_attendance' in features:
+                    return True
+            except:
+                continue
+    except Exception as e:
+        # If DB fails or not initialized, assume False to save resources
+        print(f"[MFD] Feature check failed: {e}", flush=True)
+        return False
+    return False
+
 def _extract_structural_vector(lmks):
     if lmks is None or len(lmks) != 68:
         return np.array([], dtype=np.float32)
@@ -39,6 +69,9 @@ def _extract_structural_vector(lmks):
 _mesh_engine = None
 def get_realtime_engine():
     global _mesh_engine
+    if not is_bulk_attendance_allowed():
+        print("[3D_ENGINE] Bulk attendance feature not enabled for any vendor. Skipping model load.", flush=True)
+        return None
     if _mesh_engine is not None:
         return _mesh_engine
     
@@ -135,6 +168,9 @@ class GFPGANManager:
         return ""
 
     def load(self, upscale: int = 2):
+        if not is_bulk_attendance_allowed():
+            print("[GFPGAN] Bulk attendance feature not enabled for any vendor. Skipping model load.", flush=True)
+            return None
         self._last_used = time.time()
         # Reload if scale factor changed
         if self._restorer is not None:
@@ -292,6 +328,9 @@ class RealESRGANManager:
         return ""
 
     def load(self, upscale: int = 2):
+        if not is_bulk_attendance_allowed():
+            print("[RealESRGAN] Bulk attendance feature not enabled for any vendor. Skipping model load.", flush=True)
+            return None
         if self._upsampler is not None:
             return self._upsampler
         model_path = self._ensure_weights()
@@ -428,6 +467,9 @@ class FaceEmbedder:
         return self._available
 
     def _load(self):
+        if not is_bulk_attendance_allowed():
+            print("[FaceEmbedder] Bulk attendance feature not enabled for any vendor. Skipping model load.", flush=True)
+            return None
         if self._model is not None:
             return self._model
         if not self._check_available():

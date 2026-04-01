@@ -155,40 +155,37 @@ class WebRTCManager(
         socket.emit("webrtc_signal", data)
     }
 
+    private var yBuffer: ByteBuffer? = null
+    private var uBuffer: ByteBuffer? = null
+    private var vBuffer: ByteBuffer? = null
+    private var lastWidth = 0
+    private var lastHeight = 0
+
     // Connects the video source to the frames
     fun onNewFrame(bitmap: Bitmap) {
-        val capturer = videoSource?.capturerObserver
-        
-        // Convert Bitmap to YUV or feed it to the source
-        // For simplicity, we can use a custom VideoCapturer or feed raw bytes
-        // A more efficient way is to use the capturerObserver directly
+        val capturer = videoSource?.capturerObserver ?: return
         
         val width = bitmap.width
         val height = bitmap.height
         val timestampNs = System.nanoTime()
 
-        val yuvFrame = bitmapToYuv(bitmap)
-        val buffer = JavaI420Buffer.wrap(
-            width, height,
-            yuvFrame.y, width,
-            yuvFrame.u, width / 2,
-            yuvFrame.v, width / 2,
-            null
-        )
-        
-        val videoFrame = VideoFrame(buffer, 0, timestampNs)
-        capturer?.onFrameCaptured(videoFrame)
-        videoFrame.release()
-    }
+        // Reuse buffers if size hasn't changed
+        if (width != lastWidth || height != lastHeight || yBuffer == null) {
+            lastWidth = width
+            lastHeight = height
+            yBuffer = ByteBuffer.allocateDirect(width * height)
+            uBuffer = ByteBuffer.allocateDirect(width * height / 4)
+            vBuffer = ByteBuffer.allocateDirect(width * height / 4)
+        }
 
-    private fun bitmapToYuv(bitmap: Bitmap): YuvData {
-        val width = bitmap.width
-        val height = bitmap.height
+        val y = yBuffer!!
+        val u = uBuffer!!
+        val v = vBuffer!!
+        y.clear()
+        u.clear()
+        v.clear()
+
         val size = width * height
-        val y = ByteBuffer.allocateDirect(size)
-        val u = ByteBuffer.allocateDirect(size / 4)
-        val v = ByteBuffer.allocateDirect(size / 4)
-
         val argb = IntArray(size)
         bitmap.getPixels(argb, 0, width, 0, 0, width, height)
 
@@ -210,10 +207,19 @@ class WebRTCManager(
                 }
             }
         }
-        return YuvData(y, u, v)
+        
+        val buffer = JavaI420Buffer.wrap(
+            width, height,
+            y, width,
+            u, width / 2,
+            v, width / 2,
+            null
+        )
+        
+        val videoFrame = VideoFrame(buffer, 0, timestampNs)
+        capturer.onFrameCaptured(videoFrame)
+        videoFrame.release()
     }
-
-    private data class YuvData(val y: ByteBuffer, val u: ByteBuffer, val v: ByteBuffer)
 
     open class SimpleSdpObserver : SdpObserver {
         override fun onCreateSuccess(sessionDescription: SessionDescription) {}
@@ -226,5 +232,8 @@ class WebRTCManager(
         peerConnection?.dispose()
         peerConnectionFactory?.dispose()
         videoSource?.dispose()
+        yBuffer = null
+        uBuffer = null
+        vBuffer = null
     }
 }

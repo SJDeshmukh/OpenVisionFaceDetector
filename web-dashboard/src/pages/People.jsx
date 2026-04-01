@@ -44,6 +44,17 @@ const People = () => {
   const { socket, joinVendor } = useSocket();
   useEffect(() => {
     if (user) {
+      // Load initial data from localStorage for instant loading
+      const cachedUsers = localStorage.getItem(`people_cache_${user?.vendor_id}`);
+      if (cachedUsers) {
+        try {
+          setUsers(JSON.parse(cachedUsers));
+          setLoading(false);
+        } catch (e) {
+          console.error("Error parsing people cache:", e);
+        }
+      }
+
       fetchUsers();
       fetchShifts();
       // Fetch Vendor Registration Config to drive dynamic fields
@@ -82,10 +93,12 @@ const People = () => {
 
   const fetchUsers = async () => {
     try {
-      // API call includes Authorization header automatically via AuthContext global axios defaults
       const response = await axios.get(`${API_URL}/sync/download?limit=200`);
-      setUsers(response.data.faces || []);
+      const faces = response.data.faces || [];
+      setUsers(faces);
       setLoading(false);
+      // Save to cache
+      localStorage.setItem(`people_cache_${user?.vendor_id}`, JSON.stringify(faces));
     } catch (error) {
       console.error("Error fetching users:", error);
       setLoading(false);

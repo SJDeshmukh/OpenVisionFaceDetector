@@ -30,6 +30,9 @@ class TestIntegration(unittest.TestCase):
             name TEXT,
             email TEXT,
             password TEXT,
+            password_plain TEXT,
+            person_id INTEGER,
+            has_set_password INTEGER DEFAULT 0,
             status TEXT DEFAULT 'active',
             working_hours REAL DEFAULT 8.0,
             live_timetable TEXT,
@@ -70,6 +73,9 @@ class TestIntegration(unittest.TestCase):
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE,
             password TEXT,
+            password_plain TEXT,
+            person_id INTEGER,
+            has_set_password INTEGER DEFAULT 0,
             role TEXT,
             vendor_id TEXT,
             frontend_bundle_id TEXT
@@ -164,7 +170,8 @@ class TestIntegration(unittest.TestCase):
                 # We will use `unittest.mock` to patch it
                 from unittest.mock import patch
                 
-                with patch('routes.attendance.authenticate_vendor_access', return_value=(self.vendor_id, None)):
+                with patch('services.auth_service.authenticate_vendor_access', return_value=(self.vendor_id, None)), \
+                     patch('routes.attendance.authenticate_vendor_access', return_value=(self.vendor_id, None)):
                     with app.test_client() as client:
                         # Test JSON Report
                         response = client.get(f'/api/reports/payroll?start_date=2023-10-27&end_date=2023-10-28')

@@ -198,7 +198,7 @@ public class DBManager extends SQLiteOpenHelper {
             }
         }
 
-        Person p = new Person(effectiveLocalUid, id, name, face, templates, phone, department, designation, shift, customData);
+        Person p = new Person(effectiveLocalUid, id, name, templates, phone, department, designation, shift, customData);
         p.synced = synced;
         personList.add(p);
     }
@@ -386,13 +386,10 @@ public class DBManager extends SQLiteOpenHelper {
 
         while(res.isAfterLast() == false){
             String name = res.getString(res.getColumnIndexOrThrow("name"));
-            byte[] faceJpg = null;
-            try { faceJpg = res.getBlob(res.getColumnIndexOrThrow("face")); } catch (Exception ignored) {}
-            
             byte[] templates = null;
             try { templates = res.getBlob(res.getColumnIndexOrThrow("templates")); } catch (Exception ignored) {}
             
-            if (faceJpg == null || templates == null) {
+            if (templates == null) {
                 res.moveToNext();
                 continue;
             }
@@ -441,17 +438,7 @@ public class DBManager extends SQLiteOpenHelper {
             int syncedIdx = res.getColumnIndex("synced");
             if (syncedIdx != -1) synced = res.getInt(syncedIdx) == 1;
 
-            Bitmap face = null;
-            try {
-                face = BitmapFactory.decodeByteArray(faceJpg, 0, faceJpg.length);
-            } catch (Exception ignored) {}
-
-            if (face == null) {
-                res.moveToNext();
-                continue;
-            }
-
-            Person person = new Person(localUid, id, name, face, templates, phone, department, designation, shift, customData);
+            Person person = new Person(localUid, id, name, templates, phone, department, designation, shift, customData);
             person.synced = synced;
             
             // Deduplicate
@@ -734,14 +721,8 @@ public class DBManager extends SQLiteOpenHelper {
                     int cdIdx = res.getColumnIndex("custom_data");
                     if (cdIdx != -1) customData = res.getString(cdIdx);
 
-                    Bitmap face = null;
-                    try {
-                        if (faceJpg != null) {
-                            face = BitmapFactory.decodeByteArray(faceJpg, 0, faceJpg.length);
-                        }
-                    } catch (Exception ignored) {}
-                    if (face != null && templates != null) {
-                        Person p = new Person(localUid, id, name, face, templates, phone, department, designation, shift, customData);
+                    if (templates != null) {
+                        Person p = new Person(localUid, id, name, templates, phone, department, designation, shift, customData);
                         p.synced = false;
                         list.add(p);
                     }

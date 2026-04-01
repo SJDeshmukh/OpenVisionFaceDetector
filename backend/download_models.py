@@ -59,10 +59,16 @@ def download_hf_models():
             except Exception as e:
                 print(f"--- FAILED HF download {filename}: {e} ---")
 
-if __name__ == "__main__":
+def run_full_download():
     print("AI Model Auto-Downloader starting...")
     for path, url in MODELS.items():
+        # Adjust path if called from backend root
+        if not os.path.exists(path) and os.path.exists(os.path.join("..", path)):
+             path = os.path.join("..", path)
         download_file(url, path)
     
     download_hf_models()
     print("Auto-download process finished.")
+
+if __name__ == "__main__":
+    run_full_download()

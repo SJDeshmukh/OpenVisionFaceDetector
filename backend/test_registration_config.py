@@ -41,6 +41,9 @@ class TestRegistrationConfig(unittest.TestCase):
         c.execute('''CREATE TABLE IF NOT EXISTS system_users (
             username TEXT PRIMARY KEY,
             password TEXT,
+            password_plain TEXT,
+            person_id INTEGER,
+            has_set_password INTEGER DEFAULT 0,
             role TEXT,
             vendor_id INTEGER
         )''')

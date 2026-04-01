@@ -98,6 +98,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     private ProcessCameraProvider cameraProvider = null;
 
     private FaceView faceView;
+    private ExecutorService streamExecutorService;
     private TextView statusText;
     private FrameLayout screenSaverView;
     private DBManager dbManager;
@@ -204,6 +205,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         }
 
         cameraExecutorService = Executors.newFixedThreadPool(1);
+        streamExecutorService = Executors.newSingleThreadExecutor();
         tts = new TextToSpeech(requireContext(), this);
 
         if (ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.CAMERA)
@@ -330,6 +332,9 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         }
         if (cameraExecutorService != null) {
             cameraExecutorService.shutdown();
+        }
+        if (streamExecutorService != null) {
+            streamExecutorService.shutdown();
         }
         if (powerSaveHandler != null) {
             powerSaveHandler.removeCallbacks(powerSaveRunnable);
@@ -760,13 +765,18 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         }
 
         // --- Restored: Direct upload for Dashboard visibility ---
-        new Thread(() -> {
-            try {
-                // Resize for speed (e.g., 320px width)
-                int width = 320;
-                int height = (int) (originalBitmap.getHeight() * ((float) width / originalBitmap.getWidth()));
-                Bitmap scaled = Bitmap.createScaledBitmap(originalBitmap, width, height, false);
+        // Resize for speed (e.g., 320px width)
+        int width = 320;
+        int height = (int) (originalBitmap.getHeight() * ((float) width / originalBitmap.getWidth()));
+        final Bitmap scaled = Bitmap.createScaledBitmap(originalBitmap, width, height, false);
+        
+        if (streamExecutorService == null || streamExecutorService.isShutdown()) {
+            if (scaled != originalBitmap) scaled.recycle();
+            return;
+        }
 
+        streamExecutorService.execute(() -> {
+            try {
                 ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
                 scaled.compress(Bitmap.CompressFormat.JPEG, 60, byteArrayOutputStream);
                 byte[] byteArray = byteArrayOutputStream.toByteArray();
@@ -792,8 +802,12 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 });
             } catch (Exception e) {
                 e.printStackTrace();
+            } finally {
+                if (scaled != originalBitmap) {
+                    scaled.recycle();
+                }
             }
-        }).start();
+        });
         // --------------------------------------------------------
     }
 
@@ -1129,6 +1143,9 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
+            if (processedFrameBitmap != null && !processedFrameBitmap.isRecycled()) {
+                processedFrameBitmap.recycle();
+            }
             imageProxy.close();
         }
     }

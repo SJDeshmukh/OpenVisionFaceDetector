@@ -7,7 +7,7 @@ import io
 import time
 from datetime import datetime, date, timedelta
 from services.auth_service import authenticate_vendor_access, extract_token, verify_token
-from utils import parse_db_date
+from utils import parse_db_date, cache_get, cache_set
 
 # Mock Auth Decorators
 def vendor_required(f):
@@ -52,15 +52,8 @@ def rate_limit(*args, **kwargs):
         return decorated
     return decorator
     
-def require_feature(feature_name):
-    def decorator(f):
-        from functools import wraps
-        @wraps(f)
-        def decorated(*inner_args, **inner_kwargs):
-            return f(*inner_args, **inner_kwargs)
-        return decorated
-    return decorator
-    
+from utils import require_feature
+
 vendor_bp = Blueprint('vendor_bp', __name__)
 
 from utils import ALL_FEATURES, log_audit
@@ -239,6 +232,11 @@ def get_vendor_subscription():
     if not vendor_id:
          return jsonify({"error": "No vendor context"}), 400
 
+    cache_key = f"vendor:{vendor_id}:subscription"
+    cached = cache_get(cache_key)
+    if cached:
+        return jsonify(cached)
+
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -306,6 +304,7 @@ def get_vendor_subscription():
     except Exception:
         sub_dict["max_web_sessions"] = 1
     
+    cache_set(cache_key, sub_dict, 3600) # 1 hour cache for subscription
     return jsonify(sub_dict)
 
 

@@ -10,6 +10,7 @@ class TestComprehensiveFeatures(unittest.TestCase):
         # Create a temporary database
         self.db_fd, self.db_path = tempfile.mkstemp()
         app.config['TESTING'] = True
+        app.config['PROPAGATE_EXCEPTIONS'] = True
         
         # Override the database connection in app.py to use our temp db
         # We'll patch get_db_connection indirectly by setting the global DB path if possible, 
@@ -47,128 +48,30 @@ class TestComprehensiveFeatures(unittest.TestCase):
         c = conn.cursor()
         
         # Create Tables (Simplified Schema for Features/Vendors)
-        c.execute('''CREATE TABLE IF NOT EXISTS vendors (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            company_name TEXT NOT NULL,
-            contact_person TEXT,
-            phone TEXT,
-            email TEXT,
-            frontend_bundle_id TEXT,
-            backend_service_id TEXT,
-            config TEXT,
-            web_login_enabled INTEGER DEFAULT 1,
-            status TEXT DEFAULT 'active',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )''')
-        
-        c.execute('''CREATE TABLE IF NOT EXISTS subscriptions (
-            vendor_id INTEGER PRIMARY KEY,
-            plan_type TEXT,
-            start_date DATE,
-            end_date DATE,
-            max_users INTEGER,
-            max_employees INTEGER,
-            max_mobile_devices INTEGER,
-            cost_per_user REAL,
-            cost_per_employee REAL,
-            setup_fee REAL,
-            setup_fee_paid INTEGER,
-            grace_period_days INTEGER DEFAULT 0,
-            features TEXT,
-            FOREIGN KEY (vendor_id) REFERENCES vendors (id)
-        )''')
-        
-        c.execute('''CREATE TABLE IF NOT EXISTS system_users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL,
-            role TEXT NOT NULL,
-            vendor_id INTEGER,
-            FOREIGN KEY (vendor_id) REFERENCES vendors (id)
-        )''')
-
-        c.execute('''CREATE TABLE IF NOT EXISTS faces (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            vendor_id INTEGER,
-            name TEXT,
-            embedding TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (vendor_id) REFERENCES vendors (id)
-        )''')
-
-        c.execute('''CREATE TABLE IF NOT EXISTS vendor_devices (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            vendor_id INTEGER,
-            device_name TEXT,
-            device_id TEXT,
-            status TEXT DEFAULT 'active',
-            last_seen TIMESTAMP,
-            FOREIGN KEY (vendor_id) REFERENCES vendors (id)
-        )''')
-
-        c.execute('''CREATE TABLE IF NOT EXISTS companies (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            shifts TEXT,
-            draft_timetable TEXT,
-            live_timetable TEXT,
-            vendor_id INTEGER,
-            FOREIGN KEY (vendor_id) REFERENCES vendors (id)
-        )''')
-
-        c.execute('''CREATE TABLE IF NOT EXISTS invoices (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            vendor_id INTEGER,
-            amount REAL,
-            status TEXT,
-            due_date DATE,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (vendor_id) REFERENCES vendors (id)
-        )''')
-
-        c.execute('''CREATE TABLE IF NOT EXISTS active_sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT,
-            token TEXT,
-            vendor_id INTEGER,
-            device_id TEXT,
-            platform TEXT,
-            ip_address TEXT,
-            last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (vendor_id) REFERENCES vendors (id)
-        )''')
-
-        c.execute('''CREATE TABLE IF NOT EXISTS system_settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )''')
-
-        c.execute('''CREATE TABLE IF NOT EXISTS audit_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            actor_username TEXT,
-            action TEXT,
-            target_vendor_id INTEGER,
-            details TEXT,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )''')
+        from db_factory import init_sqlite_schema
+        init_sqlite_schema(conn)
         
         # Create SuperAdmin
+        c = conn.cursor()
         c.execute("INSERT INTO system_users (username, password, role) VALUES (?, ?, ?)",
                   ('superadmin', 'admin123', 'super_admin'))
         
         conn.commit()
         conn.close()
         
-        # Patch app.get_db_connection
-        self.app_module = __import__('app')
-        self.original_get_db = self.app_module.get_db_connection
-        
-        def mock_get_db():
+        # Override get_db_connection to return our in-memory DB
+        def mock_get_db(timeout=30):
             conn = sqlite3.connect(self.db_path)
             conn.row_factory = sqlite3.Row
             return conn
             
+        import db_factory
+        self.app_module = __import__('app')
+        self.original_get_db = self.app_module.get_db_connection
+        self.original_db_factory_get_db = db_factory.get_db_connection
+        
         self.app_module.get_db_connection = mock_get_db
+        db_factory.get_db_connection = mock_get_db
         self.client = app.test_client()
         
         # Login to get token
@@ -183,8 +86,10 @@ class TestComprehensiveFeatures(unittest.TestCase):
         self.headers = {'Authorization': f'Bearer {self.token}'}
 
     def tearDown(self):
+        import db_factory
         # Restore DB connection
         self.app_module.get_db_connection = self.original_get_db
+        db_factory.get_db_connection = self.original_db_factory_get_db
         os.close(self.db_fd)
         os.remove(self.db_path)
 
@@ -200,7 +105,7 @@ class TestComprehensiveFeatures(unittest.TestCase):
         }
         
         resp = self.client.post('/api/admin/vendors', json=payload, headers=self.headers)
-        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.status_code, 200, resp.data.decode())
         
         # Verify DB
         conn = self.app_module.get_db_connection()
@@ -319,7 +224,9 @@ class TestComprehensiveFeatures(unittest.TestCase):
         # Setup: Create Vendor Admin
         self.client.post('/api/admin/vendors', json={
             "company_name": "Access Co",
-            "features": ["reports"] # Has reports, NO payroll
+            "features": ["reports"], # Has reports, NO payroll
+            "start_date": "2024-01-01",
+            "end_date": "2030-12-31"
         }, headers=self.headers)
         
         # Login as Vendor Admin
@@ -336,22 +243,19 @@ class TestComprehensiveFeatures(unittest.TestCase):
         # Actually, let's check a known protected endpoint.
         # /reports/payroll requires 'payroll'.
         
-        print("Attempting /api/reports/payroll without 'payroll' feature...")
-        resp = self.client.get('/api/reports/payroll', headers=vendor_headers)
+        print("Attempting /api/settings/late-config without 'payroll' feature...")
+        resp = self.client.put('/api/settings/late-config', headers=vendor_headers, json={"allowance": 10})
         print(f"Status: {resp.status_code}, Response: {resp.json}")
         self.assertEqual(resp.status_code, 403) # Should be Forbidden
         
         # 2. Grant 'payroll' feature
         self.client.put('/api/admin/vendors/1/subscription', json={"features": ["reports", "payroll"]}, headers=self.headers)
         
-        # Re-login to refresh features in session (if cached) or just retry if checked per request
-        # The current implementation checks per request using the decorator which queries DB or token?
-        # @require_feature checks DB usually.
         # Let's retry.
         
-        print("Attempting /api/reports/payroll WITH 'payroll' feature...")
-        resp = self.client.get('/api/reports/payroll', headers=vendor_headers)
-        print(f"Status: {resp.status_code}")
+        print("Attempting /api/settings/late-config WITH 'payroll' feature...")
+        resp = self.client.put('/api/settings/late-config', headers=vendor_headers, json={"allowance": 15})
+        print(f"Status: {resp.status_code}, Response: {resp.json}")
         
         # Note: It might be 400 or 200 depending on params, but definitely NOT 403
         self.assertNotEqual(resp.status_code, 403)
@@ -418,7 +322,9 @@ class TestComprehensiveFeatures(unittest.TestCase):
         # 1. Perform Actions that should be logged
         # Action A: Create Vendor
         self.client.post('/api/admin/vendors', json={
-            "company_name": "Audit Co"
+            "company_name": "Audit Co",
+            "start_date": "2024-01-01",
+            "end_date": "2030-12-31"
         }, headers=self.headers)
         
         # Action B: Update Subscription
@@ -498,11 +404,18 @@ class TestComprehensiveFeatures(unittest.TestCase):
         self.client.post('/api/admin/vendors', json={
             "company_name": "Restricted Co",
             "feature_bundle_id": "custom",
-            "custom_features": ["reports", "cameras"] # Only Reports and Cameras
+            "features": ["reports", "cameras"], # Only Reports and Cameras
+            "start_date": "2024-01-01",
+            "end_date": "2030-12-31"
         }, headers=self.headers)
         
         # Verify DB state directly? Or trust login?
-        # The create_vendor endpoint might be merging default features?
+        conn = self.app_module.get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT vendor_id, features FROM subscriptions")
+        rows = c.fetchall()
+        print(f"SUBSCRIPTION ROWS IN DB: {[dict(r) for r in rows]}")
+        conn.close()
         
         # 2. Login as Vendor Admin
         resp = self.client.post('/api/auth/login', json={
@@ -543,8 +456,8 @@ class TestComprehensiveFeatures(unittest.TestCase):
         token = data['token']
         headers = {'Authorization': f'Bearer {token}'}
         
-        resp_payroll = self.client.get('/api/reports/payroll?start_date=2026-01-01&end_date=2026-01-31', headers=headers)
-        print(f"Payroll Access Status: {resp_payroll.status_code}")
+        resp_payroll = self.client.put('/api/settings/late-config', headers=headers, json={"allowance": 10})
+        print(f"Late Config Access Status: {resp_payroll.status_code}")
         # Expect 403 because 'payroll' feature is missing
         self.assertEqual(resp_payroll.status_code, 403)
         

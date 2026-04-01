@@ -2,10 +2,10 @@ from flask import Blueprint, request, jsonify
 import json
 import base64
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 from services.auth_service import authenticate_vendor_access, hash_password, verify_token
 from services.face_service import _normalize_vec, _decode_data_uri_to_rgb
-from utils import get_db_connection
+from utils import get_db_connection, require_feature
 
 leave_bp = Blueprint('leave_bp', __name__)
 
@@ -19,6 +19,7 @@ def get_row_dict(row):
         return row
 
 @leave_bp.route("/request", methods=["POST"])
+@require_feature("leave_management")
 def create_leave_request():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -291,7 +292,106 @@ def parent_approve_request():
     finally:
         conn.close()
 
+@leave_bp.route("/admin/tracking", methods=["GET"])
+@require_feature("leave_management")
+def get_leave_tracking():
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+    
+    role = request.args.get("role", "rector")
+    dept = request.args.get("department")
+    
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        is_pg = getattr(conn, "_is_pg", False)
+        today = datetime.now().date()
+        
+        # Base query for approved leaves
+        query = """
+            SELECT lr.*, f.name as student_name, f.department as student_dept
+            FROM leave_requests lr
+            JOIN faces f ON lr.student_id = f.id
+            WHERE lr.vendor_id = ? AND lr.final_status = 'approved'
+            AND lr.end_date >= ? OR lr.end_date < ? -- Show upcoming and past due
+        """
+        params = [vendor_id, today - timedelta(days=1), today]
+        
+        if role == 'hod' and dept:
+            if is_pg:
+                query += """ AND (
+                    LOWER(TRIM(f.department)) = LOWER(TRIM(%s)) OR
+                    LOWER(TRIM(f.custom_data::jsonb->>'department')) = LOWER(TRIM(%s))
+                )"""
+            else:
+                query += """ AND (
+                    LOWER(TRIM(f.department)) = LOWER(TRIM(?)) OR
+                    LOWER(TRIM(json_extract(f.custom_data, '$.department'))) = LOWER(TRIM(?))
+                )"""
+            params.extend([dept, dept])
+
+        if is_pg:
+            query = query.replace('?', '%s')
+            
+        c.execute(query, tuple(params))
+        requests = [get_row_dict(r) for r in c.fetchall()]
+        
+        tracking_data = []
+        for req in requests:
+            student_id = req['student_id']
+            end_date = req['end_date']
+            if isinstance(end_date, str):
+                from utils import parse_db_date
+                end_date = parse_db_date(end_date)
+            
+            # Check if student has arrived since leave started
+            # We look for any attendance record after start_date
+            start_date = req['start_date']
+            if isinstance(start_date, str):
+                from utils import parse_db_date
+                start_date = parse_db_date(start_date)
+
+            if is_pg:
+                c.execute("SELECT timestamp FROM attendance WHERE person_id = %s AND timestamp >= %s ORDER BY timestamp ASC LIMIT 1", 
+                          (student_id, start_date))
+            else:
+                c.execute("SELECT timestamp FROM attendance WHERE person_id = ? AND timestamp >= ? ORDER BY timestamp ASC LIMIT 1", 
+                          (student_id, start_date))
+            
+            arrival = c.fetchone()
+            has_arrived = arrival is not None
+            
+            status_text = "On Leave"
+            status_color = "blue"
+            
+            if has_arrived:
+                status_text = "Arrived"
+                status_color = "green"
+            else:
+                diff = (end_date - today).days
+                if diff == 0:
+                    status_text = "Will Arrive Today"
+                    status_color = "orange"
+                elif diff == 1:
+                    status_text = "Will Arrive Tomorrow"
+                    status_color = "blue"
+                elif diff < 0:
+                    status_text = "Has Not Arrived"
+                    status_color = "red"
+            
+            req['tracking_status'] = status_text
+            req['tracking_color'] = status_color
+            req['arrival_time'] = get_row_dict(arrival)['timestamp'] if has_arrived else None
+            tracking_data.append(req)
+            
+        return jsonify({"tracking": tracking_data})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
 @leave_bp.route("/admin/pending", methods=["GET"])
+@require_feature("leave_management")
 def get_admin_pending_requests():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -364,6 +464,7 @@ def get_admin_pending_requests():
         conn.close()
 
 @leave_bp.route("/admin/history", methods=["GET"])
+@require_feature("leave_management")
 def get_admin_leave_history():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -426,6 +527,7 @@ def get_admin_leave_history():
         conn.close()
 
 @leave_bp.route("/admin/approve", methods=["POST"])
+@require_feature("leave_management")
 def admin_approve_request():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -490,6 +592,7 @@ def admin_approve_request():
         conn.close()
 
 @leave_bp.route("/admin/generate-logins", methods=["POST"])
+@require_feature("leave_management")
 def generate_student_logins():
     vendor_id, error = authenticate_vendor_access()
     if error: return error

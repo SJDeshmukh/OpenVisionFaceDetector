@@ -356,6 +356,9 @@ public class EnrollFragment extends Fragment {
                 Toast.makeText(getContext(), "Registered locally (offline)", Toast.LENGTH_SHORT).show();
             }
             
+            if (faceImage != null && !faceImage.isRecycled()) faceImage.recycle();
+            if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
+
             // Clear inputs
             etName.setText("");
             etMobile.setText("");

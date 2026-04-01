@@ -20,6 +20,7 @@ const LeaveManagement = () => {
   const { user, staffSession, loginAsStaff, logout } = useAuth();
   const [activeTab, setActiveTab] = useState('pending');
   const [requests, setRequests] = useState([]);
+  const [trackingData, setTrackingData] = useState([]);
   const [parents, setParents] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -83,6 +84,13 @@ const LeaveManagement = () => {
         }
         const res = await axios.get(url);
         setRequests(res.data.history || res.data.requests || []);
+      } else if (activeTab === 'tracking') {
+        let url = `${API_URL}/leave/admin/tracking?role=${currentRole}`;
+        if (staffSession?.department) {
+          url += `&department=${encodeURIComponent(staffSession.department)}`;
+        }
+        const res = await axios.get(url);
+        setTrackingData(res.data.tracking || []);
       } else if (activeTab === 'parents') {
         const res = await axios.get(`${API_URL}/leave/parent-faces`);
         setParents(res.data.parents || []);
@@ -221,6 +229,12 @@ const LeaveManagement = () => {
                 className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === 'pending' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}
               >
                 Pending Approvals
+              </button>
+              <button
+                onClick={() => setActiveTab('tracking')}
+                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === 'tracking' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}
+              >
+                Leave Tracking
               </button>
               <button
                 onClick={() => setActiveTab('parents')}
@@ -514,6 +528,70 @@ const LeaveManagement = () => {
                   <p className="text-slate-500">{user?.role === 'user' ? "Your leave request history will appear here." : "No leave history records match your filters."}</p>
                 </div>
               )}
+            </div>
+          ) : activeTab === 'tracking' ? (
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+              <table className="w-full text-left border-collapse">
+                <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-bold tracking-wider">
+                  <tr>
+                    <th className="p-4 border-b">Student</th>
+                    <th className="p-4 border-b">Leave Period</th>
+                    <th className="p-4 border-b">Status</th>
+                    <th className="p-4 border-b">Arrival</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {trackingData.length > 0 ? (
+                    trackingData.map(item => (
+                      <tr key={item.id} className="hover:bg-slate-50 transition-colors">
+                        <td className="p-4">
+                          <div className="flex items-center gap-3">
+                            <div className="p-2 bg-blue-50 text-blue-600 rounded-full">
+                              <User size={16} />
+                            </div>
+                            <div>
+                              <p className="font-bold text-slate-800">{item.student_name}</p>
+                              <p className="text-[10px] text-slate-400 uppercase font-mono">{item.student_dept || 'No Dept'}</p>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="p-4">
+                          <div className="text-sm">
+                            <p className="text-slate-700 font-medium">{item.start_date} to {item.end_date}</p>
+                            <p className="text-xs text-slate-400 italic">"{item.reason}"</p>
+                          </div>
+                        </td>
+                        <td className="p-4">
+                          <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-tight 
+                            ${item.tracking_color === 'red' ? 'bg-red-100 text-red-700' : 
+                              item.tracking_color === 'green' ? 'bg-green-100 text-green-700' : 
+                              item.tracking_color === 'orange' ? 'bg-orange-100 text-orange-700' : 
+                              'bg-blue-100 text-blue-700'}`}
+                          >
+                            {item.tracking_status}
+                          </span>
+                        </td>
+                        <td className="p-4">
+                          {item.arrival_time ? (
+                            <div className="text-sm">
+                              <p className="text-green-600 font-bold">Arrived</p>
+                              <p className="text-[10px] text-slate-400">{new Date(item.arrival_time).toLocaleString()}</p>
+                            </div>
+                          ) : (
+                            <p className="text-slate-400 text-xs italic">Waiting...</p>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan="4" className="p-12 text-center text-slate-500 italic">
+                        No active or upcoming leaves tracked at this moment.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
             </div>
           ) : (
             /* Parent Validation Tab */

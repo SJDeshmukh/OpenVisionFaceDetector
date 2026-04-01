@@ -73,124 +73,107 @@ def extract_token(auth_header):
 
 from flask import request, jsonify
 from datetime import datetime, date, timedelta
+from functools import wraps
+from flask import request, jsonify, g
 
-# We need a way to access the DB without circular imports
-# For now, we'll import get_db_connection locally inside functions if needed
+def require_auth(roles=None):
+    """
+    Decorator to require authentication and optionally check for specific roles.
+    """
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            vendor_id, error = authenticate_vendor_access()
+            if error:
+                return error
+            
+            # Store in flask.g for easy access in routes
+            g.vendor_id = vendor_id
+            
+            # Additional role checks if needed
+            if roles and g.user_role not in roles:
+                return jsonify({"error": "Forbidden", "code": "FORBIDDEN"}), 403
+            
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
+
 def authenticate_vendor_access():
     """
     Helper to authenticate a vendor admin/user and verify subscription status.
     Returns: (vendor_id, error_response)
     If error_response is not None, return it immediately.
     """
-    from app import get_db_connection, check_vendor_status, socketio
+    from app import get_db_connection, socketio
     
     try:
         auth_header = request.headers.get('Authorization')
         username = None
         role = None
+        token = extract_token(auth_header)
         
-        token = None
-        if auth_header:
-            try:
-                token = auth_header.split(" ")[1]
-                user_data = verify_token(token)
-                if user_data:
-                    username = user_data['username']
-                    role = user_data['role']
-                    try:
-                        conn_s = get_db_connection()
-                        cs = conn_s.cursor()
-                        cs.execute("UPDATE active_sessions SET last_active = ? WHERE token = ?", (datetime.now(), token))
-                        conn_s.commit()
-                        conn_s.close()
-                    except Exception:
-                        try:
-                            conn_s.close()
-                        except Exception:
-                            pass
-                else:
-                    return None, (jsonify({"error": "Invalid or Expired Token"}), 401)
-            except:
-                return None, (jsonify({"error": "Invalid Token Format"}), 401)
+        if token:
+            user_data = verify_token(token)
+            if user_data:
+                username = user_data.get('username')
+                role = user_data.get('role')
+                # Optional: Update active session activity
+            else:
+                return None, (jsonify({"error": "Invalid or Expired Token", "code": "UNAUTHORIZED"}), 401)
         
         if not username and request.args.get('token'):
-            try:
-                token = request.args.get('token')
-                user_data = verify_token(token)
-                if user_data:
-                    username = user_data['username']
-                    role = user_data['role']
-                else:
-                    return None, (jsonify({"error": "Invalid or Expired Token"}), 401)
-            except:
-                pass
+            token = request.args.get('token')
+            user_data = verify_token(token)
+            if user_data:
+                username = user_data.get('username')
+                role = user_data.get('role')
 
         if not username:
-            try:
-                body = request.get_json(silent=True) or {}
-                vid = body.get("vendor_id")
-                if vid and str(request.path).startswith("/api/sync/upload"):
-                    return vid, None
-            except Exception:
-                pass
-            return None, (jsonify({"error": "Authentication Required"}), 401)
+            # Special case for sync upload if allowed
+            if request.path.startswith("/api/sync/upload"):
+                vid = (request.get_json(silent=True) or {}).get("vendor_id")
+                if vid: return int(vid), None
+            return None, (jsonify({"error": "Authentication Required", "code": "UNAUTHORIZED"}), 401)
 
         conn = get_db_connection()
-        conn.row_factory = __import__('sqlite3').Row
+        conn.row_factory = sqlite3.Row
         c = conn.cursor()
         
-        # Check system_users first
         c.execute("SELECT vendor_id, role FROM system_users WHERE username = ?", (username,))
-        user = c.fetchone()
+        user_row = c.fetchone()
         
-        # If not found in system_users, check parent_users if the role is parent
-        if not user and role == 'parent':
+        if not user_row and role == 'parent':
             c.execute("SELECT vendor_id, 'parent' as role FROM parent_users WHERE username = ?", (username,))
-            user = c.fetchone()
+            user_row = c.fetchone()
         
         conn.close()
         
-        if not user:
-            try:
-                body = request.get_json(silent=True) or {}
-                vid = body.get("vendor_id")
-                if vid and str(request.path).startswith("/api/sync/upload"):
-                    return int(vid), None
-            except Exception:
-                pass
-            return None, (jsonify({"error": "User Not Found"}), 401)
+        if not user_row:
+            return None, (jsonify({"error": "User Not Found", "code": "USER_NOT_FOUND"}), 401)
 
-        vendor_id = user['vendor_id']
+        vendor_id = user_row['vendor_id']
+        g.user_role = role or user_row['role']
+        g.username = username
         
-        if role == 'super_admin':
-            impersonate_id = request.headers.get('X-Vendor-ID')
-            if not impersonate_id:
-                impersonate_id = request.args.get('vendor_id')
-                
+        # Super-admin impersonation
+        if g.user_role == 'super_admin':
+            impersonate_id = request.headers.get('X-Vendor-ID') or request.args.get('vendor_id')
             if impersonate_id:
-                try:
-                    vendor_id = int(impersonate_id)
-                except:
-                    pass
-            
-        if not vendor_id and role != 'super_admin':
-             return None, (jsonify({"error": "Vendor Context Required"}), 400)
-        
-        if role == 'super_admin':
+                try: vendor_id = int(impersonate_id)
+                except: pass
             return vendor_id, None
              
+        if not vendor_id:
+             return None, (jsonify({"error": "Vendor Context Required", "code": "MISSING_VENDOR"}), 400)
+
         is_allowed, reason = check_vendor_status(vendor_id)
         if not is_allowed:
-           try:
-               socketio.emit('force_logout', {'vendor_id': vendor_id, 'reason': reason}, room=f"vendor_{vendor_id}")
-           except Exception:
-               pass
-           return None, (jsonify({"error": f"Access Denied: {reason}"}), 403)
+            return None, (jsonify({"error": f"Access Denied: {reason}", "code": "VENDOR_SUSPENDED"}), 403)
             
         return vendor_id, None
         
     except Exception as e:
-        return None, (jsonify({"error": str(e)}), 500)
+        return None, (jsonify({"error": str(e), "code": "INTERNAL_ERROR"}), 500)
 
 import sqlite3
 from datetime import datetime, date, timedelta
