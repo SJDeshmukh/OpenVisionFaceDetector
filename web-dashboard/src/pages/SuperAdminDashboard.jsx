@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { Plus, Check, X, Shield, User, Users, Lock, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight, Search, Filter, ArrowLeft, ArrowRight, Eye, Settings, Trash2, Database, Download, RefreshCw, Layers, Upload, Activity, Battery, WifiOff } from 'lucide-react';
+import { Plus, Check, X, Shield, User, Users, Lock, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight, Search, Filter, ArrowLeft, ArrowRight, Eye, Settings, Trash2, Database, Download, RefreshCw, Layers, Upload, Activity, Battery, WifiOff, UploadCloud, Box } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { API_URL, FRONTEND_BUNDLES, BASE_URL } from '../config';
 import { useSocket } from '../context/SocketContext';
@@ -946,6 +946,48 @@ const SuperAdminDashboard = () => {
       alert("Error deleting vendor: " + (error.response?.data?.error || error.message));
     }
   };
+
+  const handlePortableExport = async (vendor) => {
+    try {
+      const response = await axios.get(`${API_URL}/admin/vendors/${vendor.id}/portable-export`, {
+        headers: { Authorization: `Bearer ${user?.token}` },
+        responseType: 'blob'
+      });
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `vendor_${vendor.id}_${vendor.company_name.replace(/\s+/g, '_')}_portable.gz`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch (err) {
+      alert("Failed to export vendor data: " + (err.response?.data?.error || err.message));
+    }
+  };
+
+  const handlePortableImport = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    try {
+      const response = await axios.post(`${API_URL}/admin/vendors/portable-import`, formData, {
+        headers: { 
+          'Content-Type': 'multipart/form-data',
+          Authorization: `Bearer ${user?.token}` 
+        }
+      });
+      alert(`Success! Vendor imported with ID: ${response.data.vendor_id}. Total faces: ${response.data.faces_imported}`);
+      fetchVendors();
+      fetchStats();
+    } catch (err) {
+      alert("Failed to import vendor data: " + (err.response?.data?.error || err.message));
+    } finally {
+      e.target.value = '';
+    }
+  };
   const handleViewInvoices = async (vendor) => {
     try {
       const response = await axios.get(`${API_URL}/admin/vendors/${vendor.id}/invoices`, {
@@ -1178,32 +1220,38 @@ const SuperAdminDashboard = () => {
           >
             <Lock size={18} /> Change My Password
           </button>
-          <button
-            onClick={() => {
-              setEditingVendor(null);
-              setNewVendor({
-                company_name: '', contact_person: '', phone: '', email: '',
-                start_date: '', end_date: '',
-                cost_per_user: '', cost_per_employee: '',
-                max_users: '', max_employees: '',
-                max_web_sessions: '',
-                registration_template: '',
-                admin_username: '', admin_password: '',
-                user_username: '', user_password: '',
-                features: [],
-                vertical: '',
-                frontend_bundle_id: 'default_attendance',
-                backend_service_id: 'default_api',
-                attendance_type: 'total_time',
-                retention_days: '90'
-              });
-              setRegistrationConfig([]);
-              setShowModal(true);
-            }}
-            className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg flex items-center gap-2"
-          >
-            <Plus size={18} /> Add New Vendor
-          </button>
+          <div className="flex gap-2">
+            <label className="bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 px-4 py-2 rounded-lg flex items-center gap-2 cursor-pointer shadow-sm transition-all active:scale-95">
+              <UploadCloud size={18} /> Import Portable Vendor
+              <input type="file" className="hidden" accept=".gz,.json" onChange={handlePortableImport} />
+            </label>
+            <button
+              onClick={() => {
+                setEditingVendor(null);
+                setNewVendor({
+                  company_name: '', contact_person: '', phone: '', email: '',
+                  start_date: '', end_date: '',
+                  cost_per_user: '', cost_per_employee: '',
+                  max_users: '', max_employees: '',
+                  max_web_sessions: '',
+                  registration_template: '',
+                  admin_username: '', admin_password: '',
+                  user_username: '', user_password: '',
+                  features: [],
+                  vertical: '',
+                  frontend_bundle_id: 'default_attendance',
+                  backend_service_id: 'default_api',
+                  attendance_type: 'total_time',
+                  retention_days: '90'
+                });
+                setRegistrationConfig([]);
+                setShowModal(true);
+              }}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg flex items-center gap-2"
+            >
+              <Plus size={18} /> Add New Vendor
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1479,6 +1527,13 @@ const SuperAdminDashboard = () => {
                               <Lock size={16} />
                             </button>
                           )}
+                          <button
+                            onClick={() => handlePortableExport(vendor)}
+                            className="p-1.5 rounded hover:bg-slate-200 text-indigo-600"
+                            title="Portable Export (JSON + Biometrics)"
+                          >
+                            <Box size={16} />
+                          </button>
                           <button
                             onClick={() => handleDeleteVendor(vendor)}
                             className="p-1.5 rounded hover:bg-slate-200 text-red-600"

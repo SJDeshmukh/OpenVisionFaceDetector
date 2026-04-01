@@ -470,7 +470,7 @@ def import_payroll_adjustments():
                 if row.get('late_deduction_amount'): vals['late_deduction_amount'] = float(row['late_deduction_amount'])
             except: pass
             if vals:
-                _run(c, "UPDATE faces SET late_allowance_days = ?, late_deduction_amount = ? WHERE vendor_id = ? AND id = ?", (vals.get('late_allowance_days'), vals.get('late_deduction_amount'), vendor_id, pid))
+                c.execute("UPDATE faces SET late_allowance_days = ?, late_deduction_amount = ? WHERE vendor_id = ? AND id = ?", (vals.get('late_allowance_days'), vals.get('late_deduction_amount'), vendor_id, pid))
                 updated += 1
         conn.commit(); conn.close()
         return jsonify({"success": True, "updated": updated})

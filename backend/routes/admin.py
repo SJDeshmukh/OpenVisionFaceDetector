@@ -129,7 +129,7 @@ admin_bp = Blueprint('admin_bp', __name__)
 @admin_bp.route("/audit-logs", methods=["GET"])
 @super_admin_required
 def get_audit_logs():
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
@@ -158,7 +158,7 @@ def get_audit_logs():
 @admin_bp.route("/impersonate", methods=["POST"])
 @super_admin_required
 def impersonate_vendor():
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     data = request.json
     vendor_id = data.get('vendor_id')
@@ -209,7 +209,7 @@ def impersonate_vendor():
 @admin_bp.route("/vendors/<int:vendor_id>/devices", methods=["GET"])
 @super_admin_required
 def list_vendor_devices(vendor_id):
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     try:
         conn = get_db_connection()
@@ -240,7 +240,7 @@ def list_vendor_devices(vendor_id):
 @admin_bp.route("/vendors/<int:vendor_id>/devices/<device_id>", methods=["PUT"])
 @super_admin_required
 def update_vendor_device_name(vendor_id, device_id):
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     data = request.json or {}
     new_name = str(data.get("device_name") or "").strip()
@@ -291,7 +291,7 @@ def update_vendor_device_name(vendor_id, device_id):
 @admin_bp.route("/vendors/<int:vendor_id>/devices/<device_id>/assign-slot", methods=["POST"])
 @super_admin_required
 def admin_assign_device_slot(vendor_id, device_id):
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     data = request.json or {}
     slot_name = str(data.get("slot_name") or "").strip()
@@ -389,7 +389,7 @@ def admin_assign_device_slot(vendor_id, device_id):
 @admin_bp.route("/vendors/<int:vendor_id>/devices/<device_id>", methods=["DELETE"])
 @super_admin_required
 def delete_vendor_device(vendor_id, device_id):
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     try:
         conn = get_db_connection()
@@ -433,7 +433,7 @@ def delete_vendor_device(vendor_id, device_id):
 @admin_bp.route("/vendors/<int:vendor_id>/devices/<device_id>/logout", methods=["POST"])
 @super_admin_required
 def logout_vendor_device(vendor_id, device_id):
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     try:
         conn = get_db_connection()
@@ -466,7 +466,7 @@ def logout_vendor_device(vendor_id, device_id):
 @admin_bp.route("/vendors/<int:vendor_id>/device-slots", methods=["GET"])
 @super_admin_required
 def list_vendor_device_slots(vendor_id):
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     try:
         conn = get_db_connection()
@@ -496,7 +496,7 @@ def list_vendor_device_slots(vendor_id):
 @admin_bp.route("/vendors/<int:vendor_id>/device-slots", methods=["PUT"])
 @super_admin_required
 def set_vendor_device_slots(vendor_id):
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     data = request.json or {}
     slots = data.get("slots") or []
@@ -543,7 +543,7 @@ def set_vendor_device_slots(vendor_id):
 @admin_bp.route("/users/password", methods=["PUT"])
 @super_admin_required
 def reset_user_password():
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     data = request.json
     target_username = data.get("username")
@@ -576,7 +576,7 @@ def reset_user_password():
 @admin_bp.route("/stats", methods=["GET"])
 @super_admin_required
 def get_admin_stats():
-    from app import get_db_connection, socketio, is_testing, latest_frames
+    from app import socketio, is_testing, latest_frames
     cached = cache_get("admin_stats")
     if cached:
         return jsonify(cached)
@@ -649,7 +649,7 @@ def get_admin_stats():
 @admin_bp.route("/vendors", methods=["GET"])
 @super_admin_required
 def get_vendors():
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
@@ -732,19 +732,19 @@ def get_vendors():
 @admin_bp.route("/features", methods=["GET"])
 @super_admin_required
 def get_available_features():
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     return jsonify({"features": ALL_FEATURES, "bundles": BUNDLE_FEATURES})
 
 @admin_bp.route("/registration/templates", methods=["GET"])
 @super_admin_required
 def get_registration_templates():
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     return jsonify({"templates": REGISTRATION_TEMPLATES})
 
 @admin_bp.route("/vendors/<int:vendor_id>/registration_config", methods=["PUT"])
 @super_admin_required
 def set_vendor_registration_config(vendor_id):
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     data = request.json or {}
     config = data.get("registration_config")
@@ -758,7 +758,7 @@ def set_vendor_registration_config(vendor_id):
             return jsonify({"error": "registration_config must be a list"}), 400
         conn = get_db_connection()
         c = conn.cursor()
-        _run(c, "UPDATE vendors SET registration_config = ? WHERE id = ?", (json.dumps(config), vendor_id))
+        c.execute("UPDATE vendors SET registration_config = ? WHERE id = ?", (json.dumps(config), vendor_id))
         conn.commit()
         conn.close()
         log_audit("vendor_registration_config_update", {"count": len(config)}, target_vendor_id=vendor_id)
@@ -782,19 +782,19 @@ def bulk_vendor_action():
         return jsonify({"success": True, "task_id": task.id, "message": "Bulk action processing in background"}), 202
 
     try:
-        from app import get_db_connection, socketio, ALL_FEATURES
+        from app import socketio, ALL_FEATURES
         conn = get_db_connection()
         c = conn.cursor()
         if action in ("suspend", "activate"):
             new_status = 'suspended' if action == 'suspend' else 'active'
             for vid in vendor_ids:
-                _run(c, "UPDATE vendors SET status = ? WHERE id = ?", (new_status, vid))
+                c.execute("UPDATE vendors SET status = ? WHERE id = ?", (new_status, vid))
                 log_audit(f"vendor_{action}", {}, target_vendor_id=vid)
         elif action == "toggle_feature":
             feature = payload.get("feature")
             enabled = payload.get("enabled", True)
             for vid in vendor_ids:
-                _run(c, "SELECT features FROM subscriptions WHERE vendor_id = ?", (vid,))
+                c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (vid,))
                 row = c.fetchone()
                 feats = []
                 if row and row[0]:
@@ -806,7 +806,7 @@ def bulk_vendor_action():
                     feats.append(feature)
                 if not enabled:
                     feats = [f for f in feats if f != feature]
-                _run(c, "UPDATE subscriptions SET features = ? WHERE vendor_id = ?", (json.dumps(feats), vid))
+                c.execute("UPDATE subscriptions SET features = ? WHERE vendor_id = ?", (json.dumps(feats), vid))
                 log_audit("vendor_toggle_feature", {"feature": feature, "enabled": enabled}, target_vendor_id=vid)
                 try:
                     socketio.emit('features_updated', {'vendor_id': vid, 'features': feats}, room=f"vendor_{vid}")
@@ -819,7 +819,7 @@ def bulk_vendor_action():
             # ... (truncated for brevity in actual replacement, but I should keep it all)
             if max_web_sessions < 1: max_web_sessions = 1
             for vid in vendor_ids:
-                _run(c, "UPDATE subscriptions SET max_web_sessions = ? WHERE vendor_id = ?", (max_web_sessions, vid))
+                c.execute("UPDATE subscriptions SET max_web_sessions = ? WHERE vendor_id = ?", (max_web_sessions, vid))
                 log_audit("vendor_update_web_sessions", {"max_web_sessions": max_web_sessions}, target_vendor_id=vid)
         else:
             return jsonify({"error": "Unknown action"}), 400
@@ -832,12 +832,12 @@ def bulk_vendor_action():
 @admin_bp.route("/vendors/<int:vendor_id>/employees/export", methods=["GET"])
 @super_admin_required
 def export_employees(vendor_id):
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     import csv, io
     conn = get_db_connection()
     c = conn.cursor()
-    _run(c, "SELECT name, phone, department, designation, shift, daily_wage, custom_data FROM faces WHERE vendor_id = ?", (vendor_id,))
+    c.execute("SELECT name, phone, department, designation, shift, daily_wage, custom_data FROM faces WHERE vendor_id = ?", (vendor_id,))
     rows = c.fetchall()
     conn.close()
     output = io.StringIO()
@@ -864,7 +864,6 @@ def import_employees(vendor_id):
         task = process_import_employees_task.delay(vendor_id, csv_data)
         return jsonify({"success": True, "task_id": task.id, "message": "Import processing in background"}), 202
 
-    from app import get_db_connection, log_audit
     import csv, io
     f = io.StringIO(csv_data)
     # ... keep existing fallback ...
@@ -886,7 +885,7 @@ def import_employees(vendor_id):
             c.execute("SELECT COALESCE(MAX(display_id), 0) + 1 FROM faces WHERE vendor_id = ?", (vendor_id,))
             next_display_id = c.fetchone()[0]
 
-            _run(c, """INSERT INTO faces (name, phone, department, designation, shift, daily_wage, vendor_id, custom_data, display_id)
+            c.execute("""INSERT INTO faces (name, phone, department, designation, shift, daily_wage, vendor_id, custom_data, display_id)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", (name, phone, department, designation, shift, daily_wage, vendor_id, custom_data, next_display_id))
             count += 1
         conn.commit()
@@ -1025,7 +1024,7 @@ def create_vendor():
 @admin_bp.route("/vendors/<int:vendor_id>/suspend", methods=["POST"])
 @super_admin_required
 def suspend_vendor(vendor_id):
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     data = request.json
     action = data.get("action", "suspend") # suspend or activate
@@ -1037,7 +1036,7 @@ def suspend_vendor(vendor_id):
     conn.commit()
     try:
         if status == 'suspended':
-            _run(c, "DELETE FROM active_sessions WHERE vendor_id = ?", (vendor_id,))
+            c.execute("DELETE FROM active_sessions WHERE vendor_id = ?", (vendor_id,))
     except Exception:
         pass
     conn.close()
@@ -1055,7 +1054,7 @@ def suspend_vendor(vendor_id):
 @admin_bp.route("/vendors/<int:vendor_id>/toggle_web_login", methods=["POST"])
 @super_admin_required
 def toggle_web_login(vendor_id):
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     data = request.json
     enabled = data.get("enabled", True) # boolean
@@ -1078,7 +1077,7 @@ def toggle_web_login(vendor_id):
 @admin_bp.route("/vendors/<int:vendor_id>/subscription", methods=["GET"])
 @super_admin_required
 def get_vendor_subscription_admin(vendor_id):
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
@@ -1100,7 +1099,7 @@ def get_vendor_subscription_admin(vendor_id):
 @admin_bp.route("/vendors/<int:vendor_id>/subscription", methods=["PUT"])
 @super_admin_required
 def update_vendor_subscription(vendor_id):
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     data = request.json
     
@@ -1258,7 +1257,7 @@ def update_vendor_subscription(vendor_id):
             log_audit('update_subscription', data, target_vendor_id=vendor_id)
             
             try:
-                _run(c, "SELECT features FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+                c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
                 row = c.fetchone()
                 feats = []
                 if row and row[0]:
@@ -1290,7 +1289,7 @@ def update_vendor_subscription(vendor_id):
 
 @admin_bp.route("/vendors/<int:vendor_id>/registration-config", methods=["GET"])
 def get_vendor_registration_config(vendor_id):
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     # Auth Check (SuperAdmin or Vendor Admin of same vendor)
     caller_vendor_id, error = authenticate_vendor_access()
@@ -1341,7 +1340,7 @@ def get_vendor_registration_config(vendor_id):
 @admin_bp.route("/vendors/<int:vendor_id>/registration-config", methods=["PUT"])
 @super_admin_required
 def update_vendor_registration_config(vendor_id):
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     data = request.json
     config = data.get('config') # Expecting a list/object
@@ -1367,7 +1366,7 @@ def update_vendor_registration_config(vendor_id):
 @admin_bp.route("/vendors/<int:vendor_id>", methods=["PUT"])
 @super_admin_required
 def update_vendor_details(vendor_id):
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     data = request.json
     
@@ -1529,31 +1528,57 @@ def update_vendor_details(vendor_id):
 @admin_bp.route("/vendors/<int:vendor_id>", methods=["DELETE"])
 @super_admin_required
 def delete_vendor(vendor_id):
-    from celery_app import celery
-    if celery:
-        from tasks import process_delete_vendor_task
-        task = process_delete_vendor_task.delay(vendor_id)
-        return jsonify({"success": True, "task_id": task.id, "message": "Vendor deletion/archiving in background"}), 202
-
-    from app import get_db_connection, socketio
+    from app import socketio
     from db_factory import ensure_archive_table
     ensure_archive_table()
     conn = get_db_connection()
     c = conn.cursor()
     # ... keep existing fallback ...
     try:
-        _run(c, "SELECT * FROM vendors WHERE id = ?", (vendor_id,))
+        is_pg = getattr(conn, "_is_pg", False)
+        sql_vendor = "SELECT * FROM vendors WHERE id = %s" if is_pg else "SELECT * FROM vendors WHERE id = ?"
+        c.execute(sql_vendor, (vendor_id,))
         vendor_row = c.fetchone()
         if not vendor_row:
             return jsonify({"error": "Vendor not found"}), 404
-        # (Rest of the original code follows...)
+            
+        vcols = [d[0] for d in c.description] if hasattr(c, "description") and c.description else []
+        vdict = vendor_row if isinstance(vendor_row, dict) else {vcols[i]: vendor_row[i] for i in range(len(vcols))}
+
+        def _json_default(obj):
+            if isinstance(obj, (bytes, bytearray, memoryview)):
+                import base64
+                return base64.b64encode(obj).decode('utf-8')
+            from datetime import date, datetime
+            if isinstance(obj, (datetime, date)):
+                return obj.isoformat()
+            return str(obj)
+
         def archive_table(table, key="vendor_id"):
-            _run(c, f"SELECT * FROM {table} WHERE {key} = ?", (vendor_id,))
-            cols = [d[0] for d in c.description] if hasattr(c, "description") and c.description else []
-            fetched = c.fetchall()
-            for r in fetched:
-                row = r if isinstance(r, dict) else {cols[i]: r[i] for i in range(len(cols))}
-                _run(c, "INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES (?, ?, ?)", (vendor_id, table, json.dumps(row)))
+            try:
+                # Check if table exists first to avoid error
+                if is_pg:
+                    c.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = %s)", (table,))
+                else:
+                    c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,))
+                if not c.fetchone():
+                    return
+
+                sql_target = f"SELECT * FROM {table} WHERE {key} = %s" if is_pg else f"SELECT * FROM {table} WHERE {key} = ?"
+                c.execute(sql_target, (vendor_id,))
+                cols = [d[0] for d in c.description] if hasattr(c, "description") and c.description else []
+                
+                sql_insert = "INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES (%s, %s, %s)" if is_pg else "INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES (?, ?, ?)"
+                
+                while True:
+                    rows = c.fetchmany(100) # Process in batches of 100 to save memory
+                    if not rows:
+                        break
+                    for r in rows:
+                        row = r if isinstance(r, dict) else {cols[i]: r[i] for i in range(len(cols))}
+                        c.execute(sql_insert, (vendor_id, table, json.dumps(row, default=_json_default)))
+            except Exception:
+                pass
         tables = [
             "class_batches", "attendance", "leave_requests", "student_parents", 
             "person_embeddings", "system_users", "parent_tokens", "parent_users", 
@@ -1566,39 +1591,93 @@ def delete_vendor(vendor_id):
         
         # Manual handle for class_batch_items (referenced by class_batches)
         try:
-            _run(c, "SELECT * FROM class_batch_items WHERE batch_id IN (SELECT id FROM class_batches WHERE vendor_id = ?)", (vendor_id,))
-            cols = [d[0] for d in c.description] if hasattr(c, "description") and c.description else []
-            fetched = c.fetchall()
-            for r in fetched:
-                row = r if isinstance(r, dict) else {cols[i]: r[i] for i in range(len(cols))}
-                _run(c, "INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES (?, ?, ?)", (vendor_id, "class_batch_items", json.dumps(row)))
-            _run(c, "DELETE FROM class_batch_items WHERE batch_id IN (SELECT id FROM class_batches WHERE vendor_id = ?)", (vendor_id,))
+            sql_batches = "SELECT id FROM class_batches WHERE vendor_id = %s" if is_pg else "SELECT id FROM class_batches WHERE vendor_id = ?"
+            c.execute(sql_batches, (vendor_id,))
+            batch_ids = [r[0] if not isinstance(r, dict) else r['id'] for r in c.fetchall()]
+            
+            if batch_ids:
+                placeholders = ', '.join(['%s' if is_pg else '?'] * len(batch_ids))
+                sql_items = f"SELECT * FROM class_batch_items WHERE batch_id IN ({placeholders})"
+                c.execute(sql_items, tuple(batch_ids))
+                cols = [d[0] for d in c.description] if hasattr(c, "description") and c.description else []
+                
+                sql_insert_items = "INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES (%s, %s, %s)" if is_pg else "INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES (?, ?, ?)"
+                
+                while True:
+                    rows = c.fetchmany(100)
+                    if not rows:
+                        break
+                    for r in rows:
+                        row = r if isinstance(r, dict) else {cols[i]: r[i] for i in range(len(cols))}
+                        c.execute(sql_insert_items, (vendor_id, "class_batch_items", json.dumps(row, default=_json_default)))
+                
+                sql_delete_items = f"DELETE FROM class_batch_items WHERE batch_id IN ({', '.join(['%s' if is_pg else '?' for _ in batch_ids])})"
+                c.execute(sql_delete_items, tuple(batch_ids))
         except Exception:
             pass
 
-        vcols = [d[0] for d in c.description] if hasattr(c, "description") and c.description else []
-        vdict = vendor_row if isinstance(vendor_row, dict) else {vcols[i]: vendor_row[i] for i in range(len(vcols))}
-        _run(c, "INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES (?, ?, ?)", (vendor_id, "vendors", json.dumps(vdict)))
+        sql_insert_vendor = "INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES (%s, %s, %s)" if is_pg else "INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES (?, ?, ?)"
+        c.execute(sql_insert_vendor, (vendor_id, "vendors", json.dumps(vdict, default=_json_default)))
         
         # Delete in reverse order of foreign key dependency
         for t in tables:
-            key = "target_vendor_id" if t == "audit_logs" else "vendor_id"
-            _run(c, f"DELETE FROM {t} WHERE {key} = ?", (vendor_id,))
-        _run(c, "DELETE FROM vendors WHERE id = ?", (vendor_id,))
-        
-        # Reset sequences for all relevant tables
-        is_pg = getattr(conn, "_is_pg", False)
-        reset_tables = tables + ["vendors"]
-        for t in reset_tables:
             try:
-                reset_sequence(t)
+                # Check if table exists
+                if is_pg:
+                    c.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = %s)", (t,))
+                else:
+                    c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (t,))
+                if not c.fetchone():
+                    continue
+
+                key = "target_vendor_id" if t == "audit_logs" else "vendor_id"
+                sql_delete = f"DELETE FROM {t} WHERE {key} = %s" if is_pg else f"DELETE FROM {t} WHERE {key} = ?"
+                c.execute(sql_delete, (vendor_id,))
             except Exception:
                 pass
-
+        
+        sql_delete_vendor = "DELETE FROM vendors WHERE id = %s" if is_pg else "DELETE FROM vendors WHERE id = ?"
+        c.execute(sql_delete_vendor, (vendor_id,))
+        
+        # 1. Commit the deletion FIRST so it's permanent and doesn't roll back if sequence reset fails
         conn.commit()
+        
+        # 2. Invalidate admin stats cache so the numbers update immediately
+        cache_delete("admin_stats")
+        
+        # 3. Reset sequences for all relevant tables (Nice to have, not critical)
+        # We do this in a separate try-except block to prevent it from affecting the deletion result
+        try:
+            is_pg = getattr(conn, "_is_pg", False)
+            reset_tables = tables + ["vendors"]
+            for t in reset_tables:
+                try:
+                    if is_pg:
+                        # Postgres: We need to be careful with column names and sequences
+                        # Only try if 'id' column exists
+                        c.execute(f"SELECT column_name FROM information_schema.columns WHERE table_name='{t}' AND column_name='id'")
+                        if c.fetchone():
+                            c.execute(f"SELECT pg_get_serial_sequence('{t}', 'id')")
+                            seq_row = c.fetchone()
+                            if seq_row and seq_row[0]:
+                                seq_name = seq_row[0]
+                                c.execute(f"SELECT setval('{seq_name}', COALESCE((SELECT MAX(id) FROM {t}), 1), EXISTS (SELECT 1 FROM {t}))")
+                                conn.commit() # Commit each reset separately
+                    else:
+                        # SQLite
+                        c.execute(f"UPDATE sqlite_sequence SET seq = COALESCE((SELECT MAX(id) FROM {t}), 0) WHERE name = '{t}'")
+                        conn.commit()
+                except Exception:
+                    if conn: conn.rollback() # Rollback only this specific sequence reset if it fails
+                    pass
+        except Exception:
+            pass
+        
         try:
             from app import socketio
             socketio.emit('force_logout', {'vendor_id': vendor_id, 'reason': 'Vendor account deleted'}, room=f"vendor_{vendor_id}")
+            # Notify super admin dashboard to refresh stats
+            socketio.emit('admin_stats_updated', room='super_admin')
         except Exception:
             pass
         return jsonify({"success": True, "message": "Vendor archived and deleted"})
@@ -1610,7 +1689,7 @@ def delete_vendor(vendor_id):
 @admin_bp.route("/vendors/<int:vendor_id>/invoices", methods=["GET"])
 @super_admin_required
 def get_vendor_invoices(vendor_id):
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
@@ -1629,7 +1708,7 @@ def get_vendor_invoices(vendor_id):
 @admin_bp.route("/archive/vendors", methods=["GET"])
 @super_admin_required
 def list_archived_vendors():
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     from db_factory import ensure_archive_table as _ensure_archive_table
     _ensure_archive_table()
@@ -1638,7 +1717,7 @@ def list_archived_vendors():
     conn = get_db_connection()
     c = conn.cursor()
     try:
-        _run(c, "SELECT vendor_id, row_json, archived_at, restored_at FROM archive_objects WHERE table_name = 'vendors'")
+        c.execute("SELECT vendor_id, row_json, archived_at, restored_at FROM archive_objects WHERE table_name = 'vendors'")
         rows = c.fetchall()
         results = []
         for r in rows:
@@ -1670,14 +1749,14 @@ def list_archived_vendors():
 @admin_bp.route("/audit-logs", methods=["GET"])
 @super_admin_required
 def list_audit_logs():
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     from app import ensure_audit_logs_table as _ensure_audit_logs_table
     _ensure_audit_logs_table()
     conn = get_db_connection()
     c = conn.cursor()
     try:
-        _run(c, "SELECT id, timestamp, actor_username, actor_role, target_vendor_id, action, details, ip FROM audit_logs ORDER BY timestamp DESC LIMIT 500")
+        c.execute("SELECT id, timestamp, actor_username, actor_role, target_vendor_id, action, details, ip FROM audit_logs ORDER BY timestamp DESC LIMIT 500")
         rows = c.fetchall()
         logs = []
         for r in rows:
@@ -1704,7 +1783,7 @@ def list_audit_logs():
 @admin_bp.route("/vendors/<int:vendor_id>/invoices/generate", methods=["POST"])
 @super_admin_required
 def generate_invoice(vendor_id):
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     import eventlet
     is_async = request.args.get('async') == 'true'
@@ -1787,7 +1866,7 @@ def generate_invoice(vendor_id):
 @admin_bp.route("/invoices/<int:invoice_id>/status", methods=["PUT"])
 @super_admin_required
 def update_invoice_status(invoice_id):
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     data = request.json
     status = data.get("status") # paid, overdue, generated
@@ -1814,14 +1893,14 @@ def update_invoice_status(invoice_id):
 @admin_bp.route("/system/health", methods=["GET"])
 @super_admin_required
 def system_health():
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     status = {"db": "ok", "redis": "disabled", "active_sessions": 0}
     # DB check
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        _run(c, "SELECT COUNT(*) FROM active_sessions")
+        c.execute("SELECT COUNT(*) FROM active_sessions")
         row = c.fetchone()
         status["active_sessions"] = row[0] if row else 0
         conn.close()
@@ -1841,7 +1920,7 @@ def system_health():
 @admin_bp.route("/system/queues", methods=["GET"])
 @super_admin_required
 def system_queues():
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     data = {
         "broker": "unknown",
@@ -1881,7 +1960,7 @@ def system_queues():
 @admin_bp.route("/jobs/events", methods=["GET"])
 @super_admin_required
 def list_task_events():
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     from tasks import ensure_task_events_table
     ensure_task_events_table()
@@ -1909,7 +1988,7 @@ def list_task_events():
             base += " WHERE " + " AND ".join(where)
         base += " ORDER BY id DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
-        _run(c, base, params)
+        c.execute(base, params)
         rows = c.fetchall()
         events = []
         for r in rows:
@@ -1930,7 +2009,7 @@ def list_task_events():
 @admin_bp.route("/jobs/events/purge", methods=["POST"])
 @super_admin_required
 def purge_task_events():
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     from tasks import ensure_task_events_table
     ensure_task_events_table()
@@ -1941,14 +2020,14 @@ def purge_task_events():
         max_rows = request.json.get("max_rows") if request.is_json else None
         deleted = 0
         if older_days > 0:
-            _run(c, "DELETE FROM task_events WHERE created_at < datetime('now', ?)", (f'-{older_days} days',))
+            c.execute("DELETE FROM task_events WHERE created_at < datetime('now', ?)", (f'-{older_days} days',))
             deleted += c.rowcount if hasattr(c, "rowcount") else 0
         if max_rows:
-            _run(c, "SELECT COUNT(*) FROM task_events")
+            c.execute("SELECT COUNT(*) FROM task_events")
             total = c.fetchone()[0]
             if total and int(total) > int(max_rows):
                 overflow = int(total) - int(max_rows)
-                _run(c, "DELETE FROM task_events WHERE id IN (SELECT id FROM task_events ORDER BY id ASC LIMIT ?)", (overflow,))
+                c.execute("DELETE FROM task_events WHERE id IN (SELECT id FROM task_events ORDER BY id ASC LIMIT ?)", (overflow,))
                 deleted += c.rowcount if hasattr(c, "rowcount") else 0
         conn.commit()
         return jsonify({"success": True, "deleted": deleted})
@@ -1964,7 +2043,7 @@ def purge_task_events():
 @admin_bp.route("/jobs/metrics", methods=["GET"])
 @super_admin_required
 def jobs_metrics():
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     from tasks import ensure_task_events_table
     ensure_task_events_table()
@@ -1974,7 +2053,7 @@ def jobs_metrics():
         window_minutes = int(request.args.get("window_minutes") or 60)
         bucket = request.args.get("bucket") or "minute"
         cutoff = datetime.now() - timedelta(minutes=window_minutes)
-        _run(c, "SELECT queue, status, runtime, finished_at, started_at, received_at FROM task_events WHERE (finished_at IS NOT NULL AND finished_at >= ?) OR (finished_at IS NULL AND created_at >= ?)", (cutoff.isoformat(), cutoff.isoformat()))
+        c.execute("SELECT queue, status, runtime, finished_at, started_at, received_at FROM task_events WHERE (finished_at IS NOT NULL AND finished_at >= ?) OR (finished_at IS NULL AND created_at >= ?)", (cutoff.isoformat(), cutoff.isoformat()))
         rows = c.fetchall()
         buckets = {}
         queues = set()
@@ -2042,7 +2121,7 @@ def jobs_metrics():
 @admin_bp.route("/vendors/restore", methods=["POST"])
 @super_admin_required
 def restore_vendor():
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     from db_factory import ensure_archive_table
     ensure_archive_table()
@@ -2054,7 +2133,7 @@ def restore_vendor():
     conn = get_db_connection()
     c = conn.cursor()
     try:
-        _run(c, "SELECT vendor_id, row_json FROM archive_objects WHERE table_name='vendors'")
+        c.execute("SELECT vendor_id, row_json FROM archive_objects WHERE table_name='vendors'")
         rows = c.fetchall()
         target_vendor_id = None
         vendor_snapshot = None
@@ -2074,60 +2153,286 @@ def restore_vendor():
             break
         if not target_vendor_id:
             return jsonify({"error": "No archived vendor match found"}), 404
-        # Create vendor
-        _run(c, """INSERT INTO vendors (company_name, contact_person, phone, email, frontend_bundle_id, backend_service_id) 
-                   VALUES (?, ?, ?, ?, ?, ?)""", (
+        
+        is_pg = getattr(conn, "_is_pg", False)
+        
+        # 1. Restore Vendor
+        sql_insert_vendor = """INSERT INTO vendors (company_name, contact_person, phone, email, frontend_bundle_id, backend_service_id, registration_config, vertical, attendance_type, retention_days) 
+                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""" if is_pg else \
+                            """INSERT INTO vendors (company_name, contact_person, phone, email, frontend_bundle_id, backend_service_id, registration_config, vertical, attendance_type, retention_days) 
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+        
+        c.execute(sql_insert_vendor, (
             vendor_snapshot.get("company_name"),
             vendor_snapshot.get("contact_person"),
             vendor_snapshot.get("phone"),
             vendor_snapshot.get("email"),
             vendor_snapshot.get("frontend_bundle_id") or "default_attendance",
-            vendor_snapshot.get("backend_service_id") or "default_api"
+            vendor_snapshot.get("backend_service_id") or "default_api",
+            vendor_snapshot.get("registration_config"),
+            vendor_snapshot.get("vertical"),
+            vendor_snapshot.get("attendance_type") or "total_time",
+            vendor_snapshot.get("retention_days") or 90
         ))
+        
         new_vendor_id = None
-        try:
+        if is_pg:
+            c.execute("SELECT id FROM vendors WHERE email = %s ORDER BY id DESC LIMIT 1", (vendor_snapshot.get("email"),))
+            new_vendor_id = c.fetchone()[0]
+        else:
             new_vendor_id = c.lastrowid
-        except Exception:
-            _run(c, "SELECT id FROM vendors WHERE email = ?", (vendor_snapshot.get("email"),))
-            r2 = c.fetchone()
-            new_vendor_id = r2[0] if r2 else None
+
         if not new_vendor_id:
             conn.rollback()
             return jsonify({"error": "Failed to create vendor"}), 500
-        # Restore subscriptions
-        _run(c, "SELECT row_json FROM archive_objects WHERE table_name='subscriptions' AND vendor_id = ?", (target_vendor_id,))
+
+        # Mappings for dependent tables
+        person_id_map = {}
+        parent_id_map = {}
+        
+        # 2. Restore Subscriptions
+        c.execute("SELECT row_json FROM archive_objects WHERE table_name='subscriptions' AND vendor_id = ?", (target_vendor_id,))
         for (row_json,) in c.fetchall():
             obj = json.loads(row_json)
-            _run(c, """INSERT INTO subscriptions (vendor_id, plan_type, start_date, end_date, max_users, max_employees, max_mobile_devices, cost_per_user, cost_per_employee, setup_fee, features)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (
+            sql = """INSERT INTO subscriptions (vendor_id, plan_type, start_date, end_date, max_users, max_employees, max_mobile_devices, cost_per_user, cost_per_employee, setup_fee, features, max_web_sessions)
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""" if is_pg else \
+                  """INSERT INTO subscriptions (vendor_id, plan_type, start_date, end_date, max_users, max_employees, max_mobile_devices, cost_per_user, cost_per_employee, setup_fee, features, max_web_sessions)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+            c.execute(sql, (
                 new_vendor_id, obj.get("plan_type") or "custom", obj.get("start_date"), obj.get("end_date"),
                 obj.get("max_users"), obj.get("max_employees"), obj.get("max_mobile_devices"),
-                obj.get("cost_per_user"), obj.get("cost_per_employee"), obj.get("setup_fee") or 0, obj.get("features")
+                obj.get("cost_per_user"), obj.get("cost_per_employee"), obj.get("setup_fee") or 0, 
+                obj.get("features"), obj.get("max_web_sessions") or 1
             ))
-        # Restore users
-        _run(c, "SELECT row_json FROM archive_objects WHERE table_name='system_users' AND vendor_id = ?", (target_vendor_id,))
-        for (row_json,) in c.fetchall():
-            u = json.loads(row_json)
-            _run(c, """INSERT INTO system_users (username, password, role, vendor_id) VALUES (?, ?, ?, ?)""",
-                 (u.get("username"), u.get("password"), u.get("role"), new_vendor_id))
-        # Restore companies
-        _run(c, "SELECT row_json FROM archive_objects WHERE table_name='companies' AND vendor_id = ?", (target_vendor_id,))
+
+        # 3. Restore Companies
+        c.execute("SELECT row_json FROM archive_objects WHERE table_name='companies' AND vendor_id = ?", (target_vendor_id,))
         for (row_json,) in c.fetchall():
             comp = json.loads(row_json)
-            _run(c, """INSERT INTO companies (name, shifts, draft_timetable, live_timetable, vendor_id) VALUES (?, ?, ?, ?, ?)""",
-                 (comp.get("name"), comp.get("shifts") or "[]", comp.get("draft_timetable") or "[]", comp.get("live_timetable") or "[]", new_vendor_id))
-        # Restore faces
-        _run(c, "SELECT row_json FROM archive_objects WHERE table_name='faces' AND vendor_id = ?", (target_vendor_id,))
+            sql = """INSERT INTO companies (name, shifts, draft_timetable, live_timetable, working_hours, vendor_id) 
+                     VALUES (%s, %s, %s, %s, %s, %s)""" if is_pg else \
+                  """INSERT INTO companies (name, shifts, draft_timetable, live_timetable, working_hours, vendor_id) 
+                     VALUES (?, ?, ?, ?, ?, ?)"""
+            c.execute(sql, (comp.get("name"), comp.get("shifts") or "[]", comp.get("draft_timetable") or "[]", comp.get("live_timetable") or "[]", comp.get("working_hours"), new_vendor_id))
+
+        # 4. Restore Faces (and populate person_id_map)
+        c.execute("SELECT row_json FROM archive_objects WHERE table_name='faces' AND vendor_id = ?", (target_vendor_id,))
         for (row_json,) in c.fetchall():
             f = json.loads(row_json)
-            # Get next display_id for this vendor
-            c.execute("SELECT COALESCE(MAX(display_id), 0) + 1 FROM faces WHERE vendor_id = ?", (new_vendor_id,))
+            old_id = f.get("id")
+            
+            c.execute("SELECT COALESCE(MAX(display_id), 0) + 1 FROM faces WHERE vendor_id = %s" if is_pg else "SELECT COALESCE(MAX(display_id), 0) + 1 FROM faces WHERE vendor_id = ?", (new_vendor_id,))
             next_display_id = c.fetchone()[0]
 
-            _run(c, """INSERT INTO faces (name, templates, face_image, phone, department, designation, shift, vendor_id, custom_data, display_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                 (f.get("name"), f.get("templates"), f.get("face_image"), f.get("phone"), f.get("department"), f.get("designation"), f.get("shift"), new_vendor_id, f.get("custom_data"), next_display_id))
+            sql = """INSERT INTO faces (name, templates, face_image, phone, department, designation, shift, daily_wage, late_allowance_days, late_deduction_amount, custom_data, display_id, vendor_id) 
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""" if is_pg else \
+                  """INSERT INTO faces (name, templates, face_image, phone, department, designation, shift, daily_wage, late_allowance_days, late_deduction_amount, custom_data, display_id, vendor_id) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+            c.execute(sql, (
+                f.get("name"), f.get("templates"), f.get("face_image"), f.get("phone"), 
+                f.get("department"), f.get("designation"), f.get("shift"), f.get("daily_wage"),
+                f.get("late_allowance_days"), f.get("late_deduction_amount"), f.get("custom_data"), 
+                next_display_id, new_vendor_id
+            ))
+            
+            new_id = None
+            if is_pg:
+                c.execute("SELECT id FROM faces WHERE vendor_id = %s AND name = %s ORDER BY id DESC LIMIT 1", (new_vendor_id, f.get("name")))
+                new_id = c.fetchone()[0]
+            else:
+                new_id = c.lastrowid
+            
+            if old_id: person_id_map[old_id] = new_id
+
+        # 5. Restore Parent Users
+        c.execute("SELECT row_json FROM archive_objects WHERE table_name='parent_users' AND vendor_id = ?", (target_vendor_id,))
+        for (row_json,) in c.fetchall():
+            p = json.loads(row_json)
+            old_id = p.get("id")
+            sql = """INSERT INTO parent_users (username, password, contact_email, contact_phone, student_number, device_id, fcm_token, face_image, face_template, vendor_id) 
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""" if is_pg else \
+                  """INSERT INTO parent_users (username, password, contact_email, contact_phone, student_number, device_id, fcm_token, face_image, face_template, vendor_id) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+            c.execute(sql, (
+                p.get("username"), p.get("password"), p.get("contact_email"), p.get("contact_phone"),
+                p.get("student_number"), p.get("device_id"), p.get("fcm_token"), p.get("face_image"),
+                p.get("face_template"), new_vendor_id
+            ))
+            
+            new_id = None
+            if is_pg:
+                c.execute("SELECT id FROM parent_users WHERE vendor_id = %s AND username = %s ORDER BY id DESC LIMIT 1", (new_vendor_id, p.get("username")))
+                new_id = c.fetchone()[0]
+            else:
+                new_id = c.lastrowid
+            if old_id: parent_id_map[old_id] = new_id
+
+        # 6. Restore System Users
+        c.execute("SELECT row_json FROM archive_objects WHERE table_name='system_users' AND vendor_id = ?", (target_vendor_id,))
+        for (row_json,) in c.fetchall():
+            u = json.loads(row_json)
+            old_person_id = u.get("person_id")
+            new_person_id = person_id_map.get(old_person_id) if old_person_id else None
+            
+            sql = """INSERT INTO system_users (username, password, password_plain, role, has_set_password, last_active_at, person_id, vendor_id) 
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""" if is_pg else \
+                  """INSERT INTO system_users (username, password, password_plain, role, has_set_password, last_active_at, person_id, vendor_id) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)"""
+            c.execute(sql, (
+                u.get("username"), u.get("password"), u.get("password_plain"), u.get("role"),
+                u.get("has_set_password"), u.get("last_active_at"), new_person_id, new_vendor_id
+            ))
+
+        # 7. Restore Attendance
+        c.execute("SELECT row_json FROM archive_objects WHERE table_name='attendance' AND vendor_id = ?", (target_vendor_id,))
+        for (row_json,) in c.fetchall():
+            a = json.loads(row_json)
+            old_person_id = a.get("person_id")
+            new_person_id = person_id_map.get(old_person_id) if old_person_id else None
+            
+            sql = """INSERT INTO attendance (name, timestamp, status, captured_image, activity, is_late, device_id, person_id, vendor_id) 
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""" if is_pg else \
+                  """INSERT INTO attendance (name, timestamp, status, captured_image, activity, is_late, device_id, person_id, vendor_id) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+            c.execute(sql, (
+                a.get("name"), a.get("timestamp"), a.get("status"), a.get("captured_image"),
+                a.get("activity"), a.get("is_late"), a.get("device_id"), new_person_id, new_vendor_id
+            ))
+
+        # 8. Restore Leave Requests
+        c.execute("SELECT row_json FROM archive_objects WHERE table_name='leave_requests' AND vendor_id = ?", (target_vendor_id,))
+        for (row_json,) in c.fetchall():
+            l = json.loads(row_json)
+            old_student_id = l.get("student_id")
+            new_student_id = person_id_map.get(old_student_id) if old_student_id else None
+            
+            sql = """INSERT INTO leave_requests (student_id, leave_type, reason, start_date, end_date, start_time, end_time, parent_status, rector_status, hod_status, final_status, created_at, vendor_id) 
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""" if is_pg else \
+                  """INSERT INTO leave_requests (student_id, leave_type, reason, start_date, end_date, start_time, end_time, parent_status, rector_status, hod_status, final_status, created_at, vendor_id) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+            c.execute(sql, (
+                new_student_id, l.get("leave_type"), l.get("reason"), l.get("start_date"),
+                l.get("end_date"), l.get("start_time"), l.get("end_time"), l.get("parent_status"),
+                l.get("rector_status"), l.get("hod_status"), l.get("final_status"), l.get("created_at"), new_vendor_id
+            ))
+
+        # 9. Restore Person Embeddings
+        c.execute("SELECT row_json FROM archive_objects WHERE table_name='person_embeddings' AND vendor_id = ?", (target_vendor_id,))
+        for (row_json,) in c.fetchall():
+            e = json.loads(row_json)
+            old_person_id = e.get("person_id")
+            new_person_id = person_id_map.get(old_person_id) if old_person_id else None
+            
+            # Convert base64 back to bytes for LargeBinary columns
+            import base64
+            vec = base64.b64decode(e.get("vec")) if e.get("vec") else None
+            struct_vec = base64.b64decode(e.get("struct_vec")) if e.get("struct_vec") else None
+            
+            sql = """INSERT INTO person_embeddings (person_id, class_year, division, branch, vec, dim, struct_vec, landmarks_3d, created_at, vendor_id) 
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""" if is_pg else \
+                  """INSERT INTO person_embeddings (person_id, class_year, division, branch, vec, dim, struct_vec, landmarks_3d, created_at, vendor_id) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+            c.execute(sql, (
+                new_person_id, e.get("class_year"), e.get("division"), e.get("branch"),
+                vec, e.get("dim"), struct_vec, e.get("landmarks_3d"), e.get("created_at"), new_vendor_id
+            ))
+
+        # 10. Restore Student Parents (Mapping)
+        c.execute("SELECT row_json FROM archive_objects WHERE table_name='student_parents' AND vendor_id = ?", (target_vendor_id,))
+        for (row_json,) in c.fetchall():
+            sp = json.loads(row_json)
+            old_p_id = sp.get("person_id")
+            old_pa_id = sp.get("parent_id")
+            new_p_id = person_id_map.get(old_p_id)
+            new_pa_id = parent_id_map.get(old_pa_id)
+            
+            if new_p_id and new_pa_id:
+                sql = "INSERT INTO student_parents (person_id, parent_id, created_at, vendor_id) VALUES (%s, %s, %s, %s)" if is_pg else \
+                      "INSERT INTO student_parents (person_id, parent_id, created_at, vendor_id) VALUES (?, ?, ?, ?)"
+                c.execute(sql, (new_p_id, new_pa_id, sp.get("created_at"), new_vendor_id))
+
+        # 11. Restore Class Batches and Items
+        c.execute("SELECT row_json FROM archive_objects WHERE table_name='class_batches' AND vendor_id = ?", (target_vendor_id,))
+        for (row_json,) in c.fetchall():
+            cb = json.loads(row_json)
+            batch_id = cb.get("id")
+            sql = """INSERT INTO class_batches (id, class_year, division, branch, status, created_at, vendor_id) 
+                     VALUES (%s, %s, %s, %s, %s, %s, %s)""" if is_pg else \
+                  """INSERT INTO class_batches (id, class_year, division, branch, status, created_at, vendor_id) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?)"""
+            c.execute(sql, (batch_id, cb.get("class_year"), cb.get("division"), cb.get("branch"), cb.get("status"), cb.get("created_at"), new_vendor_id))
+            
+            # Items for this batch
+            c.execute("SELECT row_json FROM archive_objects WHERE table_name='class_batch_items' AND vendor_id = ?", (target_vendor_id,))
+            for (item_json,) in c.fetchall():
+                item = json.loads(item_json)
+                if item.get("batch_id") == batch_id:
+                    sql_i = """INSERT INTO class_batch_items (id, batch_id, seq, image_b64, annotated_b64, faces_json, status, created_at) 
+                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""" if is_pg else \
+                            """INSERT INTO class_batch_items (id, batch_id, seq, image_b64, annotated_b64, faces_json, status, created_at) 
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?)"""
+                    c.execute(sql_i, (item.get("id"), batch_id, item.get("seq"), item.get("image_b64"), item.get("annotated_b64"), item.get("faces_json"), item.get("status"), item.get("created_at")))
+
+        # 12. Restore Devices and Slots
+        c.execute("SELECT row_json FROM archive_objects WHERE table_name='vendor_devices' AND vendor_id = ?", (target_vendor_id,))
+        for (row_json,) in c.fetchall():
+            d = json.loads(row_json)
+            sql = """INSERT INTO vendor_devices (device_id, device_name, registered_at, last_login_at, last_active_at, battery_level, vendor_id) 
+                     VALUES (%s, %s, %s, %s, %s, %s, %s)""" if is_pg else \
+                  """INSERT INTO vendor_devices (device_id, device_name, registered_at, last_login_at, last_active_at, battery_level, vendor_id) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?)"""
+            c.execute(sql, (d.get("device_id"), d.get("device_name"), d.get("registered_at"), d.get("last_login_at"), d.get("last_active_at"), d.get("battery_level"), new_vendor_id))
+
+        c.execute("SELECT row_json FROM archive_objects WHERE table_name='vendor_device_slots' AND vendor_id = ?", (target_vendor_id,))
+        for (row_json,) in c.fetchall():
+            s = json.loads(row_json)
+            sql = """INSERT INTO vendor_device_slots (slot_name, assigned_device_id, assigned_at, vendor_id) 
+                     VALUES (%s, %s, %s, %s)""" if is_pg else \
+                  """INSERT INTO vendor_device_slots (slot_name, assigned_device_id, assigned_at, vendor_id) 
+                     VALUES (?, ?, ?, ?)"""
+            c.execute(sql, (s.get("slot_name"), s.get("assigned_device_id"), s.get("assigned_at"), new_vendor_id))
+
+        # 13. Restore Invoices and Audit Logs
+        c.execute("SELECT row_json FROM archive_objects WHERE table_name='invoices' AND vendor_id = ?", (target_vendor_id,))
+        for (row_json,) in c.fetchall():
+            inv = json.loads(row_json)
+            sql = """INSERT INTO invoices (amount, status, due_date, generated_at, paid_at, invoice_date, details, vendor_id) 
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""" if is_pg else \
+                  """INSERT INTO invoices (amount, status, due_date, generated_at, paid_at, invoice_date, details, vendor_id) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)"""
+            c.execute(sql, (inv.get("amount"), inv.get("status"), inv.get("due_date"), inv.get("generated_at"), inv.get("paid_at"), inv.get("invoice_date"), inv.get("details"), new_vendor_id))
+
+        c.execute("SELECT row_json FROM archive_objects WHERE table_name='leave_staff' AND vendor_id = ?", (target_vendor_id,))
+        for (row_json,) in c.fetchall():
+            s = json.loads(row_json)
+            sql = """INSERT INTO leave_staff (staff_id, role, vendor_id) 
+                     VALUES (%s, %s, %s)""" if is_pg else \
+                  """INSERT INTO leave_staff (staff_id, role, vendor_id) 
+                     VALUES (?, ?, ?)"""
+            # Note: staff_id here refers to person_id (Face ID)
+            new_staff_id = person_id_map.get(s.get("staff_id"))
+            if new_staff_id:
+                c.execute(sql, (new_staff_id, s.get("role"), new_vendor_id))
+
+        c.execute("SELECT row_json FROM archive_objects WHERE table_name='audit_logs' AND vendor_id = ?", (target_vendor_id,))
+        for (row_json,) in c.fetchall():
+            log = json.loads(row_json)
+            sql = """INSERT INTO audit_logs (actor_username, actor_role, action, details, ip, timestamp, target_vendor_id) 
+                     VALUES (%s, %s, %s, %s, %s, %s, %s)""" if is_pg else \
+                  """INSERT INTO audit_logs (actor_username, actor_role, action, details, ip, timestamp, target_vendor_id) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?)"""
+            c.execute(sql, (log.get("actor_username"), log.get("actor_role"), log.get("action"), log.get("details"), log.get("ip"), log.get("timestamp"), new_vendor_id))
+
+        # Mark archived objects as restored
+        now = datetime.now()
+        c.execute("UPDATE archive_objects SET restored_at = %s WHERE vendor_id = %s" if is_pg else "UPDATE archive_objects SET restored_at = ? WHERE vendor_id = ?", (now, target_vendor_id))
+        
         conn.commit()
-        return jsonify({"success": True, "new_vendor_id": new_vendor_id})
+        
+        # Invalidate cache
+        cache_delete("admin_stats")
+        
+        return jsonify({"success": True, "new_vendor_id": new_vendor_id, "message": "Vendor and all related data restored successfully"})
     except Exception as e:
         try:
             conn.rollback()
@@ -2139,7 +2444,7 @@ def restore_vendor():
 
 @admin_bp.route("/students/assign-parent", methods=["POST"])
 def assign_parent():
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     caller_vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -2166,7 +2471,7 @@ def assign_parent():
 @admin_bp.route("/superadmin/subscription", methods=["POST", "PUT"])
 @super_admin_required
 def update_subscription():
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     data = request.json
     vendor_id = data.get("vendor_id")
@@ -2211,7 +2516,7 @@ def update_subscription():
 @admin_bp.route("/superadmin/employees", methods=["GET"])
 @super_admin_required
 def get_all_employees():
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     conn = get_db_connection()
     if not getattr(conn, "_is_pg", False):
@@ -2264,7 +2569,7 @@ def get_all_employees():
 @admin_bp.route("/vendors/<int:vendor_id>/employees", methods=["GET"])
 @super_admin_required
 def get_vendor_employees(vendor_id):
-    from app import get_db_connection, socketio, is_testing
+    from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     conn = get_db_connection()
     if not getattr(conn, "_is_pg", False):
@@ -2386,6 +2691,232 @@ def backup_database():
     # Note: We should ideally delete the temp file after sending, 
     # but send_file doesn't make that easy without a wrapper.
     # Flask's after_this_request can do it or just let /tmp clean up.
+@admin_bp.route("/vendors/<int:vendor_id>/portable-export", methods=["GET"])
+@super_admin_required
+def portable_export_vendor(vendor_id):
+    import json
+    import gzip
+    from io import BytesIO
+    
+    conn = get_db_connection()
+    if not getattr(conn, "_is_pg", False):
+        conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    try:
+        # 1. Get Vendor
+        c.execute("SELECT * FROM vendors WHERE id = ?", (vendor_id,))
+        vendor = dict(c.fetchone())
+        if not vendor:
+            return jsonify({"error": "Vendor not found"}), 404
+            
+        # 2. Get Subscription
+        c.execute("SELECT * FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+        sub_row = c.fetchone()
+        subscription = dict(sub_row) if sub_row else None
+        
+        # 3. Get Company
+        c.execute("SELECT * FROM companies WHERE vendor_id = ?", (vendor_id,))
+        comp_row = c.fetchone()
+        company = dict(comp_row) if comp_row else None
+        
+        # 4. Get Faces
+        c.execute("SELECT * FROM faces WHERE vendor_id = ?", (vendor_id,))
+        faces = [dict(row) for row in c.fetchall()]
+        
+        # 5. Get Embeddings
+        c.execute("SELECT * FROM person_embeddings WHERE vendor_id = ?", (vendor_id,))
+        embeddings = [dict(row) for row in c.fetchall()]
+        
+        # 6. Get Users
+        c.execute("SELECT * FROM system_users WHERE vendor_id = ?", (vendor_id,))
+        users = [dict(row) for row in c.fetchall()]
+        
+        package = {
+            "version": "1.0",
+            "exported_at": datetime.now().isoformat(),
+            "vendor": vendor,
+            "subscription": subscription,
+            "company": company,
+            "faces": faces,
+            "embeddings": embeddings,
+            "users": users
+        }
+        
+        # Custom JSON encoder
+        def _json_default(obj):
+            if isinstance(obj, (bytes, bytearray, memoryview)):
+                import base64
+                return base64.b64encode(obj).decode('utf-8')
+            from datetime import date, datetime
+            if isinstance(obj, (datetime, date)):
+                return obj.isoformat()
+            return str(obj)
+            
+        # Compress the JSON
+        json_data = json.dumps(package, default=_json_default).encode('utf-8')
+        compressed = gzip.compress(json_data)
+        
+        filename = f"vendor_{vendor_id}_{vendor['company_name'].replace(' ', '_')}_portable.gz"
+        return send_file(
+            BytesIO(compressed),
+            mimetype='application/gzip',
+            as_attachment=True,
+            download_name=filename
+        )
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+@admin_bp.route("/vendors/portable-import", methods=["POST"])
+@super_admin_required
+def portable_import_vendor():
+    import json
+    import gzip
+    
+    if 'file' not in request.files:
+        return jsonify({"error": "No file part"}), 400
+    
+    file = request.files['file']
+    try:
+        raw_content = file.read()
+        try:
+            content = gzip.decompress(raw_content)
+        except Exception:
+            # Fallback to plain JSON
+            content = raw_content
+            
+        package = json.loads(content)
+        if package.get("version") != "1.0":
+            return jsonify({"error": "Unsupported package version"}), 400
+            
+        v_data = package.get("vendor")
+        s_data = package.get("subscription")
+        c_data = package.get("company")
+        f_list = package.get("faces", [])
+        e_list = package.get("embeddings", [])
+        u_list = package.get("users", [])
+        
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        try:
+            # 1. Create Vendor (Generate new ID)
+            # Check if email exists
+            c.execute("SELECT id FROM vendors WHERE email = ?", (v_data.get("email"),))
+            if c.fetchone():
+                return jsonify({"error": f"Vendor with email {v_data.get('email')} already exists"}), 409
+                
+            c.execute("""INSERT INTO vendors (company_name, contact_person, phone, email, status, frontend_bundle_id, backend_service_id, registration_config, retention_days)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                      (v_data.get("company_name"), v_data.get("contact_person"), v_data.get("phone"), v_data.get("email"), 
+                       v_data.get("status", "active"), v_data.get("frontend_bundle_id"), v_data.get("backend_service_id"),
+                       v_data.get("registration_config"), v_data.get("retention_days", 90)))
+            
+            new_vendor_id = None
+            try:
+                new_vendor_id = c.lastrowid
+            except Exception: pass
+            
+            if not new_vendor_id:
+               c.execute("SELECT id FROM vendors WHERE email = ?", (v_data.get("email"),))
+               rv = c.fetchone()
+               new_vendor_id = rv[0] if rv else None
+               
+            if not new_vendor_id:
+                raise Exception("Failed to retrieve new vendor ID")
+            
+            # 2. Restore Subscription
+            if s_data:
+                c.execute("""INSERT INTO subscriptions (vendor_id, plan_type, start_date, end_date, status, max_users, max_employees, cost_per_user, setup_fee, setup_fee_paid, max_mobile_devices, cost_per_employee, grace_period_days, max_web_sessions, features)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                          (new_vendor_id, s_data.get("plan_type"), s_data.get("start_date"), s_data.get("end_date"), s_data.get("status"),
+                           s_data.get("max_users"), s_data.get("max_employees"), s_data.get("cost_per_user"), s_data.get("setup_fee"), s_data.get("setup_fee_paid"),
+                           s_data.get("max_mobile_devices"), s_data.get("cost_per_employee"), s_data.get("grace_period_days"), s_data.get("max_web_sessions"), s_data.get("features")))
+            
+            # 3. Restore Company
+            if c_data:
+                c.execute("""INSERT INTO companies (name, shifts, draft_timetable, live_timetable, vendor_id)
+                             VALUES (?, ?, ?, ?, ?)""",
+                          (c_data.get("name"), c_data.get("shifts"), c_data.get("draft_timetable"), c_data.get("live_timetable"), new_vendor_id))
+            
+            # 4. Restore Users
+            for u in u_list:
+                # Check if username exists
+                c.execute("SELECT username FROM system_users WHERE username = ?", (u.get("username"),))
+                if c.fetchone():
+                    # Handle collision by appending vendor ID
+                    u["username"] = f"{u['username']}_{new_vendor_id}"
+                
+                c.execute("""INSERT INTO system_users (username, password, role, vendor_id) VALUES (?, ?, ?, ?)""",
+                          (u.get("username"), u.get("password"), u.get("role"), new_vendor_id))
+            
+            # 5. Restore Faces & Map IDs
+            face_id_map = {}
+            for f in f_list:
+                old_id = f.get("id")
+                c.execute("""INSERT INTO faces (name, templates, face_image, department, designation, phone, shift, vendor_id, custom_data, display_id)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                          (f.get("name"), f.get("templates"), f.get("face_image"), f.get("department"), f.get("designation"), 
+                           f.get("phone"), f.get("shift"), new_vendor_id, f.get("custom_data"), f.get("display_id")))
+                
+                new_face_id = None
+                try: new_face_id = c.lastrowid
+                except Exception: pass
+                
+                if not new_face_id:
+                     # Fallback to phone + name for identification in the same transaction
+                     c.execute("SELECT id FROM faces WHERE vendor_id = ? AND phone = ? AND name = ?", (new_vendor_id, f.get("phone"), f.get("name")))
+                     rf = c.fetchone()
+                     new_face_id = rf[0] if rf else None
+                
+                if new_face_id:
+                    face_id_map[old_id] = new_face_id
+                
+            # 6. Restore Embeddings with mapped person_id
+            for e in e_list:
+                old_person_id = e.get("person_id")
+                new_person_id = face_id_map.get(old_person_id)
+                if not new_person_id: continue
+                
+                def _decode_blob(val):
+                    if isinstance(val, str):
+                        try:
+                            import base64
+                            return base64.b64decode(val)
+                        except Exception:
+                            pass
+                    return val
+                
+                vec = _decode_blob(e.get("vec"))
+                struct_vec = _decode_blob(e.get("struct_vec"))
+                lms = _decode_blob(e.get("landmarks_3d")) if e.get("landmarks_3d") else None
+                
+                c.execute("""INSERT INTO person_embeddings (vendor_id, person_id, class_year, division, branch, vec, dim, struct_vec, landmarks_3d)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                          (new_vendor_id, new_person_id, e.get("class_year"), e.get("division"), e.get("branch"), vec, e.get("dim"), struct_vec, lms))
+            
+            conn.commit()
+            log_audit("portable_import", {"company": v_data.get("company_name"), "faces_count": len(f_list)}, target_vendor_id=new_vendor_id)
+            
+            # Trigger FAISS cache refresh for the new vendor
+            try:
+                from services.face_service import _ensure_vendor_emb_cache
+                _ensure_vendor_emb_cache(new_vendor_id, force_refresh=True)
+            except Exception: pass
+            
+            return jsonify({"success": True, "vendor_id": new_vendor_id, "faces_imported": len(f_list)})
+        except Exception as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 500
+        finally:
+            conn.close()
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @admin_bp.route("/vendors/<int:vendor_id>/leave/students", methods=["GET"])
 @super_admin_required
 def get_vendor_leave_students(vendor_id):

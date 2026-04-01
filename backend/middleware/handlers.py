@@ -102,7 +102,14 @@ def setup_middleware(app):
                 resp.headers['Access-Control-Allow-Origin'] = origin
                 resp.headers['Access-Control-Allow-Credentials'] = 'true'
                 resp.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Vendor-ID, x-vendor-id'
+                resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, PATCH, OPTIONS'
                 resp.headers['Access-Control-Expose-Headers'] = 'Authorization'
         except Exception:
             pass
         return resp
+
+    @app.before_request
+    def handle_options():
+        if request.method == 'OPTIONS':
+            resp = app.make_default_options_response()
+            return add_cors_headers(resp)

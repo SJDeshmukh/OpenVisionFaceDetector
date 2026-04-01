@@ -122,7 +122,14 @@ def process_delete_vendor_task(vendor_id):
         # 7. Finally the vendor itself
         c.execute("DELETE FROM vendors WHERE id = ?", (vendor_id,))
         
-        # Reset sequences if no vendors left
+        # 8. Commit the deletion FIRST so it's permanent
+        conn.commit()
+        
+        # 9. Invalidate admin stats cache so the numbers update immediately
+        from utils import cache_delete
+        cache_delete("admin_stats")
+        
+        # 10. Reset sequences if no vendors left
         try:
             c.execute("SELECT COUNT(*) FROM vendors")
             row = c.fetchone()
@@ -138,20 +145,37 @@ def process_delete_vendor_task(vendor_id):
                 for t in tables:
                     try:
                         if is_pg:
-                            c.execute(f"ALTER SEQUENCE {t}_id_seq RESTART WITH 1")
+                            # Postgres: Check if 'id' column exists first
+                            c.execute(f"SELECT column_name FROM information_schema.columns WHERE table_name='{t}' AND column_name='id'")
+                            if c.fetchone():
+                                c.execute(f"SELECT pg_get_serial_sequence('{t}', 'id')")
+                                seq_row = c.fetchone()
+                                if seq_row and seq_row[0]:
+                                    seq_name = seq_row[0]
+                                    c.execute(f"ALTER SEQUENCE {seq_name} RESTART WITH 1")
+                                    conn.commit()
                         else:
+                            # SQLite
                             c.execute(f"DELETE FROM sqlite_sequence WHERE name='{t}'")
+                            conn.commit()
                     except Exception:
+                        if conn: conn.rollback()
                         pass
         except Exception:
             pass
 
-        conn.commit()
         # No audit log for the vendor deletion itself as we've deleted all logs for this vendor!
         # Actually, maybe we should log it but without target_vendor_id?
         # Let's log it globally.
+        from app import socketio
         socketio.emit('force_logout', {'vendor_id': vendor_id, 'reason': 'Vendor account deleted'}, room=f"vendor_{vendor_id}")
         socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
+        socketio.emit('admin_stats_updated', room='super_admin')
+    except Exception as e:
+        if conn: conn.rollback()
+        print(f"Error in delete_vendor_task: {e}")
+    finally:
+        if conn: conn.close()
     except Exception as e:
         if conn: conn.rollback()
         print(f"Error in delete_vendor_task: {e}")

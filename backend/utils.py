@@ -416,11 +416,11 @@ def reset_sequence(table_name):
                     EXISTS (SELECT 1 FROM {table_name})
                 )
             """
-            _run(c, sql)
+            c.execute(sql)
         else:
             # SQLite: UPDATE sqlite_sequence
             sql = f"UPDATE sqlite_sequence SET seq = COALESCE((SELECT MAX(id) FROM {table_name}), 0) WHERE name = '{table_name}'"
-            _run(c, sql)
+            c.execute(sql)
             
         conn.commit()
         conn.close()
@@ -493,7 +493,7 @@ def _ensure_class_batch_tables(conn):
         is_pg = getattr(conn, "_is_pg", False)
         
         if is_pg:
-            _run(c, """
+            c.execute("""
                 CREATE TABLE IF NOT EXISTS class_batches (
                     id TEXT PRIMARY KEY,
                     vendor_id INTEGER,
@@ -504,7 +504,7 @@ def _ensure_class_batch_tables(conn):
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            _run(c, """
+            c.execute("""
                 CREATE TABLE IF NOT EXISTS class_batch_items (
                     id TEXT PRIMARY KEY,
                     batch_id TEXT,
@@ -517,7 +517,7 @@ def _ensure_class_batch_tables(conn):
                 )
             """)
         else:
-            _run(c, """
+            c.execute("""
                 CREATE TABLE IF NOT EXISTS class_batches (
                     id TEXT PRIMARY KEY,
                     vendor_id INTEGER,
@@ -528,7 +528,7 @@ def _ensure_class_batch_tables(conn):
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            _run(c, """
+            c.execute("""
                 CREATE TABLE IF NOT EXISTS class_batch_items (
                     id TEXT PRIMARY KEY,
                     batch_id TEXT,
@@ -560,7 +560,7 @@ def ensure_audit_logs_table():
     try:
         is_pg = getattr(conn, "_is_pg", False)
         if is_pg:
-            _run(c, """
+            c.execute("""
                 CREATE TABLE IF NOT EXISTS audit_logs (
                     id SERIAL PRIMARY KEY,
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -573,7 +573,7 @@ def ensure_audit_logs_table():
                 )
             """)
         else:
-            _run(c, """
+            c.execute("""
                 CREATE TABLE IF NOT EXISTS audit_logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -639,7 +639,7 @@ def log_audit(action, details=None, target_vendor_id=None, status="success", act
         elif isinstance(details, str):
             payload["message"] = details
             
-        _run(c, "INSERT INTO audit_logs (actor_username, actor_role, target_vendor_id, action, details, ip) VALUES (?, ?, ?, ?, ?, ?)",
+        c.execute("INSERT INTO audit_logs (actor_username, actor_role, target_vendor_id, action, details, ip) VALUES (?, ?, ?, ?, ?, ?)",
              (actor_username, actor_role, target_vendor_id, action, json.dumps(payload), ip))
         conn.commit()
         conn.close()
@@ -653,7 +653,7 @@ def vendor_has_feature(vendor_id, feature_name):
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        _run(c, "SELECT features FROM subscriptions WHERE vendor_id = ? LIMIT 1", (vendor_id,))
+        c.execute("SELECT features FROM subscriptions WHERE vendor_id = ? LIMIT 1", (vendor_id,))
         row = c.fetchone()
         conn.close()
         if row:

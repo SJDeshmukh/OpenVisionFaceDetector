@@ -31,7 +31,7 @@ streaming_bp = Blueprint('streaming_bp', __name__)
 def upload_stream_frame():
     from app import get_db_connection, socketio, is_testing
     from utils import ALL_FEATURES
-    from app import latest_frames, client_counts, device_status
+    from app import latest_frames
     from services.auth_service import extract_token, verify_token
     try:
         # 1. Identify Vendor from Auth Token
@@ -97,7 +97,7 @@ def upload_stream_frame():
 def view_stream_frame():
     from app import get_db_connection, socketio, is_testing
     from utils import ALL_FEATURES
-    from app import latest_frames, client_counts, device_status
+    from app import latest_frames
     from services.auth_service import extract_token, verify_token, authenticate_vendor_access
     auth_vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -141,7 +141,7 @@ def view_stream_frame():
 @streaming_bp.route("/stream/active-devices", methods=["GET"])
 def list_active_devices():
     from app import get_db_connection, socketio, is_testing, ALL_FEATURES
-    from app import latest_frames, client_counts, device_status
+    from app import latest_frames
     from services.auth_service import extract_token, verify_token, authenticate_vendor_access
     """
     Returns a list of active devices (streams) for the authenticated vendor 
