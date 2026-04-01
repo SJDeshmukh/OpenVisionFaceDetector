@@ -334,16 +334,7 @@ const People = () => {
           <p className="text-slate-500">Manage {personLabel.toLowerCase()}s and their facial data.</p>
         </div>
         <div className="flex space-x-3">
-          <button className="flex items-center space-x-2 px-4 py-2 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 font-medium transition-colors">
-            <Upload size={18} />
-            <span>Import</span>
-          </button>
-          <button
-            onClick={openAddModal}
-            className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium transition-colors shadow-sm">
-            <Plus size={18} />
-            <span>{`Add ${personLabel}`}</span>
-          </button>
+          {/* Manual registration and import buttons removed to enforce mobile-only registration */}
         </div>
       </div>
 
