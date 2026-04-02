@@ -1,0 +1,19 @@
+{
+  "$schema": "https://railway.app/repo.schema.json",
+  "services": {
+    "face-detection-backend": {
+      "root": "backend",
+      "watchPatterns": ["backend/**"],
+      "build": {
+        "builder": "NIXPACKS"
+      }
+    },
+    "face-detection-frontend": {
+      "root": "web-dashboard",
+      "watchPatterns": ["web-dashboard/**"],
+      "build": {
+        "builder": "NIXPACKS"
+      }
+    }
+  }
+}

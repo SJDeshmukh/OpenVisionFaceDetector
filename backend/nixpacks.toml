@@ -1,0 +1,11 @@
+[phases.setup]
+nixPkgs = ["python310", "gcc", "libglib20", "libGL"]
+
+[phases.install]
+cmds = ["pip install -r requirements.txt"]
+
+[phases.build]
+cmds = ["python download_models.py"]
+
+[start]
+cmd = "gunicorn app:app --bind 0.0.0.0:$PORT"
