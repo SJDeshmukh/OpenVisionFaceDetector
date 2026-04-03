@@ -858,7 +858,9 @@ def get_vendor_student_logins(vendor_id):
                 LEFT JOIN faces f ON (
                     LOWER(TRIM(f.custom_data::jsonb->>'student_number')) = LOWER(TRIM(u.username)) OR 
                     LOWER(TRIM(f.custom_data::jsonb->>'admission_number')) = LOWER(TRIM(u.username)) OR 
-                    LOWER(TRIM(f.custom_data::jsonb->>'roll_number')) = LOWER(TRIM(u.username))
+                    LOWER(TRIM(f.custom_data::jsonb->>'roll_number')) = LOWER(TRIM(u.username)) OR
+                    LOWER(TRIM(f.custom_data::jsonb->>'student_id')) = LOWER(TRIM(u.username)) OR
+                    LOWER(TRIM(f.custom_data::jsonb->>'id_number')) = LOWER(TRIM(u.username))
                 ) AND f.vendor_id = u.vendor_id
                 WHERE u.vendor_id = %s AND u.role = 'user'
             """, (vendor_id,))
@@ -870,7 +872,9 @@ def get_vendor_student_logins(vendor_id):
                 LEFT JOIN faces f ON (
                     LOWER(TRIM(json_extract(f.custom_data, '$.student_number'))) = LOWER(TRIM(u.username)) OR 
                     LOWER(TRIM(json_extract(f.custom_data, '$.admission_number'))) = LOWER(TRIM(u.username)) OR 
-                    LOWER(TRIM(json_extract(f.custom_data, '$.roll_number'))) = LOWER(TRIM(u.username))
+                    LOWER(TRIM(json_extract(f.custom_data, '$.roll_number'))) = LOWER(TRIM(u.username)) OR
+                    LOWER(TRIM(json_extract(f.custom_data, '$.student_id'))) = LOWER(TRIM(u.username)) OR
+                    LOWER(TRIM(json_extract(f.custom_data, '$.id_number'))) = LOWER(TRIM(u.username))
                 ) AND f.vendor_id = u.vendor_id
                 WHERE u.vendor_id = ? AND u.role = 'user'
             """, (vendor_id,))

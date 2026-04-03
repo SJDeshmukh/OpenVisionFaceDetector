@@ -896,6 +896,7 @@ def get_users():
 def create_user():
     from app import get_db_connection, socketio, is_testing
     from services.auth_service import extract_token, verify_token
+    from routes.auth import register_user
     return register_user() # Reuse register logic
 
 
@@ -985,7 +986,7 @@ def delete_user(username):
 @vendor_bp.route("/class-threshold", methods=["GET"])
 def get_class_threshold():
     from app import get_db_connection, socketio, is_testing, ALL_FEATURES
-    from app import latest_frames, client_counts, device_status
+    from socket_handlers import latest_frames, client_counts, device_status
     from services.auth_service import extract_token, verify_token
     vendor_id, error = authenticate_vendor_access()
     if error:

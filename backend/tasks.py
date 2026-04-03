@@ -476,3 +476,21 @@ def detect_faces_task(img_b64, params, vendor_id):
 
 if celery:
     detect_faces_task = celery.task(name="tasks.detect_faces")(detect_faces_task)
+
+def search_embedding_task(img_b64, params, vendor_id):
+    from services.face_service import _detect_faces_from_bytes
+    import base64
+    
+    if not img_b64:
+        return {"faces": [], "annotated_b64": ""}
+        
+    try:
+        header, encoded = img_b64.split(',', 1) if ',' in img_b64 else ('', img_b64)
+        raw = base64.b64decode(encoded)
+        faces, annotated_b64 = _detect_faces_from_bytes(raw, params or {}, vendor_id)
+        return {"faces": faces, "annotated_b64": annotated_b64, "status": "done"}
+    except Exception as e:
+        return {"error": str(e), "status": "failed"}
+
+if celery:
+    search_embedding_task = celery.task(name="tasks.search_embedding")(search_embedding_task)

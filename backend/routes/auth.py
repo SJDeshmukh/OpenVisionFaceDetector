@@ -192,9 +192,9 @@ def login():
         try:
             is_pg = getattr(conn, "_is_pg", False)
             if is_pg:
-                c.execute("SELECT id, name, phone, vendor_id, custom_data FROM faces WHERE custom_data::jsonb->>'student_number' = %s OR custom_data::jsonb->>'admission_number' = %s OR custom_data::jsonb->>'roll_number' = %s", (username, username, username))
+                c.execute("SELECT id, name, phone, vendor_id, custom_data FROM faces WHERE custom_data::jsonb->>'student_number' = %s OR custom_data::jsonb->>'admission_number' = %s OR custom_data::jsonb->>'roll_number' = %s OR custom_data::jsonb->>'student_id' = %s OR custom_data::jsonb->>'id_number' = %s", (username, username, username, username, username))
             else:
-                c.execute("SELECT id, name, phone, vendor_id, custom_data FROM faces WHERE json_extract(custom_data, '$.student_number') = ? OR json_extract(custom_data, '$.admission_number') = ? OR json_extract(custom_data, '$.roll_number') = ?", (username, username, username))
+                c.execute("SELECT id, name, phone, vendor_id, custom_data FROM faces WHERE json_extract(custom_data, '$.student_number') = ? OR json_extract(custom_data, '$.admission_number') = ? OR json_extract(custom_data, '$.roll_number') = ? OR json_extract(custom_data, '$.student_id') = ? OR json_extract(custom_data, '$.id_number') = ?", (username, username, username, username, username))
             
             face = c.fetchone()
             if face:
@@ -203,10 +203,16 @@ def login():
                 
                 if str(password) == str(student_phone) and student_phone:
                     # SECURE HASHING: Hash the password being stored
-                    c.execute(
-                        "INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (?, ?, ?, 'user', ?, ?)",
-                        (username, hash_password(password), password, face_row['vendor_id'], face_row['id'])
-                    )
+                    if is_pg:
+                        c.execute(
+                            "INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (%s, %s, %s, 'user', %s, %s)",
+                            (username, hash_password(password), password, face_row['vendor_id'], face_row['id'])
+                        )
+                    else:
+                        c.execute(
+                            "INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (?, ?, ?, 'user', ?, ?)",
+                            (username, hash_password(password), password, face_row['vendor_id'], face_row['id'])
+                        )
                     conn.commit()
                     c.execute("SELECT * FROM system_users WHERE username = ?", (username,))
                     user = c.fetchone()
@@ -385,34 +391,38 @@ def login():
                 except Exception:
                     pass
             elif platform == 'mobile':
-                c.execute("SELECT max_mobile_devices FROM subscriptions WHERE vendor_id = ?", (user['vendor_id'],))
-                sub = c.fetchone()
-                max_devs = sub[0] if sub else 1
-                
-                if device_id:
-                    c.execute("SELECT id FROM vendor_devices WHERE vendor_id = ? AND device_id = ?", (user['vendor_id'], device_id))
-                    existing_device = c.fetchone()
+                if user['role'] == 'vendor_admin':
+                    c.execute("SELECT max_mobile_devices FROM subscriptions WHERE vendor_id = ?", (user['vendor_id'],))
+                    sub = c.fetchone()
+                    max_devs = sub[0] if sub else 1
                     
-                    if existing_device:
-                        c.execute("UPDATE vendor_devices SET last_login_at = ? WHERE id = ?", (datetime.now(), existing_device[0]))
-                        conn.commit()
-                    else:
-                        c.execute("SELECT COUNT(*) FROM vendor_devices WHERE vendor_id = ?", (user['vendor_id'],))
-                        registered_count = c.fetchone()[0]
+                    if device_id:
+                        c.execute("SELECT id FROM vendor_devices WHERE vendor_id = ? AND device_id = ?", (user['vendor_id'], device_id))
+                        existing_device = c.fetchone()
                         
-                        if registered_count >= max_devs:
-                            conn.close()
-                            return jsonify({"error": f"Mobile device limit reached ({max_devs}). Contact Admin to register new device."}), 403
-                        
-                        try:
-                            c.execute("INSERT INTO vendor_devices (vendor_id, device_id, device_name, last_login_at) VALUES (?, ?, ?, ?)",
-                                      (user['vendor_id'], device_id, f"Device {device_id[:8]}", datetime.now()))
+                        if existing_device:
+                            c.execute("UPDATE vendor_devices SET last_login_at = ? WHERE id = ?", (datetime.now(), existing_device[0]))
                             conn.commit()
-                        except sqlite3.IntegrityError:
-                            pass
+                        else:
+                            c.execute("SELECT COUNT(*) FROM vendor_devices WHERE vendor_id = ?", (user['vendor_id'],))
+                            registered_count = c.fetchone()[0]
+                            
+                            if registered_count >= max_devs:
+                                conn.close()
+                                return jsonify({"error": f"Mobile device limit reached ({max_devs}). Contact Admin to register new device."}), 403
+                            
+                            try:
+                                c.execute("INSERT INTO vendor_devices (vendor_id, device_id, device_name, last_login_at) VALUES (?, ?, ?, ?)",
+                                          (user['vendor_id'], device_id, f"Device {device_id[:8]}", datetime.now()))
+                                conn.commit()
+                            except sqlite3.IntegrityError:
+                                pass
+                    else:
+                        conn.close()
+                        return jsonify({"error": "Device ID required for mobile login"}), 400
                 else:
-                    conn.close()
-                    return jsonify({"error": "Device ID required for mobile login"}), 400
+                    # Allow students and other roles on mobile without consuming vendor device slots
+                    pass
 
             conn.close()
 
@@ -1202,10 +1212,10 @@ def verify_student_password():
         
     conn = get_db_connection()
     try:
-        if not getattr(conn, "_is_pg", False):
-            conn.row_factory = sqlite3.Row
+        is_pg = getattr(conn, "_is_pg", False)
+        placeholder = "%s" if is_pg else "?"
         c = conn.cursor()
-        c.execute("SELECT * FROM system_users WHERE username = ? AND role = 'user'", (username,))
+        c.execute(f"SELECT * FROM system_users WHERE username = {placeholder} AND role = 'user'", (username,))
         user = c.fetchone()
         if not user:
             return jsonify({"error": "User not found"}), 404
@@ -1213,25 +1223,25 @@ def verify_student_password():
         user_dict = dict(user)
         stored_pw = user_dict.get("password")
         
+        from services.auth_service import verify_password, generate_token
         if verify_password(password, stored_pw):
             # Student PIN/Password verified. Return full login response including token.
-            from services.auth_service import generate_token
             token = generate_token(username, user_dict.get('role', 'user'), user_dict.get('vendor_id'))
             
             # Record activation
-            from flask import request
             device_id = request.json.get('device_id', 'web-student')
 
             # Single-device restriction check
             try:
                 # Clean up expired sessions first (older than 24h)
                 is_pg = getattr(conn, "_is_pg", False)
+                placeholder = "%s" if is_pg else "?"
                 if is_pg:
-                    c.execute("DELETE FROM active_sessions WHERE username = ? AND last_active < (NOW() - INTERVAL '1 day')", (username,))
+                    c.execute(f"DELETE FROM active_sessions WHERE username = {placeholder} AND last_active < (NOW() - INTERVAL '1 day')", (username,))
                 else:
-                    c.execute("DELETE FROM active_sessions WHERE username = ? AND last_active < datetime('now','-1 day')", (username,))
+                    c.execute(f"DELETE FROM active_sessions WHERE username = {placeholder} AND last_active < datetime('now','-1 day')", (username,))
                 
-                c.execute("SELECT device_id FROM active_sessions WHERE username = ?", (username,))
+                c.execute(f"SELECT device_id FROM active_sessions WHERE username = {placeholder}", (username,))
                 existing_session = c.fetchone()
                 if existing_session:
                     existing_device_id = existing_session[0]
@@ -1242,8 +1252,10 @@ def verify_student_password():
                 logger.error(f"Error checking existing student session: {e}")
             
             try:
+                is_pg = getattr(conn, "_is_pg", False)
+                placeholder = "%s" if is_pg else "?"
                 c.execute(
-                    "INSERT INTO active_sessions (token, username, vendor_id, device_id, platform, last_active) VALUES (?, ?, ?, ?, 'web', ?)",
+                    f"INSERT INTO active_sessions (token, username, vendor_id, device_id, platform, last_active) VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'web', {placeholder})",
                     (token, username, user_dict.get('vendor_id'), device_id, datetime.now())
                 )
                 conn.commit()
