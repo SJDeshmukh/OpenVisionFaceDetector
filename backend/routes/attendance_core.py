@@ -344,9 +344,11 @@ def get_attendance(valid_data: AttendanceFilterSchema):
     conn = get_db_connection(); conn.row_factory = sqlite3.Row; c = conn.cursor()
     s_date, e_date, name = valid_data.start_date, valid_data.end_date, valid_data.name
     query = """
-        SELECT a.*, f.department, f.designation, f.shift, f.phone, f.custom_data AS face_custom_data
+        SELECT a.*, f.department, f.designation, f.shift, f.phone, f.custom_data AS face_custom_data,
+               vd.device_name
         FROM attendance a
         LEFT JOIN faces f ON a.person_id = f.id
+        LEFT JOIN vendor_devices vd ON a.device_id = vd.device_id AND a.vendor_id = vd.vendor_id
         WHERE a.vendor_id = ?
     """
     params = [vendor_id]
@@ -362,7 +364,8 @@ def get_attendance(valid_data: AttendanceFilterSchema):
             "id": r["id"], "name": r["name"], "timestamp": str(r["timestamp"]),
             "status": r["status"], "activity": r["activity"], "is_late": r.get("is_late", 0),
             "department": r["department"], "designation": r["designation"],
-            "captured_image": r["captured_image"]
+            "captured_image": r["captured_image"],
+            "device_name": r["device_name"] or r["device_id"]
         })
     result = {"attendance": attendance}
     cache_set(cache_key, result, 60)
