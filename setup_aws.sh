@@ -24,7 +24,7 @@ fi
 
 echo "==> [2/8] Updating System and Installing Dependencies..."
 sudo apt-get update
-sudo apt-get install -y python3-venv python3-pip postgresql postgresql-contrib redis-server libgl1 libglib2.0-0 nodejs
+sudo apt-get install -y python3-venv python3-pip postgresql postgresql-contrib redis-server nginx libgl1 libglib2.0-0 nodejs
 
 echo "==> [3/8] Setting Up Backend Environment (including CPU AI)..."
 if [ ! -d "backend/.venv" ]; then
@@ -79,8 +79,8 @@ echo "Detected Public IP: $PUBLIC_IP"
 # Create/Overwrite .env with clean values
 cat <<EOF > $ENV_FILE
 SECRET_KEY=$(openssl rand -base64 32)
-BACKEND_URL=http://$PUBLIC_IP:5001
-FRONTEND_URL=http://$PUBLIC_IP:5173
+BACKEND_URL=http://$PUBLIC_IP
+FRONTEND_URL=http://$PUBLIC_IP
 DB_TYPE=postgres
 DATABASE_URL=postgresql://$DB_USER:$DB_PASS@localhost:5432/$DB_NAME
 DB_PATH=face_db.sqlite
@@ -102,11 +102,25 @@ export DB_TYPE="postgres"
 python3 migrate_to_postgres.py || echo "Warning: migrate_to_postgres.py encountered issues."
 cd ..
 
-echo "==> [8/8] Launching UI + Backend Concurrently..."
-# Kill any old processes
+echo "==> [8/8] Building Frontend & Configuring Nginx..."
+echo "Building web-dashboard for production..."
+cd web-dashboard
+npm run build || echo "Warning: Frontend build failed. Check RAM/Swap."
+cd ..
+
+echo "Deploying Nginx configuration..."
+sudo cp nginx_face_detection.conf /etc/nginx/sites-available/face_detection
+sudo ln -sf /etc/nginx/sites-available/face_detection /etc/nginx/sites-enabled/
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl restart nginx
+
+echo "Launching Backend (Gunicorn) & Celery..."
+cd backend
+source .venv/bin/activate
+# Kill old processes
 pkill -f gunicorn || true
 pkill -f celery || true
-pkill -f vite || true
 
 # Important: Allow ports in Ubuntu Firewall (ufw)
 sudo ufw allow 5173/tcp || true
@@ -114,21 +128,22 @@ sudo ufw allow 5001/tcp || true
 sudo ufw allow 80/tcp || true
 sudo ufw allow 443/tcp || true
 
-# Export hosts to 0.0.0.0 so they are accessible externally
-export FRONTEND_HOST=0.0.0.0
-export BACKEND_HOST=0.0.0.0
+# Start Gunicorn (Port 5001)
 export LOW_RAM_MODE=1
+nohup gunicorn --worker-class eventlet -w 1 -b 0.0.0.0:5001 app:app --timeout 600 > ../gunicorn.log 2>&1 &
 
-nohup npm run dev > app.log 2>&1 &
+# Start Celery
+nohup celery -A celery_app worker --loglevel=info --concurrency=1 --pool=solo > ../celery.log 2>&1 &
+cd ..
 
 echo ""
 echo "=============================================================================="
-echo "SETUP COMPLETE! STABLE DEPLOYMENT FINISHED."
+echo "PRODUCTION SETUP COMPLETE! OPENVISION IS LIVE."
 echo "=============================================================================="
-echo "- Dashboard: Port 5173"
-echo "- API:       Port 5001"
-echo "- Logs:      tail -f app.log"
+echo "- Dashboard: http://$PUBLIC_IP"
+echo "- API:       http://$PUBLIC_IP/api"
+echo "- Logs:      tail -f gunicorn.log"
 echo "- Database:  $DB_NAME (User: $DB_USER)"
 echo "=============================================================================="
-echo "IMPORTANT: Open ports 5173 and 5001 in your AWS Security Group!"
+echo "IMPORTANT: Port 80 must be open in your AWS Security Group (it is!)."
 echo "=============================================================================="
