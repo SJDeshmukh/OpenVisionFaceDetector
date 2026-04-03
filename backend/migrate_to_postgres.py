@@ -5,6 +5,11 @@ import sys
 import logging
 from psycopg2.extras import execute_values
 import db_factory
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO)
@@ -13,6 +18,10 @@ logger = logging.getLogger(__name__)
 # Configuration
 SQLITE_DB_PATH = os.environ.get("DB_PATH", "face_db.sqlite")
 POSTGRES_DB_URL = os.environ.get("DATABASE_URL")
+if not POSTGRES_DB_URL:
+    # Try one level up for .env if working from backend/ 
+    # but since we already tried load_dotenv() above, let's just use it as a fallback
+    POSTGRES_DB_URL = os.environ.get("DATABASE_URL")
 
 def get_sqlite_conn():
     conn = sqlite3.connect(SQLITE_DB_PATH)
