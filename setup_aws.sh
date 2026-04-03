@@ -103,9 +103,6 @@ python3 migrate_to_postgres.py || echo "Warning: migrate_to_postgres.py encounte
 cd ..
 
 echo "==> [8/8] Building Frontend & Configuring Nginx..."
-echo "Fixing home directory permissions for Nginx access..."
-sudo chmod +x /home/ubuntu || true
-
 echo "Building web-dashboard for production..."
 cd web-dashboard
 npm run build || echo "Warning: Frontend build failed. Check RAM/Swap."
@@ -114,6 +111,12 @@ if [ ! -d "dist" ]; then
     echo "ERROR: 'dist' folder was not created. Check build errors above."
     exit 1
 fi
+
+echo "Moving frontend assets to /var/www/ for standard access..."
+sudo mkdir -p /var/www/face_detection
+sudo cp -r dist/* /var/www/face_detection/
+sudo chown -R www-data:www-data /var/www/face_detection
+sudo chmod -R 755 /var/www/face_detection
 cd ..
 
 echo "Deploying Nginx configuration..."
