@@ -803,12 +803,31 @@ def parent_login():
                 actual_vendor_id = None
         if not row:
             # Search faces with the provided vendor_id first
-            c.execute("SELECT id, vendor_id, phone, custom_data FROM faces WHERE vendor_id = ? AND phone LIKE ?", (vendor_id, f"%{mobile_tail}%"))
+            # Search both phone column and custom_data JSON
+            if is_pg:
+                c.execute("""
+                    SELECT id, vendor_id, phone, custom_data FROM faces 
+                    WHERE vendor_id = %s AND (
+                        phone LIKE %s OR 
+                        custom_data::text LIKE %s
+                    )
+                """, (vendor_id, f"%{mobile_tail}%", f"%{mobile_tail}%"))
+            else:
+                c.execute("""
+                    SELECT id, vendor_id, phone, custom_data FROM faces 
+                    WHERE vendor_id = ? AND (
+                        phone LIKE ? OR 
+                        custom_data LIKE ?
+                    )
+                """, (vendor_id, f"%{mobile_tail}%", f"%{mobile_tail}%"))
             potential_students = c.fetchall() or []
             
             # If not found with that vendor_id, try searching ALL vendors (for convenience)
             if not potential_students:
-                c.execute("SELECT id, vendor_id, phone, custom_data FROM faces WHERE phone LIKE ?", (f"%{mobile_tail}%",))
+                if is_pg:
+                    c.execute("SELECT id, vendor_id, phone, custom_data FROM faces WHERE phone LIKE %s OR custom_data::text LIKE %s", (f"%{mobile_tail}%", f"%{mobile_tail}%"))
+                else:
+                    c.execute("SELECT id, vendor_id, phone, custom_data FROM faces WHERE phone LIKE ? OR custom_data LIKE ?", (f"%{mobile_tail}%", f"%{mobile_tail}%"))
                 potential_students = c.fetchall() or []
 
             def _check_student_match(st_row):
