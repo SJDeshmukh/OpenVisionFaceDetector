@@ -73,11 +73,14 @@ sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER;
 
 echo "==> [6/8] Generating Clean Environment (.env)..."
 ENV_FILE="backend/.env"
+PUBLIC_IP=$(curl -s https://api.ipify.org || echo "127.0.0.1")
+echo "Detected Public IP: $PUBLIC_IP"
+
 # Create/Overwrite .env with clean values
 cat <<EOF > $ENV_FILE
 SECRET_KEY=$(openssl rand -base64 32)
-BACKEND_URL=http://127.0.0.1:5001
-FRONTEND_URL=http://localhost:5173
+BACKEND_URL=http://$PUBLIC_IP:5001
+FRONTEND_URL=http://$PUBLIC_IP:5173
 DB_TYPE=postgres
 DATABASE_URL=postgresql://$DB_USER:$DB_PASS@localhost:5432/$DB_NAME
 DB_PATH=face_db.sqlite
@@ -105,7 +108,17 @@ pkill -f gunicorn || true
 pkill -f celery || true
 pkill -f vite || true
 
+# Important: Allow ports in Ubuntu Firewall (ufw)
+sudo ufw allow 5173/tcp || true
+sudo ufw allow 5001/tcp || true
+sudo ufw allow 80/tcp || true
+sudo ufw allow 443/tcp || true
+
+# Export hosts to 0.0.0.0 so they are accessible externally
+export FRONTEND_HOST=0.0.0.0
+export BACKEND_HOST=0.0.0.0
 export LOW_RAM_MODE=1
+
 nohup npm run dev > app.log 2>&1 &
 
 echo ""
