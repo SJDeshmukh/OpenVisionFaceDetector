@@ -1043,22 +1043,33 @@ def get_student_history():
             c.execute("""
                 SELECT id FROM faces 
                 WHERE vendor_id = %s AND (
+                    id::text = %s OR
                     LOWER(TRIM(custom_data::jsonb->>'student_number')) = LOWER(TRIM(%s)) OR 
                     LOWER(TRIM(custom_data::jsonb->>'admission_number')) = LOWER(TRIM(%s)) OR 
                     LOWER(TRIM(custom_data::jsonb->>'roll_number')) = LOWER(TRIM(%s))
                 )
-            """, (vendor_id, student_number, student_number, student_number))
+            """, (vendor_id, student_number, student_number, student_number, student_number))
         else:
             c.execute("""
                 SELECT id FROM faces 
                 WHERE vendor_id = ? AND (
+                    CAST(id AS TEXT) = ? OR
                     LOWER(TRIM(json_extract(custom_data, '$.student_number'))) = LOWER(TRIM(?)) OR 
                     LOWER(TRIM(json_extract(custom_data, '$.admission_number'))) = LOWER(TRIM(?)) OR 
                     LOWER(TRIM(json_extract(custom_data, '$.roll_number'))) = LOWER(TRIM(?))
                 )
-            """, (vendor_id, student_number, student_number, student_number))
+            """, (vendor_id, student_number, student_number, student_number, student_number))
         
         face_row = c.fetchone()
+        
+        # --- Robust Fallback: Check system_users table ---
+        if not face_row:
+            logger.info(f"Student history faces lookup failed for {student_number}, trying system_users fallback...")
+            if is_pg:
+                c.execute("SELECT person_id FROM system_users WHERE vendor_id = %s AND username = %s AND person_id IS NOT NULL", (vendor_id, student_number))
+            else:
+                c.execute("SELECT person_id FROM system_users WHERE vendor_id = ? AND username = ? AND person_id IS NOT NULL", (vendor_id, student_number))
+            face_row = c.fetchone()
         if not face_row:
             logger.error(f"Student history fetch failed: student_number={student_number} not found in faces table")
             return jsonify({"requests": []})
