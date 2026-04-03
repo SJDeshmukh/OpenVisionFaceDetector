@@ -217,13 +217,28 @@ def parent_register_face():
 
     # 2. Proceed with registration
     try:
+        is_pg = getattr(conn, "_is_pg", False)
         if face_template:
-            c.execute("UPDATE parent_users SET face_image = ?, face_template = ? WHERE student_number = ? AND vendor_id = ?", 
-                      (face_image, face_template, student_number, vendor_id))
+            # Use robust LOWER(TRIM()) matching for student_number
+            if is_pg:
+                c.execute("UPDATE parent_users SET face_image = %s, face_template = %s WHERE LOWER(TRIM(student_number)) = LOWER(TRIM(%s)) AND vendor_id = %s", 
+                          (face_image, face_template, student_number, vendor_id))
+            else:
+                c.execute("UPDATE parent_users SET face_image = ?, face_template = ? WHERE LOWER(TRIM(student_number)) = LOWER(TRIM(?)) AND vendor_id = ?", 
+                          (face_image, face_template, student_number, vendor_id))
+            
             if c.rowcount == 0:
-                # Try without vendor_id check as a fallback if the token's vendor_id is somehow different
-                c.execute("UPDATE parent_users SET face_image = ?, face_template = ?, vendor_id = ? WHERE student_number = ?", 
-                          (face_image, face_template, vendor_id, student_number))
+                # Try without vendor_id check as a fallback (using the resolved vendor_id if possible)
+                if is_pg:
+                    c.execute("UPDATE parent_users SET face_image = %s, face_template = %s, vendor_id = %s WHERE LOWER(TRIM(student_number)) = LOWER(TRIM(%s))", 
+                              (face_image, face_template, vendor_id, student_number))
+                else:
+                    c.execute("UPDATE parent_users SET face_image = ?, face_template = ?, vendor_id = ? WHERE LOWER(TRIM(student_number)) = LOWER(TRIM(?))", 
+                              (face_image, face_template, vendor_id, student_number))
+            
+            if c.rowcount == 0:
+                conn.close()
+                return jsonify({"status": "error", "error": "Parent record not found for this student. Please ensure you are using the correct student ID."}), 404
             
             conn.commit()
             conn.close()
