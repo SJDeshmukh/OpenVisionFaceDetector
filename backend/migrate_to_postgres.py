@@ -162,7 +162,17 @@ def run_safe_migration():
          ['id', 'vendor_id', 'invoice_date', 'due_date', 'amount', 'status', 'details'], 
          None, 'id'),
         ('audit_logs', ['id', 'actor_username', 'action', 'target_vendor_id', 'details', 'timestamp'], None, 'id'),
-        ('system_settings', ['key', 'value'], None, 'key')
+        ('system_settings', ['key', 'value'], None, 'key'),
+        ('parent_users', 
+         ['id', 'vendor_id', 'username', 'password', 'contact_email', 'contact_phone', 'student_number', 'selected_person_id', 'device_id', 'fcm_token', 'session_version', 'face_image', 'face_template', 'created_at'], 
+         None, 'id'),
+        ('student_parents', ['id', 'vendor_id', 'person_id', 'parent_id', 'created_at'], None, 'id'),
+        ('parent_tokens', ['token', 'vendor_id', 'student_number', 'created_at'], None, 'token'),
+        ('leave_requests', 
+         ['id', 'vendor_id', 'student_id', 'leave_type', 'reason', 'start_date', 'end_date', 'start_time', 'end_time', 'parent_status', 'rector_status', 'hod_status', 'final_status', 'created_at'], 
+         None, 'id'),
+        ('leave_staff', ['id', 'vendor_id', 'name', 'role', 'pin', 'department', 'created_at'], None, 'id'),
+        ('person_embeddings', ['id', 'vendor_id', 'person_id', 'class_year', 'division', 'branch', 'vec', 'dim', 'struct_vec', 'landmarks_3d', 'created_at'], None, 'id')
     ]
 
     success = True
