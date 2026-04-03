@@ -96,6 +96,8 @@ def run_safe_migration():
     """
     Runs migration safely. Returns True if successful.
     """
+    global SQLITE_DB_PATH
+    
     # Improved path detection: check current dir, then parent dir
     db_path = SQLITE_DB_PATH
     if not os.path.exists(db_path):
@@ -108,7 +110,6 @@ def run_safe_migration():
             return True
     
     # Update global path for get_sqlite_conn
-    global SQLITE_DB_PATH
     SQLITE_DB_PATH = db_path
 
     if not POSTGRES_DB_URL:
