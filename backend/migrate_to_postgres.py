@@ -96,9 +96,20 @@ def run_safe_migration():
     """
     Runs migration safely. Returns True if successful.
     """
-    if not os.path.exists(SQLITE_DB_PATH):
-        logger.info(f"Migration Skipped: SQLite database not found at {SQLITE_DB_PATH}")
-        return True
+    # Improved path detection: check current dir, then parent dir
+    db_path = SQLITE_DB_PATH
+    if not os.path.exists(db_path):
+        parent_path = os.path.join("..", SQLITE_DB_PATH)
+        if os.path.exists(parent_path):
+            db_path = parent_path
+            logger.info(f"Found SQLite database at {db_path}")
+        else:
+            logger.info(f"Migration Skipped: SQLite database not found at {SQLITE_DB_PATH} or {parent_path}")
+            return True
+    
+    # Update global path for get_sqlite_conn
+    global SQLITE_DB_PATH
+    SQLITE_DB_PATH = db_path
 
     if not POSTGRES_DB_URL:
         logger.info("Migration Skipped: DATABASE_URL not set.")
@@ -126,7 +137,7 @@ def run_safe_migration():
          ['id', 'name', 'draft_timetable', 'live_timetable', 'last_modified_by', 'last_modified_at', 'published_by', 'published_at', 'shifts', 'working_hours', 'vendor_id'], 
          None, 'id'),
         ('faces', 
-         ['id', 'name', 'templates', 'face_image', 'department', 'designation', 'phone', 'shift', 'daily_wage', 'vendor_id', 'late_allowance_days', 'late_deduction_amount', 'display_id'], 
+         ['id', 'name', 'templates', 'face_image', 'department', 'designation', 'phone', 'shift', 'daily_wage', 'vendor_id', 'late_allowance_days', 'late_deduction_amount', 'display_id', 'custom_data'], 
          None, 'id'),
         ('attendance', 
          ['id', 'name', 'timestamp', 'status', 'captured_image', 'activity', 'is_late', 'vendor_id', 'person_id'], 

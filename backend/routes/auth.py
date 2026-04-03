@@ -201,7 +201,16 @@ def login():
                 face_row = face if hasattr(face, 'keys') else dict(zip(['id', 'name', 'phone', 'vendor_id', 'custom_data'], face))
                 student_phone = face_row.get('phone')
                 
-                if str(password) == str(student_phone) and student_phone:
+                # FALLBACK: If phone column is empty, check custom_data for student_phone or phone
+                if not student_phone and face_row.get('custom_data'):
+                    try:
+                        custom = face_row['custom_data']
+                        if isinstance(custom, str):
+                            custom = json.loads(custom)
+                        student_phone = custom.get('student_phone') or custom.get('phone') or custom.get('contact_phone')
+                    except: pass
+
+                if student_phone and str(password) == str(student_phone):
                     # SECURE HASHING: Hash the password being stored
                     if is_pg:
                         c.execute(

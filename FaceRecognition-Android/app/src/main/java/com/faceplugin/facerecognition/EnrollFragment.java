@@ -339,7 +339,7 @@ public class EnrollFragment extends Fragment {
                  if (key.equalsIgnoreCase("name") || key.equalsIgnoreCase("full_name")) {
                      if (!value.isEmpty()) name = value;
                  }
-                 if (key.equalsIgnoreCase("phone") || key.equalsIgnoreCase("mobile") || key.equalsIgnoreCase("phone_number")) phone = value;
+                 if (key.equalsIgnoreCase("phone") || key.equalsIgnoreCase("mobile") || key.equalsIgnoreCase("phone_number") || key.equalsIgnoreCase("student_phone") || key.equalsIgnoreCase("contact_phone")) phone = value;
                  if (key.equalsIgnoreCase("department")) department = value;
                  if (key.equalsIgnoreCase("designation")) designation = value;
                  if (key.equalsIgnoreCase("shift")) shift = value;
