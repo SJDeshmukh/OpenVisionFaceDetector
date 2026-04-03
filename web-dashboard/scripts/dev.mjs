@@ -61,13 +61,17 @@ async function performAudit() {
 
   process.stdout.write("\n--- Step 3: AI Environment Health Check ---\n");
   try {
-    const checkScript = "import torch; import tensorflow; print(f'Torch {torch.__version__} OK, TF {tensorflow.__version__} OK')";
-    execSync(`${pythonCmd} -c "${checkScript}"`, { stdio: "inherit" });
-    process.stdout.write("Health check passed.\n\n");
+    const isLowRam = process.env.LOW_RAM_MODE === "1";
+    if (isLowRam) {
+      process.stdout.write("LOW_RAM_MODE=1 detected. Skipping heavy AI health check.\n\n");
+    } else {
+      const checkScript = "import torch; import tensorflow; print(f'Torch {torch.__version__} OK, TF {tensorflow.__version__} OK')";
+      execSync(`${pythonCmd} -c "${checkScript}"`, { stdio: "inherit" });
+      process.stdout.write("Health check passed.\n\n");
+    }
   } catch (e) {
-    process.stderr.write(`Critical: AI environment health check failed! ${e.message}\n`);
-    process.stderr.write("Please ensure torch and tensorflow are correctly installed in the venv.\n");
-    // We don't exit here, but the backend likely won't start correctly if this fails.
+    process.stderr.write(`Warning: AI environment health check failed! ${e.message}\n`);
+    process.stderr.write("Please ensure torch and tensorflow are correctly installed in the venv if you need AI features.\n");
   }
 }
 
@@ -198,7 +202,12 @@ const REDIS_URL = "redis://127.0.0.1:6379/0";
 async function startRedis() {
   process.stdout.write("Starting Redis server...\n");
   try {
-    redisProc = spawnProc("/opt/homebrew/opt/redis/bin/redis-server", ["--daemonize", "no", "--port", "6379"], {
+    // Try to find redis-server in standard paths or the system PATH
+    const redisPath = fs.existsSync("/opt/homebrew/opt/redis/bin/redis-server") 
+        ? "/opt/homebrew/opt/redis/bin/redis-server" 
+        : "redis-server";
+        
+    redisProc = spawnProc(redisPath, ["--daemonize", "no", "--port", "6379"], {
       name: "redis",
       stdio: "pipe",
     });
