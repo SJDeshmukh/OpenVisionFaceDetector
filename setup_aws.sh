@@ -24,7 +24,7 @@ fi
 
 echo "==> [2/8] Updating System and Installing Dependencies..."
 sudo apt-get update
-sudo apt-get install -y python3-venv python3-pip postgresql postgresql-contrib redis-server libgl1 libglib2.0-0 nodejs npm
+sudo apt-get install -y python3-venv python3-pip postgresql postgresql-contrib redis-server libgl1 libglib2.0-0 nodejs
 
 echo "==> [3/8] Setting Up Backend Environment (including CPU AI)..."
 if [ ! -d "backend/.venv" ]; then
