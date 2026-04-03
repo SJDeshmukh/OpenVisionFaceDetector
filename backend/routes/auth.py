@@ -802,6 +802,7 @@ def parent_login():
                 row = None
                 actual_vendor_id = None
         if not row:
+            is_pg = getattr(conn, "_is_pg", False)
             # Search faces with the provided vendor_id first
             # Search both phone column and custom_data JSON
             if is_pg:
