@@ -22,7 +22,7 @@ fi
 
 echo "==> [2/6] Updating System and Installing Dependencies..."
 sudo apt-get update
-sudo apt-get install -y python3-venv python3-pip postgresql redis-server libgl1-mesa-glx libglib2.0-0
+sudo apt-get install -y python3-venv python3-pip postgresql redis-server libgl1 libglib2.0-0
 
 echo "==> [3/6] Setting Up Python Virtual Environment..."
 if [ ! -d "backend/.venv" ]; then
