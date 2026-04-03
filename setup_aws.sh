@@ -93,10 +93,10 @@ echo ".env file generated successfully."
 echo "==> [7/8] Initializing Database Schema..."
 cd backend
 source .venv/bin/activate
-# Run setup_postgres.py which handles migrations
+# Run migrate_to_postgres.py which handles schema initialization + SQLite data migration
 export DATABASE_URL="postgresql://$DB_USER:$DB_PASS@localhost:5432/$DB_NAME"
 export DB_TYPE="postgres"
-python3 setup_postgres.py
+python3 migrate_to_postgres.py || echo "Warning: migrate_to_postgres.py encountered issues."
 cd ..
 
 echo "==> [8/8] Launching UI + Backend Concurrently..."
