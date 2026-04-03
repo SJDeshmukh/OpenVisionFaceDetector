@@ -50,24 +50,33 @@ def create_leave_request():
                 c.execute("""
                     SELECT id FROM faces 
                     WHERE vendor_id = %s AND (
+                        id::text = %s OR
                         LOWER(TRIM(custom_data::jsonb->>'student_number')) = LOWER(TRIM(%s)) OR 
                         LOWER(TRIM(custom_data::jsonb->>'admission_number')) = LOWER(TRIM(%s)) OR 
-                        LOWER(TRIM(custom_data::jsonb->>'roll_number')) = LOWER(TRIM(%s)) OR
-                        id::text = %s
+                        LOWER(TRIM(custom_data::jsonb->>'roll_number')) = LOWER(TRIM(%s))
                     )
                 """, (vendor_id, student_id, student_id, student_id, student_id))
             else:
                 c.execute("""
                     SELECT id FROM faces 
                     WHERE vendor_id = ? AND (
+                        CAST(id AS TEXT) = ? OR
                         LOWER(TRIM(json_extract(custom_data, '$.student_number'))) = LOWER(TRIM(?)) OR 
                         LOWER(TRIM(json_extract(custom_data, '$.admission_number'))) = LOWER(TRIM(?)) OR 
-                        LOWER(TRIM(json_extract(custom_data, '$.roll_number'))) = LOWER(TRIM(?)) OR
-                        CAST(id AS TEXT) = ?
+                        LOWER(TRIM(json_extract(custom_data, '$.roll_number'))) = LOWER(TRIM(?))
                     )
                 """, (vendor_id, student_id, student_id, student_id, student_id))
             
             row = c.fetchone()
+            
+            # --- Robust Fallback: Check system_users table if faces lookup failed ---
+            if not row:
+                logger.info(f"Faces lookup failed for {student_id}, trying system_users fallback...")
+                if is_pg:
+                    c.execute("SELECT person_id FROM system_users WHERE vendor_id = %s AND username = %s AND person_id IS NOT NULL", (vendor_id, student_id))
+                else:
+                    c.execute("SELECT person_id FROM system_users WHERE vendor_id = ? AND username = ? AND person_id IS NOT NULL", (vendor_id, student_id))
+                row = c.fetchone()
             if row:
                 if hasattr(row, 'keys') and 'id' in row.keys():
                     student_id = row['id']
@@ -140,6 +149,15 @@ def get_parent_pending_requests():
             """, (vendor_id, student_number, student_number, student_number))
         
         row = c.fetchone()
+        
+        # --- Robust Fallback: Check system_users table ---
+        if not row:
+            if is_pg:
+                c.execute("SELECT person_id FROM system_users WHERE vendor_id = %s AND username = %s AND person_id IS NOT NULL", (vendor_id, student_number))
+            else:
+                c.execute("SELECT person_id FROM system_users WHERE vendor_id = ? AND username = ? AND person_id IS NOT NULL", (vendor_id, student_number))
+            row = c.fetchone()
+
         if not row:
             return jsonify({"requests": []})
         
