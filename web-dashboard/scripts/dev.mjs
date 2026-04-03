@@ -7,9 +7,9 @@ import fs from "node:fs";
 import path from "node:path";
 
 const defaultPort = Number.parseInt(process.env.FRONTEND_PORT ?? "5173", 10);
-const host = process.env.FRONTEND_HOST ?? "127.0.0.1";
+const host = process.env.FRONTEND_HOST ?? "0.0.0.0";
 const backendPort = Number.parseInt(process.env.BACKEND_PORT ?? "5001", 10);
-const backendHost = process.env.BACKEND_HOST ?? "127.0.0.1";
+const backendHost = process.env.BACKEND_HOST ?? "0.0.0.0";
 
 async function cleanupPorts() {
   const ports = [6379, backendPort, defaultPort];
