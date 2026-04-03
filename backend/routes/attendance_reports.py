@@ -9,7 +9,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment
 
 from utils import (
-    get_db_connection, get_table_columns, parse_db_date, cache_get, cache_set,
+    get_db_connection, get_table_columns, parse_db_date, parse_db_datetime, cache_get, cache_set,
     vendor_has_feature, _run
 )
 from services.attendance_service import (
@@ -28,8 +28,8 @@ attendance_reports_bp = Blueprint('attendance_reports_bp', __name__)
 def get_analytics(valid_data: PayrollReportRequest):
     vendor_id = g.vendor_id
     
-    start_date = valid_data.start_date
-    end_date = valid_data.end_date
+    start_date = valid_data.start_date or (datetime.now() - timedelta(days=6)).strftime('%Y-%m-%d')
+    end_date = valid_data.end_date or datetime.now().strftime('%Y-%m-%d')
         
     cache_key = f"vendor:{vendor_id}:analytics:{start_date}:{end_date}"
     cached = cache_get(cache_key)
@@ -112,11 +112,43 @@ def get_analytics(valid_data: PayrollReportRequest):
             "attendance_rate": round((p_present_days / total_days) * 100, 1) if total_days > 0 else 0
         }
     
+    total_persons = len(persons)
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    present_today = daily_stats[today_str]["present"]
+    late_today = daily_stats[today_str]["late"]
+    absent_today = max(0, total_persons - present_today)
+    on_time_today = max(0, present_today - late_today)
+
+    pie_data = [
+        {"name": "On Time", "value": on_time_today},
+        {"name": "Late", "value": late_today},
+        {"name": "Absent", "value": absent_today}
+    ]
+
+    bar_data = []
+    for d_str in all_dates:
+        p = daily_stats[d_str]["present"]
+        l = daily_stats[d_str]["late"]
+        a = max(0, total_persons - p)
+        try:
+            d_name = datetime.strptime(d_str, '%Y-%m-%d').strftime('%a')
+        except: 
+            d_name = d_str
+        bar_data.append({
+            "name": d_name, "date": d_str, "present": p, "absent": a, "late": l, "total": total_persons
+        })
+
     result = {
         "daily_stats": daily_stats,
         "person_stats": person_stats,
+        "bar_data": bar_data,
+        "pie_data": pie_data,
+        "dept_data": [],
         "summary": {
-            "total_persons": len(persons),
+            "total_users": total_persons,
+            "present_today": present_today,
+            "absent_today": absent_today,
+            "late_today": late_today,
             "avg_attendance": round(sum(p['attendance_rate'] for p in person_stats.values()) / len(person_stats), 1) if person_stats else 0
         }
     }
@@ -138,26 +170,58 @@ def export_attendance(valid_data: PayrollReportRequest):
     
     query = """
         SELECT a.name, a.timestamp, a.status, a.activity, a.is_late,
-               f.department, f.designation, f.phone
+               f.department, f.custom_data
         FROM attendance a
         LEFT JOIN faces f ON a.person_id = f.id
         WHERE date(a.timestamp) BETWEEN ? AND ? AND a.vendor_id = ?
         ORDER BY a.timestamp ASC
     """
     c.execute(query, (start_date, end_date, vendor_id))
-    rows = c.fetchall()
+    db_rows = c.fetchall()
     conn.close()
+    
+    # Extract unique custom fields
+    custom_keys = []
+    parsed_rows = []
+    for row in db_rows:
+        row_dict = dict(row)
+        cdata_str = row_dict.pop('custom_data', None)
+        cdata = {}
+        if cdata_str:
+            try:
+                cdata = json.loads(cdata_str)
+                if isinstance(cdata, dict):
+                    for k in cdata.keys():
+                        if k not in custom_keys:
+                            custom_keys.append(k)
+            except: pass
+        row_dict['parsed_custom'] = cdata
+        parsed_rows.append(row_dict)
+    
+    # Format Headers cleanly
+    base_headers = ["Name", "Date", "Time", "Status", "Activity", "Is Late", "Department"]
+    formatted_custom = [k.replace('_', ' ').title() for k in custom_keys]
+    headers = base_headers + formatted_custom
     
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["Name", "Timestamp", "Status", "Activity", "Is Late", "Department", "Designation", "Phone"])
+    writer.writerow(headers)
     
-    for row in rows:
-        writer.writerow([
-            row['name'], row['timestamp'], row['status'], row['activity'],
-            "Yes" if row['is_late'] else "No",
-            row['department'], row['designation'], row['phone']
-        ])
+    for row in parsed_rows:
+        d = parse_db_datetime(row['timestamp'])
+        d_str = d.strftime('%Y-%m-%d') if d else ""
+        t_str = d.strftime('%H:%M:%S') if d else ""
+        
+        base_record = [
+            row['name'], d_str, t_str, row['status'], row['activity'],
+            "Yes" if row['is_late'] else "No", row['department']
+        ]
+        
+        # Add custom data aligned with headers
+        cdata = row['parsed_custom']
+        custom_record = [cdata.get(k, "") for k in custom_keys]
+        
+        writer.writerow(base_record + custom_record)
         
     return output.getvalue(), 200, {
         "Content-Type": "text/csv",
@@ -329,7 +393,7 @@ def export_payroll_daily():
 
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["person_id","name","date","hours_payable","late_mark","deduction_applied","net_wage"])
+        writer.writerow(["Employee ID", "Name", "Date", "Daily Wage Rate", "Working Hours", "Base Wage", "Late Penalty", "Net Wage"])
 
         for pid, records in user_records.items():
             if pid not in persons: continue
@@ -361,7 +425,7 @@ def export_payroll_daily():
                 daily_wage = float(info.get('daily_wage') or 0.0)
                 hourly_rate = daily_wage / company_working_hours if daily_wage and company_working_hours > 0 else 0
                 base_wage_for_day = round((mins / 60.0) * hourly_rate, 2)
-                writer.writerow([pid, info.get('name'), d.isoformat(), round(mins/60.0,2), lm, deduct, round(base_wage_for_day - deduct, 2)])
+                writer.writerow([pid, info.get('name'), d.isoformat(), daily_wage, round(mins/60.0,2), base_wage_for_day, deduct, round(base_wage_for_day - deduct, 2)])
         
         return output.getvalue(), 200, {"Content-Type": "text/csv"}
     except Exception as e:
@@ -405,7 +469,7 @@ def export_payroll_excel():
         wb = Workbook()
         ws = wb.active
         ws.title = "Daily Payroll"
-        headers = ["Person ID", "Name", "Date", "Working Hours", "Is Late", "Deduction", "Net Wage"]
+        headers = ["Employee ID", "Name", "Date", "Daily Wage Rate", "Working Hours", "Base Wage", "Late Penalty", "Net Wage"]
         ws.append(headers)
         for cell in ws[1]:
             cell.font = Font(bold=True)
@@ -437,7 +501,7 @@ def export_payroll_excel():
                 daily_wage = float(info.get('daily_wage') or 0.0)
                 hourly_rate = daily_wage / company_working_hours if daily_wage and company_working_hours > 0 else 0
                 base_wage_for_day = round((mins / 60.0) * hourly_rate, 2)
-                ws.append([pid, info.get('name'), d.isoformat(), round(mins/60.0, 2), lm, deduct, round(base_wage_for_day - deduct, 2)])
+                ws.append([pid, info.get('name'), d.isoformat(), daily_wage, round(mins/60.0, 2), base_wage_for_day, deduct, round(base_wage_for_day - deduct, 2)])
 
         out = io.BytesIO()
         wb.save(out)

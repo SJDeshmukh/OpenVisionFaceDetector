@@ -322,7 +322,7 @@ def person_event(valid_data: PersonEventSchema):
         conn.commit()
         if vendor_id_to_check: cache_delete_vendor_prefix(vendor_id_to_check)
         if vendor_id_to_check and socketio:
-            ev = {"name": name, "timestamp": current_time_obj.strftime('%Y-%m-%d %H:%M:%S'), "status": new_status, "is_late": is_late, "activity": activity_name, "vendor_id": vendor_id_to_check, "device_id": curr_dev_id}
+            ev = {"name": name, "timestamp": current_time_obj.strftime('%Y-%m-%d %H:%M:%S'), "status": new_status, "is_late": is_late, "activity": activity_name, "vendor_id": vendor_id_to_check, "device_id": curr_dev_id, "captured_image": captured_image}
             socketio.emit('attendance_updated', ev, room=f"vendor_{vendor_id_to_check}")
         conn.close()
         return jsonify({"speak": True, "text": f"{name}: {new_status.title()}", "status": new_status, "is_late": is_late, "activity": activity_name, "person_id": person_id})
@@ -361,7 +361,8 @@ def get_attendance(valid_data: AttendanceFilterSchema):
         attendance.append({
             "id": r["id"], "name": r["name"], "timestamp": str(r["timestamp"]),
             "status": r["status"], "activity": r["activity"], "is_late": r.get("is_late", 0),
-            "department": r["department"], "designation": r["designation"]
+            "department": r["department"], "designation": r["designation"],
+            "captured_image": r["captured_image"]
         })
     result = {"attendance": attendance}
     cache_set(cache_key, result, 60)

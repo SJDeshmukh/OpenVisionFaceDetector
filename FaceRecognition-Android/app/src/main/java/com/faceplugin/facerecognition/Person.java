@@ -13,13 +13,14 @@ public class Person {
     public String designation;
     public String shift;
     public String customData;
+    public Bitmap face;
     public boolean synced = true;
 
     public Person() {
 
     }
 
-    public Person(String localUid, String id, String name, byte[] templates, String phone, String department, String designation, String shift, String customData) {
+    public Person(String localUid, String id, String name, byte[] templates, String phone, String department, String designation, String shift, String customData, Bitmap face) {
         this.localUid = localUid;
         this.id = id;
         this.name = name;
@@ -29,6 +30,11 @@ public class Person {
         this.designation = designation;
         this.shift = shift;
         this.customData = customData;
+        this.face = face;
+    }
+
+    public Person(String localUid, String id, String name, byte[] templates, String phone, String department, String designation, String shift, String customData) {
+        this(localUid, id, name, templates, phone, department, designation, shift, customData, null);
     }
 
     public Person(String id, String name, byte[] templates, String phone, String department, String designation, String shift, String customData) {

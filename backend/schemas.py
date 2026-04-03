@@ -55,8 +55,8 @@ class ClassBatchStatusSchema(BaseModel):
     batch_id: str
 
 class PayrollReportRequest(BaseModel):
-    start_date: str
-    end_date: str
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
 
 class PublicAttendanceRequest(BaseModel):
     student_number: str

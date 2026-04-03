@@ -813,6 +813,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
 
     @OptIn(markerClass = ExperimentalGetImage.class)
     private void analyzeImage(ImageProxy imageProxy) {
+        Bitmap processedFrameBitmap = null;
         try {
             android.media.Image inputMediaImage = imageProxy.getImage();
             if (inputMediaImage == null) {
@@ -840,13 +841,14 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                     cameraMode = 6;
                 }
             } catch (Exception ignored) {}
-            final Bitmap processedFrameBitmap = FaceSDKWrapper.INSTANCE.yuv2Bitmap(nv21, inputMediaImage.getWidth(), inputMediaImage.getHeight(), cameraMode);
+            processedFrameBitmap = FaceSDKWrapper.INSTANCE.yuv2Bitmap(nv21, inputMediaImage.getWidth(), inputMediaImage.getHeight(), cameraMode);
+            final Bitmap finalProcessed = processedFrameBitmap;
 
             // --- Streaming Logic ---
             long currentTime = System.currentTimeMillis();
             if (currentTime - lastStreamTime > 1000) { // 1 FPS
                 lastStreamTime = currentTime;
-                sendStreamFrame(processedFrameBitmap);
+                sendStreamFrame(finalProcessed);
             }
             // -----------------------
 
@@ -861,11 +863,11 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             try {
                 faceDetectionParam.check_liveness_level = SettingsActivity.getLivenessLevel(requireContext());
             } catch (Exception ignored) {}
-            List<FaceBox> faceBoxes = FaceSDKWrapper.INSTANCE.faceDetection(processedFrameBitmap, faceDetectionParam);
+            List<FaceBox> faceBoxes = FaceSDKWrapper.INSTANCE.faceDetection(finalProcessed, faceDetectionParam);
 
             if (getActivity() != null) {
                 getActivity().runOnUiThread(() -> {
-                    faceView.setFrameSize(new Size(processedFrameBitmap.getWidth(), processedFrameBitmap.getHeight()));
+                    faceView.setFrameSize(new Size(finalProcessed.getWidth(), finalProcessed.getHeight()));
                     faceView.setFaceBoxes(faceBoxes);
                     
                     if (faceBoxes.size() > 0) {
@@ -925,7 +927,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                     String nameForBox = "Unknown";
 
                     if (faceBox.liveness > livenessThreshold) {
-                        byte[] templates = FaceSDKWrapper.INSTANCE.templateExtraction(processedFrameBitmap, faceBox);
+                        byte[] templates = FaceSDKWrapper.INSTANCE.templateExtraction(finalProcessed, faceBox);
 
                         float maxSimilarityForBox = 0f;
                         Person bestForBox = null;
@@ -1044,7 +1046,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                         } catch (Exception ignored) {}
                         if (!withinCooldown) {
                             String predicted = dbManager.predictNextAttendanceStatus(personId, localUid, bestPerson.name);
-                            dbManager.insertAttendanceQueue(personId, localUid, bestPerson.name, timestamp, predicted, processedFrameBitmap, false);
+                            dbManager.insertAttendanceQueue(personId, localUid, bestPerson.name, timestamp, predicted, finalProcessed, false);
                             playAttendanceSound(predicted);
                             showStatusOverlay(predicted);
                             if (getActivity() != null) {
@@ -1108,7 +1110,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                             });
                         }
 
-                        sendPersonEvent(true, true, personId, localUid, bestPerson.name, bestSimilarity, processedFrameBitmap);
+                        sendPersonEvent(true, true, personId, localUid, bestPerson.name, bestSimilarity, finalProcessed);
                         try { lastEventSentAtMs.put(key, System.currentTimeMillis()); } catch (Exception ignored) {}
                     } else {
                         if (getActivity() != null) {

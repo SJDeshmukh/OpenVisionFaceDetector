@@ -8,9 +8,8 @@ import { Monitor, Wifi, WifiOff, RefreshCw, Maximize2, X, Search, Camera, Chevro
 const DeviceMonitor = ({ vendorId, deviceId, deviceName, socket }) => {
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [now, setNow] = useState(Date.now());
-    const videoRef = React.useRef(null);
-    const pcRef = React.useRef(null);
-    const [stream, setStream] = useState(null);
+    const [liveImage, setLiveImage] = useState(null);
+    const lastFrameTimeRef = React.useRef(0);
     const [status, setStatus] = useState('offline');
 
     useEffect(() => {
@@ -18,74 +17,31 @@ const DeviceMonitor = ({ vendorId, deviceId, deviceName, socket }) => {
         return () => clearInterval(interval);
     }, []);
 
-    const setupWebRTC = async () => {
+    useEffect(() => {
         if (!socket || !deviceId) return;
 
-        const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
-        const pc = new RTCPeerConnection(config);
-        pcRef.current = pc;
+        const handleFrameUpdate = (ev) => {
+            if (!ev || String(ev.device_id) !== String(deviceId) || String(ev.vendor_id) !== String(vendorId)) return;
+            if (!ev.image) return;
 
-        pc.ontrack = (event) => {
-            setStream(event.streams[0]);
+            setLiveImage(ev.image.startsWith('data:') ? ev.image : `data:image/jpeg;base64,${ev.image}`);
             setStatus('online');
+            lastFrameTimeRef.current = Date.now();
         };
 
-        pc.onicecandidate = (event) => {
-            if (event.candidate) {
-                const signalData = {
-                    type: 'candidate',
-                    signal: event.candidate,
-                    target_room: `device_${vendorId}_${deviceId}`,
-                    from_room: 'web_dashboard'
-                };
-                socket.emit('webrtc_signal', signalData);
-            }
-        };
+        socket.on('frame_update', handleFrameUpdate);
 
-        pc.oniceconnectionstatechange = () => {
-            if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+        const checkStatusInterval = setInterval(() => {
+            if (lastFrameTimeRef.current && Date.now() - lastFrameTimeRef.current > 1500) {
                 setStatus('offline');
             }
-        };
-
-        // Create Offer
-        const offer = await pc.createOffer({ offerToReceiveVideo: true });
-        await pc.setLocalDescription(offer);
-
-        socket.emit('webrtc_signal', {
-            type: 'offer',
-            signal: offer,
-            target_room: `device_${vendorId}_${deviceId}`,
-            from_room: 'web_dashboard'
-        });
-    };
-
-    useEffect(() => {
-        setupWebRTC();
-
-        const handleSignal = async (data) => {
-            if (data.from_room !== `device_${vendorId}_${deviceId}`) return;
-
-            if (data.type === 'answer') {
-                await pcRef.current?.setRemoteDescription(new RTCSessionDescription(data.signal));
-            } else if (data.type === 'candidate') {
-                await pcRef.current?.addIceCandidate(new RTCIceCandidate(data.signal));
-            }
-        };
-
-        socket?.on('webrtc_signal', handleSignal);
+        }, 500);
 
         return () => {
-            socket?.off('webrtc_signal', handleSignal);
-            pcRef.current?.close();
+             socket.off('frame_update', handleFrameUpdate);
+             clearInterval(checkStatusInterval);
         };
-    }, [socket, deviceId]);
-
-    useEffect(() => {
-        if (videoRef.current && stream) {
-            videoRef.current.srcObject = stream;
-        }
-    }, [stream]);
+    }, [socket, deviceId, vendorId]);
 
     const toggleFullscreen = (e) => {
         e?.stopPropagation();
@@ -106,15 +62,13 @@ const DeviceMonitor = ({ vendorId, deviceId, deviceName, socket }) => {
                     </button>
                 </div>
 
-                <video
-                    ref={videoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className={`max-w-full max-h-full object-contain rounded-lg shadow-2xl ${status !== 'online' ? 'hidden' : ''}`}
-                />
-
-                {status !== 'online' && (
+                {status === 'online' && liveImage ? (
+                    <img
+                        src={liveImage}
+                        alt="Live Stream"
+                        className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
+                    />
+                ) : (
                     <div className="text-white text-center">
                         <WifiOff size={48} className="mx-auto mb-4 opacity-50" />
                         <p className="text-xl">Stream Offline</p>
@@ -148,15 +102,13 @@ const DeviceMonitor = ({ vendorId, deviceId, deviceName, socket }) => {
 
             {/* Video Area */}
             <div className="relative aspect-video bg-slate-900 flex items-center justify-center overflow-hidden">
-                <video
-                    ref={videoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className={`w-full h-full object-cover group-hover:scale-105 transition-transform duration-500 ${status !== 'online' ? 'hidden' : ''}`}
-                />
-
-                {status !== 'online' && (
+                {status === 'online' && liveImage ? (
+                    <img
+                        src={liveImage}
+                        alt="Live Stream"
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                    />
+                ) : (
                     <div className="text-slate-500 flex flex-col items-center">
                         <WifiOff size={32} className="mb-2 opacity-50" />
                         <span className="text-xs">Signal Lost</span>

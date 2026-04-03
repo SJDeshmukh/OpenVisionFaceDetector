@@ -569,7 +569,7 @@ const Wages = () => {
                 <tr>
                   <td colSpan="6" className="py-3 px-4 text-right text-sm uppercase tracking-wider">Total Estimated Cost</td>
                   <td className="py-3 px-4 text-right text-base text-blue-700">
-                    ₹{payrollData.reduce((acc, curr) => acc + parseFloat(curr.total_cost || 0), 0).toFixed(2)}
+                    ₹{payrollData.reduce((acc, curr) => acc + parseFloat(curr.final_payout || curr.total_cost || 0), 0).toFixed(2)}
                   </td>
                 </tr>
               </tfoot>

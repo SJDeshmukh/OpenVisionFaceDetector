@@ -200,7 +200,7 @@ public class DBManager extends SQLiteOpenHelper {
             }
         }
 
-        Person p = new Person(effectiveLocalUid, id, name, templates, phone, department, designation, shift, customData);
+        Person p = new Person(effectiveLocalUid, id, name, templates, phone, department, designation, shift, customData, face);
         p.synced = synced;
         personList.add(p);
     }
@@ -440,7 +440,11 @@ public class DBManager extends SQLiteOpenHelper {
             int syncedIdx = res.getColumnIndex("synced");
             if (syncedIdx != -1) synced = res.getInt(syncedIdx) == 1;
 
-            Person person = new Person(localUid, id, name, templates, phone, department, designation, shift, customData);
+            byte[] faceJpg = null;
+            try { faceJpg = res.getBlob(res.getColumnIndexOrThrow("face")); } catch (Exception ignored) {}
+            Bitmap face = (faceJpg != null) ? BitmapFactory.decodeByteArray(faceJpg, 0, faceJpg.length) : null;
+
+            Person person = new Person(localUid, id, name, templates, phone, department, designation, shift, customData, face);
             person.synced = synced;
             
             // Deduplicate
@@ -724,7 +728,8 @@ public class DBManager extends SQLiteOpenHelper {
                     if (cdIdx != -1) customData = res.getString(cdIdx);
 
                     if (templates != null) {
-                        Person p = new Person(localUid, id, name, templates, phone, department, designation, shift, customData);
+                        Bitmap face = (faceJpg != null) ? BitmapFactory.decodeByteArray(faceJpg, 0, faceJpg.length) : null;
+                        Person p = new Person(localUid, id, name, templates, phone, department, designation, shift, customData, face);
                         p.synced = false;
                         list.add(p);
                     }
