@@ -269,6 +269,10 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         // Re-bind camera if provider is available
         if (cameraProvider != null) {
             bindCameraUseCases();
+        } else if (ContextCompat.checkSelfPermission(requireContext(), android.Manifest.permission.CAMERA) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            if (viewFinder != null) {
+                viewFinder.post(this::setUpCamera);
+            }
         }
     }
 
@@ -565,18 +569,26 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     }
 
     private void playAttendanceSound(String status) {
-        try {
-            ToneGenerator toneGen = new ToneGenerator(AudioManager.STREAM_MUSIC, 100);
-            if ("CHECK_IN".equals(status)) {
-                // Check In Sound - High Pitch "Success" feel
-                toneGen.startTone(ToneGenerator.TONE_PROP_BEEP, 200); 
-            } else {
-                // Check Out Sound - Different Tone (Double beep or lower)
-                toneGen.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 200);
+        new Thread(() -> {
+            try {
+                // STREAM_ALARM forces loud play regardless of media volume
+                android.media.ToneGenerator toneGen = new android.media.ToneGenerator(android.media.AudioManager.STREAM_ALARM, 100);
+                if ("CHECK_IN".equals(status)) {
+                    // Check In Sound - Fast Double Beep
+                    toneGen.startTone(android.media.ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 150);
+                    Thread.sleep(200);
+                    toneGen.startTone(android.media.ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 150);
+                    Thread.sleep(200);
+                } else {
+                    // Check Out Sound - Single Long Distinct Beep
+                    toneGen.startTone(android.media.ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 600);
+                    Thread.sleep(650);
+                }
+                toneGen.release();
+            } catch (Exception e) {
+                e.printStackTrace();
             }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        }).start();
     }
 
     private void showStatusOverlay(String status) {

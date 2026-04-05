@@ -332,17 +332,26 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
 
     private void playAttendanceSound(String status) {
         if (toneGen == null) return;
-        try {
-            if ("CHECK_IN".equals(status)) {
-                // Check In Sound - High Pitch "Success" feel
-                toneGen.startTone(ToneGenerator.TONE_PROP_BEEP, 200); 
-            } else {
-                // Check Out Sound - Different Tone (Double beep or lower)
-                toneGen.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 200);
+        new Thread(() -> {
+            try {
+                // We use a local toneGen with STREAM_ALARM to ensure it is loud
+                android.media.ToneGenerator loudToneGen = new android.media.ToneGenerator(android.media.AudioManager.STREAM_ALARM, 100);
+                if ("CHECK_IN".equals(status)) {
+                    // Check In Sound - Fast Double Beep
+                    loudToneGen.startTone(android.media.ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 150);
+                    Thread.sleep(200);
+                    loudToneGen.startTone(android.media.ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 150);
+                    Thread.sleep(200);
+                } else {
+                    // Check Out Sound - Single Long Distinct Beep
+                    loudToneGen.startTone(android.media.ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 600);
+                    Thread.sleep(650);
+                }
+                loudToneGen.release();
+            } catch (Exception e) {
+                Log.e(TAG, "Error playing sound", e);
             }
-        } catch (Exception e) {
-            Log.e(TAG, "Error playing sound", e);
-        }
+        }).start();
     }
 
     @Override
