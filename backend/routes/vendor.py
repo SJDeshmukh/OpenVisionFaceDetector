@@ -1110,12 +1110,14 @@ def mobile_heartbeat():
                     WHERE vendor_id = ? AND device_id = ?
                 """, (now, battery_level, vendor_id, device_id))
         else:
-             # Just update if device not found (usually means it logged out, wait for next clean)
-             c.execute("""
-                 UPDATE vendor_devices 
-                 SET last_active_at = ?, battery_level = ? 
-                 WHERE vendor_id = ? AND device_id = ?
-             """, (now, battery_level, vendor_id, device_id))
+             # Device not found (e.g., student device or missing record), insert it
+             try:
+                 c.execute("""
+                     INSERT INTO vendor_devices (vendor_id, device_id, device_name, registered_at, last_active_at, battery_level, last_lat, last_lng, geofence_lat, geofence_lng) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 """, (vendor_id, device_id, f"Mobile {device_id[:6]}", now, now, battery_level, lat, lng, lat, lng))
+             except Exception:
+                 pass
             
         conn.commit()
         

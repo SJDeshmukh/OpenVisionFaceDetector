@@ -400,10 +400,11 @@ def login():
                 except Exception:
                     pass
             elif platform == 'mobile':
-                if user['role'] == 'vendor_admin':
+                if user['role'] in ['vendor_admin', 'user']:
                     c.execute("SELECT max_mobile_devices FROM subscriptions WHERE vendor_id = ?", (user['vendor_id'],))
                     sub = c.fetchone()
-                    max_devs = sub[0] if sub else 1
+                    # if limit is None or missing, default to 1
+                    max_devs = sub[0] if sub and sub[0] is not None else 1
                     
                     if device_id:
                         c.execute("SELECT id FROM vendor_devices WHERE vendor_id = ? AND device_id = ?", (user['vendor_id'], device_id))
@@ -430,7 +431,7 @@ def login():
                         conn.close()
                         return jsonify({"error": "Device ID required for mobile login"}), 400
                 else:
-                    # Allow students and other roles on mobile without consuming vendor device slots
+                    # Allow parent and other roles on mobile without consuming vendor device slots
                     pass
 
             conn.close()
