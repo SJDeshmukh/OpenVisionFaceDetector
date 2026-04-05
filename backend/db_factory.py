@@ -121,6 +121,10 @@ class PostgresCursorWrapper:
                 sql_pg += " ON CONFLICT (id) DO NOTHING"
             elif "student_parents" in sql_pg.lower():
                 sql_pg += " ON CONFLICT (person_id, parent_id) DO NOTHING"
+            elif "vendor_devices" in sql_pg.lower():
+                sql_pg += " ON CONFLICT (vendor_id, device_id) DO NOTHING"
+            elif "vendor_device_slots" in sql_pg.lower():
+                sql_pg += " ON CONFLICT (vendor_id, slot_name) DO NOTHING"
             else:
                 pass
 
@@ -393,6 +397,11 @@ def _init_pg_schema_on_conn(conn):
     cols = [
         ("vendor_devices", "last_active_at", "TIMESTAMP"),
         ("vendor_devices", "battery_level", "REAL"),
+        ("vendor_devices", "geofence_lat", "REAL"),
+        ("vendor_devices", "geofence_lng", "REAL"),
+        ("vendor_devices", "geofence_radius", "REAL DEFAULT 0"),
+        ("vendor_devices", "last_lat", "REAL"),
+        ("vendor_devices", "last_lng", "REAL"),
         ("parent_users", "face_image", "TEXT"),
         ("parent_users", "face_template", "TEXT"),
         ("parent_users", "vendor_id", "INTEGER"),
