@@ -223,10 +223,30 @@ def list_vendor_devices(vendor_id):
                 device_id TEXT,
                 device_name TEXT,
                 registered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                last_login_at DATETIME
+                last_login_at DATETIME,
+                last_active_at DATETIME,
+                battery_level REAL,
+                geofence_lat REAL,
+                geofence_lng REAL,
+                geofence_radius REAL,
+                last_lat REAL,
+                last_lng REAL
             )
         """)
-        c.execute("SELECT id, device_id, device_name, registered_at, last_login_at FROM vendor_devices WHERE vendor_id = ? ORDER BY registered_at DESC", (vendor_id,))
+        # We can also dynamically add columns in case the table exists without them
+        for col in ["last_active_at", "battery_level", "geofence_lat", "geofence_lng", "geofence_radius", "last_lat", "last_lng"]:
+            try:
+                c.execute(f"ALTER TABLE vendor_devices ADD COLUMN {col} REAL")
+            except Exception:
+                pass
+
+        c.execute("""
+            SELECT id, device_id, device_name, registered_at, last_login_at, 
+                   last_active_at, battery_level, geofence_lat, geofence_lng, geofence_radius, last_lat, last_lng 
+            FROM vendor_devices 
+            WHERE vendor_id = ? 
+            ORDER BY registered_at DESC
+        """, (vendor_id,))
         rows = [dict(row) for row in c.fetchall() or []]
         conn.close()
         return jsonify({"devices": rows})
@@ -287,6 +307,52 @@ def update_vendor_device_name(vendor_id, device_id):
         except Exception:
             pass
         return jsonify({"error": str(e)}), 500
+
+@admin_bp.route("/vendors/<int:vendor_id>/devices/<device_id>/geofence", methods=["PUT"])
+@super_admin_required
+def update_device_geofence(vendor_id, device_id):
+    data = request.json or {}
+    radius = data.get("radius_meters")
+    reset_anchor = data.get("reset_anchor", False)
+    
+    # Validation
+    if radius is not None:
+        try:
+            radius = float(radius)
+            if radius <= 0: radius = None
+        except ValueError:
+            return jsonify({"error": "Invalid radius"}), 400
+
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        # Check if device exists
+        c.execute("SELECT id FROM vendor_devices WHERE vendor_id = ? AND device_id = ?", (vendor_id, device_id))
+        if not c.fetchone():
+            conn.close()
+            return jsonify({"error": "Device not found"}), 404
+            
+        if reset_anchor:
+            # Clear anchor coordinates if requested (they will be recaptured on next heartbeat)
+            c.execute("""
+                UPDATE vendor_devices 
+                SET geofence_radius = ?, geofence_lat = NULL, geofence_lng = NULL 
+                WHERE vendor_id = ? AND device_id = ?
+            """, (radius, vendor_id, device_id))
+        else:
+            c.execute("""
+                UPDATE vendor_devices 
+                SET geofence_radius = ? 
+                WHERE vendor_id = ? AND device_id = ?
+            """, (radius, vendor_id, device_id))
+            
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 @admin_bp.route("/vendors/<int:vendor_id>/devices/<device_id>/assign-slot", methods=["POST"])
 @super_admin_required

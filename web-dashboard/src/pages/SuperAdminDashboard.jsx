@@ -427,6 +427,20 @@ const SuperAdminDashboard = () => {
     }
   };
 
+  const updateDeviceGeofence = async (vendorId, deviceId, radius, resetAnchor = false) => {
+    try {
+      await axios.put(`${API_URL}/admin/vendors/${vendorId}/devices/${encodeURIComponent(deviceId)}/geofence`,
+        { radius_meters: radius, reset_anchor: resetAnchor },
+        { headers: { Authorization: `Bearer ${user?.token}` } }
+      );
+      alert(resetAnchor ? "Geofence anchor cleared." : "Geofence updated.");
+      await fetchVendorDevices(vendorId);
+    } catch (e) {
+      const msg = e?.response?.data?.error || e.message || "Failed to update geofence";
+      alert(msg);
+    }
+  };
+
   const fetchLeaveStaff = async (vendorId) => {
     try {
       const res = await axios.get(`${API_URL}/leave/admin/staff`, {
@@ -1729,6 +1743,7 @@ const SuperAdminDashboard = () => {
                           <th className="p-2">Place</th>
                           <th className="p-2">Status</th>
                           <th className="p-2">Battery</th>
+                          <th className="p-2">Geofence (m)</th>
                           <th className="p-2">Registered</th>
                           <th className="p-2">Last Active</th>
                           <th className="p-2"></th>
@@ -1760,6 +1775,35 @@ const SuperAdminDashboard = () => {
                                     <span className={d.battery_level < 20 ? 'text-red-600 font-bold' : ''}>{Math.round(d.battery_level)}%</span>
                                   </div>
                                 ) : '-'}
+                              </td>
+                              <td className="p-2">
+                                <div className="flex items-center gap-1">
+                                  <input 
+                                    id={`geo-${d.device_id}`}
+                                    type="number" 
+                                    defaultValue={d.geofence_radius || ''} 
+                                    placeholder="Disabled"
+                                    className="w-20 text-xs px-2 py-1.5 border border-slate-300 rounded bg-white"
+                                  />
+                                  <button 
+                                    onClick={() => {
+                                      const val = document.getElementById(`geo-${d.device_id}`).value;
+                                      updateDeviceGeofence(selectedVendorForDetail.id, d.device_id, val);
+                                    }}
+                                    className="text-xs px-2 py-1.5 rounded border bg-white text-blue-600 border-blue-200 hover:bg-blue-50"
+                                  >
+                                    Set
+                                  </button>
+                                  {(d.geofence_lat && d.geofence_lng) && (
+                                    <button 
+                                      onClick={() => updateDeviceGeofence(selectedVendorForDetail.id, d.device_id, d.geofence_radius, true)}
+                                      title={`Anchor: ${d.geofence_lat.toFixed(4)}, ${d.geofence_lng.toFixed(4)}\nClick to clear`}
+                                      className="text-xs px-2 py-1.5 rounded border bg-white text-slate-600 border-slate-300 hover:bg-slate-50"
+                                    >
+                                      Reset Anchor
+                                    </button>
+                                  )}
+                                </div>
                               </td>
                               <td className="p-2 text-slate-500">{d.registered_at || '-'}</td>
                               <td className="p-2 text-slate-500" title={d.last_active_at || d.last_login_at}>

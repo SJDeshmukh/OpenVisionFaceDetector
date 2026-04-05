@@ -32,9 +32,16 @@ import io.socket.client.IO
 import io.socket.client.Socket
 import org.json.JSONObject
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.core.app.ActivityCompat
+import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationServices
+
 class MainActivity : AppCompatActivity() {
 
     private var mSocket: Socket? = null
+    private lateinit var fusedLocationClient: FusedLocationProviderClient
 
     private val authFailureReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -111,6 +118,22 @@ class MainActivity : AppCompatActivity() {
         MyGlobal.context = getApplicationContext()
         android.util.Log.e("AppCrash", "MainActivity onCreate started")
         setContentView(R.layout.activity_main)
+
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+
+        val permissions = mutableListOf(Manifest.permission.CAMERA)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
+        permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION)
+
+        val ungranted = permissions.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (ungranted.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, ungranted.toTypedArray(), 100)
+        }
 
         try {
             val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
@@ -630,20 +653,42 @@ class MainActivity : AppCompatActivity() {
             body.addProperty("device_id", did)
             body.addProperty("battery_level", battery)
 
-            RetrofitClient.getService().sendHeartbeat(body).enqueue(object : Callback<JsonObject> {
-                override fun onResponse(call: Call<JsonObject>, response: Response<JsonObject>) {
-                    if (response.isSuccessful) {
-                        android.util.Log.d("Heartbeat", "Sent successfully: $battery%")
+            val apiCall = { finalBody: JsonObject ->
+                RetrofitClient.getService().sendHeartbeat(finalBody).enqueue(object : Callback<JsonObject> {
+                    override fun onResponse(call: Call<JsonObject>, response: Response<JsonObject>) {
+                        if (response.isSuccessful) {
+                            android.util.Log.d("Heartbeat", "Sent successfully: $battery%")
+                            val resBody = response.body()
+                            if (resBody != null && resBody.has("geofence_status") && resBody.get("geofence_status").asString == "outside") {
+                                performLogout("Device moved outside allowed geofence area.")
+                            }
+                        }
                     }
+                    override fun onFailure(call: Call<JsonObject>, t: Throwable) {
+                        android.util.Log.e("Heartbeat", "Failed to send heartbeat", t)
+                    }
+                })
+            }
+
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                fusedLocationClient.lastLocation.addOnSuccessListener { location ->
+                    if (location != null) {
+                        body.addProperty("latitude", location.latitude)
+                        body.addProperty("longitude", location.longitude)
+                    }
+                    apiCall(body)
+                }.addOnFailureListener {
+                    apiCall(body)
                 }
-                override fun onFailure(call: Call<JsonObject>, t: Throwable) {
-                    android.util.Log.e("Heartbeat", "Failed to send heartbeat", t)
-                }
-            })
+            } else {
+                apiCall(body)
+            }
+
         } catch (e: Exception) {
             e.printStackTrace()
         }
     }
+
 
     private fun facesSignature(faces: List<com.faceplugin.facerecognition.api.SyncRequest>): String {
         val sb = StringBuilder()

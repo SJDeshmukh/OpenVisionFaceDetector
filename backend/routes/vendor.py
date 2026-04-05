@@ -1020,6 +1020,18 @@ def get_class_threshold():
             pass
         return jsonify({"error": str(e)}), 500
 
+import math
+
+def haversine_distance(lat1, lon1, lat2, lon2):
+    R = 6371000  # Radius of earth in meters
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = math.radians(lon2 - lon1)
+    a = math.sin(delta_phi / 2.0)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2.0)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
+
 @vendor_bp.route("/mobile/heartbeat", methods=["POST"])
 def mobile_heartbeat():
     from app import get_db_connection, socketio
@@ -1029,6 +1041,8 @@ def mobile_heartbeat():
     data = request.json or {}
     device_id = data.get("device_id")
     battery_level = data.get("battery_level")
+    lat = data.get("latitude")
+    lng = data.get("longitude")
     
     if not device_id:
         # Fallback: resolve from session if possible
@@ -1051,16 +1065,58 @@ def mobile_heartbeat():
         
     try:
         conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
         c = conn.cursor()
         now = datetime.now()
         
-        # Update device health
-        c.execute("""
-            UPDATE vendor_devices 
-            SET last_active_at = ?, battery_level = ? 
-            WHERE vendor_id = ? AND device_id = ?
-        """, (now, battery_level, vendor_id, device_id))
+        # Get existing device to check geofence anchor
+        c.execute("SELECT geofence_lat, geofence_lng, geofence_radius FROM vendor_devices WHERE vendor_id = ? AND device_id = ?", (vendor_id, device_id))
+        device_row = c.fetchone()
         
+        geofence_status = "inside"
+        if device_row:
+            row_dict = dict(device_row)
+            anchor_lat = row_dict.get('geofence_lat')
+            anchor_lng = row_dict.get('geofence_lng')
+            radius = row_dict.get('geofence_radius')
+            
+            if lat is not None and lng is not None:
+                lat = float(lat)
+                lng = float(lng)
+                # If no anchor yet, this becomes the anchor
+                if anchor_lat is None or anchor_lng is None:
+                    c.execute("""
+                        UPDATE vendor_devices 
+                        SET last_active_at = ?, battery_level = ?, last_lat = ?, last_lng = ?, geofence_lat = ?, geofence_lng = ? 
+                        WHERE vendor_id = ? AND device_id = ?
+                    """, (now, battery_level, lat, lng, lat, lng, vendor_id, device_id))
+                else:
+                    # Anchor exists, check distance
+                    if radius is not None and radius > 0:
+                        dist = haversine_distance(anchor_lat, anchor_lng, lat, lng)
+                        if dist > radius:
+                            geofence_status = "outside"
+                    
+                    c.execute("""
+                        UPDATE vendor_devices 
+                        SET last_active_at = ?, battery_level = ?, last_lat = ?, last_lng = ? 
+                        WHERE vendor_id = ? AND device_id = ?
+                    """, (now, battery_level, lat, lng, vendor_id, device_id))
+            else:
+                # No GPS provided
+                c.execute("""
+                    UPDATE vendor_devices 
+                    SET last_active_at = ?, battery_level = ? 
+                    WHERE vendor_id = ? AND device_id = ?
+                """, (now, battery_level, vendor_id, device_id))
+        else:
+             # Just update if device not found (usually means it logged out, wait for next clean)
+             c.execute("""
+                 UPDATE vendor_devices 
+                 SET last_active_at = ?, battery_level = ? 
+                 WHERE vendor_id = ? AND device_id = ?
+             """, (now, battery_level, vendor_id, device_id))
+            
         conn.commit()
         
         # Emit real-time update
@@ -1075,6 +1131,6 @@ def mobile_heartbeat():
         socketio.emit("device_health_update", payload, room="super_admin")
         
         conn.close()
-        return jsonify({"status": "success"})
+        return jsonify({"status": "success", "geofence_status": geofence_status})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
