@@ -4,7 +4,7 @@ import io
 import sqlite3
 from datetime import datetime, timedelta
 from collections import defaultdict
-from flask import Blueprint, request, jsonify, send_file
+from flask import Blueprint, request, jsonify, send_file, g
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment
 
@@ -18,9 +18,130 @@ from services.attendance_service import (
 from services.auth_service import require_auth
 from middleware.validation import validate_request
 from schemas import PayrollReportRequest
-from flask import Blueprint, request, jsonify, send_file, g
 
 attendance_reports_bp = Blueprint('attendance_reports_bp', __name__)
+
+# ---------------------------------------------------------------------------
+# Helper: parse dynamic filters from request args (dynamic_<field>=value)
+# ---------------------------------------------------------------------------
+def _parse_dynamic_args():
+    """Return dict of dynamic field filters from query params like dynamic_site=PlantA."""
+    dynamic = {}
+    for key, val in request.args.items():
+        if key.startswith('dynamic_') and val:
+            dynamic[key[len('dynamic_'):]] = val
+    return dynamic
+
+
+# ---------------------------------------------------------------------------
+# /reports/filters  –  mirrors /attendance/filters but under the reports prefix
+# ---------------------------------------------------------------------------
+@attendance_reports_bp.route("/reports/filters", methods=["GET"])
+@require_auth()
+def get_report_filters():
+    vendor_id = g.vendor_id
+
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+
+    # ---- vendor meta ----
+    c.execute("SELECT company_name, registration_config FROM vendors WHERE id = ?", (vendor_id,))
+    vendor_row = c.fetchone()
+    vendor_name = vendor_row['company_name'] if vendor_row else ''
+    raw_reg = vendor_row['registration_config'] if vendor_row else None
+
+    # ---- parse registration_config to know which filters are visible/dynamic ----
+    visible_standard_filters = {"department": True, "designation": True, "shift": True, "phone": True}
+    enabled_dynamic_fields = []  # [{key, label, options}]
+    if raw_reg:
+        try:
+            config = json.loads(raw_reg) if isinstance(raw_reg, str) else raw_reg
+            if isinstance(config, list):
+                for f in config:
+                    if f.get("enabled", True) is False:
+                        field_key = f.get("field") or f.get("key")
+                        if field_key in visible_standard_filters:
+                            visible_standard_filters[field_key] = False
+                    else:
+                        key = f.get("field") or f.get("key")
+                        if key and key not in visible_standard_filters:
+                            enabled_dynamic_fields.append({
+                                "key": str(key),
+                                "label": str(f.get("label") or key),
+                                "options": f.get("options")
+                            })
+        except Exception:
+            pass
+
+    # ---- collect active request-level filters for cascading ----
+    req_dept  = request.args.get('department', '')
+    req_desig = request.args.get('designation', '')
+    req_shift = request.args.get('shift', '')
+    req_phone = request.args.get('phone', '')
+    req_dyn   = _parse_dynamic_args()
+
+    # ---- fetch all faces for this vendor ----
+    c.execute(
+        "SELECT department, designation, shift, phone, custom_data "
+        "FROM faces WHERE vendor_id = ?",
+        (vendor_id,)
+    )
+    faces_raw = c.fetchall()
+    conn.close()
+
+    faces = []
+    for r in faces_raw:
+        d = dict(r)
+        try:
+            d["custom"] = json.loads(d.get("custom_data") or "{}")
+        except Exception:
+            d["custom"] = {}
+        faces.append(d)
+
+    # ---- apply cascading filters ----
+    def _face_matches(face):
+        if req_dept  and str(face.get('department') or '').strip() != req_dept:  return False
+        if req_desig and str(face.get('designation') or '').strip() != req_desig: return False
+        if req_shift and str(face.get('shift') or '').strip() != req_shift:       return False
+        if req_phone and str(face.get('phone') or '').strip() != req_phone:       return False
+        for dk, dv in req_dyn.items():
+            fval = face['custom'].get(dk)
+            if fval is None or str(fval).strip() != dv: return False
+        return True
+
+    filtered = [f for f in faces if _face_matches(f)]
+
+    departments  = sorted({str(f.get('department')).strip() for f in filtered if f.get('department')})  if visible_standard_filters['department']  else []
+    designations = sorted({str(f.get('designation')).strip() for f in filtered if f.get('designation')}) if visible_standard_filters['designation'] else []
+    shifts       = sorted({str(f.get('shift')).strip()       for f in filtered if f.get('shift')})       if visible_standard_filters['shift']        else []
+    phones       = sorted({str(f.get('phone')).strip()       for f in filtered if f.get('phone')})       if visible_standard_filters['phone']        else []
+
+    # ---- build dynamic filter option lists ----
+    dynamic_filters = {}
+    for field in enabled_dynamic_fields:
+        fk, fl = field['key'], field['label']
+        unique_values = set()
+        for f in filtered:
+            val = f['custom'].get(fk)
+            if val is not None and str(val).strip():
+                unique_values.add(str(val).strip())
+        options = sorted(list(unique_values))[:200]
+        # if the config defines a fixed option list, intersect it
+        if field.get('options'):
+            allowed = [str(x) for x in field['options']]
+            options = [x for x in allowed if x in unique_values] if unique_values else allowed
+        dynamic_filters[fk] = {'label': fl, 'options': options}
+
+    return jsonify({
+        'vendor_name': vendor_name,
+        'departments': departments,
+        'designations': designations,
+        'shifts': shifts,
+        'phones': phones,
+        'visible_standard_filters': visible_standard_filters,
+        'dynamic_filters': dynamic_filters,
+    })
 
 @attendance_reports_bp.route("/reports/analytics", methods=["GET"])
 @require_auth()
@@ -160,33 +281,52 @@ def get_analytics(valid_data: PayrollReportRequest):
 @validate_request(PayrollReportRequest)
 def export_attendance(valid_data: PayrollReportRequest):
     vendor_id = g.vendor_id
-    
+
     start_date = valid_data.start_date
-    end_date = valid_data.end_date
-        
+    end_date   = valid_data.end_date
+
+    # --- active filters ---
+    f_dept  = request.args.get('department', '').strip()
+    f_desig = request.args.get('designation', '').strip()
+    f_shift = request.args.get('shift', '').strip()
+    f_phone = request.args.get('phone', '').strip()
+    dyn_filters = _parse_dynamic_args()  # {field_key: value, ...}
+
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    
+
+    # Build query with optional standard-filter JOINs on faces
     query = """
         SELECT a.name, a.timestamp, a.status, a.activity, a.is_late,
-               f.department, f.custom_data
+               f.department, f.designation, f.shift, f.phone, f.custom_data
         FROM attendance a
         LEFT JOIN faces f ON a.person_id = f.id
         WHERE date(a.timestamp) BETWEEN ? AND ? AND a.vendor_id = ?
-        ORDER BY a.timestamp ASC
     """
-    c.execute(query, (start_date, end_date, vendor_id))
+    params = [start_date, end_date, vendor_id]
+
+    if f_dept:
+        query += " AND f.department = ?"; params.append(f_dept)
+    if f_desig:
+        query += " AND f.designation = ?"; params.append(f_desig)
+    if f_shift:
+        query += " AND f.shift = ?"; params.append(f_shift)
+    if f_phone:
+        query += " AND f.phone = ?"; params.append(f_phone)
+
+    query += " ORDER BY a.timestamp ASC"
+    c.execute(query, params)
     db_rows = c.fetchall()
     conn.close()
-    
-    # Extract unique custom fields
-    custom_keys = []
-    parsed_rows = []
+
+    # Extract unique custom-data keys and apply dynamic filters
+    custom_keys  = []
+    parsed_rows  = []
     for row in db_rows:
-        row_dict = dict(row)
+        row_dict  = dict(row)
         cdata_str = row_dict.pop('custom_data', None)
-        cdata = {}
+        cdata     = {}
         if cdata_str:
             try:
                 cdata = json.loads(cdata_str)
@@ -194,35 +334,45 @@ def export_attendance(valid_data: PayrollReportRequest):
                     for k in cdata.keys():
                         if k not in custom_keys:
                             custom_keys.append(k)
-            except: pass
+            except Exception:
+                pass
         row_dict['parsed_custom'] = cdata
+
+        # Apply dynamic (custom_data) filters – Python-side after parse
+        match = True
+        for dk, dv in dyn_filters.items():
+            if str(cdata.get(dk, '')).strip() != dv:
+                match = False
+                break
+        if not match:
+            continue
+
         parsed_rows.append(row_dict)
-    
-    # Format Headers cleanly
-    base_headers = ["Name", "Date", "Time", "Status", "Activity", "Is Late", "Department"]
+
+    # Build CSV
+    base_headers     = ["Name", "Date", "Time", "Status", "Activity", "Is Late",
+                        "Department", "Designation", "Shift", "Phone"]
     formatted_custom = [k.replace('_', ' ').title() for k in custom_keys]
-    headers = base_headers + formatted_custom
-    
+    headers          = base_headers + formatted_custom
+
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(headers)
-    
+
     for row in parsed_rows:
-        d = parse_db_datetime(row['timestamp'])
+        d     = parse_db_datetime(row['timestamp'])
         d_str = d.strftime('%Y-%m-%d') if d else ""
         t_str = d.strftime('%H:%M:%S') if d else ""
-        
+
         base_record = [
             row['name'], d_str, t_str, row['status'], row['activity'],
-            "Yes" if row['is_late'] else "No", row['department']
+            "Yes" if row['is_late'] else "No",
+            row.get('department', ''), row.get('designation', ''),
+            row.get('shift', ''), row.get('phone', '')
         ]
-        
-        # Add custom data aligned with headers
-        cdata = row['parsed_custom']
-        custom_record = [cdata.get(k, "") for k in custom_keys]
-        
+        custom_record = [row['parsed_custom'].get(k, '') for k in custom_keys]
         writer.writerow(base_record + custom_record)
-        
+
     return output.getvalue(), 200, {
         "Content-Type": "text/csv",
         "Content-Disposition": f"attachment; filename=attendance_{start_date}_{end_date}.csv"
@@ -358,11 +508,18 @@ def get_payroll_report(valid_data: PayrollReportRequest):
 @attendance_reports_bp.route("/reports/payroll/export-daily", methods=["GET"])
 @require_auth()
 def export_payroll_daily():
-    vendor_id = g.vendor_id
+    vendor_id  = g.vendor_id
     start_date = request.args.get("start_date")
-    end_date = request.args.get("end_date")
+    end_date   = request.args.get("end_date")
     if not start_date or not end_date:
         return jsonify({"error": "start_date and end_date required"}), 400
+
+    # active standard filters
+    f_dept  = request.args.get('department', '').strip()
+    f_desig = request.args.get('designation', '').strip()
+    f_shift = request.args.get('shift', '').strip()
+    f_phone = request.args.get('phone', '').strip()
+    dyn_filters = _parse_dynamic_args()
 
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
@@ -379,9 +536,30 @@ def export_payroll_daily():
         for row in rows:
             d = dict(row)
             if d.get('person_id'): user_records[d['person_id']].append(d)
-            
-        c.execute("SELECT id, name, daily_wage, late_allowance_days, late_deduction_amount, shift FROM faces WHERE vendor_id = ?", (vendor_id,))
-        persons = {r['id']: dict(r) for r in c.fetchall()}
+
+        # Build faces query with standard filters
+        faces_query  = "SELECT id, name, daily_wage, late_allowance_days, late_deduction_amount, shift, department, designation, phone, custom_data FROM faces WHERE vendor_id = ?"
+        faces_params = [vendor_id]
+        if f_dept:  faces_query += " AND department = ?";  faces_params.append(f_dept)
+        if f_desig: faces_query += " AND designation = ?"; faces_params.append(f_desig)
+        if f_shift: faces_query += " AND shift = ?" ;      faces_params.append(f_shift)
+        if f_phone: faces_query += " AND phone = ?" ;      faces_params.append(f_phone)
+
+        c.execute(faces_query, faces_params)
+        all_faces = c.fetchall()
+
+        # Apply dynamic (custom_data) filter if any
+        persons = {}
+        for r in all_faces:
+            rd = dict(r)
+            if dyn_filters:
+                try:
+                    cdata = json.loads(rd.get('custom_data') or '{}')
+                except Exception:
+                    cdata = {}
+                if any(str(cdata.get(dk, '')).strip() != dv for dk, dv in dyn_filters.items()):
+                    continue
+            persons[rd['id']] = rd
 
         c.execute("SELECT key, value FROM system_settings WHERE key IN ('global_late_allowance', 'global_late_deduction')")
         s_map = {r['key']: r['value'] for r in c.fetchall()}

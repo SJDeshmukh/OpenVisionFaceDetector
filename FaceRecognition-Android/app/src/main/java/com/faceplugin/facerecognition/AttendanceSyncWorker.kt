@@ -62,7 +62,7 @@ class AttendanceSyncWorker(appContext: Context, params: WorkerParameters) : Work
                         btype = prefs2.getString("selected_business_type", null)
                     }
                     if (!btype.isNullOrBlank()) {
-                        req.businessType = btype!!.lowercase()
+                        req.businessType = btype.lowercase()
                     }
                 } catch (_: Exception) {}
                 val resp: Response<com.faceplugin.facerecognition.api.GreetingResponse> =

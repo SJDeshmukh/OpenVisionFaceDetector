@@ -403,6 +403,7 @@ const SuperAdminDashboard = () => {
       await axios.delete(`${API_URL}/admin/vendors/${vendorId}/devices/${encodeURIComponent(deviceId)}`, {
         headers: { Authorization: `Bearer ${user?.token}` }
       });
+      alert("Device deleted successfully");
       // Refresh local state
       await fetchVendorDevices(vendorId);
       await fetchVendorDeviceSlots(vendorId);

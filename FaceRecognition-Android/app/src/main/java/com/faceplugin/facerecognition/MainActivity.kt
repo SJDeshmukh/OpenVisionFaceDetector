@@ -296,7 +296,8 @@ class MainActivity : AppCompatActivity() {
                 override fun onResponse(call: Call<com.google.gson.JsonObject>, response: Response<com.google.gson.JsonObject>) {
                     if (response.isSuccessful) {
                         val obj = response.body()
-                        val dn = obj?.get("device_name")?.asString
+                        val dnElement = obj?.get("device_name")
+                        val dn = if (dnElement != null && dnElement.isJsonPrimitive) dnElement.asString else null
                         if (!dn.isNullOrBlank()) {
                             val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
                             prefs.edit().putString("device_name", dn).apply()

@@ -44,18 +44,8 @@ public class SplashActivity extends AppCompatActivity {
         MyGlobal.context = getApplicationContext();
         tvStatus = findViewById(R.id.tvStatus);
 
-        // Initialize FaceSDK
-        int ret = FaceSDKWrapper.INSTANCE.setActivation(
-            "Fqk7LKLbzfSCBor1Oidf0+aPu7OsAJgjxU5m6EQMP3WQ4JZ0Rt44C8T7auT27jjx9iwYmG/8l3TB\n" +
-                    "9MBZuaQKCKMiBvwu+JGfbyrQPrs0vyunAZplg0qUm3MUjz/ko1oJNDzh90jOvsdy8C+SGFWgLULQ\n" +
-                    "rA6K0dipo5B0v8uPXHkGliNVRuxdKg86iaGHpVzE9V+oqecdXqiuJyRloIqC+vWEYObQkJAocnwR\n" +
-                    "M51gg1HHqFYZ0RS9PI5DVzRNHHT4X/ws7e1tc2R0LgU22gd/4SHDYfoV8gHtyi/QdMthKgyzcJrN\n" +
-                    "p0lS+CrpoQuOzWl1toECPoSfcrbmmNP6v67ISA=="
-        );
-
-        if (ret == FaceSDK.SDK_SUCCESS) {
-            ret = FaceSDKWrapper.INSTANCE.init(getAssets());
-        }
+        // Initialize FaceSDK (idempotent — fast no-op if already initialized by Application)
+        int ret = FaceSDKWrapper.INSTANCE.ensureInitialized(getApplicationContext());
 
         if (ret != FaceSDK.SDK_SUCCESS) {
             String msg = "SDK Init Failed";

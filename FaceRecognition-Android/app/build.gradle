@@ -33,13 +33,13 @@ android {
             dimension "env"
             buildConfigField "String", "BASE_URL", "\"http://192.168.1.8:5001/\""
             buildConfigField "String", "LOCAL_BASE_URL", "\"http://192.168.1.8:5001/\""
-            buildConfigField "String", "REMOTE_BASE_URL", "\"https://tapinx--openvisionfacedetector--g4rz8tx5rcc5.code.run/\""
+            buildConfigField "String", "REMOTE_BASE_URL", "\"https://tapinx.in/\""
             buildConfigField "String", "WEB_LOGIN_URL", "\"http://192.168.1.8:5001/login\""
         }
         remote {
             dimension "env"
             buildConfigField "String", "BASE_URL", "\"https://tapinx.in/\""
-            buildConfigField "String", "LOCAL_BASE_URL", "\"http://10.0.2.2:5001/\""
+            buildConfigField "String", "LOCAL_BASE_URL", "\"https://tapinx.in/\""
             buildConfigField "String", "REMOTE_BASE_URL", "\"https://tapinx.in/\""
             buildConfigField "String", "WEB_LOGIN_URL", "\"https://tapinx.in/login\""
         }

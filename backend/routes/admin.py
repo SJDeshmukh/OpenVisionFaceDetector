@@ -411,12 +411,22 @@ def delete_vendor_device(vendor_id, device_id):
             c.execute("DELETE FROM active_sessions WHERE vendor_id = ? AND device_id = ?", (vendor_id, device_id))
         except Exception:
             pass
+        # Clear parent device bindings so parent app sessions on this device are invalidated
+        try:
+            c.execute("UPDATE parent_users SET device_id = NULL, fcm_token = NULL, session_version = COALESCE(session_version, 1) + 1 WHERE vendor_id = ? AND device_id = ?", (vendor_id, device_id))
+        except Exception:
+            pass
+        try:
+            c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND device_id = ?", (vendor_id, device_id))
+        except Exception:
+            pass
         # Remove the device record
         c.execute("DELETE FROM vendor_devices WHERE vendor_id = ? AND device_id = ?", (vendor_id, device_id))
         conn.commit()
         try:
             socketio.emit("vendor_updated", {"vendor_id": vendor_id}, room="super_admin")
             socketio.emit("device_removed", {"vendor_id": vendor_id, "device_id": device_id}, room=f"vendor_{vendor_id}")
+            socketio.emit("force_logout_mobile_device", {"vendor_id": vendor_id, "device_id": device_id}, room=f"vendor_{vendor_id}")
         except Exception:
             pass
         conn.close()

@@ -1,6 +1,7 @@
 package com.faceplugin.facerecognition;
 
 import android.app.Activity;
+import androidx.core.content.ContextCompat;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
@@ -299,7 +300,10 @@ public class EnrollFragment extends Fragment {
                     if (s > maxSimilarity) maxSimilarity = s;
                 } catch (Exception ignored) {}
             }
-            if (maxSimilarity > SettingsActivity.getIdentifyThreshold(requireContext())) {
+            Context context = getContext();
+            if (context == null || !isAdded()) return;
+
+            if (maxSimilarity > SettingsActivity.getIdentifyThreshold(context)) {
                 Toast.makeText(getContext(), "Already registered", Toast.LENGTH_SHORT).show();
                 return;
             }
@@ -608,6 +612,10 @@ public class EnrollFragment extends Fragment {
 
     private void renderDynamicFields(JsonArray config) {
         this.currentRegistrationConfig = config;
+        if (config == null) {
+            android.util.Log.e("AppCrash", "renderDynamicFields called with null config");
+            return;
+        }
         android.util.Log.e("AppCrash", "renderDynamicFields started with " + config.size() + " items");
         try {
             if (!isAdded() || getContext() == null) return;
@@ -626,6 +634,9 @@ public class EnrollFragment extends Fragment {
             if (llShift != null) llShift.setVisibility(View.GONE);
 
             boolean nameInConfig = false;
+
+            Context context = getContext();
+            if (context == null || !isAdded()) return;
 
             for (JsonElement el : config) {
                 if (!el.isJsonObject()) continue;
@@ -705,18 +716,15 @@ public class EnrollFragment extends Fragment {
                 if (dynamicViews.containsKey(key)) continue;
     
                 if (type.equals("text") || type.equals("number")) {
-                    com.google.android.material.textfield.TextInputLayout til = new com.google.android.material.textfield.TextInputLayout(requireContext());
+                    com.google.android.material.textfield.TextInputLayout til = new com.google.android.material.textfield.TextInputLayout(context);
                     til.setLayoutParams(new android.widget.LinearLayout.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.WRAP_CONTENT));
                     til.setHint(label);
                     til.setBoxBackgroundMode(com.google.android.material.textfield.TextInputLayout.BOX_BACKGROUND_OUTLINE);
-                    // Note: Using hardcoded colors for simplicity as accessing R.color from context requires more verbose code or ensure imports
-                    // But we are in Fragment, so requireContext() works.
-                    // Assuming R.color.vision_blue exists as per existing XML.
                     
                     android.widget.LinearLayout.LayoutParams params = (android.widget.LinearLayout.LayoutParams) til.getLayoutParams();
-                    params.setMargins(0, 0, 0, (int)(16 * getResources().getDisplayMetrics().density));
+                    params.setMargins(0, 0, 0, (int)(16 * context.getResources().getDisplayMetrics().density));
                     til.setLayoutParams(params);
 
                     com.google.android.material.textfield.TextInputEditText et = new com.google.android.material.textfield.TextInputEditText(til.getContext());
@@ -729,10 +737,10 @@ public class EnrollFragment extends Fragment {
                     if (dynamicContainer != null) dynamicContainer.addView(til);
                     dynamicViews.put(key, et);
                 } else if (type.equals("select") || type.equals("multiselect")) {
-                    android.widget.TextView tv = new android.widget.TextView(requireContext());
+                    android.widget.TextView tv = new android.widget.TextView(context);
                     tv.setText(label + (required ? " *" : ""));
                     tv.setTextSize(14);
-                    tv.setTextColor(getResources().getColor(android.R.color.darker_gray));
+                    tv.setTextColor(ContextCompat.getColor(context, android.R.color.darker_gray));
                     tv.setPadding(0, 16, 0, 8);
                     if (dynamicContainer != null) dynamicContainer.addView(tv);
     

@@ -5,13 +5,28 @@ import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import com.ocp.facesdk.FaceSDK
 import kotlin.system.exitProcess
 
 class OpenVisionApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        
+        MyGlobal.context = applicationContext
+
+        // Initialize FaceSDK at application startup — this guarantees it is ready
+        // regardless of which Activity the OS launches into (e.g. after login).
+        try {
+            val ret = FaceSDKWrapper.ensureInitialized(applicationContext)
+            if (ret != FaceSDK.SDK_SUCCESS) {
+                Log.e("OpenVision", "FaceSDK init failed in Application: $ret")
+            } else {
+                Log.i("OpenVision", "FaceSDK initialized in Application.onCreate")
+            }
+        } catch (e: Exception) {
+            Log.e("OpenVision", "FaceSDK init exception", e)
+        }
+
         // Register Global Crash Handler
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->

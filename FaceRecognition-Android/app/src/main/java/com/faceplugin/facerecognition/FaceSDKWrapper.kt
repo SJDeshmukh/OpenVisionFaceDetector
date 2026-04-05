@@ -1,5 +1,6 @@
 package com.faceplugin.facerecognition
 
+import android.content.Context
 import android.content.res.AssetManager
 import android.graphics.Bitmap
 import android.util.Log
@@ -13,6 +14,36 @@ import com.ocp.facesdk.FaceSDK
  */
 object FaceSDKWrapper {
     private const val TAG = "FaceSDKWrapper"
+
+    @Volatile
+    var isInitialized: Boolean = false
+        private set
+
+    private val LICENSE = "Fqk7LKLbzfSCBor1Oidf0+aPu7OsAJgjxU5m6EQMP3WQ4JZ0Rt44C8T7auT27jjx9iwYmG/8l3TB\n" +
+            "9MBZuaQKCKMiBvwu+JGfbyrQPrs0vyunAZplg0qUm3MUjz/ko1oJNDzh90jOvsdy8C+SGFWgLULQ\n" +
+            "rA6K0dipo5B0v8uPXHkGliNVRuxdKg86iaGHpVzE9V+oqecdXqiuJyRloIqC+vWEYObQkJAocnwR\n" +
+            "M51gg1HHqFYZ0RS9PI5DVzRNHHT4X/ws7e1tc2R0LgU22gd/4SHDYfoV8gHtyi/QdMthKgyzcJrN\n" +
+            "p0lS+CrpoQuOzWl1toECPoSfcrbmmNP6v67ISA=="
+
+    /**
+     * Ensures the SDK is initialized. Safe to call multiple times — only initializes once.
+     * @return SDK_SUCCESS if already initialized or newly initialized successfully, error code otherwise.
+     */
+    @Synchronized
+    fun ensureInitialized(context: Context): Int {
+        if (isInitialized) return FaceSDK.SDK_SUCCESS
+        var ret = setActivation(LICENSE)
+        if (ret == FaceSDK.SDK_SUCCESS) {
+            ret = init(context.assets)
+        }
+        if (ret == FaceSDK.SDK_SUCCESS) {
+            isInitialized = true
+            Log.i(TAG, "FaceSDK initialized successfully")
+        } else {
+            Log.e(TAG, "FaceSDK initialization failed: $ret")
+        }
+        return ret
+    }
 
     fun setActivation(license: String): Int {
         return try {
@@ -33,6 +64,10 @@ object FaceSDKWrapper {
     }
 
     fun faceDetection(bitmap: Bitmap?, param: FaceDetectionParam?): List<FaceBox> {
+        if (!isInitialized) {
+            Log.w(TAG, "faceDetection called before SDK is initialized — skipping")
+            return emptyList()
+        }
         if (bitmap == null || bitmap.isRecycled) {
             Log.w(TAG, "faceDetection: bitmap is null or recycled")
             return emptyList()
@@ -48,6 +83,10 @@ object FaceSDKWrapper {
     }
 
     fun templateExtraction(bitmap: Bitmap?, faceBox: FaceBox?): ByteArray? {
+        if (!isInitialized) {
+            Log.w(TAG, "templateExtraction called before SDK is initialized — skipping")
+            return null
+        }
         if (bitmap == null || bitmap.isRecycled || faceBox == null) {
             Log.w(TAG, "templateExtraction: invalid inputs")
             return null
@@ -62,6 +101,10 @@ object FaceSDKWrapper {
     }
 
     fun similarityCalculation(templates1: ByteArray?, templates2: ByteArray?): Float {
+        if (!isInitialized) {
+            Log.w(TAG, "similarityCalculation called before SDK is initialized — skipping")
+            return 0.0f
+        }
         if (templates1 == null || templates2 == null) {
             return 0.0f
         }
