@@ -52,27 +52,35 @@ def get_report_filters():
     raw_reg = vendor_row['registration_config'] if vendor_row else None
 
     # ---- parse registration_config to know which filters are visible/dynamic ----
-    visible_standard_filters = {"department": True, "designation": True, "shift": True, "phone": True}
+    # Start with all standard filters hidden; only enable those present in the config
+    visible_standard_filters = {"department": False, "designation": False, "shift": False, "phone": False}
+    has_reg_config = False
     enabled_dynamic_fields = []  # [{key, label, options}]
     if raw_reg:
         try:
             config = json.loads(raw_reg) if isinstance(raw_reg, str) else raw_reg
             if isinstance(config, list):
+                has_reg_config = len(config) > 0
                 for f in config:
-                    if f.get("enabled", True) is False:
-                        field_key = f.get("field") or f.get("key")
-                        if field_key in visible_standard_filters:
-                            visible_standard_filters[field_key] = False
-                    else:
-                        key = f.get("field") or f.get("key")
-                        if key and key not in visible_standard_filters:
-                            enabled_dynamic_fields.append({
-                                "key": str(key),
-                                "label": str(f.get("label") or key),
-                                "options": f.get("options")
-                            })
+                    field_key = f.get("field") or f.get("key")
+                    if not field_key:
+                        continue
+                    is_enabled = f.get("enabled", True) is not False
+                    if field_key in visible_standard_filters:
+                        # Standard field: show only if present and enabled in the config
+                        visible_standard_filters[field_key] = is_enabled
+                    elif is_enabled:
+                        # Dynamic / custom field
+                        enabled_dynamic_fields.append({
+                            "key": str(field_key),
+                            "label": str(f.get("label") or field_key),
+                            "options": f.get("options")
+                        })
         except Exception:
             pass
+    # If no registration config exists, fall back to showing all standard filters
+    if not has_reg_config:
+        visible_standard_filters = {"department": True, "designation": True, "shift": True, "phone": True}
 
     # ---- collect active request-level filters for cascading ----
     req_dept  = request.args.get('department', '')
