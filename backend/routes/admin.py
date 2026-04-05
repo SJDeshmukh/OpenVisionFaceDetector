@@ -1,4 +1,6 @@
 from flask import Blueprint, request, jsonify, send_file
+import logging
+logger = logging.getLogger(__name__)
 import sqlite3
 from datetime import datetime, date, timedelta
 import json
@@ -215,30 +217,6 @@ def list_vendor_devices(vendor_id):
         conn = get_db_connection()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
-        # Ensure table exists for SQLite environments
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS vendor_devices (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                vendor_id INTEGER,
-                device_id TEXT,
-                device_name TEXT,
-                registered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                last_login_at DATETIME,
-                last_active_at DATETIME,
-                battery_level REAL,
-                geofence_lat REAL,
-                geofence_lng REAL,
-                geofence_radius REAL,
-                last_lat REAL,
-                last_lng REAL
-            )
-        """)
-        # We can also dynamically add columns in case the table exists without them
-        for col in ["last_active_at", "battery_level", "geofence_lat", "geofence_lng", "geofence_radius", "last_lat", "last_lng"]:
-            try:
-                c.execute(f"ALTER TABLE vendor_devices ADD COLUMN {col} REAL")
-            except Exception:
-                pass
 
         c.execute("""
             SELECT id, device_id, device_name, registered_at, last_login_at, 
@@ -548,16 +526,6 @@ def list_vendor_device_slots(vendor_id):
         conn = get_db_connection()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS vendor_device_slots (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                vendor_id INTEGER,
-                slot_name TEXT,
-                assigned_device_id TEXT,
-                assigned_at DATETIME,
-                UNIQUE(vendor_id, slot_name)
-            )
-        """)
         c.execute("SELECT id, slot_name, assigned_device_id, assigned_at FROM vendor_device_slots WHERE vendor_id = ? ORDER BY id ASC", (vendor_id,))
         rows = [dict(row) for row in c.fetchall() or []]
         conn.close()

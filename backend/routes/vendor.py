@@ -1,4 +1,6 @@
 from flask import Blueprint, request, jsonify, send_file, send_from_directory
+import logging
+logger = logging.getLogger(__name__)
 import sqlite3
 import json
 import base64
@@ -182,27 +184,11 @@ def mobile_assign_slot():
         c.execute("UPDATE vendor_device_slots SET assigned_device_id = ?, assigned_at = ? WHERE vendor_id = ? AND slot_name = ?", (device_id, now, vendor_id, slot_name))
         # Upsert vendor_devices and sync friendly name
         try:
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS vendor_devices (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    vendor_id INTEGER,
-                    device_id TEXT,
-                    device_name TEXT,
-                    registered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    last_login_at DATETIME
-                )
-            """)
-        except Exception:
-            pass
-        try:
+            # Our PostgresCursorWrapper translates INSERT OR IGNORE to ON CONFLICT DO NOTHING
+            c.execute("INSERT OR IGNORE INTO vendor_devices (vendor_id, device_id, device_name, registered_at, last_login_at) VALUES (?, ?, ?, ?, ?)", (vendor_id, device_id, slot_name, now, now))
             c.execute("UPDATE vendor_devices SET device_name = ?, last_login_at = ? WHERE vendor_id = ? AND device_id = ?", (slot_name, now, vendor_id, device_id))
-            if c.rowcount == 0:
-                c.execute("INSERT INTO vendor_devices (vendor_id, device_id, device_name, registered_at, last_login_at) VALUES (?, ?, ?, ?, ?)", (vendor_id, device_id, slot_name, now, now))
-        except Exception:
-            try:
-                c.execute("INSERT INTO vendor_devices (vendor_id, device_id, device_name, registered_at, last_login_at) VALUES (?, ?, ?, ?, ?)", (vendor_id, device_id, slot_name, now, now))
-            except Exception:
-                pass
+        except Exception as e:
+            logger.error(f"Error upserting vendor_device in assign_slot: {e}")
         conn.commit()
         try:
             ev = {"vendor_id": vendor_id, "device_id": device_id, "device_name": slot_name}
@@ -1112,12 +1098,14 @@ def mobile_heartbeat():
         else:
              # Device not found (e.g., student device or missing record), insert it
              try:
+                 c.execute("INSERT OR IGNORE INTO vendor_devices (vendor_id, device_id, device_name, registered_at, last_active_at, battery_level, last_lat, last_lng, geofence_lat, geofence_lng) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (vendor_id, device_id, f"Mobile {device_id[:6]}", now, now, battery_level, lat, lng, lat, lng))
                  c.execute("""
-                     INSERT INTO vendor_devices (vendor_id, device_id, device_name, registered_at, last_active_at, battery_level, last_lat, last_lng, geofence_lat, geofence_lng) 
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                 """, (vendor_id, device_id, f"Mobile {device_id[:6]}", now, now, battery_level, lat, lng, lat, lng))
-             except Exception:
-                 pass
+                     UPDATE vendor_devices 
+                     SET last_active_at = ?, battery_level = ?, last_lat = ?, last_lng = ?
+                     WHERE vendor_id = ? AND device_id = ?
+                 """, (now, battery_level, lat, lng, vendor_id, device_id))
+             except Exception as e:
+                 logger.error(f"Error upserting vendor_device in heartbeat: {e}")
             
         conn.commit()
         
