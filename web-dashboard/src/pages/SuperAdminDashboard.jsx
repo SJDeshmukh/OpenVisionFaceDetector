@@ -510,15 +510,25 @@ const SuperAdminDashboard = () => {
     if (!slotName) return;
     if (!window.confirm(`Delete place "${slotName}"? This will unassign any devices using it.`)) return;
     try {
+      const slotObj = (deviceSlots || []).find(s => s.slot_name === slotName);
+      
+      // 1) Unassign device if this slot is currently occupied
+      if (slotObj && slotObj.assigned_device_id) {
+        await adminAssignDeviceSlot(vendorId, slotObj.assigned_device_id, '');
+        // fetchVendorDeviceSlots is already called by adminAssignDeviceSlot, 
+        // but we'll still proceed to save the new remaining list
+      }
+      
       const impacted = (vendorDevices || []).filter(d => (d.device_name || '').trim() === slotName);
-      // 1) Unassign all impacted devices first (backend won't delete assigned slots)
+      // Clean up legacy device_name logic just in case
       await Promise.all(
         impacted.map(d => {
           setDeviceEdits(prev => ({ ...prev, [d.device_id]: '' }));
           return saveDeviceName(vendorId, d.device_id, '');
         })
       );
-      // 2) Now remove the slot
+      
+      // 2) Now remove the slot from the list
       const remaining = (deviceSlots || [])
         .filter(x => x.slot_name !== slotName)
         .map(x => x.slot_name);
