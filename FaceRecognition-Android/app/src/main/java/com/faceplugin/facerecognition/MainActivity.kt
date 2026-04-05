@@ -184,6 +184,11 @@ class MainActivity : AppCompatActivity() {
             if (!dn.isNullOrBlank() && tvPlace != null) {
                 tvPlace.text = "— $dn"
             }
+            
+            // If Kiosk user has no place assigned, force selection
+            if (isUser && dn.isNullOrBlank()) {
+                checkDeviceSlotAssignment()
+            }
         } catch (_: Exception) {}
         
         bottomNav.setOnItemSelectedListener { item ->
@@ -701,5 +706,86 @@ class MainActivity : AppCompatActivity() {
         val out = StringBuilder(bytes.size * 2)
         for (b in bytes) out.append(String.format("%02x", b))
         return out.toString()
+    }
+
+    private fun checkDeviceSlotAssignment() {
+        val deviceId = android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.ANDROID_ID)
+        RetrofitClient.getService().getMobileDeviceInfo().enqueue(object : Callback<com.google.gson.JsonObject> {
+            override fun onResponse(call: Call<com.google.gson.JsonObject>, infoResp: Response<com.google.gson.JsonObject>) {
+                val body = infoResp.body()
+                val assigned = if (body != null && body.has("device_name") && !body.get("device_name").isJsonNull) {
+                    body.get("device_name").asString
+                } else null
+
+                if (!assigned.isNullOrBlank()) {
+                    val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+                    prefs.edit().putString("device_name", assigned).apply()
+                    val tvPlace = findViewById<TextView>(R.id.tv_device_name)
+                    if (tvPlace != null) tvPlace.text = "— $assigned"
+                } else {
+                    fetchSlotsAndPick(false)
+                }
+            }
+            override fun onFailure(call: Call<com.google.gson.JsonObject>, t: Throwable) {
+                // If offline or error, we might just have to skip for now
+            }
+        })
+    }
+
+    private fun fetchSlotsAndPick(includeDeleted: Boolean) {
+        val deviceId = android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.ANDROID_ID)
+        RetrofitClient.getService().getMobileDeviceSlots(includeDeleted).enqueue(object : Callback<com.google.gson.JsonObject> {
+            override fun onResponse(call: Call<com.google.gson.JsonObject>, resp: Response<com.google.gson.JsonObject>) {
+                val arr = resp.body()?.getAsJsonArray("slots")
+                val slots = mutableListOf<String>()
+                if (arr != null && !arr.isJsonNull) {
+                    for (el in arr) {
+                        if (el != null && !el.isJsonNull) {
+                             try { slots.add(el.asString) } catch (_: Exception) {}
+                        }
+                    }
+                }
+                if (slots.isNotEmpty()) {
+                    showSlotSelectionDialog(slots, { selected ->
+                        val obj = JsonObject()
+                        obj.addProperty("device_id", deviceId)
+                        obj.addProperty("slot_name", selected)
+                        RetrofitClient.getService().assignMobileDeviceSlot(obj).enqueue(object : Callback<com.google.gson.JsonObject> {
+                            override fun onResponse(call: Call<com.google.gson.JsonObject>, resp2: Response<com.google.gson.JsonObject>) {
+                                val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+                                prefs.edit().putString("device_name", selected).apply()
+                                val tvPlace = findViewById<TextView>(R.id.tv_device_name)
+                                if (tvPlace != null) tvPlace.text = "— $selected"
+                                Toast.makeText(this@MainActivity, "Place assigned: $selected", Toast.LENGTH_SHORT).show()
+                            }
+                            override fun onFailure(call: Call<com.google.gson.JsonObject>, t: Throwable) {
+                                Toast.makeText(this@MainActivity, "Failed to assign place", Toast.LENGTH_SHORT).show()
+                            }
+                        })
+                    }, if (!includeDeleted) { { fetchSlotsAndPick(true) } } else null)
+                }
+            }
+            override fun onFailure(call: Call<com.google.gson.JsonObject>, t: Throwable) {}
+        })
+    }
+
+    private fun showSlotSelectionDialog(options: List<String>, onChosen: (String) -> Unit, onMore: (() -> Unit)? = null) {
+        val builder = androidx.appcompat.app.AlertDialog.Builder(this)
+        builder.setTitle("Select Device Place")
+        var selectedIndex = 0
+        val arr = options.toTypedArray()
+        builder.setSingleChoiceItems(arr, 0) { _, which -> selectedIndex = which }
+        builder.setPositiveButton("Confirm") { dialog, _ ->
+            onChosen.invoke(arr[selectedIndex])
+            dialog.dismiss()
+        }
+        if (onMore != null) {
+            builder.setNeutralButton("More options") { dialog, _ ->
+                onMore.invoke()
+                dialog.dismiss()
+            }
+        }
+        builder.setCancelable(false)
+        builder.show()
     }
 }

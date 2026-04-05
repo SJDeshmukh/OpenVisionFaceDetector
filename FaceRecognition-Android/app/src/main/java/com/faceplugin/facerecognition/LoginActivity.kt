@@ -254,9 +254,11 @@ class LoginActivity : AppCompatActivity() {
                                     override fun onResponse(call: Call<com.google.gson.JsonObject>, resp: Response<com.google.gson.JsonObject>) {
                                         val arr = resp.body()?.getAsJsonArray("slots")
                                         val slots = mutableListOf<String>()
-                                        if (arr != null) {
+                                        if (arr != null && !arr.isJsonNull) {
                                             for (el in arr) {
-                                                if (el != null && !el.isJsonNull) slots.add(el.asString)
+                                                if (el != null && !el.isJsonNull) {
+                                                    try { slots.add(el.asString) } catch (_: Exception) {}
+                                                }
                                             }
                                         }
                                         if (slots.isNotEmpty()) {
@@ -293,19 +295,25 @@ class LoginActivity : AppCompatActivity() {
                             }
                             
                             // Always run onboarding once per install (or when not yet confirmed)
-                            if (!alreadyPrompted) {
+                            // If role is user (kiosk), we MUST have a place.
+                            val role = prefs.getString("role", "user")
+                            if (!alreadyPrompted || (role == "user" && cachedName.isNullOrBlank())) {
                                 RetrofitClient.getService().getMobileDeviceInfo().enqueue(object: Callback<com.google.gson.JsonObject> {
                                     override fun onResponse(call: Call<com.google.gson.JsonObject>, infoResp: Response<com.google.gson.JsonObject>) {
-                                        val assigned = infoResp.body()?.get("device_name")?.asString
+                                        val body = infoResp.body()
+                                        val assigned = if (body != null && body.has("device_name") && !body.get("device_name").isJsonNull) {
+                                            body.get("device_name").asString
+                                        } else null
+
                                         if (!assigned.isNullOrBlank()) {
+                                            // Sync local storage if server already has it
+                                            prefs.edit().putString("device_name", assigned).apply()
+                                            prefs.edit().putBoolean("place_onboarded", true).apply()
+                                            
                                             val builder = androidx.appcompat.app.AlertDialog.Builder(this@LoginActivity)
                                             builder.setTitle("Device Place")
-                                            builder.setMessage("Use current place \"$assigned\" or change?")
+                                            builder.setMessage("This device is assigned to \"$assigned\". Use it or change?")
                                             builder.setPositiveButton("Use \"$assigned\"") { dialog, _ ->
-                                                try { 
-                                                    prefs.edit().putString("device_name", assigned).apply()
-                                                    prefs.edit().putBoolean("place_onboarded", true).apply()
-                                                } catch (_: Exception) {}
                                                 runLogoShineThenNavigate()
                                             }
                                             builder.setNegativeButton("Change Place") { dialog, _ ->
