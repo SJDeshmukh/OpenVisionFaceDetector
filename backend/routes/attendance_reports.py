@@ -493,6 +493,7 @@ def get_payroll_report(valid_data: PayrollReportRequest):
         
         payroll_data.append({
             "person_id": pid,
+            "display_id": person_info.get('display_id') or pid,
             "name": person_info.get('name'),
             "department": person_info.get('department'),
             "designation": person_info.get('designation'),
@@ -611,7 +612,8 @@ def export_payroll_daily():
                 daily_wage = float(info.get('daily_wage') or 0.0)
                 hourly_rate = daily_wage / company_working_hours if daily_wage and company_working_hours > 0 else 0
                 base_wage_for_day = round((mins / 60.0) * hourly_rate, 2)
-                writer.writerow([pid, info.get('name'), d.isoformat(), daily_wage, round(mins/60.0,2), base_wage_for_day, deduct, round(base_wage_for_day - deduct, 2)])
+                d_id = info.get('display_id') or pid
+                writer.writerow([d_id, info.get('name'), d.isoformat(), daily_wage, round(mins/60.0,2), base_wage_for_day, deduct, round(base_wage_for_day - deduct, 2)])
         
         return output.getvalue(), 200, {"Content-Type": "text/csv"}
     except Exception as e:
@@ -687,7 +689,8 @@ def export_payroll_excel():
                 daily_wage = float(info.get('daily_wage') or 0.0)
                 hourly_rate = daily_wage / company_working_hours if daily_wage and company_working_hours > 0 else 0
                 base_wage_for_day = round((mins / 60.0) * hourly_rate, 2)
-                ws.append([pid, info.get('name'), d.isoformat(), daily_wage, round(mins/60.0, 2), base_wage_for_day, deduct, round(base_wage_for_day - deduct, 2)])
+                d_id = info.get('display_id') or pid
+                ws.append([d_id, info.get('name'), d.isoformat(), daily_wage, round(mins/60.0, 2), base_wage_for_day, deduct, round(base_wage_for_day - deduct, 2)])
 
         out = io.BytesIO()
         wb.save(out)
