@@ -248,6 +248,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
     private void bindCameraUseCases()
     {
         int rotation = viewFinder.getDisplay().getRotation();
+        Size targetSize = Utils.getOptimalResolution(this);
 
         int defaultLens = SettingsActivity.getCameraLens(this);
         if (forceFrontCamera) {
@@ -257,13 +258,13 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
         cameraSelector = new CameraSelector.Builder().requireLensFacing(defaultLens).build();
 
         preview = new Preview.Builder()
-                .setTargetResolution(new Size(PREVIEW_WIDTH, PREVIEW_HEIGHT))
+                .setTargetResolution(targetSize)
                 .setTargetRotation(rotation)
                 .build();
 
         imageAnalyzer = new ImageAnalysis.Builder()
                 .setBackpressureStrategy(STRATEGY_KEEP_ONLY_LATEST)
-                .setTargetResolution(new Size(PREVIEW_WIDTH, PREVIEW_HEIGHT))
+                .setTargetResolution(targetSize)
                 // Set initial target rotation, we will have to call this again if rotation changes
                 // during the lifecycle of this use case
                 .setTargetRotation(rotation)
@@ -279,6 +280,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
 
             preview.setSurfaceProvider(viewFinder.getSurfaceProvider());
         } catch (Exception exc) {
+            exc.printStackTrace();
         }
     }
 

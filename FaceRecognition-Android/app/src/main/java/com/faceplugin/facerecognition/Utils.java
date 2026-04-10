@@ -54,13 +54,50 @@ public class Utils {
 
     public static int getCameraMode(int rotationDegrees, int lensFacing) {
         boolean isFront = lensFacing == CameraSelector.LENS_FACING_FRONT;
+        
+        // standard CameraX rotationDegrees is the clockwise rotation needed to make the image upright.
+        // FaceSDK modes:
+        // 0-3: Back Camera (no mirror), rotations 0, 90, 180, 270
+        // 4-7: Front Camera (mirrored), rotations 0, 90, 180, 270
+        
+        int mode;
         switch (rotationDegrees) {
-            case 0: return isFront ? 4 : 0;
-            case 90: return isFront ? 5 : 1;
-            case 180: return isFront ? 6 : 2;
-            case 270: return isFront ? 7 : 3;
-            default: return isFront ? 7 : 1;
+            case 0: mode = 0; break;
+            case 90: mode = 1; break;
+            case 180: mode = 2; break;
+            case 270: mode = 3; break;
+            default: mode = 0; break;
         }
+        
+        if (isFront) {
+            return mode + 4;
+        }
+        return mode;
+    }
+
+    /**
+     * Recommends a preview resolution based on the display aspect ratio.
+     * Hardcoded 720x1280 can fail or stretch on some devices.
+     */
+    public static android.util.Size getOptimalResolution(Context context) {
+        // Default fallback
+        int targetWidth = 720;
+        int targetHeight = 1280;
+        
+        try {
+            android.util.DisplayMetrics metrics = context.getResources().getDisplayMetrics();
+            float aspectRatio = (float) metrics.heightPixels / (float) metrics.widthPixels;
+            
+            // If aspect ratio is significantly different from 16:9, adjust
+            if (Math.abs(aspectRatio - (16f/9f)) > 0.1) {
+                // Keep width at 720 and adjust height to maintain aspect ratio
+                targetHeight = (int) (targetWidth * aspectRatio);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        
+        return new android.util.Size(targetWidth, targetHeight);
     }
 
 

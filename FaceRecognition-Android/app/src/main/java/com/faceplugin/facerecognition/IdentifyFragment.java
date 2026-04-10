@@ -374,17 +374,18 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     @SuppressLint({"RestrictedApi", "UnsafeExperimentalUsageError", "UnsafeOptInUsageError"})
     private void bindCameraUseCases() {
         int rotation = viewFinder.getDisplay().getRotation();
+        Size targetSize = Utils.getOptimalResolution(requireContext());
 
         cameraSelector = new CameraSelector.Builder().requireLensFacing(SettingsActivity.getCameraLens(requireContext())).build();
 
         preview = new Preview.Builder()
-                .setTargetResolution(new Size(PREVIEW_WIDTH, PREVIEW_HEIGHT))
+                .setTargetResolution(targetSize)
                 .setTargetRotation(rotation)
                 .build();
 
         imageAnalyzer = new ImageAnalysis.Builder()
                 .setBackpressureStrategy(STRATEGY_KEEP_ONLY_LATEST)
-                .setTargetResolution(new Size(PREVIEW_WIDTH, PREVIEW_HEIGHT))
+                .setTargetResolution(targetSize)
                 .setTargetRotation(rotation)
                 .build();
 
@@ -939,10 +940,11 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                                 }
                             }
                             
+                            // Diagnostic Log
                             if (bestForBox != null) {
-                                Log.d("IdentifyFragment", "Best match for box: " + bestForBox.name + " similarity: " + maxSimilarityForBox);
+                                Log.i(TAG, "Match found: " + bestForBox.name + " (" + (maxSimilarityForBox * 100) + "%)");
                             } else {
-                                Log.d("IdentifyFragment", "No match found for box, max similarity: " + maxSimilarityForBox);
+                                Log.d(TAG, "No match found. Max similarity: " + (maxSimilarityForBox * 100) + "%");
                             }
                         }
 
@@ -955,7 +957,19 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                                 bestPersonId = bestForBox.id != null ? bestForBox.id : "";
                                 bestLocalUid = bestForBox.localUid != null ? bestForBox.localUid : "";
                             }
+                        } else if (maxSimilarityForBox > 0.4f) {
+                            // If we have a weak match, toast it for diagnostics (Redmi/Vivo troubleshooting)
+                            final float weakSim = maxSimilarityForBox;
+                            final String weakName = (bestForBox != null) ? bestForBox.name : "Unknown";
+                            getActivity().runOnUiThread(() -> {
+                                if (getContext() != null) {
+                                    Toast.makeText(getContext(), "Weak match: " + weakName + " (" + Math.round(weakSim * 100) + "%)", Toast.LENGTH_SHORT).show();
+                                }
+                            });
                         }
+                    } else {
+                         // Liveness failed - possible source of Redmi recognition issues
+                         Log.w(TAG, "Liveness failed: " + faceBox.liveness + " (Threshold: " + livenessThreshold + ")");
                     }
 
                     namesForBoxes.add(nameForBox);
