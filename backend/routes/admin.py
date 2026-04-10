@@ -440,66 +440,93 @@ def delete_vendor_device(vendor_id, device_id):
         
         conn = get_db_connection()
         c = conn.cursor()
-        # Ensure tables exist
-        try:
-            c.execute("CREATE TABLE IF NOT EXISTS vendor_devices (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, device_id TEXT, device_name TEXT, registered_at DATETIME DEFAULT CURRENT_TIMESTAMP, last_login_at DATETIME)")
-            c.execute("CREATE TABLE IF NOT EXISTS vendor_device_slots (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, slot_name TEXT, assigned_device_id TEXT, assigned_at DATETIME, UNIQUE(vendor_id, slot_name))")
-            c.execute("CREATE TABLE IF NOT EXISTS active_sessions (token TEXT PRIMARY KEY, username TEXT, vendor_id INTEGER, device_id TEXT, platform TEXT, last_active DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
-        except Exception as e:
-            logger.warning(f"Schema check error (ignoring): {e}")
-            pass
-        # Unassign any slots tied to this device
-        try:
-            c.execute("UPDATE vendor_device_slots SET assigned_device_id = NULL, assigned_at = NULL WHERE vendor_id = ? AND assigned_device_id = ?", (vendor_id, device_id))
-            logger.info(f"Unassigned slots: {c.rowcount}")
-        except Exception as e:
-            logger.warning(f"Unassign slots error: {e}")
-            pass
-        # Delete any active sessions for this device (mobile/web tied to this device_id)
-        try:
-            c.execute("DELETE FROM active_sessions WHERE vendor_id = ? AND device_id = ?", (vendor_id, device_id))
-            logger.info(f"Deleted sessions: {c.rowcount}")
-        except Exception as e:
-            logger.warning(f"Delete sessions error: {e}")
-            pass
-        # Clear parent device bindings so parent app sessions on this device are invalidated
-        try:
-            c.execute("UPDATE parent_users SET device_id = NULL, fcm_token = NULL, session_version = COALESCE(session_version, 1) + 1 WHERE vendor_id = ? AND device_id = ?", (vendor_id, device_id))
-            logger.info(f"Updated parent users: {c.rowcount}")
-        except Exception as e:
-            logger.warning(f"Update parent users error: {e}")
-            pass
-        try:
-            # Check if column exists first? Or just try-except
-            c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND device_id = ?", (vendor_id, device_id))
-            logger.info(f"Deleted parent tokens: {c.rowcount}")
-        except Exception as e:
-            logger.warning(f"Delete parent tokens error (might be missing column): {e}")
-            pass
-        # Remove the device record
+        
+        # Defensive check for optional tables to avoid PostgreSQL transaction aborts
+        def safe_execute(query, params, table=None, cols=None):
+            try:
+                if table and cols:
+                    # Check if all required columns exist in the table
+                    existing_cols = get_table_columns(conn, table)
+                    if not existing_cols:
+                        logger.warning(f"Table '{table}' does not exist, skipping query.")
+                        return 0
+                    missing_cols = [col for col in cols if col not in existing_cols]
+                    if missing_cols:
+                        logger.warning(f"Columns {missing_cols} missing in table '{table}', skipping query.")
+                        return 0
+                
+                c.execute(query, params)
+                return c.rowcount
+            except Exception as e:
+                logger.warning(f"Execution failed for query on '{table}': {e}")
+                # Important: In PostgreSQL, if the query actually failed, the transaction is aborted.
+                # However, get_table_columns might have already triggered a rollback if it failed internally.
+                # Since we already checked column existence, this block is mostly for unexpected errors.
+                return 0
+
+        # Optional Cleanups
+        # 1. Unassign slots
+        rows = safe_execute(
+            "UPDATE vendor_device_slots SET assigned_device_id = NULL, assigned_at = NULL WHERE vendor_id = ? AND assigned_device_id = ?",
+            (vendor_id, device_id),
+            table="vendor_device_slots",
+            cols=["vendor_id", "assigned_device_id"]
+        )
+        logger.info(f"Unassigned slots: {rows}")
+
+        # 2. Delete active sessions
+        rows = safe_execute(
+            "DELETE FROM active_sessions WHERE vendor_id = ? AND device_id = ?",
+            (vendor_id, device_id),
+            table="active_sessions",
+            cols=["vendor_id", "device_id"]
+        )
+        logger.info(f"Deleted sessions: {rows}")
+
+        # 3. Update parent users
+        rows = safe_execute(
+            "UPDATE parent_users SET device_id = NULL, fcm_token = NULL, session_version = COALESCE(session_version, 1) + 1 WHERE vendor_id = ? AND device_id = ?",
+            (vendor_id, device_id),
+            table="parent_users",
+            cols=["vendor_id", "device_id", "fcm_token", "session_version"]
+        )
+        logger.info(f"Updated parent users: {rows}")
+
+        # 4. Delete parent tokens
+        rows = safe_execute(
+            "DELETE FROM parent_tokens WHERE vendor_id = ? AND device_id = ?",
+            (vendor_id, device_id),
+            table="parent_tokens",
+            cols=["vendor_id", "device_id"]
+        )
+        logger.info(f"Deleted parent tokens: {rows}")
+
+        # Core Deletion (Critical)
+        # We perform this last and without the 'safe_execute' helper to ensure it bubbles up errors if the main table is broken.
         c.execute("DELETE FROM vendor_devices WHERE vendor_id = ? AND device_id = ?", (vendor_id, device_id))
         rows_deleted = c.rowcount
-        logger.info(f"Deleted device record: {rows_deleted}")
+        logger.info(f"Deleted device record from vendor_devices: {rows_deleted}")
         
         conn.commit()
+        
         try:
             socketio.emit("vendor_updated", {"vendor_id": vendor_id}, room="super_admin")
-            # device_removed tells the specific device it's no longer allowed
             socketio.emit("device_removed", {"vendor_id": vendor_id, "device_id": device_id}, room=f"vendor_{vendor_id}")
-            # force_logout_mobile is used for session invalidation on the client
             socketio.emit("force_logout_mobile", {"vendor_id": vendor_id, "device_id": device_id, "reason": "Device deleted by admin"}, room=f"vendor_{vendor_id}")
             logger.info("Socket events emitted")
         except Exception as e:
             logger.warning(f"Socket emit error: {e}")
             pass
+
         conn.close()
         log_audit("device_delete", {"device_id": device_id}, target_vendor_id=vendor_id)
         return jsonify({"success": True, "rows_deleted": rows_deleted})
     except Exception as e:
         logger.error(f"Error in delete_vendor_device: {e}", exc_info=True)
         try:
-            conn.rollback()
-            conn.close()
+            if 'conn' in locals() and conn:
+                conn.rollback()
+                conn.close()
         except Exception:
             pass
         return jsonify({"error": str(e)}), 500
