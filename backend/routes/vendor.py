@@ -1051,17 +1051,26 @@ def mobile_heartbeat():
         
     try:
         conn = get_db_connection()
-        conn.row_factory = sqlite3.Row
+        try:
+            if not getattr(conn, "_is_pg", False):
+                conn.row_factory = sqlite3.Row
+        except Exception:
+            pass
+            
         c = conn.cursor()
         now = datetime.now()
         
         # Get existing device to check geofence anchor
-        c.execute("SELECT geofence_lat, geofence_lng, geofence_radius FROM vendor_devices WHERE vendor_id = ? AND device_id = ?", (vendor_id, device_id))
-        device_row = c.fetchone()
+        try:
+            c.execute("SELECT geofence_lat, geofence_lng, geofence_radius FROM vendor_devices WHERE vendor_id = ? AND device_id = ?", (vendor_id, device_id))
+            device_row = c.fetchone()
+        except Exception as e:
+            logger.error(f"Error fetching device info in heartbeat: {e}")
+            device_row = None
         
         geofence_status = "inside"
         if device_row:
-            row_dict = dict(device_row)
+            row_dict = dict(device_row) if hasattr(device_row, 'keys') or isinstance(device_row, dict) else {'geofence_lat': device_row[0], 'geofence_lng': device_row[1], 'geofence_radius': device_row[2]}
             anchor_lat = row_dict.get('geofence_lat')
             anchor_lng = row_dict.get('geofence_lng')
             radius = row_dict.get('geofence_radius')
@@ -1098,7 +1107,14 @@ def mobile_heartbeat():
         else:
              # Device not found (e.g., student device or missing record), insert it
              try:
-                 c.execute("INSERT OR IGNORE INTO vendor_devices (vendor_id, device_id, device_name, registered_at, last_active_at, battery_level, last_lat, last_lng, geofence_lat, geofence_lng) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (vendor_id, device_id, f"Mobile {device_id[:6]}", now, now, battery_level, lat, lng, lat, lng))
+                 # INSERT OR IGNORE is translated by our PostgresCursorWrapper
+                 c.execute("""
+                    INSERT OR IGNORE INTO vendor_devices 
+                    (vendor_id, device_id, device_name, registered_at, last_active_at, battery_level, last_lat, last_lng, geofence_lat, geofence_lng) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 """, (vendor_id, device_id, f"Mobile {device_id[:6]}", now, now, battery_level, lat, lng, lat, lng))
+                 
+                 # Immediately update in case it was IGNORED above but needs fields updated
                  c.execute("""
                      UPDATE vendor_devices 
                      SET last_active_at = ?, battery_level = ?, last_lat = ?, last_lng = ?
@@ -1115,7 +1131,7 @@ def mobile_heartbeat():
             "device_id": device_id,
             "last_active_at": now.isoformat(),
             "battery_level": battery_level,
-            "status": "online"
+            "online": True
         }
         socketio.emit("device_health_update", payload, room=f"vendor_{vendor_id}")
         socketio.emit("device_health_update", payload, room="super_admin")
@@ -1123,4 +1139,5 @@ def mobile_heartbeat():
         conn.close()
         return jsonify({"status": "success", "geofence_status": geofence_status})
     except Exception as e:
+        logger.error(f"Global error in mobile_heartbeat: {e}")
         return jsonify({"error": str(e)}), 500

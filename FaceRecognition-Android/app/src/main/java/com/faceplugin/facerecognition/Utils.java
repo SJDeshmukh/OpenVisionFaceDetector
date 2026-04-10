@@ -13,7 +13,56 @@ import com.ocp.facesdk.FaceBox;
 import java.io.IOException;
 import java.io.InputStream;
 
+import android.media.Image;
+import java.nio.ByteBuffer;
+import androidx.camera.core.CameraSelector;
+
 public class Utils {
+
+    public static byte[] yuv420ToNv21(Image image) {
+        Image.Plane[] planes = image.getPlanes();
+        ByteBuffer yBuffer = planes[0].getBuffer();
+        ByteBuffer uBuffer = planes[1].getBuffer();
+        ByteBuffer vBuffer = planes[2].getBuffer();
+
+        int ySize = yBuffer.remaining();
+        int uSize = uBuffer.remaining();
+        int vSize = vBuffer.remaining();
+
+        byte[] nv21 = new byte[ySize + (ySize / 2)];
+
+        // Full Y plane
+        yBuffer.get(nv21, 0, ySize);
+
+        // Interleave V and U (NV21: YYYY... VUVU...)
+        int pos = ySize;
+        int rowStride = planes[1].getRowStride();
+        int pixelStride = planes[1].getPixelStride();
+        int width = image.getWidth();
+        int height = image.getHeight();
+
+        for (int row = 0; row < height / 2; row++) {
+            for (int col = 0; col < width / 2; col++) {
+                int vuIdx = row * rowStride + col * pixelStride;
+                nv21[pos++] = vBuffer.get(vuIdx);
+                nv21[pos++] = uBuffer.get(vuIdx);
+            }
+        }
+
+        return nv21;
+    }
+
+    public static int getCameraMode(int rotationDegrees, int lensFacing) {
+        boolean isFront = lensFacing == CameraSelector.LENS_FACING_FRONT;
+        switch (rotationDegrees) {
+            case 0: return isFront ? 4 : 0;
+            case 90: return isFront ? 5 : 1;
+            case 180: return isFront ? 6 : 2;
+            case 270: return isFront ? 7 : 3;
+            default: return isFront ? 7 : 1;
+        }
+    }
+
 
     public static Bitmap cropFace(Bitmap src, FaceBox faceBox) {
         int centerX = (faceBox.x1 + faceBox.x2) / 2;

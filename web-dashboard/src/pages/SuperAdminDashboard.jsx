@@ -212,11 +212,27 @@ const SuperAdminDashboard = () => {
     socket.on('device_health_update', (data) => {
       console.log("Device Health Update:", data);
       if (selectedVendorForDetail?.id === data.vendor_id) {
-        setVendorDevices(prev => prev.map(d =>
-          d.device_id === data.device_id
-            ? { ...d, last_active_at: data.last_active_at, battery_level: data.battery_level }
-            : d
-        ));
+        setVendorDevices(prev => {
+          const exists = prev.find(d => d.device_id === data.device_id);
+          if (exists) {
+            return prev.map(d =>
+              d.device_id === data.device_id
+                ? { ...d, last_active_at: data.last_active_at, battery_level: data.battery_level, online: data.online }
+                : d
+            );
+          } else {
+            // New device discovered in real-time
+            const newDev = {
+              device_id: data.device_id,
+              device_name: `Mobile ${data.device_id.substring(0, 6)}`,
+              last_active_at: data.last_active_at,
+              battery_level: data.battery_level,
+              online: data.online,
+              registered_at: new Date().toISOString()
+            };
+            return [newDev, ...prev];
+          }
+        });
       }
     });
 

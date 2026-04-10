@@ -834,26 +834,13 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             }
 
             android.media.Image.Plane[] planes = inputMediaImage.getPlanes();
-            ByteBuffer yBuffer = planes[0].getBuffer();
-            ByteBuffer uBuffer = planes[1].getBuffer();
-            ByteBuffer vBuffer = planes[2].getBuffer();
+            byte[] nv21 = Utils.yuv420ToNv21(inputMediaImage);
 
-            int ySize = yBuffer.remaining();
-            int uSize = uBuffer.remaining();
-            int vSize = vBuffer.remaining();
-
-            byte[] nv21 = new byte[ySize + uSize + vSize];
-            yBuffer.get(nv21, 0, ySize);
-            vBuffer.get(nv21, ySize, vSize);
-            uBuffer.get(nv21, ySize + vSize, uSize);
-
-            int cameraMode = 7;
-            try {
-                if (SettingsActivity.getCameraLens(requireContext()) == CameraSelector.LENS_FACING_BACK) {
-                    cameraMode = 6;
-                }
-            } catch (Exception ignored) {}
+            int rotationDegrees = imageProxy.getImageInfo().getRotationDegrees();
+            int lensFacing = SettingsActivity.getCameraLens(requireContext());
+            int cameraMode = Utils.getCameraMode(rotationDegrees, lensFacing);
             processedFrameBitmap = FaceSDKWrapper.INSTANCE.yuv2Bitmap(nv21, inputMediaImage.getWidth(), inputMediaImage.getHeight(), cameraMode);
+
             final Bitmap finalProcessed = processedFrameBitmap;
 
             // --- Streaming Logic ---

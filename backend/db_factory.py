@@ -103,39 +103,50 @@ class PostgresCursorWrapper:
         # 2. Convert SQLite syntax/functions to Postgres
         sql_pg = sql.replace('?', '%s')
         
+        # Clean up multi-line SQL for easier regex matching
+        sql_up = sql_pg.upper().strip()
+        
         # Handle "INSERT OR IGNORE" -> "INSERT ... ON CONFLICT DO NOTHING"
-        if "INSERT OR IGNORE" in sql_pg.upper():
+        if "INSERT OR IGNORE" in sql_up:
             sql_pg = re.sub(r'INSERT\s+OR\s+IGNORE\s+INTO', 'INSERT INTO', sql_pg, flags=re.IGNORECASE)
             # Find the core part to determine where to append ON CONFLICT
-            # We assume for now that standard tables have a UNIQUE constraint or PRIMARY KEY
-            # If it's system_users, the constraint is on 'username'
-            if "system_users" in sql_pg.lower():
-                sql_pg += " ON CONFLICT (username) DO NOTHING"
-            elif "parent_users" in sql_pg.lower():
-                sql_pg += " ON CONFLICT (username) DO NOTHING"
-            elif "active_sessions" in sql_pg.lower():
-                sql_pg += " ON CONFLICT (token) DO NOTHING"
-            elif "subscriptions" in sql_pg.lower():
-                 sql_pg += " ON CONFLICT (vendor_id) DO NOTHING"
-            elif "vendors" in sql_pg.lower() and "id" in sql_pg.lower():
-                sql_pg += " ON CONFLICT (id) DO NOTHING"
-            elif "student_parents" in sql_pg.lower():
-                sql_pg += " ON CONFLICT (person_id, parent_id) DO NOTHING"
-            elif "vendor_devices" in sql_pg.lower():
-                sql_pg += " ON CONFLICT (vendor_id, device_id) DO NOTHING"
-            elif "vendor_device_slots" in sql_pg.lower():
-                sql_pg += " ON CONFLICT (vendor_id, slot_name) DO NOTHING"
-            else:
-                pass
+            target_table = None
+            for table in [
+                'system_users', 'parent_users', 'active_sessions', 'subscriptions', 
+                'vendors', 'student_parents', 'vendor_devices', 'vendor_device_slots',
+                'audit_logs', 'parent_tokens', 'system_settings'
+            ]:
+                if table in sql_pg.lower():
+                    target_table = table
+                    break
+            
+            if target_table:
+                # Remove trailing semicolon if present to append ON CONFLICT safely
+                sql_pg = sql_pg.rstrip().rstrip(';')
+                if target_table == "system_users":
+                    sql_pg += " ON CONFLICT (username) DO NOTHING"
+                elif target_table == "parent_users":
+                    sql_pg += " ON CONFLICT (username) DO NOTHING"
+                elif target_table == "active_sessions":
+                    sql_pg += " ON CONFLICT (token) DO NOTHING"
+                elif target_table == "subscriptions":
+                    sql_pg += " ON CONFLICT (vendor_id) DO NOTHING"
+                elif target_table == "vendors" and "id" in sql_pg.lower():
+                    sql_pg += " ON CONFLICT (id) DO NOTHING"
+                elif target_table == "student_parents":
+                    sql_pg += " ON CONFLICT (person_id, parent_id) DO NOTHING"
+                elif target_table == "vendor_devices":
+                    sql_pg += " ON CONFLICT (vendor_id, device_id) DO NOTHING"
+                elif target_table == "vendor_device_slots":
+                    sql_pg += " ON CONFLICT (vendor_id, slot_name) DO NOTHING"
+                elif target_table == "system_settings":
+                    sql_pg += " ON CONFLICT (key) DO NOTHING"
 
         # Handle "INSERT OR REPLACE" -> "INSERT ... ON CONFLICT (...) DO UPDATE SET ..."
-        # This is more complex because we need the list of columns
-        if "INSERT OR REPLACE" in sql_pg.upper():
+        if "INSERT OR REPLACE" in sql_up:
             sql_pg = re.sub(r'INSERT\s+OR\s+REPLACE\s+INTO', 'INSERT INTO', sql_pg, flags=re.IGNORECASE)
-            # This is hard to do generically without full SQL parsing. 
-            # We'll handle the most common ones or log an error if we can't.
+            sql_pg = sql_pg.rstrip().rstrip(';')
             if "system_settings" in sql_pg.lower():
-                # INSERT INTO system_settings (key, value) VALUES (%s, %s)
                 sql_pg += " ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
 
         # Function translation
