@@ -436,6 +436,10 @@ def delete_vendor_device(vendor_id, device_id):
     from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     try:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"DELETE request for vendor_id={vendor_id}, device_id={device_id}")
+        
         conn = get_db_connection()
         c = conn.cursor()
         # Ensure tables exist
@@ -443,29 +447,42 @@ def delete_vendor_device(vendor_id, device_id):
             c.execute("CREATE TABLE IF NOT EXISTS vendor_devices (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, device_id TEXT, device_name TEXT, registered_at DATETIME DEFAULT CURRENT_TIMESTAMP, last_login_at DATETIME)")
             c.execute("CREATE TABLE IF NOT EXISTS vendor_device_slots (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, slot_name TEXT, assigned_device_id TEXT, assigned_at DATETIME, UNIQUE(vendor_id, slot_name))")
             c.execute("CREATE TABLE IF NOT EXISTS active_sessions (token TEXT PRIMARY KEY, username TEXT, vendor_id INTEGER, device_id TEXT, platform TEXT, last_active DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Schema check error (ignoring): {e}")
             pass
         # Unassign any slots tied to this device
         try:
             c.execute("UPDATE vendor_device_slots SET assigned_device_id = NULL, assigned_at = NULL WHERE vendor_id = ? AND assigned_device_id = ?", (vendor_id, device_id))
-        except Exception:
+            logger.info(f"Unassigned slots: {c.rowcount}")
+        except Exception as e:
+            logger.warning(f"Unassign slots error: {e}")
             pass
         # Delete any active sessions for this device (mobile/web tied to this device_id)
         try:
             c.execute("DELETE FROM active_sessions WHERE vendor_id = ? AND device_id = ?", (vendor_id, device_id))
-        except Exception:
+            logger.info(f"Deleted sessions: {c.rowcount}")
+        except Exception as e:
+            logger.warning(f"Delete sessions error: {e}")
             pass
         # Clear parent device bindings so parent app sessions on this device are invalidated
         try:
             c.execute("UPDATE parent_users SET device_id = NULL, fcm_token = NULL, session_version = COALESCE(session_version, 1) + 1 WHERE vendor_id = ? AND device_id = ?", (vendor_id, device_id))
-        except Exception:
+            logger.info(f"Updated parent users: {c.rowcount}")
+        except Exception as e:
+            logger.warning(f"Update parent users error: {e}")
             pass
         try:
+            # Check if column exists first? Or just try-except
             c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND device_id = ?", (vendor_id, device_id))
-        except Exception:
+            logger.info(f"Deleted parent tokens: {c.rowcount}")
+        except Exception as e:
+            logger.warning(f"Delete parent tokens error (might be missing column): {e}")
             pass
         # Remove the device record
         c.execute("DELETE FROM vendor_devices WHERE vendor_id = ? AND device_id = ?", (vendor_id, device_id))
+        rows_deleted = c.rowcount
+        logger.info(f"Deleted device record: {rows_deleted}")
+        
         conn.commit()
         try:
             socketio.emit("vendor_updated", {"vendor_id": vendor_id}, room="super_admin")
@@ -473,12 +490,15 @@ def delete_vendor_device(vendor_id, device_id):
             socketio.emit("device_removed", {"vendor_id": vendor_id, "device_id": device_id}, room=f"vendor_{vendor_id}")
             # force_logout_mobile is used for session invalidation on the client
             socketio.emit("force_logout_mobile", {"vendor_id": vendor_id, "device_id": device_id, "reason": "Device deleted by admin"}, room=f"vendor_{vendor_id}")
-        except Exception:
+            logger.info("Socket events emitted")
+        except Exception as e:
+            logger.warning(f"Socket emit error: {e}")
             pass
         conn.close()
         log_audit("device_delete", {"device_id": device_id}, target_vendor_id=vendor_id)
-        return jsonify({"success": True})
+        return jsonify({"success": True, "rows_deleted": rows_deleted})
     except Exception as e:
+        logger.error(f"Error in delete_vendor_device: {e}", exc_info=True)
         try:
             conn.rollback()
             conn.close()
