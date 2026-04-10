@@ -341,20 +341,16 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
             Image image = imageProxy.getImage();
 
             Image.Plane[] planes = image.getPlanes();
-            ByteBuffer yBuffer = planes[0].getBuffer();
-            ByteBuffer uBuffer = planes[1].getBuffer();
-            ByteBuffer vBuffer = planes[2].getBuffer();
+            byte[] nv21 = Utils.yuv420ToNv21(image);
 
-            int ySize = yBuffer.remaining();
-            int uSize = uBuffer.remaining();
-            int vSize = vBuffer.remaining();
+            int rotationDegrees = imageProxy.getImageInfo().getRotationDegrees();
+            int lensFacing = SettingsActivity.getCameraLens(this);
+            if (forceFrontCamera) {
+                lensFacing = CameraSelector.LENS_FACING_FRONT;
+            }
+            int cameraMode = Utils.getCameraMode(rotationDegrees, lensFacing);
+            Bitmap bitmap = FaceSDK.yuv2Bitmap(nv21, image.getWidth(), image.getHeight(), cameraMode);
 
-            byte[] nv21 = new byte[ySize + uSize + vSize];
-            yBuffer.get(nv21, 0, ySize);
-            vBuffer.get(nv21, ySize, vSize);
-            uBuffer.get(nv21, ySize + vSize, uSize);
-
-            Bitmap bitmap  = FaceSDK.yuv2Bitmap(nv21, image.getWidth(), image.getHeight(), 7);
 
             // --- Streaming Logic ---
             long currentTime = System.currentTimeMillis();

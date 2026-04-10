@@ -444,25 +444,13 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
                 return;
             }
 
-            Image.Plane[] planes = image.getPlanes();
-            ByteBuffer yBuffer = planes[0].getBuffer();
-            ByteBuffer uBuffer = planes[1].getBuffer();
-            ByteBuffer vBuffer = planes[2].getBuffer();
+            byte[] nv21 = Utils.yuv420ToNv21(image);
 
-            int ySize = yBuffer.remaining();
-            int uSize = uBuffer.remaining();
-            int vSize = vBuffer.remaining();
+            int rotationDegrees = imageProxy.getImageInfo().getRotationDegrees();
+            int lensFacing = SettingsActivity.getCameraLens(context);
+            int cameraMode = Utils.getCameraMode(rotationDegrees, lensFacing);
+            bitmap = FaceSDK.yuv2Bitmap(nv21, image.getWidth(), image.getHeight(), cameraMode);
 
-            byte[] nv21 = new byte[ySize + uSize + vSize];
-            yBuffer.get(nv21, 0, ySize);
-            vBuffer.get(nv21, ySize, vSize);
-            uBuffer.get(nv21, ySize + vSize, uSize);
-
-            int cameraMode = 7;
-            if(SettingsActivity.getCameraLens(context) == CameraSelector.LENS_FACING_BACK) {
-                cameraMode = 6;
-            }
-            bitmap  = FaceSDK.yuv2Bitmap(nv21, image.getWidth(), image.getHeight(), cameraMode);
 
             if (bitmap == null) {
                 imageProxy.close();

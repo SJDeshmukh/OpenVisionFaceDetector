@@ -534,36 +534,30 @@ def login():
                 except Exception:
                     pass
 
-            # Student single-device restriction
-            if user['role'] == 'user':
-                try:
-                    # Clean up expired sessions first (older than 24h)
-                    is_pg = getattr(conn, "_is_pg", False)
-                    if is_pg:
-                        c.execute("DELETE FROM active_sessions WHERE username = ? AND last_active < (NOW() - INTERVAL '1 day')", (username,))
-                    else:
-                        c.execute("DELETE FROM active_sessions WHERE username = ? AND last_active < datetime('now','-1 day')", (username,))
-                    
-                    c.execute("SELECT device_id FROM active_sessions WHERE username = ?", (username,))
-                    existing_session = c.fetchone()
-                    if existing_session:
-                        existing_device_id = existing_session[0]
-                        # If there's an active session on a DIFFERENT device, block login
-                        if existing_device_id and device_id and existing_device_id != device_id:
-                            conn.close()
-                            return jsonify({"error": "You are already logged in on another device. Please logout first to use this device."}), 403
-                        elif existing_device_id and not device_id:
-                            conn.close()
-                            return jsonify({"error": "You are already logged in on another device. Please logout first to use this device."}), 403
-                except Exception as e:
-                    logger.error(f"Error checking existing student session: {e}")
+            # Device-Centric Restriction: 
+            # Ensure this specific device only has ONE active session at a time in the database,
+            # regardless of which user is logging in now vs who was there before.
+            try:
+                c.execute("DELETE FROM active_sessions WHERE platform = ? AND device_id = ?", (platform, device_id))
+            except Exception:
+                pass
+
+            # Cleanup stale sessions (older than 12h instead of 24h for better rotation)
+            try:
+                is_pg = getattr(conn, "_is_pg", False)
+                if is_pg:
+                    c.execute("DELETE FROM active_sessions WHERE last_active < (NOW() - INTERVAL '12 hours')")
+                else:
+                    c.execute("DELETE FROM active_sessions WHERE last_active < datetime('now','-12 hours')")
+            except Exception as e:
+                logger.error(f"Error cleaning stale sessions: {e}")
 
             try:
                 c.execute("CREATE TABLE IF NOT EXISTS active_sessions (token TEXT PRIMARY KEY, username TEXT, vendor_id INTEGER, device_id TEXT, platform TEXT, last_active DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
             except Exception:
                 pass
-            c.execute("DELETE FROM active_sessions WHERE username = ? AND platform = ? AND device_id = ?", (username, platform, device_id))
             
+            # Create NEW session for this login
             c.execute("INSERT INTO active_sessions (token, username, vendor_id, device_id, platform, last_active) VALUES (?, ?, ?, ?, ?, ?)",
                       (token, username, user_vendor_id, device_id, platform, datetime.now()))
             conn.commit()
@@ -1258,39 +1252,27 @@ def verify_student_password():
             # Student PIN/Password verified. Return full login response including token.
             token = generate_token(username, user_dict.get('role', 'user'), user_dict.get('vendor_id'))
             
-            # Record activation
+            # Record activation or update session
             device_id = request.json.get('device_id', 'web-student')
-
-            # Single-device restriction check
-            try:
-                # Clean up expired sessions first (older than 24h)
-                is_pg = getattr(conn, "_is_pg", False)
-                placeholder = "%s" if is_pg else "?"
-                if is_pg:
-                    c.execute(f"DELETE FROM active_sessions WHERE username = {placeholder} AND last_active < (NOW() - INTERVAL '1 day')", (username,))
-                else:
-                    c.execute(f"DELETE FROM active_sessions WHERE username = {placeholder} AND last_active < datetime('now','-1 day')", (username,))
-                
-                c.execute(f"SELECT device_id FROM active_sessions WHERE username = {placeholder}", (username,))
-                existing_session = c.fetchone()
-                if existing_session:
-                    existing_device_id = existing_session[0]
-                    # If there's an active session on a DIFFERENT device, block login
-                    if existing_device_id and device_id and existing_device_id != device_id:
-                        return jsonify({"error": "You are already logged in on another device. Please logout first to use this device."}), 403
-            except Exception as e:
-                logger.error(f"Error checking existing student session: {e}")
             
             try:
                 is_pg = getattr(conn, "_is_pg", False)
                 placeholder = "%s" if is_pg else "?"
+                c.execute(f"DELETE FROM active_sessions WHERE username = {placeholder} AND platform = 'web' AND device_id = {placeholder}", (username, device_id))
+                
+                # Cleanup stale web sessions (older than 12h)
+                if is_pg:
+                    c.execute(f"DELETE FROM active_sessions WHERE platform = 'web' AND last_active < (NOW() - INTERVAL '12 hours')")
+                else:
+                    c.execute(f"DELETE FROM active_sessions WHERE platform = 'web' AND last_active < datetime('now','-12 hours')")
+                
                 c.execute(
                     f"INSERT INTO active_sessions (token, username, vendor_id, device_id, platform, last_active) VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'web', {placeholder})",
                     (token, username, user_dict.get('vendor_id'), device_id, datetime.now())
                 )
                 conn.commit()
             except Exception as e:
-                logger.error(f"Failed to record session: {e}")
+                logger.error(f"Failed to record session in verify_password: {e}")
 
             return jsonify({
                 "status": "success",

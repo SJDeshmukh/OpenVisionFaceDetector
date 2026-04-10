@@ -469,8 +469,10 @@ def delete_vendor_device(vendor_id, device_id):
         conn.commit()
         try:
             socketio.emit("vendor_updated", {"vendor_id": vendor_id}, room="super_admin")
+            # device_removed tells the specific device it's no longer allowed
             socketio.emit("device_removed", {"vendor_id": vendor_id, "device_id": device_id}, room=f"vendor_{vendor_id}")
-            socketio.emit("force_logout_mobile_device", {"vendor_id": vendor_id, "device_id": device_id}, room=f"vendor_{vendor_id}")
+            # force_logout_mobile is used for session invalidation on the client
+            socketio.emit("force_logout_mobile", {"vendor_id": vendor_id, "device_id": device_id, "reason": "Device deleted by admin"}, room=f"vendor_{vendor_id}")
         except Exception:
             pass
         conn.close()
@@ -504,7 +506,7 @@ def logout_vendor_device(vendor_id, device_id):
         conn.commit()
         conn.close()
         try:
-            socketio.emit("force_logout_mobile_device", {"vendor_id": vendor_id, "device_id": device_id}, room=f"vendor_{vendor_id}")
+            socketio.emit("force_logout_mobile", {"vendor_id": vendor_id, "device_id": device_id, "reason": "Remote logout by admin"}, room=f"vendor_{vendor_id}")
         except Exception:
             pass
         log_audit("device_logout", {"device_id": device_id}, target_vendor_id=vendor_id)
