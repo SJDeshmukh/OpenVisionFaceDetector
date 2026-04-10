@@ -436,8 +436,6 @@ def delete_vendor_device(vendor_id, device_id):
     from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
     try:
-        import logging
-        logger = logging.getLogger(__name__)
         logger.info(f"DELETE request for vendor_id={vendor_id}, device_id={device_id}")
         
         conn = get_db_connection()
