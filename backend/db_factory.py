@@ -532,7 +532,7 @@ def init_sqlite_schema(conn):
         cur.execute(q)
     
     # Migration: Add columns if they don't exist
-    for col in ["last_active_at DATETIME", "battery_level REAL"]:
+    for col in ["last_active_at DATETIME", "battery_level REAL", "geofence_lat REAL", "geofence_lng REAL", "geofence_radius REAL DEFAULT 0", "last_lat REAL", "last_lng REAL"]:
         try:
             cur.execute(f"ALTER TABLE vendor_devices ADD COLUMN {col}")
         except Exception:
