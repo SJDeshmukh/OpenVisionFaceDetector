@@ -127,6 +127,21 @@ sudo nginx -t
 sudo systemctl restart nginx
 
 echo "==> [8/8] Configuring Systemd Services (Auto-Restart)..."
+
+# Pre-cleanup: Stop legacy services and clear port 5001
+echo "Performing pre-startup cleanup..."
+sudo systemctl stop openvision-backend 2>/dev/null || true
+sudo systemctl stop openvision-celery 2>/dev/null || true
+sudo pkill -f gunicorn || true
+sudo pkill -f celery || true
+
+# Force clear port 5001 if still occupied
+PORT_PID=$(sudo lsof -t -i:5001 2>/dev/null || true)
+if [ ! -z "$PORT_PID" ]; then
+    echo "Clearing port 5001 (PID: $PORT_PID)..."
+    sudo kill -9 $PORT_PID 2>/dev/null || true
+fi
+
 WORKING_DIR=$(pwd)
 GUNICORN_PATH="$(pwd)/backend/.venv/bin/gunicorn"
 CELERY_PATH="$(pwd)/backend/.venv/bin/celery"
