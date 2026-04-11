@@ -1203,20 +1203,7 @@ def toggle_web_login(vendor_id):
 
     return jsonify({"success": True, "enabled": enabled})
 
-@admin_bp.route("/vendors/<int:vendor_id>", methods=["DELETE"])
-@super_admin_required
-def delete_vendor(vendor_id):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("DELETE FROM vendors WHERE id = ?", (vendor_id,))
-    conn.commit()
-    conn.close()
-    
-    # Invalidate stats cache so summary cards update
-    cache_delete("admin_stats")
 
-    log_audit("delete_vendor", {"vendor_id": vendor_id})
-    return jsonify({"success": True})
 
 @admin_bp.route("/vendors/<int:vendor_id>/subscription", methods=["GET"])
 @super_admin_required
@@ -1897,39 +1884,7 @@ def list_archived_vendors():
     finally:
         conn.close()
 
-@admin_bp.route("/audit-logs", methods=["GET"])
-@super_admin_required
-def list_audit_logs():
-    from app import socketio, is_testing
-    from services.auth_service import authenticate_vendor_access
-    from app import ensure_audit_logs_table as _ensure_audit_logs_table
-    _ensure_audit_logs_table()
-    conn = get_db_connection()
-    c = conn.cursor()
-    try:
-        c.execute("SELECT id, timestamp, actor_username, actor_role, target_vendor_id, action, details, ip FROM audit_logs ORDER BY timestamp DESC LIMIT 500")
-        rows = c.fetchall()
-        logs = []
-        for r in rows:
-            if isinstance(r, dict):
-                d = r
-            else:
-                d = {
-                    "id": r[0],
-                    "timestamp": r[1],
-                    "actor_username": r[2],
-                    "actor_role": r[3],
-                    "target_vendor_id": r[4],
-                    "action": r[5],
-                    "details": r[6],
-                    "ip": r[7]
-                }
-            logs.append(d)
-        return jsonify({"logs": logs})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        conn.close()
+
 
 @admin_bp.route("/vendors/<int:vendor_id>/invoices/generate", methods=["POST"])
 @super_admin_required
