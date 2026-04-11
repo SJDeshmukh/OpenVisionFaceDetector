@@ -1,8 +1,13 @@
 import os
 import sqlite3
-import psycopg2
-import psycopg2.pool
-from psycopg2.extras import DictCursor
+try:
+    import psycopg2
+    import psycopg2.pool
+    from psycopg2.extras import DictCursor
+    from psycopg2 import extensions as ext
+except ImportError:
+    psycopg2 = None
+    ext = None
 import re
 import logging
 from datetime import datetime
@@ -82,8 +87,11 @@ def get_pg_pool():
             # ThreadedConnectionPool for eventlet/threading compatibility
             minconn = int(os.environ.get("DB_MIN_CONN", "1"))
             maxconn = int(os.environ.get("DB_MAX_CONN", "20"))
-            _PG_POOL = psycopg2.pool.ThreadedConnectionPool(minconn, maxconn, DATABASE_URL)
-            logger.info(f"PostgreSQL connection pool initialized (min={minconn}, max={maxconn})")
+            if psycopg2:
+                _PG_POOL = psycopg2.pool.ThreadedConnectionPool(minconn, maxconn, DATABASE_URL)
+                logger.info(f"PostgreSQL connection pool initialized (min={minconn}, max={maxconn})")
+            else:
+                logger.error("PostgreSQL requested but psycopg2 is not installed.")
         except Exception as e:
             logger.error(f"Failed to initialize PostgreSQL pool: {e}")
     return _PG_POOL
@@ -287,18 +295,21 @@ def get_db_connection(timeout=30):
                 # Ensure the connection is in a clean state.
                 # If a previous request aborted a transaction but didn't rollback, we must fix it here.
                 try:
-                    import psycopg2.extensions as ext
-                    status = conn.get_transaction_status()
-                    if status == ext.TRANSACTION_STATUS_INERROR:
-                        logger.warning("Retrieved 'aborted' connection from pool. Performing recovery rollback.")
-                        conn.rollback()
-                    elif status != ext.TRANSACTION_STATUS_IDLE:
-                        # Also rollback if it's IN_TRANS (unfinished transaction) to prevent cross-request leakage
-                        conn.rollback()
+                    if ext:
+                        status = conn.get_transaction_status()
+                        if status == ext.TRANSACTION_STATUS_INERROR:
+                            logger.warning("Retrieved 'aborted' connection from pool. Performing recovery rollback.")
+                            conn.rollback()
+                        elif status != ext.TRANSACTION_STATUS_IDLE:
+                            # Also rollback if it's IN_TRANS (unfinished transaction) to prevent cross-request leakage
+                            conn.rollback()
                 except Exception as ex:
                     logger.debug(f"Failed to check/reset connection status: {ex}")
             else:
-                conn = psycopg2.connect(DATABASE_URL, connect_timeout=timeout)
+                if psycopg2:
+                    conn = psycopg2.connect(DATABASE_URL, connect_timeout=timeout)
+                else:
+                    raise Exception("PostgreSQL requested but psycopg2 is not installed.")
             
             try:
                 # If it's a new connection or we want to ensure settings
@@ -359,10 +370,13 @@ def init_schemas():
     # Init primary if available
     if DATABASE_URL:
         try:
-            conn = psycopg2.connect(DATABASE_URL)
-            _init_pg_schema_on_conn(conn)
-            conn.close()
-            logger.info("PostgreSQL Schema initialized.")
+            if psycopg2:
+                conn = psycopg2.connect(DATABASE_URL)
+                _init_pg_schema_on_conn(conn)
+                conn.close()
+                logger.info("PostgreSQL Schema initialized.")
+            else:
+                raise Exception("PostgreSQL requested but psycopg2 is not installed.")
         except Exception as e:
             logger.warning(f"Could not initialize PostgreSQL schema: {e}")
 

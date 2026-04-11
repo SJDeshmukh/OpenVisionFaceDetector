@@ -540,7 +540,6 @@ def delete_vendor_device(vendor_id, device_id):
         conn.close()
 
         # Invalidate stats cache so summary cards update
-        from utils import cache_delete
         cache_delete("admin_stats")
 
         log_audit("device_delete", {"device_id": device_id}, target_vendor_id=vendor_id)
@@ -1135,7 +1134,6 @@ def create_vendor():
         socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
         
         # Invalidate stats cache so summary cards update
-        from utils import cache_delete
         cache_delete("admin_stats")
         
         return jsonify({
@@ -1215,7 +1213,6 @@ def delete_vendor(vendor_id):
     conn.close()
     
     # Invalidate stats cache so summary cards update
-    from utils import cache_delete
     cache_delete("admin_stats")
 
     log_audit("delete_vendor", {"vendor_id": vendor_id})
