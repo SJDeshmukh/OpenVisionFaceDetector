@@ -12,6 +12,7 @@ from utils import (
     vendor_has_feature, track_metrics, rate_limit,
     check_vendor_status, _run
 )
+from db_factory import set_row_factory
 from services.attendance_service import (
     calculate_daily_hours, calculate_expected_hours, calculate_arrival_status
 )
@@ -33,7 +34,7 @@ def get_attendance_filters(valid_data: AttendanceFilterSchema):
     if cached: return jsonify(cached)
 
     conn = get_db_connection()
-    conn.row_factory = sqlite3.Row
+    set_row_factory(conn)
     c = conn.cursor()
     
     c.execute("SELECT registration_config FROM vendors WHERE id = ?", (vendor_id,))
@@ -141,7 +142,7 @@ def get_attendance_summary(valid_data: AttendanceFilterSchema):
     if cached: return jsonify(cached)
 
     conn = get_db_connection()
-    conn.row_factory = sqlite3.Row
+    set_row_factory(conn)
     c = conn.cursor()
     
     c.execute("SELECT live_timetable FROM companies WHERE vendor_id = ?", (vendor_id,))

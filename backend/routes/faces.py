@@ -10,10 +10,13 @@ from datetime import datetime
 import numpy as np
 import cv2
 from services.auth_service import authenticate_vendor_access, extract_token, verify_token, check_vendor_status, hash_password
+import db_factory
+from db_factory import set_row_factory
 from utils import get_db_connection, LOW_RAM_MODE, _VENDOR_EMB_CACHE, reset_sequence, ALL_FEATURES, cache_delete_vendor_prefix, cache_delete, require_feature, cache_get, cache_set
 from services.face_service import _ensure_vendor_emb_cache, _normalize_vec, _suggest_from_cache
 from storage import upload_base64_image, presigned_url_for_key, OBJECT_STORAGE_ENABLED, compress_image
-import os
+import db_factory
+from db_factory import set_row_factory
 from concurrent.futures import ThreadPoolExecutor
 def _extract_structural_vector(lmks):
     if lmks is None or len(lmks) != 68:
@@ -440,7 +443,7 @@ def get_persons():
         return jsonify(cached)
 
     conn = get_db_connection()
-    conn.row_factory = sqlite3.Row
+    set_row_factory(conn)
     c = conn.cursor()
     
     query = "SELECT id, display_id, name, department, designation, shift, daily_wage, face_image, phone, custom_data FROM faces"
@@ -459,9 +462,13 @@ def get_persons():
             params += [limit, offset]
     except:
         pass
-    c.execute(query, params)
-    rows = c.fetchall()
-    conn.close()
+    try:
+        c.execute(query, params)
+        rows = c.fetchall()
+        conn.close()
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": f"PostgreSQL Fetch Error: {str(e)}", "query": query, "params": str(params)}), 500
     
     persons = []
     for row in rows:
@@ -473,7 +480,7 @@ def get_persons():
 
 
 @faces_bp.route("/sync/upload", methods=["POST"])
-@require_feature("mobile_app")
+@require_feature("mobile_app", "bulk_image_attendance")
 def upload_face():
     from app import get_db_connection, socketio, is_testing
     from services.auth_service import extract_token, verify_token
@@ -496,11 +503,17 @@ def upload_face():
     struct_vec = data.get("struct_vec")
     struct_vec_list = data.get("struct_vec_list")
     
+    # Class Scope Support
+    class_year = data.get("class_year")
+    division = data.get("division")
+    branch = data.get("branch")
+    
     # Extract Custom Data (Dynamic Fields)
     standard_fields = {
         'person_id', 'name', 'templates', 'templates_list', 'face_image', 'phone', 
         'department', 'designation', 'shift', 'vendor_id', 
-        'landmarks_3d', 'landmarks_3d_list', 'struct_vec', 'struct_vec_list'
+        'landmarks_3d', 'landmarks_3d_list', 'struct_vec', 'struct_vec_list',
+        'class_year', 'division', 'branch'
     }
     custom_dict = {k: v for k, v in data.items() if k not in standard_fields}
     custom_data = json.dumps(custom_dict) if custom_dict else None
@@ -599,7 +612,7 @@ def upload_face():
             # Check limit (only for new users)
             c.execute("SELECT max_employees FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
             sub = c.fetchone()
-            max_employees = sub[0] if sub else 50 # Default limit
+            max_employees = (sub[0] if sub and sub[0] is not None else 50)
             
             c.execute("SELECT COUNT(*) FROM faces WHERE vendor_id = ?", (vendor_id,))
             current_count = c.fetchone()[0]
@@ -747,9 +760,9 @@ def upload_face():
                                             try: cur_lmks_json = json.dumps(lm)
                                             except Exception: pass
 
-                                        c.execute("""INSERT INTO person_embeddings (vendor_id, person_id, vec, dim, struct_vec, landmarks_3d) 
-                                                     VALUES (?, ?, ?, ?, ?, ?)""", 
-                                                  (vendor_id or existing.get("vendor_id"), person_id, vec_blob, int(emb.size), cur_struct_blob, cur_lmks_json))
+                                        c.execute("""INSERT INTO person_embeddings (vendor_id, person_id, class_year, division, branch, vec, dim, struct_vec, landmarks_3d) 
+                                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", 
+                                                  (vendor_id or existing.get("vendor_id"), person_id, str(class_year or ''), str(division or ''), str(branch or ''), vec_blob, int(emb.size), cur_struct_blob, cur_lmks_json))
                                 except Exception:
                                     continue
 
@@ -910,8 +923,8 @@ def upload_face():
                                     try: cur_lmks_json = json.dumps(lm)
                                     except Exception: pass
 
-                                c.execute("""INSERT INTO person_embeddings (vendor_id, person_id, vec, dim, struct_vec, landmarks_3d) 
-                                             VALUES (?, ?, ?, ?, ?, ?)""", (vendor_id, new_id, vec_blob, int(emb.size), cur_struct_blob, cur_lmks_json))
+                                c.execute("""INSERT INTO person_embeddings (vendor_id, person_id, class_year, division, branch, vec, dim, struct_vec, landmarks_3d) 
+                                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", (vendor_id, new_id, str(class_year or ''), str(division or ''), str(branch or ''), vec_blob, int(emb.size), cur_struct_blob, cur_lmks_json))
                         except Exception:
                             continue
 
@@ -951,7 +964,7 @@ def download_faces():
     if error: return error
 
     conn = get_db_connection()
-    conn.row_factory = sqlite3.Row
+    set_row_factory(conn)
     c = conn.cursor()
     
     query = "SELECT * FROM faces"
@@ -976,17 +989,18 @@ def download_faces():
 
     faces = []
     for row in rows:
+        r = dict(row)
         face_item = {
-            "id": row["id"],
-            "display_id": row["display_id"] if "display_id" in row.keys() else row["id"],
-            "name": row["name"],
-            "templates": row["templates"] if row["templates"] else None,
-            "face_image": row["face_image"] if row["face_image"] else None,
-            "phone": row["phone"] if "phone" in row.keys() else "",
-            "department": row["department"] if "department" in row.keys() else "",
-            "designation": row["designation"] if "designation" in row.keys() else "",
-            "shift": row["shift"] if "shift" in row.keys() else "",
-            "custom_data": json.loads(row["custom_data"]) if "custom_data" in row.keys() and row["custom_data"] else {}
+            "id": r.get("id"),
+            "display_id": r.get("display_id") or r.get("id"),
+            "name": r.get("name"),
+            "templates": r.get("templates"),
+            "face_image": r.get("face_image"),
+            "phone": r.get("phone", ""),
+            "department": r.get("department", ""),
+            "designation": r.get("designation", ""),
+            "shift": r.get("shift", ""),
+            "custom_data": json.loads(r["custom_data"]) if r.get("custom_data") else {}
         }
         try:
             if face_item["face_image"] and isinstance(face_item["face_image"], str) and face_item["face_image"].startswith("s3://"):

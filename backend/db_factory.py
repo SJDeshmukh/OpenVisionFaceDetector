@@ -9,22 +9,47 @@ from datetime import datetime
 import time
 from database.models import db
 
+def set_row_factory(conn):
+    """Sets the appropriate row factory for SQLite or uses DictCursor for PG."""
+    if getattr(conn, "_is_pg", False):
+        # psycopg2 connections with DictCursor don't need row_factory
+        # But we ensure it's using DictCursor if initialized via get_db_connection
+        return conn
+    else:
+        # SQLite native connection
+        try:
+            conn.row_factory = sqlite3.Row
+        except Exception:
+            pass
+    return conn
+
 def get_table_columns(conn, table_name):
     """Returns a list of column names for a given table."""
-    c = conn.cursor()
     is_pg = getattr(conn, "_is_pg", False)
+    c = conn.cursor()
     try:
         if is_pg:
-            # PostgreSQL uses %s for parameters
-            c.execute("SELECT column_name FROM information_schema.columns WHERE table_name = %s", (table_name,))
-            return [str(r[0]) for r in c.fetchall()]
+            # Use SAVEPOINT to protect any active transaction from being aborted if this check fails
+            c.execute("SAVEPOINT get_cols_sp")
+            try:
+                # PostgreSQL uses %s for parameters
+                c.execute("SELECT column_name FROM information_schema.columns WHERE table_name = %s", (table_name,))
+                cols = [str(r[0]) for r in c.fetchall()]
+                c.execute("RELEASE SAVEPOINT get_cols_sp")
+                return cols
+            except Exception:
+                # Rollback only the column check, keeping the main transaction alive
+                try:
+                    c.execute("ROLLBACK TO SAVEPOINT get_cols_sp")
+                except Exception:
+                    pass
+                return []
         else:
             # SQLite PRAGMA doesn't support ? for table names
             # table_name is trusted here since it's used internally
             c.execute(f"PRAGMA table_info({table_name})")
             return [str(r[1]) for r in c.fetchall()]
     except Exception:
-        if is_pg and hasattr(conn, "rollback"): conn.rollback()
         return []
     finally:
         c.close()
@@ -209,8 +234,16 @@ class PostgresCursorWrapper:
 class PostgresConnectionWrapper:
     def __init__(self, conn):
         self.conn = conn
-        self.row_factory = None
+        self._row_factory = None
         self._is_pg = True
+
+    @property
+    def row_factory(self):
+        return self._row_factory
+
+    @row_factory.setter
+    def row_factory(self, val):
+        self._row_factory = val
 
     def cursor(self):
         return PostgresCursorWrapper(self.conn.cursor(cursor_factory=DictCursor))

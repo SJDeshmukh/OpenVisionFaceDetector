@@ -359,14 +359,15 @@ register_error_handlers(app)
 @app.route("/", defaults={'path': ''})
 @app.route("/<path:path>")
 def serve_frontend(path):
-    # Adjust path to point to web-dashboard/dist relative to backend/app.py
-    # app.py is in backend/, so ../web-dashboard/dist
+    # Prevent shadowing API/Socket.io routes
+    if path.startswith("api/") or path.startswith("socket.io/") or path.startswith("metrics"):
+        return abort(404)
+        
     static_folder = os.path.abspath(os.path.join(os.path.dirname(__file__), "../web-dashboard/dist"))
     
     if path != "" and os.path.exists(os.path.join(static_folder, path)):
         return send_from_directory(static_folder, path)
     
-
     # Fallback to index.html for SPA routing
     return send_from_directory(static_folder, 'index.html')
 

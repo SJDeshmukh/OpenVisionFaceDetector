@@ -20,32 +20,43 @@ import androidx.camera.core.CameraSelector;
 public class Utils {
 
     public static byte[] yuv420ToNv21(Image image) {
-        Image.Plane[] planes = image.getPlanes();
-        ByteBuffer yBuffer = planes[0].getBuffer();
-        ByteBuffer uBuffer = planes[1].getBuffer();
-        ByteBuffer vBuffer = planes[2].getBuffer();
-
-        int ySize = yBuffer.remaining();
-        int uSize = uBuffer.remaining();
-        int vSize = vBuffer.remaining();
-
-        byte[] nv21 = new byte[ySize + (ySize / 2)];
-
-        // Full Y plane
-        yBuffer.get(nv21, 0, ySize);
-
-        // Interleave V and U (NV21: YYYY... VUVU...)
-        int pos = ySize;
-        int rowStride = planes[1].getRowStride();
-        int pixelStride = planes[1].getPixelStride();
         int width = image.getWidth();
         int height = image.getHeight();
+        byte[] nv21 = new byte[width * height * 3 / 2];
 
+        Image.Plane[] planes = image.getPlanes();
+        ByteBuffer yBuffer = planes[0].getBuffer();
+        int yRowStride = planes[0].getRowStride();
+
+        // Copy Y plane row-by-row to remove padding (crucial for various Android devices like Redmi/Vivo)
+        int pos = 0;
+        if (yRowStride == width) {
+            yBuffer.get(nv21, 0, width * height);
+            pos = width * height;
+        } else {
+            for (int row = 0; row < height; row++) {
+                yBuffer.position(row * yRowStride);
+                yBuffer.get(nv21, pos, width);
+                pos += width;
+            }
+        }
+
+        // Interleave V and U (NV21: YYYY... VUVU...)
+        // V plane is usually at planes[2], U is at planes[1] in YUV_420_888
+        ByteBuffer uBuffer = planes[1].getBuffer();
+        ByteBuffer vBuffer = planes[2].getBuffer();
+        int uvRowStride = planes[1].getRowStride();
+        int uvPixelStride = planes[1].getPixelStride();
+
+        // Standard UV sampling is 2x2 for YUV420
         for (int row = 0; row < height / 2; row++) {
             for (int col = 0; col < width / 2; col++) {
-                int vuIdx = row * rowStride + col * pixelStride;
-                nv21[pos++] = vBuffer.get(vuIdx);
-                nv21[pos++] = uBuffer.get(vuIdx);
+                int vuIdx = row * uvRowStride + col * uvPixelStride;
+                // Double check buffer limits to prevent crashes on edge-case hardware
+                if (vuIdx < vBuffer.capacity() && vuIdx < uBuffer.capacity()) {
+                    nv21[pos++] = vBuffer.get(vuIdx);
+                    nv21[pos++] = uBuffer.get(vuIdx);
+                }
             }
         }
 

@@ -63,6 +63,61 @@ def _decode_data_uri_to_rgb(uri: str):
     except Exception:
         return None
 
+def _apply_contrastive_refinement(sims: list, penalty_scale: float = 0.2) -> list:
+    """
+    Pushes dissimilar identities apart if they are too close (Embedding Separation).
+    """
+    if len(sims) < 2:
+        return sims
+        
+    top1 = sims[0]
+    top2 = sims[1]
+    
+    # Only refine if they are different identities and both have significant similarity
+    if top1['person_id'] != top2['person_id'] and top1['similarity'] > 0.4:
+        s1 = top1['similarity']
+        s2 = top2['similarity']
+        
+        gap = s1 - s2
+        # If the gap is small (< 10%), the identification is ambiguous.
+        # We push them away from each other mathematically.
+        overlap = max(0, 1.0 - gap)
+        penalty = overlap * penalty_scale
+        
+        # Accentuate the winner, penalize the runner-up if they are too close
+        top1['similarity'] = min(1.0, float(s1 + (gap * 0.1))) 
+        top2['similarity'] = max(0.0, float(s2 - penalty))
+        
+    return sorted(sims, key=lambda x: x['similarity'], reverse=True)
+
+def _cluster_batch_embeddings(embeddings_map: dict, threshold: float = 0.90) -> list:
+    """
+    Groups embeddings that belong to the same person within a batch (Intra-batch Clustering).
+    embeddings_map: {global_index: embedding_vector}
+    Returns: List of {'centroid': vec, 'indices': [global_indices]}
+    """
+    clusters = []
+    for idx, vec in embeddings_map.items():
+        v = _normalize_vec(vec)
+        if v.size == 0: continue
+        
+        top_sim = -1.0
+        target_cluster = None
+        
+        for c in clusters:
+            sim = float(np.dot(c['centroid'], v))
+            if sim > threshold and sim > top_sim:
+                top_sim = sim
+                target_cluster = c
+        
+        if target_cluster:
+            target_cluster['indices'].append(idx)
+            # Update centroid (moving average)
+            target_cluster['centroid'] = _normalize_vec((target_cluster['centroid'] * (len(target_cluster['indices']) - 1) + v))
+        else:
+            clusters.append({'centroid': v, 'indices': [idx]})
+    return clusters
+
 def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str | None = None, division: str | None = None, branch: str | None = None):
     try:
         class_y = str(class_year or "")
@@ -96,16 +151,16 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
         from multiple_face_detection import app as mfd_app
         items = []
         try:
-            q = "SELECT person_id, vec, dim, struct_vec FROM person_embeddings WHERE vendor_id = ?"
+            q = "SELECT person_id, vec, dim, struct_vec, class_year, division, branch FROM person_embeddings WHERE vendor_id = ?"
             args = [int(vendor_id or 0)]
             if class_year:
-                q += " AND (class_year = ?)"
+                q += " AND (class_year = ? OR class_year IS NULL OR class_year = '')"
                 args.append(str(class_year))
             if division:
-                q += " AND (division = ?)"
+                q += " AND (division = ? OR division IS NULL OR division = '')"
                 args.append(str(division))
             if branch:
-                q += " AND (branch = ?)"
+                q += " AND (branch = ? OR branch IS NULL OR branch = '')"
                 args.append(str(branch))
             c.execute(q, args)
             rows_emb = c.fetchall() or []
@@ -116,17 +171,21 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
                     vb = r['vec'] if isinstance(r, sqlite3.Row) else r[1]
                     dim = int(r['dim'] if isinstance(r, sqlite3.Row) else r[2])
                     sb = r['struct_vec'] if isinstance(r, sqlite3.Row) else r[3]
+                    class_y = r['class_year'] if isinstance(r, sqlite3.Row) else r[4]
+                    div = r['division'] if isinstance(r, sqlite3.Row) else r[5]
+                    br = r['branch'] if isinstance(r, sqlite3.Row) else r[6]
+                    
                     s_vec = None
                     if sb:
                         sd = np.frombuffer(sb, dtype=np.float32)
                         if sd.size > 0:
                             s_vec = sd
-                            
+                    
                     if vb and dim > 0:
                         v = np.frombuffer(vb, dtype=np.float32)
                         if v.size == dim:
                             v = _normalize_vec(v)
-                            items.append({'person_id': pid, 'name': '', 'vec': v, 'struct_vec': s_vec})
+                            items.append({'person_id': pid, 'name': '', 'vec': v, 'struct_vec': s_vec, 'class_year': class_y, 'division': div, 'branch': br})
                             id_set.add(pid)
                 except Exception:
                     continue
@@ -159,14 +218,17 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
             if vendor_id:
                 where.append("vendor_id = ?"); params.append(vendor_id)
             if class_year:
-                where.append("(custom_data LIKE ?)")
+                where.append("((custom_data LIKE ?) OR (custom_data NOT LIKE ?))")
                 params.append(f'%\"class_year\":\"{class_year}\"%')
+                params.append('%\"class_year\"%')
             if division:
-                where.append("(custom_data LIKE ?)")
+                where.append("((custom_data LIKE ?) OR (custom_data NOT LIKE ?))")
                 params.append(f'%\"division\":\"{division}\"%')
+                params.append('%\"division\"%')
             if branch:
-                where.append("(custom_data LIKE ?)")
+                where.append("((custom_data LIKE ?) OR (custom_data NOT LIKE ?))")
                 params.append(f'%\"branch\":\"{branch}\"%')
+                params.append('%\"branch\"%')
             if where:
                 base_query += " WHERE " + " AND ".join(where)
             c.execute(base_query, params)
@@ -203,7 +265,7 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
 
                     emb = mfd_app.get_embedder().embed(crop)
                     emb = _normalize_vec(emb)
-                    if emb.size > 0:
+                    if emb is not None and emb.size > 0:
                         items.append({'person_id': int(pid), 'name': str(nm), 'vec': emb})
                 except Exception:
                     continue
@@ -234,7 +296,7 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
     except Exception:
         return None
 
-def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3, struct_vec=None) -> list:
+def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3, struct_vec=None, class_year=None, division=None, branch=None) -> list:
     try:
         v = _normalize_vec(vec)
         if cache is None or not cache.get('items') or v.size == 0:
@@ -273,8 +335,20 @@ def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3, struct_vec=
                                 struct_sim = float(np.dot(s_u, struct_vec))
                                 sim = (sim * 0.70) + (struct_sim * 0.30)
                     
-                    raw.append({'person_id': int(pid), 'name': str(nm), 'similarity': sim})
-                return _dedup(raw, topk)
+                    # Check for perfect scope match
+                    is_perfect = True
+                    # Find matching item in cache to check scope
+                    match_item = next((x for x in cache.get('items', []) if x['person_id'] == int(pid)), None)
+                    if match_item:
+                        if class_year and str(match_item.get('class_year') or '') != str(class_year): is_perfect = False
+                        if division and str(match_item.get('division') or '') != str(division): is_perfect = False
+                        if branch and str(match_item.get('branch') or '') != str(branch): is_perfect = False
+
+                    raw.append({'person_id': int(pid), 'name': str(nm), 'similarity': sim, 'perfect_scope': is_perfect})
+                
+                deduped = _dedup(raw, topk * 2) # Get more candidates for refinement
+                refined = _apply_contrastive_refinement(deduped)
+                return refined[:topk]
             except Exception:
                 pass
         sims = []
@@ -290,8 +364,16 @@ def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3, struct_vec=
                     struct_sim = float(np.dot(s_u, struct_vec))
                     sim = (sim * 0.70) + (struct_sim * 0.30)
                     
-            sims.append({'person_id': it['person_id'], 'name': it['name'], 'similarity': sim})
-        return _dedup(sims, topk)
+            is_perfect = True
+            if class_year and str(it.get('class_year') or '') != str(class_year): is_perfect = False
+            if division and str(it.get('division') or '') != str(division): is_perfect = False
+            if branch and str(it.get('branch') or '') != str(branch): is_perfect = False
+                    
+            sims.append({'person_id': it['person_id'], 'name': it['name'], 'similarity': sim, 'perfect_scope': is_perfect})
+        
+        deduped = _dedup(sims, topk * 2)
+        refined = _apply_contrastive_refinement(deduped)
+        return refined[:topk]
     except Exception:
         return []
 
@@ -329,113 +411,122 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
         if isinstance(annotated, tuple) and len(annotated) == 2:
             img_rgb, anns = annotated
             draw = cv2.cvtColor(img_rgb.copy(), cv2.COLOR_RGB2BGR)
+            
+            # Step 1: Pre-process all faces to get embeddings and structural vectors
+            face_data = []
+            embeddings_map = {} # {local_index: emb_norm}
+            
             for i, (box, score_str) in enumerate(anns or []):
                 x1, y1, x2, y2 = [int(v) for v in box]
                 cv2.rectangle(draw, (x1, y1), (x2, y2), (0, 180, 255), 2)
                 if i < len(crops):
-                    crop_rgb = crops[i]
                     ih, iw = img_rgb.shape[:2]
-                    # Get original face bounding box from df (raw detector output, no padding)
                     if df is not None and hasattr(df, 'iloc') and i < len(df):
                         row = df.iloc[i]
                         bx1, by1, bx2, by2 = int(row['x1']), int(row['y1']), int(row['x2']), int(row['y2'])
+                        landmarks_3d = row.get('landmarks_3d', [])
                     else:
                         bx1, by1, bx2, by2 = x1, y1, x2, y2
-                    # Pure face crop - NO padding, just the detector box
-                    bx1 = max(0, bx1); by1 = max(0, by1)
-                    bx2 = min(iw, bx2); by2 = min(ih, by2)
-                    # Use a balanced centered box for the thumbnail crop (1.2x tight for embedding consistency)
-                    cx1, cy1, cx2, cy2 = mfd_app._compute_centered_box(bx1, by1, bx2, by2, img_rgb.shape[1], img_rgb.shape[0], scale=1.2)
+                        landmarks_3d = []
+                    
+                    bx1 = max(0, bx1); by1 = max(0, by1); bx2 = min(iw, bx2); by2 = min(ih, by2)
+                    cx1, cy1, cx2, cy2 = mfd_app._compute_centered_box(bx1, by1, bx2, by2, iw, ih, scale=1.2)
                     pure_face = img_rgb[cy1:cy2, cx1:cx2]
-
-                    # Compute embedding and 3D from PURE face crop (the padded one)
-                    emb_vec_b64 = ''
-                    struct_vec_b64 = ''
-                    landmarks_3d = []
-                    try:
-                        if df is not None and hasattr(df, 'iloc') and i < len(df):
-                            row = df.iloc[i]
-                            if 'landmarks_3d' in row and isinstance(row['landmarks_3d'], list) and len(row['landmarks_3d']) > 0:
-                                landmarks_3d = row['landmarks_3d']
-                                # Draw on full annotated image (landmarks are now GLOBAL)
-                                for pt in landmarks_3d:
-                                    dx, dy = int(pt[0]), int(pt[1])
-                                    cv2.circle(draw, (dx, dy), 1, (0, 255, 0), -1)
-
-                        # Now professionally restore pure_face using GFPGAN for the thumbnail and embedding
-                        if pure_face.size > 0:
-                            lmks_local = None
-                            if landmarks_3d:
-                                try:
-                                    lmks_local = np.array(landmarks_3d).copy()
-                                    lmks_local[:, 0] -= cx1
-                                    lmks_local[:, 1] -= cy1
-                                except Exception:
-                                    pass
-                            
-                            # Revert to GFPGAN for the sharp, professional look the user prefers
-                            pure_face = mfd_app.get_gfpgan_manager().enhance_crop(pure_face, fidelity=0.9, upscale=2, landmarks=lmks_local)
-                            if min(pure_face.shape[:2]) < 512:
-                                scale_f = 512.0 / min(pure_face.shape[:2])
-                                pure_face = cv2.resize(pure_face, (int(pure_face.shape[1] * scale_f), int(pure_face.shape[0] * scale_f)), interpolation=cv2.INTER_LANCZOS4)
-
-                        emb = mfd_app.get_embedder().embed(pure_face)
-                        vcache = _ensure_vendor_emb_cache(vendor_id, class_year=class_year, division=division, branch=branch)
-                        
-                        # Store base64 for UI preview
-                        _, buffer = cv2.imencode('.jpg', cv2.cvtColor(pure_face, cv2.COLOR_RGB2BGR), [int(cv2.IMWRITE_JPEG_QUALITY), 95])
-                        # face_b64 = base64.b64encode(buffer).decode('utf-8') # Removed redundant assignment
-
-                        # Compute structural vector if landmarks available
-                        struct_vec_val = None
+                    
+                    if pure_face.size > 0:
+                        lmks_local = None
                         if landmarks_3d:
                             try:
-                                lmks_local_sv = np.array(landmarks_3d).copy()
-                                lmks_local_sv[:, 0] -= cx1
-                                lmks_local_sv[:, 1] -= cy1
-                                struct_vec_val = _extract_structural_vector(lmks_local_sv)
+                                lmks_local = np.array(landmarks_3d).copy()
+                                lmks_local[:, 0] -= cx1
+                                lmks_local[:, 1] -= cy1
+                                # Draw global landmarks on annotated image
+                                for pt in landmarks_3d:
+                                    cv2.circle(draw, (int(pt[0]), int(pt[1])), 1, (0, 255, 0), -1)
+                            except Exception:
+                                pass
+                        
+                        # Enhance and normalize face for embedding
+                        pure_face_enh = mfd_app.get_gfpgan_manager().enhance_crop(pure_face, fidelity=0.4, upscale=1, landmarks=lmks_local)
+                        if min(pure_face_enh.shape[:2]) < 512:
+                            scale_f = 512.0 / min(pure_face_enh.shape[:2])
+                            pure_face_enh = cv2.resize(pure_face_enh, (int(pure_face_enh.shape[1] * scale_f), int(pure_face_enh.shape[0] * scale_f)), interpolation=cv2.INTER_LANCZOS4)
+                            
+                        emb = mfd_app.get_embedder().embed(pure_face_enh)
+                        emb_norm = _normalize_vec(emb)
+                        
+                        # Extract Structural Vector
+                        struct_vec_val = None
+                        struct_vec_b64 = ''
+                        if landmarks_3d:
+                            try:
+                                struct_vec_val = _extract_structural_vector(lmks_local)
                                 if struct_vec_val.size > 0:
                                     struct_vec_b64 = base64.b64encode(struct_vec_val.astype(np.float32).tobytes()).decode('ascii')
                             except Exception:
                                 pass
-
-                        emb_norm = _normalize_vec(emb)
-                        if emb_norm.size > 0:
-                            emb_vec_b64 = base64.b64encode(emb_norm.astype(np.float32).tobytes()).decode('ascii')
                         
-                        sugg = _suggest_from_cache(emb_norm, vcache, topk=3, struct_vec=struct_vec_val)
-                    except Exception:
-                        sugg = []
+                        emb_vec_b64 = base64.b64encode(emb_norm.astype(np.float32).tobytes()).decode('ascii') if emb_norm.size > 0 else ''
+                        
+                        # Portrait enhancement
+                        try:
+                            px1, py1, px2, py2 = mfd_app._compute_portrait_box(bx1, by1, bx2, by2, iw, ih, scale=3.0, margin=0.5)
+                            portrait = img_rgb[py1:py2, px1:px2]
+                            portrait_enh = mfd_app.get_gfpgan_manager().enhance_crop(portrait, upscale=gfp_up, whole=True, fidelity=0.5) if not lr and portrait.size > 0 else portrait
+                        except Exception:
+                            portrait_enh = None
+                        
+                        # Encode thumbnails
+                        ok, buf = cv2.imencode('.jpg', cv2.cvtColor(pure_face_enh, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
+                        okp, bufp = cv2.imencode('.jpg', cv2.cvtColor(portrait_enh, cv2.COLOR_RGB2BGR) if portrait_enh is not None else np.zeros((1,1,3), np.uint8), [cv2.IMWRITE_JPEG_QUALITY, 85])
+                        
+                        f_entry = {
+                            "index": i,
+                            "box": [bx1, by1, bx2, by2],
+                            "score": float(score_str) if score_str else None,
+                            "thumbs": {
+                                "face": f"data:image/jpeg;base64,{base64.b64encode(buf).decode('ascii')}" if ok else None, 
+                                "portrait": f"data:image/jpeg;base64,{base64.b64encode(bufp).decode('ascii')}" if (okp and portrait_enh is not None) else None
+                            },
+                            "emb_vec": emb_vec_b64,
+                            "struct_vec": struct_vec_b64,
+                            "landmarks_3d": landmarks_3d,
+                            "emb_norm": emb_norm, # Internal use
+                            "struct_vec_val": struct_vec_val # Internal use
+                        }
+                        face_data.append(f_entry)
+                        if emb_norm.size > 0:
+                            embeddings_map[len(face_data)-1] = emb_norm
 
-                    try:
-                        px1, py1, px2, py2 = mfd_app._compute_portrait_box(bx1, by1, bx2, by2, img_rgb.shape[1], img_rgb.shape[0], scale=3.0, margin=0.5)
-                        portrait = img_rgb[py1:py2, px1:px2]
-                        if lr:
-                            portrait_enh = portrait
-                        else:
-                            portrait_enh = mfd_app.get_gfpgan_manager().enhance_crop(portrait, upscale=gfp_up, whole=True, fidelity=0.7) if portrait.size > 0 else portrait
-                    except Exception:
-                        portrait_enh = None
-
-                    # Encode pure face crop as thumbs.face (used for display AND saving embeddings)
-                    ok, buf = cv2.imencode('.jpg', cv2.cvtColor(pure_face, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
-                    face_b64 = base64.b64encode(buf.tobytes()).decode('ascii') if ok else ''
-                    if portrait_enh is not None and portrait_enh.size > 0:
-                        okp, bufp = cv2.imencode('.jpg', cv2.cvtColor(portrait_enh, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
-                        port_b64 = base64.b64encode(bufp.tobytes()).decode('ascii') if okp else ''
-                    else:
-                        port_b64 = ''
-
-                    faces.append({
-                        "index": i,
-                        "box": [bx1, by1, bx2, by2],
-                        "score": float(score_str) if score_str else None,
-                        "thumbs": {"face": f"data:image/jpeg;base64,{face_b64}" if face_b64 else None, "portrait": f"data:image/jpeg;base64,{port_b64}" if port_b64 else None},
-                        "suggestions": sugg,
-                        "emb_vec": emb_vec_b64,
-                        "struct_vec": struct_vec_b64,
-                        "landmarks_3d": landmarks_3d
-                    })
+            # Step 2: Intra-batch Clustering
+            clusters = _cluster_batch_embeddings(embeddings_map, threshold=0.90)
+            
+            # Step 3: Identify Clusters and Assign
+            for cluster in clusters:
+                centroid = cluster['centroid']
+                # Pick the best structural vector from the cluster for identification leverage
+                best_sv = None
+                best_s = -1.0
+                for f_idx in cluster['indices']:
+                    f = face_data[f_idx]
+                    f_score = f.get('score')
+                    if f_score is not None and float(f_score) > best_s:
+                        best_s = float(f_score)
+                        best_sv = f.get('struct_vec_val')
+                
+                sugg = _suggest_from_cache(centroid, vcache, topk=3, struct_vec=best_sv, class_year=class_year, division=division, branch=branch)
+                for f_idx in cluster['indices']:
+                    face_data[f_idx]['suggestions'] = sugg
+            
+            # Step 4: Fallback for any non-clustered faces (should be none, but safe)
+            for f in face_data:
+                if 'suggestions' not in f:
+                    f['suggestions'] = _suggest_from_cache(f['emb_norm'], vcache, topk=3, struct_vec=f['struct_vec_val'], class_year=class_year, division=division, branch=branch)
+                # Cleanup internal fields before returning
+                if 'emb_norm' in f: del f['emb_norm']
+                if 'struct_vec_val' in f: del f['struct_vec_val']
+            
+            faces = face_data
 
             ok2, ann = cv2.imencode('.jpg', draw, [cv2.IMWRITE_JPEG_QUALITY, 85])
             annotated_b64 = f"data:image/jpeg;base64,{base64.b64encode(ann.tobytes()).decode('ascii')}" if ok2 else ''

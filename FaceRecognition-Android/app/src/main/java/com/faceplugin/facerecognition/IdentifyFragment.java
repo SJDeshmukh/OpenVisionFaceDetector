@@ -834,13 +834,25 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 return;
             }
 
-            android.media.Image.Plane[] planes = inputMediaImage.getPlanes();
+            // Hardened conversion handles padding (fixes Redmi/OEM detection failures)
             byte[] nv21 = Utils.yuv420ToNv21(inputMediaImage);
 
             int rotationDegrees = imageProxy.getImageInfo().getRotationDegrees();
             int lensFacing = SettingsActivity.getCameraLens(requireContext());
             int cameraMode = Utils.getCameraMode(rotationDegrees, lensFacing);
+
+            // Diagnostic logging for Redmi/OEM troubleshooting
+            if (frameCounter % 60 == 0) {
+                Log.d(TAG, "Analysis Frame: " + inputMediaImage.getWidth() + "x" + inputMediaImage.getHeight() + 
+                    ", rot: " + rotationDegrees + ", mode: " + cameraMode + ", buffer: " + nv21.length);
+            }
+
             processedFrameBitmap = FaceSDKWrapper.INSTANCE.yuv2Bitmap(nv21, inputMediaImage.getWidth(), inputMediaImage.getHeight(), cameraMode);
+
+            if (processedFrameBitmap == null) {
+                imageProxy.close();
+                return;
+            }
 
             final Bitmap finalProcessed = processedFrameBitmap;
 

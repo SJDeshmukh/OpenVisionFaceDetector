@@ -12,6 +12,7 @@ import android.graphics.Bitmap;
 import android.graphics.RectF;
 import android.media.Image;
 import android.os.Bundle;
+import android.util.Log;
 import android.util.Size;
 import android.view.View;
 import android.widget.TextView;
@@ -343,6 +344,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
             Image image = imageProxy.getImage();
 
             Image.Plane[] planes = image.getPlanes();
+            // Hardened conversion handles padding (fixes Redmi/OEM detection failures during enrollment)
             byte[] nv21 = Utils.yuv420ToNv21(image);
 
             int rotationDegrees = imageProxy.getImageInfo().getRotationDegrees();
@@ -351,7 +353,19 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
                 lensFacing = CameraSelector.LENS_FACING_FRONT;
             }
             int cameraMode = Utils.getCameraMode(rotationDegrees, lensFacing);
+
+            // Limited diagnostic logging to prevent log flooding
+            if (System.currentTimeMillis() % 1000 < 50) { 
+                Log.d("CaptureActivity", "Frame: " + image.getWidth() + "x" + image.getHeight() + 
+                    ", rot: " + rotationDegrees + ", mode: " + cameraMode + ", buffer: " + nv21.length);
+            }
+
             Bitmap bitmap = FaceSDK.yuv2Bitmap(nv21, image.getWidth(), image.getHeight(), cameraMode);
+
+            if (bitmap == null) {
+                imageProxy.close();
+                return;
+            }
 
 
             // --- Streaming Logic ---

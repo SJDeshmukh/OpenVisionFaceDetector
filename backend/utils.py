@@ -427,7 +427,7 @@ def reset_sequence(table_name):
     except Exception:
         pass
 
-def require_feature(feature_name):
+def require_feature(*feature_names):
     from functools import wraps
     from flask import request, jsonify
     def decorator(f):
@@ -443,8 +443,10 @@ def require_feature(feature_name):
             
             # Check Feature (Only for Vendor Context)
             if vendor_id:
-                if feature_name == "mobile_app":
+                # Bypass for mobile_app (legacy/special case) if it's one of the requested features
+                if "mobile_app" in feature_names:
                     return f(*args, **kwargs)
+                
                 conn = get_db_connection()
                 c = conn.cursor()
                 c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
@@ -456,15 +458,15 @@ def require_feature(feature_name):
                 if row and row[0]:
                     try:
                         features = json.loads(row[0])
-                        if feature_name in features:
+                        # Check if ANY of the requested features are present
+                        if any(fn in features for fn in feature_names):
                             has_feature = True
-                    except:
+                    except Exception:
                         pass
                 
-                print(f"[REQUIRE_FEATURE TRACE] checking feature '{feature_name}' for vendor {vendor_id}. Has feature? {has_feature}. Features array: {features}", flush=True)
                 if not has_feature:
-                     return jsonify({"error": f"Feature '{feature_name}' is not enabled for your plan."}), 403
-
+                    return jsonify({"error": f"Feature(s) {feature_names} not enabled for this vendor"}), 403
+            
             return f(*args, **kwargs)
         return decorated_function
     return decorator

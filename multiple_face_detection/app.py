@@ -207,7 +207,7 @@ class GFPGANManager:
             print(f"[GFPGAN] Loaded model: {model_path} on {self._get_device()} with upscale={upscale}", flush=True)
         return self._restorer
 
-    def enhance_crop(self, crop_rgb: np.ndarray, upscale: int = 2, whole: bool = False, fidelity: float = 0.8, landmarks: np.ndarray = None) -> np.ndarray:
+    def enhance_crop(self, crop_rgb: np.ndarray, upscale: int = 2, whole: bool = False, fidelity: float = 0.4, landmarks: np.ndarray = None) -> np.ndarray:
         if crop_rgb is None or crop_rgb.size == 0:
             return crop_rgb
         
@@ -274,8 +274,8 @@ class GFPGANManager:
                         # Expand the mask slightly to include hair/edges
                         kernel_size = max(3, int(min(h_new, w_new) // 15)) | 1
                         mask = cv2.dilate(mask, np.ones((kernel_size, kernel_size), np.uint8), iterations=2)
-                        # Blur the mask slightly for smooth transition
-                        mask = cv2.GaussianBlur(mask, (21, 21), 11)
+                        # Blur the mask more aggressively for a smoother, more natural transition
+                        mask = cv2.GaussianBlur(mask, (31, 31), 15)
                         # Expand dimensions for broadcasting
                         mask = mask[:, :, np.newaxis]
                     except Exception as e:
@@ -879,8 +879,9 @@ def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0
                 short_side = min(h_c, w_c)
                 target_res = 256
                 if short_side < target_res and short_side > 0:
+                    # Conservative upscale for small faces to avoid "AI artifacts"
                     calc_scale = max(2, int(np.ceil(target_res / short_side)))
-                    final_scale = max(int(gfpgan_upscale), calc_scale)
+                    final_scale = min(2, max(int(gfpgan_upscale), calc_scale))
                     print(f"[RE-ENGINE] Face {i} is small ({short_side}px). Pre-upscaling x{final_scale} with RealESRGAN...", flush=True)
                     temp_crop = get_realesrgan_manager().upscale(crop, scale=final_scale)
                 elif gfpgan_upscale > 1:
@@ -894,7 +895,7 @@ def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0
             elif enhancer == "OpenCV":
                 out_crop = enhance_face_crop(temp_crop, level=enhance_level)
             elif enhancer == "GFPGAN":
-                out_crop = get_gfpgan_manager().enhance_crop(temp_crop, upscale=1, whole=(crop_mode == "Portrait"))
+                out_crop = get_gfpgan_manager().enhance_crop(temp_crop, upscale=1, whole=(crop_mode == "Portrait"), fidelity=0.4)
             elif enhancer == "GFPGAN+CodeFormer":
                 first = get_gfpgan_manager().enhance_crop(temp_crop, upscale=1, whole=(crop_mode == "Portrait"))
                 out_crop = get_codeformer_manager().refine_crop(first, fidelity=codeformer_w, upscale=1)
@@ -907,9 +908,8 @@ def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0
                 # For embeddings, we MUST use the same tight 1.2x crop, enhanced if possible
                 emb_crop = face_only_tight
                 if enhancer != "None" and face_only_tight.size > 0:
-                    # Match backend routes: upscale=2, fidelity=0.9, and pass landmarks for alignment
-                    # Note: We use upscale=2 here because that's what faces.py does for pure_face thumbnails/embeddings
-                    emb_crop = get_gfpgan_manager().enhance_crop(face_only_tight, upscale=2, whole=False, fidelity=0.9, landmarks=lmks_local_emb)
+                    # Match backend routes: upscale=1, fidelity=0.4 for natural look
+                    emb_crop = get_gfpgan_manager().enhance_crop(face_only_tight, upscale=1, whole=False, fidelity=0.4, landmarks=lmks_local_emb)
                     
                     # MANDATORY: Resize to 512px minimum for consistent embedding extraction across all resolutions
                     if min(emb_crop.shape[:2]) < 512:

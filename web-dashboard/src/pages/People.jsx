@@ -22,6 +22,7 @@ const People = () => {
   const { user } = useAuth();
   const personLabel = (user?.vertical && ['school', 'hostel'].includes(String(user.vertical).toLowerCase())) ? 'Student' : 'Employee';
   const [users, setUsers] = useState([]);
+  const [searchTerm, setSearchTerm] = useState('');
   const [shifts, setShifts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -35,11 +36,13 @@ const People = () => {
     shift: '',
     photo: null,
     photoPreview: null,
-    templates: ''
+    templates: '',
+    class_id: ''
   });
   const [submitting, setSubmitting] = useState(false);
   const [vendorConfig, setVendorConfig] = useState([]);
   const [vendorDepartments, setVendorDepartments] = useState([]);
+  const [vendorClasses, setVendorClasses] = useState([]);
 
   const { socket, joinVendor } = useSocket();
   useEffect(() => {
@@ -70,6 +73,13 @@ const People = () => {
         })
           .then(res => setVendorDepartments(res.data.departments || []))
           .catch(() => setVendorDepartments([]));
+
+        // Fetch Registered Classes
+        axios.get(`${API_URL}/classes`, {
+          headers: { Authorization: `Bearer ${user?.token}` }
+        })
+          .then(res => setVendorClasses(res.data.classes || []))
+          .catch(() => setVendorClasses([]));
       }
 
       if (socket) {
@@ -170,7 +180,8 @@ const People = () => {
       shift: '',
       photo: null,
       photoPreview: null,
-      templates: ''
+      templates: '',
+      class_id: ''
     });
     setIsModalOpen(true);
   };
@@ -193,6 +204,7 @@ const People = () => {
           ? user.face_image
           : (user.face_image ? `data:image/jpeg;base64,${user.face_image}` : null)),
       templates: user.templates || '',
+      class_id: user.custom_data?.class_id || '',
       ...dynamicFields
     });
     setIsModalOpen(true);
@@ -243,6 +255,16 @@ const People = () => {
       delete payload.photoPreview;
       delete payload.photo;
       delete payload.id;
+
+      // Map class_id to scope fields if selected
+      if (formData.class_id) {
+        const selectedClass = vendorClasses.find(c => String(c.id) === String(formData.class_id));
+        if (selectedClass) {
+          payload.class_year = selectedClass.class_year;
+          payload.division = selectedClass.division;
+          payload.branch = selectedClass.branch;
+        }
+      }
 
       const response = await axios.post(`${API_URL}/sync/upload`, payload);
       if (response.data.status === 'success') {
@@ -326,6 +348,18 @@ const People = () => {
     return '-';
   };
 
+  const filteredUsers = useMemo(() => {
+    if (!searchTerm) return users;
+    const lowerSearch = searchTerm.toLowerCase();
+    return users.filter(u => 
+      (u.name || '').toLowerCase().includes(lowerSearch) || 
+      (String(u.id || '')).includes(lowerSearch) ||
+      (String(u.display_id || '')).includes(lowerSearch) ||
+      (u.phone || '').toLowerCase().includes(lowerSearch) ||
+      (u.department || '').toLowerCase().includes(lowerSearch)
+    );
+  }, [users, searchTerm]);
+
   return (
     <div className="p-6 max-w-7xl mx-auto">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -334,7 +368,15 @@ const People = () => {
           <p className="text-slate-500">Manage {personLabel.toLowerCase()}s and their facial data.</p>
         </div>
         <div className="flex space-x-3">
-          {/* Manual registration and import buttons removed to enforce mobile-only registration */}
+          {(user?.role === 'super_admin' || user?.features?.includes('bulk_image_attendance') || user?.features?.includes('mobile_app')) && (
+            <button
+              onClick={openAddModal}
+              className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all text-sm font-medium shadow-sm hover:shadow-md"
+            >
+              <Plus size={20} />
+              <span>Add {personLabel}</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -344,7 +386,9 @@ const People = () => {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
           <input
             type="text"
-            placeholder="Search employees by name or ID..."
+            placeholder={`Search ${personLabel.toLowerCase()}s by name or ID...`}
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
             className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
           />
         </div>
@@ -378,14 +422,14 @@ const People = () => {
             <tbody className="divide-y divide-slate-100">
               {loading ? (
                 <tr>
-                  <td colSpan={tableColumns.length + 2} className="px-6 py-8 text-center text-slate-500">Loading employees...</td>
+                  <td colSpan={tableColumns.length + 2} className="px-6 py-8 text-center text-slate-500">Loading {personLabel.toLowerCase()}s...</td>
                 </tr>
-              ) : users.length === 0 ? (
+              ) : filteredUsers.length === 0 ? (
                 <tr>
-                  <td colSpan={tableColumns.length + 2} className="px-6 py-8 text-center text-slate-500">No employees found.</td>
+                  <td colSpan={tableColumns.length + 2} className="px-6 py-8 text-center text-slate-500">No {personLabel.toLowerCase()}s found.</td>
                 </tr>
               ) : (
-                users.map((user, idx) => (
+                filteredUsers.map((user, idx) => (
                   <tr key={idx} className="hover:bg-slate-50/80 transition-colors">
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="flex items-center">
@@ -451,7 +495,7 @@ const People = () => {
         {/* Pagination */}
         <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-between">
           <div className="text-sm text-slate-500">
-            Showing <span className="font-medium">1</span> to <span className="font-medium">{users.length}</span> of <span className="font-medium">{users.length}</span> results
+            Showing <span className="font-medium">1</span> to <span className="font-medium">{filteredUsers.length}</span> of <span className="font-medium">{filteredUsers.length}</span> results
           </div>
           <div className="flex space-x-2">
             <button className="px-3 py-1 border border-slate-200 rounded text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50" disabled>Previous</button>
@@ -563,6 +607,26 @@ const People = () => {
                     </div>
                   );
                 })}
+                
+                {/* Registered Classes Dropdown */}
+                {vendorClasses.length > 0 && (
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-700">Map to Registered Class</label>
+                    <select
+                      value={formData.class_id || ''}
+                      onChange={(e) => setFormData({ ...formData, class_id: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                    >
+                      <option value="">Select Class</option>
+                      {vendorClasses.map((cl, cIdx) => (
+                        <option key={cIdx} value={cl.id}>
+                          {cl.label || `${cl.class_year} - ${cl.division} (${cl.branch})`}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-slate-500">Associating a student with a class improves recognition during bulk attendance.</p>
+                  </div>
+                )}
               </div>
 
               <div className="flex gap-3 pt-2">

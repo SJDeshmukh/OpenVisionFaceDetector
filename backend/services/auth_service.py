@@ -5,21 +5,29 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import date, datetime, timedelta
 from utils import parse_db_date
 
-# Secret key Configuration
-SECRET_KEY = os.environ.get('SECRET_KEY', 'super_secret_key_change_this_in_prod')
-serializer = URLSafeTimedSerializer(SECRET_KEY)
+# Secret key Configuration (Lazy initialized to ensure .env is loaded)
+_serializer = None
+
+def get_serializer():
+    global _serializer
+    if _serializer is None:
+        key = os.environ.get('SECRET_KEY', 'super_secret_key_change_this_in_prod')
+        with open("/tmp/auth_debug.log", "a") as f:
+            f.write(f"[{datetime.now()}] [AUTH] Initializing serializer with SECRET_KEY (first 5 chars): {key[:5]}...\n")
+        _serializer = URLSafeTimedSerializer(key)
+    return _serializer
 
 def generate_token(username, role, vendor_id=None):
     payload = {'username': username, 'role': role, 'nonce': str(uuid.uuid4())}
     if vendor_id:
         payload['vendor_id'] = vendor_id
-    return serializer.dumps(payload)
+    return get_serializer().dumps(payload)
 
 def generate_token_with_claims(username, role, extra_claims):
     payload = {'username': username, 'role': role, 'nonce': str(uuid.uuid4())}
     if isinstance(extra_claims, dict):
         payload.update(extra_claims)
-    return serializer.dumps(payload)
+    return get_serializer().dumps(payload)
 
 def hash_password(raw_password):
     try:
@@ -56,9 +64,11 @@ def verify_password(raw_password, stored_password):
 
 def verify_token(token):
     try:
-        data = serializer.loads(token, max_age=86400) # Valid for 1 day
+        data = get_serializer().loads(token, max_age=86400) # Valid for 1 day
         return data
-    except:
+    except Exception as e:
+        with open("/tmp/auth_debug.log", "a") as f:
+            f.write(f"[{datetime.now()}] [AUTH] verify_token failed: {e}\n")
         return None
 
 def extract_token(auth_header):
@@ -119,7 +129,13 @@ def authenticate_vendor_access():
                 role = user_data.get('role')
                 # Optional: Update active session activity
             else:
+                with open("/tmp/auth_debug.log", "a") as f:
+                    f.write(f"[{datetime.now()}] [AUTH] Token verification failed for token: '{token}' (Type: {type(token)})\n")
                 return None, (jsonify({"error": "Invalid or Expired Token", "code": "UNAUTHORIZED"}), 401)
+        else:
+            if auth_header:
+                with open("/tmp/auth_debug.log", "a") as f:
+                    f.write(f"[{datetime.now()}] [AUTH] extract_token returned None for auth_header: '{auth_header}'\n")
         
         if not username and request.args.get('token'):
             token = request.args.get('token')
@@ -136,7 +152,7 @@ def authenticate_vendor_access():
             return None, (jsonify({"error": "Authentication Required", "code": "UNAUTHORIZED"}), 401)
 
         conn = get_db_connection()
-        conn.row_factory = sqlite3.Row
+        # Row factory is handled by get_db_connection for SQLite, or DictCursor for PG
         c = conn.cursor()
         
         c.execute("SELECT vendor_id, role FROM system_users WHERE username = ?", (username,))

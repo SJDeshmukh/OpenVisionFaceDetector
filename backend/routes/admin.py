@@ -443,25 +443,44 @@ def delete_vendor_device(vendor_id, device_id):
         
         # Defensive check for optional tables to avoid PostgreSQL transaction aborts
         def safe_execute(query, params, table=None, cols=None):
+            is_pg = getattr(conn, "_is_pg", False)
+            if is_pg:
+                # Use SAVEPOINT to protect the main transaction from optional query failures
+                try:
+                    c.execute("SAVEPOINT cleanup_step")
+                except Exception:
+                    pass
+
             try:
                 if table and cols:
                     # Check if all required columns exist in the table
                     existing_cols = get_table_columns(conn, table)
                     if not existing_cols:
                         logger.warning(f"Table '{table}' does not exist, skipping query.")
+                        if is_pg:
+                            try: c.execute("RELEASE SAVEPOINT cleanup_step")
+                            except Exception: pass
                         return 0
                     missing_cols = [col for col in cols if col not in existing_cols]
                     if missing_cols:
                         logger.warning(f"Columns {missing_cols} missing in table '{table}', skipping query.")
+                        if is_pg:
+                            try: c.execute("RELEASE SAVEPOINT cleanup_step")
+                            except Exception: pass
                         return 0
                 
                 c.execute(query, params)
+                if is_pg:
+                    try: c.execute("RELEASE SAVEPOINT cleanup_step")
+                    except Exception: pass
                 return c.rowcount
             except Exception as e:
-                logger.warning(f"Execution failed for query on '{table}': {e}")
-                # Important: In PostgreSQL, if the query actually failed, the transaction is aborted.
-                # However, get_table_columns might have already triggered a rollback if it failed internally.
-                # Since we already checked column existence, this block is mostly for unexpected errors.
+                logger.error(f"Execution failed for optional cleanup on table '{table}': {e}. Skipping this step to protect deletion.")
+                if is_pg:
+                    try:
+                        c.execute("ROLLBACK TO SAVEPOINT cleanup_step")
+                    except Exception as rollback_err:
+                        logger.error(f"Critical: Failed to rollback savepoint: {rollback_err}")
                 return 0
 
         # Optional Cleanups
