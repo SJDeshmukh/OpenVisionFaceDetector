@@ -284,6 +284,19 @@ def get_db_connection(timeout=30):
             pool = get_pg_pool()
             if pool:
                 conn = pool.getconn()
+                # Ensure the connection is in a clean state.
+                # If a previous request aborted a transaction but didn't rollback, we must fix it here.
+                try:
+                    import psycopg2.extensions as ext
+                    status = conn.get_transaction_status()
+                    if status == ext.TRANSACTION_STATUS_INERROR:
+                        logger.warning("Retrieved 'aborted' connection from pool. Performing recovery rollback.")
+                        conn.rollback()
+                    elif status != ext.TRANSACTION_STATUS_IDLE:
+                        # Also rollback if it's IN_TRANS (unfinished transaction) to prevent cross-request leakage
+                        conn.rollback()
+                except Exception as ex:
+                    logger.debug(f"Failed to check/reset connection status: {ex}")
             else:
                 conn = psycopg2.connect(DATABASE_URL, connect_timeout=timeout)
             
