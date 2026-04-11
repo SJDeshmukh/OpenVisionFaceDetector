@@ -126,26 +126,70 @@ sudo rm -f /etc/nginx/sites-enabled/default
 sudo nginx -t
 sudo systemctl restart nginx
 
-echo "Launching Backend (Gunicorn) & Celery..."
-cd backend
-source .venv/bin/activate
-# Kill old processes
-pkill -f gunicorn || true
-pkill -f celery || true
+echo "==> [8/8] Configuring Systemd Services (Auto-Restart)..."
+WORKING_DIR=$(pwd)
+GUNICORN_PATH="$(pwd)/backend/.venv/bin/gunicorn"
+CELERY_PATH="$(pwd)/backend/.venv/bin/celery"
+
+# 1. Create Backend Service
+echo "Creating openvision-backend.service..."
+sudo bash -c "cat <<EOF > /etc/systemd/system/openvision-backend.service
+[Unit]
+Description=Gunicorn instance to serve OpenVision Face Detection
+After=network.target postgresql.service redis.service
+
+[Service]
+User=$USER
+Group=www-data
+WorkingDirectory=$WORKING_DIR/backend
+Environment=\"PATH=$WORKING_DIR/backend/.venv/bin\"
+Environment=\"LOW_RAM_MODE=1\"
+EnvironmentFile=$WORKING_DIR/backend/.env
+ExecStart=$GUNICORN_PATH --worker-class eventlet -w 1 -b 0.0.0.0:5001 app:app --timeout 600
+
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF"
+
+# 2. Create Celery Service
+echo "Creating openvision-celery.service..."
+sudo bash -c "cat <<EOF > /etc/systemd/system/openvision-celery.service
+[Unit]
+Description=Celery worker for OpenVision Face Detection
+After=network.target postgresql.service redis.service
+
+[Service]
+User=$USER
+Group=www-data
+WorkingDirectory=$WORKING_DIR/backend
+Environment=\"PATH=$WORKING_DIR/backend/.venv/bin\"
+EnvironmentFile=$WORKING_DIR/backend/.env
+ExecStart=$CELERY_PATH -A celery_app worker --loglevel=info --concurrency=1 --pool=solo
+
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF"
+
+echo "Reloading systemd and enabling services..."
+sudo systemctl daemon-reload
+sudo systemctl enable openvision-backend
+sudo systemctl enable openvision-celery
+
+echo "Starting/Restarting services..."
+sudo systemctl restart openvision-backend
+sudo systemctl restart openvision-celery
 
 # Important: Allow ports in Ubuntu Firewall (ufw)
 sudo ufw allow 5173/tcp || true
 sudo ufw allow 5001/tcp || true
 sudo ufw allow 80/tcp || true
 sudo ufw allow 443/tcp || true
-
-# Start Gunicorn (Port 5001)
-export LOW_RAM_MODE=1
-nohup gunicorn --worker-class eventlet -w 1 -b 0.0.0.0:5001 app:app --timeout 600 > ../gunicorn.log 2>&1 &
-
-# Start Celery
-nohup celery -A celery_app worker --loglevel=info --concurrency=1 --pool=solo > ../celery.log 2>&1 &
-cd ..
 
 echo ""
 echo "=============================================================================="
