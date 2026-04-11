@@ -538,6 +538,11 @@ def delete_vendor_device(vendor_id, device_id):
             pass
 
         conn.close()
+
+        # Invalidate stats cache so summary cards update
+        from utils import cache_delete
+        cache_delete("admin_stats")
+
         log_audit("device_delete", {"device_id": device_id}, target_vendor_id=vendor_id)
         return jsonify({"success": True, "rows_deleted": rows_deleted})
     except Exception as e:
@@ -1129,6 +1134,10 @@ def create_vendor():
         
         socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
         
+        # Invalidate stats cache so summary cards update
+        from utils import cache_delete
+        cache_delete("admin_stats")
+        
         return jsonify({
             "success": True,
             "vendor_id": vendor_id,
@@ -1195,6 +1204,22 @@ def toggle_web_login(vendor_id):
         socketio.emit('force_logout', {'vendor_id': vendor_id})
 
     return jsonify({"success": True, "enabled": enabled})
+
+@admin_bp.route("/vendors/<int:vendor_id>", methods=["DELETE"])
+@super_admin_required
+def delete_vendor(vendor_id):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("DELETE FROM vendors WHERE id = ?", (vendor_id,))
+    conn.commit()
+    conn.close()
+    
+    # Invalidate stats cache so summary cards update
+    from utils import cache_delete
+    cache_delete("admin_stats")
+
+    log_audit("delete_vendor", {"vendor_id": vendor_id})
+    return jsonify({"success": True})
 
 @admin_bp.route("/vendors/<int:vendor_id>/subscription", methods=["GET"])
 @super_admin_required

@@ -423,6 +423,7 @@ const SuperAdminDashboard = () => {
       // Refresh local state
       await fetchVendorDevices(vendorId);
       await fetchVendorDeviceSlots(vendorId);
+      await fetchStats(); // Refresh dashboard cards
     } catch (e) {
       const msg = e?.response?.data?.error || e.message || "Failed to delete device";
       alert(msg);
