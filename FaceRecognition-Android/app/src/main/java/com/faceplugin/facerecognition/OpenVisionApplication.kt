@@ -41,7 +41,9 @@ class OpenVisionApplication : Application() {
         
         // Clear static memory-intensive list to prevent OOM
         try {
-            DBManager.personList.clear()
+            synchronized(DBManager.personList) {
+                DBManager.personList.clear()
+            }
             System.gc() // Suggest GC
         } catch (e: Exception) {}
     }
@@ -54,7 +56,9 @@ class OpenVisionApplication : Application() {
             
             // Clear static list to free up significant RAM
             try {
-                DBManager.personList.clear()
+                synchronized(DBManager.personList) {
+                    DBManager.personList.clear()
+                }
                 System.gc()
             } catch (e: Exception) {}
         }

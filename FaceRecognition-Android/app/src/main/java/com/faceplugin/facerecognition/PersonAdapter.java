@@ -45,7 +45,17 @@ public class PersonAdapter extends ArrayAdapter<Person> {
         });
 
         tvName.setText(person.name);
-        faceView.setImageBitmap(person.face);
+        if (person.face != null) {
+            faceView.setImageBitmap(person.face);
+        } else {
+            Bitmap loaded = dbManager.getPersonFace(person.localUid);
+            if (loaded != null) {
+                person.face = loaded; // Cache in object for this adapter session
+                faceView.setImageBitmap(loaded);
+            } else {
+                faceView.setImageResource(android.R.drawable.ic_menu_gallery);
+            }
+        }
         // Return the completed view to render on screen
         return convertView;
     }

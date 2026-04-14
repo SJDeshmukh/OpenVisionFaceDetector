@@ -8,14 +8,11 @@ import android.database.sqlite.SQLiteOpenHelper;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 
-import java.io.ByteArrayOutputStream;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.UUID;
-
-public class DBManager extends SQLiteOpenHelper {
-
-    public static ArrayList<Person> personList = new ArrayList<Person>();
+import java.util.concurrent.CopyOnWriteArrayList;
+ 
+ public class DBManager extends SQLiteOpenHelper {
+ 
+     public static CopyOnWriteArrayList<Person> personList = new CopyOnWriteArrayList<Person>();
 
     public DBManager(Context context) {
         super(context, "mydb" , null, 12);
@@ -202,7 +199,10 @@ public class DBManager extends SQLiteOpenHelper {
 
         Person p = new Person(effectiveLocalUid, id, name, templates, phone, department, designation, shift, customData, face);
         p.synced = synced;
-        personList.add(p);
+        
+        synchronized (personList) {
+            personList.add(p);
+        }
     }
 
     public void insertPerson (String id, String name, Bitmap face, byte[] templates, String phone, String department, String designation, String shift, String customData, boolean synced) {
@@ -234,10 +234,12 @@ public class DBManager extends SQLiteOpenHelper {
         contentValues.put("synced", synced ? 1 : 0);
         db.update("person", contentValues, "name = ?", new String[]{name});
         
-        for (Person p : personList) {
-            if (p.name.equals(name)) {
-                p.synced = synced;
-                break;
+        synchronized (personList) {
+            for (Person p : personList) {
+                if (p.name.equals(name)) {
+                    p.synced = synced;
+                    break;
+                }
             }
         }
     }
@@ -248,10 +250,12 @@ public class DBManager extends SQLiteOpenHelper {
         contentValues.put("synced", synced ? 1 : 0);
         db.update("person", contentValues, "id = ?", new String[]{id});
 
-        for (Person p : personList) {
-            if (p.id != null && p.id.equals(id)) {
-                p.synced = synced;
-                break;
+        synchronized (personList) {
+            for (Person p : personList) {
+                if (p.id != null && p.id.equals(id)) {
+                    p.synced = synced;
+                    break;
+                }
             }
         }
     }
@@ -264,10 +268,12 @@ public class DBManager extends SQLiteOpenHelper {
 
         db.update("person", contentValues, "name = ? AND (id IS NULL OR id = '')", new String[]{name});
 
-        for (Person p : personList) {
-            if (p.name != null && p.name.equals(name) && (p.id == null || p.id.isEmpty())) {
-                p.id = id;
-                break;
+        synchronized (personList) {
+            for (Person p : personList) {
+                if (p.name != null && p.name.equals(name) && (p.id == null || p.id.isEmpty())) {
+                    p.id = id;
+                    break;
+                }
             }
         }
     }
@@ -280,11 +286,13 @@ public class DBManager extends SQLiteOpenHelper {
         contentValues.put("synced", 1);
         db.update("person", contentValues, "local_uid = ?", new String[]{localUid});
 
-        for (Person p : personList) {
-            if (p.localUid != null && p.localUid.equals(localUid)) {
-                p.id = id;
-                p.synced = true;
-                break;
+        synchronized (personList) {
+            for (Person p : personList) {
+                if (p.localUid != null && p.localUid.equals(localUid)) {
+                    p.id = id;
+                    p.synced = true;
+                    break;
+                }
             }
         }
     }
@@ -296,10 +304,12 @@ public class DBManager extends SQLiteOpenHelper {
         contentValues.put("synced", synced ? 1 : 0);
         db.update("person", contentValues, "local_uid = ?", new String[]{localUid});
 
-        for (Person p : personList) {
-            if (p.localUid != null && p.localUid.equals(localUid)) {
-                p.synced = synced;
-                break;
+        synchronized (personList) {
+            for (Person p : personList) {
+                if (p.localUid != null && p.localUid.equals(localUid)) {
+                    p.synced = synced;
+                    break;
+                }
             }
         }
     }
@@ -320,21 +330,23 @@ public class DBManager extends SQLiteOpenHelper {
         }
 
         // Update in-memory list
-        for (Person p : personList) {
-            if (id != null && !id.isEmpty() && p.id != null && p.id.equals(id)) {
-                p.phone = phone;
-                p.department = department;
-                p.designation = designation;
-                p.shift = shift;
-                p.customData = customData;
-                break;
-            } else if (p.name.equals(name)) {
-                p.phone = phone;
-                p.department = department;
-                p.designation = designation;
-                p.shift = shift;
-                p.customData = customData;
-                break;
+        synchronized (personList) {
+            for (Person p : personList) {
+                if (id != null && !id.isEmpty() && p.id != null && p.id.equals(id)) {
+                    p.phone = phone;
+                    p.department = department;
+                    p.designation = designation;
+                    p.shift = shift;
+                    p.customData = customData;
+                    break;
+                } else if (p.name.equals(name)) {
+                    p.phone = phone;
+                    p.department = department;
+                    p.designation = designation;
+                    p.shift = shift;
+                    p.customData = customData;
+                    break;
+                }
             }
         }
     }
@@ -344,10 +356,12 @@ public class DBManager extends SQLiteOpenHelper {
     }
 
     public Integer deletePerson (String name) {
-        for(int i = 0; i < personList.size(); i ++) {
-            if(personList.get(i).name.equals(name)) {
-                personList.remove(i);
-                i --;
+        synchronized (personList) {
+            for (int i = 0; i < personList.size(); i++) {
+                if (personList.get(i).name.equals(name)) {
+                    personList.remove(i);
+                    i--;
+                }
             }
         }
 
@@ -358,10 +372,12 @@ public class DBManager extends SQLiteOpenHelper {
     }
 
     public Integer deletePersonById (String id) {
-        for(int i = 0; i < personList.size(); i ++) {
-            if(personList.get(i).id != null && personList.get(i).id.equals(id)) {
-                personList.remove(i);
-                i --;
+        synchronized (personList) {
+            for (int i = 0; i < personList.size(); i++) {
+                if (personList.get(i).id != null && personList.get(i).id.equals(id)) {
+                    personList.remove(i);
+                    i--;
+                }
             }
         }
 
@@ -372,7 +388,9 @@ public class DBManager extends SQLiteOpenHelper {
     }
 
     public Integer clearDB () {
-        personList.clear();
+        synchronized (personList) {
+            personList.clear();
+        }
 
         SQLiteDatabase db = this.getWritableDatabase();
         db.execSQL("delete from person");
@@ -440,36 +458,37 @@ public class DBManager extends SQLiteOpenHelper {
             int syncedIdx = res.getColumnIndex("synced");
             if (syncedIdx != -1) synced = res.getInt(syncedIdx) == 1;
 
-            byte[] faceJpg = null;
-            try { faceJpg = res.getBlob(res.getColumnIndexOrThrow("face")); } catch (Exception ignored) {}
-            Bitmap face = (faceJpg != null) ? BitmapFactory.decodeByteArray(faceJpg, 0, faceJpg.length) : null;
-
-            Person person = new Person(localUid, id, name, templates, phone, department, designation, shift, customData, face);
+            // MEMORY OPTIMIZATION: Do not load full bitmap into RAM for identification list.
+            // person.face will remain null in the main list. 
+            // The photo is loaded from DB only when needed by adapters.
+            Person person = new Person(localUid, id, name, templates, phone, department, designation, shift, customData, null); 
             person.synced = synced;
             
             // Deduplicate
             boolean found = false;
-            for (int i = 0; i < personList.size(); i++) {
-                Person p = personList.get(i);
-                if (id != null && !id.isEmpty() && p.id != null && p.id.equals(id)) {
-                    personList.set(i, person);
-                    found = true;
-                    break;
-                } else if ((id == null || id.isEmpty()) && localUid != null && !localUid.isEmpty() && p.localUid != null && p.localUid.equals(localUid)) {
-                    personList.set(i, person);
-                    found = true;
-                    break;
-                } else if (templates != null && p.templates != null && Arrays.equals(p.templates, templates)) {
-                    boolean keepNew = (id != null && !id.isEmpty()) && (p.id == null || p.id.isEmpty());
-                    if (keepNew) {
+            synchronized (personList) {
+                for (int i = 0; i < personList.size(); i++) {
+                    Person p = personList.get(i);
+                    if (id != null && !id.isEmpty() && p.id != null && p.id.equals(id)) {
                         personList.set(i, person);
+                        found = true;
+                        break;
+                    } else if ((id == null || id.isEmpty()) && localUid != null && !localUid.isEmpty() && p.localUid != null && p.localUid.equals(localUid)) {
+                        personList.set(i, person);
+                        found = true;
+                        break;
+                    } else if (templates != null && p.templates != null && Arrays.equals(p.templates, templates)) {
+                        boolean keepNew = (id != null && !id.isEmpty()) && (p.id == null || p.id.isEmpty());
+                        if (keepNew) {
+                            personList.set(i, person);
+                        }
+                        found = true;
+                        break;
                     }
-                    found = true;
-                    break;
                 }
-            }
-            if (!found) {
-                personList.add(person);
+                if (!found) {
+                    personList.add(person);
+                }
             }
 
             res.moveToNext();
@@ -482,6 +501,25 @@ public class DBManager extends SQLiteOpenHelper {
             if (p.name.equals(name)) return true;
         }
         return false;
+    }
+
+    public Bitmap getPersonFace(String localUid) {
+        if (localUid == null || localUid.isEmpty()) return null;
+        SQLiteDatabase db = this.getReadableDatabase();
+        Cursor res = null;
+        try {
+            res = db.rawQuery("select face from person where local_uid = ? limit 1", new String[]{localUid});
+            if (res.moveToFirst()) {
+                byte[] faceJpg = res.getBlob(0);
+                if (faceJpg != null) {
+                    return BitmapFactory.decodeByteArray(faceJpg, 0, faceJpg.length);
+                }
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (res != null) res.close();
+        }
+        return null;
     }
 
     // --- Offline Attendance Queue Methods ---

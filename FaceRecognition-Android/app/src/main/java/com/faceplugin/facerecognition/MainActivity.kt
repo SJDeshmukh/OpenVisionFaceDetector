@@ -546,8 +546,10 @@ class MainActivity : AppCompatActivity() {
                                     faces.forEach { faceData ->
                                         try {
                                             var existingPerson: com.faceplugin.facerecognition.Person? = null
-                                            if (!faceData.id.isNullOrEmpty()) {
-                                                existingPerson = DBManager.personList.find { it.id == faceData.id }
+                                            synchronized(DBManager.personList) {
+                                                if (!faceData.id.isNullOrEmpty()) {
+                                                    existingPerson = DBManager.personList.find { it.id == faceData.id }
+                                                }
                                             }
 
                                             val phone = faceData.phone ?: ""
@@ -596,7 +598,9 @@ class MainActivity : AppCompatActivity() {
                                     }
 
                                     // Cleanup phase: remove local persons that are no longer on server
-                                    val localPersonsCopy = ArrayList(DBManager.personList)
+                                    val localPersonsCopy = synchronized(DBManager.personList) {
+                                        ArrayList(DBManager.personList)
+                                    }
                                     localPersonsCopy.forEach { localPerson ->
                                         val localId = localPerson.id
                                         // Only delete if it has a server ID and that ID is not in the current server list
