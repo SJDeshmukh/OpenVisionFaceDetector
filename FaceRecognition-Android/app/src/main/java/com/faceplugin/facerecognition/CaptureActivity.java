@@ -382,7 +382,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
             param.check_mouth_opened = true;
 
             List<FaceBox> faceBoxes = FaceSDK.faceDetection(bitmap, param);
-            FACE_CAPTURE_STATE faceCaptureState = checkFace(faceBoxes, this);
+            FACE_CAPTURE_STATE faceCaptureState = checkFace(faceBoxes, this, bitmap.getWidth(), bitmap.getHeight());
 
             if(captureView.viewMode == CaptureView.VIEW_MODE.REPEAT_NO_FACE_PREPARE) {
                 if(faceCaptureState.compareTo(FACE_CAPTURE_STATE.NO_FACE) > 0) {
@@ -509,7 +509,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
         }
     }
 
-    public static FACE_CAPTURE_STATE checkFace(List<FaceBox> faceBoxes, Context context) {
+    public static FACE_CAPTURE_STATE checkFace(List<FaceBox> faceBoxes, Context context, int width, int height) {
         if(faceBoxes == null || faceBoxes.size() == 0)
             return FACE_CAPTURE_STATE.NO_FACE;
 
@@ -529,7 +529,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
 
         float sizeRate = 0.25f;
         float interRate = 0.10f;
-        Size frameSize = new Size(PREVIEW_WIDTH, PREVIEW_HEIGHT);
+        Size frameSize = new Size(width, height);
         RectF roiRect = CaptureView.getROIRect(frameSize);
         float centerY = (faceBox.y2 + faceBox.y1) / 2;
         float topY = centerY - (faceBox.y2 - faceBox.y1) * 2 / 3;

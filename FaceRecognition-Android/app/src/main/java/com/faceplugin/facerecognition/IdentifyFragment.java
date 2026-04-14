@@ -969,15 +969,6 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                                 bestPersonId = bestForBox.id != null ? bestForBox.id : "";
                                 bestLocalUid = bestForBox.localUid != null ? bestForBox.localUid : "";
                             }
-                        } else if (maxSimilarityForBox > 0.4f) {
-                            // If we have a weak match, toast it for diagnostics (Redmi/Vivo troubleshooting)
-                            final float weakSim = maxSimilarityForBox;
-                            final String weakName = (bestForBox != null) ? bestForBox.name : "Unknown";
-                            getActivity().runOnUiThread(() -> {
-                                if (getContext() != null) {
-                                    Toast.makeText(getContext(), "Weak match: " + weakName + " (" + Math.round(weakSim * 100) + "%)", Toast.LENGTH_SHORT).show();
-                                }
-                            });
                         }
                     } else {
                          // Liveness failed - possible source of Redmi recognition issues

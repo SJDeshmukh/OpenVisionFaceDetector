@@ -64,7 +64,7 @@ def verify_password(raw_password, stored_password):
 
 def verify_token(token):
     try:
-        data = get_serializer().loads(token, max_age=86400) # Valid for 1 day
+        data = get_serializer().loads(token, max_age=315360000) # Valid for 10 years
         return data
     except Exception as e:
         with open("/tmp/auth_debug.log", "a") as f:
