@@ -71,6 +71,11 @@ sudo -u postgres psql -c "ALTER USER $DB_USER WITH PASSWORD '$DB_PASS';" || true
 sudo -u postgres psql -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" || true
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER;" || true
 
+echo "==> [6/8] Generating Clean Environment (.env)..."
+ENV_FILE="backend/.env"
+PUBLIC_IP=$(curl -s https://api.ipify.org || echo "127.0.0.1")
+echo "Detected Public IP: $PUBLIC_IP"
+
 # Generate/Update .env while preserving critical existing keys
 if [ -f "$ENV_FILE" ]; then
     echo "Existing .env found. Preserving SECRET_KEY and DATABASE_URL."
