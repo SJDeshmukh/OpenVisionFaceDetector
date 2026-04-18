@@ -618,6 +618,8 @@ def create_class():
         return error
     data = request.get_json(silent=True) or {}
     try:
+        conn = get_db_connection()
+        c = conn.cursor()
         is_pg = getattr(conn, "_is_pg", False)
         if is_pg:
             c.execute("""CREATE TABLE IF NOT EXISTS classes (
