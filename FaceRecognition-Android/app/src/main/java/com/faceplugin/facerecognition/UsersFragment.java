@@ -42,7 +42,7 @@ public class UsersFragment extends Fragment {
         recyclerView.setLayoutManager(new GridLayoutManager(getContext(), 2));
         
         if (DBManager.personList != null) {
-             adapter = new UserAdapter(DBManager.personList);
+             adapter = new UserAdapter(DBManager.personList, dbManager);
              adapter.setOnUserDeleteListener(new UserAdapter.OnUserDeleteListener() {
                  @Override
                  public void onDeleteUser(Person person, int position) {

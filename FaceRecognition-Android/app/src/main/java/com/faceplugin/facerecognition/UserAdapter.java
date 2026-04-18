@@ -13,6 +13,7 @@ public class UserAdapter extends RecyclerView.Adapter<UserAdapter.UserViewHolder
 
     private List<Person> userList;
     private OnUserDeleteListener deleteListener;
+    private DBManager dbManager;
 
     public interface OnUserDeleteListener {
         void onDeleteUser(Person person, int position);
@@ -22,8 +23,9 @@ public class UserAdapter extends RecyclerView.Adapter<UserAdapter.UserViewHolder
         this.deleteListener = listener;
     }
 
-    public UserAdapter(List<Person> userList) {
+    public UserAdapter(List<Person> userList, DBManager dbManager) {
         this.userList = userList;
+        this.dbManager = dbManager;
     }
 
     @NonNull
@@ -37,8 +39,20 @@ public class UserAdapter extends RecyclerView.Adapter<UserAdapter.UserViewHolder
     public void onBindViewHolder(@NonNull UserViewHolder holder, int position) {
         Person person = userList.get(position);
         holder.tvName.setText(person.name);
+        
         if (person.face != null) {
             holder.imgFace.setImageBitmap(person.face);
+        } else if (dbManager != null && person.localUid != null) {
+            // Lazy load from DB if not in memory
+            android.graphics.Bitmap face = dbManager.getPersonFace(person.localUid);
+            if (face != null) {
+                person.face = face; // Cache in memory once loaded
+                holder.imgFace.setImageBitmap(face);
+            } else {
+                holder.imgFace.setImageResource(R.drawable.openvision_logo);
+            }
+        } else {
+            holder.imgFace.setImageResource(R.drawable.openvision_logo);
         }
         
         String details = "";
