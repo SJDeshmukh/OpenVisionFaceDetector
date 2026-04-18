@@ -45,6 +45,13 @@ echo "==> [3/6] Cleaning up Legacy Services (if any)..."
 sudo systemctl stop openvision-backend openvision-celery redis-server nginx postgresql 2>/dev/null || true
 sudo systemctl disable openvision-backend openvision-celery 2>/dev/null || true
 
+# Kill anything on port 5001 (backend) and 6379 (redis) to prevent binding errors
+sudo fuser -k 5001/tcp 2>/dev/null || true
+sudo fuser -k 6379/tcp 2>/dev/null || true
+
+# Clear stale containers
+sudo docker compose down --remove-orphans 2>/dev/null || true
+
 echo "==> [4/6] Initializing Environment Configuration (.env)..."
 if [ ! -f "backend/.env" ]; then
     PUBLIC_IP=$(curl -s https://api.ipify.org || echo "localhost")
