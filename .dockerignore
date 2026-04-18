@@ -19,9 +19,11 @@ postgres_data/
 .git
 .gitignore
 
-# Models/Heavy data (These should be downloaded in Dockerfile via curl or COPY specifically)
-# If multiple_face_detection is huge, we should be selective
-# But usually we need it. However, we can ignore other things.
+# Models/Heavy data (Mounted as volumes instead)
+multiple_face_detection/models/
+multiple_face_detection/weights/
+backend/models/
+backend/weights/
 
 # OS
 .DS_Store

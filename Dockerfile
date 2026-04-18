@@ -53,10 +53,9 @@ RUN cd multiple_face_detection/third_party/BasicSR && pip install --no-cache-dir
 COPY backend/ ./backend
 RUN pip install --no-cache-dir -r backend/standalone_live_mesh/requirements.txt
 
-# 4. PRE-DOWNLOAD AI MODELS (IMPORTANT: This caches weights in the image)
-# We need to set PYTHONPATH so download_models.py can find internal modules if needed
+# 4. NOTE: Models should be mounted via volumes to save disk space
+# Models are NOT downloaded here to keep the image slim
 ENV PYTHONPATH=/app/backend:/app:/app/multiple_face_detection
-RUN python3 backend/download_models.py
 
 # 5. Copy Frontend Build from Stage 1
 # Ensure path matches Nginx config

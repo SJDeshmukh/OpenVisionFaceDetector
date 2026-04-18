@@ -36,6 +36,9 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@db:5432/${DB_NAME:-face_detection}
       - CELERY_BROKER_URL=redis://redis:6379/0
+    volumes:
+      - .:/app
+      - ./multiple_face_detection/models:/app/multiple_face_detection/models
     depends_on:
       db:
         condition: service_healthy
@@ -56,7 +59,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    # Auto-scaling tip: Scale this service with `docker-compose up --scale worker=30`
+    volumes:
+      - .:/app
+      - ./multiple_face_detection/models:/app/multiple_face_detection/models
+    # Auto-scaling tip: Scale this service with `docker compose up --scale worker=30`
 
 volumes:
   postgres_data:
