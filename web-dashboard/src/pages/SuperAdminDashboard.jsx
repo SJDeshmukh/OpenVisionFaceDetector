@@ -3127,13 +3127,7 @@ const SuperAdminDashboard = () => {
                           className="rounded text-indigo-600 focus:ring-indigo-500"
                         />
                         <span className="text-sm capitalize flex-1">{feature.replace('_', ' ')}</span>
-                        {(() => {
-                          if (feature === 'bulk_image_attendance' && newVendor.features?.includes('bulk_image_attendance')) {
-                            console.log("Rendering Bulk Attendance CONFIG button");
-                          }
-                          return null;
-                        })()}
-                        {feature.trim() === 'bulk_image_attendance' && newVendor.features?.includes('bulk_image_attendance') && (
+                        {(feature === 'bulk_image_attendance' || feature.includes('bulk_image')) && newVendor.features?.includes('bulk_image_attendance') && (
                           <button
                             type="button"
                             onClick={(e) => {
