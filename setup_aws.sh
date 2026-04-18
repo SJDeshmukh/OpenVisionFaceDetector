@@ -127,6 +127,8 @@ cd ..
 echo "==> [8/8] Building Frontend & Configuring Nginx..."
 echo "Building web-dashboard for production..."
 cd web-dashboard
+# Ensure we have permissions to the dist folder
+sudo chown -R $USER:$USER . 2>/dev/null || true
 npm run build || echo "Warning: Frontend build failed. Check RAM/Swap."
 
 if [ ! -d "dist" ]; then
