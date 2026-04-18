@@ -17,25 +17,46 @@ def get_realtime_engine():
     return _get()
 
 def _extract_structural_vector(lmks):
+    """
+    Extracts a pose-invariant geometric ratio vector from 68-point landmarks.
+    Focuses on physiological proportions (ratios) rather than absolute distances.
+    """
     if lmks is None or len(lmks) != 68:
         return np.array([], dtype=np.float32)
-    left_eye_center = np.mean(lmks[36:42], axis=0)
-    right_eye_center = np.mean(lmks[42:48], axis=0)
-    interocular_dist = np.linalg.norm(left_eye_center - right_eye_center)
-    if interocular_dist < 1e-5: return np.array([], dtype=np.float32)
     
-    nose = lmks[33]
-    vec = []
-    for i in range(68):
-        if i == 33: continue 
-        d = np.linalg.norm(lmks[i] - nose) / interocular_dist
+    # Key Anchor Points
+    le = np.mean(lmks[36:42], axis=0)  # Left Eye Center
+    re = np.mean(lmks[42:48], axis=0)  # Right Eye Center
+    nose_tip = lmks[33]
+    mouth_l = lmks[48]
+    mouth_r = lmks[54]
+    chin = lmks[8]
+    forehead_top = lmks[27] # Reference point on nose bridge
+    
+    # Fundamental distances for ratios
+    iod = np.linalg.norm(le - re)  # Interocular Distance (Base Unit)
+    if iod < 1e-5: return np.array([], dtype=np.float32)
+    
+    # 1. Broad Facial Ratios
+    nose_to_chin = np.linalg.norm(nose_tip - chin) / iod
+    eye_to_nose = np.linalg.norm((le + re)/2 - nose_tip) / iod
+    mouth_width = np.linalg.norm(mouth_l - mouth_r) / iod
+    face_height = np.linalg.norm(forehead_top - chin) / iod
+    jaw_breadth = np.linalg.norm(lmks[4] - lmks[12]) / iod
+    
+    # 2. Key landmark relative distances to nose tip (normalized by IOD)
+    # We take 20 key points to avoid noise from individual jitter
+    key_indices = [0, 4, 8, 12, 16, 17, 21, 22, 26, 36, 39, 42, 45, 48, 51, 54, 57, 60, 64, 66]
+    vec = [nose_to_chin, eye_to_nose, mouth_width, face_height, jaw_breadth]
+    
+    for idx in key_indices:
+        d = np.linalg.norm(lmks[idx] - nose_tip) / iod
         vec.append(d)
         
     v = np.array(vec, dtype=np.float32)
-    norm = np.linalg.norm(v)
-    if norm > 1e-5:
-        v = v / norm
-    return v
+    # Final normalization into a unit vector for dot product similarity
+    n = np.linalg.norm(v)
+    return (v / n) if n > 1e-6 else v
 
 def _normalize_vec(v: np.ndarray) -> np.ndarray:
     if v is None or v.size == 0:
@@ -79,9 +100,16 @@ def _apply_contrastive_refinement(sims: list, penalty_scale: float = 0.2) -> lis
         s2 = top2['similarity']
         
         gap = s1 - s2
+        
+        # AMBIGUITY DETECTION: If the model is collapsed (both high sim) 
+        # but the gap is tiny (< 5%), flag it.
+        if s1 > 0.7 and gap < 0.05:
+            top1['is_ambiguous'] = True
+            top2['is_ambiguous'] = True
+        
         # If the gap is small (< 10%), the identification is ambiguous.
         # We push them away from each other mathematically.
-        overlap = max(0, 1.0 - gap)
+        overlap = max(0.0, 1.0 - gap)
         penalty = overlap * penalty_scale
         
         # Accentuate the winner, penalize the runner-up if they are too close
@@ -165,28 +193,9 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
             c.execute(q, args)
             rows_emb = c.fetchall() or []
             
+            # The primary query already filters by class_year, division, and branch.
+            # We don't need to secondary-filter by faces.custom_data as it's often out of sync.
             valid_person_ids = None
-            if class_year:
-                c.execute("SELECT id FROM classes WHERE vendor_id = ? AND class_year = ? AND (division = ? OR division IS NULL OR division = '') AND (branch = ? OR branch IS NULL OR branch = '')", 
-                           (int(vendor_id or 0), str(class_year), str(division or ''), str(branch or '')))
-                crow = c.fetchone()
-                if crow:
-                    class_id_str = str(crow[0] if isinstance(crow, tuple) else crow['id'])
-                    c.execute("SELECT id, custom_data FROM faces WHERE vendor_id = ?", (int(vendor_id or 0),))
-                    valid_person_ids = set()
-                    import json
-                    for f_row in c.fetchall():
-                        try:
-                            cfid = int(f_row[0] if isinstance(f_row, tuple) else f_row['id'])
-                            cd_str = f_row[1] if isinstance(f_row, tuple) else f_row['custom_data']
-                            cd = json.loads(cd_str or '{}')
-                            fid = str(cd.get('class_id') or cd.get('class_section') or '')
-                            if fid == class_id_str:
-                                valid_person_ids.add(cfid)
-                        except Exception:
-                            pass
-                else:
-                    valid_person_ids = set() # No matching class found in DB, so no valid persons
 
             id_set = set()
             for r in rows_emb:
@@ -360,7 +369,8 @@ def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3, struct_vec=
                             s_u = match_item['struct_vec']
                             if s_u.size == struct_vec.size:
                                 struct_sim = float(np.dot(s_u, struct_vec))
-                                sim = (sim * 0.70) + (struct_sim * 0.30)
+                                # Weighting: 60% 3D Structural Mesh, 40% Facial Embeddings (ArcFace)
+                                sim = (sim * 0.40) + (struct_sim * 0.60)
                     
                     # Check for perfect scope match
                     is_perfect = True
@@ -389,7 +399,8 @@ def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3, struct_vec=
                 s_u = it['struct_vec']
                 if s_u.size == struct_vec.size:
                     struct_sim = float(np.dot(s_u, struct_vec))
-                    sim = (sim * 0.70) + (struct_sim * 0.30)
+                    # Weighting: 60% 3D Structural Mesh, 40% Facial Embeddings (ArcFace)
+                    sim = (sim * 0.40) + (struct_sim * 0.60)
                     
             is_perfect = True
             if class_year and str(it.get('class_year') or '') != str(class_year): is_perfect = False

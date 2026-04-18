@@ -255,7 +255,7 @@ def mark_lecture_attendance(lecture_id):
         pid = data.get('person_id')
         if not pid:
             return jsonify({"error": "person_id required"}), 400
-        entries = [{"person_id": int(pid), "status": data.get('status', 'present')}]
+        entries = [{"person_id": int(pid), "status": data.get('status', 'present'), "image": data.get('image', '')}]
 
     conn = get_db_connection()
     c    = conn.cursor()

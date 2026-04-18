@@ -700,12 +700,22 @@ def upload_face():
                 c.execute(q, params)
                 new_id = person_id
                 
+                # CRITICAL: Sync metadata to person_embeddings if scope changed
+                # Ensure the recognition engine can still find these embeddings under the new class/division/branch
+                if class_year is not None or division is not None or branch is not None:
+                    sync_fields = []
+                    sync_params = []
+                    if class_year is not None: sync_fields.append("class_year = ?"); sync_params.append(str(class_year))
+                    if division is not None: sync_fields.append("division = ?"); sync_params.append(str(division))
+                    if branch is not None: sync_fields.append("branch = ?"); sync_params.append(str(branch))
+                    if sync_fields:
+                        sync_params.append(person_id)
+                        c.execute(f"UPDATE person_embeddings SET {', '.join(sync_fields)} WHERE person_id = ?", sync_params)
+                
                 # If face image or templates are updated, clear accumulated embeddings
                 if (face_image is not None and face_image != "") or (templates_list and len(templates_list) > 0) or (templates is not None and templates != ""):
                     try:
-                        c.execute("DELETE FROM person_embeddings WHERE person_id = ?", (person_id,))
-                        
-                        # PERSIST NEW EMBEDDINGS if templates provided
+                        # Only delete if we are actually providing new templates to replace them!
                         target_templates = templates_list if (templates_list and len(templates_list) > 0) else None
                         if not target_templates and templates:
                             try:
@@ -715,6 +725,9 @@ def upload_face():
                                 target_templates = [templates]
                         
                         if target_templates:
+                            c.execute("DELETE FROM person_embeddings WHERE person_id = ?", (person_id,))
+                            
+                            # PERSIST NEW EMBEDDINGS if templates provided
                             for idx, t_item in enumerate(target_templates):
                                 try:
                                     # Handle both base64 strings and raw lists
@@ -1046,8 +1059,11 @@ def delete_face(name):
         for r in face_rows:
             v_id = r[1]
             d_id = r[2]
+            p_id = r[0]
             if v_id not in affected_vendors: affected_vendors[v_id] = []
             affected_vendors[v_id].append(d_id)
+            # CRITICAL: Clean up embeddings for this person
+            c.execute("DELETE FROM person_embeddings WHERE person_id = ?", (p_id,))
 
         if vendor_id:
             c.execute("DELETE FROM faces WHERE name = ? AND vendor_id = ?", (name, vendor_id))
@@ -1255,6 +1271,7 @@ def delete_face_by_id(person_id):
                     del _VENDOR_EMB_CACHE[k]
             
             c.execute("DELETE FROM lecture_attendance WHERE person_id = ?", (person_id,))
+            c.execute("DELETE FROM person_embeddings WHERE person_id = ?", (person_id,))
             
             if sn:
                 c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (target_vendor_id, sn))

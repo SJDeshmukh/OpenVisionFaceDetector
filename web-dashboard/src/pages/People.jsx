@@ -237,8 +237,11 @@ const People = () => {
 
     setSubmitting(true);
     try {
-      const missingRequired = (vendorConfig || []).filter(f => f.required).some(f => {
-        const key = f.field;
+      const activeColumns = getColumns();
+      const missingRequired = (activeColumns || []).filter(f => f.required).some(f => {
+        const key = f.key || f.field;
+        // Basic fields (name/phone) are validated separately or are always present
+        if (['name', 'phone', 'full_name', 'mobile_number'].includes(key)) return false;
         return !formData[key] || String(formData[key]).trim() === '';
       });
       if (missingRequired) {
@@ -259,13 +262,21 @@ const People = () => {
       delete payload.photo;
       delete payload.id;
 
-      // Map class_id to scope fields if selected
+      // Map class_id to scope fields if selected (Prefer these over manual Year/Div inputs)
       if (formData.class_id) {
         const selectedClass = vendorClasses.find(c => String(c.id) === String(formData.class_id));
         if (selectedClass) {
           payload.class_year = selectedClass.class_year;
           payload.division = selectedClass.division;
           payload.branch = selectedClass.branch;
+          // Store original mapping in custom_data
+          payload.custom_data = JSON.stringify({
+             ...JSON.parse(formData.custom_data || '{}'),
+             class_id: formData.class_id,
+             class_year: selectedClass.class_year,
+             division: selectedClass.division,
+             branch: selectedClass.branch
+          });
         }
       }
 
@@ -691,12 +702,47 @@ const People = () => {
                   );
                 })}
                 
-                {/* Registered Classes Dropdown - Hidden for now to match SuperAdmin fields strictly */}
-                {/* 
+                {/* Registered Classes Dropdown */}
                 {vendorClasses.length > 0 && (
-                  ...
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-700">
+                      Select Class (Recommended)
+                      <span className="text-slate-400 text-xs ml-2 font-normal">Auto-fills Year/Branch/Division</span>
+                    </label>
+                    <div className="relative">
+                      <select
+                        value={formData.class_id || ''}
+                        onChange={(e) => {
+                          const cid = e.target.value;
+                          const sel = vendorClasses.find(c => String(c.id) === String(cid));
+                          if (sel) {
+                            setFormData(prev => ({ 
+                              ...prev, 
+                              class_id: cid,
+                              class_year: sel.class_year || prev.class_year,
+                              division: sel.division || prev.division,
+                              branch: sel.branch || prev.branch,
+                              // If these fields exist in config, update them too
+                              Year: sel.class_year || prev.Year,
+                              Department: sel.branch || prev.Department,
+                              Division: sel.division || prev.Division
+                            }));
+                          } else {
+                            setFormData(prev => ({ ...prev, class_id: '' }));
+                          }
+                        }}
+                        className="w-full px-4 py-2 bg-blue-50 border border-blue-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 text-blue-900 font-medium"
+                      >
+                        <option value="">-- No Class Linked --</option>
+                        {vendorClasses.map(c => (
+                          <option key={c.id} value={c.id}>
+                            {c.class_year} - {c.branch} ({c.division})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
                 )}
-                */}
               </div>
 
               <div className="flex gap-3 pt-2">

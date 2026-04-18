@@ -188,6 +188,11 @@ def class_batch_commit(valid_data: ClassBatchCommitSchema):
                     if s_emb.size > 0: struct_blob = s_emb.astype(np.float32).tobytes()
                 except Exception: pass
             lmks_json = json.dumps(landmarks_3d) if landmarks_3d else None
+            
+            # CRITICAL FIX: Delete old (potentially bad/collapsed) embeddings for this person
+            # before saving the high-quality "learned" one from the bulk scan.
+            c.execute("DELETE FROM person_embeddings WHERE person_id = ? AND vendor_id = ?", (pid_key, vendor_id))
+            
             c.execute("INSERT INTO person_embeddings (vendor_id, person_id, class_year, division, branch, vec, dim, struct_vec, landmarks_3d) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (vendor_id, int(person_id), str(class_year), str(division), str(branch), vec_blob, dim, struct_blob, lmks_json))
             saved += 1
         except Exception: continue

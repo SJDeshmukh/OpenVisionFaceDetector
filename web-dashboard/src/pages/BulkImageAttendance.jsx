@@ -833,9 +833,16 @@ const BulkImageAttendance = () => {
                             Top suggestion: {Array.isArray(f.suggestions) && f.suggestions.length
                               ? (
                                 <>
-                                  <span className="font-semibold text-slate-700">{f.suggestions[0].name}</span>
+                                  <span className={`font-semibold ${f.suggestions[0].is_ambiguous ? 'text-amber-600' : 'text-slate-700'}`}>
+                                    {f.suggestions[0].name}
+                                  </span>
                                   {" "}
                                   {(f.suggestions[0].similarity * 100).toFixed(1)}%
+                                  {f.suggestions[0].is_ambiguous && (
+                                    <span className="ml-1 text-[9px] px-1 bg-amber-500 text-white rounded font-bold animate-pulse" title="Model collapse detected: Top 2 matches are too close. Please verify.">
+                                      AMBIGUOUS
+                                    </span>
+                                  )}
                                   {f.suggestions[0].perfect_scope === false && (
                                     <span className="ml-1 text-[9px] px-1 bg-amber-100 text-amber-700 border border-amber-200 rounded font-medium" title="Matched from a different class/batch">
                                       Cross-Class
