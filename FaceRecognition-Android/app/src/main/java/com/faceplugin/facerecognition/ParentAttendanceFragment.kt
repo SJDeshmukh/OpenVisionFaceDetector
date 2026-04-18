@@ -351,6 +351,17 @@ class ParentAttendanceFragment : Fragment() {
 
                 root.findViewById<TextView>(R.id.tv_parent_day_summary).text = "Date: ${date ?: "-"} • Status: ${lastStatus ?: "-"}"
 
+                val faceBase64 = try { studentObj?.get("face_image")?.asString } catch (_: Exception) { null }
+                if (!faceBase64.isNullOrBlank()) {
+                    try {
+                        val decodedBytes = android.util.Base64.decode(faceBase64, android.util.Base64.DEFAULT)
+                        val bitmap = android.graphics.BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
+                        if (bitmap != null) {
+                            root.findViewById<ImageView>(R.id.iv_parent_student_photo).setImageBitmap(bitmap)
+                        }
+                    } catch (_: Exception) {}
+                }
+
                 val list = try { resBody.getAsJsonArray("attendance") } catch (_: Exception) { null }
                 val history = root.findViewById<LinearLayout>(R.id.parent_history_container)
                 history.removeAllViews()

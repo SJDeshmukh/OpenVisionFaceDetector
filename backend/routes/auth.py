@@ -1072,13 +1072,13 @@ def parent_student_day():
 
         student_row = None
         if person_id:
-            c.execute("SELECT id, name, phone, department, designation, custom_data FROM faces WHERE vendor_id = ? AND id = ?", (vendor_id, person_id))
+            c.execute("SELECT id, name, phone, department, designation, custom_data, face_image FROM faces WHERE vendor_id = ? AND id = ?", (vendor_id, person_id))
             student_row = c.fetchone()
 
         if not student_row:
             phone_digits = "".join(ch for ch in str(contact_phone or "") if ch.isdigit())
             phone_tail = phone_digits[-10:] if len(phone_digits) >= 10 else phone_digits
-            c.execute("SELECT id, name, phone, department, designation, custom_data FROM faces WHERE vendor_id = ? AND phone LIKE ?", (vendor_id, f"%{phone_tail}%"))
+            c.execute("SELECT id, name, phone, department, designation, custom_data, face_image FROM faces WHERE vendor_id = ? AND phone LIKE ?", (vendor_id, f"%{phone_tail}%"))
             candidates = c.fetchall() or []
             for r in candidates:
                 cd_raw = r["custom_data"]
@@ -1149,6 +1149,7 @@ def parent_student_day():
                 "department": student_row["department"] if "department" in (student_row.keys() if hasattr(student_row, 'keys') else []) else None,
                 "designation": student_row["designation"] if "designation" in (student_row.keys() if hasattr(student_row, 'keys') else []) else None,
                 "student_number": student_custom.get("student_number") or student_number,
+                "face_image": base64.b64encode(student_row["face_image"]).decode('utf-8') if student_row["face_image"] else None,
                 "custom_data": student_custom,
             },
             "check_in": check_in,

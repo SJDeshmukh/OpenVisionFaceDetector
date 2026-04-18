@@ -307,17 +307,19 @@ const People = () => {
 
   // Determine columns based on Vendor Config (SuperAdmin defined)
   const getColumns = () => {
-    // Build bulk-attendance fields
+    // 1. Prioritize Vendor Registration Config (Mobile Registration Fields)
+    // This is the source of truth for student/employee registration
+    if (vendorConfig && Array.isArray(vendorConfig) && vendorConfig.length > 0) {
+        return vendorConfig;
+    }
+
+    // 2. Fallback to bulk-attendance fields if feature is enabled
     const bulkFields = [];
     if (user?.features?.includes('bulk_image_attendance')) {
       (bulkAttendanceFields || []).forEach(f => {
-        // Keep the original names from SuperAdmin as requested
         const fieldName = f.name;
-        
-        // Skip Full Name from columns as it's already in the main profile block
         if (['name', 'full_name'].includes(fieldName)) return;
         
-        // If it's phone or mobile, map its field to 'phone' so data is pulled from user.phone
         if (['phone', 'mobile_number'].includes(fieldName)) {
             bulkFields.push({ 
               field: 'phone', 
@@ -339,18 +341,10 @@ const People = () => {
           options: f.options 
         });
       });
+      return bulkFields;
     }
 
-    // If bulk_image_attendance is enabled, we strictly follow that config
-    if (user?.features?.includes('bulk_image_attendance')) {
-        return bulkFields;
-    }
-
-    if (vendorConfig && Array.isArray(vendorConfig) && vendorConfig.length > 0) {
-      return vendorConfig;
-    }
-    
-    // Fallback Defaults
+    // 3. Fallback Defaults
     return [
       { field: 'phone', label: 'Phone' },
       { field: 'department', label: 'Department' },

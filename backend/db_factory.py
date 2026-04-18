@@ -489,6 +489,7 @@ def _init_pg_schema_on_conn(conn):
         "CREATE TABLE IF NOT EXISTS bulk_attendance_config (id SERIAL PRIMARY KEY, vendor_id INTEGER UNIQUE REFERENCES vendors(id), fields TEXT DEFAULT '[]', updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS lectures (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), subject TEXT NOT NULL, class_year TEXT, division TEXT, branch TEXT, lecture_date DATE, start_time TEXT, teacher TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS lecture_attendance (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), lecture_id INTEGER REFERENCES lectures(id), person_id INTEGER REFERENCES faces(id), status TEXT DEFAULT 'present', marked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(lecture_id, person_id))",
+        "CREATE TABLE IF NOT EXISTS classes (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), class_year TEXT, division TEXT, branch TEXT, label TEXT, mapped_subjects TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
 
         # --- Performance Indices ---
         "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_time ON attendance(vendor_id, timestamp)",
@@ -662,6 +663,7 @@ def init_sqlite_schema(conn):
         "CREATE TABLE IF NOT EXISTS bulk_attendance_config (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER UNIQUE, fields TEXT DEFAULT '[]', updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS lectures (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, subject TEXT NOT NULL, class_year TEXT, division TEXT, branch TEXT, lecture_date DATE, start_time TEXT, teacher TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS lecture_attendance (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, lecture_id INTEGER, person_id INTEGER, status TEXT DEFAULT 'present', marked_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(lecture_id, person_id))",
+        "CREATE TABLE IF NOT EXISTS classes (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, class_year TEXT, division TEXT, branch TEXT, label TEXT, mapped_subjects TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
 
         # --- Performance Indices ---
         "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_time ON attendance(vendor_id, timestamp)",

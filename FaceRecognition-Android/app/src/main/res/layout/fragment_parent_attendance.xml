@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/vision_navy_900">
@@ -36,13 +37,31 @@
                 style="@style/ButtonStyleOutline"/>
         </LinearLayout>
 
+        <androidx.cardview.widget.CardView
+            android:id="@+id/cv_parent_student_photo"
+            android:layout_width="80dp"
+            android:layout_height="80dp"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginBottom="16dp"
+            app:cardCornerRadius="40dp"
+            app:cardElevation="4dp"
+            app:cardBackgroundColor="@color/vision_navy_800">
+            <ImageView
+                android:id="@+id/iv_parent_student_photo"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:scaleType="centerCrop"
+                android:src="@drawable/openvision_logo"/>
+        </androidx.cardview.widget.CardView>
+
         <TextView
             android:id="@+id/tv_parent_student_name"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="Student"
+            android:gravity="center_horizontal"
             android:textStyle="bold"
-            android:textSize="18sp"
+            android:textSize="20sp"
             android:textColor="@color/vision_text_primary"
             android:layout_marginBottom="4dp"/>
         <TextView

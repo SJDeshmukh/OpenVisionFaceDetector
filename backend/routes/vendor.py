@@ -549,17 +549,29 @@ def list_classes():
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        # Ensure table and migration
-        c.execute("""CREATE TABLE IF NOT EXISTS classes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            vendor_id INTEGER,
-            class_year TEXT,
-            division TEXT,
-            branch TEXT,
-            label TEXT,
-            mapped_subjects TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )""")
+        is_pg = getattr(conn, "_is_pg", False)
+        if is_pg:
+            c.execute("""CREATE TABLE IF NOT EXISTS classes (
+                id SERIAL PRIMARY KEY,
+                vendor_id INTEGER,
+                class_year TEXT,
+                division TEXT,
+                branch TEXT,
+                label TEXT,
+                mapped_subjects TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""")
+        else:
+            c.execute("""CREATE TABLE IF NOT EXISTS classes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                vendor_id INTEGER,
+                class_year TEXT,
+                division TEXT,
+                branch TEXT,
+                label TEXT,
+                mapped_subjects TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )""")
         # Migration for existing tables
         try:
             c.execute("ALTER TABLE classes ADD COLUMN mapped_subjects TEXT")
@@ -606,18 +618,29 @@ def create_class():
         return error
     data = request.get_json(silent=True) or {}
     try:
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute("""CREATE TABLE IF NOT EXISTS classes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            vendor_id INTEGER,
-            class_year TEXT,
-            division TEXT,
-            branch TEXT,
-            label TEXT,
-            mapped_subjects TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )""")
+        is_pg = getattr(conn, "_is_pg", False)
+        if is_pg:
+            c.execute("""CREATE TABLE IF NOT EXISTS classes (
+                id SERIAL PRIMARY KEY,
+                vendor_id INTEGER,
+                class_year TEXT,
+                division TEXT,
+                branch TEXT,
+                label TEXT,
+                mapped_subjects TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""")
+        else:
+            c.execute("""CREATE TABLE IF NOT EXISTS classes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                vendor_id INTEGER,
+                class_year TEXT,
+                division TEXT,
+                branch TEXT,
+                label TEXT,
+                mapped_subjects TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )""")
         
         mapped_subjects_json = json.dumps(data.get('mapped_subjects') or [])
         
