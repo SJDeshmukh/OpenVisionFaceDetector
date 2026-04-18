@@ -1,50 +1,35 @@
-# Git
-.git
-.gitignore
-
 # Python
 **/__pycache__
 **/*.pyc
 **/*.pyo
 **/*.pyd
-**/venv
-**/.venv
-**/env
-**/.env
-**/.pytest_cache
-**/.coverage
-**/htmlcov
+backend/.venv
+backend/.env
 
-# Node / Frontend
+# Node.js
 **/node_modules
-**/dist
-**/.npm
-**/npm-debug.log*
-**/yarn-debug.log*
-**/yarn-error.log*
+web-dashboard/dist
 
-# Database / Storage
+# Database
 **/*.sqlite
 **/*.db
-**/*.db-shm
-**/*.db-wal
-**/captured_frames
-**/face_templates
-**/storage
+postgres_data/
 
-# Logs
-**/*.log
-**/logs
+# Git
+.git
+.gitignore
 
-# OS / IDE
+# Models/Heavy data (These should be downloaded in Dockerfile via curl or COPY specifically)
+# If multiple_face_detection is huge, we should be selective
+# But usually we need it. However, we can ignore other things.
+
+# OS
 .DS_Store
-.vscode
-.idea
-*.swp
-*.swo
+Thumbs.db
 
-# Project specific
-multiple_face_detection/weights/*.pth
-multiple_face_detection/weights/*.onnx
-backend/face_templates/*
-backend/captured_frames/*
+# Documentation/Artifacts
+.gemini
+brain
+task.md
+implementation_plan.md
+walkthrough.md

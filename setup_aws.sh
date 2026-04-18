@@ -49,8 +49,9 @@ sudo systemctl disable openvision-backend openvision-celery 2>/dev/null || true
 sudo fuser -k 5001/tcp 2>/dev/null || true
 sudo fuser -k 6379/tcp 2>/dev/null || true
 
-# Clear stale containers
+# Clear stale containers and free up disk space
 sudo docker compose down --remove-orphans 2>/dev/null || true
+sudo docker system prune -f --volumes || true
 
 echo "==> [4/6] Initializing Environment Configuration (.env)..."
 if [ ! -f "backend/.env" ]; then
