@@ -48,13 +48,14 @@ if ! command -v docker-compose &> /dev/null; then
     sudo ln -s /usr/libexec/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose || true
 fi
 
-echo "==> [3/6] Cleaning up Legacy Services (if any)..."
-sudo systemctl stop openvision-backend openvision-celery redis-server nginx postgresql 2>/dev/null || true
-sudo systemctl disable openvision-backend openvision-celery 2>/dev/null || true
+# Stop all possible legacy service names
+sudo systemctl stop openvision-backend openvision-celery openvision.service gunicorn 2>/dev/null || true
+sudo systemctl disable openvision-backend openvision-celery openvision.service 2>/dev/null || true
 
-# Kill anything on port 5001 (backend) and 6379 (redis) to prevent binding errors
+# Force kill anything on port 5001 (backend) and 6379 (redis)
 sudo fuser -k 5001/tcp 2>/dev/null || true
 sudo fuser -k 6379/tcp 2>/dev/null || true
+sudo lsof -t -i:5001 | xargs sudo kill -9 2>/dev/null || true
 
 # Clear stale containers and free up disk space
 sudo docker compose down --remove-orphans 2>/dev/null || true
