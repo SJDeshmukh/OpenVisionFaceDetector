@@ -50,8 +50,12 @@ if ! command -v docker-compose &> /dev/null; then
 fi
 
 # Stop all possible legacy service names
-sudo systemctl stop openvision-backend openvision-celery openvision.service gunicorn 2>/dev/null || true
+sudo systemctl stop openvision-backend openvision-celery openvision.service gunicorn nginx 2>/dev/null || true
 sudo systemctl disable openvision-backend openvision-celery openvision.service 2>/dev/null || true
+
+# Kill any docker container holding port 5001
+sudo docker ps -q --filter "publish=5001" | xargs sudo docker stop 2>/dev/null || true
+sudo docker ps -q --filter "name=face-api" | xargs sudo docker stop 2>/dev/null || true
 
 # Force kill anything on port 5001 (backend) and 6379 (redis)
 sudo fuser -k 5001/tcp 2>/dev/null || true
@@ -61,6 +65,10 @@ sudo lsof -t -i:5001 | xargs sudo kill -9 2>/dev/null || true
 # Clear stale containers and free up disk space
 sudo docker compose down --remove-orphans 2>/dev/null || true
 sudo docker system prune -f --volumes || true
+
+# Wait for ports to clear
+echo "Waiting for ports to clear..."
+sleep 3
 
 echo "==> [4/6] Initializing Environment Configuration (.env)..."
 if [ ! -f "backend/.env" ]; then
