@@ -157,8 +157,8 @@ const Reports = () => {
       params.append('token', user.token);
     }
 
-    const endpoint = filters.type === 'summary' 
-      ? `${API_URL}/reports/payroll/export-daily` 
+    const endpoint = filters.type === 'summary'
+      ? `${API_URL}/reports/payroll/export-daily`
       : `${API_URL}/reports/export`;
 
     window.location.href = `${endpoint}?${params.toString()}`;

@@ -1,0 +1,87 @@
+--- web-dashboard/src/pages/People.jsx
++++ web-dashboard/src/pages/People.jsx
+@@ -304,13 +304,24 @@
+         const fieldName = f.name;
+         
+         // We handle these via labels on standard fields in the modal
+-        if (['name', 'phone', 'full_name', 'mobile_number'].includes(f.name)) return;
++        if (['name', 'full_name'].includes(fieldName)) return;
++        
++        if (['phone', 'mobile_number'].includes(fieldName)) {
++            bulkFields.push({ 
++              field: 'phone', 
++              key: fieldName, 
++              label: f.label, 
++              required: f.required, 
++              type: f.type, 
++              options: f.options 
++            });
++            return;
++        }
+         
+         bulkFields.push({ 
+           field: fieldName, 
+           key: fieldName, 
+           label: f.label, 
+           required: f.required, 
+           type: f.type, 
+           options: f.options 
+@@ -328,6 +339,7 @@
+     
+     // Fallback Defaults
+     return [
++      { field: 'phone', label: 'Phone' },
+       { field: 'department', label: 'Department' },
+       { field: 'shift', label: 'Shift' },
+       { field: 'designation', label: 'Designation' }
+@@ -345,10 +357,17 @@
+ 
+     const getRawValue = (person, field) => {
++      let val = null;
+       if (person?.custom_data && person.custom_data[field] !== undefined && person.custom_data[field] !== null) {
+-        return person.custom_data[field];
++        val = person.custom_data[field];
++      } else if (person && person[field] !== undefined && person[field] !== null) {
++        val = person[field];
+       }
+-      if (person && person[field] !== undefined && person[field] !== null) {
+-        return person[field];
+-      }
+-      return null;
++      
++      if ((val === null || val === '') && ['student_id', 'student_number', 'roll_number'].includes(field)) {
++        val = person?.custom_data?.student_id || person?.custom_data?.student_number || person?.custom_data?.roll_number || person?.custom_data?.admission_number || null;
++      }
++      
++      return val;
+     };
+ 
+@@ -362,13 +381,17 @@
+ 
+   const getCellValue = (person, field) => {
++    let rawValue = null;
+     if (person?.custom_data && person.custom_data[field] !== undefined && person.custom_data[field] !== null) {
+-      const v = person.custom_data[field];
+-      const s = typeof v === 'string' ? v.trim() : v;
+-      return s === '' ? '-' : s;
++      rawValue = person.custom_data[field];
++    } else if (person && person[field] !== undefined && person[field] !== null) {
++      rawValue = person[field];
+     }
+-    if (person && person[field] !== undefined && person[field] !== null) {
+-      const v = person[field];
+-      const s = typeof v === 'string' ? v.trim() : v;
+-      return s === '' ? '-' : s;
++    
++    if ((rawValue === null || rawValue === '') && ['student_id', 'student_number', 'roll_number'].includes(field)) {
++      rawValue = person?.custom_data?.student_id || person?.custom_data?.student_number || person?.custom_data?.roll_number || person?.custom_data?.admission_number;
+     }
+-    return '-';
++    
++    if (rawValue !== null && rawValue !== undefined) {
++      const v = rawValue;
++      const s = typeof v === 'string' ? v.trim() : v;
++      return s === '' ? '-' : s;
++    }
++    return '-';
+   };

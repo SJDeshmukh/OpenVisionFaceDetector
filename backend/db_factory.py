@@ -86,7 +86,7 @@ def get_pg_pool():
         try:
             # ThreadedConnectionPool for eventlet/threading compatibility
             minconn = int(os.environ.get("DB_MIN_CONN", "1"))
-            maxconn = int(os.environ.get("DB_MAX_CONN", "20"))
+            maxconn = int(os.environ.get("DB_MAX_CONN", "50"))
             if psycopg2:
                 _PG_POOL = psycopg2.pool.ThreadedConnectionPool(minconn, maxconn, DATABASE_URL)
                 logger.info(f"PostgreSQL connection pool initialized (min={minconn}, max={maxconn})")
@@ -104,7 +104,7 @@ def init_db_sqlalchemy(app):
         # Connection pool settings for SQLAlchemy
         app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
             "pool_size": int(os.environ.get("DB_MIN_CONN", "5")),
-            "max_overflow": int(os.environ.get("DB_MAX_CONN", "20")) - int(os.environ.get("DB_MIN_CONN", "5")),
+            "max_overflow": int(os.environ.get("DB_MAX_CONN", "50")) - int(os.environ.get("DB_MIN_CONN", "5")),
             "pool_recycle": 1800,
             "pool_pre_ping": True,
         }
@@ -239,11 +239,63 @@ class PostgresCursorWrapper:
     def __iter__(self):
         return self.cursor.__iter__()
 
+class SQLiteConnectionWrapper:
+    def __init__(self, conn):
+        self.conn = conn
+        self._is_pg = False
+        self._row_factory = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type:
+            try: self.conn.rollback()
+            except: pass
+        else:
+            try: self.conn.commit()
+            except: pass
+        self.conn.close()
+
+    @property
+    def row_factory(self):
+        return self.conn.row_factory
+
+    @row_factory.setter
+    def row_factory(self, val):
+        self.conn.row_factory = val
+
+    def cursor(self):
+        return self.conn.cursor()
+
+    def commit(self):
+        self.conn.commit()
+
+    def close(self):
+        self.conn.close()
+
+    def rollback(self):
+        self.conn.rollback()
+
+    def execute(self, sql, params=None):
+        if params is None: params = []
+        return self.conn.execute(sql, params)
+
 class PostgresConnectionWrapper:
     def __init__(self, conn):
         self.conn = conn
         self._row_factory = None
         self._is_pg = True
+        self._closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type:
+            try: self.rollback()
+            except: pass
+        self.close()
 
     @property
     def row_factory(self):
@@ -260,15 +312,26 @@ class PostgresConnectionWrapper:
         self.conn.commit()
 
     def close(self):
+        if self._closed:
+            return
+        self._closed = True
         pool = get_pg_pool()
         if pool:
             try:
                 pool.putconn(self.conn)
             except Exception as e:
                 logger.error(f"Error returning connection to pool: {e}")
-                self.conn.close()
+                try: self.conn.close()
+                except: pass
         else:
-            self.conn.close()
+            try: self.conn.close()
+            except: pass
+            
+    def __del__(self):
+        try:
+            self.close()
+        except:
+            pass
         
     def rollback(self):
         self.conn.rollback()
@@ -343,7 +406,7 @@ def get_db_connection(timeout=30):
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.row_factory = sqlite3.Row
-        return conn
+        return SQLiteConnectionWrapper(conn)
     except Exception as e:
         logger.error(f"SQLite Connection failed: {e}")
         raise e
@@ -355,7 +418,7 @@ def get_backup_db_connection(timeout=20):
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.row_factory = sqlite3.Row
-        return conn
+        return SQLiteConnectionWrapper(conn)
     except Exception as e:
         logger.error(f"Backup SQLite Connection failed: {e}")
         raise e
@@ -423,14 +486,20 @@ def _init_pg_schema_on_conn(conn):
         "CREATE TABLE IF NOT EXISTS class_batch_items (id TEXT PRIMARY KEY, batch_id TEXT REFERENCES class_batches(id), seq INTEGER, image_b64 TEXT, annotated_b64 TEXT, faces_json TEXT, status TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS leave_staff (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), name TEXT, role TEXT, pin TEXT, department TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS archive_objects (id SERIAL PRIMARY KEY, vendor_id INTEGER, table_name TEXT, row_json TEXT, archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, restored_at TIMESTAMP)",
-        
+        "CREATE TABLE IF NOT EXISTS bulk_attendance_config (id SERIAL PRIMARY KEY, vendor_id INTEGER UNIQUE REFERENCES vendors(id), fields TEXT DEFAULT '[]', updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS lectures (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), subject TEXT NOT NULL, class_year TEXT, division TEXT, branch TEXT, lecture_date DATE, start_time TEXT, teacher TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS lecture_attendance (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), lecture_id INTEGER REFERENCES lectures(id), person_id INTEGER REFERENCES faces(id), status TEXT DEFAULT 'present', marked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(lecture_id, person_id))",
+
         # --- Performance Indices ---
         "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_time ON attendance(vendor_id, timestamp)",
         "CREATE INDEX IF NOT EXISTS idx_attendance_person ON attendance(person_id)",
         "CREATE INDEX IF NOT EXISTS idx_faces_vendor ON faces(vendor_id)",
         "CREATE INDEX IF NOT EXISTS idx_system_users_vendor ON system_users(vendor_id)",
         "CREATE INDEX IF NOT EXISTS idx_active_sessions_vendor ON active_sessions(vendor_id)",
-        "CREATE INDEX IF NOT EXISTS idx_active_sessions_user ON active_sessions(username)"
+        "CREATE INDEX IF NOT EXISTS idx_active_sessions_user ON active_sessions(username)",
+        "CREATE INDEX IF NOT EXISTS idx_lectures_vendor ON lectures(vendor_id, lecture_date)",
+        "CREATE INDEX IF NOT EXISTS idx_lecture_attendance_lecture ON lecture_attendance(lecture_id)",
+        "CREATE INDEX IF NOT EXISTS idx_lecture_attendance_person ON lecture_attendance(person_id, vendor_id)"
     ]
     for q in queries:
         try:
@@ -590,14 +659,20 @@ def init_sqlite_schema(conn):
         "CREATE TABLE IF NOT EXISTS class_batch_items (id TEXT PRIMARY KEY, batch_id TEXT, seq INTEGER, image_b64 TEXT, annotated_b64 TEXT, faces_json TEXT, status TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS leave_staff (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, name TEXT, role TEXT, pin TEXT, department TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS archive_objects (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, table_name TEXT, row_json TEXT, archived_at DATETIME DEFAULT CURRENT_TIMESTAMP, restored_at DATETIME)",
-        
+        "CREATE TABLE IF NOT EXISTS bulk_attendance_config (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER UNIQUE, fields TEXT DEFAULT '[]', updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS lectures (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, subject TEXT NOT NULL, class_year TEXT, division TEXT, branch TEXT, lecture_date DATE, start_time TEXT, teacher TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS lecture_attendance (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, lecture_id INTEGER, person_id INTEGER, status TEXT DEFAULT 'present', marked_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(lecture_id, person_id))",
+
         # --- Performance Indices ---
         "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_time ON attendance(vendor_id, timestamp)",
         "CREATE INDEX IF NOT EXISTS idx_attendance_person ON attendance(person_id)",
         "CREATE INDEX IF NOT EXISTS idx_faces_vendor ON faces(vendor_id)",
         "CREATE INDEX IF NOT EXISTS idx_system_users_vendor ON system_users(vendor_id)",
         "CREATE INDEX IF NOT EXISTS idx_active_sessions_vendor ON active_sessions(vendor_id)",
-        "CREATE INDEX IF NOT EXISTS idx_active_sessions_user ON active_sessions(username)"
+        "CREATE INDEX IF NOT EXISTS idx_active_sessions_user ON active_sessions(username)",
+        "CREATE INDEX IF NOT EXISTS idx_lectures_vendor ON lectures(vendor_id, lecture_date)",
+        "CREATE INDEX IF NOT EXISTS idx_lecture_attendance_lecture ON lecture_attendance(lecture_id)",
+        "CREATE INDEX IF NOT EXISTS idx_lecture_attendance_person ON lecture_attendance(person_id, vendor_id)"
     ]
     for q in queries:
         cur.execute(q)

@@ -206,16 +206,88 @@ def class_batch_commit(valid_data: ClassBatchCommitSchema):
 def class_batch_status(valid_data: ClassBatchStatusSchema):
     vendor_id = g.vendor_id
     bid = valid_data.batch_id
+    exclude_images = request.args.get('exclude_images', '0').lower() in ('1', 'true', 'yes')
+    
     conn = get_db_connection()
     _ensure_class_batch_tables(conn)
     c = conn.cursor()
     c.execute("SELECT id, class_year, division, branch, status FROM class_batches WHERE id = ? AND vendor_id = ?", (bid, vendor_id))
     b = c.fetchone()
     if not b: conn.close(); return jsonify({"error": "batch not found"}), 404
-    c.execute("SELECT id, seq, image_b64, annotated_b64, faces_json, status FROM class_batch_items WHERE batch_id = ? ORDER BY seq ASC", (bid,))
-    rows = c.fetchall() or []; conn.close()
-    items = [{"id": r[0], "seq": r[1], "image": r[2], "annotated": r[3], "faces": json.loads(r[4] or "[]"), "status": r[5]} for r in rows]
+    
+    if exclude_images:
+        c.execute("SELECT id, seq, faces_json, status FROM class_batch_items WHERE batch_id = ? ORDER BY seq ASC", (bid,))
+        rows = c.fetchall() or []
+        conn.close()
+        items = [{"id": r[0], "seq": r[1], "faces": json.loads(r[2] or "[]"), "status": r[3]} for r in rows]
+    else:
+        c.execute("SELECT id, seq, image_b64, annotated_b64, faces_json, status FROM class_batch_items WHERE batch_id = ? ORDER BY seq ASC", (bid,))
+        rows = c.fetchall() or []
+        conn.close()
+        items = [{"id": r[0], "seq": r[1], "image": r[2], "annotated": r[3], "faces": json.loads(r[4] or "[]"), "status": r[5]} for r in rows]
+        
     return jsonify({"batch": {"id": b[0], "class_year": b[1], "division": b[2], "branch": b[3], "status": b[4]}, "items": items})
+
+@attendance_class_bp.route("/class-batch/item-image/<item_id>", methods=["GET"])
+def class_batch_item_image(item_id):
+    # Support token in query params for <img> tags
+    token = request.args.get('token')
+    if token:
+        # Manually verify token or just use it if provided
+        # For simplicity and consistency, let's try to populate g.vendor_id
+        from services.auth_service import verify_token
+        user_data = verify_token(token)
+        if not user_data:
+            return jsonify({"error": "unauthorized"}), 401
+        vendor_id = user_data.get('vendor_id')
+    else:
+        # Fallback to standard require_auth logic (implicit)
+        @require_auth()
+        def _protected():
+            return g.vendor_id
+        try:
+            vendor_id = _protected()
+            if isinstance(vendor_id, tuple): # error response
+                return vendor_id
+        except Exception:
+            return jsonify({"error": "unauthorized"}), 401
+
+    image_type = request.args.get('type', 'raw') # 'raw' or 'annotated'
+    
+    conn = get_db_connection()
+    _ensure_class_batch_tables(conn)
+    c = conn.cursor()
+    
+    # Verify that the item belongs to a batch owned by this vendor
+    c.execute("""
+        SELECT i.image_b64, i.annotated_b64 
+        FROM class_batch_items i
+        JOIN class_batches b ON i.batch_id = b.id
+        WHERE i.id = ? AND b.vendor_id = ?
+    """, (item_id, vendor_id))
+    
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        return jsonify({"error": "item not found"}), 404
+        
+    img_b64 = row[1] if image_type == 'annotated' else row[0]
+    
+    if not img_b64:
+        return jsonify({"error": "image not available"}), 404
+        
+    # If it's a data URI, strip the header
+    if ',' in img_b64:
+        header, encoded = img_b64.split(',', 1)
+        mime_type = header.split(':')[1].split(';')[0]
+        raw_data = base64.b64decode(encoded)
+    else:
+        mime_type = "image/jpeg"
+        raw_data = base64.b64decode(img_b64)
+        
+    from flask import Response
+    return Response(raw_data, mimetype=mime_type)
 
 @attendance_class_bp.route("/class-batch/clear", methods=["POST"])
 @require_auth()

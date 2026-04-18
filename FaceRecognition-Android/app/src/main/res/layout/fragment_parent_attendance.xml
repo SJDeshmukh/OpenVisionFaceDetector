@@ -9,6 +9,33 @@
         android:orientation="vertical"
         android:padding="16dp">
 
+        <!-- Tab Toggle: Daily / Lectures — hidden for hostel/non-bulk vendors -->
+        <LinearLayout
+            android:id="@+id/tab_row_attendance"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:orientation="horizontal"
+            android:background="@drawable/bg_input_field"
+            android:layout_marginBottom="16dp"
+            android:visibility="gone">
+            <Button
+                android:id="@+id/btn_tab_daily"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:text="Daily"
+                android:textSize="13sp"
+                style="@style/ButtonStyle"/>
+            <Button
+                android:id="@+id/btn_tab_lectures"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:text="Lectures"
+                android:textSize="13sp"
+                style="@style/ButtonStyleOutline"/>
+        </LinearLayout>
+
         <TextView
             android:id="@+id/tv_parent_student_name"
             android:layout_width="match_parent"
@@ -188,5 +215,74 @@
             android:visibility="gone"
             android:layout_gravity="center_horizontal"
             android:layout_marginTop="12dp"/>
+
+        <!-- Lecture Attendance Section (shown when Lectures tab is active) -->
+        <LinearLayout
+            android:id="@+id/layout_lectures"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginBottom="12dp">
+                <EditText
+                    android:id="@+id/et_lecture_start"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_weight="1"
+                    android:hint="From date"
+                    android:background="@drawable/bg_input_field"
+                    android:inputType="none"
+                    android:focusable="false"
+                    android:singleLine="true"
+                    android:padding="10dp"
+                    android:textSize="12sp"
+                    android:textColor="@color/vision_text_primary"
+                    android:textColorHint="@color/vision_text_tertiary"/>
+                <EditText
+                    android:id="@+id/et_lecture_end"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_weight="1"
+                    android:hint="To date"
+                    android:background="@drawable/bg_input_field"
+                    android:inputType="none"
+                    android:focusable="false"
+                    android:singleLine="true"
+                    android:padding="10dp"
+                    android:textSize="12sp"
+                    android:textColor="@color/vision_text_primary"
+                    android:textColorHint="@color/vision_text_tertiary"
+                    android:layout_marginStart="8dp"/>
+                <Button
+                    android:id="@+id/btn_load_lectures"
+                    android:layout_width="wrap_content"
+                    android:layout_height="44dp"
+                    android:text="Load"
+                    style="@style/ButtonStyle"
+                    android:layout_marginStart="8dp"/>
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/tv_lecture_summary"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text=""
+                android:textSize="12sp"
+                android:textColor="@color/vision_text_secondary"
+                android:layout_marginBottom="8dp"/>
+
+            <LinearLayout
+                android:id="@+id/lecture_list_container"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"/>
+        </LinearLayout>
+
     </LinearLayout>
 </ScrollView>

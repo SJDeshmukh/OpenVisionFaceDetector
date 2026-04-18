@@ -549,7 +549,7 @@ def list_classes():
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        # Ensure table
+        # Ensure table and migration
         c.execute("""CREATE TABLE IF NOT EXISTS classes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             vendor_id INTEGER,
@@ -557,18 +557,36 @@ def list_classes():
             division TEXT,
             branch TEXT,
             label TEXT,
+            mapped_subjects TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )""")
+        # Migration for existing tables
+        try:
+            c.execute("ALTER TABLE classes ADD COLUMN mapped_subjects TEXT")
+            if hasattr(conn, "commit"):
+                conn.commit()
+        except:
+            if hasattr(conn, "rollback"):
+                try: conn.rollback()
+                except: pass
+            pass
+
         if vendor_id:
-            c.execute("SELECT id, class_year, division, branch, label FROM classes WHERE vendor_id = ? ORDER BY created_at DESC", (vendor_id,))
+            c.execute("SELECT id, class_year, division, branch, label, mapped_subjects FROM classes WHERE vendor_id = ? ORDER BY created_at DESC", (vendor_id,))
         else:
-            c.execute("SELECT id, class_year, division, branch, label FROM classes ORDER BY created_at DESC")
+            c.execute("SELECT id, class_year, division, branch, label, mapped_subjects FROM classes ORDER BY created_at DESC")
         rows = c.fetchall() or []
         conn.close()
         items = []
         for r in rows:
+            mapped_subjects_list = []
+            try:
+                mapped_subjects_list = json.loads(r[5]) if r[5] else []
+            except:
+                pass
+
             items.append({
-                "id": r[0], "class_year": r[1], "division": r[2], "branch": r[3], "label": r[4]
+                "id": r[0], "class_year": r[1], "division": r[2], "branch": r[3], "label": r[4], "mapped_subjects": mapped_subjects_list
             })
         return jsonify({"classes": items})
     except Exception as e:
@@ -597,10 +615,14 @@ def create_class():
             division TEXT,
             branch TEXT,
             label TEXT,
+            mapped_subjects TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )""")
-        c.execute("INSERT INTO classes (vendor_id, class_year, division, branch, label) VALUES (?, ?, ?, ?, ?)",
-                  (vendor_id, str(data.get('class_year') or ''), str(data.get('division') or ''), str(data.get('branch') or ''), str(data.get('label') or '')))
+        
+        mapped_subjects_json = json.dumps(data.get('mapped_subjects') or [])
+        
+        c.execute("INSERT INTO classes (vendor_id, class_year, division, branch, label, mapped_subjects) VALUES (?, ?, ?, ?, ?, ?)",
+                  (vendor_id, str(data.get('class_year') or ''), str(data.get('division') or ''), str(data.get('branch') or ''), str(data.get('label') or ''), mapped_subjects_json))
         conn.commit()
         new_id = c.lastrowid
         conn.close()
@@ -624,6 +646,17 @@ def update_class(cid: int):
     try:
         conn = get_db_connection()
         c = conn.cursor()
+        
+        # Ensure migration exists before update
+        try:
+            c.execute("ALTER TABLE classes ADD COLUMN mapped_subjects TEXT")
+            if hasattr(conn, "commit"): conn.commit()
+        except:
+            if hasattr(conn, "rollback"):
+                try: conn.rollback()
+                except: pass
+            pass
+            
         c.execute("SELECT vendor_id FROM classes WHERE id = ?", (cid,))
         row = c.fetchone()
         if not row or (vendor_id and int(row[0]) != int(vendor_id)):
@@ -633,6 +666,10 @@ def update_class(cid: int):
         for k in ["class_year", "division", "branch", "label"]:
             if k in data:
                 fields.append(f"{k} = ?"); params.append(str(data.get(k) or ''))
+        
+        if 'mapped_subjects' in data:
+            fields.append("mapped_subjects = ?"); params.append(json.dumps(data.get('mapped_subjects') or []))
+
         if fields:
             params.append(cid)
             c.execute(f"UPDATE classes SET {', '.join(fields)} WHERE id = ?", params)

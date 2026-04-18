@@ -842,8 +842,12 @@ def manage_departments():
                 depts.remove(dept_name)
                 if is_pg:
                     c.execute("UPDATE vendors SET departments = %s WHERE id = %s", (json.dumps(depts), vendor_id))
+                    # Also clean up staff associated with this department
+                    c.execute("DELETE FROM leave_staff WHERE vendor_id = %s AND department = %s", (vendor_id, dept_name))
                 else:
                     c.execute("UPDATE vendors SET departments = ? WHERE id = ?", (json.dumps(depts), vendor_id))
+                    # Also clean up staff associated with this department
+                    c.execute("DELETE FROM leave_staff WHERE vendor_id = ? AND department = ?", (vendor_id, dept_name))
                 conn.commit()
             return jsonify({"status": "success", "departments": depts})
     finally:

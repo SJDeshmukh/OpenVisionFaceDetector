@@ -82,8 +82,6 @@ def super_admin_role_required(f):
     from functools import wraps
     @wraps(f)
     def decorated(*args, **kwargs):
-        from flask import request, jsonify
-        from services.auth_service import extract_token, verify_token
         auth_header = request.headers.get('Authorization')
         if not auth_header:
             return jsonify({"error": "Missing Authorization Header"}), 401
@@ -98,8 +96,6 @@ def admin_role_required(f):
     from functools import wraps
     @wraps(f)
     def decorated(*args, **kwargs):
-        from flask import request, jsonify
-        from services.auth_service import extract_token, verify_token
         auth_header = request.headers.get('Authorization')
         if not auth_header:
             return jsonify({"error": "Missing Authorization Header"}), 401
@@ -1422,6 +1418,7 @@ def update_vendor_subscription(vendor_id):
 def get_vendor_registration_config(vendor_id):
     from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
+    from services.config_utils import hydrate_registration_config
     # Auth Check (SuperAdmin or Vendor Admin of same vendor)
     caller_vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -1451,7 +1448,10 @@ def get_vendor_registration_config(vendor_id):
             except Exception:
                 pass
         if config:
-            return jsonify({"config": json.loads(config)})
+            config_data = json.loads(config)
+            # Hydrate dynamic fields (e.g. Leave Departments)
+            hydrated = hydrate_registration_config(vendor_id, config_data, conn=conn)
+            return jsonify({"config": hydrated})
         if str(vertical_val or "").strip().lower() == "school":
             try:
                 default_rc = [

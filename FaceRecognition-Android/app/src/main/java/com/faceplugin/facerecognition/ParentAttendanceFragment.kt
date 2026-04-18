@@ -2,6 +2,7 @@ package com.faceplugin.facerecognition
 
 import android.app.DatePickerDialog
 import android.content.Context
+import android.graphics.Typeface
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
@@ -22,6 +23,7 @@ class ParentAttendanceFragment : Fragment() {
 
     private var mSocket: Socket? = null
     private lateinit var root: View
+    private var showingLectures = false
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         root = inflater.inflate(R.layout.fragment_parent_attendance, container, false)
@@ -46,16 +48,181 @@ class ParentAttendanceFragment : Fragment() {
         }
 
         etDate.setOnClickListener { showDatePicker() }
+        root.findViewById<Button>(R.id.btn_filter_date).setOnClickListener { fetchStudentDay() }
 
-        root.findViewById<Button>(R.id.btn_filter_date).setOnClickListener {
-            fetchStudentDay()
+        // Show lecture tab only if the vendor has bulk_image_attendance enabled
+        val hasBulkAttendance = prefs.getBoolean("parent_has_bulk_attendance", false)
+        val tabRow = root.findViewById<LinearLayout>(R.id.tab_row_attendance)
+        tabRow?.visibility = if (hasBulkAttendance) View.VISIBLE else View.GONE
+
+        root.findViewById<Button>(R.id.btn_tab_daily).setOnClickListener { switchTab(daily = true) }
+        root.findViewById<Button>(R.id.btn_tab_lectures).setOnClickListener { switchTab(daily = false) }
+
+        // Lecture date pickers
+        val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Calendar.getInstance().time)
+        val cal7 = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -7) }
+        val weekAgo = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(cal7.time)
+        root.findViewById<EditText>(R.id.et_lecture_start).apply {
+            setText(weekAgo)
+            setOnClickListener { showDatePickerFor(this) }
         }
+        root.findViewById<EditText>(R.id.et_lecture_end).apply {
+            setText(today)
+            setOnClickListener { showDatePickerFor(this) }
+        }
+        root.findViewById<Button>(R.id.btn_load_lectures).setOnClickListener { fetchLectureAttendance() }
 
         if (savedStudentId.isNotEmpty()) {
             joinSocket(savedStudentId)
         }
 
         fetchStudentDay()
+    }
+
+    private fun switchTab(daily: Boolean) {
+        showingLectures = !daily
+        val dailyViews = listOf(
+            R.id.et_date, R.id.btn_filter_date,
+            R.id.card_check_in, R.id.card_check_out,
+            R.id.tv_parent_day_summary, R.id.tv_parent_history_title,
+            R.id.parent_history_container, R.id.parent_container
+        )
+        dailyViews.forEach { id ->
+            try { root.findViewById<View>(id)?.visibility = if (daily) View.VISIBLE else View.GONE } catch (_: Exception) {}
+        }
+        root.findViewById<LinearLayout>(R.id.layout_lectures)?.visibility = if (daily) View.GONE else View.VISIBLE
+
+        val btnDaily = root.findViewById<Button>(R.id.btn_tab_daily)
+        val btnLectures = root.findViewById<Button>(R.id.btn_tab_lectures)
+        if (daily) {
+            btnDaily?.setTypeface(null, Typeface.BOLD)
+            btnLectures?.setTypeface(null, Typeface.NORMAL)
+        } else {
+            btnDaily?.setTypeface(null, Typeface.NORMAL)
+            btnLectures?.setTypeface(null, Typeface.BOLD)
+            fetchLectureAttendance()
+        }
+    }
+
+    private fun showDatePickerFor(et: EditText) {
+        val current = Calendar.getInstance()
+        try {
+            val txt = et.text.toString().trim()
+            if (txt.matches(Regex("\\d{4}-\\d{2}-\\d{2}"))) {
+                val parts = txt.split("-")
+                current.set(parts[0].toInt(), parts[1].toInt() - 1, parts[2].toInt())
+            }
+        } catch (_: Exception) {}
+        DatePickerDialog(requireContext(), { _, year, month, day ->
+            val m = (month + 1).toString().padStart(2, '0')
+            val d = day.toString().padStart(2, '0')
+            et.setText("$year-$m-$d")
+        }, current.get(Calendar.YEAR), current.get(Calendar.MONTH), current.get(Calendar.DAY_OF_MONTH)).show()
+    }
+
+    private fun fetchLectureAttendance() {
+        if (!isAdded) return
+        val startDate = root.findViewById<EditText>(R.id.et_lecture_start).text.toString().trim()
+        val endDate   = root.findViewById<EditText>(R.id.et_lecture_end).text.toString().trim()
+
+        RetrofitClient.getService().getParentLectureAttendance(
+            startDate.ifBlank { null },
+            endDate.ifBlank { null }
+        ).enqueue(object : Callback<JsonObject> {
+            override fun onResponse(call: Call<JsonObject>, response: Response<JsonObject>) {
+                if (!isAdded) return
+                if (response.code() == 401 || response.code() == 403) {
+                    Toast.makeText(context, "Session expired. Please login again.", Toast.LENGTH_LONG).show()
+                    (activity as? ParentActivity)?.performLogout()
+                    return
+                }
+                val body = response.body() ?: return
+                val list = try { body.getAsJsonArray("attendance") } catch (_: Exception) { null }
+                val container = root.findViewById<LinearLayout>(R.id.lecture_list_container)
+                container.removeAllViews()
+
+                if (list == null || list.size() == 0) {
+                    val tv = TextView(requireContext())
+                    tv.text = "No lectures found for this period."
+                    tv.textSize = 13f
+                    tv.setTextColor(resources.getColor(R.color.vision_text_secondary, null))
+                    container.addView(tv)
+                    root.findViewById<TextView>(R.id.tv_lecture_summary).text = ""
+                    return
+                }
+
+                var presentCount = 0
+                var totalCount = list.size()
+                for (i in 0 until list.size()) {
+                    val obj = try { list[i].asJsonObject } catch (_: Exception) { continue }
+                    val status = try { obj.get("status")?.asString ?: "absent" } catch (_: Exception) { "absent" }
+                    if (status == "present") presentCount++
+                    container.addView(createLectureCard(obj))
+                }
+                root.findViewById<TextView>(R.id.tv_lecture_summary).text =
+                    "Present: $presentCount / $totalCount lectures"
+            }
+
+            override fun onFailure(call: Call<JsonObject>, t: Throwable) {
+                if (isAdded) Toast.makeText(context, "Network error: ${t.message}", Toast.LENGTH_SHORT).show()
+            }
+        })
+    }
+
+    private fun createLectureCard(obj: JsonObject): LinearLayout {
+        val status  = try { obj.get("status")?.asString ?: "absent" } catch (_: Exception) { "absent" }
+        val subject = try { obj.get("subject")?.asString ?: "Lecture" } catch (_: Exception) { "Lecture" }
+        val date    = try { obj.get("lecture_date")?.asString ?: "" } catch (_: Exception) { "" }
+        val time    = try { obj.get("start_time")?.asString ?: "" } catch (_: Exception) { "" }
+        val teacher = try { obj.get("teacher")?.asString ?: "" } catch (_: Exception) { "" }
+        val isPresent = status == "present"
+
+        val card = LinearLayout(requireContext())
+        card.orientation = LinearLayout.HORIZONTAL
+        card.setBackgroundResource(R.drawable.bg_input_field)
+        val pad = (12 * resources.displayMetrics.density).toInt()
+        card.setPadding(pad, pad, pad, pad)
+        val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        lp.bottomMargin = (8 * resources.displayMetrics.density).toInt()
+        card.layoutParams = lp
+
+        // Status badge
+        val badge = TextView(requireContext())
+        badge.text = if (isPresent) "P" else "A"
+        badge.textSize = 14f
+        badge.setTypeface(badge.typeface, Typeface.BOLD)
+        val badgeColor = if (isPresent) android.graphics.Color.parseColor("#22c55e") else android.graphics.Color.parseColor("#ef4444")
+        badge.setTextColor(badgeColor)
+        val badgeLp = LinearLayout.LayoutParams(
+            (40 * resources.displayMetrics.density).toInt(),
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        )
+        badgeLp.marginEnd = (10 * resources.displayMetrics.density).toInt()
+        badge.layoutParams = badgeLp
+        badge.gravity = android.view.Gravity.CENTER
+
+        // Details column
+        val col = LinearLayout(requireContext())
+        col.orientation = LinearLayout.VERTICAL
+        col.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+
+        val tvSubject = TextView(requireContext())
+        tvSubject.text = subject
+        tvSubject.textSize = 15f
+        tvSubject.setTypeface(tvSubject.typeface, Typeface.BOLD)
+        tvSubject.setTextColor(resources.getColor(R.color.vision_text_primary, null))
+
+        val meta = listOf(date, time, teacher).filter { it.isNotBlank() }.joinToString(" · ")
+        val tvMeta = TextView(requireContext())
+        tvMeta.text = meta
+        tvMeta.textSize = 12f
+        tvMeta.setTextColor(resources.getColor(R.color.vision_text_secondary, null))
+
+        col.addView(tvSubject)
+        col.addView(tvMeta)
+        card.addView(badge)
+        card.addView(col)
+        return card
     }
 
     private fun showDatePicker() {

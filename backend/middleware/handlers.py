@@ -1,6 +1,8 @@
 import os
 import time
 import re
+import threading
+import collections
 import redis
 from functools import wraps
 from flask import request, jsonify
@@ -13,6 +15,11 @@ try:
         redis_client = redis.from_url(REDIS_URL)
 except Exception:
     redis_client = None
+
+# In-memory sliding window fallback (used when Redis is unavailable)
+# { key: deque of timestamps }
+_local_buckets: dict = {}
+_local_lock = threading.Lock()
 
 # Prometheus metrics setup
 try:
@@ -53,12 +60,26 @@ def track_metrics(endpoint):
         return inner
     return wrapper
 
+def _local_rate_check(key, limit, window):
+    """Sliding-window rate check using an in-process deque. Thread-safe."""
+    now = time.time()
+    cutoff = now - window
+    with _local_lock:
+        bucket = _local_buckets.setdefault(key, collections.deque())
+        # Evict timestamps outside the window
+        while bucket and bucket[0] <= cutoff:
+            bucket.popleft()
+        if len(bucket) >= limit:
+            return False
+        bucket.append(now)
+        return True
+
 def rate_limit(key_func=lambda: request.remote_addr, limit=100, window=60):
     def decorator(fn):
         @wraps(fn)
         def inner(*args, **kwargs):
+            key = f"rl:{key_func()}"
             if redis_client:
-                key = f"rl:{key_func()}"
                 try:
                     pipe = redis_client.pipeline()
                     pipe.incr(key, 1)
@@ -66,8 +87,12 @@ def rate_limit(key_func=lambda: request.remote_addr, limit=100, window=60):
                     count, _ = pipe.execute()
                     if count and int(count) > limit:
                         return jsonify({"error": "Too Many Requests"}), 429
+                    return fn(*args, **kwargs)
                 except Exception:
-                    pass
+                    pass  # Redis unavailable — fall through to in-memory
+            # In-memory fallback
+            if not _local_rate_check(key, limit, window):
+                return jsonify({"error": "Too Many Requests"}), 429
             return fn(*args, **kwargs)
         return inner
     return decorator

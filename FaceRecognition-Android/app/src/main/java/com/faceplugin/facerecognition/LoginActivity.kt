@@ -127,6 +127,8 @@ class LoginActivity : AppCompatActivity() {
                              val faceRegistered = response.body()?.faceRegistered ?: false
                              val faceTemplate = response.body()?.faceTemplate
                              
+                             val vertical = response.body()?.getVertical()
+                             val hasBulkAttendance = response.body()?.getHasBulkAttendance() ?: false
                              val editor = prefs.edit()
                              if (token != null) editor.putString("token", token)
                              if (role != null) editor.putString("role", role)
@@ -136,6 +138,8 @@ class LoginActivity : AppCompatActivity() {
                              editor.putString("student_id", studentId)
                              editor.putString("parent_student_number", studentId)
                              editor.putString("parent_mobile_number", mobile)
+                             if (vertical != null) editor.putString("parent_vendor_vertical", vertical)
+                             editor.putBoolean("parent_has_bulk_attendance", hasBulkAttendance)
                              editor.apply()
                              
                              if (token != null) RetrofitClient.setAuthToken(token)

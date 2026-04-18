@@ -50,6 +50,17 @@ def get_report_filters():
     vendor_row = c.fetchone()
     vendor_name = vendor_row['company_name'] if vendor_row else ''
     raw_reg = vendor_row['registration_config'] if vendor_row else None
+    
+    # ---- features ----
+    c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+    sub_row = c.fetchone()
+    vendor_features = []
+    try:
+        vendor_features = json.loads(sub_row['features'] or '[]') if sub_row else []
+        if isinstance(vendor_features, str):
+            vendor_features = json.loads(vendor_features)
+    except Exception:
+        vendor_features = []
 
     # ---- parse registration_config to know which filters are visible/dynamic ----
     # Start with all standard filters hidden; only enable those present in the config
@@ -58,7 +69,10 @@ def get_report_filters():
     enabled_dynamic_fields = []  # [{key, label, options}]
     if raw_reg:
         try:
-            config = json.loads(raw_reg) if isinstance(raw_reg, str) else raw_reg
+            config_data = json.loads(raw_reg) if isinstance(raw_reg, str) else raw_reg
+            from services.config_utils import hydrate_registration_config
+            config = hydrate_registration_config(vendor_id, config_data, conn=conn)
+            
             if isinstance(config, list):
                 has_reg_config = len(config) > 0
                 for f in config:
@@ -81,6 +95,27 @@ def get_report_filters():
     # If no registration config exists, fall back to showing all standard filters
     if not has_reg_config:
         visible_standard_filters = {"department": True, "designation": True, "shift": True, "phone": True}
+
+    # ---- also include bulk attendance custom fields as dynamic filters ----
+    if 'bulk_image_attendance' in vendor_features:
+        try:
+            c.execute("SELECT fields FROM bulk_attendance_config WHERE vendor_id = ?", (vendor_id,))
+            bulk_row = c.fetchone()
+            if bulk_row:
+                bulk_fields = json.loads(bulk_row['fields'] or '[]')
+                existing_keys = {f['key'] for f in enabled_dynamic_fields}
+                for bf in bulk_fields:
+                    bkey = str(bf.get('name', '')).strip()
+                    if not bkey or bkey in existing_keys:
+                        continue
+                    enabled_dynamic_fields.append({
+                        "key": bkey,
+                        "label": str(bf.get('label') or bkey),
+                        "options": bf.get('options') or []
+                    })
+                    existing_keys.add(bkey)
+        except Exception:
+            pass
 
     # ---- collect active request-level filters for cascading ----
     req_dept  = request.args.get('department', '')
@@ -107,6 +142,23 @@ def get_report_filters():
             d["custom"] = {}
         faces.append(d)
 
+    def _fuzzy_get(custom_dict, key):
+        val = custom_dict.get(key)
+        if val is not None:
+            return val
+        key_aliases = {
+            'student_id': ['student_number', 'roll_number', 'admission_number'],
+            'student_number': ['student_id', 'roll_number', 'admission_number'],
+            'roll_number': ['student_id', 'student_number', 'admission_number'],
+            'admission_number': ['student_id', 'student_number', 'roll_number'],
+            'class_section': ['class_id'],
+            'class_id': ['class_section']
+        }
+        for alias in key_aliases.get(key, []):
+            if alias in custom_dict:
+                return custom_dict[alias]
+        return None
+
     # ---- apply cascading filters ----
     def _face_matches(face):
         if req_dept  and str(face.get('department') or '').strip() != req_dept:  return False
@@ -114,7 +166,7 @@ def get_report_filters():
         if req_shift and str(face.get('shift') or '').strip() != req_shift:       return False
         if req_phone and str(face.get('phone') or '').strip() != req_phone:       return False
         for dk, dv in req_dyn.items():
-            fval = face['custom'].get(dk)
+            fval = _fuzzy_get(face['custom'], dk)
             if fval is None or str(fval).strip() != dv: return False
         return True
 
@@ -131,14 +183,13 @@ def get_report_filters():
         fk, fl = field['key'], field['label']
         unique_values = set()
         for f in filtered:
-            val = f['custom'].get(fk)
+            val = _fuzzy_get(f['custom'], fk)
             if val is not None and str(val).strip():
                 unique_values.add(str(val).strip())
         options = sorted(list(unique_values))[:200]
-        # if the config defines a fixed option list, intersect it
+        # if the config defines a fixed option list, always show all configured options
         if field.get('options'):
-            allowed = [str(x) for x in field['options']]
-            options = [x for x in allowed if x in unique_values] if unique_values else allowed
+            options = [str(x) for x in field['options']]
         dynamic_filters[fk] = {'label': fl, 'options': options}
 
     return jsonify({
@@ -539,7 +590,16 @@ def export_payroll_daily():
         v_row = c.fetchone()
         company_working_hours = float(v_row['working_hours']) if v_row and v_row['working_hours'] else 8.0
 
-        c.execute("SELECT * FROM attendance WHERE vendor_id = ?", (vendor_id,))
+        # Add a 1-day buffer on each side to capture timezone-shifted timestamps
+        start_dt_req = datetime.strptime(start_date, '%Y-%m-%d').date()
+        end_dt_req   = datetime.strptime(end_date, '%Y-%m-%d').date()
+        fetch_start  = (start_dt_req - timedelta(days=1)).isoformat()
+        fetch_end    = (end_dt_req   + timedelta(days=1)).isoformat()
+
+        c.execute(
+            "SELECT * FROM attendance WHERE vendor_id = ? AND date(timestamp) BETWEEN ? AND ?",
+            (vendor_id, fetch_start, fetch_end)
+        )
         rows = c.fetchall()
         user_records = defaultdict(list)
         for row in rows:
@@ -574,9 +634,6 @@ def export_payroll_daily():
         s_map = {r['key']: r['value'] for r in c.fetchall()}
         global_allowance = int(s_map.get('global_late_allowance', 7))
         global_deduction = float(s_map.get('global_late_deduction', 0.0))
-
-        start_dt_req = datetime.strptime(start_date, '%Y-%m-%d').date()
-        end_dt_req = datetime.strptime(end_date, '%Y-%m-%d').date()
 
         output = io.StringIO()
         writer = csv.writer(output)
@@ -639,13 +696,22 @@ def export_payroll_excel():
         v_row = c.fetchone()
         company_working_hours = float(v_row['working_hours']) if v_row and v_row['working_hours'] else 8.0
 
-        c.execute("SELECT * FROM attendance WHERE vendor_id = ?", (vendor_id,))
+        # Add a 1-day buffer on each side to capture timezone-shifted timestamps
+        start_dt_req = datetime.strptime(start_date, '%Y-%m-%d').date()
+        end_dt_req   = datetime.strptime(end_date, '%Y-%m-%d').date()
+        fetch_start  = (start_dt_req - timedelta(days=1)).isoformat()
+        fetch_end    = (end_dt_req   + timedelta(days=1)).isoformat()
+
+        c.execute(
+            "SELECT * FROM attendance WHERE vendor_id = ? AND date(timestamp) BETWEEN ? AND ?",
+            (vendor_id, fetch_start, fetch_end)
+        )
         rows = c.fetchall()
         user_records = defaultdict(list)
         for row in rows:
             d = dict(row)
             if d.get('person_id'): user_records[d['person_id']].append(d)
-        
+
         c.execute("SELECT id, name, daily_wage, late_allowance_days, late_deduction_amount FROM faces WHERE vendor_id = ?", (vendor_id,))
         persons = {r['id']: dict(r) for r in c.fetchall()}
 
@@ -729,3 +795,4 @@ def import_payroll_adjustments():
         return jsonify({"success": True, "updated": updated})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+

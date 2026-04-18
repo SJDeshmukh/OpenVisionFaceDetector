@@ -45,7 +45,10 @@ def get_attendance_filters(valid_data: AttendanceFilterSchema):
     enabled_fields = []
     if raw:
         try:
-            config = json.loads(raw) if isinstance(raw, str) else raw
+            config_data = json.loads(raw) if isinstance(raw, str) else raw
+            from services.config_utils import hydrate_registration_config
+            config = hydrate_registration_config(vendor_id, config_data, conn=conn)
+            
             if isinstance(config, list):
                 for f in config:
                     if f.get("enabled", True) is False:
@@ -69,6 +72,22 @@ def get_attendance_filters(valid_data: AttendanceFilterSchema):
     # Apply standard request filters if any
     request_args = valid_data.dict(exclude_none=True)
     
+    def _fuzzy_get_local(custom_dict, key):
+        if not key: return None
+        val = custom_dict.get(key)
+        if val is not None: return val
+        key_aliases = {
+            'student_id': ['student_number', 'roll_number', 'admission_number'],
+            'student_number': ['student_id', 'roll_number', 'admission_number'],
+            'roll_number': ['student_id', 'student_number', 'admission_number'],
+            'admission_number': ['student_id', 'student_number', 'roll_number'],
+            'class_section': ['class_id'],
+            'class_id': ['class_section']
+        }
+        for alias in key_aliases.get(key, []):
+            if alias in custom_dict: return custom_dict[alias]
+        return None
+
     def face_matches(face):
         for k, v in request_args.items():
             kl = k.lower()
@@ -79,11 +98,11 @@ def get_attendance_filters(valid_data: AttendanceFilterSchema):
                 for bk in base_keys:
                     if kl == bk and bk in face:
                         rv = face.get(bk); break
-            if rv is None and k in face["custom"]: rv = face["custom"].get(k)
+            if rv is None: rv = _fuzzy_get_local(face["custom"], k)
             if rv is None:
                 for ef in enabled_fields:
                     if ef.get("key") == k:
-                        rv = face["custom"].get(ef.get("label")); break
+                        rv = _fuzzy_get_local(face["custom"], ef.get("label")); break
             if rv is None or str(rv).strip() != str(v).strip(): return False
         return True
 
@@ -112,8 +131,8 @@ def get_attendance_filters(valid_data: AttendanceFilterSchema):
                     if val is None and fll in base_keys:
                         for bk in base_keys:
                             if fll == bk: val = f.get(bk); break
-                if val is None: val = f["custom"].get(fk)
-                if val is None: val = f["custom"].get(fl)
+                if val is None: val = _fuzzy_get_local(f["custom"], fk)
+                if val is None: val = _fuzzy_get_local(f["custom"], fl)
                 if val is not None and str(val).strip() != "": unique_values.add(str(val).strip())
             
             options = sorted(list(unique_values))[:200]

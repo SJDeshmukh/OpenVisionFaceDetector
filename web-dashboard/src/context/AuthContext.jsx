@@ -2,6 +2,9 @@ import { createContext, useContext, useState, useEffect } from 'react';
 import axios from 'axios';
 import { API_URL, BASE_URL } from '../config';
 
+// Always send cookies (httpOnly session token) with cross-origin requests
+axios.defaults.withCredentials = true;
+
 const AuthContext = createContext();
 
 export const AuthProvider = ({ children }) => {
@@ -10,11 +13,12 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Check local storage for session
+    // Load user profile from localStorage
     const storedUser = localStorage.getItem('user');
     if (storedUser) {
       const parsedUser = JSON.parse(storedUser);
       setUser(parsedUser);
+      // Restore Authorization header from stored token
       if (parsedUser.token) {
         axios.defaults.headers.common['Authorization'] = `Bearer ${parsedUser.token}`;
       }
@@ -39,8 +43,8 @@ export const AuthProvider = ({ children }) => {
         if (error.response) {
           const status = error.response.status;
           const errorMessage = error.response.data?.error || "";
-          
-          // 401 is always an auth failure. 
+
+          // 401 is always an auth failure.
           // 403 with "Subscription Expired" or explicit suspension should logout.
           const isSuspended = errorMessage.includes("Subscription Expired") || errorMessage.includes("Account Suspended") || errorMessage.includes("Service Suspended");
           const isFeatureMissing = errorMessage.includes("Feature") && errorMessage.includes("not enabled");
@@ -106,9 +110,9 @@ export const AuthProvider = ({ children }) => {
         setUser(userData);
         localStorage.setItem('user', JSON.stringify(userData));
         axios.defaults.headers.common['Authorization'] = `Bearer ${userData.token}`;
-        return { 
-          success: true, 
-          role: userData.role, 
+        return {
+          success: true,
+          role: userData.role,
           redirect_url: response.data.redirect_url,
           force_password_change: response.data.force_password_change || false
         };
@@ -127,6 +131,8 @@ export const AuthProvider = ({ children }) => {
     try {
       const deviceId = localStorage.getItem('web_device_id');
       const username = user?.username;
+      // withCredentials=true (global default) ensures the cookie is sent so
+      // the backend can delete both the active_sessions row AND clear the cookie.
       axios.post(`${API_URL}/auth/logout`, { username, device_id: deviceId }).catch(() => {});
     } catch (e) {}
     setUser(null);
@@ -165,11 +171,11 @@ export const AuthProvider = ({ children }) => {
       const res = await axios.get(`${API_URL}/auth/me`);
       const data = res.data;
       if (!data) return null;
-      
+
       setUser((prev) => {
         if (!prev) return prev;
-        const next = { 
-          ...prev, 
+        const next = {
+          ...prev,
           username: data.username,
           role: data.role,
           vendor_id: data.vendor_id,
@@ -204,9 +210,9 @@ export const AuthProvider = ({ children }) => {
   const refreshFeatures = refreshUserData; // Keep alias for compatibility
 
   return (
-    <AuthContext.Provider value={{ 
-      user, staffSession, login, logout, loginAsStaff, logoutStaff, 
-      loading, refreshFeatures, refreshUserData 
+    <AuthContext.Provider value={{
+      user, staffSession, login, logout, loginAsStaff, logoutStaff,
+      loading, refreshFeatures, refreshUserData
     }}>
       {!loading && children}
     </AuthContext.Provider>

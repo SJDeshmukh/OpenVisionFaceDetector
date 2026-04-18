@@ -43,6 +43,7 @@ const People = () => {
   const [vendorConfig, setVendorConfig] = useState([]);
   const [vendorDepartments, setVendorDepartments] = useState([]);
   const [vendorClasses, setVendorClasses] = useState([]);
+  const [bulkAttendanceFields, setBulkAttendanceFields] = useState([]);
 
   const { socket, joinVendor } = useSocket();
   useEffect(() => {
@@ -67,19 +68,21 @@ const People = () => {
           .catch(() => setVendorConfig([]));
 
         // Fetch Leave Departments
-        axios.get(`${API_URL}/leave/admin/departments`, {
-          params: { vendor_id: user.vendor_id },
-          headers: { Authorization: `Bearer ${user?.token}` }
-        })
+        axios.get(`${API_URL}/leave/admin/departments`, { params: { vendor_id: user.vendor_id } })
           .then(res => setVendorDepartments(res.data.departments || []))
           .catch(() => setVendorDepartments([]));
 
         // Fetch Registered Classes
-        axios.get(`${API_URL}/classes`, {
-          headers: { Authorization: `Bearer ${user?.token}` }
-        })
+        axios.get(`${API_URL}/classes`)
           .then(res => setVendorClasses(res.data.classes || []))
           .catch(() => setVendorClasses([]));
+
+        // Fetch bulk attendance fields when feature is enabled
+        if (user.features?.includes('bulk_image_attendance')) {
+          axios.get(`${API_URL}/bulk-attendance/config`)
+            .then(res => setBulkAttendanceFields(res.data.fields || []))
+            .catch(() => setBulkAttendanceFields([]));
+        }
       }
 
       if (socket) {
@@ -293,14 +296,52 @@ const People = () => {
 
   // Determine columns based on Vendor Config (SuperAdmin defined)
   const getColumns = () => {
+    // Build bulk-attendance fields
+    const bulkFields = [];
+    if (user?.features?.includes('bulk_image_attendance')) {
+      (bulkAttendanceFields || []).forEach(f => {
+        // Keep the original names from SuperAdmin as requested
+        const fieldName = f.name;
+        
+        // Skip Full Name from columns as it's already in the main profile block
+        if (['name', 'full_name'].includes(fieldName)) return;
+        
+        // If it's phone or mobile, map its field to 'phone' so data is pulled from user.phone
+        if (['phone', 'mobile_number'].includes(fieldName)) {
+            bulkFields.push({ 
+              field: 'phone', 
+              key: fieldName, 
+              label: f.label, 
+              required: f.required, 
+              type: f.type, 
+              options: f.options 
+            });
+            return;
+        }
+        
+        bulkFields.push({ 
+          field: fieldName, 
+          key: fieldName, 
+          label: f.label, 
+          required: f.required, 
+          type: f.type, 
+          options: f.options 
+        });
+      });
+    }
+
+    // If bulk_image_attendance is enabled, we strictly follow that config
+    if (user?.features?.includes('bulk_image_attendance')) {
+        return bulkFields;
+    }
+
     if (vendorConfig && Array.isArray(vendorConfig) && vendorConfig.length > 0) {
       return vendorConfig;
     }
-    if (user?.vendor_config && Array.isArray(user.vendor_config) && user.vendor_config.length > 0) {
-      return user.vendor_config;
-    }
+    
     // Fallback Defaults
     return [
+      { field: 'phone', label: 'Phone' },
       { field: 'department', label: 'Department' },
       { field: 'shift', label: 'Shift' },
       { field: 'designation', label: 'Designation' }
@@ -317,13 +358,19 @@ const People = () => {
     };
 
     const getRawValue = (person, field) => {
+      let val = null;
       if (person?.custom_data && person.custom_data[field] !== undefined && person.custom_data[field] !== null) {
-        return person.custom_data[field];
+        val = person.custom_data[field];
+      } else if (person && person[field] !== undefined && person[field] !== null) {
+        val = person[field];
       }
-      if (person && person[field] !== undefined && person[field] !== null) {
-        return person[field];
+      
+      // Fallback for student ID fields
+      if ((val === null || val === '') && ['student_id', 'student_number', 'roll_number'].includes(field)) {
+        val = person?.custom_data?.student_id || person?.custom_data?.student_number || person?.custom_data?.roll_number || person?.custom_data?.admission_number || null;
       }
-      return null;
+      
+      return val;
     };
 
     return (registrationColumns || []).filter((col) => {
@@ -335,13 +382,20 @@ const People = () => {
   }, [registrationColumns, users]);
 
   const getCellValue = (person, field) => {
+    let rawValue = null;
     if (person?.custom_data && person.custom_data[field] !== undefined && person.custom_data[field] !== null) {
-      const v = person.custom_data[field];
-      const s = typeof v === 'string' ? v.trim() : v;
-      return s === '' ? '-' : s;
+      rawValue = person.custom_data[field];
+    } else if (person && person[field] !== undefined && person[field] !== null) {
+      rawValue = person[field];
     }
-    if (person && person[field] !== undefined && person[field] !== null) {
-      const v = person[field];
+    
+    // Fallback for student ID fields
+    if ((rawValue === null || rawValue === '') && ['student_id', 'student_number', 'roll_number'].includes(field)) {
+      rawValue = person?.custom_data?.student_id || person?.custom_data?.student_number || person?.custom_data?.roll_number || person?.custom_data?.admission_number;
+    }
+    
+    if (rawValue !== null && rawValue !== undefined) {
+      const v = rawValue;
       const s = typeof v === 'string' ? v.trim() : v;
       return s === '' ? '-' : s;
     }
@@ -351,13 +405,37 @@ const People = () => {
   const filteredUsers = useMemo(() => {
     if (!searchTerm) return users;
     const lowerSearch = searchTerm.toLowerCase();
-    return users.filter(u => 
-      (u.name || '').toLowerCase().includes(lowerSearch) || 
-      (String(u.id || '')).includes(lowerSearch) ||
-      (String(u.display_id || '')).includes(lowerSearch) ||
-      (u.phone || '').toLowerCase().includes(lowerSearch) ||
-      (u.department || '').toLowerCase().includes(lowerSearch)
-    );
+    return users.filter(u => {
+      if ((u.name || '').toLowerCase().includes(lowerSearch) || 
+          (String(u.id || '')).includes(lowerSearch) ||
+          (String(u.display_id || '')).includes(lowerSearch) ||
+          (u.phone || '').toLowerCase().includes(lowerSearch) ||
+          (u.department || '').toLowerCase().includes(lowerSearch)) {
+        return true;
+      }
+      
+      // Expand search across all dynamically registered fields
+      for (const col of registrationColumns) {
+        if (col.field) {
+          let rawValue = null;
+          if (u?.custom_data && u.custom_data[col.field] !== undefined && u.custom_data[col.field] !== null) {
+            rawValue = u.custom_data[col.field];
+          } else if (u[col.field] !== undefined && u[col.field] !== null && typeof u[col.field] !== 'object') {
+            rawValue = u[col.field];
+          }
+          
+          if ((rawValue === null || rawValue === '') && ['student_id', 'student_number', 'roll_number'].includes(col.field)) {
+            rawValue = u?.custom_data?.student_id || u?.custom_data?.student_number || u?.custom_data?.roll_number || u?.custom_data?.admission_number;
+          }
+          
+          if (rawValue !== null && rawValue !== undefined && String(rawValue).toLowerCase().includes(lowerSearch)) {
+            return true;
+          }
+        }
+      }
+      return false;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [users, searchTerm]);
 
   return (
@@ -539,12 +617,16 @@ const People = () => {
               </div>
 
               <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-700">Full Name</label>
+                <label className="text-sm font-medium text-slate-700">
+                  {/* Dynamically align label with SuperAdmin config if available */}
+                  {(user?.features?.includes('bulk_image_attendance') && bulkAttendanceFields?.find(f => ['name', 'full_name'].includes(f.name))?.label) || 'Full Name'}
+                  <span className="text-red-500 ml-1">*</span>
+                </label>
                 <div className="relative">
                   <User className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                   <input
                     type="text"
-                    value={formData.name}
+                    value={formData.name || ''}
                     onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                     placeholder="e.g. John Doe"
                     className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
@@ -553,14 +635,20 @@ const People = () => {
                 </div>
               </div>
 
+              {/* Phone Field */}
               <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-700">Phone</label>
+                <label className="text-sm font-medium text-slate-700">
+                  {/* Dynamically align label with SuperAdmin config if available */}
+                  {(user?.features?.includes('bulk_image_attendance') && bulkAttendanceFields?.find(f => ['phone', 'mobile_number'].includes(f.name))?.label) || 'Phone'}
+                  <span className="text-red-500 ml-1">*</span>
+                </label>
                 <input
-                  type="tel"
-                  value={formData.phone}
+                  type="text"
+                  value={formData.phone || ''}
                   onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
                   placeholder="e.g. +1234567890"
                   className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                  required
                 />
               </div>
 
@@ -569,31 +657,25 @@ const People = () => {
                 {registrationColumns.map((col, idx) => {
                   const fieldKey = col.key || col.field;
                   // Skip name/phone as they are already handled above
-                  if (['name', 'phone'].includes(fieldKey)) return null;
+                  if (['name', 'phone', 'full_name', 'mobile_number'].includes(fieldKey)) return null;
 
                   return (
                     <div key={idx} className="space-y-2">
-                      <label className="text-sm font-medium text-slate-700">{col.label}</label>
-                      {col.type === 'select' || fieldKey === 'shift' ? (
+                      <label className="text-sm font-medium text-slate-700">
+                        {col.label}
+                        {col.required && <span className="text-red-500 ml-1">*</span>}
+                      </label>
+                      {col.type === 'select' ? (
                         <select
                           value={formData[fieldKey] || ''}
                           onChange={(e) => setFormData({ ...formData, [fieldKey]: e.target.value })}
                           className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                          required
                         >
                           <option value="">Select {col.label}</option>
-                          {fieldKey === 'shift' ? (
-                            shifts.map((s, sIdx) => (
-                              <option key={sIdx} value={s.name}>{s.name} ({s.start_time} - {s.end_time})</option>
-                            ))
-                          ) : fieldKey === 'department' && vendorDepartments.length > 0 ? (
-                            vendorDepartments.map((dept, dIdx) => (
-                              <option key={dIdx} value={dept}>{dept}</option>
-                            ))
-                          ) : (
-                            col.options && col.options.map((opt, oId) => (
-                              <option key={oId} value={opt}>{opt}</option>
-                            ))
-                          )}
+                          {(col.options || []).map((opt, oIdx) => (
+                            <option key={oIdx} value={opt}>{opt}</option>
+                          ))}
                         </select>
                       ) : (
                         <input
@@ -602,31 +684,19 @@ const People = () => {
                           onChange={(e) => setFormData({ ...formData, [fieldKey]: e.target.value })}
                           placeholder={`Enter ${col.label}`}
                           className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                          required
                         />
                       )}
                     </div>
                   );
                 })}
                 
-                {/* Registered Classes Dropdown */}
+                {/* Registered Classes Dropdown - Hidden for now to match SuperAdmin fields strictly */}
+                {/* 
                 {vendorClasses.length > 0 && (
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-700">Map to Registered Class</label>
-                    <select
-                      value={formData.class_id || ''}
-                      onChange={(e) => setFormData({ ...formData, class_id: e.target.value })}
-                      className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                    >
-                      <option value="">Select Class</option>
-                      {vendorClasses.map((cl, cIdx) => (
-                        <option key={cIdx} value={cl.id}>
-                          {cl.label || `${cl.class_year} - ${cl.division} (${cl.branch})`}
-                        </option>
-                      ))}
-                    </select>
-                    <p className="text-xs text-slate-500">Associating a student with a class improves recognition during bulk attendance.</p>
-                  </div>
+                  ...
                 )}
+                */}
               </div>
 
               <div className="flex gap-3 pt-2">

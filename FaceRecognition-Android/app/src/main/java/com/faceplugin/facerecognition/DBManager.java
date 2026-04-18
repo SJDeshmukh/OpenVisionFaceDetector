@@ -8,6 +8,10 @@ import android.database.sqlite.SQLiteOpenHelper;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 
+import java.io.ByteArrayOutputStream;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
  
  public class DBManager extends SQLiteOpenHelper {
@@ -398,7 +402,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
     }
 
     public void loadPerson() {
-        personList.clear();
+        // Collect into a local list first; then swap atomically under the lock
+        // so readers never see a partially-cleared personList.
+        java.util.List<Person> newList = new java.util.ArrayList<>();
 
         SQLiteDatabase db = this.getReadableDatabase();
         Cursor res =  db.rawQuery( "select rowid, * from person", null );
@@ -464,36 +470,41 @@ import java.util.concurrent.CopyOnWriteArrayList;
             Person person = new Person(localUid, id, name, templates, phone, department, designation, shift, customData, null); 
             person.synced = synced;
             
-            // Deduplicate
+            // Deduplicate into the local list
             boolean found = false;
-            synchronized (personList) {
-                for (int i = 0; i < personList.size(); i++) {
-                    Person p = personList.get(i);
-                    if (id != null && !id.isEmpty() && p.id != null && p.id.equals(id)) {
-                        personList.set(i, person);
-                        found = true;
-                        break;
-                    } else if ((id == null || id.isEmpty()) && localUid != null && !localUid.isEmpty() && p.localUid != null && p.localUid.equals(localUid)) {
-                        personList.set(i, person);
-                        found = true;
-                        break;
-                    } else if (templates != null && p.templates != null && Arrays.equals(p.templates, templates)) {
-                        boolean keepNew = (id != null && !id.isEmpty()) && (p.id == null || p.id.isEmpty());
-                        if (keepNew) {
-                            personList.set(i, person);
-                        }
-                        found = true;
-                        break;
+            for (int i = 0; i < newList.size(); i++) {
+                Person p = newList.get(i);
+                if (id != null && !id.isEmpty() && p.id != null && p.id.equals(id)) {
+                    newList.set(i, person);
+                    found = true;
+                    break;
+                } else if ((id == null || id.isEmpty()) && localUid != null && !localUid.isEmpty() && p.localUid != null && p.localUid.equals(localUid)) {
+                    newList.set(i, person);
+                    found = true;
+                    break;
+                } else if (templates != null && p.templates != null && Arrays.equals(p.templates, templates)) {
+                    boolean keepNew = (id != null && !id.isEmpty()) && (p.id == null || p.id.isEmpty());
+                    if (keepNew) {
+                        newList.set(i, person);
                     }
+                    found = true;
+                    break;
                 }
-                if (!found) {
-                    personList.add(person);
-                }
+            }
+            if (!found) {
+                newList.add(person);
             }
 
             res.moveToNext();
         }
         res.close();
+
+        // Atomic swap: clear + addAll under a single lock so no thread
+        // observes an empty personList mid-reload.
+        synchronized (personList) {
+            personList.clear();
+            personList.addAll(newList);
+        }
     }
 
     public boolean personExists(String name) {

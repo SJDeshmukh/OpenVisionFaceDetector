@@ -3,7 +3,7 @@ import Webcam from 'react-webcam';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { API_URL } from '../config';
-import { Upload, Check, Users, Camera, Loader2, Wand2, Cpu } from 'lucide-react';
+import { Upload, Check, Users, Camera, Loader2, Wand2, Cpu, BookOpen, Plus, Trash2, ChevronDown } from 'lucide-react';
 import modelManager from '../lib/model-manager';
 
 const BulkImageAttendance = () => {
@@ -14,7 +14,17 @@ const BulkImageAttendance = () => {
   const [loading, setLoading] = useState(false);
   const [marking, setMarking] = useState({});
   const [classes, setClasses] = useState([]);
-  const [selectedClass, setSelectedClass] = useState({ class_year: '', division: '', branch: '' });
+  const [selectedClass, setSelectedClass] = useState(() => {
+    const saved = localStorage.getItem('lastClassFilter');
+    return saved ? JSON.parse(saved) : { class_year: '', division: '', branch: '' };
+  });
+  const [selectedSubject, setSelectedSubject] = useState('');
+
+  // ── Lecture mode state ────────────────────────────────────────────────────
+  const [lectures, setLectures] = useState([]);
+  const [selectedLectureId, setSelectedLectureId] = useState('');
+  const [lectureRoster, setLectureRoster] = useState([]); // [{person_id, status, name}]
+  const [rosterMarking, setRosterMarking] = useState({});
   const [batchId, setBatchId] = useState(() => localStorage.getItem('class_batch_id') || '');
   const [batchItems, setBatchItems] = useState([]);
   const [showWebcam, setShowWebcam] = useState(false);
@@ -94,6 +104,97 @@ const BulkImageAttendance = () => {
     // Load threshold for selected class if any
   }, [user]);
 
+  const fetchLectures = async () => {
+    try {
+      const res = await axios.get(`${API_URL}/bulk-attendance/lectures`, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      setLectures(res.data?.lectures || []);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  useEffect(() => {
+    fetchLectures();
+  }, [user?.token]);
+
+  // Implicitly handle lecture creation/selection based on Subject Dropdown
+  useEffect(() => {
+    const manageLectureAssoc = async () => {
+      if (!selectedClass.class_year || !selectedSubject) {
+        setSelectedLectureId('');
+        return;
+      }
+      const today = new Date().toISOString().split('T')[0];
+      const match = lectures.find(l => 
+        l.class_year === selectedClass.class_year && 
+        l.division === selectedClass.division && 
+        l.branch === selectedClass.branch && 
+        l.subject === selectedSubject &&
+        l.lecture_date === today
+      );
+      
+      if (match) {
+        setSelectedLectureId(String(match.id));
+      } else {
+        const mapped = classes.find(c => c.class_year === selectedClass.class_year && c.division === selectedClass.division && c.branch === selectedClass.branch)?.mapped_subjects || [];
+        const matchRow = mapped.find(m => m.subject === selectedSubject);
+        const autoTeacher = matchRow?.faculty || '';
+        
+        try {
+          const res = await axios.post(`${API_URL}/bulk-attendance/lectures`, {
+            class_year: selectedClass.class_year,
+            division: selectedClass.division,
+            branch: selectedClass.branch,
+            subject: selectedSubject,
+            teacher: autoTeacher,
+            lecture_date: today,
+            start_time: new Date().toTimeString().slice(0, 5)
+          }, {
+            headers: { Authorization: `Bearer ${user?.token}` }
+          });
+          await fetchLectures();
+          setSelectedLectureId(String(res.data?.lecture_id || ''));
+        } catch (e) {
+          console.error("Failed to implicitly create lecture", e);
+        }
+      }
+    };
+    manageLectureAssoc();
+  }, [selectedClass, selectedSubject]);
+
+  // Fetch roster whenever selected lecture changes
+  useEffect(() => {
+    if (!selectedLectureId) { setLectureRoster([]); return; }
+    (async () => {
+      try {
+        const res = await axios.get(`${API_URL}/bulk-attendance/lectures/${selectedLectureId}`);
+        setLectureRoster(res.data.attendance || []);
+      } catch (_) {}
+    })();
+  }, [selectedLectureId]);
+
+
+  const toggleRosterStudent = async (personId, currentStatus) => {
+    if (!selectedLectureId) return;
+    const newStatus = currentStatus === 'present' ? 'absent' : 'present';
+    setRosterMarking(p => ({ ...p, [personId]: true }));
+    try {
+      await axios.post(`${API_URL}/bulk-attendance/lectures/${selectedLectureId}/mark`, { person_id: personId, status: newStatus });
+      setLectureRoster(prev => {
+        const exists = prev.find(r => String(r.person_id) === String(personId));
+        if (exists) return prev.map(r => String(r.person_id) === String(personId) ? { ...r, status: newStatus } : r);
+        const person = people.find(p => String(p.id) === String(personId));
+        return [...prev, { person_id: personId, status: newStatus, name: person?.name || '' }];
+      });
+    } catch (e) {
+      alert(e.response?.data?.error || 'Mark failed');
+    } finally {
+      setRosterMarking(p => ({ ...p, [personId]: false }));
+    }
+  };
+
   useEffect(() => {
     const loadThreshold = async () => {
       const y = selectedClass.class_year || '';
@@ -142,7 +243,7 @@ const BulkImageAttendance = () => {
   };
 
   const fetchBatchStatus = async (id) => {
-    const params = new URLSearchParams({ batch_id: id });
+    const params = new URLSearchParams({ batch_id: id, exclude_images: '1' });
     const res = await axios.get(`${API_URL}/class-batch/status?${params.toString()}`, {
       headers: { Authorization: `Bearer ${user?.token}` }
     });
@@ -382,15 +483,30 @@ const BulkImageAttendance = () => {
     }
     setMarking(prev => ({ ...prev, [f.globalIndex]: true }));
     try {
-      await axios.post(`${API_URL}/person-event`, {
-        detected: true,
-        recognized: true,
-        person_id: personId,
-        is_attendance: true,
-        image: f.thumbs?.face || f.thumb
-      }, {
-        headers: { Authorization: `Bearer ${user?.token}` }
-      });
+      if (selectedLectureId) {
+        // Lecture mode: mark present for the selected lecture (no check-in/check-out)
+        await axios.post(`${API_URL}/bulk-attendance/lectures/${selectedLectureId}/mark`, {
+          person_id: personId,
+          status: 'present',
+          image: f.thumbs?.face || f.thumb
+        });
+        // Refresh roster
+        setLectureRoster(prev => {
+          const exists = prev.find(r => String(r.person_id) === String(personId));
+          const name = peopleById.current?.get(String(personId)) || '';
+          if (exists) return prev.map(r => String(r.person_id) === String(personId) ? { ...r, status: 'present' } : r);
+          return [...prev, { person_id: personId, status: 'present', name }];
+        });
+      } else {
+        // Legacy mode: standard check-in/check-out
+        await axios.post(`${API_URL}/person-event`, {
+          detected: true,
+          recognized: true,
+          person_id: personId,
+          is_attendance: true,
+          image: f.thumbs?.face || f.thumb
+        });
+      }
     } catch (e) {
       alert(e.response?.data?.error || e.message || 'Mark failed');
     } finally {
@@ -458,6 +574,10 @@ const BulkImageAttendance = () => {
     }
   };
 
+  // Build merged roster: all people + their status from lectureRoster
+  const rosterMap = Object.fromEntries(lectureRoster.map(r => [String(r.person_id), r.status]));
+  const presentCount = Object.values(rosterMap).filter(s => s === 'present').length;
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -467,11 +587,12 @@ const BulkImageAttendance = () => {
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
         <div className="flex flex-wrap items-center gap-3">
           <select
-            className="p-2 border rounded-lg bg-white"
+            className="p-2 border rounded-lg bg-white appearance-none pr-8 relative"
             value={`${selectedClass.class_year}|${selectedClass.division}|${selectedClass.branch}`}
             onChange={(e) => {
               const [y, d, b] = e.target.value.split('|');
               setSelectedClass({ class_year: y || '', division: d || '', branch: b || '' });
+              setSelectedSubject(''); // reset subject on class change
             }}
           >
             <option value="||">Select Class Scope</option>
@@ -481,14 +602,62 @@ const BulkImageAttendance = () => {
               </option>
             ))}
           </select>
-          <label className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 cursor-pointer disabled:opacity-50">
+          
+          {(() => {
+            const currentClass = selectedClass && selectedClass.class_year ? classes.find(c => c.class_year === selectedClass.class_year && c.division === selectedClass.division && c.branch === selectedClass.branch) : null;
+            const mapped = currentClass?.mapped_subjects || [];
+
+            if (!currentClass) {
+              return <select disabled className="p-2 border rounded-lg bg-slate-50 text-slate-400"><option>Select class to unlock subject</option></select>;
+            }
+            if (mapped.length === 0) {
+              return <select disabled className="p-2 border rounded-lg bg-red-50 text-red-500"><option>No subjects mapped</option></select>;
+            }
+
+            return (
+              <select
+                value={selectedSubject}
+                onChange={e => setSelectedSubject(e.target.value)}
+                className="p-2 border border-slate-200 rounded-lg bg-white"
+              >
+                <option value="">Select Subject</option>
+                {mapped.map(s => <option key={s.subject} value={s.subject}>{s.subject}</option>)}
+              </select>
+            );
+          })()}
+
+          {(() => {
+             if (!selectedSubject) return null;
+             const currentClass = classes.find(c => c.class_year === selectedClass.class_year && c.division === selectedClass.division && c.branch === selectedClass.branch);
+             const sub = (currentClass?.mapped_subjects || []).find(m => m.subject === selectedSubject);
+             if (sub && sub.faculty) {
+               return <span className="text-sm font-medium text-slate-600 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200">Teacher: {sub.faculty}</span>;
+             }
+             return null;
+          })()}
+
+          {selectedLectureId ? (
+            <span className="text-sm font-semibold text-emerald-700 bg-emerald-50 px-3 py-1.5 rounded-full border border-emerald-200 ml-auto">
+              {presentCount} / {people.length} present (Roster Synced)
+            </span>
+          ) : (
+             <span className="text-sm font-medium text-orange-600 bg-orange-50 px-3 py-1.5 rounded-full border border-orange-200 ml-auto">Select Subject to sync Roster</span>
+          )}
+        </div>
+      </div>
+
+
+
+      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+        <div className="flex flex-wrap items-center gap-3">
+          <label className={`inline-flex items-center gap-2 px-4 py-2 ${(!scopeSelected || !selectedLectureId) ? 'bg-slate-200 text-slate-500 cursor-not-allowed' : 'bg-indigo-600 text-white hover:bg-indigo-700 cursor-pointer'} rounded-lg transition-colors`}>
             <><Upload size={18} /><span>Upload Images</span></>
             <input
               type="file"
               accept="image/*"
               multiple
               className="hidden"
-              disabled={loading || !scopeSelected}
+              disabled={loading || !scopeSelected || !selectedLectureId}
               onChange={(e) => {
                 if (e.target.files?.length > 0) addFilesToPending(e.target.files);
                 e.target.value = '';
@@ -497,8 +666,8 @@ const BulkImageAttendance = () => {
           </label>
           <button
             onClick={scanPendingFiles}
-            disabled={!scopeSelected || pendingFiles.length === 0}
-            className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+            disabled={!scopeSelected || pendingFiles.length === 0 || !selectedLectureId}
+            className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
             title="Queue images one-by-one, then press to scan"
           >
             Scan Attendance ({pendingFiles.length})
@@ -537,7 +706,7 @@ const BulkImageAttendance = () => {
             disabled={faces.length === 0}
             className="px-4 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
           >
-            Mark Selected
+            Mark Attendance
           </button>
           <button
             onClick={async () => {
@@ -568,15 +737,19 @@ const BulkImageAttendance = () => {
             {batchItems.map(item => (
               <div key={item.id} className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
                 <div className="relative bg-slate-100 h-64 sm:h-80 flex-shrink-0 flex items-center justify-center overflow-hidden">
-                  {(item.annotated || item.image) ? (
+                  {true ? (
                     <img
-                      src={item.annotated || (item.image?.startsWith('data:') ? item.image : `data:image/jpeg;base64,${item.image}`)}
+                      src={item.image ? (item.image.startsWith('data:') ? item.image : `data:image/jpeg;base64,${item.image}`) : `${API_URL}/class-batch/item-image/${item.id}?type=${item.status === 'done' ? 'annotated' : 'raw'}&token=${user?.token}&t=${Date.now()}`}
                       alt={`frame-seq-${item.seq}`}
-                      className="w-full h-full object-contain p-2"
+                      className={`w-full h-full object-contain p-2 ${item.status !== 'done' ? 'opacity-70 blur-[1px]' : ''}`}
+                      onError={(e) => {
+                        // If annotated fails, try raw
+                        if (e.target.src.includes('type=annotated')) {
+                          e.target.src = `${API_URL}/class-batch/item-image/${item.id}?type=raw&token=${user?.token}&t=${Date.now()}`;
+                        }
+                      }}
                     />
-                  ) : (
-                    <div className="text-slate-400">No Image Data</div>
-                  )}
+                  ) : null}
                   <div className={`absolute top-2 right-2 px-2 py-1 text-xs font-bold rounded-lg shadow-sm backdrop-blur border 
                     ${item.status === 'done' ? 'bg-emerald-500/90 text-white border-emerald-600' :
                       item.status === 'processing' ? 'bg-amber-500/90 text-white border-amber-600' :

@@ -568,22 +568,23 @@ class MainActivity : AppCompatActivity() {
                                             val faceImageBytes = Base64.decode(faceB64, Base64.NO_WRAP)
                                             val faceBitmap = BitmapFactory.decodeByteArray(faceImageBytes, 0, faceImageBytes.size) ?: return@forEach
 
-                                            if (existingPerson == null) {
+                                            val currentPerson = existingPerson
+                                            if (currentPerson == null) {
                                                 dbManager.insertPerson(id, faceData.name, faceBitmap, templates, phone, dept, desig, shift, customDataStr, true)
                                                 newFacesCount++
                                             } else {
-                                                val effectiveId = if (!id.isNullOrEmpty()) id else (existingPerson.id ?: "")
+                                                val effectiveId = if (!id.isNullOrEmpty()) id else (currentPerson.id ?: "")
                                                 val needsMetadataUpdate =
-                                                    existingPerson.phone != phone ||
-                                                        existingPerson.department != dept ||
-                                                        existingPerson.designation != desig ||
-                                                        existingPerson.shift != shift ||
-                                                        existingPerson.customData != customDataStr ||
-                                                        (existingPerson.id != id && !id.isNullOrEmpty())
+                                                    currentPerson.phone != phone ||
+                                                        currentPerson.department != dept ||
+                                                        currentPerson.designation != desig ||
+                                                        currentPerson.shift != shift ||
+                                                        currentPerson.customData != customDataStr ||
+                                                        (currentPerson.id != id && !id.isNullOrEmpty())
 
                                                 var needsFaceUpdate = false
                                                 try {
-                                                    if (!java.util.Arrays.equals(existingPerson.templates, templates)) {
+                                                    if (!java.util.Arrays.equals(currentPerson.templates, templates)) {
                                                         needsFaceUpdate = true
                                                     }
                                                 } catch (_: Exception) {}
@@ -702,7 +703,7 @@ class MainActivity : AppCompatActivity() {
     private fun facesSignature(faces: List<com.faceplugin.facerecognition.api.SyncRequest>): String {
         val sb = StringBuilder()
         sb.append(faces.size).append('|')
-        for (i in 0 until kotlin.math.min(faces.size, 100)) {
+        for (i in 0 until faces.size) {
             val f = faces[i]
             sb.append(f.id ?: "").append(':').append(f.name ?: "").append('|')
         }

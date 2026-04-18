@@ -353,6 +353,9 @@ app.register_blueprint(tasks_bp, url_prefix='/api')
 from routes.leave_routes import leave_bp
 app.register_blueprint(leave_bp, url_prefix='/api/leave')
 
+from routes.bulk_attendance import bulk_attendance_bp
+app.register_blueprint(bulk_attendance_bp, url_prefix='/api')
+
 register_error_handlers(app)
 
 # --- Serve Frontend (SPA) ---

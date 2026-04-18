@@ -51,6 +51,14 @@ public class LoginResponse {
     @SerializedName("face_template")
     private String faceTemplate;
 
+    @SerializedName("vertical")
+    private String vertical;
+
+    @SerializedName("has_bulk_attendance")
+    private Boolean hasBulkAttendance;
+
     public Boolean getFaceRegistered() { return faceRegistered; }
     public String getFaceTemplate() { return faceTemplate; }
+    public String getVertical() { return vertical; }
+    public Boolean getHasBulkAttendance() { return hasBulkAttendance; }
 }

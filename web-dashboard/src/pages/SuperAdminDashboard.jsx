@@ -12,6 +12,7 @@ const SuperAdminDashboard = () => {
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [passwordModal, setPasswordModal] = useState({ show: false, username: '' });
+  const [deleteModal, setDeleteModal] = useState({ show: false, vendor: null });
   const [invoiceModal, setInvoiceModal] = useState({ show: false, vendor: null, invoices: [] });
   const [newPassword, setNewPassword] = useState('');
   const [newVendor, setNewVendor] = useState({
@@ -65,6 +66,18 @@ const SuperAdminDashboard = () => {
     { value: 'enterprise', label: 'Enterprise (Custom)', default_frontend_bundle_id: 'default_attendance', default_registration_config: [] }
   ]);
   const [registrationConfig, setRegistrationConfig] = useState([]);
+
+  const refreshRegistrationConfig = async (vendorId) => {
+    if (!vendorId) return;
+    try {
+      const response = await axios.get(`${API_URL}/admin/vendors/${vendorId}/registration-config`, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      setRegistrationConfig(response.data.config || []);
+    } catch (e) {
+      console.error("Error refreshing registration config:", e);
+    }
+  };
   const [editingVendor, setEditingVendor] = useState(null);
 
   // Features Config
@@ -107,6 +120,15 @@ const SuperAdminDashboard = () => {
    const [deviceEdits, setDeviceEdits] = useState({});
    const [deviceSlots, setDeviceSlots] = useState([]);
    const [newSlotName, setNewSlotName] = useState('');
+
+   // --- Bulk Attendance Configuration State ---
+   const [showBulkAttendanceConfigModal, setShowBulkAttendanceConfigModal] = useState(false);
+   const [bulkAttendanceCustomFields, setBulkAttendanceCustomFields] = useState([]);
+   const [loadingBulkConfig, setLoadingBulkConfig] = useState(false);
+   const [newBulkField, setNewBulkField] = useState({ name: '', label: '', type: 'text', required: false, options: '' });
+   const [isEditingBulkField, setIsEditingBulkField] = useState(false);
+   const [savingBulkConfig, setSavingBulkConfig] = useState(false);
+   const [bulkConfigStatus, setBulkConfigStatus] = useState({ type: '', message: '' });
 
    // --- Leave Management Configuration State ---
    const [showLeaveConfigModal, setShowLeaveConfigModal] = useState(false);
@@ -315,7 +337,8 @@ const SuperAdminDashboard = () => {
         headers: { Authorization: `Bearer ${user?.token}` } 
       });
       setNewDept('');
-      fetchVendorDepts(vendorId);
+      await fetchVendorDepts(vendorId);
+      refreshRegistrationConfig(vendorId);
     } catch (e) { alert(e.response?.data?.error || e.message); }
   };
 
@@ -326,7 +349,9 @@ const SuperAdminDashboard = () => {
         params: { vendor_id: vendorId, name: dept },
         headers: { Authorization: `Bearer ${user?.token}` }
       });
-      fetchVendorDepts(vendorId);
+      await fetchVendorDepts(vendorId);
+      await fetchLeaveStaff(vendorId);
+      refreshRegistrationConfig(vendorId);
     } catch (e) { alert(e.response?.data?.error || e.message); }
   };
 
@@ -507,6 +532,110 @@ const SuperAdminDashboard = () => {
     } finally {
       setLoadingLeaveData(false);
     }
+  };
+
+  const handleOpenBulkAttendanceConfig = async (vendor) => {
+    setEditingVendor(vendor);
+    setShowBulkAttendanceConfigModal(true);
+    setLoadingBulkConfig(true);
+    try {
+      const res = await axios.get(`${API_URL}/bulk-attendance/config?vendor_id=${vendor.id}`);
+      setBulkAttendanceCustomFields(res.data.custom_fields || []);
+    } catch (e) {
+      setBulkAttendanceCustomFields([]);
+    } finally {
+      setLoadingBulkConfig(false);
+    }
+  };
+
+  const handleSaveBulkAttendanceConfig = async (vendorId) => {
+    if (savingBulkConfig) return;
+    setSavingBulkConfig(true);
+    setBulkConfigStatus({ type: '', message: '' });
+
+    // Auto-commit any unsaved form data before saving
+    let fieldsToSave = bulkAttendanceCustomFields;
+    const pendingName = newBulkField.name.trim().replace(/\s+/g, '_').toLowerCase();
+    if (pendingName) {
+      const parsedOptions = newBulkField.type === 'select'
+        ? (typeof newBulkField.options === 'string' ? newBulkField.options.split(',').map(o => o.trim()).filter(Boolean) : (newBulkField.options || []))
+        : [];
+      const pendingField = { ...newBulkField, name: pendingName, label: newBulkField.label || pendingName, options: parsedOptions };
+      if (fieldsToSave.some(f => f.name === pendingName)) {
+        fieldsToSave = fieldsToSave.map(f => f.name === pendingName ? pendingField : f);
+      } else {
+        fieldsToSave = [...fieldsToSave, pendingField];
+      }
+      setBulkAttendanceCustomFields(fieldsToSave);
+      setNewBulkField({ name: '', label: '', type: 'text', required: false, options: '' });
+      setIsEditingBulkField(false);
+    }
+
+    try {
+      await axios.put(`${API_URL}/bulk-attendance/config`, {
+        vendor_id: vendorId,
+        custom_fields: fieldsToSave
+      });
+      setBulkConfigStatus({ type: 'success', message: 'Configuration saved successfully!' });
+      // Clear status after 3 seconds
+      setTimeout(() => setBulkConfigStatus({ type: '', message: '' }), 3000);
+    } catch (e) {
+      setBulkConfigStatus({ type: 'error', message: e.response?.data?.error || 'Failed to save configuration.' });
+    } finally {
+      setSavingBulkConfig(false);
+    }
+  };
+
+  const handleAddBulkField = () => {
+    const name = newBulkField.name.trim().replace(/\s+/g, '_').toLowerCase();
+    if (!name) return;
+    
+    // Parse options if it's a select type
+    const parsedOptions = newBulkField.type === 'select' 
+      ? (typeof newBulkField.options === 'string' ? newBulkField.options.split(',').map(o => o.trim()).filter(Boolean) : newBulkField.options)
+      : [];
+      
+    if (isEditingBulkField) {
+      setBulkAttendanceCustomFields(prev => prev.map(f => 
+        f.name === name ? { ...newBulkField, name, label: newBulkField.label || name, options: parsedOptions } : f
+      ));
+      setIsEditingBulkField(false);
+    } else {
+      if (bulkAttendanceCustomFields.some(f => f.name === name)) {
+        // Update existing field instead of silently ignoring
+        setBulkAttendanceCustomFields(prev => prev.map(f =>
+          f.name === name ? { ...newBulkField, name, label: newBulkField.label || name, options: parsedOptions } : f
+        ));
+      } else {
+        setBulkAttendanceCustomFields(prev => [...prev, {
+          ...newBulkField,
+          name,
+          label: newBulkField.label || name,
+          options: parsedOptions
+        }]);
+      }
+    }
+    setNewBulkField({ name: '', label: '', type: 'text', required: false, options: '' });
+  };
+
+  const handleEditBulkField = (field) => {
+    setNewBulkField({
+      ...field,
+      options: Array.isArray(field.options) ? field.options.join(', ') : (field.options || '')
+    });
+    setIsEditingBulkField(true);
+  };
+
+  const handleCancelEdit = () => {
+    setNewBulkField({ name: '', label: '', type: 'text', required: false, options: '' });
+    setIsEditingBulkField(false);
+  };
+
+  const handleRemoveBulkField = (name) => {
+    if (isEditingBulkField && newBulkField.name === name) {
+      handleCancelEdit();
+    }
+    setBulkAttendanceCustomFields(prev => prev.filter(f => f.name !== name));
   };
 
   const handleCreateStaff = async (vendorId) => {
@@ -976,14 +1105,20 @@ const SuperAdminDashboard = () => {
     }
   };
 
-  const handleDeleteVendor = async (vendor) => {
-    if (!window.confirm(`Delete vendor "${vendor.company_name}" and all related data? This cannot be undone.`)) return;
+  const handleDeleteVendor = (vendor) => {
+    setDeleteModal({ show: true, vendor });
+  };
+
+  const confirmDeleteVendor = async () => {
+    const vendor = deleteModal.vendor;
+    if (!vendor) return;
+    setDeleteModal({ show: false, vendor: null });
     try {
       await axios.delete(`${API_URL}/admin/vendors/${vendor.id}`, {
         headers: { Authorization: `Bearer ${user?.token}` }
       });
       setVendors(prev => prev.filter(v => v.id !== vendor.id));
-      fetchStats(); // Refresh dashboard counts
+      fetchStats();
     } catch (error) {
       alert("Error deleting vendor: " + (error.response?.data?.error || error.message));
     }
@@ -1530,6 +1665,15 @@ const SuperAdminDashboard = () => {
                       </td>
                       <td className="p-4">
                         <div className="flex gap-2">
+                          {vendor.features?.includes('bulk_image_attendance') && (
+                            <button
+                              onClick={() => handleOpenBulkAttendanceConfig(vendor)}
+                              className="p-1.5 rounded hover:bg-slate-200 text-emerald-600"
+                              title="Bulk Attendance Field Configuration"
+                            >
+                              <Settings size={16} />
+                            </button>
+                          )}
                           {vendor.features?.includes('leave_management') && (
                             <button
                               onClick={() => handleOpenLeaveConfig(vendor)}
@@ -2525,6 +2669,34 @@ const SuperAdminDashboard = () => {
         </div>
       )}
 
+      {/* Delete Vendor Confirmation Modal */}
+      {deleteModal.show && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-sm">
+            <h2 className="text-xl font-bold mb-2 text-red-600">Delete Vendor</h2>
+            <p className="text-sm text-slate-600 mb-4">
+              Delete vendor <b>"{deleteModal.vendor?.company_name}"</b> and all related data? This cannot be undone.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setDeleteModal({ show: false, vendor: null })}
+                className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmDeleteVendor}
+                className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Invoice Modal */}
       {invoiceModal.show && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
@@ -2955,6 +3127,29 @@ const SuperAdminDashboard = () => {
                           className="rounded text-indigo-600 focus:ring-indigo-500"
                         />
                         <span className="text-sm capitalize flex-1">{feature.replace('_', ' ')}</span>
+                        {feature === 'bulk_image_attendance' && newVendor.features?.includes('bulk_image_attendance') && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              if (editingVendor) {
+                                handleOpenBulkAttendanceConfig(editingVendor);
+                              } else {
+                                alert("Please save the vendor first before configuring bulk attendance.");
+                              }
+                            }}
+                            className={`ml-auto text-[10px] px-2 py-1 rounded transition-colors flex items-center gap-1.5 shadow-sm ${
+                              editingVendor
+                                ? "bg-emerald-600 text-white hover:bg-emerald-700"
+                                : "bg-slate-200 text-slate-500 cursor-not-allowed"
+                            }`}
+                            title={editingVendor ? "Configure Bulk Attendance Fields" : "Save vendor first to configure"}
+                          >
+                            <Settings size={12} />
+                            <span className="font-bold">CONFIG</span>
+                          </button>
+                        )}
                         {feature === 'leave_management' && newVendor.features?.includes('leave_management') && (
                           <button
                             type="button"
@@ -2968,8 +3163,8 @@ const SuperAdminDashboard = () => {
                               }
                             }}
                             className={`ml-auto text-[10px] px-2 py-1 rounded transition-colors flex items-center gap-1.5 shadow-sm ${
-                              editingVendor 
-                                ? "bg-indigo-600 text-white hover:bg-indigo-700" 
+                              editingVendor
+                                ? "bg-indigo-600 text-white hover:bg-indigo-700"
                                 : "bg-slate-200 text-slate-500 cursor-not-allowed"
                             }`}
                             title={editingVendor ? "Configure Leave Management" : "Save vendor first to configure"}
@@ -3076,6 +3271,189 @@ const SuperAdminDashboard = () => {
       )}
 
       {/* Leave Management Configuration Modal */}
+      {/* ── Bulk Attendance Config Modal ── */}
+      {showBulkAttendanceConfigModal && editingVendor && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-[60]">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col border border-slate-200 animate-in fade-in zoom-in duration-200">
+            <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+              <div>
+                <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                  <Settings size={20} className="text-emerald-600" />
+                  Bulk Attendance Fields
+                </h2>
+                <p className="text-sm text-slate-500 mt-0.5">Custom registration fields for {editingVendor.company_name}</p>
+              </div>
+              <div className="flex items-center gap-4">
+                {bulkConfigStatus.message && (
+                  <div className={`text-sm px-3 py-1 rounded-full animate-in fade-in slide-in-from-right-4 duration-300 ${
+                    bulkConfigStatus.type === 'success' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
+                  }`}>
+                    {bulkConfigStatus.message}
+                  </div>
+                )}
+                <button onClick={() => setShowBulkAttendanceConfigModal(false)} className="p-2 hover:bg-slate-200 rounded-full text-slate-400 hover:text-slate-600 transition-colors">
+                  <X size={20} />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-6 space-y-6">
+              {/* Default fields (read-only) */}
+              <div>
+                <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wide mb-3">Default Fields (always present)</h3>
+                <div className="space-y-2">
+                  {[
+                    {label:'Full Name', name:'name'},
+                    {label:'Student ID', name:'student_id'}, 
+                    {label:'Mobile Number', name:'mobile_number'}
+                  ].map(f => (
+                    <div key={f.name} className="flex items-center justify-between p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                      <div>
+                        <span className="font-medium text-slate-700">{f.label}</span>
+                        <span className="ml-2 text-xs text-slate-400 font-mono">{f.name}</span>
+                      </div>
+                      <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-semibold">Required</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Custom fields */}
+              <div>
+                <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wide mb-3">Custom Fields</h3>
+                {loadingBulkConfig ? (
+                  <div className="text-center py-8 text-slate-400">Loading…</div>
+                ) : bulkAttendanceCustomFields.length === 0 ? (
+                  <div className="text-center py-8 border-2 border-dashed border-slate-100 rounded-2xl text-slate-400 text-sm">
+                    No custom fields yet. Add one below.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {bulkAttendanceCustomFields.map(f => (
+                      <div key={f.name} className="flex items-center justify-between p-3 bg-white border border-slate-200 rounded-xl group hover:shadow-sm transition-shadow">
+                        <div>
+                          <span className="font-medium text-slate-700">{f.label}</span>
+                          <span className="ml-2 text-xs text-slate-400 font-mono">{f.name}</span>
+                          <span className="ml-2 text-xs bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded font-medium">{f.type}</span>
+                          {f.required && <span className="ml-1 text-xs bg-orange-50 text-orange-600 px-1.5 py-0.5 rounded font-medium">required</span>}
+                          {f.type === 'select' && Array.isArray(f.options) && f.options.length > 0 && (
+                            <span className="ml-2 text-xs text-slate-500">({f.options.join(', ')})</span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <button onClick={() => handleEditBulkField(f)} className="p-1.5 text-slate-400 hover:text-blue-500 hover:bg-blue-50 rounded-md transition-all" title="Edit field">
+                            <Pencil size={14} />
+                          </button>
+                          <button onClick={() => handleRemoveBulkField(f.name)} className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-md transition-all" title="Delete field">
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Add new field */}
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
+                <div className="flex justify-between items-center">
+                  <h3 className="text-sm font-bold text-slate-600">{isEditingBulkField ? 'Edit Custom Field' : 'Add Custom Field'}</h3>
+                  {isEditingBulkField && (
+                    <button onClick={handleCancelEdit} className="text-xs text-blue-600 hover:underline">Cancel Edit</button>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs text-slate-500 mb-1 block">Field Name (key)</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. year_of_education"
+                      value={newBulkField.name}
+                      onChange={e => setNewBulkField(p => ({ ...p, name: e.target.value }))}
+                      disabled={isEditingBulkField}
+                      className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none disabled:opacity-50"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-500 mb-1 block">Display Label</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Year of Education"
+                      value={newBulkField.label}
+                      onChange={e => setNewBulkField(p => ({ ...p, label: e.target.value }))}
+                      className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-500 mb-1 block">Type</label>
+                    <select
+                      value={newBulkField.type}
+                      onChange={e => setNewBulkField(p => ({ ...p, type: e.target.value }))}
+                      className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none bg-white"
+                    >
+                      <option value="text">Text</option>
+                      <option value="number">Number</option>
+                      <option value="date">Date</option>
+                      <option value="select">Select (dropdown)</option>
+                    </select>
+                  </div>
+                  {newBulkField.type === 'select' && (
+                    <div className="col-span-2">
+                      <label className="text-xs text-slate-500 mb-1 block">Field Options (comma separated)</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. CS, IT, ENTC"
+                        value={newBulkField.options}
+                        onChange={e => setNewBulkField(p => ({ ...p, options: e.target.value }))}
+                        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                      />
+                    </div>
+                  )}
+                  <div className="flex items-end">
+                    <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={newBulkField.required}
+                        onChange={e => setNewBulkField(p => ({ ...p, required: e.target.checked }))}
+                        className="rounded text-emerald-600"
+                      />
+                      Required field
+                    </label>
+                  </div>
+                </div>
+                <button
+                  onClick={handleAddBulkField}
+                  disabled={!newBulkField.name.trim()}
+                  className="w-full bg-emerald-600 text-white py-2 rounded-lg text-sm font-bold hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  {isEditingBulkField ? 'Update Field' : '+ Add Field'}
+                </button>
+              </div>
+            </div>
+
+            <div className="p-4 border-t border-slate-100 flex justify-end gap-3 bg-slate-50/50">
+              <button onClick={() => setShowBulkAttendanceConfigModal(false)} className="px-4 py-2 text-slate-600 hover:bg-slate-200 rounded-lg text-sm font-medium transition-colors">
+                Cancel
+              </button>
+              <button
+                onClick={() => handleSaveBulkAttendanceConfig(editingVendor.id)}
+                disabled={savingBulkConfig}
+                className={`px-6 py-2 bg-emerald-600 text-white rounded-lg text-sm font-bold hover:bg-emerald-700 transition-colors shadow-sm flex items-center gap-2 ${savingBulkConfig ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
+                {savingBulkConfig ? (
+                  <>
+                    <RefreshCw size={14} className="animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  'Save Configuration'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showLeaveConfigModal && editingVendor && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-[60]">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col border border-slate-200 animate-in fade-in zoom-in duration-200">
@@ -3331,10 +3709,13 @@ const SuperAdminDashboard = () => {
             {/* Modal Footer */}
             <div className="p-6 border-t border-slate-100 bg-slate-50/50 flex justify-end">
               <button 
-                onClick={() => {
+                onClick={async () => {
                   setShowLeaveConfigModal(false);
                   setNewStaff({ name: '', role: 'rector', pin: '', department: '' });
                   setNewDept('');
+                  if (editingVendor) {
+                    await refreshRegistrationConfig(editingVendor.id);
+                  }
                 }}
                 className="bg-slate-900 text-white px-8 py-3 rounded-xl font-bold hover:bg-black transition-all shadow-lg shadow-slate-200"
               >

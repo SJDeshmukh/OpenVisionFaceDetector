@@ -164,10 +164,37 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
                 args.append(str(branch))
             c.execute(q, args)
             rows_emb = c.fetchall() or []
+            
+            valid_person_ids = None
+            if class_year:
+                c.execute("SELECT id FROM classes WHERE vendor_id = ? AND class_year = ? AND (division = ? OR division IS NULL OR division = '') AND (branch = ? OR branch IS NULL OR branch = '')", 
+                           (int(vendor_id or 0), str(class_year), str(division or ''), str(branch or '')))
+                crow = c.fetchone()
+                if crow:
+                    class_id_str = str(crow[0] if isinstance(crow, tuple) else crow['id'])
+                    c.execute("SELECT id, custom_data FROM faces WHERE vendor_id = ?", (int(vendor_id or 0),))
+                    valid_person_ids = set()
+                    import json
+                    for f_row in c.fetchall():
+                        try:
+                            cfid = int(f_row[0] if isinstance(f_row, tuple) else f_row['id'])
+                            cd_str = f_row[1] if isinstance(f_row, tuple) else f_row['custom_data']
+                            cd = json.loads(cd_str or '{}')
+                            fid = str(cd.get('class_id') or cd.get('class_section') or '')
+                            if fid == class_id_str:
+                                valid_person_ids.add(cfid)
+                        except Exception:
+                            pass
+                else:
+                    valid_person_ids = set() # No matching class found in DB, so no valid persons
+
             id_set = set()
             for r in rows_emb:
                 try:
                     pid = int(r['person_id'] if isinstance(r, sqlite3.Row) else r[0])
+                    if valid_person_ids is not None and pid not in valid_person_ids:
+                        continue
+
                     vb = r['vec'] if isinstance(r, sqlite3.Row) else r[1]
                     dim = int(r['dim'] if isinstance(r, sqlite3.Row) else r[2])
                     sb = r['struct_vec'] if isinstance(r, sqlite3.Row) else r[3]

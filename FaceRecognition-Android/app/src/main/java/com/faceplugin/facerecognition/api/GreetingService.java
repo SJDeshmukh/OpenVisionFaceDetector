@@ -69,6 +69,12 @@ public interface GreetingService {
     @GET("api/parents/student-day")
     Call<com.google.gson.JsonObject> getParentStudentDay(@Query("date") String date);
 
+    @GET("api/parents/lecture-attendance")
+    Call<com.google.gson.JsonObject> getParentLectureAttendance(
+        @Query("start_date") String startDate,
+        @Query("end_date") String endDate
+    );
+
     @POST("api/parents/select-student")
     Call<com.google.gson.JsonObject> selectStudent(@Body ParentSelectRequest request);
 

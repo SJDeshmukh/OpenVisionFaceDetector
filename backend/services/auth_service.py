@@ -1,9 +1,24 @@
 import os
 import uuid
+import sqlite3
+import logging
 from itsdangerous import URLSafeTimedSerializer
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import date, datetime, timedelta
 from utils import parse_db_date
+from db_factory import get_db_connection
+
+logger = logging.getLogger(__name__)
+
+# Token TTLs
+# Web sessions expire after 24 hours via the cryptographic signature.
+# Mobile/parent/kiosk tokens use a long TTL but are invalidated by deleting
+# their row from active_sessions (logout or superadmin force-logout).
+WEB_TOKEN_TTL = 86400          # 24 hours
+PERSISTENT_TOKEN_TTL = 315360000  # ~10 years
+
+# Platforms that are validated against active_sessions instead of expiry time
+_PERSISTENT_PLATFORMS = ('mobile', 'kiosk')
 
 # Secret key Configuration (Lazy initialized to ensure .env is loaded)
 _serializer = None
@@ -12,19 +27,22 @@ def get_serializer():
     global _serializer
     if _serializer is None:
         key = os.environ.get('SECRET_KEY', 'super_secret_key_change_this_in_prod')
-        with open("/tmp/auth_debug.log", "a") as f:
-            f.write(f"[{datetime.now()}] [AUTH] Initializing serializer with SECRET_KEY (first 5 chars): {key[:5]}...\n")
         _serializer = URLSafeTimedSerializer(key)
     return _serializer
 
-def generate_token(username, role, vendor_id=None):
-    payload = {'username': username, 'role': role, 'nonce': str(uuid.uuid4())}
+def generate_token(username, role, vendor_id=None, platform='web'):
+    """
+    Generate a signed token.
+    platform='web'    → expires in 24 h (enforced by verify_token)
+    platform='mobile' → long-lived; invalidated via active_sessions deletion
+    """
+    payload = {'username': username, 'role': role, 'platform': platform, 'nonce': str(uuid.uuid4())}
     if vendor_id:
         payload['vendor_id'] = vendor_id
     return get_serializer().dumps(payload)
 
-def generate_token_with_claims(username, role, extra_claims):
-    payload = {'username': username, 'role': role, 'nonce': str(uuid.uuid4())}
+def generate_token_with_claims(username, role, extra_claims, platform='parent'):
+    payload = {'username': username, 'role': role, 'platform': platform, 'nonce': str(uuid.uuid4())}
     if isinstance(extra_claims, dict):
         payload.update(extra_claims)
     return get_serializer().dumps(payload)
@@ -63,13 +81,31 @@ def verify_password(raw_password, stored_password):
     return False
 
 def verify_token(token):
+    """
+    Verify a signed token with platform-aware expiry.
+
+    - Tokens that carry platform='web' (or legacy tokens without the field
+      that were issued via the web login) are accepted for at most 24 hours.
+    - Tokens for mobile/parent/kiosk platforms are accepted for up to 10 years;
+      their actual session lifetime is controlled by the active_sessions table.
+    - Old tokens without a 'platform' field are treated as persistent (mobile-
+      style) for backward-compatibility — they existed before this change and
+      the mobile app would otherwise get logged out mid-flight.
+    """
     try:
-        data = get_serializer().loads(token, max_age=315360000) # Valid for 10 years
-        return data
-    except Exception as e:
-        with open("/tmp/auth_debug.log", "a") as f:
-            f.write(f"[{datetime.now()}] [AUTH] verify_token failed: {e}\n")
+        # Always load with the long TTL first to read the payload.
+        data = get_serializer().loads(token, max_age=PERSISTENT_TOKEN_TTL)
+    except Exception:
         return None
+
+    # Enforce short expiry for web tokens only.
+    if data.get('platform') == 'web':
+        try:
+            return get_serializer().loads(token, max_age=WEB_TOKEN_TTL)
+        except Exception:
+            return None
+
+    return data
 
 def extract_token(auth_header):
     if not auth_header:
@@ -110,67 +146,84 @@ def require_auth(roles=None):
 
 def authenticate_vendor_access():
     """
-    Helper to authenticate a vendor admin/user and verify subscription status.
-    Returns: (vendor_id, error_response)
-    If error_response is not None, return it immediately.
+    Authenticate a request and verify subscription status.
+    Returns (vendor_id, None) on success or (None, error_response) on failure.
+
+    Token lifetime policy:
+    - Web tokens:    expire after 24 h (enforced by verify_token).
+    - Mobile tokens: long-lived but must have a live row in active_sessions.
+                     If the row is missing (explicit logout or admin force-logout)
+                     the request is rejected even if the signature is still valid.
     """
-    from app import get_db_connection, socketio
-    
     try:
         auth_header = request.headers.get('Authorization')
         username = None
         role = None
+        token_platform = None
         token = extract_token(auth_header)
-        
+
+        # Treat JS "undefined"/"null" strings (sent when frontend user.token is missing) as no token
+        if token in ('undefined', 'null', ''):
+            token = None
+
+        # Accept tokens from Authorization header OR httpOnly cookie (web sessions)
+        if not token:
+            token = request.cookies.get('token')
+
         if token:
             user_data = verify_token(token)
             if user_data:
                 username = user_data.get('username')
                 role = user_data.get('role')
-                # Optional: Update active session activity
+                token_platform = user_data.get('platform')
             else:
-                with open("/tmp/auth_debug.log", "a") as f:
-                    f.write(f"[{datetime.now()}] [AUTH] Token verification failed for token: '{token}' (Type: {type(token)})\n")
+                logger.warning("Token verification failed for request to %s", request.path)
                 return None, (jsonify({"error": "Invalid or Expired Token", "code": "UNAUTHORIZED"}), 401)
-        else:
-            if auth_header:
-                with open("/tmp/auth_debug.log", "a") as f:
-                    f.write(f"[{datetime.now()}] [AUTH] extract_token returned None for auth_header: '{auth_header}'\n")
-        
+
         if not username and request.args.get('token'):
             token = request.args.get('token')
             user_data = verify_token(token)
             if user_data:
                 username = user_data.get('username')
                 role = user_data.get('role')
+                token_platform = user_data.get('platform')
 
         if not username:
-            # Special case for sync upload if allowed
             if request.path.startswith("/api/sync/upload"):
                 vid = (request.get_json(silent=True) or {}).get("vendor_id")
                 if vid: return int(vid), None
             return None, (jsonify({"error": "Authentication Required", "code": "UNAUTHORIZED"}), 401)
 
         conn = get_db_connection()
-        # Row factory is handled by get_db_connection for SQLite, or DictCursor for PG
         c = conn.cursor()
-        
+
         c.execute("SELECT vendor_id, role FROM system_users WHERE username = ?", (username,))
         user_row = c.fetchone()
-        
+
         if not user_row and role == 'parent':
             c.execute("SELECT vendor_id, 'parent' as role FROM parent_users WHERE username = ?", (username,))
             user_row = c.fetchone()
-        
+
+        # Mobile/kiosk tokens: validate against active_sessions so that logout
+        # and admin force-logout take effect immediately.
+        if token and token_platform in _PERSISTENT_PLATFORMS:
+            try:
+                c.execute("SELECT 1 FROM active_sessions WHERE token = ? LIMIT 1", (token,))
+                if not c.fetchone():
+                    conn.close()
+                    return None, (jsonify({"error": "Session expired. Please log in again.", "code": "UNAUTHORIZED"}), 401)
+            except Exception:
+                pass  # If active_sessions is unavailable, fall through to other checks
+
         conn.close()
-        
+
         if not user_row:
             return None, (jsonify({"error": "User Not Found", "code": "USER_NOT_FOUND"}), 401)
 
         vendor_id = user_row['vendor_id']
         g.user_role = role or user_row['role']
         g.username = username
-        
+
         # Super-admin impersonation
         if g.user_role == 'super_admin':
             impersonate_id = request.headers.get('X-Vendor-ID') or request.args.get('vendor_id')
@@ -178,21 +231,18 @@ def authenticate_vendor_access():
                 try: vendor_id = int(impersonate_id)
                 except: pass
             return vendor_id, None
-             
+
         if not vendor_id:
-             return None, (jsonify({"error": "Vendor Context Required", "code": "MISSING_VENDOR"}), 400)
+            return None, (jsonify({"error": "Vendor Context Required", "code": "MISSING_VENDOR"}), 400)
 
         is_allowed, reason = check_vendor_status(vendor_id)
         if not is_allowed:
             return None, (jsonify({"error": f"Access Denied: {reason}", "code": "VENDOR_SUSPENDED"}), 403)
-            
+
         return vendor_id, None
-        
+
     except Exception as e:
         return None, (jsonify({"error": str(e), "code": "INTERNAL_ERROR"}), 500)
-
-import sqlite3
-from datetime import datetime, date, timedelta
 
 def check_vendor_status(vendor_id):
     """
@@ -201,8 +251,7 @@ def check_vendor_status(vendor_id):
     """
     if not vendor_id:
         return True, "SuperAdmin"
-        
-    from app import get_db_connection
+
     conn = get_db_connection()
     if not getattr(conn, "_is_pg", False):
         conn.row_factory = sqlite3.Row

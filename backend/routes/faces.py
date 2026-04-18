@@ -1253,6 +1253,9 @@ def delete_face_by_id(person_id):
                     del _VENDOR_EMB_CACHE[k]
                 elif isinstance(k, tuple) and len(k) > 0 and k[0] == target_vendor_id:
                     del _VENDOR_EMB_CACHE[k]
+            
+            c.execute("DELETE FROM lecture_attendance WHERE person_id = ?", (person_id,))
+            
             if sn:
                 c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (target_vendor_id, sn))
                 c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND student_number = ?", (target_vendor_id, sn))

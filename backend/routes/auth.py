@@ -1,6 +1,8 @@
-from flask import Blueprint, request, jsonify
+import os
+from flask import Blueprint, request, jsonify, make_response
 from datetime import datetime, date, timedelta
 from services.auth_service import authenticate_vendor_access, verify_password, generate_token, check_vendor_status, verify_token, hash_password, generate_token_with_claims, extract_token
+from middleware.handlers import rate_limit
 import json
 import sqlite3
 import logging
@@ -58,7 +60,9 @@ def get_current_user():
             web_login_enabled = v_row[0]
             frontend_bundle_id = v_row[1] or 'default_attendance'
             backend_service_id = v_row[2] or 'default_api'
-            vendor_config = json.loads(v_row[3]) if v_row[3] else []
+            config_raw = json.loads(v_row[3]) if v_row[3] else []
+            from services.config_utils import hydrate_registration_config
+            vendor_config = hydrate_registration_config(vendor_id, config_raw, conn=conn)
             vendor_vertical = v_row[4]
             
         c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
@@ -86,6 +90,7 @@ def get_current_user():
 
 
 @auth_bp.route("/auth/login", methods=["POST"])
+@rate_limit(limit=10, window=60)  # 10 attempts per minute per IP
 def login():
     from app import get_db_connection, socketio, is_testing, ALL_FEATURES
     data = request.json or {}
@@ -126,19 +131,6 @@ def login():
             user = c.fetchone()
         except Exception:
             user = None
-    
-    # NEW: Handle superadmin auto-creation if user not found, 
-    # even if initial query didn't "fail" but returned empty.
-    if not user and (username == "superadmin" or username.startswith("superadmin")):
-        try:
-            # We use INSERT OR IGNORE which is now translated by our PostgresCursorWrapper
-            c.execute("INSERT OR IGNORE INTO system_users (username, password, role, vendor_id) VALUES (?, ?, ?, ?)",
-                       (username, hash_password(password or "admin123"), "super_admin", None))
-            conn.commit()
-            c.execute("SELECT * FROM system_users WHERE username = ?", (username,))
-            user = c.fetchone()
-        except Exception as e:
-            logger.error(f"Failed to auto-create superadmin: {e}")
     
     # Handle demo admin fallback
     if not user and username in ("admin", "vendor_admin"):
@@ -363,7 +355,9 @@ def login():
             web_login_enabled = row[0] if row else 1
             frontend_bundle_id = row[1] if row and len(row) > 1 and row[1] else 'default_attendance'
             backend_service_id = row[2] if row and len(row) > 2 and row[2] else 'default_api'
-            vendor_config = json.loads(row[3]) if row and len(row) > 3 and row[3] else []
+            config_raw = json.loads(row[3]) if row and len(row) > 3 and row[3] else []
+            from services.config_utils import hydrate_registration_config
+            vendor_config = hydrate_registration_config(user_vendor_id, config_raw, conn=conn)
             
             try:
                 c.execute("SELECT vertical FROM vendors WHERE id = ?", (user['vendor_id'],))
@@ -438,7 +432,7 @@ def login():
 
             if not is_allowed:
                 if reason == "Subscription Expired" and web_login_enabled:
-                     token = generate_token(user['username'], user['role'], user.get('vendor_id'))
+                     token = generate_token(user['username'], user['role'], user.get('vendor_id'), platform=platform)
                      return jsonify({
                         "status": "success",
                         "role": user["role"],
@@ -465,8 +459,8 @@ def login():
             vendor_config = {}
             features = ALL_FEATURES
 
-        token = generate_token(user['username'], user['role'], user.get('vendor_id'))
-        
+        token = generate_token(user['username'], user['role'], user.get('vendor_id'), platform=platform)
+
         company_id = None
         if user_vendor_id:
             conn = get_db_connection()
@@ -545,10 +539,12 @@ def login():
             # Cleanup stale sessions (older than 12h instead of 24h for better rotation)
             try:
                 is_pg = getattr(conn, "_is_pg", False)
+                # Only purge web sessions automatically; mobile sessions persist
+                # until explicit logout or admin force-logout.
                 if is_pg:
-                    c.execute("DELETE FROM active_sessions WHERE last_active < (NOW() - INTERVAL '12 hours')")
+                    c.execute("DELETE FROM active_sessions WHERE platform = 'web' AND last_active < (NOW() - INTERVAL '12 hours')")
                 else:
-                    c.execute("DELETE FROM active_sessions WHERE last_active < datetime('now','-12 hours')")
+                    c.execute("DELETE FROM active_sessions WHERE platform = 'web' AND last_active < datetime('now','-12 hours')")
             except Exception as e:
                 logger.error(f"Error cleaning stale sessions: {e}")
 
@@ -563,11 +559,11 @@ def login():
             conn.commit()
             conn.close()
 
-        return jsonify({
+        resp = make_response(jsonify({
             "status": "success",
             "role": user["role"],
             "username": user["username"],
-            "token": token,
+            "token": token,  # kept for mobile / backward compat
             "vendor_id": user_vendor_id,
             "person_id": user.get("person_id"),
             "company_id": company_id,
@@ -579,7 +575,22 @@ def login():
             "device_slot_required": bool(locals().get('device_slot_required', False)),
             "available_slots": locals().get('available_slots', []),
             "force_password_change": user.get('force_password_change', False)
-        })
+        }))
+
+        # For web logins: set an httpOnly cookie so the token is not accessible
+        # to JavaScript (XSS protection). Mobile clients use the Bearer token above.
+        if platform == 'web':
+            is_secure = os.environ.get('PROTOCOL', 'http').lower() == 'https'
+            resp.set_cookie(
+                'token', token,
+                httponly=True,
+                secure=is_secure,
+                samesite='Lax',
+                max_age=86400,  # matches WEB_TOKEN_TTL (24 h)
+                path='/'
+            )
+
+        return resp
     else:
         return jsonify({"error": "Invalid credentials"}), 401
 
@@ -895,17 +906,37 @@ def parent_login():
 
         token_username = f"parent_{actual_vendor_id}_{student_id}"
         token = generate_token_with_claims(token_username, "parent", {"sv": int(session_version)})
+
+        # Fetch vendor vertical and feature flags for the app to adapt its UI
+        vendor_vertical = None
+        has_bulk_attendance = False
+        try:
+            c.execute("SELECT vertical FROM vendors WHERE id = ?", (actual_vendor_id,))
+            vrow = c.fetchone()
+            if vrow:
+                vendor_vertical = vrow[0] if isinstance(vrow, (list, tuple)) else vrow.get('vertical')
+            c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (actual_vendor_id,))
+            srow = c.fetchone()
+            if srow:
+                raw = srow[0] if isinstance(srow, (list, tuple)) else srow.get('features')
+                feats = json.loads(raw) if isinstance(raw, str) else (list(raw) if raw else [])
+                has_bulk_attendance = 'bulk_image_attendance' in feats
+        except Exception:
+            pass
+
         conn.close()
         return jsonify({
-            "status": "success", 
-            "token": token, 
+            "status": "success",
+            "token": token,
             "student_id": student_id,
             "role": "parent",
             "vendor_id": actual_vendor_id,
             "parent_id": parent_id,
             "person_id": resolved_person_id,
             "face_registered": bool(face_template),
-            "face_template": face_template
+            "face_template": face_template,
+            "vertical": vendor_vertical,
+            "has_bulk_attendance": has_bulk_attendance
         })
     except Exception as e:
         conn.close()
@@ -1194,7 +1225,7 @@ def parent_select_student():
 @auth_bp.route("/auth/logout", methods=["POST"])
 def logout():
     from app import get_db_connection, socketio, is_testing, ALL_FEATURES
-    # Attempt to get token
+    # Accept token from Authorization header OR httpOnly cookie (web sessions)
     auth_header = request.headers.get('Authorization')
     token = None
     if auth_header:
@@ -1202,29 +1233,34 @@ def logout():
             token = auth_header.split(" ")[1]
         except:
             pass
-            
+    if not token:
+        token = request.cookies.get('token')
+
     data = request.json or {}
     username = data.get("username")
     device_id = data.get("device_id")
-    
+
     if not token and not (username and device_id):
         return jsonify({"error": "Token or credentials required"}), 400
-        
+
     conn = get_db_connection()
     c = conn.cursor()
-    
+
     try:
         if token:
             c.execute("DELETE FROM active_sessions WHERE token = ?", (token,))
-        
+
         if username and device_id:
             c.execute("DELETE FROM active_sessions WHERE username = ? AND device_id = ?", (username, device_id))
-            
+
         conn.commit()
-        return jsonify({"status": "success", "message": "Logged out"})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
         conn.close()
+        resp = make_response(jsonify({"status": "success", "message": "Logged out"}))
+        resp.delete_cookie('token', path='/')
+        return resp
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 500
 @auth_bp.route("/student/verify-password", methods=["POST"])
 def verify_student_password():
     data = request.json
