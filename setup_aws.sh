@@ -8,12 +8,21 @@
 
 set -e
 
+echo "==> [0/6] Checking Disk Space..."
+AVAILABLE_DISK=$(df / | tail -1 | awk '{print $4}')
+if [ "$AVAILABLE_DISK" -lt 5000000 ]; then
+    echo "WARNING: Less than 5GB of disk space available ($((AVAILABLE_DISK/1024)) MB)."
+    echo "This build may fail. Consider increasing your AWS EBS volume to at least 40GB."
+fi
+
 echo "==> [1/6] Configuring 2GB Swap File for Build Stability..."
 if [ -f /swapfile ]; then
     echo "Resizing existing swap..."
     sudo swapoff /swapfile || true
     sudo rm -f /swapfile
 fi
+sudo docker builder prune -a -f || true
+
 sudo fallocate -l 2G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048
 sudo chmod 600 /swapfile
 sudo mkswap /swapfile
