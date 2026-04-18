@@ -126,7 +126,7 @@ def setup_middleware(app):
             if origin_allowed:
                 resp.headers['Access-Control-Allow-Origin'] = origin
                 resp.headers['Access-Control-Allow-Credentials'] = 'true'
-                resp.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Vendor-ID, x-vendor-id'
+                resp.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Vendor-ID, x-vendor-id, X-App-Brand, x-app-brand'
                 resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, PATCH, OPTIONS'
                 resp.headers['Access-Control-Expose-Headers'] = 'Authorization'
         except Exception:
