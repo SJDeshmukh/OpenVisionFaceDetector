@@ -5,10 +5,11 @@ import subprocess
 
 # Configuration
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-QUEUE_NAME = "normal_priority"
-THRESHOLD = 5  # Scale up if more than 5 tasks are pending
-MAX_WORKERS = 31
-MIN_WORKERS = 1
+QUEUE_NAME = os.environ.get("CELERY_QUEUE", "normal_priority")
+THRESHOLD = int(os.environ.get("AUTOSCALE_THRESHOLD", "5"))  # Scale up if more than 5 tasks are pending
+MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "31"))
+MIN_WORKERS = int(os.environ.get("MIN_WORKERS", "1"))
+CHECK_INTERVAL = int(os.environ.get("AUTOSCALE_INTERVAL", "5"))
 
 def get_queue_length():
     try:

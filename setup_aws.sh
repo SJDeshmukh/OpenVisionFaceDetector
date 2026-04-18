@@ -33,6 +33,9 @@ if ! command -v docker &> /dev/null; then
     sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
 fi
 
+# Add user to docker group
+sudo usermod -aG docker $USER || true
+
 # Ensure docker-compose command is available (v2 uses 'docker compose' but some scripts use 'docker-compose')
 if ! command -v docker-compose &> /dev/null; then
     sudo ln -s /usr/libexec/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose || true
@@ -63,14 +66,14 @@ fi
 
 echo "==> [5/6] Building and Starting Containers (Orchestration)..."
 # Pull latest or build locally
-docker compose build --pull
+sudo docker compose build --pull
 
 # Start core services
-docker compose up -d
+sudo docker compose up -d
 
 echo "==> [6/6] Scaling Workers for Bulk Attendance (AttendX)..."
 # Start with 2 workers by default, can be scaled manually later
-docker compose up -d --scale worker=2
+sudo docker compose up -d --scale worker=2
 
 echo ""
 echo "=============================================================================="
@@ -81,6 +84,9 @@ echo "- API:       http://localhost:5001"
 echo "- Monitors:  docker compose ps"
 echo "- Logs:      docker compose logs -f worker"
 echo ""
-echo "To scale for 30 classes simultaneously, run:"
+echo "To scale for 30+ classes simultaneously, run:"
 echo "  docker compose up -d --scale worker=30"
+
+echo "For dynamic auto-scaling based on request load, run the monitor:"
+echo "  python3 scripts/autoscale_monitor.py"
 echo "=============================================================================="
