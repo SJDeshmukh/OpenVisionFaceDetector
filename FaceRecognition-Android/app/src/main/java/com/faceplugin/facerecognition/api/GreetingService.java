@@ -116,4 +116,17 @@ public interface GreetingService {
 
     @POST("api/parents/face-reset-request")
     Call<com.google.gson.JsonObject> requestFaceReset(@Body com.google.gson.JsonObject body);
+
+    // Owner API
+    @GET("api/owner/advances")
+    Call<com.google.gson.JsonObject> getOwnerAdvances();
+
+    @POST("api/owner/advances/approve")
+    Call<com.google.gson.JsonObject> approveOwnerAdvance(@Body com.google.gson.JsonObject body);
+
+    @POST("api/owner/advances/reject")
+    Call<com.google.gson.JsonObject> rejectOwnerAdvance(@Body com.google.gson.JsonObject body);
+
+    @GET("api/owner/insights")
+    Call<com.google.gson.JsonObject> getOwnerInsights();
 }

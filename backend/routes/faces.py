@@ -1440,6 +1440,13 @@ def update_wages():
                     query_parts.append("late_deduction_amount = ?")
                     params.append(u['late_deduction_amount'])
                 
+                # New fields
+                for field in ['basic_salary', 'hra', 'conveyance', 'special_allowance', 'pf_enabled', 'esi_enabled', 'gratuity_enabled', 'professional_tax', 'joining_date']:
+                    if field in u and u[field] is not None:
+                        # Allow 0 or empty string if it's explicitly passed, though frontend usually sends values
+                        query_parts.append(f"{field} = ?")
+                        params.append(u[field])
+                
                 if query_parts:
                     if pid:
                         query_str = f"UPDATE faces SET {', '.join(query_parts)} WHERE id = ?"
@@ -1451,9 +1458,130 @@ def update_wages():
                     if vendor_id:
                         query_str += " AND vendor_id = ?"
                         params.append(vendor_id)
-                        
+                    
+                    # logger.info(f"[WAGES] Updating {pid or name}: {query_str} with {params}")
                     c.execute(query_str, params)
                  
+        conn.commit()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@faces_bp.route("/persons/advances", methods=["POST"])
+@require_feature("payroll")
+def record_advance():
+    from app import get_db_connection
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+
+    data = request.json
+    person_id = data.get("person_id")
+    amount_cash = data.get("amount_cash", 0)
+    amount_online = data.get("amount_online", 0)
+    amount = data.get("amount") or (float(amount_cash) + float(amount_online))
+    date_str = data.get("date") or datetime.now().strftime('%Y-%m-%d')
+    deduction_month = data.get("deduction_month") # e.g. "2023-10"
+
+    if not person_id or (not amount and amount != 0):
+        return jsonify({"error": "person_id and amount required"}), 400
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute("INSERT INTO advances (vendor_id, person_id, amount, amount_cash, amount_online, date, status, deduction_month) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)",
+                  (vendor_id, person_id, amount, amount_cash, amount_online, date_str, deduction_month))
+        conn.commit()
+        return jsonify({"success": True, "id": c.lastrowid})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@faces_bp.route("/persons/advances/<int:person_id>", methods=["GET"])
+@require_feature("payroll")
+def get_person_advances(person_id):
+    from app import get_db_connection
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute("SELECT id, amount, amount_cash, amount_online, date, deduction_month, status, created_at FROM advances WHERE person_id = ? AND vendor_id = ? ORDER BY date DESC", (person_id, vendor_id))
+        advances = [dict(row) for row in c.fetchall()]
+        return jsonify({"success": True, "advances": advances})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@faces_bp.route("/persons/advances/record/<int:record_id>", methods=["PUT"])
+@require_feature("payroll")
+def update_advance_record(record_id):
+    from app import get_db_connection
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+
+    data = request.json
+    amount_cash = data.get("amount_cash")
+    amount_online = data.get("amount_online")
+    amount = data.get("amount")
+    date_str = data.get("date")
+    deduction_month = data.get("deduction_month")
+
+    if amount is None and amount_cash is None and amount_online is None:
+        return jsonify({"error": "amount, amount_cash or amount_online is required"}), 400
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        query_parts = []
+        params = []
+        
+        if amount is not None:
+            query_parts.append("amount = ?")
+            params.append(amount)
+        if amount_cash is not None:
+            query_parts.append("amount_cash = ?")
+            params.append(amount_cash)
+        if amount_online is not None:
+            query_parts.append("amount_online = ?")
+            params.append(amount_online)
+        if date_str:
+            query_parts.append("date = ?")
+            params.append(date_str)
+        if deduction_month:
+            query_parts.append("deduction_month = ?")
+            params.append(deduction_month)
+            
+        params.append(record_id)
+        params.append(vendor_id)
+        
+        c.execute(f"UPDATE advances SET {', '.join(query_parts)} WHERE id = ? AND vendor_id = ?", params)
+        conn.commit()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@faces_bp.route("/persons/advances/record/<int:record_id>", methods=["DELETE"])
+@require_feature("payroll")
+def delete_advance_record(record_id):
+    from app import get_db_connection
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute("DELETE FROM advances WHERE id = ? AND vendor_id = ?", (record_id, vendor_id))
         conn.commit()
         return jsonify({"success": True})
     except Exception as e:

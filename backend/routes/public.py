@@ -59,43 +59,46 @@ def public_business_types():
     """
     logger.info(f"Public business-types requested from {current_app.name}")
     
-    # Default list of business types exactly matching the Super Admin dashboard screenshot
+    # Default list of business types exactly matching the Super Admin dashboard requirements
     default_types = {
-        "school": {"value": "school", "label": "School / College / Tuitions", "allow_parent_login": True},
-        "wages": {"value": "wages", "label": "Daily Wages / Workforce", "allow_parent_login": False},
-        "factory": {"value": "factory", "label": "Industrial / Manufacturing", "allow_parent_login": False},
-        "enterprise": {"value": "enterprise", "label": "Enterprise (Custom)", "allow_parent_login": False}
+        "bulk_attendance_attendx": {
+            "value": "bulk_attendance_attendx", 
+            "label": "AttendX", 
+            "allow_parent_login": True,
+            "default_frontend_bundle_id": "attendx_bulk_ui",
+            "default_registration_config": [
+                {"field": "student_number", "label": "Student/Employee Number", "type": "text", "required": True},
+                {"field": "class_section", "label": "Class/Department", "type": "text", "required": True},
+                {"field": "daily_wage", "label": "Daily Wage", "type": "text", "required": False},
+                {"field": "phone", "label": "Parent/Contact Mobile", "type": "text", "required": True}
+            ]
+        },
+        "checkin_checkout_tapinx": {
+            "value": "checkin_checkout_tapinx", 
+            "label": "TapInX", 
+            "allow_parent_login": True,
+            "default_frontend_bundle_id": "tapinx_ui",
+            "default_registration_config": [
+                {"field": "student_id", "label": "Student ID", "type": "text", "required": True},
+                {"field": "phone", "label": "Parent Mobile Number", "type": "text", "required": True},
+                {"field": "class_section", "label": "Class/Section", "type": "text", "required": True}
+            ]
+        },
+        "enterprise": {
+            "value": "enterprise", 
+            "label": "Enterprise (Custom)", 
+            "allow_parent_login": False,
+            "default_frontend_bundle_id": "default_attendance",
+            "default_registration_config": []
+        }
     }
 
-    # Fetch unique verticals from the database
-    db_verticals = []
-    try:
-        from utils import get_db_connection
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute("SELECT DISTINCT vertical FROM vendors WHERE vertical IS NOT NULL AND vertical != ''")
-        results = c.fetchall()
-        for r in results:
-            val = r[0] if not isinstance(r, dict) else r.get('vertical')
-            if val:
-                db_verticals.append(val)
-        conn.close()
-    except Exception as e:
-        logger.error(f"Error fetching verticals from database for public-business-types: {e}")
-
-    # Merge database values into our map
-    for v in db_verticals:
-        key_norm = v.strip().lower()
-        if key_norm not in default_types:
-            default_types[key_norm] = {
-                "value": v,
-                "label": v.replace('_', ' ').title(),
-                "allow_parent_login": v.lower() in ['school', 'college', 'tuition']
-            }
-
-    # Convert mapping to a sorted list
-    # Preserve order similar to dashboard if possible, or just alpha
-    final_list = sorted(default_types.values(), key=lambda x: x['label'])
+    # Return in a fixed order: AttendX, TapInX, Enterprise
+    final_list = [
+        default_types["bulk_attendance_attendx"],
+        default_types["checkin_checkout_tapinx"],
+        default_types["enterprise"]
+    ]
     
     logger.info(f"Returning {len(final_list)} business types.")
     return jsonify({

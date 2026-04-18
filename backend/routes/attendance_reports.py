@@ -2,7 +2,7 @@ import json
 import csv
 import io
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, date, timedelta
 from collections import defaultdict
 from flask import Blueprint, request, jsonify, send_file, g
 from openpyxl import Workbook
@@ -15,6 +15,7 @@ from utils import (
 from services.attendance_service import (
     calculate_daily_hours, calculate_expected_hours, calculate_arrival_status
 )
+from services.payroll_service import calculate_salary_breakdown, get_pending_advances
 from services.auth_service import require_auth
 from middleware.validation import validate_request
 from schemas import PayrollReportRequest
@@ -465,23 +466,62 @@ def get_payroll_report(valid_data: PayrollReportRequest):
         except: pass
 
     late_enabled = vendor_has_feature(vendor_id, "late_mark")
+    
+    # 1. Incoming global percentages (Query params override stored settings)
+    # Fetch stored settings first
+    settings_keys = [
+        'global_late_allowance', 
+        'global_late_deduction',
+        'global_pf_percentage',
+        'global_esi_percentage',
+        'global_gratuity_percentage',
+        'global_gratuity_threshold_years',
+        'global_timezone_offset'
+    ]
+    try:
+        # DB Factory handles the ? placeholder correctly for both PG and SQLite
+        placeholders = ', '.join(['?'] * len(settings_keys))
+        c.execute(f"SELECT key, value FROM system_settings WHERE key IN ({placeholders})", settings_keys)
+        stored_settings = {row['key']: row['value'] for row in c.fetchall()}
+    except:
+        stored_settings = {}
+
+    pf_pct = request.args.get('pf_percentage')
+    if pf_pct is None: pf_pct = stored_settings.get('global_pf_percentage', '12.0')
+    
+    esi_pct = request.args.get('esi_percentage')
+    if esi_pct is None: esi_pct = stored_settings.get('global_esi_percentage', '0.75')
+    
+    gratuity_pct = request.args.get('gratuity_percentage')
+    if gratuity_pct is None: gratuity_pct = stored_settings.get('global_gratuity_percentage', '4.81')
+    
+    grat_years_threshold = stored_settings.get('global_gratuity_threshold_years')
+    if grat_years_threshold is None: grat_years_threshold = 5
+    else: grat_years_threshold = int(grat_years_threshold)
+
+    try:
+        pf_pct = float(pf_pct)
+        esi_pct = float(esi_pct)
+        gratuity_pct = float(gratuity_pct)
+    except:
+        pf_pct = 12.0
+        esi_pct = 0.75
+        gratuity_pct = 4.81
 
     # 2. Fetch Persons
     try:
         fcols = get_table_columns(conn, "faces")
-        extra = [col for col in ["late_allowance_days", "late_deduction_amount"] if col in fcols]
+        payroll_fields = ["basic_salary", "hra", "conveyance", "special_allowance", "pf_enabled", "esi_enabled", "gratuity_enabled", "professional_tax", "joining_date"]
+        extra = [col for col in (["late_allowance_days", "late_deduction_amount"] + payroll_fields) if col in fcols]
         extra_select = ", " + ", ".join(extra) if extra else ""
-        c.execute(f"SELECT id, name, daily_wage, department, designation, face_image, phone, display_id, custom_data{extra_select} FROM faces WHERE vendor_id = ?", (vendor_id,))
+        c.execute(f"SELECT id, name, daily_wage, department, designation, face_image, phone, display_id, custom_data{extra_select} FROM faces WHERE vendor_id = ? ORDER BY id ASC", (vendor_id,))
     except:
-        c.execute("SELECT id, name, daily_wage, department, designation, face_image, phone FROM faces WHERE vendor_id = ?", (vendor_id,))
+        c.execute("SELECT id, name, daily_wage, department, designation, face_image, phone FROM faces WHERE vendor_id = ? ORDER BY id ASC", (vendor_id,))
     
     persons = {row['id']: dict(row) for row in c.fetchall()}
     
-    # 3. Fetch Global Settings
-    c.execute("SELECT key, value FROM system_settings WHERE key IN ('global_late_allowance', 'global_late_deduction')")
-    settings = {row['key']: row['value'] for row in c.fetchall()}
-    global_allowance = int(settings.get('global_late_allowance', 7))
-    global_deduction = float(settings.get('global_late_deduction', 0.0))
+    global_allowance = int(stored_settings.get('global_late_allowance', 7))
+    global_deduction = float(stored_settings.get('global_late_deduction', 0.0))
     
     # 4. Fetch Attendance
     try:
@@ -493,15 +533,17 @@ def get_payroll_report(valid_data: PayrollReportRequest):
     query = "SELECT * FROM attendance WHERE date(timestamp) BETWEEN ? AND ? AND vendor_id = ? ORDER BY timestamp ASC"
     c.execute(query, (s_dt.strftime('%Y-%m-%d'), e_dt.strftime('%Y-%m-%d'), vendor_id))
     rows = c.fetchall()
-    conn.close()
     
     user_records = defaultdict(list)
     for row in rows:
         pid = row.get('person_id')
         if pid: user_records[pid].append(dict(row))
+
+    # Fetch list of advances for marking status later if needed (but here we just read)
+    # The connection is still open.
         
     payroll_data = []
-    today_str = datetime.now().strftime('%Y-%m-%d')
+    # today_str = datetime.now().strftime('%Y-%m-%d') # Removed unused
     start_dt_req = datetime.strptime(start_date, '%Y-%m-%d').date()
     end_dt_req = datetime.strptime(end_date, '%Y-%m-%d').date()
 
@@ -511,7 +553,7 @@ def get_payroll_report(valid_data: PayrollReportRequest):
         late_dates = set()
         
         records = user_records.get(pid, [])
-        stats = calculate_daily_hours(records, timetable, date_str=today_str)
+        stats = calculate_daily_hours(records, timetable)
         
         for r in records:
             if r.get('is_late') == 1:
@@ -540,7 +582,46 @@ def get_payroll_report(valid_data: PayrollReportRequest):
         
         deductable_lates = max(0, late_marks_count - allowance)
         total_deduction = round(deductable_lates * deduction_amt, 2)
-        final_payout = round(base_cost - total_deduction, 2)
+        
+        # Get Month for advances (using end_date if it covers the month)
+        target_month = end_dt_req.strftime('%Y-%m')
+        
+        # Determine Tenure (Years) for Gratuity Threshold
+        tenure_years = 0
+        if person_info.get('joining_date'):
+            try:
+                # Handling both string and date/datetime objects for robustness
+                j_raw = person_info['joining_date']
+                if isinstance(j_raw, str):
+                    jdate = datetime.strptime(j_raw, '%Y-%m-%d').date()
+                elif hasattr(j_raw, 'date'):
+                    jdate = j_raw.date()
+                else:
+                    jdate = j_raw
+                
+                today = date.today()
+                tenure_years = (today - jdate).days / 365.25
+            except:
+                pass
+        
+        # Calculate Breakdown using the service
+        person_info_with_tenure = person_info.copy()
+        person_info_with_tenure['tenure_years'] = tenure_years
+        
+        breakdown = calculate_salary_breakdown(
+            base_cost, 
+            person_info_with_tenure, 
+            pf_percent=pf_pct, 
+            esi_percent=esi_pct, 
+            gratuity_percent=gratuity_pct,
+            gratuity_threshold_years=grat_years_threshold
+        )
+        
+        # Fetch and process advances
+        advances = get_pending_advances(conn, pid, target_month)
+        advance_total = sum(adv[1] for adv in advances)
+        
+        final_payout = round(breakdown['net_before_advances'] - total_deduction - advance_total, 2)
         
         payroll_data.append({
             "person_id": pid,
@@ -556,13 +637,29 @@ def get_payroll_report(valid_data: PayrollReportRequest):
             "base_cost": base_cost,
             "late_marks_count": late_marks_count,
             "late_deduction": total_deduction,
+            "advance_deduction": advance_total,
+            "pf_enabled": person_info.get('pf_enabled', 0),
+            "esi_enabled": person_info.get('esi_enabled', 0),
+            "gratuity_enabled": person_info.get('gratuity_enabled', 0),
+            "professional_tax": person_info.get('professional_tax', 0),
+            "late_allowance_days": person_info.get('late_allowance_days'),
+            "late_deduction_amount": person_info.get('late_deduction_amount'),
+            "breakdown": breakdown,
             "final_payout": final_payout,
             "custom_data": json.loads(person_info.get('custom_data') or '{}') if isinstance(person_info.get('custom_data'), str) else person_info.get('custom_data')
         })
     
+    conn.close()
     return jsonify({
         "payroll": payroll_data,
-        "global_settings": {"allowance": global_allowance, "deduction": global_deduction}
+        "global_settings": {
+            "allowance": global_allowance, 
+            "deduction": global_deduction, 
+            "pf_percentage": pf_pct, 
+            "esi_percentage": esi_pct, 
+            "gratuity_percentage": gratuity_pct,
+            "gratuity_threshold_years": grat_years_threshold
+        }
     })
 
 @attendance_reports_bp.route("/reports/payroll/export-daily", methods=["GET"])
@@ -607,7 +704,12 @@ def export_payroll_daily():
             if d.get('person_id'): user_records[d['person_id']].append(d)
 
         # Build faces query with standard filters
-        faces_query  = "SELECT id, name, daily_wage, late_allowance_days, late_deduction_amount, shift, department, designation, phone, custom_data FROM faces WHERE vendor_id = ?"
+        fcols = get_table_columns(conn, "faces")
+        payroll_fields = ["basic_salary", "hra", "conveyance", "special_allowance", "pf_enabled", "esi_enabled", "professional_tax"]
+        extra = [col for col in (["late_allowance_days", "late_deduction_amount"] + payroll_fields) if col in fcols]
+        extra_select = ", " + ", ".join(extra) if extra else ""
+        
+        faces_query  = f"SELECT id, name, daily_wage, shift, department, designation, phone, custom_data, display_id{extra_select} FROM faces WHERE vendor_id = ?"
         faces_params = [vendor_id]
         if f_dept:  faces_query += " AND department = ?";  faces_params.append(f_dept)
         if f_desig: faces_query += " AND designation = ?"; faces_params.append(f_desig)
@@ -637,7 +739,7 @@ def export_payroll_daily():
 
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["Employee ID", "Name", "Date", "Daily Wage Rate", "Working Hours", "Base Wage", "Late Penalty", "Net Wage"])
+        writer.writerow(["Employee ID", "Name", "Date", "Daily Wage Rate", "Working Hours", "Base Wage", "Late Penalty", "PF", "ESI", "PT", "Net Wage"])
 
         for pid, records in user_records.items():
             if pid not in persons: continue
@@ -669,8 +771,16 @@ def export_payroll_daily():
                 daily_wage = float(info.get('daily_wage') or 0.0)
                 hourly_rate = daily_wage / company_working_hours if daily_wage and company_working_hours > 0 else 0
                 base_wage_for_day = round((mins / 60.0) * hourly_rate, 2)
+                
+                # Breakdown for this day's portion
+                breakdown = calculate_salary_breakdown(base_wage_for_day, info)
+                pf = breakdown['deductions']['pf']
+                esi = breakdown['deductions']['esi']
+                pt = breakdown['deductions']['pt'] / 26.0 # Arbitrary per day PT if monthly
+                
+                net_wage = round(breakdown['net_before_advances'] - deduct, 2)
                 d_id = info.get('display_id') or pid
-                writer.writerow([d_id, info.get('name'), d.isoformat(), daily_wage, round(mins/60.0,2), base_wage_for_day, deduct, round(base_wage_for_day - deduct, 2)])
+                writer.writerow([d_id, info.get('name'), d.isoformat(), daily_wage, round(mins/60.0,2), base_wage_for_day, deduct, pf, esi, round(pt, 2), net_wage])
         
         return output.getvalue(), 200, {"Content-Type": "text/csv"}
     except Exception as e:
@@ -712,7 +822,12 @@ def export_payroll_excel():
             d = dict(row)
             if d.get('person_id'): user_records[d['person_id']].append(d)
 
-        c.execute("SELECT id, name, daily_wage, late_allowance_days, late_deduction_amount FROM faces WHERE vendor_id = ?", (vendor_id,))
+        fcols = get_table_columns(conn, "faces")
+        payroll_fields = ["basic_salary", "hra", "conveyance", "special_allowance", "pf_enabled", "esi_enabled", "professional_tax"]
+        extra = [col for col in (["late_allowance_days", "late_deduction_amount"] + payroll_fields) if col in fcols]
+        extra_select = ", " + ", ".join(extra) if extra else ""
+        
+        c.execute(f"SELECT id, name, daily_wage, display_id{extra_select} FROM faces WHERE vendor_id = ?", (vendor_id,))
         persons = {r['id']: dict(r) for r in c.fetchall()}
 
         c.execute("SELECT key, value FROM system_settings WHERE key IN ('global_late_allowance', 'global_late_deduction')")
@@ -723,7 +838,7 @@ def export_payroll_excel():
         wb = Workbook()
         ws = wb.active
         ws.title = "Daily Payroll"
-        headers = ["Employee ID", "Name", "Date", "Daily Wage Rate", "Working Hours", "Base Wage", "Late Penalty", "Net Wage"]
+        headers = ["Employee ID", "Name", "Date", "Daily Wage Rate", "Working Hours", "Base Wage", "Late Penalty", "PF", "ESI", "PT", "Net Wage"]
         ws.append(headers)
         for cell in ws[1]:
             cell.font = Font(bold=True)
@@ -755,8 +870,16 @@ def export_payroll_excel():
                 daily_wage = float(info.get('daily_wage') or 0.0)
                 hourly_rate = daily_wage / company_working_hours if daily_wage and company_working_hours > 0 else 0
                 base_wage_for_day = round((mins / 60.0) * hourly_rate, 2)
+                
+                # Breakdown
+                breakdown = calculate_salary_breakdown(base_wage_for_day, info)
+                pf = breakdown['deductions']['pf']
+                esi = breakdown['deductions']['esi']
+                pt = breakdown['deductions']['pt'] / 26.0
+                
+                net_wage = round(breakdown['net_before_advances'] - deduct, 2)
                 d_id = info.get('display_id') or pid
-                ws.append([d_id, info.get('name'), d.isoformat(), daily_wage, round(mins/60.0, 2), base_wage_for_day, deduct, round(base_wage_for_day - deduct, 2)])
+                ws.append([d_id, info.get('name'), d.isoformat(), daily_wage, round(mins/60.0, 2), base_wage_for_day, deduct, pf, esi, round(pt, 2), net_wage])
 
         out = io.BytesIO()
         wb.save(out)

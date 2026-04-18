@@ -29,38 +29,23 @@ const SuperAdminDashboard = () => {
     features: [],
     vertical: '',
     attendance_type: 'total_time',
-    retention_days: '90' // Default to 90 days
+    retention_days: '90', // Default to 90 days
+    owners: []
   });
   const [businessTypes, setBusinessTypes] = useState([
     {
-      value: 'school', label: 'School / College / Tuitions', default_frontend_bundle_id: 'attendance_ui', default_registration_config: [
-        { field: 'student_id', label: 'Student ID', type: 'text', required: true, options: [] },
-        { field: 'student_phone', label: 'Phone Number of Student', type: 'text', required: true, options: [] }
-      ]
-    },
-    {
-      value: 'hostel', label: 'Hostel / Accommodation', default_frontend_bundle_id: 'attendance_ui', default_registration_config: [
-        { field: 'student_id', label: 'Student ID', type: 'text', required: true, options: [] },
-        { field: 'student_phone', label: 'Phone Number of Student', type: 'text', required: true, options: [] }
-      ]
-    },
-    {
-      value: 'class_attendance', label: 'Class Attendance', default_frontend_bundle_id: 'class_attendance_ui', default_registration_config: [
-        { field: 'student_number', label: 'Student Number', type: 'text', required: true, options: [] },
-        { field: 'class_section', label: 'Class/Section', type: 'text', required: true, options: [] }
-      ]
-    },
-    {
-      value: 'wages', label: 'Daily Wages / Workforce', default_frontend_bundle_id: 'attendance_payroll_ui', default_registration_config: [
+      value: 'bulk_attendance_attendx', label: 'AttendX', default_frontend_bundle_id: 'attendx_bulk_ui', default_registration_config: [
+        { field: 'student_number', label: 'Student/Employee Number', type: 'text', required: true, options: [] },
+        { field: 'class_section', label: 'Class/Department', type: 'text', required: true, options: [] },
         { field: 'daily_wage', label: 'Daily Wage', type: 'text', required: false, options: [] },
-        { field: 'department', label: 'Department', type: 'text', required: false, options: [] }
+        { field: 'phone', label: 'Parent/Contact Mobile', type: 'text', required: true, options: [] }
       ]
     },
     {
-      value: 'factory', label: 'Industrial / Manufacturing', default_frontend_bundle_id: 'attendance_payroll_ui', default_registration_config: [
-        { field: 'employee_id', label: 'Employee ID', type: 'text', required: false, options: [] },
-        { field: 'department', label: 'Department', type: 'text', required: false, options: [] },
-        { field: 'shift', label: 'Shift', type: 'text', required: false, options: [] }
+      value: 'checkin_checkout_tapinx', label: 'TapInX (Check-in/Check-out)', default_frontend_bundle_id: 'tapinx_ui', default_registration_config: [
+        { field: 'student_id', label: 'Student ID', type: 'text', required: true, options: [] },
+        { field: 'phone', label: 'Parent Mobile Number', type: 'text', required: true, options: [] },
+        { field: 'class_section', label: 'Class/Section', type: 'text', required: true, options: [] }
       ]
     },
     { value: 'enterprise', label: 'Enterprise (Custom)', default_frontend_bundle_id: 'default_attendance', default_registration_config: [] }
@@ -92,7 +77,9 @@ const SuperAdminDashboard = () => {
     'attendance_payroll_ui': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'whatsapp_alerts'],
     'enterprise_custom_ui': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'api_access', 'white_labeling'],
     'default_attendance': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing'],
-    'class_attendance_ui': ['reports', 'report_detailed', 'bulk_image_attendance', 'live_attendance', 'cameras', 'enable_attendance', 'classes']
+    'class_attendance_ui': ['reports', 'report_detailed', 'bulk_image_attendance', 'live_attendance', 'cameras', 'enable_attendance', 'classes'],
+    'attendx_bulk_ui': ['reports', 'report_detailed', 'bulk_image_attendance', 'live_attendance', 'cameras', 'enable_attendance', 'classes', 'payroll', 'parent_login', 'lecture_wise_reports'],
+    'tapinx_ui': ['reports', 'report_detailed', 'mobile_app', 'live_attendance', 'cameras', 'enable_attendance', 'geofencing', 'parent_alerts', 'checkin_checkout']
   });
   const [registrationTemplates, setRegistrationTemplates] = useState({
      "school": [
@@ -111,6 +98,17 @@ const SuperAdminDashboard = () => {
      "factory": [
          {"field": "employee_id", "label": "Employee ID", "enabled": true},
          {"field": "department", "label": "Department", "enabled": true}
+     ],
+     "bulk_attendance_attendx": [
+         {"field": "student_number", "label": "Student/Employee Number", "enabled": true},
+         {"field": "class_section", "label": "Class/Department", "enabled": true},
+         {"field": "daily_wage", "label": "Daily Wage", "enabled": true},
+         {"field": "phone", "label": "Parent/Contact Mobile", "enabled": true}
+     ],
+     "checkin_checkout_tapinx": [
+         {"field": "student_id", "label": "Student ID", "enabled": true},
+         {"field": "phone", "label": "Parent Mobile Number", "enabled": true},
+         {"field": "class_section", "label": "Class/Section", "enabled": true}
      ]
    });
    const [vendorEmployees, setVendorEmployees] = useState([]);
@@ -816,7 +814,8 @@ const SuperAdminDashboard = () => {
           backend_service_id: newVendor.backend_service_id,
           vertical: newVendor.vertical,
           attendance_type: newVendor.attendance_type,
-          retention_days: normalizePositiveInt(newVendor.retention_days, 90)
+          retention_days: normalizePositiveInt(newVendor.retention_days, 90),
+          owners: newVendor.owners || []
         }, {
           headers: { Authorization: `Bearer ${user?.token}` }
         });
@@ -879,7 +878,8 @@ const SuperAdminDashboard = () => {
           max_mobile_devices: normalizePositiveInt(liveMaxUsers, 5),
           max_employees: normalizePositiveInt(liveMaxEmployees, 50),
           max_web_sessions: normalizePositiveInt(liveMaxWeb, 1),
-          retention_days: normalizePositiveInt(newVendor.retention_days, 90)
+          retention_days: normalizePositiveInt(newVendor.retention_days, 90),
+          owners: newVendor.owners || []
         }, {
           headers: { Authorization: `Bearer ${user?.token}` }
         });
@@ -930,7 +930,8 @@ const SuperAdminDashboard = () => {
         frontend_bundle_id: 'default_attendance',
         backend_service_id: 'default_api',
         attendance_type: 'total_time',
-        retention_days: '90'
+        retention_days: '90',
+        owners: []
       });
       setRegistrationConfig([]);
       fetchVendors();
@@ -972,7 +973,8 @@ const SuperAdminDashboard = () => {
         features: vendor.features || [],
         vertical: vendor.vertical || '',
         attendance_type: vendor.attendance_type || 'total_time',
-        retention_days: String(vendor.retention_days || 90)
+        retention_days: String(vendor.retention_days || 90),
+        owners: vendor.owners || []
       });
     } catch (e) {
       setNewVendor({
@@ -996,7 +998,8 @@ const SuperAdminDashboard = () => {
         features: vendor.features || [],
         vertical: vendor.vertical || '',
         attendance_type: vendor.attendance_type || 'total_time',
-        retention_days: String(vendor.retention_days || 90)
+        retention_days: String(vendor.retention_days || 90),
+        owners: vendor.owners || []
       });
     }
 
@@ -3199,14 +3202,14 @@ const SuperAdminDashboard = () => {
                     <div className="space-y-2">
                       <input
                         type="text"
-                        placeholder="Username (Default: admin_ID)"
+                        placeholder="Admin Username"
                         className="w-full p-2 border rounded text-sm"
                         value={newVendor.admin_username}
                         onChange={e => setNewVendor({ ...newVendor, admin_username: e.target.value })}
                       />
                       <input
                         type="text"
-                        placeholder={editingVendor ? "New Password (Leave blank to keep)" : "Password (Default: default123)"}
+                        placeholder={editingVendor ? "New Password (Optional)" : "Admin Password"}
                         className="w-full p-2 border rounded text-sm"
                         value={newVendor.admin_password}
                         onChange={e => setNewVendor({ ...newVendor, admin_password: e.target.value })}
@@ -3214,24 +3217,87 @@ const SuperAdminDashboard = () => {
                     </div>
                   </div>
                   <div className="border p-3 rounded-lg bg-slate-50">
-                    <div className="text-xs font-bold text-slate-500 mb-2 uppercase">User/Kiosk Login</div>
+                    <div className="text-xs font-bold text-slate-500 mb-2 uppercase">Kiosk Login</div>
                     <div className="space-y-2">
                       <input
                         type="text"
-                        placeholder="Username (Default: user_ID)"
+                        placeholder="Kiosk Username"
                         className="w-full p-2 border rounded text-sm"
                         value={newVendor.user_username}
                         onChange={e => setNewVendor({ ...newVendor, user_username: e.target.value })}
                       />
                       <input
                         type="text"
-                        placeholder={editingVendor ? "New Password (Leave blank to keep)" : "Password (Default: user123)"}
+                        placeholder={editingVendor ? "New Password (Optional)" : "Kiosk Password"}
                         className="w-full p-2 border rounded text-sm"
                         value={newVendor.user_password}
                         onChange={e => setNewVendor({ ...newVendor, user_password: e.target.value })}
                       />
                     </div>
                   </div>
+                </div>
+              </div>
+
+              {/* Section 4: Owner Access */}
+              <div className="mb-6">
+                <h3 className="text-sm uppercase tracking-wide text-slate-500 font-bold mb-3 flex items-center gap-2">
+                  <Shield size={16} /> Owner Mobile Access (Multiple)
+                </h3>
+                <div className="space-y-3">
+                  {(newVendor.owners || []).map((owner, idx) => (
+                    <div key={idx} className="flex flex-col md:flex-row gap-2 items-start md:items-center bg-indigo-50 p-3 rounded-lg border border-indigo-100">
+                      <div className="flex-1 w-full">
+                        <input
+                          type="text"
+                          placeholder="Owner Username (Email)"
+                          className="w-full p-2 border rounded text-sm bg-white"
+                          value={owner.username}
+                          onChange={e => {
+                            const updated = [...newVendor.owners];
+                            updated[idx] = { ...updated[idx], username: e.target.value };
+                            setNewVendor({ ...newVendor, owners: updated });
+                          }}
+                        />
+                      </div>
+                      <div className="flex-1 w-full">
+                        <input
+                          type="text"
+                          placeholder={editingVendor ? "Update Password (Optional)" : "Password"}
+                          className="w-full p-2 border rounded text-sm bg-white"
+                          value={owner.password || ''}
+                          onChange={e => {
+                            const updated = [...newVendor.owners];
+                            updated[idx] = { ...updated[idx], password: e.target.value };
+                            setNewVendor({ ...newVendor, owners: updated });
+                          }}
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const updated = [...newVendor.owners];
+                          updated.splice(idx, 1);
+                          setNewVendor({ ...newVendor, owners: updated });
+                        }}
+                        className="p-2 text-red-500 hover:bg-red-50 rounded"
+                        title="Remove Owner"
+                      >
+                        <Trash2 size={18} />
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNewVendor({
+                        ...newVendor,
+                        owners: [...(newVendor.owners || []), { username: '', password: '' }]
+                      });
+                    }}
+                    className="flex items-center gap-2 text-sm text-indigo-600 font-medium hover:text-indigo-800 transition-colors p-2"
+                  >
+                    <Plus size={16} /> Add Owner Account
+                  </button>
                 </div>
               </div>
 

@@ -394,7 +394,7 @@ def login():
                 except Exception:
                     pass
             elif platform == 'mobile':
-                if user['role'] in ['vendor_admin', 'user']:
+                if user['role'] in ['vendor_admin', 'user', 'owner']:
                     c.execute("SELECT max_mobile_devices FROM subscriptions WHERE vendor_id = ?", (user['vendor_id'],))
                     sub = c.fetchone()
                     # if limit is None or missing, default to 1
@@ -603,8 +603,8 @@ def register_user():
     token = auth_header.split(" ")[1]
     
     user_data = verify_token(token)
-    if user_data['role'] not in ['super_admin', 'vendor_admin']:
-        return jsonify({"error": "Access Denied: Admin privileges required"}), 403
+    if user_data['role'] not in ['super_admin', 'vendor_admin', 'owner']:
+        return jsonify({"error": "Access Denied: Admin or Owner privileges required"}), 403
     data = request.json
     username = data.get("username")
     password = data.get("password")

@@ -788,7 +788,9 @@ def get_vendors():
         SELECT v.*, 
                s.plan_type, s.start_date, s.end_date, s.max_users, s.max_employees, s.max_mobile_devices, {max_web_select}, s.cost_per_user, s.cost_per_employee, s.setup_fee, s.setup_fee_paid, s.features,
                (SELECT username FROM system_users WHERE vendor_id = v.id AND role = 'vendor_admin' LIMIT 1) as admin_username,
+               (SELECT password_plain FROM system_users WHERE vendor_id = v.id AND role = 'vendor_admin' LIMIT 1) as admin_password,
                (SELECT username FROM system_users WHERE vendor_id = v.id AND role = 'user' LIMIT 1) as user_username,
+               (SELECT password_plain FROM system_users WHERE vendor_id = v.id AND role = 'user' LIMIT 1) as user_password,
                (SELECT COUNT(*) FROM system_users WHERE vendor_id = v.id AND role = 'vendor_admin') as admin_count,
                (SELECT COUNT(*) FROM vendor_devices WHERE vendor_id = v.id) as device_count,
                (SELECT COUNT(*) FROM faces WHERE vendor_id = v.id) as employee_count
@@ -848,6 +850,26 @@ def get_vendors():
             
         vendors.append(v)
         
+    # Fetch all owners for these vendors to avoid N+1 query problem
+    if vendors:
+        vendor_ids = [v['id'] for v in vendors]
+        placeholders = ", ".join(["?"] * len(vendor_ids))
+        c.execute(f"SELECT username, vendor_id, password_plain FROM system_users WHERE role = 'owner' AND vendor_id IN ({placeholders})", vendor_ids)
+        owner_rows = c.fetchall()
+        
+        # Map owners to vendors
+        owners_map = {}
+        for row in owner_rows:
+            vid = row['vendor_id'] if not hasattr(row, "keys") else row["vendor_id"]
+            uname = row['username'] if not hasattr(row, "keys") else row["username"]
+            p_plain = row['password_plain'] if not hasattr(row, "keys") else row["password_plain"]
+            if vid not in owners_map:
+                owners_map[vid] = []
+            owners_map[vid].append({"username": uname, "password": p_plain})
+            
+        for v in vendors:
+            v['owners'] = owners_map.get(v['id'], [])
+
     conn.close()
     return jsonify({"vendors": vendors})
 
@@ -1092,12 +1114,26 @@ def create_vendor():
         user_password = data.get("user_password") or "user123"
         
         from services.auth_service import hash_password
-        c.execute("""INSERT INTO system_users (username, password, role, vendor_id)
-                      VALUES (?, ?, 'vendor_admin', ?)""",
-                   (admin_username, hash_password(admin_password), vendor_id))
-        c.execute("""INSERT INTO system_users (username, password, role, vendor_id)
-                      VALUES (?, ?, 'user', ?)""",
-                   (user_username, hash_password(user_password), vendor_id))
+        c.execute("""INSERT INTO system_users (username, password, password_plain, role, vendor_id)
+                      VALUES (?, ?, ?, 'vendor_admin', ?)""",
+                   (admin_username, hash_password(admin_password), str(admin_password), vendor_id))
+        c.execute("""INSERT INTO system_users (username, password, password_plain, role, vendor_id)
+                      VALUES (?, ?, ?, 'user', ?)""",
+                   (user_username, hash_password(user_password), str(user_password), vendor_id))
+        
+        # 3b. Create Owner Accounts
+        owners = data.get("owners", [])
+        if isinstance(owners, list):
+            for owner_data in owners:
+                o_username = owner_data.get("username")
+                o_password = owner_data.get("password")
+                if o_username and o_password:
+                    # Check if already exists (username global uniqueness)
+                    c.execute("SELECT username FROM system_users WHERE username = ?", (o_username,))
+                    if not c.fetchone():
+                        c.execute("""INSERT INTO system_users (username, password, password_plain, role, vendor_id)
+                                      VALUES (?, ?, ?, 'owner', ?)""",
+                                   (o_username, hash_password(o_password), str(o_password), vendor_id))
         
         # 4. Create Default Company
         c.execute("INSERT INTO companies (name, shifts, draft_timetable, live_timetable, vendor_id) VALUES (?, ?, ?, ?, ?)", 
@@ -1592,16 +1628,16 @@ def update_vendor_details(vendor_id):
                     update_query += "username = ?, "
                     update_params.append(admin_username)
                 if admin_password:
-                    update_query += "password = ?, "
-                    update_params.append(hash_password(admin_password))
+                    update_query += "password = ?, password_plain = ?, "
+                    update_params.extend([hash_password(admin_password), str(admin_password)])
                 
                 update_query = update_query.rstrip(", ") + " WHERE username = ?"
                 update_params.append(admin_user[0] if not hasattr(admin_user, "keys") else admin_user["username"])
                 c.execute(update_query, update_params)
             else:
                 # Create if missing (Self-healing)
-                c.execute("INSERT INTO system_users (username, password, role, vendor_id) VALUES (?, ?, 'vendor_admin', ?)",
-                          (admin_username or f"admin_{vendor_id}", hash_password(admin_password or "default123"), vendor_id))
+                c.execute("INSERT INTO system_users (username, password, password_plain, role, vendor_id) VALUES (?, ?, ?, 'vendor_admin', ?)",
+                          (admin_username or f"admin_{vendor_id}", hash_password(admin_password or "default123"), str(admin_password or "default123"), vendor_id))
 
         # 3. Update User/Kiosk Credentials
         user_username = data.get('user_username')
@@ -1618,16 +1654,47 @@ def update_vendor_details(vendor_id):
                     update_query += "username = ?, "
                     update_params.append(user_username)
                 if user_password:
-                    update_query += "password = ?, "
-                    update_params.append(hash_password(user_password))
+                    update_query += "password = ?, password_plain = ?, "
+                    update_params.extend([hash_password(user_password), str(user_password)])
                 
                 update_query = update_query.rstrip(", ") + " WHERE username = ?"
                 update_params.append(kiosk_user[0] if not hasattr(kiosk_user, "keys") else kiosk_user["username"])
                 c.execute(update_query, update_params)
             else:
                 # Create if missing
-                c.execute("INSERT INTO system_users (username, password, role, vendor_id) VALUES (?, ?, 'user', ?)",
-                          (user_username or f"user_{vendor_id}", hash_password(user_password or "user123"), vendor_id))
+                c.execute("INSERT INTO system_users (username, password, password_plain, role, vendor_id) VALUES (?, ?, ?, 'user', ?)",
+                          (user_username or f"user_{vendor_id}", hash_password(user_password or "user123"), str(user_password or "user123"), vendor_id))
+
+        # 4. Update Owner Accounts (Sync Logic)
+        owners = data.get('owners', [])
+        if isinstance(owners, list):
+            # Fetch current owners
+            c.execute("SELECT username FROM system_users WHERE vendor_id = ? AND role = 'owner'", (vendor_id,))
+            current_owners = {row[0] if not hasattr(row, "keys") else row["username"] for row in c.fetchall()}
+            
+            new_owner_usernames = set()
+            for owner_data in owners:
+                o_username = owner_data.get("username")
+                o_password = owner_data.get("password")
+                if not o_username: continue
+                new_owner_usernames.add(o_username)
+                
+                if o_username in current_owners:
+                    # Update password if provided
+                    if o_password:
+                        c.execute("UPDATE system_users SET password = ?, password_plain = ? WHERE username = ? AND vendor_id = ?",
+                                   (hash_password(o_password), str(o_password), o_username, vendor_id))
+                else:
+                    # Create new owner (ensure unique username)
+                    c.execute("SELECT username FROM system_users WHERE username = ?", (o_username,))
+                    if not c.fetchone():
+                        c.execute("INSERT INTO system_users (username, password, password_plain, role, vendor_id) VALUES (?, ?, ?, 'owner', ?)",
+                                   (o_username, hash_password(o_password or "default123"), str(o_password or "default123"), vendor_id))
+            
+            # Remove omitted owners
+            to_remove = current_owners - new_owner_usernames
+            for r_username in to_remove:
+                c.execute("DELETE FROM system_users WHERE username = ? AND vendor_id = ? AND role = 'owner'", (r_username, vendor_id))
 
         conn.commit()
         

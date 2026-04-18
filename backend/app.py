@@ -359,6 +359,9 @@ app.register_blueprint(bulk_attendance_bp, url_prefix='/api')
 from routes.parent_reset import parent_reset_bp
 app.register_blueprint(parent_reset_bp, url_prefix='/api')
 
+from routes.owner import owner_bp
+app.register_blueprint(owner_bp, url_prefix='/api')
+
 register_error_handlers(app)
 
 # --- Serve Frontend (SPA) ---

@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# OpenVision AWS Master Setup Script (v4.0 - Final Stability)
+# OpenVision Master Setup Script (v5.0 - Containerized & Scalable)
 # ==============================================================================
-# This script automates the setup of the Face Detection system on AWS Ubuntu.
-# It handles Swap, Dependencies, CPU-only AI libraries, Postgres, and .env.
+# This script automates the setup of the Face Detection system using Docker.
+# Handles dependencies, Docker installation, Compose orchestration, and scaling.
 # ==============================================================================
 
 set -e
 
-echo "==> [1/8] Configuring 2GB Swap File for RAM Stability..."
+echo "==> [1/6] Configuring 4GB Swap File for Build Stability..."
 if [ ! -f /swapfile ] && [ ! -L /swapfile ]; then
-    sudo fallocate -l 2G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048
+    sudo fallocate -l 4G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=4096
     sudo chmod 600 /swapfile
     sudo mkswap /swapfile
     sudo swapon /swapfile
@@ -22,217 +22,65 @@ else
     echo "Swap file already exists."
 fi
 
-echo "==> [2/8] Updating System and Installing Dependencies..."
-sudo apt-get update
-sudo apt-get install -y python3-venv python3-pip postgresql postgresql-contrib redis-server nginx libgl1 libglib2.0-0 nodejs
-
-echo "==> [3/8] Setting Up Backend Environment (including CPU AI)..."
-if [ ! -d "backend/.venv" ]; then
-    cd backend
-    python3 -m venv .venv
-    source .venv/bin/activate
-    pip install -U pip
-    pip install -r requirements.txt
-    echo "Installing CPU-only AI libraries for health check compatibility..."
-    pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu --no-cache-dir
-    pip install tensorflow-cpu --no-cache-dir
-    cd ..
-else
-    echo "Backend venv already exists. Ensuring AI libraries are present..."
-    source backend/.venv/bin/activate
-    pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu --no-cache-dir --quiet || true
-    pip install tensorflow-cpu --no-cache-dir --quiet || true
+echo "==> [2/6] Installing Docker and Docker Compose..."
+if ! command -v docker &> /dev/null; then
+    sudo apt-get update
+    sudo apt-get install -y ca-certificates curl gnupg lsb-release
+    sudo mkdir -p /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+    sudo apt-get update
+    sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
 fi
 
-echo "==> [4/8] Setting Up Frontend Environment..."
-echo "Installing root dependencies..."
-npm install --quiet
-echo "Installing web-dashboard dependencies..."
-cd web-dashboard
-npm install --quiet
-cd ..
-
-echo "==> [5/8] Automating PostgreSQL Configuration..."
-DB_NAME="face_db"
-DB_USER="face_admin"
-# Check if we already have a password in .env to avoid resetting it
-if [ -f "backend/.env" ] && grep -q "DATABASE_URL=postgresql://face_admin:" "backend/.env"; then
-    DB_PASS=$(grep "DATABASE_URL" backend/.env | sed -E 's/.*:([^@:]+)@.*/\1/')
-    echo "Using existing password from .env"
-else
-    DB_PASS=$(openssl rand -base64 12 | tr -d '/+' | cut -c1-16)
-    echo "Generated new database password."
+# Ensure docker-compose command is available (v2 uses 'docker compose' but some scripts use 'docker-compose')
+if ! command -v docker-compose &> /dev/null; then
+    sudo ln -s /usr/libexec/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose || true
 fi
 
-sudo service postgresql start
-echo "Configuring Postgres roles and database..."
-sudo -u postgres psql -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';" || true
-sudo -u postgres psql -c "ALTER USER $DB_USER WITH PASSWORD '$DB_PASS';" || true
-sudo -u postgres psql -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" || true
-sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER;" || true
+echo "==> [3/6] Cleaning up Legacy Services (if any)..."
+sudo systemctl stop openvision-backend openvision-celery redis-server nginx postgresql 2>/dev/null || true
+sudo systemctl disable openvision-backend openvision-celery 2>/dev/null || true
 
-echo "==> [6/8] Generating Clean Environment (.env)..."
-ENV_FILE="backend/.env"
-PUBLIC_IP=$(curl -s https://api.ipify.org || echo "127.0.0.1")
-echo "Detected Public IP: $PUBLIC_IP"
-
-# Generate/Update .env while preserving critical existing keys
-# Using a temp file to avoid "ambiguous redirect" or partial write issues
-TEMP_ENV=$(mktemp)
-if [ -f "$ENV_FILE" ]; then
-    echo "Existing .env found. Preserving SECRET_KEY and DATABASE_URL."
-    # Use safer extraction that handles special characters
-    EXISTING_SECRET=$(grep "^SECRET_KEY=" "$ENV_FILE" | head -n 1 | cut -d'=' -f2-)
-    EXISTING_DB_URL=$(grep "^DATABASE_URL=" "$ENV_FILE" | head -n 1 | cut -d'=' -f2-)
-    
-    # Copy current .env to temp then update ONLY what is necessary
-    cp "$ENV_FILE" "$TEMP_ENV"
-    
-    # Update URLs but keep critical keys if they exist
-    sed -i "s|^BACKEND_URL=.*|BACKEND_URL=http://$PUBLIC_IP|" "$TEMP_ENV"
-    sed -i "s|^FRONTEND_URL=.*|FRONTEND_URL=http://$PUBLIC_IP|" "$TEMP_ENV"
-else
-    cat <<EOF > "$TEMP_ENV"
+echo "==> [4/6] Initializing Environment Configuration (.env)..."
+if [ ! -f "backend/.env" ]; then
+    PUBLIC_IP=$(curl -s https://api.ipify.org || echo "localhost")
+    cat <<EOF > backend/.env
 SECRET_KEY=$(openssl rand -base64 32)
-BACKEND_URL=http://$PUBLIC_IP
+DATABASE_URL=postgresql://postgres:postgres@db:5432/face_detection
+REDIS_URL=redis://redis:6379/0
+CELERY_BROKER_URL=redis://redis:6379/0
+BACKEND_URL=http://$PUBLIC_IP:5001
 FRONTEND_URL=http://$PUBLIC_IP
-DB_TYPE=postgres
-DATABASE_URL=postgresql://$DB_USER:$DB_PASS@localhost:5432/$DB_NAME
-DB_PATH=face_db.sqlite
 LOW_RAM_MODE=1
-REDIS_URL=redis://127.0.0.1:6379/0
-CELERY_BROKER_URL=redis://127.0.0.1:6379/0
-CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/0
-AWS_REGION=us-east-1
 EOF
+    echo "Created new .env file."
+else
+    echo "Existing .env found. Ensuring DATABASE_URL points to 'db' container..."
+    sed -i "s|localhost:5432|db:5432|g" backend/.env
+    sed -i "s|127.0.0.1:6379|redis:6379|g" backend/.env
 fi
 
-mv "$TEMP_ENV" "$ENV_FILE"
-echo ".env file managed successfully."
+echo "==> [5/6] Building and Starting Containers (Orchestration)..."
+# Pull latest or build locally
+docker compose build --pull
 
-echo "==> [7/8] Initializing Database Schema..."
-cd backend
-source .venv/bin/activate
-# Run migrate_to_postgres.py which handles schema initialization + SQLite data migration
-export DATABASE_URL="postgresql://$DB_USER:$DB_PASS@localhost:5432/$DB_NAME"
-export DB_TYPE="postgres"
-python3 migrate_to_postgres.py || echo "Warning: migrate_to_postgres.py encountered issues."
-cd ..
+# Start core services
+docker compose up -d
 
-echo "==> [8/8] Building Frontend & Configuring Nginx..."
-echo "Building web-dashboard for production..."
-cd web-dashboard
-# Ensure we have permissions to the dist folder
-sudo chown -R $USER:$USER . 2>/dev/null || true
-npm run build || echo "Warning: Frontend build failed. Check RAM/Swap."
-
-if [ ! -d "dist" ]; then
-    echo "ERROR: 'dist' folder was not created. Check build errors above."
-    exit 1
-fi
-
-echo "Moving frontend assets to /var/www/ for standard access..."
-sudo mkdir -p /var/www/face_detection
-sudo cp -r dist/* /var/www/face_detection/
-sudo chown -R www-data:www-data /var/www/face_detection
-sudo chmod -R 755 /var/www/face_detection
-cd ..
-
-echo "Deploying Nginx configuration..."
-sudo cp nginx_face_detection.conf /etc/nginx/sites-available/face_detection
-sudo ln -sf /etc/nginx/sites-available/face_detection /etc/nginx/sites-enabled/
-sudo rm -f /etc/nginx/sites-enabled/default
-sudo nginx -t
-sudo systemctl restart nginx
-
-echo "==> [8/8] Configuring Systemd Services (Auto-Restart)..."
-
-# Pre-cleanup: Stop legacy services and clear port 5001
-echo "Performing pre-startup cleanup..."
-sudo systemctl stop openvision-backend 2>/dev/null || true
-sudo systemctl stop openvision-celery 2>/dev/null || true
-sudo pkill -f gunicorn || true
-sudo pkill -f celery || true
-
-# Force clear port 5001 if still occupied
-PORT_PID=$(sudo lsof -t -i:5001 2>/dev/null || true)
-if [ ! -z "$PORT_PID" ]; then
-    echo "Clearing port 5001 (PID: $PORT_PID)..."
-    sudo kill -9 $PORT_PID 2>/dev/null || true
-fi
-
-WORKING_DIR=$(pwd)
-GUNICORN_PATH="$(pwd)/backend/.venv/bin/gunicorn"
-CELERY_PATH="$(pwd)/backend/.venv/bin/celery"
-
-# 1. Create Backend Service
-echo "Creating openvision-backend.service..."
-sudo bash -c "cat <<EOF > /etc/systemd/system/openvision-backend.service
-[Unit]
-Description=Gunicorn instance to serve OpenVision Face Detection
-After=network.target postgresql.service redis.service
-
-[Service]
-User=$USER
-Group=www-data
-WorkingDirectory=$WORKING_DIR/backend
-Environment=\"PATH=$WORKING_DIR/backend/.venv/bin\"
-Environment=\"LOW_RAM_MODE=1\"
-EnvironmentFile=$WORKING_DIR/backend/.env
-ExecStart=$GUNICORN_PATH --worker-class eventlet -w 1 -b 0.0.0.0:5001 app:app --timeout 600
-
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF"
-
-# 2. Create Celery Service
-echo "Creating openvision-celery.service..."
-sudo bash -c "cat <<EOF > /etc/systemd/system/openvision-celery.service
-[Unit]
-Description=Celery worker for OpenVision Face Detection
-After=network.target postgresql.service redis.service
-
-[Service]
-User=$USER
-Group=www-data
-WorkingDirectory=$WORKING_DIR/backend
-Environment=\"PATH=$WORKING_DIR/backend/.venv/bin\"
-EnvironmentFile=$WORKING_DIR/backend/.env
-ExecStart=$CELERY_PATH -A celery_app worker --loglevel=info --concurrency=1 --pool=solo
-
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-EOF"
-
-echo "Reloading systemd and enabling services..."
-sudo systemctl daemon-reload
-sudo systemctl enable openvision-backend
-sudo systemctl enable openvision-celery
-
-echo "Starting/Restarting services..."
-sudo systemctl restart openvision-backend
-sudo systemctl restart openvision-celery
-
-# Important: Allow ports in Ubuntu Firewall (ufw)
-sudo ufw allow 5173/tcp || true
-sudo ufw allow 5001/tcp || true
-sudo ufw allow 80/tcp || true
-sudo ufw allow 443/tcp || true
+echo "==> [6/6] Scaling Workers for Bulk Attendance (AttendX)..."
+# Start with 2 workers by default, can be scaled manually later
+docker compose up -d --scale worker=2
 
 echo ""
 echo "=============================================================================="
-echo "PRODUCTION SETUP COMPLETE! OPENVISION IS LIVE."
+echo "CONTAINERIZED DEPLOYMENT COMPLETE!"
 echo "=============================================================================="
-echo "- Dashboard: http://$PUBLIC_IP"
-echo "- API:       http://$PUBLIC_IP/api"
-echo "- Logs:      tail -f gunicorn.log"
-echo "- Database:  $DB_NAME (User: $DB_USER)"
-echo "=============================================================================="
-echo "IMPORTANT: Port 80 must be open in your AWS Security Group (it is!)."
+echo "- Dashboard: http://localhost:5173 (Development) or Nginx Mapping"
+echo "- API:       http://localhost:5001"
+echo "- Monitors:  docker compose ps"
+echo "- Logs:      docker compose logs -f worker"
+echo ""
+echo "To scale for 30 classes simultaneously, run:"
+echo "  docker compose up -d --scale worker=30"
 echo "=============================================================================="

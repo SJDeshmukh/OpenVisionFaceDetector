@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/owner_nav_advances"
+        android:icon="@drawable/enroll"
+        android:title="Advances" />
+    <item
+        android:id="@+id/owner_nav_insights"
+        android:icon="@drawable/ic_person_search"
+        android:title="Insights" />
+</menu>

@@ -491,6 +491,8 @@ class LoginActivity : AppCompatActivity() {
             } else {
                 ParentFaceRegistrationActivity::class.java
             }
+        } else if (role == "owner") {
+            OwnerActivity::class.java
         } else {
             MainActivity::class.java
         }

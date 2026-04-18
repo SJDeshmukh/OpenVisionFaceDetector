@@ -662,7 +662,8 @@ const People = () => {
                 {registrationColumns.map((col, idx) => {
                   const fieldKey = col.key || col.field;
                   // Skip name/phone as they are already handled above
-                  if (['name', 'phone', 'full_name', 'mobile_number'].includes(fieldKey)) return null;
+                  // ALSO Skip branch/subject/section related keys to simplify as requested
+                  if (['name', 'phone', 'full_name', 'mobile_number', 'branch', 'subject', 'Department', 'Branch / Subject', 'Section', 'Branch'].includes(fieldKey)) return null;
 
                   return (
                     <div key={idx} className="space-y-2">
@@ -670,38 +671,24 @@ const People = () => {
                         {col.label}
                         {col.required && <span className="text-red-500 ml-1">*</span>}
                       </label>
-                      {col.type === 'select' ? (
-                        <select
-                          value={formData[fieldKey] || ''}
-                          onChange={(e) => setFormData({ ...formData, [fieldKey]: e.target.value })}
-                          className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                          required
-                        >
-                          <option value="">Select {col.label}</option>
-                          {(col.options || []).map((opt, oIdx) => (
-                            <option key={oIdx} value={opt}>{opt}</option>
-                          ))}
-                        </select>
-                      ) : (
-                        <input
-                          type={col.type || 'text'}
-                          value={formData[fieldKey] || ''}
-                          onChange={(e) => setFormData({ ...formData, [fieldKey]: e.target.value })}
-                          placeholder={`Enter ${col.label}`}
-                          className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                          required
-                        />
-                      )}
+                      <input
+                        type={col.type || 'text'}
+                        value={formData[fieldKey] || ''}
+                        onChange={(e) => setFormData({ ...formData, [fieldKey]: e.target.value })}
+                        placeholder={`Enter ${col.label}`}
+                        className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                        required={col.required}
+                      />
                     </div>
                   );
                 })}
                 
-                {/* Registered Classes Dropdown */}
+                {/* Simplified Class Selection */}
                 {vendorClasses.length > 0 && (
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-slate-700">
-                      Select Class (Recommended)
-                      <span className="text-slate-400 text-xs ml-2 font-normal">Auto-fills Year/Branch/Division</span>
+                      Select Class
+                      <span className="text-red-500 ml-1">*</span>
                     </label>
                     <div className="relative">
                       <select
@@ -713,21 +700,20 @@ const People = () => {
                             setFormData(prev => ({ 
                               ...prev, 
                               class_id: cid,
-                              class_year: sel.class_year || prev.class_year,
-                              division: sel.division || prev.division,
-                              branch: sel.branch || prev.branch,
-                              // If these fields exist in config, update them too
-                              Year: sel.class_year || prev.Year,
-                              Department: sel.branch || prev.Department,
-                              Division: sel.division || prev.Division
+                              class_year: sel.class_year,
+                              division: sel.division,
+                              branch: sel.branch,
+                              Section: sel.division, // Compatibility
+                              Department: sel.branch // Compatibility
                             }));
                           } else {
                             setFormData(prev => ({ ...prev, class_id: '' }));
                           }
                         }}
-                        className="w-full px-4 py-2 bg-blue-50 border border-blue-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 text-blue-900 font-medium"
+                        className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                        required
                       >
-                        <option value="">-- No Class Linked --</option>
+                        <option value="">-- Choose Class --</option>
                         {vendorClasses.map(c => (
                           <option key={c.id} value={c.id}>
                             {c.class_year} - {c.branch} ({c.division})

@@ -21,6 +21,8 @@ export const FRONTEND_BUNDLES = {
   'attendance_ui': ['Dashboard', 'Attendance', 'Live Attendance', 'Settings', 'Reports', 'People', 'Cameras', 'Audit Logs'],
   'attendance_payroll_ui': ['Dashboard', 'Attendance', 'Live Attendance', 'Wages', 'Settings', 'Reports', 'People', 'Cameras', 'Audit Logs', 'Timetable'],
   'class_attendance_ui': ['Dashboard', 'Attendance', 'Bulk Image Attendance', 'Live Attendance', 'Settings', 'Reports', 'People', 'Faces', 'Cameras', 'Audit Logs', 'Classes'],
+  'attendx_bulk_ui': ['Dashboard', 'Attendance', 'Bulk Image Attendance', 'Live Attendance', 'Wages', 'Settings', 'Reports', 'People', 'Faces', 'Cameras', 'Audit Logs', 'Classes'],
+  'tapinx_ui': ['Dashboard', 'Attendance', 'Live Attendance', 'Settings', 'Reports', 'People', 'Cameras', 'Audit Logs'],
   'enterprise_custom_ui': 'ALL',
   'default_attendance': 'ALL'
 };
@@ -41,7 +43,11 @@ export const FEATURE_TO_SIDEBAR_MAP = {
   'audit_logs': 'Audit Logs',
   'classes': 'Classes',
   'faces': 'Faces',
-  'leave_management': 'Leave Management'
+  'leave_management': 'Leave Management',
+  'parent_login': 'Reports',
+  'lecture_wise_reports': 'Reports',
+  'parent_alerts': 'Settings',
+  'checkin_checkout': 'Attendance'
 };
 
 // Items that are ALWAYS visible regardless of features (Base System)

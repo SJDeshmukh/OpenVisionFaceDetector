@@ -770,10 +770,12 @@ def update_global_late_config():
     data = request.json
     allowance = data.get('allowance')
     deduction = data.get('deduction')
+    pf_pct = data.get('pf_percentage')
+    esi_pct = data.get('esi_percentage')
+    grat_pct = data.get('gratuity_percentage')
+    grat_years = data.get('gratuity_threshold_years')
+    timezone_offset = data.get('timezone_offset')
     
-    if allowance is None and deduction is None:
-        return jsonify({"error": "No settings provided"}), 400
-        
     conn = get_db_connection()
     c = conn.cursor()
     
@@ -785,13 +787,100 @@ def update_global_late_config():
         if deduction is not None:
             c.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)", 
                       ('global_late_deduction', str(deduction)))
-                      
+
+        if pf_pct is not None:
+            c.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)", 
+                      ('global_pf_percentage', str(pf_pct)))
+
+        if esi_pct is not None:
+            c.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)", 
+                      ('global_esi_percentage', str(esi_pct)))
+
+        if grat_pct is not None:
+            c.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)", 
+                      ('global_gratuity_percentage', str(grat_pct)))
+
+        if grat_years is not None:
+            c.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)", 
+                      ('global_gratuity_threshold_years', str(grat_years)))
+
+        if timezone_offset is not None:
+            c.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)", 
+                      ('global_timezone_offset', str(timezone_offset)))
+
         conn.commit()
-        return jsonify({"status": "success", "message": "Global late settings updated"})
+        conn.close()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 500
+
+@vendor_bp.route("/vendor/owners", methods=["GET"])
+@vendor_required
+def get_vendor_owners():
+    from app import get_db_connection
+    vendor_id = request.vendor_id
+    try:
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute("SELECT username, password_plain as password FROM system_users WHERE vendor_id = ? AND role = 'owner'", (vendor_id,))
+        owners = [dict(row) for row in c.fetchall()]
+        conn.close()
+        return jsonify({"owners": owners})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-    finally:
+
+@vendor_bp.route("/vendor/owners", methods=["PUT"])
+@vendor_required
+def sync_vendor_owners():
+    from app import get_db_connection, hash_password
+    vendor_id = request.vendor_id
+    data = request.json or {}
+    owners = data.get('owners', [])
+    
+    if not isinstance(owners, list):
+        return jsonify({"error": "owners must be a list"}), 400
+        
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        # Fetch current owners
+        c.execute("SELECT username FROM system_users WHERE vendor_id = ? AND role = 'owner'", (vendor_id,))
+        current_owners = {row[0] for row in c.fetchall()}
+        
+        new_owner_usernames = set()
+        for owner_data in owners:
+            o_username = owner_data.get("username")
+            o_password = owner_data.get("password")
+            if not o_username: continue
+            new_owner_usernames.add(o_username)
+            
+            if o_username in current_owners:
+                if o_password:
+                    c.execute("UPDATE system_users SET password = ?, password_plain = ? WHERE username = ? AND vendor_id = ?",
+                               (hash_password(o_password), str(o_password), o_username, vendor_id))
+            else:
+                # Check for global uniqueness across all users
+                c.execute("SELECT username FROM system_users WHERE username = ?", (o_username,))
+                if c.fetchone():
+                    continue # Skip or handle conflict
+                
+                c.execute("INSERT INTO system_users (username, password, password_plain, role, vendor_id) VALUES (?, ?, ?, 'owner', ?)",
+                           (o_username, hash_password(o_password or "default123"), str(o_password or "default123"), vendor_id))
+        
+        # Remove omitted owners
+        to_remove = current_owners - new_owner_usernames
+        for r_username in to_remove:
+            c.execute("DELETE FROM system_users WHERE username = ? AND vendor_id = ? AND role = 'owner'", (r_username, vendor_id))
+            
+        conn.commit()
         conn.close()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        if conn: conn.rollback(); conn.close()
+        return jsonify({"error": str(e)}), 500
 
 
 @vendor_bp.route("/settings", methods=["GET"])

@@ -1,0 +1,46 @@
+FROM python:3.10-slim
+
+# Labels for the worker
+LABEL description="Face Detection Inference Worker"
+
+# Install System Dependencies for OpenCV and ML
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 \
+    libglib2.0-0 \
+    gcc \
+    g++ \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Backend Dependencies
+COPY backend/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r ./requirements.txt
+
+# Install Torch (CPU version for broad compatibility; use CUDA version if GPU available)
+RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+# Copy Local Packages (Inference Engines)
+COPY multiple_face_detection ./multiple_face_detection
+COPY backend ./backend
+
+# Pre-download Models to avoid runtime downloads
+ENV PYTHONPATH=/app/backend:/app:/app/multiple_face_detection
+RUN python3 backend/download_models.py
+
+# Optimized settings for inference environment
+ENV OMP_NUM_THREADS=1
+ENV OPENCV_NUM_THREADS=1
+ENV KMP_DUPLICATE_LIB_OK=TRUE
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app/backend
+
+# Start the Celery Worker
+# -A tasks: specify the tasks module
+# --loglevel=info: visible logs for monitoring
+# -Q high_priority,normal_priority,low_priority: listen to all queues
+# --concurrency: controlled via env or docker-compose
+CMD ["celery", "-A", "tasks", "worker", "--loglevel=info", "-Q", "high_priority,normal_priority,low_priority"]
