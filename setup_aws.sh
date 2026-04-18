@@ -15,18 +15,19 @@ if [ "$AVAILABLE_DISK" -lt 5000000 ]; then
     echo "This build may fail. Consider increasing your AWS EBS volume to at least 40GB."
 fi
 
-echo "==> [1/6] Configuring 2GB Swap File for Build Stability..."
-if [ -f /swapfile ]; then
-    echo "Resizing existing swap..."
-    sudo swapoff /swapfile || true
-    sudo rm -f /swapfile
+echo "==> [1/6] Configuring Swap File for Build Stability..."
+if [ ! -f /swapfile ]; then
+    echo "Creating 2GB swap..."
+    sudo fallocate -l 2G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048
+    sudo chmod 600 /swapfile
+    sudo mkswap /swapfile
+    sudo swapon /swapfile
+    if ! grep -q "/swapfile" /etc/fstab; then
+        echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+    fi
+else
+    echo "Swap already exists, skipping creation."
 fi
-sudo docker builder prune -a -f || true
-
-sudo fallocate -l 2G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048
-sudo chmod 600 /swapfile
-sudo mkswap /swapfile
-sudo swapon /swapfile
 
 
 echo "==> [2/6] Installing Docker and Docker Compose..."
