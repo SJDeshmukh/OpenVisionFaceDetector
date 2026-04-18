@@ -71,13 +71,29 @@ sudo -u postgres psql -c "ALTER USER $DB_USER WITH PASSWORD '$DB_PASS';" || true
 sudo -u postgres psql -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" || true
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER;" || true
 
-echo "==> [6/8] Generating Clean Environment (.env)..."
-ENV_FILE="backend/.env"
-PUBLIC_IP=$(curl -s https://api.ipify.org || echo "127.0.0.1")
-echo "Detected Public IP: $PUBLIC_IP"
-
-# Create/Overwrite .env with clean values
-cat <<EOF > $ENV_FILE
+# Generate/Update .env while preserving critical existing keys
+if [ -f "$ENV_FILE" ]; then
+    echo "Existing .env found. Preserving SECRET_KEY and DATABASE_URL."
+    # Extract existing values
+    EXISTING_SECRET=$(grep "^SECRET_KEY=" "$ENV_FILE" | cut -d'=' -f2-)
+    EXISTING_DB_URL=$(grep "^DATABASE_URL=" "$ENV_FILE" | cut -d'=' -f2-)
+    
+    # Re-create .env with existing critical keys but updated IP/URLs if needed
+    cat <<EOF > $ENV_FILE
+SECRET_KEY=${EXISTING_SECRET:-$(openssl rand -base64 32)}
+BACKEND_URL=http://$PUBLIC_IP
+FRONTEND_URL=http://$PUBLIC_IP
+DB_TYPE=postgres
+DATABASE_URL=${EXISTING_DB_URL:-postgresql://$DB_USER:$DB_PASS@localhost:5432/$DB_NAME}
+DB_PATH=face_db.sqlite
+LOW_RAM_MODE=1
+REDIS_URL=redis://127.0.0.1:6379/0
+CELERY_BROKER_URL=redis://127.0.0.1:6379/0
+CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/0
+AWS_REGION=us-east-1
+EOF
+else
+    cat <<EOF > $ENV_FILE
 SECRET_KEY=$(openssl rand -base64 32)
 BACKEND_URL=http://$PUBLIC_IP
 FRONTEND_URL=http://$PUBLIC_IP
@@ -90,8 +106,9 @@ CELERY_BROKER_URL=redis://127.0.0.1:6379/0
 CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/0
 AWS_REGION=us-east-1
 EOF
+fi
 
-echo ".env file generated successfully."
+echo ".env file managed successfully."
 
 echo "==> [7/8] Initializing Database Schema..."
 cd backend
