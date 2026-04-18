@@ -43,7 +43,8 @@ public class RetrofitClient {
             httpClient.addInterceptor(chain -> {
                 Request original = chain.request();
                 Request.Builder builder = original.newBuilder()
-                        .header("User-Agent", "openvisionx-android");
+                        .header("User-Agent", "openvisionx-android")
+                        .header("X-App-Brand", BuildConfig.IS_ATTENDX ? "AttendX" : "TapInX");
                 return chain.proceed(builder.build());
             });
 

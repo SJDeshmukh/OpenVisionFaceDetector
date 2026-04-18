@@ -23,6 +23,7 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import { SocketProvider } from './context/SocketContext';
 import Faces from './pages/Faces';
 import LeaveManagement from './pages/LeaveManagement';
+import FaceResetRequests from './pages/FaceResetRequests';
 
 // Protected Route Component
 const ProtectedRoute = ({ allowedRoles }) => {
@@ -82,6 +83,7 @@ function App() {
                 <Route path="/classes" element={<Classes />} />
                 <Route path="/faces" element={<Faces />} />
                 <Route path="/leave-management" element={<LeaveManagement />} />
+                <Route path="/face-reset-requests" element={<FaceResetRequests />} />
               </Route>
 
               {/* Shared/User Routes */}

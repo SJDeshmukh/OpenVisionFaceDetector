@@ -27,8 +27,19 @@ android {
         buildConfigField "String", "WEB_LOGIN_URL", "\"https://tapinx.in/login\""
     }
 
-    flavorDimensions "env"
+    flavorDimensions "brand", "env"
     productFlavors {
+        tapinx {
+            dimension "brand"
+            applicationId "com.faceplugin.facerecognition"
+            buildConfigField "Boolean", "IS_ATTENDX", "false"
+        }
+        attendx {
+            dimension "brand"
+            applicationId "com.faceplugin.attendx"
+            buildConfigField "Boolean", "IS_ATTENDX", "true"
+        }
+
         local {
             dimension "env"
             buildConfigField "String", "BASE_URL", "\"http://192.168.1.8:5001/\""

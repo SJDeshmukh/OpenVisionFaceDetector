@@ -76,7 +76,11 @@ class ParentAttendanceFragment : Fragment() {
             joinSocket(savedStudentId)
         }
 
-        fetchStudentDay()
+        if (BuildConfig.IS_ATTENDX) {
+            switchTab(daily = false)
+        } else {
+            fetchStudentDay()
+        }
     }
 
     private fun switchTab(daily: Boolean) {

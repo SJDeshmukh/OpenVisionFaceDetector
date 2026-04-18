@@ -37,6 +37,7 @@ const adminNavItems = [
   { name: 'Settings', path: '/settings', icon: Settings },
   { name: 'Audit Logs', path: '/audit-logs', icon: Shield },
   { name: 'Leave Management', path: '/leave-management', icon: FileCheck },
+  { name: 'Face Reset Requests', path: '/face-reset-requests', icon: Shield },
 ];
 
 const superAdminNavItems = [

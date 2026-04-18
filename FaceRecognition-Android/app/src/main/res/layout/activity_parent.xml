@@ -27,6 +27,15 @@
             android:textSize="18sp"
             android:textColor="@color/vision_text_primary"/>
         <Button
+            android:id="@+id/btn_change_face"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:text="Change Face"
+            android:backgroundTint="@color/vision_navy_700"
+            android:textColor="@android:color/white"
+            android:layout_marginEnd="8dp"
+            style="@style/ButtonStyle"/>
+        <Button
             android:id="@+id/btn_parent_logout"
             android:layout_width="wrap_content"
             android:layout_height="40dp"

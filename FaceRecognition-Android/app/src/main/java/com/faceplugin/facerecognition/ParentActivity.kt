@@ -36,7 +36,18 @@ class ParentActivity : AppCompatActivity() {
             performLogout()
         }
 
+        findViewById<Button>(R.id.btn_change_face).setOnClickListener {
+            showFaceResetConfirmation()
+        }
+
         val bottomNav = findViewById<BottomNavigationView>(R.id.bottom_navigation)
+        
+        if (BuildConfig.IS_ATTENDX) {
+            bottomNav.menu.findItem(R.id.nav_leave)?.isVisible = false
+            // Also hide the tab row in ParentAttendanceFragment if needed? 
+            // Actually, ParentAttendanceFragment already defaults to Lectures tab in AttendX.
+        }
+
         bottomNav.setOnItemSelectedListener { item ->
             when (item.itemId) {
                 R.id.nav_attendance -> {
@@ -110,5 +121,42 @@ class ParentActivity : AppCompatActivity() {
         intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
         startActivity(intent)
         finish()
+    }
+
+    private fun showFaceResetConfirmation() {
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Change Registered Face")
+            .setMessage("Are you sure you want to change your registered face? This will delete your current face data and require admin approval. Once approved, you will be asked to scan your new face.")
+            .setPositiveButton("Request Change") { _, _ ->
+                submitFaceResetRequest()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun submitFaceResetRequest() {
+        val body = JsonObject().apply {
+            addProperty("reason", "User requested face change from mobile app")
+        }
+
+        RetrofitClient.getService().requestFaceReset(body).enqueue(object : Callback<JsonObject> {
+            override fun onResponse(call: Call<JsonObject>, response: Response<JsonObject>) {
+                if (response.isSuccessful) {
+                    android.widget.Toast.makeText(this@ParentActivity, "Request sent to admin for approval", android.widget.Toast.LENGTH_LONG).show()
+                } else {
+                    val errorBody = response.errorBody()?.string()
+                    val errorMessage = try {
+                        com.google.gson.JsonParser.parseString(errorBody).asJsonObject.get("error").asString
+                    } catch (e: Exception) {
+                        "Failed to submit request"
+                    }
+                    android.widget.Toast.makeText(this@ParentActivity, errorMessage, android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
+
+            override fun onFailure(call: Call<JsonObject>, t: Throwable) {
+                android.widget.Toast.makeText(this@ParentActivity, "Network error: ${t.message}", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        })
     }
 }

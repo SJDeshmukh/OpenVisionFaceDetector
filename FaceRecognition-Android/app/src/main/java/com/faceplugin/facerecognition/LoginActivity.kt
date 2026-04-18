@@ -65,6 +65,19 @@ class LoginActivity : AppCompatActivity() {
             }
         }
 
+        // AttendX Customization
+        if (BuildConfig.IS_ATTENDX) {
+            // Default to Parent Login
+            isParentLogin = true
+            etUsername.visibility = View.GONE
+            etPassword.visibility = View.GONE
+            btnRegister.visibility = View.GONE
+            etStudentId.visibility = View.VISIBLE
+            etMobileNumber.visibility = View.VISIBLE
+            btnParentLogin.visibility = View.GONE // Hide toggle
+            btnLogin.text = "Sign in to AttendX"
+        }
+
         try {
             val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
             var code = prefs.getString("selected_business_type_code", null)
