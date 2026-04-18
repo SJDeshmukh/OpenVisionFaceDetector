@@ -77,28 +77,22 @@ PUBLIC_IP=$(curl -s https://api.ipify.org || echo "127.0.0.1")
 echo "Detected Public IP: $PUBLIC_IP"
 
 # Generate/Update .env while preserving critical existing keys
+# Using a temp file to avoid "ambiguous redirect" or partial write issues
+TEMP_ENV=$(mktemp)
 if [ -f "$ENV_FILE" ]; then
     echo "Existing .env found. Preserving SECRET_KEY and DATABASE_URL."
-    # Extract existing values
-    EXISTING_SECRET=$(grep "^SECRET_KEY=" "$ENV_FILE" | cut -d'=' -f2-)
-    EXISTING_DB_URL=$(grep "^DATABASE_URL=" "$ENV_FILE" | cut -d'=' -f2-)
+    # Use safer extraction that handles special characters
+    EXISTING_SECRET=$(grep "^SECRET_KEY=" "$ENV_FILE" | head -n 1 | cut -d'=' -f2-)
+    EXISTING_DB_URL=$(grep "^DATABASE_URL=" "$ENV_FILE" | head -n 1 | cut -d'=' -f2-)
     
-    # Re-create .env with existing critical keys but updated IP/URLs if needed
-    cat <<EOF > $ENV_FILE
-SECRET_KEY=${EXISTING_SECRET:-$(openssl rand -base64 32)}
-BACKEND_URL=http://$PUBLIC_IP
-FRONTEND_URL=http://$PUBLIC_IP
-DB_TYPE=postgres
-DATABASE_URL=${EXISTING_DB_URL:-postgresql://$DB_USER:$DB_PASS@localhost:5432/$DB_NAME}
-DB_PATH=face_db.sqlite
-LOW_RAM_MODE=1
-REDIS_URL=redis://127.0.0.1:6379/0
-CELERY_BROKER_URL=redis://127.0.0.1:6379/0
-CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/0
-AWS_REGION=us-east-1
-EOF
+    # Copy current .env to temp then update ONLY what is necessary
+    cp "$ENV_FILE" "$TEMP_ENV"
+    
+    # Update URLs but keep critical keys if they exist
+    sed -i "s|^BACKEND_URL=.*|BACKEND_URL=http://$PUBLIC_IP|" "$TEMP_ENV"
+    sed -i "s|^FRONTEND_URL=.*|FRONTEND_URL=http://$PUBLIC_IP|" "$TEMP_ENV"
 else
-    cat <<EOF > $ENV_FILE
+    cat <<EOF > "$TEMP_ENV"
 SECRET_KEY=$(openssl rand -base64 32)
 BACKEND_URL=http://$PUBLIC_IP
 FRONTEND_URL=http://$PUBLIC_IP
@@ -113,6 +107,7 @@ AWS_REGION=us-east-1
 EOF
 fi
 
+mv "$TEMP_ENV" "$ENV_FILE"
 echo ".env file managed successfully."
 
 echo "==> [7/8] Initializing Database Schema..."
