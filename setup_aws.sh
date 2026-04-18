@@ -8,19 +8,17 @@
 
 set -e
 
-echo "==> [1/6] Configuring 4GB Swap File for Build Stability..."
-if [ ! -f /swapfile ] && [ ! -L /swapfile ]; then
-    sudo fallocate -l 4G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=4096
-    sudo chmod 600 /swapfile
-    sudo mkswap /swapfile
-    sudo swapon /swapfile
-    if ! grep -q "/swapfile" /etc/fstab; then
-        echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
-    fi
-    echo "Swap file created successfully."
-else
-    echo "Swap file already exists."
+echo "==> [1/6] Configuring 2GB Swap File for Build Stability..."
+if [ -f /swapfile ]; then
+    echo "Resizing existing swap..."
+    sudo swapoff /swapfile || true
+    sudo rm -f /swapfile
 fi
+sudo fallocate -l 2G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+
 
 echo "==> [2/6] Installing Docker and Docker Compose..."
 if ! command -v docker &> /dev/null; then
@@ -72,12 +70,14 @@ else
     sed -i "s|127.0.0.1:6379|redis:6379|g" backend/.env
 fi
 
-echo "==> [5/6] Building and Starting Containers (Orchestration)..."
+echo "==> [5/6] Building and Starting Containers (Sequential to save Disk)..."
 # Pull latest or build locally
-sudo docker compose build --pull
+sudo docker compose build api
+sudo docker compose build worker
 
 # Start core services
 sudo docker compose up -d
+
 
 echo "==> [6/6] Scaling Workers for Bulk Attendance (AttendX)..."
 # Start with 2 workers by default, can be scaled manually later
