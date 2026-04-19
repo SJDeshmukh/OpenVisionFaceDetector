@@ -104,6 +104,8 @@ else
     sudo apt-get install -y python3-pip python3-venv postgresql postgresql-contrib redis-server nginx libgl1 libglib2.0-0 psmisc lsof
 
     echo "==> [3/6] Configuring Database..."
+    sudo systemctl start postgresql
+    sudo systemctl enable postgresql
     sudo -u postgres psql -c "CREATE DATABASE face_detection;" 2>/dev/null || true
     sudo -u postgres psql -c "ALTER USER postgres WITH PASSWORD 'postgres';" || true
     sudo systemctl restart postgresql redis-server
