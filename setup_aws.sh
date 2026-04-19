@@ -94,18 +94,23 @@ EOF
     sudo docker compose up -d --scale worker=2
 
     echo "CONTAINERIZED DEPLOYMENT COMPLETE!"
-else
     # BARE-METAL SETUP (Normal Mode)
-    echo "==> [2/6] Installing Local Dependencies (Postgres, Redis, Python)..."
+    echo "==> [2/6] Fixing Permissions and Installing Dependencies..."
+    # Ensure all files are owned by the current user
+    sudo chown -R $USER:$USER /home/ubuntu/OpenVisionFaceDetector 2>/dev/null || true
+    
     sudo apt-get update
     sudo apt-get install -y python3-pip python3-venv postgresql postgresql-contrib redis-server nginx libgl1 libglib2.0-0 psmisc lsof
 
     echo "==> [3/6] Configuring Database..."
     sudo -u postgres psql -c "CREATE DATABASE face_detection;" 2>/dev/null || true
     sudo -u postgres psql -c "ALTER USER postgres WITH PASSWORD 'postgres';" || true
+    sudo systemctl restart postgresql redis-server
 
-    echo "==> [4/6] Setting up Virtual Environment & Dependencies..."
-    python3 -m venv backend/.venv
+    echo "==> [4/6] Setting up Virtual Environment..."
+    if [ ! -d "backend/.venv" ]; then
+        python3 -m venv backend/.venv
+    fi
     source backend/.venv/bin/activate
     pip install --upgrade pip
     pip install -r backend/requirements.txt
@@ -125,18 +130,26 @@ EOF
     fi
 
     echo "==> [5/6] Starting Services (Bare-Metal)..."
-    # Kill any process on 5001
+    # Kill any existing processes
     sudo fuser -k 5001/tcp 2>/dev/null || true
+    sudo pkill -f "gunicorn" || true
+    sudo pkill -f "celery" || true
+    sleep 2
     
-    # Ensure logs have correct permissions
+    # Force recreate logs with correct permissions
+    sudo rm -f backend.log celery.log
     touch backend.log celery.log
-    sudo chown $USER:$USER backend.log celery.log
     
-    # Start Backend using venv python
-    nohup backend/.venv/bin/python3 backend/app.py > backend.log 2>&1 &
-    # Start Celery using venv celery
-    nohup backend/.venv/bin/celery -A tasks worker --loglevel=info > celery.log 2>&1 &
+    # Start Backend using absolute venv path
+    nohup /home/ubuntu/OpenVisionFaceDetector/backend/.venv/bin/python3 backend/app.py > /home/ubuntu/OpenVisionFaceDetector/backend.log 2>&1 &
+    # Start Celery using absolute venv path
+    nohup /home/ubuntu/OpenVisionFaceDetector/backend/.venv/bin/celery -A tasks worker --loglevel=info > /home/ubuntu/OpenVisionFaceDetector/celery.log 2>&1 &
     
+    echo "=============================================================================="
     echo "BARE-METAL DEPLOYMENT STARTED!"
-    echo "Logs available in backend.log and celery.log"
+    echo "=============================================================================="
+    echo "Dashboard (Dev): http://YOUR_IP:5173"
+    echo "API:            http://YOUR_IP:5001"
+    echo "Logs:           tail -f backend.log"
+    echo "=============================================================================="
 fi
