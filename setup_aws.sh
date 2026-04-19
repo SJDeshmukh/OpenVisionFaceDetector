@@ -128,9 +128,14 @@ EOF
     # Kill any process on 5001
     sudo fuser -k 5001/tcp 2>/dev/null || true
     
-    # Start Backend in background (simplified for this script, normally uses systemd)
-    nohup python3 backend/app.py > backend.log 2>&1 &
-    nohup celery -A tasks worker --loglevel=info > celery.log 2>&1 &
+    # Ensure logs have correct permissions
+    touch backend.log celery.log
+    sudo chown $USER:$USER backend.log celery.log
+    
+    # Start Backend using venv python
+    nohup backend/.venv/bin/python3 backend/app.py > backend.log 2>&1 &
+    # Start Celery using venv celery
+    nohup backend/.venv/bin/celery -A tasks worker --loglevel=info > celery.log 2>&1 &
     
     echo "BARE-METAL DEPLOYMENT STARTED!"
     echo "Logs available in backend.log and celery.log"
