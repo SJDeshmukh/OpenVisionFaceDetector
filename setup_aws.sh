@@ -94,6 +94,7 @@ EOF
     sudo docker compose up -d --scale worker=2
 
     echo "CONTAINERIZED DEPLOYMENT COMPLETE!"
+else
     # BARE-METAL SETUP (Normal Mode)
     echo "==> [2/6] Fixing Permissions and Installing Dependencies..."
     # Ensure all files are owned by the current user
