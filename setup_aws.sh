@@ -34,11 +34,14 @@ sudo systemctl stop redis-server 2>/dev/null || true
 sudo pkill -f gunicorn || true
 sudo pkill -f celery || true
 
-# Explicitly kill processes on key ports
+# Explicitly kill processes on key ports using fuser (more robust)
 for port in 80 5001 5432 6379 5173 443; do
+    echo "Ensuring port $port is free..."
+    sudo fuser -k ${port}/tcp 2>/dev/null || true
+    # Fallback to lsof if fuser fails or is missing
     PID=$(sudo lsof -t -i:$port 2>/dev/null || true)
     if [ ! -z "$PID" ]; then
-        echo "Clearing port $port (PID: $PID)..."
+        echo "Forcing kill on port $port (PID: $PID)..."
         sudo kill -9 $PID 2>/dev/null || true
     fi
 done

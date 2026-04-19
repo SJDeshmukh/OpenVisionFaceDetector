@@ -1,3 +1,6 @@
+import eventlet
+eventlet.monkey_patch()
+
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -82,11 +85,7 @@ try:
 except Exception:
     class Compress:
         def __init__(self, *args, **kwargs): pass
-try:
-    import eventlet
-    import eventlet.tpool
-except Exception:
-    eventlet = None
+# eventlet already patched at top
 
 def _run_in_native_thread(fn, *args, **kwargs):
     """Run a function in a native OS thread so it doesn't block the eventlet event loop.
@@ -385,4 +384,24 @@ if __name__ == "__main__":
     debug_flag = os.environ.get("FLASK_DEBUG") or os.environ.get("DEBUG") or ""
     debug = str(debug_flag).lower() in ("1", "true", "yes", "on")
     port = int(os.environ.get("PORT", "5001"))
+    
+    # Forcefully clear port if in use (Self-Healing Startup)
+    try:
+        import subprocess
+        import time
+        print(f"Attempting to clear port {port}...", flush=True)
+        # Try fuser first (standard on Linux)
+        subprocess.run(["fuser", "-k", f"{port}/tcp"], capture_output=True, text=True)
+        # Fallback to lsof
+        pids = subprocess.check_output(["lsof", "-t", f"-i:{port}"], stderr=subprocess.DEVNULL).decode().split()
+        if pids:
+            for pid in pids:
+                if pid:
+                    subprocess.run(["kill", "-9", pid], capture_output=True)
+                    print(f"Cleanup: Released port {port} from PID {pid}", flush=True)
+            # Give OS time to release the socket
+            time.sleep(2)
+    except Exception:
+        pass
+        
     socketio.run(app, host="0.0.0.0", port=port, debug=debug, use_reloader=False)

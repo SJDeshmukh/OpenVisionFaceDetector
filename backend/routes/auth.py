@@ -7,6 +7,7 @@ import json
 import sqlite3
 import logging
 from db_factory import get_table_columns
+from utils import error_logger
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,7 @@ def get_current_user():
 
 @auth_bp.route("/auth/login", methods=["POST"])
 @rate_limit(limit=10, window=60)  # 10 attempts per minute per IP
+@error_logger
 def login():
     from app import get_db_connection, socketio, is_testing, ALL_FEATURES
     data = request.json or {}

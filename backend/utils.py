@@ -4,6 +4,7 @@ import sqlite3
 import base64
 import json
 import psycopg2
+import traceback
 from psycopg2.extras import RealDictCursor
 from datetime import date, timedelta, datetime
 from threading import Lock
@@ -227,6 +228,16 @@ def parse_db_datetime(val):
 
 
 # --- Observability & Security Decorators ---
+def error_logger(f):
+    @wraps(f)
+    def wrapped(*args, **kwargs):
+        try:
+            return f(*args, **kwargs)
+        except Exception as e:
+            logger.error(f"Error in {f.__name__}: {e}\n{traceback.format_exc()}")
+            raise e
+    return wrapped
+
 def rate_limit(limit=60, window=60):
     """Placeholder for rate limiting logic. Can be integrated with Redis."""
     def decorator(f):
