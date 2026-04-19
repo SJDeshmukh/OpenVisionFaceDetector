@@ -2,8 +2,8 @@
 # ==============================================================================
 # OpenVision Master Setup Script (v5.0 - Containerized & Scalable)
 # ==============================================================================
-# This script automates the setup of the Face Detection system using Docker.
-# Handles dependencies, Docker installation, Compose orchestration, and scaling.
+# This script automates the setup of the Face Detection system.
+# Handles dependencies, Docker installation, OR Bare-Metal Systemd setup.
 # ==============================================================================
 
 set -e
@@ -17,21 +17,36 @@ echo ""
 if [[ "$USE_DOCKER" =~ ^[Yy]$ ]]; then
     echo "==> Selected Mode: CONTAINERIZED (Docker)"
 else
-    echo "==> Selected Mode: BARE-METAL (Normal)"
+    echo "==> Selected Mode: BARE-METAL (Systemd)"
 fi
 echo "=============================================================================="
 
-# Shared steps (Swap)
-echo "==> [0/6] Checking Disk Space..."
-AVAILABLE_DISK=$(df / | tail -1 | awk '{print $4}')
-if [ "$AVAILABLE_DISK" -lt 5000000 ]; then
-    echo "WARNING: Less than 5GB of disk space available ($((AVAILABLE_DISK/1024)) MB)."
-    echo "This build may fail. Consider increasing your AWS EBS volume to at least 40GB."
-fi
+echo "==> [0/8] Aggressive Port Cleanup (Ensuring clean state)..."
+# Stop services and processes that might occupy required ports
+sudo systemctl stop nginx 2>/dev/null || true
+sudo systemctl stop apache2 2>/dev/null || true
+sudo systemctl stop openvision-backend 2>/dev/null || true
+sudo systemctl stop openvision-celery 2>/dev/null || true
+sudo systemctl stop postgresql 2>/dev/null || true
+sudo systemctl stop redis-server 2>/dev/null || true
 
-echo "==> [1/6] Configuring Swap File for Build Stability..."
-if [ ! -f /swapfile ]; then
-    echo "Creating 2GB swap..."
+# Kill any remaining gunicorn or celery workers
+sudo pkill -f gunicorn || true
+sudo pkill -f celery || true
+
+# Explicitly kill processes on key ports
+for port in 80 5001 5432 6379 5173 443; do
+    PID=$(sudo lsof -t -i:$port 2>/dev/null || true)
+    if [ ! -z "$PID" ]; then
+        echo "Clearing port $port (PID: $PID)..."
+        sudo kill -9 $PID 2>/dev/null || true
+    fi
+done
+
+echo "System cleaned. Proceeding with setup..."
+
+echo "==> [1/8] Configuring 2GB Swap File for RAM Stability..."
+if [ ! -f /swapfile ] && [ ! -L /swapfile ]; then
     sudo fallocate -l 2G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048
     sudo chmod 600 /swapfile
     sudo mkswap /swapfile
@@ -42,7 +57,6 @@ if [ ! -f /swapfile ]; then
 else
     echo "Swap already exists, skipping creation."
 fi
-
 
 if [[ "$USE_DOCKER" =~ ^[Yy]$ ]]; then
     echo "==> [2/6] Installing Docker and Docker Compose..."
@@ -64,10 +78,8 @@ if [[ "$USE_DOCKER" =~ ^[Yy]$ ]]; then
         sudo ln -s /usr/libexec/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose || true
     fi
 
-    # Stop and clear ports
-    sudo systemctl stop openvision-backend openvision-celery openvision.service gunicorn nginx 2>/dev/null || true
+    # Stop and clear ports (redundant but safe)
     sudo docker ps -q --filter "publish=5001" | xargs sudo docker stop 2>/dev/null || true
-    sudo fuser -k 5001/tcp 6379/tcp 2>/dev/null || true
     sudo docker compose down --remove-orphans 2>/dev/null || true
     sudo docker system prune -f --volumes || true
     sleep 2
@@ -95,22 +107,21 @@ EOF
 
     echo "CONTAINERIZED DEPLOYMENT COMPLETE!"
 else
-    # BARE-METAL SETUP (Normal Mode)
-    echo "==> [2/6] Fixing Permissions and Installing Dependencies..."
-    # Ensure all files are owned by the current user
-    sudo chown -R $USER:$USER /home/ubuntu/OpenVisionFaceDetector 2>/dev/null || true
+    # BARE-METAL SETUP (Systemd Mode)
+    echo "==> [2/8] Fixing Permissions and Installing Dependencies..."
+    sudo chown -R $USER:$USER $(pwd) 2>/dev/null || true
     
     sudo apt-get update
-    sudo apt-get install -y python3-pip python3-venv postgresql postgresql-contrib redis-server nginx libgl1 libglib2.0-0 psmisc lsof
+    sudo apt-get install -y python3-pip python3-venv postgresql postgresql-contrib redis-server nginx libgl1 libglib2.0-0 psmisc lsof curl
 
-    echo "==> [3/6] Configuring Database..."
+    echo "==> [3/8] Configuring Database..."
     sudo systemctl start postgresql
     sudo systemctl enable postgresql
     sudo -u postgres psql -c "CREATE DATABASE face_detection;" 2>/dev/null || true
     sudo -u postgres psql -c "ALTER USER postgres WITH PASSWORD 'postgres';" || true
     sudo systemctl restart postgresql redis-server
 
-    echo "==> [4/6] Setting up Virtual Environment..."
+    echo "==> [4/8] Setting up Virtual Environment..."
     if [ ! -d "backend/.venv" ]; then
         python3 -m venv backend/.venv
     fi
@@ -119,6 +130,7 @@ else
     pip install -r backend/requirements.txt
     pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
+    echo "==> [5/8] Managing Environment (.env)..."
     if [ ! -f "backend/.env" ]; then
         PUBLIC_IP=$(curl -s https://api.ipify.org || echo "localhost")
         cat <<EOF > backend/.env
@@ -132,27 +144,95 @@ LOW_RAM_MODE=1
 EOF
     fi
 
-    echo "==> [5/6] Starting Services (Bare-Metal)..."
-    # Kill any existing processes
-    sudo fuser -k 5001/tcp 2>/dev/null || true
-    sudo pkill -f "gunicorn" || true
-    sudo pkill -f "celery" || true
-    sleep 2
-    
-    # Force recreate logs with correct permissions
-    sudo rm -f backend.log celery.log
-    touch backend.log celery.log
-    
-    # Start Backend using absolute venv path
-    nohup /home/ubuntu/OpenVisionFaceDetector/backend/.venv/bin/python3 backend/app.py > /home/ubuntu/OpenVisionFaceDetector/backend.log 2>&1 &
-    # Start Celery using absolute venv path
-    nohup /home/ubuntu/OpenVisionFaceDetector/backend/.venv/bin/celery -A tasks worker --loglevel=info > /home/ubuntu/OpenVisionFaceDetector/celery.log 2>&1 &
-    
+    echo "==> [6/8] Initializing Database Schema..."
+    cd backend
+    source .venv/bin/activate
+    export DATABASE_URL="postgresql://postgres:postgres@localhost:5432/face_detection"
+    export DB_TYPE="postgres"
+    python3 migrate_to_postgres.py || echo "Warning: migrate_to_postgres.py encountered issues."
+    cd ..
+
+    echo "==> [7/8] Building Frontend & Configuring Nginx..."
+    echo "Building web-dashboard for production..."
+    cd web-dashboard
+    npm run build || echo "Warning: Frontend build failed. Check RAM/Swap."
+
+    if [ ! -d "dist" ]; then
+        echo "ERROR: 'dist' folder was not created. Build failed."
+        exit 1
+    fi
+
+    echo "Moving frontend assets to /var/www/face_detection..."
+    sudo mkdir -p /var/www/face_detection
+    sudo cp -r dist/* /var/www/face_detection/
+    sudo chown -R www-data:www-data /var/www/face_detection
+    sudo chmod -R 755 /var/www/face_detection
+    cd ..
+
+    echo "Deploying Nginx configuration..."
+    sudo cp nginx_face_detection.conf /etc/nginx/sites-available/face_detection
+    sudo ln -sf /etc/nginx/sites-available/face_detection /etc/nginx/sites-enabled/
+    sudo rm -f /etc/nginx/sites-enabled/default
+    sudo nginx -t && sudo systemctl restart nginx
+
+    echo "==> [8/8] Configuring Systemd Services (Auto-Restart)..."
+    WORKING_DIR=$(pwd)
+    GUNICORN_PATH="$WORKING_DIR/backend/.venv/bin/gunicorn"
+    CELERY_PATH="$WORKING_DIR/backend/.venv/bin/celery"
+
+    # Create Backend Service
+    sudo bash -c "cat <<EOF > /etc/systemd/system/openvision-backend.service
+[Unit]
+Description=Gunicorn instance to serve OpenVision Face Detection
+After=network.target postgresql.service redis.service
+
+[Service]
+User=$USER
+Group=www-data
+WorkingDirectory=$WORKING_DIR/backend
+Environment=\"PATH=$WORKING_DIR/backend/.venv/bin\"
+Environment=\"LOW_RAM_MODE=1\"
+EnvironmentFile=$WORKING_DIR/backend/.env
+ExecStart=$GUNICORN_PATH --worker-class eventlet -w 1 -b 0.0.0.0:5001 app:app --timeout 600
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF"
+
+    # Create Celery Service
+    sudo bash -c "cat <<EOF > /etc/systemd/system/openvision-celery.service
+[Unit]
+Description=Celery worker for OpenVision Face Detection
+After=network.target postgresql.service redis.service
+
+[Service]
+User=$USER
+Group=www-data
+WorkingDirectory=$WORKING_DIR/backend
+Environment=\"PATH=$WORKING_DIR/backend/.venv/bin\"
+EnvironmentFile=$WORKING_DIR/backend/.env
+ExecStart=$CELERY_PATH -A celery_app worker --loglevel=info --concurrency=1 --pool=solo
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF"
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable openvision-backend openvision-celery
+    sudo systemctl restart openvision-backend openvision-celery
+
+    # Firewall setup
+    sudo ufw allow 80/tcp || true
+    sudo ufw allow 5001/tcp || true
+
     echo "=============================================================================="
-    echo "BARE-METAL DEPLOYMENT STARTED!"
+    echo "PRODUCTION BARE-METAL SETUP COMPLETE!"
     echo "=============================================================================="
-    echo "Dashboard (Dev): http://YOUR_IP:5173"
-    echo "API:            http://YOUR_IP:5001"
-    echo "Logs:           tail -f backend.log"
+    echo "- Dashboard: http://$(curl -s https://api.ipify.org || echo "YOUR_IP")"
+    echo "- API:       http://$(curl -s https://api.ipify.org || echo "YOUR_IP")/api"
     echo "=============================================================================="
 fi
