@@ -51,9 +51,8 @@ def create_leave_request():
                     SELECT id FROM faces 
                     WHERE vendor_id = %s AND (
                         id::text = %s OR
-                        LOWER(TRIM(custom_data::jsonb->>'student_number')) = LOWER(TRIM(%s)) OR 
-                        LOWER(TRIM(custom_data::jsonb->>'admission_number')) = LOWER(TRIM(%s)) OR 
-                        LOWER(TRIM(custom_data::jsonb->>'roll_number')) = LOWER(TRIM(%s))
+                        LOWER(TRIM(custom_data::jsonb->>'student_id')) = LOWER(TRIM(%s)) OR
+                        LOWER(TRIM(custom_data::jsonb->>'id_number')) = LOWER(TRIM(%s))
                     )
                 """, (vendor_id, student_id, student_id, student_id, student_id))
             else:
@@ -61,9 +60,8 @@ def create_leave_request():
                     SELECT id FROM faces 
                     WHERE vendor_id = ? AND (
                         CAST(id AS TEXT) = ? OR
-                        LOWER(TRIM(json_extract(custom_data, '$.student_number'))) = LOWER(TRIM(?)) OR 
-                        LOWER(TRIM(json_extract(custom_data, '$.admission_number'))) = LOWER(TRIM(?)) OR 
-                        LOWER(TRIM(json_extract(custom_data, '$.roll_number'))) = LOWER(TRIM(?))
+                        LOWER(TRIM(json_extract(custom_data, '$.student_id'))) = LOWER(TRIM(?)) OR
+                        LOWER(TRIM(json_extract(custom_data, '$.id_number'))) = LOWER(TRIM(?))
                     )
                 """, (vendor_id, student_id, student_id, student_id, student_id))
             
@@ -133,18 +131,16 @@ def get_parent_pending_requests():
             c.execute("""
                 SELECT id FROM faces 
                 WHERE vendor_id = %s AND (
-                    LOWER(TRIM(custom_data::jsonb->>'student_number')) = LOWER(TRIM(%s)) OR 
-                    LOWER(TRIM(custom_data::jsonb->>'admission_number')) = LOWER(TRIM(%s)) OR 
-                    LOWER(TRIM(custom_data::jsonb->>'roll_number')) = LOWER(TRIM(%s))
+                    LOWER(TRIM(custom_data::jsonb->>'student_id')) = LOWER(TRIM(%s)) OR
+                    LOWER(TRIM(custom_data::jsonb->>'id_number')) = LOWER(TRIM(%s))
                 )
             """, (vendor_id, student_number, student_number, student_number))
         else:
             c.execute("""
                 SELECT id FROM faces 
                 WHERE vendor_id = ? AND (
-                    LOWER(TRIM(json_extract(custom_data, '$.student_number'))) = LOWER(TRIM(?)) OR 
-                    LOWER(TRIM(json_extract(custom_data, '$.admission_number'))) = LOWER(TRIM(?)) OR 
-                    LOWER(TRIM(json_extract(custom_data, '$.roll_number'))) = LOWER(TRIM(?))
+                    LOWER(TRIM(json_extract(custom_data, '$.student_id'))) = LOWER(TRIM(?)) OR
+                    LOWER(TRIM(json_extract(custom_data, '$.id_number'))) = LOWER(TRIM(?))
                 )
             """, (vendor_id, student_number, student_number, student_number))
         
@@ -647,7 +643,7 @@ def generate_student_logins():
         for f in faces:
             row = get_row_dict(f)
             cd = json.loads(row.get('custom_data') or '{}')
-            student_number = str(cd.get('student_number') or cd.get('roll_number') or cd.get('admission_number') or "").strip()
+            student_number = str(cd.get('student_id') or cd.get('id_number') or "").strip()
             
             if not student_number:
                 skipped_count += 1
@@ -893,9 +889,6 @@ def get_vendor_student_logins(vendor_id):
                 SELECT u.username, u.password_plain, u.last_active_at, f.name, u.has_set_password
                 FROM system_users u
                 LEFT JOIN faces f ON (
-                    LOWER(TRIM(f.custom_data::jsonb->>'student_number')) = LOWER(TRIM(u.username)) OR 
-                    LOWER(TRIM(f.custom_data::jsonb->>'admission_number')) = LOWER(TRIM(u.username)) OR 
-                    LOWER(TRIM(f.custom_data::jsonb->>'roll_number')) = LOWER(TRIM(u.username)) OR
                     LOWER(TRIM(f.custom_data::jsonb->>'student_id')) = LOWER(TRIM(u.username)) OR
                     LOWER(TRIM(f.custom_data::jsonb->>'id_number')) = LOWER(TRIM(u.username))
                 ) AND f.vendor_id = u.vendor_id
@@ -907,9 +900,6 @@ def get_vendor_student_logins(vendor_id):
                 SELECT u.username, u.password_plain, u.last_active_at, f.name, u.has_set_password
                 FROM system_users u
                 LEFT JOIN faces f ON (
-                    LOWER(TRIM(json_extract(f.custom_data, '$.student_number'))) = LOWER(TRIM(u.username)) OR 
-                    LOWER(TRIM(json_extract(f.custom_data, '$.admission_number'))) = LOWER(TRIM(u.username)) OR 
-                    LOWER(TRIM(json_extract(f.custom_data, '$.roll_number'))) = LOWER(TRIM(u.username)) OR
                     LOWER(TRIM(json_extract(f.custom_data, '$.student_id'))) = LOWER(TRIM(u.username)) OR
                     LOWER(TRIM(json_extract(f.custom_data, '$.id_number'))) = LOWER(TRIM(u.username))
                 ) AND f.vendor_id = u.vendor_id
@@ -947,8 +937,8 @@ def get_vendor_parents(vendor_id):
                 SELECT p.id, p.username, p.student_number, p.contact_phone, p.face_image, p.created_at, f.name as student_name
                 FROM parent_users p
                 LEFT JOIN faces f ON (
-                    LOWER(f.custom_data::jsonb->>'student_number') = LOWER(p.student_number) OR 
-                    LOWER(f.custom_data::jsonb->>'roll_number') = LOWER(p.student_number)
+                    LOWER(f.custom_data::jsonb->>'student_id') = LOWER(p.student_number) OR
+                    LOWER(f.custom_data::jsonb->>'id_number') = LOWER(p.student_number)
                 ) AND f.vendor_id = p.vendor_id
                 WHERE p.vendor_id = %s AND p.face_image IS NOT NULL
             """, (vendor_id,))
@@ -958,8 +948,8 @@ def get_vendor_parents(vendor_id):
                 SELECT p.id, p.username, p.student_number, p.contact_phone, p.face_image, p.created_at, f.name as student_name
                 FROM parent_users p
                 LEFT JOIN faces f ON (
-                    LOWER(json_extract(f.custom_data, '$.student_number')) = LOWER(p.student_number) OR 
-                    LOWER(json_extract(f.custom_data, '$.roll_number')) = LOWER(p.student_number)
+                    LOWER(json_extract(f.custom_data, '$.student_id')) = LOWER(p.student_number) OR
+                    LOWER(json_extract(f.custom_data, '$.id_number')) = LOWER(p.student_number)
                 ) AND f.vendor_id = p.vendor_id
                 WHERE p.vendor_id = ? AND p.face_image IS NOT NULL
             """, (vendor_id,))
@@ -993,7 +983,7 @@ def get_parent_faces():
             c.execute("""
                 SELECT p.id, p.username, p.student_number, p.contact_phone, p.face_image, p.created_at, f.name as student_name
                 FROM public.parent_users p
-                LEFT JOIN faces f ON (f.custom_data::jsonb->>'student_number' = p.student_number OR f.custom_data::jsonb->>'roll_number' = p.student_number) AND f.vendor_id = p.vendor_id
+                LEFT JOIN faces f ON (f.custom_data::jsonb->>'student_id' = p.student_number OR f.custom_data::jsonb->>'id_number' = p.student_number) AND f.vendor_id = p.vendor_id
                 WHERE p.vendor_id = %s AND p.face_image IS NOT NULL
             """, (vendor_id,))
         else:
@@ -1001,7 +991,7 @@ def get_parent_faces():
             c.execute("""
                 SELECT p.id, p.username, p.student_number, p.contact_phone, p.face_image, p.created_at, f.name as student_name
                 FROM parent_users p
-                LEFT JOIN faces f ON (json_extract(f.custom_data, '$.student_number') = p.student_number OR json_extract(f.custom_data, '$.roll_number') = p.student_number) AND f.vendor_id = p.vendor_id
+                LEFT JOIN faces f ON (json_extract(f.custom_data, '$.student_id') = p.student_number OR json_extract(f.custom_data, '$.id_number') = p.student_number) AND f.vendor_id = p.vendor_id
                 WHERE p.vendor_id = ? AND p.face_image IS NOT NULL
             """, (vendor_id,))
         rows = c.fetchall()
@@ -1048,9 +1038,8 @@ def get_student_history():
                 SELECT id FROM faces 
                 WHERE vendor_id = %s AND (
                     id::text = %s OR
-                    LOWER(TRIM(custom_data::jsonb->>'student_number')) = LOWER(TRIM(%s)) OR 
-                    LOWER(TRIM(custom_data::jsonb->>'admission_number')) = LOWER(TRIM(%s)) OR 
-                    LOWER(TRIM(custom_data::jsonb->>'roll_number')) = LOWER(TRIM(%s))
+                    LOWER(TRIM(custom_data::jsonb->>'student_id')) = LOWER(TRIM(%s)) OR
+                    LOWER(TRIM(custom_data::jsonb->>'id_number')) = LOWER(TRIM(%s))
                 )
             """, (vendor_id, student_number, student_number, student_number, student_number))
         else:
@@ -1058,9 +1047,8 @@ def get_student_history():
                 SELECT id FROM faces 
                 WHERE vendor_id = ? AND (
                     CAST(id AS TEXT) = ? OR
-                    LOWER(TRIM(json_extract(custom_data, '$.student_number'))) = LOWER(TRIM(?)) OR 
-                    LOWER(TRIM(json_extract(custom_data, '$.admission_number'))) = LOWER(TRIM(?)) OR 
-                    LOWER(TRIM(json_extract(custom_data, '$.roll_number'))) = LOWER(TRIM(?))
+                    LOWER(TRIM(json_extract(custom_data, '$.student_id'))) = LOWER(TRIM(?)) OR
+                    LOWER(TRIM(json_extract(custom_data, '$.id_number'))) = LOWER(TRIM(?))
                 )
             """, (vendor_id, student_number, student_number, student_number, student_number))
         

@@ -98,7 +98,7 @@ export const Sidebar = ({ isOpen, onClose }) => {
     if (staffSession) {
       if (staffSession.role === 'hod') {
         // HOD only sees Leave Management and Dashboard
-        navItems = adminNavItems.filter(item => 
+        navItems = adminNavItems.filter(item =>
           item.name === 'Leave Management' || item.name === 'Dashboard'
         );
       } else {
@@ -237,8 +237,8 @@ export const Topbar = ({ onToggleSidebar }) => {
               {staffSession ? staffSession.name : (user?.username || 'Guest')}
             </p>
             <p className="text-xs text-slate-500 capitalize">
-              {staffSession ? `${staffSession.role.toUpperCase()} ${staffSession.department ? `(${staffSession.department})` : ''}` : 
-               (user?.role === 'admin' ? 'Administrator' : 'TapInX User')}
+              {staffSession ? `${staffSession.role.toUpperCase()} ${staffSession.department ? `(${staffSession.department})` : ''}` :
+                (user?.role === 'admin' ? 'Administrator' : 'TapInX User')}
             </p>
           </div>
           <div className="w-10 h-10 rounded-full bg-slate-200 flex items-center justify-center text-slate-600 font-bold border-2 border-white shadow-sm">

@@ -361,6 +361,12 @@ app.register_blueprint(parent_reset_bp, url_prefix='/api')
 from routes.owner import owner_bp
 app.register_blueprint(owner_bp, url_prefix='/api')
 
+from routes.bulk_registration import bulk_registration_bp
+app.register_blueprint(bulk_registration_bp, url_prefix='/api')
+
+from routes.registration_batch import registration_batch_bp
+app.register_blueprint(registration_batch_bp, url_prefix='/api')
+
 register_error_handlers(app)
 
 # --- Serve Frontend (SPA) ---

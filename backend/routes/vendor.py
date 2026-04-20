@@ -549,39 +549,6 @@ def list_classes():
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        is_pg = getattr(conn, "_is_pg", False)
-        if is_pg:
-            c.execute("""CREATE TABLE IF NOT EXISTS classes (
-                id SERIAL PRIMARY KEY,
-                vendor_id INTEGER,
-                class_year TEXT,
-                division TEXT,
-                branch TEXT,
-                label TEXT,
-                mapped_subjects TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )""")
-        else:
-            c.execute("""CREATE TABLE IF NOT EXISTS classes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                vendor_id INTEGER,
-                class_year TEXT,
-                division TEXT,
-                branch TEXT,
-                label TEXT,
-                mapped_subjects TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )""")
-        # Migration for existing tables
-        try:
-            c.execute("ALTER TABLE classes ADD COLUMN mapped_subjects TEXT")
-            if hasattr(conn, "commit"):
-                conn.commit()
-        except:
-            if hasattr(conn, "rollback"):
-                try: conn.rollback()
-                except: pass
-            pass
 
         if vendor_id:
             c.execute("SELECT id, class_year, division, branch, label, mapped_subjects FROM classes WHERE vendor_id = ? ORDER BY created_at DESC", (vendor_id,))
@@ -620,29 +587,6 @@ def create_class():
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        is_pg = getattr(conn, "_is_pg", False)
-        if is_pg:
-            c.execute("""CREATE TABLE IF NOT EXISTS classes (
-                id SERIAL PRIMARY KEY,
-                vendor_id INTEGER,
-                class_year TEXT,
-                division TEXT,
-                branch TEXT,
-                label TEXT,
-                mapped_subjects TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )""")
-        else:
-            c.execute("""CREATE TABLE IF NOT EXISTS classes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                vendor_id INTEGER,
-                class_year TEXT,
-                division TEXT,
-                branch TEXT,
-                label TEXT,
-                mapped_subjects TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )""")
         
         mapped_subjects_json = json.dumps(data.get('mapped_subjects') or [])
         
@@ -671,16 +615,6 @@ def update_class(cid: int):
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        
-        # Ensure migration exists before update
-        try:
-            c.execute("ALTER TABLE classes ADD COLUMN mapped_subjects TEXT")
-            if hasattr(conn, "commit"): conn.commit()
-        except:
-            if hasattr(conn, "rollback"):
-                try: conn.rollback()
-                except: pass
-            pass
             
         c.execute("SELECT vendor_id FROM classes WHERE id = ?", (cid,))
         row = c.fetchone()

@@ -111,7 +111,7 @@ def class_batch_add_inferred():
             emb = f.get('embedding')
             if emb and len(emb) > 0:
                 vec = np.array(emb, dtype=np.float32)
-                suggestions = _suggest_from_cache(vec, vcache, topk=3)
+                suggestions = _suggest_from_cache(vec, vcache, topk=3, class_year=class_year, division=division, branch=branch)
                 f['suggestions'] = suggestions
                 f['emb_vec'] = base64.b64encode(vec.tobytes()).decode('ascii')
             processed_faces.append(f)
@@ -194,6 +194,12 @@ def class_batch_commit(valid_data: ClassBatchCommitSchema):
             c.execute("DELETE FROM person_embeddings WHERE person_id = ? AND vendor_id = ?", (pid_key, vendor_id))
             
             c.execute("INSERT INTO person_embeddings (vendor_id, person_id, class_year, division, branch, vec, dim, struct_vec, landmarks_3d) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (vendor_id, int(person_id), str(class_year), str(division), str(branch), vec_blob, dim, struct_blob, lmks_json))
+            
+            # Update the main student profile image with this "labeling" crop if they don't have one,
+            # or to ensure the People Management UI shows the image used for this session.
+            if uri:
+                c.execute("UPDATE faces SET face_image = ? WHERE id = ? AND vendor_id = ?", (uri, pid_key, vendor_id))
+
             saved += 1
         except Exception: continue
     conn.commit()

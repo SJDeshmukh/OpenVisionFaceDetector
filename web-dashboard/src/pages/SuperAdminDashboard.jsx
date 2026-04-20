@@ -42,10 +42,34 @@ const SuperAdminDashboard = () => {
       ]
     },
     {
+      value: 'school', label: 'School / College / Tuitions', default_frontend_bundle_id: 'attendance_ui', default_registration_config: [
+        { field: 'student_id', label: 'Student ID', type: 'text', required: true, options: [] },
+        { field: 'student_phone', label: 'Phone Number of Student', type: 'text', required: true, options: [] }
+      ]
+    },
+    {
+      value: 'hostel', label: 'Hostel / Accommodation', default_frontend_bundle_id: 'attendance_ui', default_registration_config: [
+        { field: 'student_id', label: 'Student ID', type: 'text', required: true, options: [] },
+        { field: 'student_phone', label: 'Phone Number of Student', type: 'text', required: true, options: [] }
+      ]
+    },
+    {
+      value: 'class_attendance', label: 'Class Attendance', default_frontend_bundle_id: 'class_attendance_ui', default_registration_config: [
+        { field: 'student_id', label: 'Student ID', type: 'text', required: true, options: [] },
+        { field: 'class_section', label: 'Class/Section', type: 'text', required: true, options: [] }
+      ]
+    },
+    {
       value: 'checkin_checkout_tapinx', label: 'TapInX (Check-in/Check-out)', default_frontend_bundle_id: 'tapinx_ui', default_registration_config: [
         { field: 'student_id', label: 'Student ID', type: 'text', required: true, options: [] },
         { field: 'phone', label: 'Parent Mobile Number', type: 'text', required: true, options: [] },
         { field: 'class_section', label: 'Class/Section', type: 'text', required: true, options: [] }
+      ]
+    },
+    {
+      value: 'factory', label: 'Industrial / Manufacturing', default_frontend_bundle_id: 'attendance_payroll_ui', default_registration_config: [
+        { field: 'department', label: 'Department', type: 'text', required: false, options: [] },
+        { field: 'shift', label: 'Shift', type: 'text', required: false, options: [] }
       ]
     },
     { value: 'enterprise', label: 'Enterprise (Custom)', default_frontend_bundle_id: 'default_attendance', default_registration_config: [] }
@@ -91,12 +115,12 @@ const SuperAdminDashboard = () => {
          {"field": "student_phone", "label": "Phone Number of Student", "enabled": true}
      ],
      "class_attendance": [
-         {"field": "student_number", "label": "Student Number", "enabled": true},
+         {"field": "student_id", "label": "Student ID", "enabled": true},
          {"field": "class_section", "label": "Class/Section", "enabled": true},
          {"field": "phone", "label": "Parent Mobile Number", "enabled": false}
      ],
      "factory": [
-         {"field": "employee_id", "label": "Employee ID", "enabled": true},
+         {"field": "phone", "label": "Phone", "enabled": true},
          {"field": "department", "label": "Department", "enabled": true}
      ],
      "bulk_attendance_attendx": [
@@ -2267,7 +2291,7 @@ const SuperAdminDashboard = () => {
                       } catch (e) { reg = []; }
                       return reg && reg.length > 0 ? (
                         reg
-                          .filter(field => field.enabled !== false && field.field !== 'student_number')
+                          .filter(field => field.enabled !== false && field.field !== 'student_id')
                           .map((field, index) => {
                             const val = (() => {
                               let custom = {};

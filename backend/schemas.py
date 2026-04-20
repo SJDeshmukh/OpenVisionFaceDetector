@@ -61,3 +61,29 @@ class PayrollReportRequest(BaseModel):
 class PublicAttendanceRequest(BaseModel):
     student_number: str
     limit: Optional[int] = 50
+
+class RegistrationBatchStartSchema(BaseModel):
+    pass
+
+class RegistrationBatchAddSchema(BaseModel):
+    batch_id: str
+    fast: Optional[bool] = False
+    det_max_side: Optional[int] = None
+
+class RegistrationBatchStatusSchema(BaseModel):
+    batch_id: str
+
+class RegistrationBatchAssignment(BaseModel):
+    item_id: str
+    face_index: int
+    name: str
+    phone: Optional[str] = ""
+    student_number: Optional[str] = ""
+    class_year: Optional[str] = ""
+    division: Optional[str] = ""
+    branch: Optional[str] = ""
+    custom_data: Optional[Dict[str, Any]] = {}
+
+class RegistrationBatchCommitSchema(BaseModel):
+    batch_id: str
+    assignments: List[RegistrationBatchAssignment]

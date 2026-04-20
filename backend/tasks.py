@@ -419,6 +419,66 @@ def process_class_batch_items(batch_id, vendor_id, params):
 if celery:
     process_class_batch_items = celery.task(name="tasks.process_class_batch_items")(process_class_batch_items)
 
+def process_registration_batch_items(batch_id, vendor_id, params):
+    from services.face_service import _detect_faces_from_bytes
+    from utils import get_db_connection
+    import base64
+    import time
+    
+    conn = get_db_connection()
+    c = conn.cursor()
+    
+    # Get pending items
+    c.execute("SELECT id, image_b64 FROM registration_batch_items WHERE batch_id = ? AND status = 'pending' ORDER BY seq ASC", (batch_id,))
+    items = c.fetchall()
+    
+    print(f"[CELERY] process_registration_batch_items: batch {batch_id} has {len(items)} items pending.", flush=True)
+
+    for item in items:
+        item_id, img_b64 = item[0], item[1]
+        try:
+            # Update status to processing
+            c.execute("UPDATE registration_batch_items SET status = 'processing' WHERE id = ?", (item_id,))
+            conn.commit()
+            
+            # Decode image
+            header, encoded = img_b64.split(',', 1) if ',' in img_b64 else ('', img_b64)
+            raw = base64.b64decode(encoded)
+            
+            t0 = time.time()
+            # Detect faces
+            faces, annotated_b64 = _detect_faces_from_bytes(raw, params, vendor_id)
+            t1 = time.time()
+            
+            print(f"[CELERY] process_registration_batch_items: processed item {item_id} in {t1-t0:.3f}s. Found {len(faces)} faces.", flush=True)
+
+            # Update item with results
+            c.execute(
+                "UPDATE registration_batch_items SET faces_json = ?, annotated_b64 = ?, status = 'done' WHERE id = ?",
+                (json.dumps(faces), annotated_b64, item_id)
+            )
+            conn.commit()
+        except Exception as e:
+            print(f"[CELERY] process_registration_batch_items: Error on item {item_id}: {e}", flush=True)
+            # Mark as failed
+            c.execute(
+                "UPDATE registration_batch_items SET status = 'failed', faces_json = '[]', annotated_b64 = ? WHERE id = ?",
+                (f"Error: {str(e)}", item_id)
+            )
+            conn.commit()
+    
+    # Check if all items are done/failed, then mark batch completed
+    c.execute("SELECT COUNT(*) FROM registration_batch_items WHERE batch_id = ? AND status IN ('pending', 'processing')", (batch_id,))
+    remaining = c.fetchone()[0]
+    if remaining == 0:
+        c.execute("UPDATE registration_batches SET status = 'completed' WHERE id = ?", (batch_id,))
+        conn.commit()
+        
+    conn.close()
+
+if celery:
+    process_registration_batch_items = celery.task(name="tasks.process_registration_batch_items")(process_registration_batch_items)
+
 def refresh_class_batch_items(batch_id, vendor_id, params):
     from services.face_service import _detect_faces_from_bytes
     from utils import get_db_connection

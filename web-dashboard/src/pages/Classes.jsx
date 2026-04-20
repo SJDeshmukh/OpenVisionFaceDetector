@@ -140,10 +140,10 @@ const Row = ({ it, onSave, onDelete, onManageSubjects }) => {
       </td>
       <td className="p-3">
         <div className="flex items-center gap-2">
-          <button onClick={() => onSave(it.id, { 
-            label: edit.label, 
-            class_year: edit.class_year, 
-            division: edit.division, 
+          <button onClick={() => onSave(it.id, {
+            label: edit.label,
+            class_year: edit.class_year,
+            division: edit.division,
             branch: edit.branch
           })} className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 inline-flex items-center gap-1 text-sm">
             <Save size={14} /> Save
@@ -184,7 +184,7 @@ const ManageSubjectsModal = ({ cls, onClose, onUpdate }) => {
           </div>
           <button onClick={onClose} className="p-2 hover:bg-slate-200 rounded-full transition-colors text-slate-500"><X size={20} /></button>
         </div>
-        
+
         <div className="p-6 flex-1 overflow-y-auto space-y-4">
           <div className="flex gap-2 items-end">
             <div className="flex-1">
@@ -218,7 +218,7 @@ const ManageSubjectsModal = ({ cls, onClose, onUpdate }) => {
             )}
           </div>
         </div>
-        
+
         <div className="p-6 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
           <button onClick={onClose} className="px-4 py-2 text-slate-600 hover:bg-slate-200 rounded-xl font-medium transition-colors">Cancel</button>
           <button onClick={() => onUpdate(subjects)} className="px-5 py-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 font-medium transition-colors inline-flex items-center gap-2 shadow-sm">

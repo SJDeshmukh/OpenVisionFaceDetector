@@ -253,7 +253,7 @@ def detect_faces_basic():
                         if emb_norm.size > 0:
                             emb_vec_b64 = base64.b64encode(emb_norm.astype(np.float32).tobytes()).decode('ascii')
                         
-                        sugg = _suggest_from_cache(emb_norm, vcache, topk=3, struct_vec=struct_vec_val)
+                        sugg = _suggest_from_cache(emb_norm, vcache, topk=3, struct_vec=struct_vec_val, class_year=class_year, division=division, branch=branch)
                     except Exception:
                         pass
 
@@ -453,6 +453,35 @@ def get_persons():
         query += " WHERE vendor_id = ?"
         params.append(vendor_id)
         
+    is_pg = getattr(conn, "_is_pg", False)
+    class_year = request.args.get('class_year')
+    division = request.args.get('division')
+    branch = request.args.get('branch')
+    
+    if class_year:
+        if is_pg:
+            query += " AND (custom_data::jsonb->>'class_year' = ? OR custom_data::jsonb->>'Year' = ? OR custom_data::jsonb->>'year' = ?)"
+            params += [str(class_year), str(class_year), str(class_year)]
+        else:
+            query += " AND (custom_data LIKE ? OR custom_data LIKE ? OR custom_data LIKE ?)"
+            params += [f'%\"class_year\":\"{class_year}\"%', f'%\"Year\":\"{class_year}\"%', f'%\"year\":\"{class_year}\"%']
+            
+    if division:
+        if is_pg:
+            query += " AND (custom_data::jsonb->>'division' = ? OR custom_data::jsonb->>'Division' = ?)"
+            params += [str(division), str(division)]
+        else:
+            query += " AND (custom_data LIKE ? OR custom_data LIKE ?)"
+            params += [f'%\"division\":\"{division}\"%', f'%\"Division\":\"{division}\"%']
+            
+    if branch:
+        if is_pg:
+            query += " AND (custom_data::jsonb->>'branch' = ? OR custom_data::jsonb->>'Branch' = ?)"
+            params += [str(branch), str(branch)]
+        else:
+            query += " AND (custom_data LIKE ? OR custom_data LIKE ?)"
+            params += [f'%\"branch\":\"{branch}\"%', f'%\"Branch\":\"{branch}\"%']
+            
     # Optional pagination
     try:
         limit = int(request.args.get('limit', 500))
@@ -463,16 +492,36 @@ def get_persons():
     except:
         pass
     try:
+        # Debug logging
+        print(f"[DEBUG_PERSONS] Params Recvd: year={class_year}, div={division}, branch={branch}", flush=True)
+        print(f"[DEBUG_PERSONS] Final Query: {query}", flush=True)
+        print(f"[DEBUG_PERSONS] Final Params: {params}", flush=True)
         c.execute(query, params)
         rows = c.fetchall()
+        print(f"[DEBUG_PERSONS] Rows found: {len(rows)}", flush=True)
+        for r in rows[:5]: 
+             # Safe logging regardless of row factory
+             if isinstance(r, dict):
+                 print(f"[DEBUG_PERSONS] Sample Row: ID={r.get('id')}, Name={r.get('name')}, CustomData={str(r.get('custom_data'))[:100]}...", flush=True)
+             else:
+                 print(f"[DEBUG_PERSONS] Sample Row: ID={r[0]}, Name={r[2]}, CustomData={str(r[9])[:100]}...", flush=True)
         conn.close()
     except Exception as e:
-        conn.close()
-        return jsonify({"error": f"PostgreSQL Fetch Error: {str(e)}", "query": query, "params": str(params)}), 500
+        print(f"[DEBUG_PERSONS] ERROR: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        if conn: conn.close()
+        return jsonify({"error": str(e)}), 500
     
     persons = []
     for row in rows:
-        persons.append(dict(row))
+        r = dict(row) if not isinstance(row, dict) else row.copy()
+        if r.get("custom_data") and isinstance(r["custom_data"], str):
+            try:
+                r["custom_data"] = json.loads(r["custom_data"])
+            except Exception:
+                pass
+        persons.append(r)
     
     result = {"persons": persons}
     cache_set(cache_key, result, 300) # 5 min cache
@@ -512,10 +561,17 @@ def upload_face():
     standard_fields = {
         'person_id', 'name', 'templates', 'templates_list', 'face_image', 'phone', 
         'department', 'designation', 'shift', 'vendor_id', 
-        'landmarks_3d', 'landmarks_3d_list', 'struct_vec', 'struct_vec_list',
-        'class_year', 'division', 'branch'
+        'landmarks_3d', 'landmarks_3d_list', 'struct_vec', 'struct_vec_list'
+        # 'class_year', 'division', 'branch' are intentional kept out here to be part of custom_dict
+        # because the faces table lacks these columns and they must be in custom_data for UI.
     }
     custom_dict = {k: v for k, v in data.items() if k not in standard_fields}
+    
+    # Ensure scope fields are in custom_dict for UI visibility (Faces table lacks columns)
+    if class_year: custom_dict['class_year'] = class_year
+    if division: custom_dict['division'] = division
+    if branch: custom_dict['branch'] = branch
+    
     custom_data = json.dumps(custom_dict) if custom_dict else None
 
     # Use caller's vendor_id. If SuperAdmin, allow overriding via payload.
@@ -541,7 +597,7 @@ def upload_face():
             vertical = r[0] if r else None
         student_number = None
         try:
-            student_number = str(custom_dict.get('student_number') or custom_dict.get('roll_number') or custom_dict.get('admission_number') or '').strip()
+            student_number = str(custom_dict.get('student_number') or custom_dict.get('student_id') or custom_dict.get('id_number') or '').strip()
         except Exception:
             student_number = None
         if vertical == 'school' and student_number:
@@ -553,7 +609,7 @@ def upload_face():
             for r in rows:
                 try:
                     cd = json.loads(r[1]) if r[1] else {}
-                    sn = str(cd.get('student_number') or cd.get('roll_number') or cd.get('admission_number') or '').strip()
+                    sn = str(cd.get('student_id') or cd.get('id_number') or '').strip()
                     if sn and sn == student_number:
                         conn_check.close()
                         return jsonify({"error": "Duplicate student_number for this vendor"}), 409
@@ -795,7 +851,7 @@ def upload_face():
                     try:
                         cd_obj = json.loads(updated_cd) if updated_cd else {}
                         if isinstance(cd_obj, dict):
-                            student_number_for_parent = str(cd_obj.get("student_number") or cd_obj.get("roll_number") or cd_obj.get("admission_number") or "").strip()
+                            student_number_for_parent = str(cd_obj.get("student_id") or cd_obj.get("id_number") or "").strip()
                     except Exception:
                         student_number_for_parent = None
                     if student_number_for_parent:
@@ -812,7 +868,7 @@ def upload_face():
                     if 'leave_management' in features:
                         # If phone or ID changed, we might need to update the login
                         cd_old_obj = json.loads(existing.get("custom_data") or "{}") if existing.get("custom_data") else {}
-                        old_sid = str(cd_old_obj.get("student_number") or cd_old_obj.get("roll_number") or cd_old_obj.get("admission_number") or "").strip()
+                        old_sid = str(cd_old_obj.get("student_id") or cd_old_obj.get("id_number") or "").strip()
                         new_sid = student_number_for_parent
                         new_phone = str(phone or "").strip()
                         
@@ -864,7 +920,7 @@ def upload_face():
                 if 'leave_management' in features:
                     # Extract student ID from custom_data
                     cd_obj = json.loads(custom_data) if custom_data else {}
-                    student_id = str(cd_obj.get("student_number") or cd_obj.get("roll_number") or cd_obj.get("admission_number") or "").strip()
+                    student_id = str(cd_obj.get("student_id") or cd_obj.get("id_number") or "").strip()
                     student_phone = str(phone or "").strip()
                     
                     if student_id and student_phone:
@@ -1100,7 +1156,7 @@ def delete_face(name):
                     if c_data:
                         cd = json.loads(c_data) if isinstance(c_data, str) else c_data
                         if isinstance(cd, dict):
-                            sn = str(cd.get("student_number") or cd.get("roll_number") or cd.get("admission_number") or "").strip()
+                            sn = str(cd.get("student_id") or cd.get("id_number") or "").strip()
                 except Exception:
                     sn = None
                 if sn:
@@ -1229,7 +1285,7 @@ def delete_face_by_id(person_id):
             if custom_data:
                 cd = json.loads(custom_data) if isinstance(custom_data, str) else custom_data
                 if isinstance(cd, dict):
-                    sn = str(cd.get("student_number") or cd.get("roll_number") or cd.get("admission_number") or "").strip()
+                    sn = str(cd.get("student_id") or cd.get("id_number") or "").strip()
         except Exception:
             sn = None
         # Get display_id and vendor_id for re-indexing
@@ -1307,6 +1363,13 @@ def delete_face_by_id(person_id):
         # 3. Re-index remaining faces for this vendor
         if deleted_faces > 0 and target_vendor_id is not None:
             reindex_vendor_faces(conn, target_vendor_id)
+            
+            # Reset registration config if 0 users remain as per user request
+            c.execute("SELECT COUNT(*) FROM faces WHERE vendor_id = ?", (target_vendor_id,))
+            if c.fetchone()[0] == 0:
+                c.execute("UPDATE bulk_attendance_config SET fields = '[]' WHERE vendor_id = ?", (target_vendor_id,))
+                c.execute("UPDATE vendors SET registration_config = '[]' WHERE id = ?", (target_vendor_id,))
+                logger.info(f"Zero students remain for vendor {target_vendor_id}. Registration config cleared.")
 
         conn.commit()
         
@@ -1333,6 +1396,49 @@ def delete_face_by_id(person_id):
     finally:
         conn.close()
 
+
+@faces_bp.route("/sync/delete-all", methods=["DELETE"])
+@vendor_required
+def delete_all_faces():
+    from app import get_db_connection, socketio
+    vendor_id = request.vendor_id
+    if not vendor_id:
+        return jsonify({"error": "Vendor ID required"}), 400
+    
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        # 1. Cleanup all related records for this vendor
+        c.execute("DELETE FROM attendance WHERE vendor_id = ?", (vendor_id,))
+        c.execute("DELETE FROM student_parents WHERE vendor_id = ?", (vendor_id,))
+        c.execute("DELETE FROM leave_requests WHERE vendor_id = ?", (vendor_id,))
+        c.execute("DELETE FROM lecture_attendance WHERE vendor_id = ?", (vendor_id,))
+        c.execute("DELETE FROM person_embeddings WHERE vendor_id = ?", (vendor_id,))
+        c.execute("DELETE FROM parent_tokens WHERE vendor_id = ?", (vendor_id,))
+        c.execute("DELETE FROM parent_users WHERE vendor_id = ?", (vendor_id,))
+        c.execute("DELETE FROM system_users WHERE vendor_id = ? AND role = 'student'", (vendor_id,))
+        
+        # 2. Delete all faces
+        c.execute("DELETE FROM faces WHERE vendor_id = ?", (vendor_id,))
+        
+        # 3. Reset registration configuration as requested
+        c.execute("UPDATE bulk_attendance_config SET fields = '[]' WHERE vendor_id = ?", (vendor_id,))
+        c.execute("UPDATE vendors SET registration_config = '[]' WHERE id = ?", (vendor_id,))
+        
+        conn.commit()
+        
+        cache_delete_vendor_prefix(vendor_id)
+        cache_delete("admin_stats")
+        
+        socketio.emit('persons_updated', {'vendor_id': vendor_id}, room=f"vendor_{vendor_id}")
+        socketio.emit('attendance_updated', {'vendor_id': vendor_id}, room=f"vendor_{vendor_id}")
+        socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
+        
+        return jsonify({"status": "success", "message": "All students and configurations cleared."})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
 @faces_bp.route("/regenerate", methods=["POST"])
 @vendor_required

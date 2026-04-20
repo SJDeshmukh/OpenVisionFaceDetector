@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
-import { 
-  Save, 
+import {
+  Save,
   HelpCircle,
   Bell,
   Lock,
@@ -20,7 +20,7 @@ import { API_URL } from '../config';
 
 const Settings = () => {
   const { user } = useAuth();
-  
+
   // System Settings State
   const [threshold, setThreshold] = useState(0.6);
   const [cooldown, setCooldown] = useState(30);
@@ -29,7 +29,7 @@ const Settings = () => {
   const [autoCheckout, setAutoCheckout] = useState(false);
   const [voiceGreeting, setVoiceGreeting] = useState(true);
   const [adminAlerts, setAdminAlerts] = useState(false);
-  
+
   // User Management State
   const [systemUsers, setSystemUsers] = useState([]);
   const [showUserModal, setShowUserModal] = useState(false);
@@ -165,8 +165,8 @@ const Settings = () => {
     <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden mb-6">
       <div className="p-6 border-b border-slate-200 flex items-center justify-between bg-slate-50/50">
         <div className="flex items-center space-x-3">
-            <Icon size={20} className="text-slate-500" />
-            <h3 className="text-lg font-bold text-slate-800">{title}</h3>
+          <Icon size={20} className="text-slate-500" />
+          <h3 className="text-lg font-bold text-slate-800">{title}</h3>
         </div>
         {action}
       </div>
@@ -183,7 +183,7 @@ const Settings = () => {
           <h1 className="text-2xl font-bold text-slate-800">System Configuration</h1>
           <p className="text-slate-500">Manage global settings for the attendance system.</p>
         </div>
-        <button 
+        <button
           onClick={handleSaveSettings}
           className="flex items-center space-x-2 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium transition-colors shadow-sm"
         >
@@ -256,11 +256,10 @@ const Settings = () => {
                             )}
                           </td>
                           <td className="p-2">
-                            <span className={`px-1.5 py-0.5 rounded text-xs font-bold ${
-                              inv.status === 'paid' ? 'bg-green-100 text-green-700' :
-                              inv.status === 'overdue' ? 'bg-red-100 text-red-700' :
-                              'bg-yellow-100 text-yellow-700'
-                            }`}>
+                            <span className={`px-1.5 py-0.5 rounded text-xs font-bold ${inv.status === 'paid' ? 'bg-green-100 text-green-700' :
+                                inv.status === 'overdue' ? 'bg-red-100 text-red-700' :
+                                  'bg-yellow-100 text-yellow-700'
+                              }`}>
                               {inv.status.toUpperCase()}
                             </span>
                           </td>
@@ -276,11 +275,11 @@ const Settings = () => {
       )}
 
       {user?.role === 'admin' && (
-        <Section 
-          title="System Access" 
+        <Section
+          title="System Access"
           icon={UsersIcon}
           action={
-            <button 
+            <button
               onClick={openAddModal}
               className="flex items-center space-x-1 px-3 py-1.5 bg-blue-600/10 text-blue-600 rounded-lg hover:bg-blue-600/20 text-sm font-medium transition-colors"
             >
@@ -303,14 +302,13 @@ const Settings = () => {
                   <tr key={u.username} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
                     <td className="py-3 text-sm">{u.username}</td>
                     <td className="py-3">
-                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                        u.role === 'admin' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'
-                      }`}>
+                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${u.role === 'admin' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'
+                        }`}>
                         {u.role.toUpperCase()}
                       </span>
                     </td>
                     <td className="py-3 flex justify-end space-x-2">
-                      <button 
+                      <button
                         onClick={() => openEditModal(u)}
                         className="p-1.5 hover:bg-slate-200 rounded text-slate-500 hover:text-blue-600 transition-colors"
                         title="Edit Password/Role"
@@ -318,7 +316,7 @@ const Settings = () => {
                         <Edit2 size={16} />
                       </button>
                       {u.username !== 'admin' && (
-                        <button 
+                        <button
                           onClick={() => handleDeleteUser(u.username)}
                           className="p-1.5 hover:bg-red-100 rounded text-slate-500 hover:text-red-600 transition-colors"
                           title="Delete User"
@@ -344,11 +342,11 @@ const Settings = () => {
             </label>
             <span className="text-sm font-mono text-blue-600 font-bold">{(threshold * 100).toFixed(0)}%</span>
           </div>
-          <input 
-            type="range" 
-            min="0.4" 
-            max="0.9" 
-            step="0.05" 
+          <input
+            type="range"
+            min="0.4"
+            max="0.9"
+            step="0.05"
             value={threshold}
             onChange={(e) => setThreshold(parseFloat(e.target.value))}
             className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
@@ -363,11 +361,11 @@ const Settings = () => {
             <label className="text-sm font-semibold text-slate-700">Duplicate Detection Cooldown</label>
             <span className="text-sm font-mono text-blue-600 font-bold">{cooldown}s</span>
           </div>
-          <input 
-            type="range" 
-            min="5" 
-            max="300" 
-            step="5" 
+          <input
+            type="range"
+            min="5"
+            max="300"
+            step="5"
             value={cooldown}
             onChange={(e) => setCooldown(parseInt(e.target.value))}
             className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
@@ -388,15 +386,15 @@ const Settings = () => {
               <p className="text-xs text-slate-500">Play text-to-speech greeting upon successful recognition</p>
             </div>
             <div className="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
-                <input 
-                  type="checkbox" 
-                  name="toggle" 
-                  id="toggle" 
-                  checked={voiceGreeting}
-                  onChange={(e) => setVoiceGreeting(e.target.checked)}
-                  className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer checked:right-0 checked:border-green-400"
-                />
-                <label htmlFor="toggle" className="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer checked:bg-green-400"></label>
+              <input
+                type="checkbox"
+                name="toggle"
+                id="toggle"
+                checked={voiceGreeting}
+                onChange={(e) => setVoiceGreeting(e.target.checked)}
+                className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer checked:right-0 checked:border-green-400"
+              />
+              <label htmlFor="toggle" className="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer checked:bg-green-400"></label>
             </div>
           </div>
           <div className="flex items-center justify-between">
@@ -404,16 +402,16 @@ const Settings = () => {
               <p className="text-sm font-medium text-slate-800">Admin Alerts</p>
               <p className="text-xs text-slate-500">Email admin on unknown face detection</p>
             </div>
-             <div className="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
-                <input 
-                  type="checkbox" 
-                  name="toggle2" 
-                  id="toggle2" 
-                  checked={adminAlerts}
-                  onChange={(e) => setAdminAlerts(e.target.checked)}
-                  className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer checked:right-0 checked:border-green-400"
-                />
-                <label htmlFor="toggle2" className="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer checked:bg-green-400"></label>
+            <div className="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
+              <input
+                type="checkbox"
+                name="toggle2"
+                id="toggle2"
+                checked={adminAlerts}
+                onChange={(e) => setAdminAlerts(e.target.checked)}
+                className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer checked:right-0 checked:border-green-400"
+              />
+              <label htmlFor="toggle2" className="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer checked:bg-green-400"></label>
             </div>
           </div>
         </div>
@@ -431,14 +429,14 @@ const Settings = () => {
                 <X size={20} />
               </button>
             </div>
-            
+
             <div className="p-6 space-y-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Username</label>
-                <input 
-                  type="text" 
+                <input
+                  type="text"
                   value={userForm.username}
-                  onChange={(e) => setUserForm({...userForm, username: e.target.value})}
+                  onChange={(e) => setUserForm({ ...userForm, username: e.target.value })}
                   disabled={!!editingUser}
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 disabled:bg-slate-100 disabled:text-slate-500"
                   placeholder="Enter username"
@@ -449,10 +447,10 @@ const Settings = () => {
                 <label className="block text-sm font-medium text-slate-700 mb-1">
                   {editingUser ? 'New Password (leave blank to keep)' : 'Password'}
                 </label>
-                <input 
-                  type="text" 
+                <input
+                  type="text"
                   value={userForm.password}
-                  onChange={(e) => setUserForm({...userForm, password: e.target.value})}
+                  onChange={(e) => setUserForm({ ...userForm, password: e.target.value })}
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                   placeholder="Enter password"
                 />
@@ -460,9 +458,9 @@ const Settings = () => {
 
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Role</label>
-                <select 
+                <select
                   value={userForm.role}
-                  onChange={(e) => setUserForm({...userForm, role: e.target.value})}
+                  onChange={(e) => setUserForm({ ...userForm, role: e.target.value })}
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                 >
                   <option value="user">User</option>
@@ -472,13 +470,13 @@ const Settings = () => {
             </div>
 
             <div className="px-6 py-4 bg-slate-50 flex justify-end space-x-3">
-              <button 
+              <button
                 onClick={() => setShowUserModal(false)}
                 className="px-4 py-2 text-sm font-medium text-slate-600 hover:text-slate-800 hover:bg-slate-200 rounded-lg transition-colors"
               >
                 Cancel
               </button>
-              <button 
+              <button
                 onClick={handleSaveUser}
                 className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-sm transition-colors"
               >

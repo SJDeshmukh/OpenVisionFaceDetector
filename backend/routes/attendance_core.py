@@ -77,10 +77,8 @@ def get_attendance_filters(valid_data: AttendanceFilterSchema):
         val = custom_dict.get(key)
         if val is not None: return val
         key_aliases = {
-            'student_id': ['student_number', 'roll_number', 'admission_number'],
-            'student_number': ['student_id', 'roll_number', 'admission_number'],
-            'roll_number': ['student_id', 'student_number', 'admission_number'],
-            'admission_number': ['student_id', 'student_number', 'roll_number'],
+            'student_id': ['id_number'],
+            'id_number': ['student_id'],
             'class_section': ['class_id'],
             'class_id': ['class_section']
         }
@@ -385,7 +383,12 @@ def get_attendance(valid_data: AttendanceFilterSchema):
             "status": r["status"], "activity": r["activity"], "is_late": r.get("is_late", 0),
             "department": r["department"], "designation": r["designation"],
             "captured_image": r["captured_image"],
-            "device_name": r["device_name"] or r["device_id"]
+            "device_name": r["device_name"] or r["device_id"],
+            "class_year": r.get("class_year"),
+            "division": r.get("division"),
+            "branch": r.get("branch"),
+            "subject": r.get("subject"),
+            "lecture_id": r.get("lecture_id")
         })
     result = {"attendance": attendance}
     cache_set(cache_key, result, 60)
@@ -401,7 +404,7 @@ def public_attendance_by_student(valid_data: PublicAttendanceRequest):
     for r in c.fetchall():
         try:
             cd = json.loads(r[2])
-            if str(cd.get('student_number') or cd.get('roll_number') or '').strip() == student_number:
+            if str(cd.get('student_id') or cd.get('id_number') or '').strip() == student_number:
                 pid, vid = r[0], r[1]; break
         except: pass
     if not pid: conn.close(); return jsonify({"attendance": []})

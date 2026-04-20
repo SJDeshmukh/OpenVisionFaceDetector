@@ -469,7 +469,7 @@ def _init_pg_schema_on_conn(conn):
         "CREATE TABLE IF NOT EXISTS companies (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), name TEXT, working_hours REAL, shifts TEXT, draft_timetable TEXT, live_timetable TEXT, last_modified_by TEXT, last_modified_at TIMESTAMP, published_by TEXT, published_at TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS faces (id SERIAL PRIMARY KEY, name TEXT, templates TEXT, face_image TEXT, department TEXT, designation TEXT, phone TEXT, shift TEXT, daily_wage REAL DEFAULT 0, basic_salary REAL DEFAULT 0, hra REAL DEFAULT 0, conveyance REAL DEFAULT 0, special_allowance REAL DEFAULT 0, pf_enabled INTEGER DEFAULT 0, esi_enabled INTEGER DEFAULT 0, gratuity_enabled INTEGER DEFAULT 0, professional_tax REAL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount REAL DEFAULT 0, vendor_id INTEGER REFERENCES vendors(id), custom_data TEXT, display_id INTEGER, joining_date DATE)",
         "CREATE TABLE IF NOT EXISTS advances (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id), amount REAL, amount_cash REAL DEFAULT 0, amount_online REAL DEFAULT 0, date DATE, status TEXT DEFAULT 'pending', approved_by TEXT, approved_at TIMESTAMP, rejection_reason TEXT, deduction_month TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
-        "CREATE TABLE IF NOT EXISTS attendance (id SERIAL PRIMARY KEY, name TEXT, timestamp TIMESTAMP, status TEXT, captured_image TEXT, activity TEXT, is_late INTEGER DEFAULT 0, device_id TEXT, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id))",
+        "CREATE TABLE IF NOT EXISTS attendance (id SERIAL PRIMARY KEY, name TEXT, timestamp TIMESTAMP, status TEXT, captured_image TEXT, activity TEXT, is_late INTEGER DEFAULT 0, device_id TEXT, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id), attendance_date DATE, class_year TEXT, division TEXT, branch TEXT, subject TEXT, lecture_id INTEGER)",
         "CREATE TABLE IF NOT EXISTS system_users (username TEXT PRIMARY KEY, password TEXT, password_plain TEXT, role TEXT, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id), has_set_password INTEGER DEFAULT 0, last_active_at TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS subscriptions (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id) UNIQUE, plan_type TEXT, start_date TIMESTAMP, end_date TIMESTAMP, status TEXT DEFAULT 'active', max_users INTEGER, max_employees INTEGER, cost_per_user REAL, setup_fee REAL, setup_fee_paid INTEGER, features TEXT, max_mobile_devices INTEGER DEFAULT 1, cost_per_employee REAL DEFAULT 0, grace_period_days INTEGER DEFAULT 0, max_web_sessions INTEGER DEFAULT 1)",
         "CREATE TABLE IF NOT EXISTS vendor_devices (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), device_id TEXT, device_name TEXT, registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, last_login_at TIMESTAMP, last_active_at TIMESTAMP, battery_level REAL, geofence_lat REAL, geofence_lng REAL, geofence_radius REAL DEFAULT 0, last_lat REAL, last_lng REAL, UNIQUE(vendor_id, device_id))",
@@ -492,6 +492,8 @@ def _init_pg_schema_on_conn(conn):
         "CREATE TABLE IF NOT EXISTS lecture_attendance (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), lecture_id INTEGER REFERENCES lectures(id), person_id INTEGER REFERENCES faces(id), status TEXT DEFAULT 'present', marked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(lecture_id, person_id))",
         "CREATE TABLE IF NOT EXISTS classes (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), class_year TEXT, division TEXT, branch TEXT, label TEXT, mapped_subjects TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS face_reset_requests (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), parent_id INTEGER REFERENCES parent_users(id), reason TEXT, status TEXT DEFAULT 'pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS registration_batches (id TEXT PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), status TEXT DEFAULT 'active', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS registration_batch_items (id TEXT PRIMARY KEY, batch_id TEXT REFERENCES registration_batches(id), seq INTEGER, image_b64 TEXT, annotated_b64 TEXT, faces_json TEXT, status TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
 
         # --- Performance Indices ---
         "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_time ON attendance(vendor_id, timestamp)",
@@ -573,7 +575,14 @@ def _init_pg_schema_on_conn(conn):
         ("advances", "amount_online", "REAL DEFAULT 0"),
         ("advances", "approved_by", "TEXT"),
         ("advances", "approved_at", "TIMESTAMP"),
-        ("advances", "rejection_reason", "TEXT")
+        ("advances", "rejection_reason", "TEXT"),
+        ("classes", "mapped_subjects", "TEXT"),
+        ("attendance", "class_year", "TEXT"),
+        ("attendance", "division", "TEXT"),
+        ("attendance", "branch", "TEXT"),
+        ("attendance", "subject", "TEXT"),
+        ("attendance", "lecture_id", "INTEGER"),
+        ("attendance", "attendance_date", "DATE")
     ]
     
     for table, col, col_type in cols:
@@ -658,7 +667,7 @@ def init_sqlite_schema(conn):
         "CREATE TABLE IF NOT EXISTS companies (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, name TEXT, working_hours REAL, shifts TEXT, draft_timetable TEXT, live_timetable TEXT, last_modified_by TEXT, last_modified_at DATETIME, published_by TEXT, published_at DATETIME)",
         "CREATE TABLE IF NOT EXISTS faces (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, templates TEXT, face_image TEXT, department TEXT, designation TEXT, phone TEXT, shift TEXT, daily_wage REAL DEFAULT 0, basic_salary REAL DEFAULT 0, hra REAL DEFAULT 0, conveyance REAL DEFAULT 0, special_allowance REAL DEFAULT 0, pf_enabled INTEGER DEFAULT 0, esi_enabled INTEGER DEFAULT 0, gratuity_enabled INTEGER DEFAULT 0, professional_tax REAL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount REAL DEFAULT 0, vendor_id INTEGER, custom_data TEXT, display_id INTEGER)",
         "CREATE TABLE IF NOT EXISTS advances (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, person_id INTEGER, amount REAL, amount_cash REAL DEFAULT 0, amount_online REAL DEFAULT 0, date DATE, status TEXT DEFAULT 'pending', approved_by TEXT, approved_at DATETIME, rejection_reason TEXT, deduction_month TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
-        "CREATE TABLE IF NOT EXISTS attendance (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, timestamp DATETIME, status TEXT, captured_image TEXT, activity TEXT, is_late INTEGER DEFAULT 0, device_id TEXT, vendor_id INTEGER, person_id INTEGER)",
+        "CREATE TABLE IF NOT EXISTS attendance (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, timestamp DATETIME, status TEXT, captured_image TEXT, activity TEXT, is_late INTEGER DEFAULT 0, device_id TEXT, vendor_id INTEGER, person_id INTEGER, attendance_date DATE, class_year TEXT, division TEXT, branch TEXT, subject TEXT, lecture_id INTEGER)",
         "CREATE TABLE IF NOT EXISTS system_users (username TEXT PRIMARY KEY, password TEXT, password_plain TEXT, role TEXT, vendor_id INTEGER, person_id INTEGER, has_set_password INTEGER DEFAULT 0)",
         "CREATE TABLE IF NOT EXISTS subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER UNIQUE, plan_type TEXT, start_date DATETIME, end_date DATETIME, status TEXT DEFAULT 'active', max_users INTEGER, max_employees INTEGER, cost_per_user REAL, setup_fee REAL, setup_fee_paid INTEGER, features TEXT, max_mobile_devices INTEGER DEFAULT 1, cost_per_employee REAL DEFAULT 0, grace_period_days INTEGER DEFAULT 0, max_web_sessions INTEGER DEFAULT 1)",
         "CREATE TABLE IF NOT EXISTS vendor_devices (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, device_id TEXT, device_name TEXT, registered_at DATETIME DEFAULT CURRENT_TIMESTAMP, last_login_at DATETIME, last_active_at DATETIME, battery_level REAL, geofence_lat REAL, geofence_lng REAL, geofence_radius REAL DEFAULT 0, last_lat REAL, last_lng REAL, UNIQUE(vendor_id, device_id))",
@@ -680,6 +689,8 @@ def init_sqlite_schema(conn):
         "CREATE TABLE IF NOT EXISTS lectures (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, subject TEXT NOT NULL, class_year TEXT, division TEXT, branch TEXT, lecture_date DATE, start_time TEXT, teacher TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS lecture_attendance (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, lecture_id INTEGER, person_id INTEGER, status TEXT DEFAULT 'present', marked_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(lecture_id, person_id))",
         "CREATE TABLE IF NOT EXISTS classes (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, class_year TEXT, division TEXT, branch TEXT, label TEXT, mapped_subjects TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS registration_batches (id TEXT PRIMARY KEY, vendor_id INTEGER, status TEXT DEFAULT 'active', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS registration_batch_items (id TEXT PRIMARY KEY, batch_id TEXT, seq INTEGER, image_b64 TEXT, annotated_b64 TEXT, faces_json TEXT, status TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
 
         # --- Performance Indices ---
         "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_time ON attendance(vendor_id, timestamp)",

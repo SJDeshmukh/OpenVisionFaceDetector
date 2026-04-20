@@ -8,10 +8,11 @@ Bulk Attendance (Lecture-based) routes
 import json
 import sqlite3
 import logging
-from flask import Blueprint, request, jsonify, g
+from flask import Blueprint, request, jsonify, g, current_app
 from datetime import datetime
 from services.auth_service import authenticate_vendor_access, require_auth, verify_token, extract_token
-from db_factory import get_db_connection
+from db_factory import get_db_connection, set_row_factory
+from utils import cache_delete_vendor_prefix
 
 logger = logging.getLogger(__name__)
 bulk_attendance_bp = Blueprint('bulk_attendance', __name__)
@@ -193,6 +194,7 @@ def create_lecture():
     lecture_id = c.lastrowid
     conn.close()
     return jsonify({"status": "created", "lecture_id": lecture_id}), 201
+    return jsonify({"status": "created", "lecture_id": lecture_id}), 201
 
 
 @bulk_attendance_bp.route("/bulk-attendance/lectures/<int:lecture_id>", methods=["GET"])
@@ -248,6 +250,7 @@ def delete_lecture(lecture_id):
 def mark_lecture_attendance(lecture_id):
     vendor_id = g.vendor_id
     data = request.json or {}
+    client_now = data.get('timestamp')
 
     # Support single {person_id, status} or batch {entries: [{person_id, status}]}
     entries = data.get('entries')
@@ -260,32 +263,47 @@ def mark_lecture_attendance(lecture_id):
     conn = get_db_connection()
     c    = conn.cursor()
 
-    c.execute("SELECT id FROM lectures WHERE id = ? AND vendor_id = ?", (lecture_id, vendor_id))
-    if not c.fetchone():
+    c.execute("SELECT id, subject, class_year, division, branch FROM lectures WHERE id = ? AND vendor_id = ?", (lecture_id, vendor_id))
+    lecture = c.fetchone()
+    if not lecture:
         conn.close()
         return jsonify({"error": "Lecture not found"}), 404
+    
+    # Extract metadata safely
+    if hasattr(lecture, 'keys') and callable(lecture.keys): # dict-like
+        l_subj = lecture.get('subject', '')
+        l_year = lecture.get('class_year', '')
+        l_div  = lecture.get('division', '')
+        l_branch = lecture.get('branch', '')
+    else: # tuple
+        l_subj = lecture[1] if len(lecture) > 1 else ''
+        l_year = lecture[2] if len(lecture) > 2 else ''
+        l_div  = lecture[3] if len(lecture) > 3 else ''
+        l_branch = lecture[4] if len(lecture) > 4 else ''
+        date_str = lecture[5] if len(lecture) > 5 else ''
 
-    now = datetime.utcnow().isoformat()
+    now = client_now or datetime.now().isoformat()
     marked = 0
     for entry in entries:
         try:
-            pid    = int(entry.get('person_id', 0))
+            pid = int(entry.get('person_id'))
             status = entry.get('status', 'present')
+            l_id = int(entry.get('lecture_id') or lecture_id)
             if status not in ('present', 'absent'):
                 status = 'present'
             c.execute(
                 "SELECT id FROM lecture_attendance WHERE lecture_id = ? AND person_id = ?",
-                (lecture_id, pid)
+                (l_id, pid)
             )
             if c.fetchone():
                 c.execute(
                     "UPDATE lecture_attendance SET status = ?, marked_at = ? WHERE lecture_id = ? AND person_id = ?",
-                    (status, now, lecture_id, pid)
+                    (status, now, l_id, pid)
                 )
             else:
                 c.execute(
                     "INSERT INTO lecture_attendance (vendor_id, lecture_id, person_id, status, marked_at) VALUES (?, ?, ?, ?, ?)",
-                    (vendor_id, lecture_id, pid, status, now)
+                    (vendor_id, l_id, pid, status, now)
                 )
             
             # Sync to core attendance logs if present
@@ -295,15 +313,16 @@ def mark_lecture_attendance(lecture_id):
                 fr = c.fetchone()
                 name = fr[0] if fr else "Unknown"
                 
-                # Check for recent duplicate to avoid spam in core logs
+                # Check for recent duplicate for this specific lecture to avoid redundant logs
                 c.execute(
-                    "SELECT id FROM attendance WHERE person_id = ? AND activity = 'Lecture' AND date(timestamp) = date(?) AND vendor_id = ?",
-                    (pid, now, vendor_id)
+                    "SELECT id FROM attendance WHERE person_id = ? AND lecture_id = ? AND vendor_id = ?",
+                    (pid, l_id, vendor_id)
                 )
                 if not c.fetchone():
                     c.execute(
-                        "INSERT INTO attendance (name, timestamp, status, activity, person_id, vendor_id, captured_image, is_late, device_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        (name, now, 'CHECK_IN', 'Lecture', pid, vendor_id, image, 0, 'Bulk_Image_API')
+                        """INSERT INTO attendance (name, timestamp, status, activity, person_id, vendor_id, captured_image, is_late, device_id, class_year, division, branch, subject, lecture_id) 
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (name, now, 'CHECK_IN', 'Lecture', pid, vendor_id, image, 0, 'Bulk_Image_API', l_year, l_div, l_branch, l_subj, l_id)
                     )
             marked += 1
         except Exception as e:
@@ -311,6 +330,18 @@ def mark_lecture_attendance(lecture_id):
 
     conn.commit()
     conn.close()
+    
+    # Invalidate attendance cache to show new records immediately
+    cache_delete_vendor_prefix(vendor_id)
+    
+    # Notify connected clients for real-time updates
+    try:
+        if 'socketio' in current_app.extensions:
+            socketio = current_app.extensions['socketio']
+            socketio.emit('attendance_updated', {'vendor_id': vendor_id}, room=f"vendor_{vendor_id}")
+    except Exception as e:
+        logger.warning(f"Failed to emit attendance_updated socket event: {e}")
+    
     return jsonify({"status": "marked", "count": marked})
 
 

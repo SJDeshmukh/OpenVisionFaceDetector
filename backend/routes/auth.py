@@ -186,9 +186,9 @@ def login():
         try:
             is_pg = getattr(conn, "_is_pg", False)
             if is_pg:
-                c.execute("SELECT id, name, phone, vendor_id, custom_data FROM faces WHERE custom_data::jsonb->>'student_number' = %s OR custom_data::jsonb->>'admission_number' = %s OR custom_data::jsonb->>'roll_number' = %s OR custom_data::jsonb->>'student_id' = %s OR custom_data::jsonb->>'id_number' = %s", (username, username, username, username, username))
+                c.execute("SELECT id, name, phone, vendor_id, custom_data FROM faces WHERE custom_data::jsonb->>'student_id' = %s OR custom_data::jsonb->>'id_number' = %s", (username, username))
             else:
-                c.execute("SELECT id, name, phone, vendor_id, custom_data FROM faces WHERE json_extract(custom_data, '$.student_number') = ? OR json_extract(custom_data, '$.admission_number') = ? OR json_extract(custom_data, '$.roll_number') = ? OR json_extract(custom_data, '$.student_id') = ? OR json_extract(custom_data, '$.id_number') = ?", (username, username, username, username, username))
+                c.execute("SELECT id, name, phone, vendor_id, custom_data FROM faces WHERE json_extract(custom_data, '$.student_id') = ? OR json_extract(custom_data, '$.id_number') = ?", (username, username))
             
             face = c.fetchone()
             if face:
@@ -713,11 +713,8 @@ def parent_login():
                 cd = None
             sn_val = ""
             if isinstance(cd, dict):
-                # Check multiple possible keys for student ID
+                # Only check for student_id or id_number
                 sn_val = str(
-                    cd.get("student_number") or 
-                    cd.get("roll_number") or 
-                    cd.get("admission_number") or 
                     cd.get("student_id") or 
                     cd.get("id_number") or
                     ""
@@ -849,9 +846,6 @@ def parent_login():
                     
                     # Extract ID from custom data
                     sn = str(
-                        cd.get("student_number") or 
-                        cd.get("roll_number") or 
-                        cd.get("admission_number") or 
                         cd.get("student_id") or 
                         cd.get("id_number") or
                         ""
@@ -1087,7 +1081,7 @@ def parent_student_day():
                 sn = ""
                 try:
                     cd = json.loads(cd_raw) if cd_raw else {}
-                    sn = str(cd.get("student_number") or cd.get("roll_number") or cd.get("admission_number") or "").strip()
+                    sn = str(cd.get("student_id") or cd.get("id_number") or "").strip()
                 except Exception:
                     sn = ""
                 if student_number and sn == student_number:
@@ -1207,7 +1201,7 @@ def parent_select_student():
         for r in rows:
             try:
                 cd = json.loads(r['custom_data'])
-                if str(cd.get('student_number') or cd.get('roll_number') or cd.get('admission_number') or '').strip() == str(student_number).strip():
+                if str(cd.get('student_id') or cd.get('id_number') or '').strip() == str(student_number).strip():
                     selected = r
                     break
             except Exception:

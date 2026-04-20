@@ -752,9 +752,7 @@ const Wages = () => {
                           <p className="font-medium text-slate-900 text-sm">{person.name}</p>
                           <p className="text-xs text-slate-500 font-mono">ID: #{person.display_id || person.person_id}</p>
                           <p className="text-[10px] text-slate-400">
-                            {person.custom_data?.student_number ||
-                              person.custom_data?.roll_number ||
-                              person.custom_data?.admission_number || ""}
+                            {person.custom_data?.student_id || ""}
                           </p>
                         </div>
                       </div>

@@ -148,10 +148,8 @@ def get_report_filters():
         if val is not None:
             return val
         key_aliases = {
-            'student_id': ['student_number', 'roll_number', 'admission_number'],
-            'student_number': ['student_id', 'roll_number', 'admission_number'],
-            'roll_number': ['student_id', 'student_number', 'admission_number'],
-            'admission_number': ['student_id', 'student_number', 'roll_number'],
+            'student_id': ['id_number'],
+            'id_number': ['student_id'],
             'class_section': ['class_id'],
             'class_id': ['class_section']
         }

@@ -182,13 +182,14 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
             q = "SELECT person_id, vec, dim, struct_vec, class_year, division, branch FROM person_embeddings WHERE vendor_id = ?"
             args = [int(vendor_id or 0)]
             if class_year:
-                q += " AND (class_year = ? OR class_year IS NULL OR class_year = '')"
+                # STRICT FILTERING: Only include students from the EXACT class if one is specified
+                q += " AND class_year = ?"
                 args.append(str(class_year))
             if division:
-                q += " AND (division = ? OR division IS NULL OR division = '')"
+                q += " AND division = ?"
                 args.append(str(division))
             if branch:
-                q += " AND (branch = ? OR branch IS NULL OR branch = '')"
+                q += " AND branch = ?"
                 args.append(str(branch))
             c.execute(q, args)
             rows_emb = c.fetchall() or []
@@ -254,17 +255,15 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
             if vendor_id:
                 where.append("vendor_id = ?"); params.append(vendor_id)
             if class_year:
-                where.append("((custom_data LIKE ?) OR (custom_data NOT LIKE ?))")
+                # STRICT FILTERING: Use LIKE for exact JSON field match to avoid including unassigned students
+                where.append("custom_data LIKE ?")
                 params.append(f'%\"class_year\":\"{class_year}\"%')
-                params.append('%\"class_year\"%')
             if division:
-                where.append("((custom_data LIKE ?) OR (custom_data NOT LIKE ?))")
+                where.append("custom_data LIKE ?")
                 params.append(f'%\"division\":\"{division}\"%')
-                params.append('%\"division\"%')
             if branch:
-                where.append("((custom_data LIKE ?) OR (custom_data NOT LIKE ?))")
+                where.append("custom_data LIKE ?")
                 params.append(f'%\"branch\":\"{branch}\"%')
-                params.append('%\"branch\"%')
             if where:
                 base_query += " WHERE " + " AND ".join(where)
             c.execute(base_query, params)
@@ -381,11 +380,39 @@ def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3, struct_vec=
                         if division and str(match_item.get('division') or '') != str(division): is_perfect = False
                         if branch and str(match_item.get('branch') or '') != str(branch): is_perfect = False
 
+                    # STRICT FILTERING: If any scope is provided, only include perfect matches
+                    if (class_year or division or branch) and not is_perfect:
+                        continue
+
                     raw.append({'person_id': int(pid), 'name': str(nm), 'similarity': sim, 'perfect_scope': is_perfect})
                 
                 deduped = _dedup(raw, topk * 2) # Get more candidates for refinement
-                refined = _apply_contrastive_refinement(deduped)
-                return refined[:topk]
+                refined = _apply_contrastive_refinement(deduped)[:topk]
+                
+                # Fetch images for the results
+                try:
+                    pids = [int(r['person_id']) for r in refined]
+                    if pids:
+                        conn = get_db_connection()
+                        c = conn.cursor()
+                        ph = ",".join(["?"]*len(pids))
+                        c.execute(f"SELECT id, face_image, custom_data FROM faces WHERE id IN ({ph})", pids)
+                        img_rows = c.fetchall() or []
+                        imap = {int(r[0]): (r[1], r[2]) for r in img_rows}
+                        for r in refined:
+                            img, custom = imap.get(int(r['person_id']), (None, None))
+                            r['face_image'] = img
+                            if custom:
+                                try:
+                                    cd = json.loads(custom) if isinstance(custom, str) else custom
+                                    r['student_number'] = cd.get('student_number')
+                                except Exception:
+                                    pass
+                        conn.close()
+                except Exception:
+                    pass
+                
+                return refined
             except Exception:
                 pass
         sims = []
@@ -406,12 +433,40 @@ def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3, struct_vec=
             if class_year and str(it.get('class_year') or '') != str(class_year): is_perfect = False
             if division and str(it.get('division') or '') != str(division): is_perfect = False
             if branch and str(it.get('branch') or '') != str(branch): is_perfect = False
+            
+            # STRICT FILTERING: If any scope is provided, only include perfect matches
+            if (class_year or division or branch) and not is_perfect:
+                continue
                     
             sims.append({'person_id': it['person_id'], 'name': it['name'], 'similarity': sim, 'perfect_scope': is_perfect})
         
         deduped = _dedup(sims, topk * 2)
-        refined = _apply_contrastive_refinement(deduped)
-        return refined[:topk]
+        refined = _apply_contrastive_refinement(deduped)[:topk]
+        
+        # Fetch images for the results
+        try:
+            pids = [int(r['person_id']) for r in refined]
+            if pids:
+                conn = get_db_connection()
+                c = conn.cursor()
+                ph = ",".join(["?"]*len(pids))
+                c.execute(f"SELECT id, face_image, custom_data FROM faces WHERE id IN ({ph})", pids)
+                img_rows = c.fetchall() or []
+                imap = {int(r[0]): (r[1], r[2]) for r in img_rows}
+                for r in refined:
+                    img, custom = imap.get(int(r['person_id']), (None, None))
+                    r['face_image'] = img
+                    if custom:
+                        try:
+                            cd = json.loads(custom) if isinstance(custom, str) else custom
+                            r['student_number'] = cd.get('student_number')
+                        except Exception:
+                            pass
+                conn.close()
+        except Exception:
+            pass
+            
+        return refined
     except Exception:
         return []
 

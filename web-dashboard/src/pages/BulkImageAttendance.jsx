@@ -13,6 +13,8 @@ const BulkImageAttendance = () => {
   const [assign, setAssign] = useState({});
   const [loading, setLoading] = useState(false);
   const [marking, setMarking] = useState({});
+  const [isMarkingAll, setIsMarkingAll] = useState(false);
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [classes, setClasses] = useState([]);
   const [selectedClass, setSelectedClass] = useState(() => {
     const saved = localStorage.getItem('lastClassFilter');
@@ -22,7 +24,9 @@ const BulkImageAttendance = () => {
 
   // ── Lecture mode state ────────────────────────────────────────────────────
   const [lectures, setLectures] = useState([]);
-  const [selectedLectureId, setSelectedLectureId] = useState('');
+  const [selectedLectureId, setSelectedLectureId] = useState(() => {
+    try { return localStorage.getItem('active_lecture_id') || ''; } catch (_) { return ''; }
+  });
   const [lectureRoster, setLectureRoster] = useState([]); // [{person_id, status, name}]
   const [rosterMarking, setRosterMarking] = useState({});
   const [batchId, setBatchId] = useState(() => localStorage.getItem('class_batch_id') || '');
@@ -80,9 +84,20 @@ const BulkImageAttendance = () => {
   useEffect(() => {
     const fetchPeople = async () => {
       try {
+        console.log('[DEBUG_FETCH_PEOPLE] Params:', {
+          class_year: selectedClass.class_year,
+          division: selectedClass.division,
+          branch: selectedClass.branch
+        });
         const res = await axios.get(`${API_URL}/persons`, {
+          params: {
+            class_year: selectedClass.class_year,
+            division: selectedClass.division,
+            branch: selectedClass.branch
+          },
           headers: { Authorization: `Bearer ${user?.token}` }
         });
+        console.log('[DEBUG_FETCH_PEOPLE] Count:', res.data?.persons?.length);
         const list = (res.data?.persons || []).map(p => ({
           id: p.person_id || p.id,
           name: p.name
@@ -102,7 +117,7 @@ const BulkImageAttendance = () => {
       } catch (_) { }
     })();
     // Load threshold for selected class if any
-  }, [user]);
+  }, [user, selectedClass.class_year, selectedClass.division, selectedClass.branch]);
 
   const fetchLectures = async () => {
     try {
@@ -123,25 +138,32 @@ const BulkImageAttendance = () => {
   useEffect(() => {
     const manageLectureAssoc = async () => {
       if (!selectedClass.class_year || !selectedSubject) {
-        setSelectedLectureId('');
         return;
       }
+
+      // If we already have a session active for this subject/class, keep it
+      if (selectedLectureId) {
+        const lec = lectures.find(l => String(l.id) === String(selectedLectureId));
+        if (lec && lec.subject === selectedSubject) return;
+      }
+
       const today = new Date().toISOString().split('T')[0];
-      const match = lectures.find(l => 
-        l.class_year === selectedClass.class_year && 
-        l.division === selectedClass.division && 
-        l.branch === selectedClass.branch && 
+      const match = lectures.find(l =>
+        l.class_year === selectedClass.class_year &&
+        l.division === selectedClass.division &&
+        l.branch === selectedClass.branch &&
         l.subject === selectedSubject &&
         l.lecture_date === today
       );
-      
+
       if (match) {
         setSelectedLectureId(String(match.id));
+        localStorage.setItem('active_lecture_id', String(match.id));
       } else {
         const mapped = classes.find(c => c.class_year === selectedClass.class_year && c.division === selectedClass.division && c.branch === selectedClass.branch)?.mapped_subjects || [];
         const matchRow = mapped.find(m => m.subject === selectedSubject);
         const autoTeacher = matchRow?.faculty || '';
-        
+
         try {
           const res = await axios.post(`${API_URL}/bulk-attendance/lectures`, {
             class_year: selectedClass.class_year,
@@ -155,14 +177,16 @@ const BulkImageAttendance = () => {
             headers: { Authorization: `Bearer ${user?.token}` }
           });
           await fetchLectures();
-          setSelectedLectureId(String(res.data?.lecture_id || ''));
+          const newId = String(res.data?.lecture_id || '');
+          setSelectedLectureId(newId);
+          localStorage.setItem('active_lecture_id', newId);
         } catch (e) {
           console.error("Failed to implicitly create lecture", e);
         }
       }
     };
     manageLectureAssoc();
-  }, [selectedClass, selectedSubject]);
+  }, [selectedClass, selectedSubject, lectures]); // Add lectures to deps so we can find a match when list loads
 
   // Fetch roster whenever selected lecture changes
   useEffect(() => {
@@ -171,7 +195,7 @@ const BulkImageAttendance = () => {
       try {
         const res = await axios.get(`${API_URL}/bulk-attendance/lectures/${selectedLectureId}`);
         setLectureRoster(res.data.attendance || []);
-      } catch (_) {}
+      } catch (_) { }
     })();
   }, [selectedLectureId]);
 
@@ -314,7 +338,7 @@ const BulkImageAttendance = () => {
           // If batch was deleted or never created, clear stale ID to stop 404 spam
           const status = e?.response?.status;
           if (status === 404) {
-            try { localStorage.removeItem('class_batch_id'); } catch (_) {}
+            try { localStorage.removeItem('class_batch_id'); } catch (_) { }
             setBatchId('');
             return;
           }
@@ -485,10 +509,12 @@ const BulkImageAttendance = () => {
     try {
       if (selectedLectureId) {
         // Lecture mode: mark present for the selected lecture (no check-in/check-out)
-        await axios.post(`${API_URL}/bulk-attendance/lectures/${selectedLectureId}/mark`, {
+        const localNow = new Date().toLocaleString('sv-SE').replace(' ', 'T');
+        const res = await axios.post(`${API_URL}/bulk-attendance/lectures/${selectedLectureId}/mark`, {
           person_id: personId,
           status: 'present',
-          image: f.thumbs?.face || f.thumb
+          image: f.thumbs?.face || f.thumb,
+          timestamp: localNow
         });
         // Refresh roster
         setLectureRoster(prev => {
@@ -515,10 +541,70 @@ const BulkImageAttendance = () => {
   };
 
   const markAll = async () => {
-    for (const f of faces) {
-      if (assign[f.globalIndex]) {
-        await markOne(f);
+    if (isMarkingAll) return;
+
+    const distinctPeople = new Set();
+    faces.forEach(f => {
+      const pid = assign[f.globalIndex];
+      if (pid) distinctPeople.add(pid);
+    });
+
+    if (distinctPeople.size === 0) {
+      alert('No recognized students to mark');
+      return;
+    }
+
+    setShowConfirmModal(true);
+  };
+
+  const confirmMarking = async () => {
+    setShowConfirmModal(false);
+    setIsMarkingAll(true);
+    try {
+      const distinctPeople = new Set();
+      const facesToMark = [];
+
+      faces.forEach(f => {
+        const pid = assign[f.globalIndex];
+        if (pid && !distinctPeople.has(pid)) {
+          distinctPeople.add(pid);
+          facesToMark.push(f);
+        }
+      });
+
+      const entries = facesToMark.map(f => ({
+        person_id: assign[f.globalIndex],
+        status: 'present',
+        image: f.thumbs?.face || f.thumb
+      }));
+
+      if (entries.length > 0) {
+        if (selectedLectureId) {
+          const localNow = new Date().toLocaleString('sv-SE').replace(' ', 'T');
+          await axios.post(`${API_URL}/bulk-attendance/lectures/${selectedLectureId}/mark`, {
+            entries,
+            timestamp: localNow
+          });
+
+          // Update local roster
+          setLectureRoster(prev => {
+            const next = [...prev];
+            entries.forEach(entry => {
+              const pid = String(entry.person_id);
+              const name = peopleById.current?.get(pid) || '';
+              const exists = next.find(r => String(r.person_id) === pid);
+              if (exists) {
+                exists.status = 'present';
+              } else {
+                next.push({ person_id: entry.person_id, status: 'present', name });
+              }
+            });
+            return next;
+          });
+        }
       }
+    } finally {
+      setIsMarkingAll(false);
     }
   };
 
@@ -602,7 +688,7 @@ const BulkImageAttendance = () => {
               </option>
             ))}
           </select>
-          
+
           {(() => {
             const currentClass = selectedClass && selectedClass.class_year ? classes.find(c => c.class_year === selectedClass.class_year && c.division === selectedClass.division && c.branch === selectedClass.branch) : null;
             const mapped = currentClass?.mapped_subjects || [];
@@ -627,13 +713,13 @@ const BulkImageAttendance = () => {
           })()}
 
           {(() => {
-             if (!selectedSubject) return null;
-             const currentClass = classes.find(c => c.class_year === selectedClass.class_year && c.division === selectedClass.division && c.branch === selectedClass.branch);
-             const sub = (currentClass?.mapped_subjects || []).find(m => m.subject === selectedSubject);
-             if (sub && sub.faculty) {
-               return <span className="text-sm font-medium text-slate-600 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200">Teacher: {sub.faculty}</span>;
-             }
-             return null;
+            if (!selectedSubject) return null;
+            const currentClass = classes.find(c => c.class_year === selectedClass.class_year && c.division === selectedClass.division && c.branch === selectedClass.branch);
+            const sub = (currentClass?.mapped_subjects || []).find(m => m.subject === selectedSubject);
+            if (sub && sub.faculty) {
+              return <span className="text-sm font-medium text-slate-600 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200">Teacher: {sub.faculty}</span>;
+            }
+            return null;
           })()}
 
           {selectedLectureId ? (
@@ -641,7 +727,7 @@ const BulkImageAttendance = () => {
               {presentCount} / {people.length} present (Roster Synced)
             </span>
           ) : (
-             <span className="text-sm font-medium text-orange-600 bg-orange-50 px-3 py-1.5 rounded-full border border-orange-200 ml-auto">Select Subject to sync Roster</span>
+            <span className="text-sm font-medium text-orange-600 bg-orange-50 px-3 py-1.5 rounded-full border border-orange-200 ml-auto">Select Subject to sync Roster</span>
           )}
         </div>
       </div>
@@ -703,10 +789,14 @@ const BulkImageAttendance = () => {
           </button>
           <button
             onClick={markAll}
-            disabled={faces.length === 0}
-            className="px-4 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
+            disabled={faces.length === 0 || isMarkingAll}
+            className="px-4 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 inline-flex items-center gap-2"
           >
-            Mark Attendance
+            {isMarkingAll ? (
+              <><Loader2 size={18} className="animate-spin" /><span>Marking...</span></>
+            ) : (
+              <span>Mark Attendance</span>
+            )}
           </button>
           <button
             onClick={async () => {
@@ -715,7 +805,9 @@ const BulkImageAttendance = () => {
               if (!confirm('End session and clear server cache?')) return;
               await axios.post(`${API_URL}/class-batch/clear`, { batch_id: id }, { headers: { Authorization: `Bearer ${user?.token}` } });
               localStorage.removeItem('class_batch_id');
+              localStorage.removeItem('active_lecture_id');
               setBatchId('');
+              setSelectedLectureId('');
               setBatchItems([]);
               setFaces([]); setAssign({});
             }}
@@ -899,6 +991,45 @@ const BulkImageAttendance = () => {
                 <Camera size={18} />
                 Capture & Detect
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Confirmation Modal */}
+      {showConfirmModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden transform animate-in zoom-in-95 duration-200">
+            <div className="p-6">
+              <div className="h-12 w-12 rounded-full bg-indigo-50 flex items-center justify-center text-indigo-600 mb-4">
+                <Users size={24} />
+              </div>
+              <h3 className="text-xl font-bold text-slate-900 mb-2">Confirm Attendance</h3>
+              <p className="text-slate-500 mb-6">
+                Are the students correctly labeled? You are about to mark attendance for
+                <span className="font-bold text-indigo-600 mx-1">
+                  {Array.from(new Set(faces.filter(f => assign[f.globalIndex]).map(f => assign[f.globalIndex]))).length}
+                </span>
+                recognized students for the lecture
+                <span className="font-bold text-slate-700 ml-1">"{selectedSubject}"</span>.
+              </p>
+
+              <div className="flex flex-col sm:flex-row gap-3">
+                <button
+                  onClick={confirmMarking}
+                  className="flex-1 px-4 py-3 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-200"
+                >
+                  Yes, Mark Attendance
+                </button>
+                <button
+                  onClick={() => setShowConfirmModal(false)}
+                  className="flex-1 px-4 py-3 bg-slate-100 text-slate-700 rounded-xl font-semibold hover:bg-slate-200 transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+            <div className="bg-slate-50 px-6 py-4 border-t border-slate-100 italic text-xs text-slate-400 text-center">
+              This action will sync the roster to the core attendance logs in real-time.
             </div>
           </div>
         </div>

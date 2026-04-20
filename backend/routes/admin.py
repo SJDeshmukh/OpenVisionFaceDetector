@@ -1144,7 +1144,7 @@ def create_vendor():
             c.execute("UPDATE vendors SET vertical = ? WHERE id = ?", (vertical, vendor_id))
             if str(vertical).strip().lower() == "school":
                 rc = json.dumps([
-                    {"field": "student_number", "label": "Student ID", "type": "text", "required": True, "options": []},
+                    {"field": "student_id", "label": "Student ID", "type": "text", "required": True, "options": []},
                     {"field": "phone", "label": "Mobile Number", "type": "text", "required": True, "options": []},
                     {"field": "department", "label": "Class/Section", "type": "text", "required": False, "options": []}
                 ])
@@ -1491,7 +1491,7 @@ def get_vendor_registration_config(vendor_id):
         if str(vertical_val or "").strip().lower() == "school":
             try:
                 default_rc = [
-                    {"field": "student_number", "label": "Student ID", "type": "text", "required": True, "options": []},
+                    {"field": "student_id", "label": "Student ID", "type": "text", "required": True, "options": []},
                     {"field": "phone", "label": "Mobile Number", "type": "text", "required": True, "options": []},
                     {"field": "department", "label": "Class/Section", "type": "text", "required": False, "options": []}
                 ]
@@ -1605,7 +1605,7 @@ def update_vendor_details(vendor_id):
                             needs_set = True
                     if needs_set:
                         rc = json.dumps([
-                            {"field": "student_number", "label": "Student ID", "type": "text", "required": True, "options": []},
+                            {"field": "student_id", "label": "Student ID", "type": "text", "required": True, "options": []},
                             {"field": "phone", "label": "Mobile Number", "type": "text", "required": True, "options": []},
                             {"field": "department", "label": "Class/Section", "type": "text", "required": False, "options": []}
                         ])

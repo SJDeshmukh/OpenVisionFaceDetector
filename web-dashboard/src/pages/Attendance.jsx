@@ -204,7 +204,11 @@ const Attendance = () => {
   const showShiftColumn = user?.features?.includes('shifts') && !!(filterOptions.dynamic_filters && filterOptions.dynamic_filters.shift);
 
   const groupedLogs = logs.reduce((acc, log) => {
-    const key = log.person_id ? `id:${log.person_id}` : `name:${log.vendor_id || 'unknown'}:${log.name}`;
+    const logDate = parseDate(log.timestamp).toLocaleDateString();
+    const key = log.person_id 
+      ? `id:${log.person_id}-${logDate}` 
+      : `name:${log.vendor_id || 'unknown'}:${log.name}-${logDate}`;
+      
     if (!acc[key]) {
       acc[key] = {
         key,
@@ -419,7 +423,7 @@ const Attendance = () => {
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
                           <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700 border border-blue-100">
-                            {log.activity || 'Work'}
+                            {log.activity || 'Work'}{log.activity === 'Lecture' && log.subject ? `: ${log.subject}` : ''}
                           </span>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
@@ -448,7 +452,7 @@ const Attendance = () => {
                       </tr>
                       {isExpanded && (
                         <tr className="bg-slate-50/50">
-                          <td colSpan="8" className="px-6 py-4 pl-12">
+                          <td colSpan="10" className="px-6 py-4 pl-12">
                             <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
                               <table className="w-full text-left">
                                 <thead className="bg-slate-50 border-b border-slate-100">
@@ -456,6 +460,8 @@ const Attendance = () => {
                                     <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Image</th>
                                     <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Time</th>
                                     <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Date</th>
+                                    <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Subject</th>
+                                    <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Class</th>
                                     <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Place</th>
                                     <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Status</th>
                                   </tr>
@@ -481,6 +487,12 @@ const Attendance = () => {
                                       </td>
                                       <td className="px-4 py-2 text-sm text-slate-600">
                                         {parseDate(historyLog.timestamp).toLocaleDateString()}
+                                      </td>
+                                      <td className="px-4 py-2 text-sm text-slate-600">
+                                        {historyLog.subject || <span className="text-slate-400 italic">-</span>}
+                                      </td>
+                                      <td className="px-4 py-2 text-sm text-slate-600">
+                                        {historyLog.class_year ? `${historyLog.class_year} ${historyLog.division || ''} ${historyLog.branch || ''}` : <span className="text-slate-400 italic">-</span>}
                                       </td>
                                       <td className="px-4 py-2 text-sm text-slate-600">
                                         {historyLog.device_name ? historyLog.device_name : <span className="text-slate-400 italic">-</span>}
