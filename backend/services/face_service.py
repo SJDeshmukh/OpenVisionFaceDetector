@@ -280,8 +280,7 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
                     if img_rgb is None:
                         continue
                     try:
-                        # Ensure we use 'Face' crop mode to match real-time detection
-                        det_ann, det_crops, _, _ = mfd_app.detect_faces(
+                        det_ann, det_crops, det_df, _ = mfd_app.detect_faces(
                             image_input=img_rgb,
                             enhancer="GFPGAN",
                             enhance_level=0.5,
@@ -295,6 +294,17 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
                             det_max_side=640
                         )
                         crop = det_crops[0] if (isinstance(det_crops, list) and len(det_crops) > 0) else img_rgb
+                        # Align registration crop to ArcFace template using 3DDFA landmarks.
+                        # Must match the alignment applied at attendance time for consistent embeddings.
+                        if det_df is not None and hasattr(det_df, 'iloc') and len(det_df) > 0:
+                            row0 = det_df.iloc[0]
+                            lmks_global_reg = row0.get('landmarks_3d', [])
+                            if lmks_global_reg and len(lmks_global_reg) >= 68:
+                                bx1_r, by1_r = int(row0['x1']), int(row0['y1'])
+                                lmks_local_reg = np.array(lmks_global_reg, dtype=np.float32)
+                                lmks_local_reg[:, 0] -= bx1_r
+                                lmks_local_reg[:, 1] -= by1_r
+                                crop = mfd_app._align_to_arcface_112(crop, lmks_local_reg)
                     except Exception:
                         crop = img_rgb
 
@@ -478,13 +488,26 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
             return [], ''
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         from multiple_face_detection import app as mfd_app
-        enhancer = params.get('enhancer') or "GFPGAN"
-        crop_mode = params.get('crop_mode') or "Portrait"
         lr = LOW_RAM_MODE
-        portrait_scale = float(params.get('portrait_scale') or (1.2 if lr else 1.5))
-        gfp_up = int(params.get('gfpgan_upscale') or (1 if lr else 2))
-        preclean_whole = bool(params.get('preclean_whole') if 'preclean_whole' in params else (False if lr else True))
-        preclean_level = float(params.get('preclean_level') or (0.2 if lr else 0.4))
+        # fast=True skips all enhancement — ArcFace is robust on raw crops
+        # and GFPGAN adds ~3–5 s per face with no meaningful accuracy gain
+        fast = str(params.get('fast', '')).lower() in ('1', 'true', 'yes') or lr
+        print(f"[FACE_SVC] fast={fast} raw_fast={params.get('fast')!r} LOW_RAM_MODE={lr}", flush=True)
+        crop_mode = params.get('crop_mode') or "Portrait"
+        if fast:
+            enhancer = "None"
+            gfp_up = 1
+            preclean_whole = False
+            preclean_level = 0.0
+            portrait_scale = float(params.get('portrait_scale') or 1.2)
+            det_max_side = int(params.get('det_max_side') or 640)
+        else:
+            enhancer = params.get('enhancer') or "GFPGAN"
+            portrait_scale = float(params.get('portrait_scale') or 1.5)
+            gfp_up = int(params.get('gfpgan_upscale') or 2)
+            preclean_whole = bool(params.get('preclean_whole') if 'preclean_whole' in params else True)
+            preclean_level = float(params.get('preclean_level') or 0.4)
+            det_max_side = int(params.get('det_max_side') or 1280)
         annotated, crops, df, df_emb = mfd_app.detect_faces(
             image_input=rgb,
             enhancer=enhancer,
@@ -496,7 +519,7 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
             portrait_scale=portrait_scale,
             preclean_whole=preclean_whole,
             preclean_level=preclean_level,
-            det_max_side=1280
+            det_max_side=det_max_side,
         )
         faces = []
         class_year = params.get('class_year'); division = params.get('division'); branch = params.get('branch')
@@ -539,12 +562,16 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                             except Exception:
                                 pass
                         
-                        # Enhance and normalize face for embedding
-                        pure_face_enh = mfd_app.get_gfpgan_manager().enhance_crop(pure_face, fidelity=0.4, upscale=1, landmarks=lmks_local)
-                        if min(pure_face_enh.shape[:2]) < 512:
-                            scale_f = 512.0 / min(pure_face_enh.shape[:2])
-                            pure_face_enh = cv2.resize(pure_face_enh, (int(pure_face_enh.shape[1] * scale_f), int(pure_face_enh.shape[0] * scale_f)), interpolation=cv2.INTER_LANCZOS4)
-                            
+                        # Align to ArcFace 112×112 canonical pose using 3DDFA landmarks.
+                        # Landmarks are already in pure_face local coordinates.
+                        if lmks_local is not None and len(lmks_local) >= 68:
+                            pure_face_aligned = mfd_app._align_to_arcface_112(pure_face, lmks_local)
+                        else:
+                            pure_face_aligned = pure_face
+
+                        # Optional GFPGAN enhancement on the aligned crop (non-fast mode only).
+                        pure_face_enh = mfd_app.get_gfpgan_manager().enhance_crop(pure_face_aligned, fidelity=0.4, upscale=1, landmarks=None) if not fast else pure_face_aligned
+
                         emb = mfd_app.get_embedder().embed(pure_face_enh)
                         emb_norm = _normalize_vec(emb)
                         
@@ -565,7 +592,7 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                         try:
                             px1, py1, px2, py2 = mfd_app._compute_portrait_box(bx1, by1, bx2, by2, iw, ih, scale=3.0, margin=0.5)
                             portrait = img_rgb[py1:py2, px1:px2]
-                            portrait_enh = mfd_app.get_gfpgan_manager().enhance_crop(portrait, upscale=gfp_up, whole=True, fidelity=0.5) if not lr and portrait.size > 0 else portrait
+                            portrait_enh = mfd_app.get_gfpgan_manager().enhance_crop(portrait, upscale=gfp_up, whole=True, fidelity=0.5) if not fast and portrait.size > 0 else portrait
                         except Exception:
                             portrait_enh = None
                         

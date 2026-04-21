@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify, send_file
+from flask import Blueprint, request, jsonify, send_file, g
 import sqlite3
 import json
 import base64
@@ -450,8 +450,44 @@ def get_persons():
     params = []
     
     if vendor_id:
-        query += " WHERE vendor_id = ?"
-        params.append(vendor_id)
+        if g.user_role == 'faculty':
+            # 1. Identify which classes this faculty is assigned to
+            c.execute("SELECT class_year, division, branch, mapped_subjects FROM classes WHERE vendor_id = ?", (vendor_id,))
+            all_classes = c.fetchall() or []
+            assigned_classes = []
+            for cl in all_classes:
+                try:
+                    ms = json.loads(cl[3]) if cl[3] else []
+                    if any(m.get('faculty') == g.username for m in ms):
+                        assigned_classes.append((cl[0], cl[1], cl[2])) # (year, div, branch)
+                except: pass
+            
+            if not assigned_classes:
+                conn.close()
+                return jsonify({"persons": []}) # No assigned classes = no students visible
+            
+            # 2. Build query to filter by these classes
+            query += " WHERE vendor_id = ?"
+            params.append(vendor_id)
+            
+            # Build a filter that matches ANY of the assigned classes
+            is_pg = getattr(conn, "_is_pg", False)
+            class_filters = []
+            for y, d, b in assigned_classes:
+                if is_pg:
+                    f = "( (custom_data::jsonb->>'class_year' = ? OR custom_data::jsonb->>'Year' = ?) AND (custom_data::jsonb->>'division' = ? OR custom_data::jsonb->>'Division' = ?) AND (custom_data::jsonb->>'branch' = ? OR custom_data::jsonb->>'Branch' = ?) )"
+                    class_filters.append(f)
+                    params += [str(y), str(y), str(d), str(d), str(b), str(b)]
+                else:
+                    f = "( (custom_data LIKE ? OR custom_data LIKE ?) AND (custom_data LIKE ? OR custom_data LIKE ?) AND (custom_data LIKE ? OR custom_data LIKE ?) )"
+                    class_filters.append(f)
+                    params += [f'%\"class_year\":\"{y}\"%', f'%\"Year\":\"{y}\"%', f'%\"division\":\"{d}\"%', f'%\"Division\":\"{d}\"%', f'%\"branch\":\"{b}\"%', f'%\"Branch\":\"{b}\"%']
+            
+            if class_filters:
+                query += " AND (" + " OR ".join(class_filters) + ")"
+        else:
+            query += " WHERE vendor_id = ?"
+            params.append(vendor_id)
         
     is_pg = getattr(conn, "_is_pg", False)
     class_year = request.args.get('class_year')

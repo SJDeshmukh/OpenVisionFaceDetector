@@ -68,8 +68,8 @@ function App() {
                 <Route path="/admin/jobs" element={<JobsDashboard />} />
               </Route>
 
-              {/* Admin/Rector/HOD Routes */}
-              <Route element={<ProtectedRoute allowedRoles={['admin', 'vendor_admin', 'rector', 'hod', 'user']} />}>
+              {/* Admin/Rector/HOD/Faculty Routes */}
+              <Route element={<ProtectedRoute allowedRoles={['admin', 'vendor_admin', 'rector', 'hod', 'user', 'faculty']} />}>
                 <Route path="/" element={<Navigate to="/dashboard" replace />} />
                 <Route path="/dashboard" element={<Dashboard />} />
                 <Route path="/people" element={<People />} />
@@ -87,7 +87,7 @@ function App() {
               </Route>
 
               {/* Shared/User Routes */}
-              <Route element={<ProtectedRoute allowedRoles={['admin', 'user', 'vendor_admin']} />}>
+              <Route element={<ProtectedRoute allowedRoles={['admin', 'user', 'vendor_admin', 'faculty']} />}>
                 {/* User lands on Attendance/Identify page */}
                 <Route path="/attendance" element={<Attendance />} />
                 {/* Allow users to access People page? Maybe restrict based on role if needed, but for now keeping as is */}

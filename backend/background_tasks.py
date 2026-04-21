@@ -45,6 +45,23 @@ def periodic_cleanup():
         # Run every hour
         time.sleep(3600)
 
+def _preload_ai_models():
+    """Preload AI models in a background thread so the first image request doesn't wait."""
+    time.sleep(8)  # Let the app fully start first
+    try:
+        import sys
+        _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if _project_root not in sys.path:
+            sys.path.insert(0, _project_root)
+        from multiple_face_detection import app as mfd_app
+        print("[PRELOAD] Loading face detector...", flush=True)
+        mfd_app.get_detector()
+        print("[PRELOAD] Loading face embedder...", flush=True)
+        mfd_app.get_embedder()
+        print("[PRELOAD] AI models loaded and ready.", flush=True)
+    except Exception as e:
+        print(f"[PRELOAD] Model preload failed (non-fatal): {e}", flush=True)
+
 def start_background_tasks(app):
     """Starts all general background tasks."""
     if not is_testing():
@@ -52,6 +69,8 @@ def start_background_tasks(app):
         if os.environ.get("WERKZEUG_RUN_MAIN") == "true" or os.environ.get("GUNICORN_WORKER_ID") == "1" or not os.environ.get("GUNICORN_WORKER_ID"):
             cleanup_thread = threading.Thread(target=periodic_cleanup, daemon=True)
             cleanup_thread.start()
+            preload_thread = threading.Thread(target=_preload_ai_models, daemon=True)
+            preload_thread.start()
 
 def start_archival_thread():
     """Starts the archival background thread."""

@@ -9,13 +9,21 @@ except Exception:
     task_prerun = task_postrun = task_failure = task_retry = task_received = task_revoked = _DummySignal()
 
 try:
-    # Prefer explicit backend.app to avoid collision with multiple_face_detection.app
-    from backend.app import socketio
     from backend.utils import get_db_connection, log_audit, BUNDLE_FEATURES, redis_client
 except Exception:
-    # Fallback to plain 'app' if module pathing already configured
-    from app import socketio
     from utils import get_db_connection, log_audit, BUNDLE_FEATURES, redis_client
+
+def _get_socketio():
+    """Lazy-load socketio so the Celery worker doesn't bootstrap the full Flask app on import."""
+    try:
+        from app import socketio as _sio
+        return _sio
+    except Exception:
+        try:
+            from backend.app import socketio as _sio
+            return _sio
+        except Exception:
+            return None
 import json
 from datetime import date, timedelta, datetime
 import sqlite3
@@ -71,8 +79,10 @@ if celery:
             
             conn2.commit()
             log_audit('create_vendor', details={'company_name': company_name}, target_vendor_id=vendor_id, actor="system")
-            socketio.emit('force_logout', {'vendor_id': vendor_id, 'reason': 'Vendor account deleted'}, room=f"vendor_{vendor_id}")
-            socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
+            _sio = _get_socketio()
+            if _sio:
+                _sio.emit('force_logout', {'vendor_id': vendor_id, 'reason': 'Vendor account deleted'}, room=f"vendor_{vendor_id}")
+                _sio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
         except Exception as e:
             if conn2: conn2.rollback()
             print(f"Error in process_vendor_creation_task: {e}")
@@ -187,10 +197,11 @@ def process_delete_vendor_task(vendor_id):
         # No audit log for the vendor deletion itself as we've deleted all logs for this vendor!
         # Actually, maybe we should log it but without target_vendor_id?
         # Let's log it globally.
-        from app import socketio
-        socketio.emit('force_logout', {'vendor_id': vendor_id, 'reason': 'Vendor account deleted'}, room=f"vendor_{vendor_id}")
-        socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
-        socketio.emit('admin_stats_updated', room='super_admin')
+        _sio = _get_socketio()
+        if _sio:
+            _sio.emit('force_logout', {'vendor_id': vendor_id, 'reason': 'Vendor account deleted'}, room=f"vendor_{vendor_id}")
+            _sio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
+            _sio.emit('admin_stats_updated', room='super_admin')
     except Exception as e:
         if conn: conn.rollback()
         print(f"Error in delete_vendor_task: {e}")
@@ -364,7 +375,11 @@ def process_class_batch_items(batch_id, vendor_id, params):
     from utils import get_db_connection
     import base64
     import time
-    
+
+    # Batch attendance always uses fast mode — skip GFPGAN/RealESRGAN enhancement
+    params = dict(params or {})
+    params['fast'] = True
+
     conn = get_db_connection()
     c = conn.cursor()
     

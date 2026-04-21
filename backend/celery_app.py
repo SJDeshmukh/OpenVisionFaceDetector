@@ -1,10 +1,26 @@
 import os
+import sys as _sys
+
+# Ensure project root (parent of backend/) is importable so multiple_face_detection can be found
+_BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_BACKEND_DIR)
+for _p in (_BACKEND_DIR, _PROJECT_ROOT):
+    if _p not in _sys.path:
+        _sys.path.insert(0, _p)
+
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
+# Load .env so the worker process also sees REDIS_URL / DATABASE_URL
+try:
+    from dotenv import load_dotenv as _ld
+    _ld()
+except Exception:
+    pass
 
 from celery import Celery
 

@@ -137,6 +137,7 @@ const SuperAdminDashboard = () => {
    });
    const [vendorEmployees, setVendorEmployees] = useState([]);
    const [vendorStudentLogins, setVendorStudentLogins] = useState([]);
+   const [vendorFacultyLogins, setVendorFacultyLogins] = useState([]);
    const [vendorParents, setVendorParents] = useState([]);
    const [vendorDevices, setVendorDevices] = useState([]);
    const [deviceEdits, setDeviceEdits] = useState({});
@@ -338,6 +339,15 @@ const SuperAdminDashboard = () => {
         headers: { Authorization: `Bearer ${user?.token}` }
       });
       setVendorStudentLogins(resp.data.logins || []);
+    } catch (e) { console.error(e); }
+  };
+
+  const fetchVendorFacultyLogins = async (vendorId) => {
+    try {
+      const resp = await axios.get(`${API_URL}/leave/admin/vendors/${vendorId}/faculty-logins`, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      setVendorFacultyLogins(resp.data.logins || []);
     } catch (e) { console.error(e); }
   };
 
@@ -1776,6 +1786,7 @@ const SuperAdminDashboard = () => {
                       setSelectedVendorForDetail(vendor);
                       fetchVendorEmployees(vendor.id);
                       fetchVendorStudentLogins(vendor.id);
+                      fetchVendorFacultyLogins(vendor.id);
                       fetchVendorParents(vendor.id);
                       fetchVendorDevices(vendor.id);
                       fetchVendorDeviceSlots(vendor.id);
@@ -2098,6 +2109,74 @@ const SuperAdminDashboard = () => {
                   </div>
                 </>
               )}
+
+              <div className="mt-12 pt-8 border-t border-slate-200">
+                <div className="flex items-center justify-between mb-6">
+                  <div>
+                    <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                      <Users size={20} className="text-indigo-600" />
+                      Faculty Logins
+                    </h3>
+                    <p className="text-sm text-slate-500 mt-1">Faculty accounts created via Excel upload (bulk_attendance feature)</p>
+                  </div>
+                  <button
+                    onClick={() => fetchVendorFacultyLogins(selectedVendorForDetail.id)}
+                    className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg border border-slate-200 transition-all font-medium text-sm"
+                  >
+                    <RefreshCw size={14} /> Refresh
+                  </button>
+                </div>
+
+                {vendorFacultyLogins.length === 0 ? (
+                  <div className="text-center py-10 text-slate-400 bg-slate-50/50 rounded-2xl border border-dashed border-slate-200">
+                    <Users size={40} className="mx-auto mb-3 opacity-20" />
+                    <p className="text-sm">No faculty logins yet. Upload a teacher Excel from People Management.</p>
+                  </div>
+                ) : (
+                  <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-sm">
+                        <thead>
+                          <tr className="bg-slate-50/50 text-slate-600 border-b border-slate-200">
+                            <th className="p-4 font-bold uppercase tracking-wider text-[10px]">Email (Username)</th>
+                            <th className="p-4 font-bold uppercase tracking-wider text-[10px]">Initial Password</th>
+                            <th className="p-4 font-bold uppercase tracking-wider text-[10px]">Last Login</th>
+                            <th className="p-4 font-bold uppercase tracking-wider text-[10px]">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {vendorFacultyLogins.map((login, idx) => (
+                            <tr key={idx} className="hover:bg-indigo-50/30 transition-colors">
+                              <td className="p-4">
+                                <span className="font-mono font-bold text-indigo-600 bg-indigo-50 px-2 py-1 rounded text-xs">{login.username}</span>
+                              </td>
+                              <td className="p-4">
+                                <code className="bg-amber-50 text-amber-700 px-2 py-1 rounded font-mono font-bold text-xs border border-amber-100">
+                                  {login.password_plain || '••••••••'}
+                                </code>
+                              </td>
+                              <td className="p-4 text-slate-500 font-mono text-xs">{login.last_login || 'Never'}</td>
+                              <td className="p-4">
+                                {login.status === 'DEFAULT' ? (
+                                  <span className="flex items-center gap-1.5 text-amber-600 text-xs font-bold">
+                                    <div className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></div>
+                                    First Login Pending
+                                  </span>
+                                ) : (
+                                  <span className="flex items-center gap-1.5 text-green-600 text-xs font-bold">
+                                    <div className="w-1.5 h-1.5 rounded-full bg-green-500"></div>
+                                    Password Set
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
 
               <div className="mt-12 pt-8 border-t border-slate-200">
                 <div className="flex items-center justify-between mb-6">
@@ -3262,8 +3341,8 @@ const SuperAdminDashboard = () => {
                 </div>
               </div>
 
-              {/* Section 4: Owner Access */}
-              <div className="mb-6">
+              {/* Section 4: Owner Access — only shown when wages feature is enabled */}
+              {(newVendor.features || []).includes('wages') && <div className="mb-6">
                 <h3 className="text-sm uppercase tracking-wide text-slate-500 font-bold mb-3 flex items-center gap-2">
                   <Shield size={16} /> Owner Mobile Access (Multiple)
                 </h3>
@@ -3323,7 +3402,7 @@ const SuperAdminDashboard = () => {
                     <Plus size={16} /> Add Owner Account
                   </button>
                 </div>
-              </div>
+              </div>}
 
               <div className="flex justify-end gap-3 pt-4 border-t">
                 <button

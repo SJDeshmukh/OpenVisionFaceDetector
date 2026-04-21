@@ -69,17 +69,28 @@ def class_batch_add(valid_data: ClassBatchAddSchema):
         created.append(item_id)
     conn.commit(); conn.close()
     
-    from celery_app import celery
-    if celery:
-        from tasks import process_class_batch_items
-        process_class_batch_items.delay(bid, vendor_id, params)
-    else:
-        def _worker():
+    import threading, logging as _log
+    _dispatched = False
+    try:
+        from celery_app import celery
+        if celery:
             from tasks import process_class_batch_items
-            try: process_class_batch_items(bid, vendor_id, params)
-            except Exception: pass
-        import threading
-        t = threading.Thread(target=_worker, daemon=True)
+            process_class_batch_items.delay(bid, vendor_id, params)
+            _dispatched = True
+            _log.getLogger(__name__).info(f"[CELERY] Task dispatched for batch {bid}")
+    except Exception as _ce:
+        _log.getLogger(__name__).warning(f"[CELERY] Dispatch failed ({_ce}), falling back to thread")
+
+    if not _dispatched:
+        def _worker():
+            try:
+                from tasks import process_class_batch_items
+                _log.getLogger(__name__).info(f"[THREAD] Starting process for batch {bid}")
+                process_class_batch_items(bid, vendor_id, params)
+                _log.getLogger(__name__).info(f"[THREAD] Finished batch {bid}")
+            except Exception as _e:
+                _log.getLogger(__name__).error(f"[THREAD] process_class_batch_items failed: {_e}", exc_info=True)
+        t = threading.Thread(target=_worker, daemon=False)
         t.start()
     return jsonify({"ok": True, "created": created})
 

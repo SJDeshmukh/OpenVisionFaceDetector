@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify, send_file, send_from_directory
+from flask import Blueprint, request, jsonify, send_file, send_from_directory, g
 import logging
 logger = logging.getLogger(__name__)
 import sqlite3
@@ -549,6 +549,28 @@ def list_classes():
     try:
         conn = get_db_connection()
         c = conn.cursor()
+
+        if g.user_role == 'faculty':
+            # Filter classes in Python for simplicity with JSON storage
+            conn.row_factory = None # Ensure simple indexing if needed, or dict if preferred
+            c.execute("SELECT id, class_year, division, branch, label, mapped_subjects FROM classes WHERE vendor_id = ?", (vendor_id,))
+            rows = c.fetchall() or []
+            items = []
+            for r in rows:
+                ms_raw = r[5]
+                ms = []
+                try:
+                    ms = json.loads(ms_raw) if ms_raw else []
+                except: pass
+                
+                # Check if this faculty is assigned to any subject in this class
+                if any(m.get('faculty') == g.username for m in ms):
+                    items.append({
+                        "id": r[0], "class_year": r[1], "division": r[2], "branch": r[3], "label": r[4], 
+                        "mapped_subjects": ms
+                    })
+            conn.close()
+            return jsonify({"classes": items})
 
         if vendor_id:
             c.execute("SELECT id, class_year, division, branch, label, mapped_subjects FROM classes WHERE vendor_id = ? ORDER BY created_at DESC", (vendor_id,))
@@ -1225,4 +1247,60 @@ def mobile_heartbeat():
         return jsonify({"status": "success", "geofence_status": geofence_status})
     except Exception as e:
         logger.error(f"Global error in mobile_heartbeat: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@vendor_bp.route("/subject-master", methods=["GET"])
+@vendor_required
+def get_subject_master():
+    from app import get_db_connection
+    vendor_id = request.vendor_id
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT id, class_year, branch, subject_name FROM subject_master WHERE vendor_id = ? ORDER BY class_year, branch, subject_name", (vendor_id,))
+        rows = c.fetchall() or []
+        conn.close()
+        items = []
+        for r in rows:
+             items.append({"id": r[0], "class_year": r[1], "branch": r[2], "subject_name": r[3]})
+        return jsonify({"subjects": items})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@vendor_bp.route("/subject-master", methods=["POST"])
+@vendor_required
+def add_master_subject():
+    from app import get_db_connection
+    vendor_id = request.vendor_id
+    data = request.json or {}
+    class_year = str(data.get("class_year", "")).strip()
+    branch = str(data.get("branch", "")).strip()
+    subject_name = str(data.get("subject_name", "")).strip()
+    if not subject_name:
+        return jsonify({"error": "Subject name is required"}), 400
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        # INSERT OR IGNORE translated for PG, native for SQLite
+        c.execute("INSERT OR IGNORE INTO subject_master (vendor_id, class_year, branch, subject_name) VALUES (?, ?, ?, ?)",
+                  (vendor_id, class_year, branch, subject_name))
+        conn.commit()
+        conn.close()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@vendor_bp.route("/subject-master/<int:sid>", methods=["DELETE"])
+@vendor_required
+def delete_master_subject(sid):
+    from app import get_db_connection
+    vendor_id = request.vendor_id
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("DELETE FROM subject_master WHERE id = ? AND vendor_id = ?", (sid, vendor_id))
+        conn.commit()
+        conn.close()
+        return jsonify({"status": "success"})
+    except Exception as e:
         return jsonify({"error": str(e)}), 500

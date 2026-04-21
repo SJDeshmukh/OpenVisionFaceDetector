@@ -35,7 +35,7 @@ class ClassBatchAddSchema(BaseModel):
     class_year: Optional[str] = ""
     division: Optional[str] = ""
     branch: Optional[str] = ""
-    fast: Optional[bool] = False
+    fast: Optional[bool] = True
     det_max_side: Optional[int] = None
 
 class ClassBatchAssignment(BaseModel):

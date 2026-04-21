@@ -53,6 +53,14 @@ const userNavItems = [
   { name: 'Leave Management', path: '/leave-management', icon: FileCheck },
 ];
 
+const facultyNavItems = [
+  { name: 'Classes', path: '/classes', icon: Users },
+  { name: 'People', path: '/people', icon: Users },
+  { name: 'Bulk Attendance', path: '/bulk-image-attendance', icon: ClipboardList },
+  { name: 'Attendance', path: '/attendance', icon: ClipboardList },
+  { name: 'Reports', path: '/reports', icon: FileText },
+];
+
 export const Sidebar = ({ isOpen, onClose }) => {
   const { user, staffSession, logout } = useAuth();
   const navigate = useNavigate();
@@ -93,6 +101,8 @@ export const Sidebar = ({ isOpen, onClose }) => {
       }
       return true;
     });
+  } else if (user?.role === 'faculty') {
+    navItems = facultyNavItems;
   } else if (user?.role === 'admin' || user?.role === 'vendor_admin') {
     // Staff Session Handling (Leave Management Roles)
     if (staffSession) {
@@ -113,7 +123,7 @@ export const Sidebar = ({ isOpen, onClose }) => {
   }
 
   // Dynamic Frontend Loading Logic
-  if (user?.role !== 'super_admin') {
+  if (user?.role !== 'super_admin' && user?.role !== 'faculty') {
     const bundleId = user?.frontend_bundle_id || 'default_attendance';
 
     // PRIORITY: Check if we have explicit 'features' list from backend (granular control)

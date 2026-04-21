@@ -851,13 +851,13 @@ def manage_departments():
 
 @leave_bp.route("/student/change-password", methods=["POST"])
 def student_change_password():
-    # Only students should call this
+    # Students and faculty on first login call this to set their own password
     auth_header = request.headers.get("Authorization")
     if not auth_header: return jsonify({"error": "Missing token"}), 401
     token = auth_header.split(" ")[1]
     user_data = verify_token(token)
-    if not user_data or user_data['role'] != 'user':
-        return jsonify({"error": "Student access required"}), 403
+    if not user_data or user_data['role'] not in ['user', 'faculty']:
+        return jsonify({"error": "Student or faculty access required"}), 403
         
     data = request.json
     new_password = data.get("password")
@@ -923,6 +923,35 @@ def get_vendor_student_logins(vendor_id):
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
+
+@leave_bp.route('/admin/vendors/<int:vendor_id>/faculty-logins', methods=['GET'])
+def get_vendor_faculty_logins(vendor_id):
+    """SuperAdmin endpoint to view faculty credentials for a vendor."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute("""
+            SELECT username, password_plain, last_active_at, has_set_password
+            FROM system_users
+            WHERE vendor_id = ? AND role = 'faculty'
+            ORDER BY username ASC
+        """, (vendor_id,))
+        rows = c.fetchall()
+        logins = []
+        for row in rows:
+            r = get_row_dict(row)
+            logins.append({
+                "username": r.get('username'),
+                "password_plain": r.get('password_plain'),
+                "last_login": r.get('last_active_at'),
+                "status": "CHANGED" if r.get('has_set_password') == 1 else "DEFAULT"
+            })
+        return jsonify({"status": "success", "logins": logins})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
 
 @leave_bp.route('/admin/vendors/<int:vendor_id>/parents', methods=['GET'])
 def get_vendor_parents(vendor_id):

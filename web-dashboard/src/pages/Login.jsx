@@ -43,6 +43,11 @@ const Login = () => {
         return;
       }
 
+      if (result.role === 'faculty') {
+        navigate('/classes');
+        return;
+      }
+
       if (result.role === 'user') {
         // It's a student - go directly to leave-management (which handles student tabs)
         navigate('/leave-management');

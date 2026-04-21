@@ -47,6 +47,13 @@ const People = () => {
   const [isBulkImportModalOpen, setIsBulkImportModalOpen] = useState(false);
   const [bulkImportProgress, setBulkImportProgress] = useState(null);
   const [bulkImportError, setBulkImportError] = useState(null);
+  const [isFacultyUploadModalOpen, setIsFacultyUploadModalOpen] = useState(false);
+  const [facultyUploadProgress, setFacultyUploadProgress] = useState(null);
+  const [facultyUploadResult, setFacultyUploadResult] = useState(null);
+  const [facultyUploadError, setFacultyUploadError] = useState(null);
+  const [activeTab, setActiveTab] = useState('people'); // 'people' | 'faculty'
+  const [facultyLogins, setFacultyLogins] = useState([]);
+  const [facultyLoading, setFacultyLoading] = useState(false);
 
   const { socket, joinVendor } = useSocket();
   useEffect(() => {
@@ -87,15 +94,32 @@ const People = () => {
 
   const fetchUsers = async () => {
     try {
-      const response = await axios.get(`${API_URL}/sync/download?limit=200`);
-      const faces = response.data.faces || [];
+      // Faculty uses /persons which filters to their assigned classes server-side
+      const isFaculty = user?.role === 'faculty';
+      const response = isFaculty
+        ? await axios.get(`${API_URL}/persons`)
+        : await axios.get(`${API_URL}/sync/download?limit=200`);
+      const faces = isFaculty ? (response.data.persons || []) : (response.data.faces || []);
       setUsers(faces);
       setLoading(false);
-      // Save to cache
-      localStorage.setItem(`people_cache_${user?.vendor_id}`, JSON.stringify(faces));
+      if (!isFaculty) {
+        localStorage.setItem(`people_cache_${user?.vendor_id}`, JSON.stringify(faces));
+      }
     } catch (error) {
       console.error("Error fetching users:", error);
       setLoading(false);
+    }
+  };
+
+  const fetchFacultyLogins = async () => {
+    setFacultyLoading(true);
+    try {
+      const res = await axios.get(`${API_URL}/bulk-registration/faculty-logins`);
+      setFacultyLogins(res.data.logins || []);
+    } catch (e) {
+      console.error('Error fetching faculty logins:', e);
+    } finally {
+      setFacultyLoading(false);
     }
   };
 
@@ -449,19 +473,20 @@ const People = () => {
     <div className="p-6 max-w-7xl mx-auto">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">People Management</h1>
-          <p className="text-slate-500">Manage {personLabel.toLowerCase()}s and their facial data.</p>
+          <h1 className="text-2xl font-bold text-slate-800">{user?.role === 'faculty' ? 'My Students' : 'People Management'}</h1>
+          <p className="text-slate-500">{user?.role === 'faculty' ? 'Students enrolled in your assigned classes.' : `Manage ${personLabel.toLowerCase()}s and their facial data.`}</p>
         </div>
-        <div className="flex space-x-3">
-          {(user?.role === 'super_admin' || user?.features?.includes('bulk_image_attendance') || user?.features?.includes('mobile_app')) && (
-            <button
-              onClick={openAddModal}
-              className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all text-sm font-medium shadow-sm hover:shadow-md"
-            >
-              <Plus size={20} />
-              <span>Add {personLabel}</span>
-            </button>
-          )}
+        {user?.role !== 'faculty' && (
+          <div className="flex space-x-3">
+            {(user?.role === 'super_admin' || user?.features?.includes('bulk_image_attendance') || user?.features?.includes('mobile_app')) && (
+              <button
+                onClick={openAddModal}
+                className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all text-sm font-medium shadow-sm hover:shadow-md"
+              >
+                <Plus size={20} />
+                <span>Add {personLabel}</span>
+              </button>
+            )}
             <button
               onClick={() => setIsBulkImportModalOpen(true)}
               className="flex items-center space-x-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 transition-all text-sm font-medium shadow-sm hover:shadow-md"
@@ -469,8 +494,17 @@ const People = () => {
               <Upload size={20} />
               <span>Bulk Import</span>
             </button>
+            {(user?.features?.includes('bulk_image_attendance') || user?.features?.includes('classes')) && (
+              <button
+                onClick={() => setIsFacultyUploadModalOpen(true)}
+                className="flex items-center space-x-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-all text-sm font-medium shadow-sm hover:shadow-md"
+              >
+                <Upload size={20} />
+                <span>Upload Faculty Logins</span>
+              </button>
+            )}
             {users.length > 0 && (
-                <button
+              <button
                 onClick={handleClearAll}
                 className="flex items-center space-x-2 px-4 py-2 bg-white border border-red-100 text-red-600 rounded-lg hover:bg-red-50 transition-all text-sm font-medium shadow-sm hover:shadow-md"
               >
@@ -479,9 +513,94 @@ const People = () => {
               </button>
             )}
           </div>
+        )}
         </div>
 
-      {/* Filters & Search */}
+      {/* Tab switcher — only show for non-faculty admins */}
+      {user?.role !== 'faculty' && (user?.features?.includes('bulk_image_attendance') || user?.features?.includes('classes')) && (
+        <div className="flex gap-1 border-b border-slate-200">
+          <button
+            onClick={() => setActiveTab('people')}
+            className={`px-4 py-2.5 text-sm font-semibold transition-colors rounded-t-lg ${activeTab === 'people' ? 'bg-white border border-b-white border-slate-200 text-blue-600' : 'text-slate-500 hover:text-slate-700'}`}
+          >
+            {personLabel}s
+          </button>
+          <button
+            onClick={() => { setActiveTab('faculty'); fetchFacultyLogins(); }}
+            className={`px-4 py-2.5 text-sm font-semibold transition-colors rounded-t-lg ${activeTab === 'faculty' ? 'bg-white border border-b-white border-slate-200 text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+          >
+            Faculty Logins
+          </button>
+        </div>
+      )}
+
+      {/* Faculty Logins Tab */}
+      {activeTab === 'faculty' && (
+        <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+            <div>
+              <h3 className="font-bold text-slate-800">Faculty Accounts</h3>
+              <p className="text-xs text-slate-500 mt-0.5">Logins created via Excel upload. Default password is <code className="bg-amber-50 text-amber-700 px-1 rounded font-mono font-bold">1234</code> until changed.</p>
+            </div>
+            <button onClick={fetchFacultyLogins} className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg text-xs font-medium transition-all">
+              <Download size={13} /> Refresh
+            </button>
+          </div>
+          {facultyLoading ? (
+            <div className="py-12 text-center text-slate-400 text-sm">Loading faculty...</div>
+          ) : facultyLogins.length === 0 ? (
+            <div className="py-16 text-center text-slate-400">
+              <User size={40} className="mx-auto mb-3 opacity-20" />
+              <p className="text-sm">No faculty logins yet.</p>
+              <p className="text-xs mt-1">Use "Upload Faculty Logins" to create them from an Excel file.</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 text-xs uppercase tracking-wider">
+                    <th className="px-6 py-3 font-semibold">Email (Username)</th>
+                    <th className="px-6 py-3 font-semibold">Current Password</th>
+                    <th className="px-6 py-3 font-semibold">Last Login</th>
+                    <th className="px-6 py-3 font-semibold">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {facultyLogins.map((f, idx) => (
+                    <tr key={idx} className="hover:bg-slate-50/60 transition-colors">
+                      <td className="px-6 py-3">
+                        <span className="font-mono text-indigo-600 font-medium text-xs">{f.email}</span>
+                      </td>
+                      <td className="px-6 py-3">
+                        <code className="bg-amber-50 text-amber-700 px-2 py-0.5 rounded font-mono font-bold text-xs border border-amber-100">
+                          {f.password_plain || '••••••••'}
+                        </code>
+                      </td>
+                      <td className="px-6 py-3 text-slate-500 text-xs">{f.last_login || 'Never'}</td>
+                      <td className="px-6 py-3">
+                        {f.status === 'DEFAULT' ? (
+                          <span className="inline-flex items-center gap-1.5 text-amber-600 text-xs font-semibold">
+                            <div className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                            Pending First Login
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1.5 text-green-600 text-xs font-semibold">
+                            <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                            Password Set
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Filters & Search + Table — only shown on people tab */}
+      {activeTab === 'people' && <>
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col sm:flex-row gap-4 justify-between items-center">
         <div className="relative w-full sm:w-96">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
@@ -517,7 +636,7 @@ const People = () => {
                     {col.label}
                   </th>
                 ))}
-                <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Actions</th>
+                {user?.role !== 'faculty' && <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Actions</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -530,34 +649,34 @@ const People = () => {
                   <td colSpan={tableColumns.length + 2} className="px-6 py-8 text-center text-slate-500">No {personLabel.toLowerCase()}s found.</td>
                 </tr>
               ) : (
-                filteredUsers.map((user, idx) => (
+                filteredUsers.map((person, idx) => (
                   <tr key={idx} className="hover:bg-slate-50/80 transition-colors">
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="flex items-center">
-                        {user.face_image || user.image_url ? (
+                        {person.face_image || person.image_url ? (
                           <img
                             src={
-                              user.image_url
-                                ? user.image_url
-                                : (user.face_image.startsWith('http')
-                                  ? user.face_image
-                                  : (user.face_image.startsWith('data:')
-                                    ? user.face_image
-                                    : `data:image/jpeg;base64,${user.face_image}`))
+                              person.image_url
+                                ? person.image_url
+                                : (person.face_image.startsWith('http')
+                                  ? person.face_image
+                                  : (person.face_image.startsWith('data:')
+                                    ? person.face_image
+                                    : `data:image/jpeg;base64,${person.face_image}`))
                             }
-                            alt={user.name}
+                            alt={person.name}
                             className="h-10 w-10 rounded-full object-cover mr-3 border border-slate-200"
                           />
                         ) : (
                           <div className="h-10 w-10 rounded-full bg-slate-200 flex items-center justify-center text-slate-600 font-bold text-sm mr-3">
-                            {user.name.charAt(0)}
+                            {person.name.charAt(0)}
                           </div>
                         )}
                         <div>
-                          <div className="text-sm font-medium text-slate-900">{user.name}</div>
-                          <div className="text-xs text-slate-500 font-mono">#{user.display_id || user.id}</div>
+                          <div className="text-sm font-medium text-slate-900">{person.name}</div>
+                          <div className="text-xs text-slate-500 font-mono">#{person.display_id || person.id}</div>
                           <div className="text-xs text-slate-500">
-                            {user.custom_data?.student_id || ""}
+                            {person.custom_data?.student_id || ""}
                           </div>
                         </div>
                       </div>
@@ -565,19 +684,19 @@ const People = () => {
 
                     {tableColumns.map(col => (
                       <td key={col.field} className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
-                        {getCellValue(user, col.field)}
+                        {getCellValue(person, col.field)}
                       </td>
                     ))}
 
-                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                    {user?.role !== 'faculty' && <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                       <div className="flex justify-end space-x-2">
                         <button
-                          onClick={() => handleEdit(user)}
+                          onClick={() => handleEdit(person)}
                           className="p-1 text-slate-400 hover:text-blue-600 transition-colors">
                           <Edit2 size={16} />
                         </button>
                         <button
-                          onClick={() => handleDelete(user.id, user.name)}
+                          onClick={() => handleDelete(person.id, person.name)}
                           className="p-1 text-slate-400 hover:text-red-600 transition-colors">
                           <Trash2 size={16} />
                         </button>
@@ -585,7 +704,7 @@ const People = () => {
                           <MoreVertical size={16} />
                         </button>
                       </div>
-                    </td>
+                    </td>}
                   </tr>
                 ))
               )}
@@ -604,6 +723,8 @@ const People = () => {
           </div>
         </div>
       </div>
+
+      </>}
 
       {/* Registration Modal */}
       {isModalOpen && (
@@ -882,6 +1003,108 @@ const People = () => {
               <p className="text-[10px] text-slate-400 uppercase tracking-widest font-bold">
                 Supported: CSV, XLS, XLSX
               </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isFacultyUploadModalOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+              <div>
+                <h2 className="text-lg font-bold text-slate-800">Upload Faculty Logins</h2>
+                <p className="text-xs text-slate-500 mt-0.5">Extracts emails from any column and creates faculty accounts with password 1234</p>
+              </div>
+              <button onClick={() => { setIsFacultyUploadModalOpen(false); setFacultyUploadProgress(null); setFacultyUploadResult(null); setFacultyUploadError(null); }} className="p-2 rounded-lg hover:bg-slate-100 transition-colors">
+                <X size={20} className="text-slate-500" />
+              </button>
+            </div>
+
+            <div className="p-6">
+              {!facultyUploadProgress && (
+                <>
+                  <p className="text-slate-500 text-sm mb-6 leading-relaxed">
+                    Upload a CSV or Excel file containing teacher data. Any cell with an <strong>@ symbol</strong> will be treated as an email and a faculty login will be created for it.
+                    <br /><br />
+                    Default password: <code className="bg-amber-50 text-amber-700 px-2 py-0.5 rounded font-mono font-bold">1234</code> — faculty will be forced to change it on first login.
+                  </p>
+                  <label className="flex items-center justify-center gap-2 w-full py-3 px-4 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-all cursor-pointer font-medium shadow-lg shadow-indigo-500/30">
+                    <input
+                      type="file"
+                      className="hidden"
+                      accept=".csv, .xls, .xlsx"
+                      onChange={async (e) => {
+                        const file = e.target.files[0];
+                        if (!file) return;
+                        const formData = new FormData();
+                        formData.append('file', file);
+                        setFacultyUploadProgress('uploading');
+                        setFacultyUploadError(null);
+                        try {
+                          const res = await axios.post(`${API_URL}/bulk-registration/upload-faculty`, formData, {
+                            headers: { 'Content-Type': 'multipart/form-data' }
+                          });
+                          if (res.data.success) {
+                            setFacultyUploadResult(res.data);
+                            setFacultyUploadProgress('success');
+                            fetchFacultyLogins();
+                          } else {
+                            setFacultyUploadError(res.data.error || 'Upload failed');
+                            setFacultyUploadProgress(null);
+                          }
+                        } catch (err) {
+                          setFacultyUploadError(err.response?.data?.error || 'Connection error');
+                          setFacultyUploadProgress(null);
+                        }
+                      }}
+                    />
+                    <Upload size={18} />
+                    Select File
+                  </label>
+                </>
+              )}
+
+              {facultyUploadProgress === 'uploading' && (
+                <div className="py-12 flex flex-col items-center">
+                  <div className="relative w-16 h-16 mb-6">
+                    <div className="absolute inset-0 border-4 border-slate-100 rounded-full"></div>
+                    <div className="absolute inset-0 border-4 border-indigo-600 rounded-full border-t-transparent animate-spin"></div>
+                  </div>
+                  <p className="text-slate-700 font-medium">Extracting emails & creating logins...</p>
+                </div>
+              )}
+
+              {facultyUploadProgress === 'success' && facultyUploadResult && (
+                <div className="py-8 text-center">
+                  <div className="w-16 h-16 bg-green-50 rounded-full flex items-center justify-center mx-auto mb-4 text-green-600 ring-4 ring-green-50/50">
+                    <Shield size={28} />
+                  </div>
+                  <h3 className="text-lg font-bold text-slate-800 mb-1">Logins Created!</h3>
+                  <p className="text-slate-500 text-sm">{facultyUploadResult.message}</p>
+                  <p className="text-xs text-slate-400 mt-2">Faculty can now log in with their email and password <code className="bg-amber-50 text-amber-700 px-1.5 rounded font-mono font-bold">1234</code></p>
+                  <button
+                    onClick={() => { setIsFacultyUploadModalOpen(false); setFacultyUploadProgress(null); setFacultyUploadResult(null); }}
+                    className="mt-6 px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-all font-medium text-sm"
+                  >
+                    Done
+                  </button>
+                </div>
+              )}
+
+              {facultyUploadError && (
+                <div className="mt-4 p-4 bg-red-50 border border-red-100 rounded-xl flex items-start gap-3 text-left">
+                  <X size={18} className="text-red-500 mt-0.5 shrink-0" />
+                  <div>
+                    <p className="text-red-800 text-sm font-semibold mb-0.5">Upload Error</p>
+                    <p className="text-red-600 text-xs leading-relaxed">{facultyUploadError}</p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="px-6 py-4 bg-slate-50/50 border-t border-slate-100 text-center">
+              <p className="text-[10px] text-slate-400 uppercase tracking-widest font-bold">Supported: CSV, XLS, XLSX</p>
             </div>
           </div>
         </div>

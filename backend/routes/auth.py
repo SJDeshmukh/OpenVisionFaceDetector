@@ -332,10 +332,11 @@ def login():
         except Exception as e:
             logger.error(f"Migration error: {e}")
             
-        # If it's a student and they haven't set a custom password yet, force them to set one
-        if is_student and not has_set_password:
+        # Force password change for students and faculty on first login
+        is_faculty = user.get('role') == 'faculty'
+        if (is_student or is_faculty) and not has_set_password:
             user['force_password_change'] = True
-            logger.info(f"Forcing student password set for {username} (first login or reset)")
+            logger.info(f"Forcing password set for {username} role={user.get('role')} (first login or reset)")
 
         vendor_vertical = None
         user_vendor_id = user.get('vendor_id')
@@ -396,27 +397,45 @@ def login():
                 except Exception:
                     pass
             elif platform == 'mobile':
+                # Faculty accounts are web-only — block mobile login
+                if user['role'] == 'faculty':
+                    conn.close()
+                    return jsonify({"error": "Faculty accounts cannot log in via the mobile app."}), 403
+
+                # Owner mobile access requires the wages feature
+                if user['role'] == 'owner':
+                    c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (user['vendor_id'],))
+                    sub_row = c.fetchone()
+                    sub_features = []
+                    try:
+                        sub_features = json.loads(sub_row[0]) if sub_row and sub_row[0] else []
+                    except Exception:
+                        pass
+                    if 'wages' not in sub_features:
+                        conn.close()
+                        return jsonify({"error": "Owner mobile access requires the Wages feature to be enabled."}), 403
+
                 if user['role'] in ['vendor_admin', 'user', 'owner']:
                     c.execute("SELECT max_mobile_devices FROM subscriptions WHERE vendor_id = ?", (user['vendor_id'],))
                     sub = c.fetchone()
                     # if limit is None or missing, default to 1
                     max_devs = sub[0] if sub and sub[0] is not None else 1
-                    
+
                     if device_id:
                         c.execute("SELECT id FROM vendor_devices WHERE vendor_id = ? AND device_id = ?", (user['vendor_id'], device_id))
                         existing_device = c.fetchone()
-                        
+
                         if existing_device:
                             c.execute("UPDATE vendor_devices SET last_login_at = ? WHERE id = ?", (datetime.now(), existing_device[0]))
                             conn.commit()
                         else:
                             c.execute("SELECT COUNT(*) FROM vendor_devices WHERE vendor_id = ?", (user['vendor_id'],))
                             registered_count = c.fetchone()[0]
-                            
+
                             if registered_count >= max_devs:
                                 conn.close()
                                 return jsonify({"error": f"Mobile device limit reached ({max_devs}). Contact Admin to register new device."}), 403
-                            
+
                             try:
                                 c.execute("INSERT INTO vendor_devices (vendor_id, device_id, device_name, last_login_at) VALUES (?, ?, ?, ?)",
                                           (user['vendor_id'], device_id, f"Device {device_id[:8]}", datetime.now()))
@@ -500,35 +519,38 @@ def login():
                 available_slots = []
             
             if platform == 'web' and user['role'] == 'vendor_admin':
+                # When bulk_image_attendance/classes is enabled, faculty logins are unlimited — lift the cap for all web sessions
+                has_bulk_attendance = 'bulk_image_attendance' in features or 'classes' in features
                 max_web = 1
-                try:
-                    c.execute("SELECT max_web_sessions FROM subscriptions WHERE vendor_id = ?", (user_vendor_id,))
-                    mw = c.fetchone()
-                    max_web = mw[0] if mw else 1
-                except Exception:
-                    max_web = 1
-                try:
-                    max_web = int(max_web)
-                except Exception:
-                    max_web = 1
-                if max_web < 1:
-                    max_web = 1
-                try:
-                    c.execute("DELETE FROM active_sessions WHERE username = ? AND platform = 'web' AND (device_id IS NULL OR device_id = '')", (username,))
-                    c.execute("SELECT COUNT(DISTINCT device_id) FROM active_sessions WHERE username = ? AND platform = 'web' AND device_id IS NOT NULL AND device_id != ''", (username,))
-                    existing_count = c.fetchone()[0] or 0
-                    if existing_count >= max_web:
-                        if device_id:
-                            c.execute("SELECT COUNT(*) FROM active_sessions WHERE username = ? AND platform = 'web' AND device_id = ?", (username, device_id))
-                            same = c.fetchone()[0]
-                            if same == 0:
+                if not has_bulk_attendance:
+                    try:
+                        c.execute("SELECT max_web_sessions FROM subscriptions WHERE vendor_id = ?", (user_vendor_id,))
+                        mw = c.fetchone()
+                        max_web = mw[0] if mw else 1
+                    except Exception:
+                        max_web = 1
+                    try:
+                        max_web = int(max_web)
+                    except Exception:
+                        max_web = 1
+                    if max_web < 1:
+                        max_web = 1
+                    try:
+                        c.execute("DELETE FROM active_sessions WHERE username = ? AND platform = 'web' AND (device_id IS NULL OR device_id = '')", (username,))
+                        c.execute("SELECT COUNT(DISTINCT device_id) FROM active_sessions WHERE username = ? AND platform = 'web' AND device_id IS NOT NULL AND device_id != ''", (username,))
+                        existing_count = c.fetchone()[0] or 0
+                        if existing_count >= max_web:
+                            if device_id:
+                                c.execute("SELECT COUNT(*) FROM active_sessions WHERE username = ? AND platform = 'web' AND device_id = ?", (username, device_id))
+                                same = c.fetchone()[0]
+                                if same == 0:
+                                    conn.close()
+                                    return jsonify({"error": f"Web session limit reached ({max_web})."}), 403
+                            else:
                                 conn.close()
                                 return jsonify({"error": f"Web session limit reached ({max_web})."}), 403
-                        else:
-                            conn.close()
-                            return jsonify({"error": f"Web session limit reached ({max_web})."}), 403
-                except Exception:
-                    pass
+                    except Exception:
+                        pass
 
             # Device-Centric Restriction: 
             # Ensure this specific device only has ONE active session at a time in the database,

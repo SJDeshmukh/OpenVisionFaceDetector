@@ -9,7 +9,7 @@ FRONTEND_DIR="$ROOT_DIR/web-dashboard"
 
 echo "🚀 Starting Unified Development Orchestrator..."
 
-# --- 1. PostgreSQL Activation (Mac) ---
+# --- 1. PostgreSQL + Redis Activation (Mac) ---
 if [[ "$OSTYPE" == "darwin"* ]]; then
     if command -v brew >/dev/null 2>&1; then
         echo "🐘 Checking PostgreSQL status..."
@@ -18,6 +18,14 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
             brew services start postgresql || echo "⚠️ Failed to start PostgreSQL via brew. Please ensure it is running manually."
         else
             echo "🐘 PostgreSQL is already running."
+        fi
+
+        echo "🔴 Checking Redis status..."
+        if ! brew services list | grep -q "redis.*started"; then
+            echo "🔴 Starting Redis via Homebrew..."
+            brew services start redis || echo "⚠️ Failed to start Redis via brew. Celery tasks will fall back to threads."
+        else
+            echo "🔴 Redis is already running."
         fi
     fi
 fi
@@ -64,7 +72,8 @@ fi
 npx concurrently \
   --kill-others \
   --prefix "[{name}]" \
-  --names "BACKEND,FRONTEND" \
-  --prefix-colors "blue,green" \
+  --names "BACKEND,CELERY,FRONTEND" \
+  --prefix-colors "blue,yellow,green" \
   "cd backend && source .venv/bin/activate && python app.py" \
+  "cd backend && source .venv/bin/activate && celery -A celery_app worker --loglevel=info --pool=solo --concurrency=1 --include tasks" \
   "cd web-dashboard && npm run dev"

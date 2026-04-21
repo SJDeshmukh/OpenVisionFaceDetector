@@ -29,16 +29,29 @@ const BulkImageAttendance = () => {
   });
   const [lectureRoster, setLectureRoster] = useState([]); // [{person_id, status, name}]
   const [rosterMarking, setRosterMarking] = useState({});
-  const [batchId, setBatchId] = useState(() => localStorage.getItem('class_batch_id') || '');
+  const batchLsKey = user?.id ? `class_batch_id_${user.id}` : null;
+  const [batchId, setBatchId] = useState('');
   const [batchItems, setBatchItems] = useState([]);
   const [showWebcam, setShowWebcam] = useState(false);
   const webcamRef = useRef(null);
+  const [zoomLevel, setZoomLevel] = useState(1);
+  const pinchStartDist = useRef(null);
+  const pinchStartZoom = useRef(1);
   const [simThreshold, setSimThreshold] = useState(0.6);
   const peopleById = useRef(null);
   const [pendingFiles, setPendingFiles] = useState([]); // queued File objects to be scanned together
   const [regenerating, setRegenerating] = useState({});
   const overridesRef = useRef(new Map()); // key: `${itemId}:${faceIndex}` -> dataURL
   const [useClientAI, setUseClientAI] = useState(false);
+
+  // Load user-scoped batch ID once user is available
+  useEffect(() => {
+    if (batchLsKey) {
+      const stored = localStorage.getItem(batchLsKey);
+      if (stored) setBatchId(stored);
+    }
+  }, [batchLsKey]);
+
   useEffect(() => {
     peopleById.current = new Map(people.map(p => [String(p.id), p.name]));
   }, [people]);
@@ -68,17 +81,51 @@ const BulkImageAttendance = () => {
       alert('Select class scope first');
       return;
     }
-    if (!webcamRef.current) return;
-    const imageSrc = webcamRef.current.getScreenshot();
-    if (!imageSrc) return;
+    const video = webcamRef.current?.video;
+    if (!video) return;
 
-    // Convert base64 to file
-    const res = await fetch(imageSrc);
+    const vw = video.videoWidth || 1280;
+    const vh = video.videoHeight || 720;
+    const cropW = vw / zoomLevel;
+    const cropH = vh / zoomLevel;
+    const sx = (vw - cropW) / 2;
+    const sy = (vh - cropH) / 2;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = vw;
+    canvas.height = vh;
+    canvas.getContext('2d').drawImage(video, sx, sy, cropW, cropH, 0, 0, vw, vh);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+
+    const res = await fetch(dataUrl);
     const buf = await res.arrayBuffer();
     const file = new File([buf], `webcam-${Date.now()}.jpg`, { type: 'image/jpeg' });
 
     setShowWebcam(false);
+    setZoomLevel(1);
     onUploadImages([file]);
+  };
+
+  const handlePinchStart = (e) => {
+    if (e.touches.length !== 2) return;
+    const dx = e.touches[0].clientX - e.touches[1].clientX;
+    const dy = e.touches[0].clientY - e.touches[1].clientY;
+    pinchStartDist.current = Math.hypot(dx, dy);
+    pinchStartZoom.current = zoomLevel;
+  };
+
+  const handlePinchMove = (e) => {
+    if (e.touches.length !== 2 || !pinchStartDist.current) return;
+    e.preventDefault();
+    const dx = e.touches[0].clientX - e.touches[1].clientX;
+    const dy = e.touches[0].clientY - e.touches[1].clientY;
+    const dist = Math.hypot(dx, dy);
+    const scale = dist / pinchStartDist.current;
+    setZoomLevel(prev => Math.min(4, Math.max(1, pinchStartZoom.current * scale)));
+  };
+
+  const handlePinchEnd = () => {
+    pinchStartDist.current = null;
   };
 
   useEffect(() => {
@@ -251,7 +298,7 @@ const BulkImageAttendance = () => {
         return batchId; // batch is valid
       } catch (e) {
         // Batch is stale/gone — clear it and create a new one
-        localStorage.removeItem('class_batch_id');
+        if (batchLsKey) localStorage.removeItem(batchLsKey);
         setBatchId('');
       }
     }
@@ -260,7 +307,7 @@ const BulkImageAttendance = () => {
     });
     const id = res.data?.batch_id;
     if (id) {
-      localStorage.setItem('class_batch_id', id);
+      if (batchLsKey) localStorage.setItem(batchLsKey, id);
       setBatchId(id);
     }
     return id;
@@ -338,7 +385,7 @@ const BulkImageAttendance = () => {
           // If batch was deleted or never created, clear stale ID to stop 404 spam
           const status = e?.response?.status;
           if (status === 404) {
-            try { localStorage.removeItem('class_batch_id'); } catch (_) { }
+            try { if (batchLsKey) localStorage.removeItem(batchLsKey); } catch (_) { }
             setBatchId('');
             return;
           }
@@ -422,6 +469,7 @@ const BulkImageAttendance = () => {
       fd.append('class_year', selectedClass.class_year || '');
       fd.append('division', selectedClass.division || '');
       fd.append('branch', selectedClass.branch || '');
+      fd.append('fast', 'true');
 
       const params = new URLSearchParams();
       const res = await axios.post(`${API_URL}/class-batch/add?${params.toString()}`, fd, {
@@ -466,7 +514,7 @@ const BulkImageAttendance = () => {
   };
 
   const saveMappings = async () => {
-    const id = localStorage.getItem('class_batch_id');
+    const id = batchLsKey ? localStorage.getItem(batchLsKey) : batchId;
     if (!id) {
       alert('No active session');
       return;
@@ -700,6 +748,10 @@ const BulkImageAttendance = () => {
               return <select disabled className="p-2 border rounded-lg bg-red-50 text-red-500"><option>No subjects mapped</option></select>;
             }
 
+            const filteredMapped = user?.role === 'faculty' 
+              ? mapped.filter(m => m.faculty === user.username || m.faculty === user.email)
+              : mapped;
+
             return (
               <select
                 value={selectedSubject}
@@ -707,7 +759,7 @@ const BulkImageAttendance = () => {
                 className="p-2 border border-slate-200 rounded-lg bg-white"
               >
                 <option value="">Select Subject</option>
-                {mapped.map(s => <option key={s.subject} value={s.subject}>{s.subject}</option>)}
+                {filteredMapped.map(s => <option key={s.subject} value={s.subject}>{s.subject}</option>)}
               </select>
             );
           })()}
@@ -800,11 +852,11 @@ const BulkImageAttendance = () => {
           </button>
           <button
             onClick={async () => {
-              const id = localStorage.getItem('class_batch_id');
+              const id = batchLsKey ? localStorage.getItem(batchLsKey) : batchId;
               if (!id) return;
               if (!confirm('End session and clear server cache?')) return;
               await axios.post(`${API_URL}/class-batch/clear`, { batch_id: id }, { headers: { Authorization: `Bearer ${user?.token}` } });
-              localStorage.removeItem('class_batch_id');
+              if (batchLsKey) localStorage.removeItem(batchLsKey);
               localStorage.removeItem('active_lecture_id');
               setBatchId('');
               setSelectedLectureId('');
@@ -961,37 +1013,71 @@ const BulkImageAttendance = () => {
       )}
 
       {showWebcam && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl p-4 w-full max-w-2xl">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-semibold text-slate-800">Live Camera Capture</h3>
-              <button onClick={() => setShowWebcam(false)} className="text-slate-500 hover:text-slate-700 font-bold">✕</button>
-            </div>
-            <div className="bg-slate-900 rounded-lg overflow-hidden flex justify-center mb-4">
-              <Webcam
-                audio={false}
-                ref={webcamRef}
-                screenshotFormat="image/jpeg"
-                videoConstraints={{ facingMode: "environment" }}
-                className="w-full max-w-lg"
-              />
-            </div>
-            <div className="flex justify-end gap-3">
+        <div className="fixed inset-0 bg-black z-50 flex flex-col">
+          {/* Top bar */}
+          <div className="flex justify-between items-center px-4 py-3 bg-black/70 absolute top-0 left-0 right-0 z-10">
+            <button
+              onClick={() => { setShowWebcam(false); setZoomLevel(1); }}
+              className="text-white text-sm font-medium bg-white/20 px-3 py-1.5 rounded-full"
+            >
+              Cancel
+            </button>
+            <span className="text-white font-bold text-base tracking-wide">
+              {zoomLevel > 1 ? `${zoomLevel.toFixed(1)}×` : 'Pinch to zoom'}
+            </span>
+            {zoomLevel > 1 && (
               <button
-                onClick={() => setShowWebcam(false)}
-                className="px-4 py-2 border rounded-lg hover:bg-slate-50 text-slate-700"
+                onClick={() => setZoomLevel(1)}
+                className="text-white text-sm bg-white/20 px-3 py-1.5 rounded-full"
               >
-                Cancel
+                Reset
               </button>
-              <button
-                onClick={captureAndUpload}
-                disabled={loading}
-                className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 inline-flex gap-2 items-center"
-              >
-                <Camera size={18} />
-                Capture & Detect
-              </button>
-            </div>
+            )}
+            {zoomLevel <= 1 && <div className="w-16" />}
+          </div>
+
+          {/* Camera view with pinch zoom */}
+          <div
+            className="flex-1 overflow-hidden flex items-center justify-center bg-black"
+            onTouchStart={handlePinchStart}
+            onTouchMove={handlePinchMove}
+            onTouchEnd={handlePinchEnd}
+            style={{ touchAction: 'none' }}
+          >
+            <Webcam
+              audio={false}
+              ref={webcamRef}
+              screenshotFormat="image/jpeg"
+              videoConstraints={{ facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }}
+              style={{
+                width: '100%',
+                height: '100%',
+                objectFit: 'cover',
+                transform: `scale(${zoomLevel})`,
+                transformOrigin: 'center center',
+                transition: pinchStartDist.current ? 'none' : 'transform 0.1s ease-out',
+              }}
+            />
+          </div>
+
+          {/* Zoom slider + capture button */}
+          <div className="absolute bottom-0 left-0 right-0 bg-black/60 px-6 pb-8 pt-4 flex flex-col items-center gap-4">
+            <input
+              type="range"
+              min="1"
+              max="4"
+              step="0.1"
+              value={zoomLevel}
+              onChange={e => setZoomLevel(parseFloat(e.target.value))}
+              className="w-48 accent-white"
+            />
+            <button
+              onClick={captureAndUpload}
+              disabled={loading}
+              className="w-16 h-16 rounded-full bg-white border-4 border-white/50 flex items-center justify-center shadow-xl active:scale-95 transition-transform disabled:opacity-50"
+            >
+              <Camera size={28} className="text-black" />
+            </button>
           </div>
         </div>
       )}

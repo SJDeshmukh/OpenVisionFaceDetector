@@ -230,3 +230,115 @@ def bulk_registration_upload():
 
     except Exception as e:
         return jsonify({"error": f"Import failed: {str(e)}"}), 500
+
+
+@bulk_registration_bp.route("/bulk-registration/faculty-logins", methods=["GET"])
+@require_auth()
+def list_faculty_logins():
+    """Vendor-scoped endpoint to list all faculty accounts."""
+    vendor_id = g.vendor_id
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute("""
+            SELECT username, password_plain, last_active_at, has_set_password
+            FROM system_users
+            WHERE vendor_id = ? AND role = 'faculty'
+            ORDER BY username ASC
+        """, (vendor_id,))
+        rows = c.fetchall()
+        logins = []
+        for row in rows:
+            try:
+                r = dict(row)
+            except Exception:
+                r = {"username": row[0], "password_plain": row[1], "last_active_at": row[2], "has_set_password": row[3]}
+            logins.append({
+                "email": r.get("username"),
+                "password_plain": r.get("password_plain"),
+                "last_login": r.get("last_active_at"),
+                "status": "CHANGED" if r.get("has_set_password") == 1 else "DEFAULT"
+            })
+        return jsonify({"success": True, "logins": logins})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')
+
+@bulk_registration_bp.route("/bulk-registration/upload-faculty", methods=["POST"])
+@require_auth()
+def bulk_registration_upload_faculty():
+    """Extract email addresses from any column in an Excel/CSV and create faculty logins."""
+    from services.auth_service import hash_password
+    vendor_id = g.vendor_id
+
+    if 'file' not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+    file = request.files['file']
+    if not file.filename:
+        return jsonify({"error": "No file selected"}), 400
+
+    ext = file.filename.rsplit('.', 1)[-1].lower()
+    try:
+        data = []
+        if ext == 'csv':
+            content = file.read().decode('utf-8-sig')
+            reader = csv.DictReader(io.StringIO(content))
+            data = [row for row in reader]
+        elif ext in ['xls', 'xlsx']:
+            df = pd.read_excel(file)
+            df = df.where(pd.notnull(df), None)
+            data = df.to_dict(orient='records')
+        else:
+            return jsonify({"error": f"Unsupported file type: {ext}"}), 400
+
+        if not data:
+            return jsonify({"error": "File is empty"}), 400
+
+        # Collect every email found in any cell across every row
+        emails_found = set()
+        for row in data:
+            for val in row.values():
+                if val is None:
+                    continue
+                matches = EMAIL_RE.findall(str(val))
+                for m in matches:
+                    emails_found.add(m.lower().strip())
+
+        if not emails_found:
+            return jsonify({"error": "No email addresses found in the file. Make sure at least one column contains emails (e.g. teacher@school.edu)."}), 400
+
+        conn = get_db_connection()
+        c = conn.cursor()
+        hashed_default = hash_password("1234")
+        created = 0
+        skipped = 0
+
+        for email in emails_found:
+            c.execute("SELECT username FROM system_users WHERE username = ? AND vendor_id = ?", (email, vendor_id))
+            if c.fetchone():
+                skipped += 1
+                continue
+            c.execute("""
+                INSERT INTO system_users (username, password, password_plain, role, vendor_id, has_set_password)
+                VALUES (?, ?, ?, 'faculty', ?, 0)
+            """, (email, hashed_default, "1234", vendor_id))
+            created += 1
+
+        conn.commit()
+        conn.close()
+
+        log_audit('faculty_upload', details={"created": created, "skipped": skipped, "filename": file.filename}, target_vendor_id=vendor_id)
+
+        return jsonify({
+            "success": True,
+            "message": f"Created {created} faculty login(s). {skipped} already existed.",
+            "created": created,
+            "skipped": skipped
+        })
+
+    except Exception as e:
+        return jsonify({"error": f"Faculty upload failed: {str(e)}"}), 500
