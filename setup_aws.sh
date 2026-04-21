@@ -196,6 +196,10 @@ EOF
     echo "Installing npm packages..."
     npm install --legacy-peer-deps
 
+    # react-is is a peer dependency of recharts not always auto-installed;
+    # rolldown-vite fails the build if it is missing, so force it here.
+    npm install react-is --legacy-peer-deps
+
     # Build with a memory cap so the process doesn't OOM on low-RAM instances
     echo "Running production build..."
     NODE_OPTIONS="--max-old-space-size=1024" npm run build || {
