@@ -21,35 +21,38 @@ else
 fi
 echo "=============================================================================="
 
-echo "==> [0/8] Aggressive Fresh Start (Cleaning environment)..."
-# Stop services
+echo "==> [0/8] NUCLEAR CLEANUP: Stopping and Killing All Services..."
+# Stop Systemd Services
+echo "Stopping OpenVision services..."
 sudo systemctl stop openvision-backend openvision-celery 2>/dev/null || true
 sudo systemctl stop nginx redis-server postgresql 2>/dev/null || true
 
-# Kill any lingering processes
-sudo pkill -f gunicorn || true
-sudo pkill -f celery || true
-sudo pkill -f "python3 app.py" || true
+# Stop Docker Services (if any)
+if command -v docker &> /dev/null; then
+    echo "Stopping Docker containers..."
+    sudo docker ps -q | xargs -r sudo docker stop || true
+fi
 
-# Explicitly kill processes on key ports
-for port in 80 5001 5432 6379 5173 443; do
-    echo "Clearing port $port..."
-    sudo fuser -k ${port}/tcp 2>/dev/null || true
+# Deep Kill by Process Name
+echo "Killing lingering Gunicorn, Celery, and Python workers..."
+sudo pkill -9 -f gunicorn || true
+sudo pkill -9 -f celery || true
+sudo pkill -9 -f "python3 app.py" || true
+sudo killall -9 gunicorn celery 2>/dev/null || true
+
+# Force release ports (The most critical part for [Errno 98])
+for port in 80 443 5001 5432 6379 5173; do
+    echo "Forcefully releasing port $port..."
+    sudo fuser -k -9 ${port}/tcp 2>/dev/null || true
+    # Wait a moment for OS to release the socket
+    sleep 0.5
 done
 
 # FRESH START: Flush Redis to clear stale task queues
-if command -v redis-server &> /dev/null; then
-    echo "Flushing Redis queues..."
-    sudo systemctl start redis-server
-    redis-cli FLUSHALL || true
-    sudo systemctl stop redis-server
-fi
-
-# FRESH START: Clear old system journals to release space and simplify debugging
-echo "Cleaning system journals..."
+echo "Performing final cleanup of logs and queues..."
 sudo journalctl --vacuum-time=1s 2>/dev/null || true
 
-echo "System cleaned. Proceeding with FRESH setup..."
+echo "Environment is now CLEAN. Ready for setup."
 
 echo "==> [1/8] Configuring 4GB Swap File for RAM Stability..."
 if [ ! -f /swapfile ] && [ ! -L /swapfile ]; then
