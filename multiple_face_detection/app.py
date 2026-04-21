@@ -17,6 +17,8 @@ import urllib.request
 import urllib.parse
 import base64
 
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 def is_bulk_attendance_allowed() -> bool:
     """Checks if ANY active vendor has bulk_image_attendance enabled."""
     try:
@@ -118,7 +120,7 @@ def init_third_party_paths(base_dir: str):
         pass
 
 # Initialize immediately (LIGHTWEIGHT ONLY)
-_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# _BASE_DIR moved to top
 # init_third_party_paths(_BASE_DIR) # DEFERRED to save memory
 
 # PATCH: RealESRGAN missing version fix (DEFERRED)
@@ -405,6 +407,9 @@ class RealESRGANManager:
 _realesrgan_manager = None
 def get_realesrgan_manager():
     global _realesrgan_manager
+    if not is_bulk_attendance_allowed():
+        if _realesrgan_manager: _check_and_unload_models(force=True)
+        return None
     from utils import LOW_RAM_MODE
     if LOW_RAM_MODE: _check_and_unload_models()
     if _realesrgan_manager is None:
@@ -660,6 +665,14 @@ def _check_and_unload_models(force: bool = False):
         _realesrgan_manager._upsampler = None
         print(f"[MEM] Unloaded RealESRGAN model to free RAM{' (FORCE)' if force else ''}", flush=True)
         
+    # Check 3D Mesh Engine
+    if _mesh_engine is not None and (force or (now - getattr(_mesh_engine, '_last_used', 0) > _UNLOAD_TTL)):
+        # Standalone live mesh engine might not have a simple 'None' to unload if it's a module
+        # but we can at least drop the global reference if we have one.
+        # NOTE: get_realtime_engine in app.py returns the engine instance.
+        _mesh_engine = None
+        print(f"[MEM] Released 3D Mesh Engine to free RAM{' (FORCE)' if force else ''}", flush=True)
+
     # Periodic GC if anything was unloaded
     import gc
     gc.collect()
@@ -678,6 +691,9 @@ def get_detector():
 
 def get_gfpgan_manager():
     global _gfpgan_manager
+    if not is_bulk_attendance_allowed():
+        if _gfpgan_manager: _check_and_unload_models(force=True)
+        return None
     from utils import LOW_RAM_MODE
     if LOW_RAM_MODE: _check_and_unload_models()
     if _gfpgan_manager is None:

@@ -36,7 +36,7 @@ def make_celery():
         return None
     
     print(f"[CELERY] Initializing with broker: {BROKER_URL}")
-    app = Celery("face_backend", broker=BROKER_URL, backend=RESULT_BACKEND)
+    app = Celery("face_backend", broker=BROKER_URL, backend=RESULT_BACKEND, include=["tasks"])
     app.conf.update(
         task_serializer="json",
         accept_content=["json"],
