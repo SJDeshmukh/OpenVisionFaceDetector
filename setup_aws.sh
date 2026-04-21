@@ -21,31 +21,35 @@ else
 fi
 echo "=============================================================================="
 
-echo "==> [0/8] Aggressive Port Cleanup (Ensuring clean state)..."
-# Stop services and processes that might occupy required ports
-sudo systemctl stop nginx 2>/dev/null || true
-sudo systemctl stop apache2 2>/dev/null || true
-sudo systemctl stop openvision-backend 2>/dev/null || true
-sudo systemctl stop openvision-celery 2>/dev/null || true
-sudo systemctl stop postgresql 2>/dev/null || true
-sudo systemctl stop redis-server 2>/dev/null || true
+echo "==> [0/8] Aggressive Fresh Start (Cleaning environment)..."
+# Stop services
+sudo systemctl stop openvision-backend openvision-celery 2>/dev/null || true
+sudo systemctl stop nginx redis-server postgresql 2>/dev/null || true
 
-# Kill any remaining gunicorn or celery workers
+# Kill any lingering processes
 sudo pkill -f gunicorn || true
 sudo pkill -f celery || true
+sudo pkill -f "python3 app.py" || true
 
-# Explicitly kill processes on key ports using fuser (more robust)
+# Explicitly kill processes on key ports
 for port in 80 5001 5432 6379 5173 443; do
-    echo "Ensuring port $port is free..."
+    echo "Clearing port $port..."
     sudo fuser -k ${port}/tcp 2>/dev/null || true
-    PID=$(sudo lsof -t -i:$port 2>/dev/null || true)
-    if [ ! -z "$PID" ]; then
-        echo "Forcing kill on port $port (PID: $PID)..."
-        sudo kill -9 $PID 2>/dev/null || true
-    fi
 done
 
-echo "System cleaned. Proceeding with setup..."
+# FRESH START: Flush Redis to clear stale task queues
+if command -v redis-server &> /dev/null; then
+    echo "Flushing Redis queues..."
+    sudo systemctl start redis-server
+    redis-cli FLUSHALL || true
+    sudo systemctl stop redis-server
+fi
+
+# FRESH START: Clear old system journals to release space and simplify debugging
+echo "Cleaning system journals..."
+sudo journalctl --vacuum-time=1s 2>/dev/null || true
+
+echo "System cleaned. Proceeding with FRESH setup..."
 
 echo "==> [1/8] Configuring 4GB Swap File for RAM Stability..."
 if [ ! -f /swapfile ] && [ ! -L /swapfile ]; then
