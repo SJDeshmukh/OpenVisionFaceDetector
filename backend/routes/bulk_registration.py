@@ -46,15 +46,21 @@ def bulk_registration_upload():
         else:
             return jsonify({"error": f"Unsupported file extension: {ext}"}), 400
 
-        if not data:
-            return jsonify({"error": "File is empty"}), 400
+        if not data or not isinstance(data, list):
+            return jsonify({"error": "File is empty or invalid format"}), 400
+
+        # Optional Class Scope from request (Class-Specific Upload)
+        req_class_id = request.form.get('class_id')
+        req_class_year = request.form.get('class_year')
+        req_division = request.form.get('division')
+        req_branch = request.form.get('branch')
 
         headers = list(data[0].keys())
         
-        # Mapping Logic
-        name_targets = ["name", "full name", "student name", "employee name", "person name"]
-        id_targets = ["student id", "student_id", "id", "id number"]
-        phone_targets = ["mobile", "phone", "contact", "whatsapp"]
+        # Mapping Logic - Expanded for better auto-identification
+        name_targets = ["name", "full name", "student name", "employee name", "person name", "first name"]
+        id_targets = ["student id", "student_id", "id", "id number", "roll number", "admission number"]
+        phone_targets = ["mobile", "phone", "contact", "whatsapp", "parent number", "alternative number", "student mobile number", "student mobile"]
         dept_targets = ["department", "dept", "branch", "class", "section"]
         desig_targets = ["designation", "role", "post"]
         shift_targets = ["shift", "timing"]
@@ -110,41 +116,57 @@ def bulk_registration_upload():
                     continue
 
                 phone = str(row.get(phone_key) or "").strip()
-                
-                # Strictly collect custom data based on ACTUAL headers from the current row
-                # (headers list was identified at the start of upload)
-                custom_data_obj = {}
-                core_headers = {h for h in [name_key, phone_key] if h}
-                
-                for h in headers:
-                    if h in core_headers:
-                        continue
-                    val = row.get(h)
-                    if val is not None:
-                        custom_key = str(h).strip()
-                        custom_data_obj[custom_key] = str(val).strip()
 
-                custom_data_str = json.dumps(custom_data_obj)
+                # Duplicate detection: case-insensitive name + phone match within same vendor
+                if phone:
+                    c.execute(
+                        "SELECT id FROM faces WHERE vendor_id = ? AND LOWER(name) = LOWER(?) AND phone = ?",
+                        (vendor_id, name, phone)
+                    )
+                elif req_class_id:
+                    c.execute(
+                        "SELECT id FROM faces WHERE vendor_id = ? AND LOWER(name) = LOWER(?) AND json_extract(custom_data, '$.class_id') = ?",
+                        (vendor_id, name, req_class_id)
+                    )
+                else:
+                    c.execute(
+                        "SELECT id FROM faces WHERE vendor_id = ? AND LOWER(name) = LOWER(?)",
+                        (vendor_id, name)
+                    )
+                if c.fetchone():
+                    skipped_count += 1
+                    continue
+
+                # Exclude core fields from custom_data to avoid database redundancy
+                custom_dict = {}
+                for k, v in row.items():
+                    if k in [name_key, phone_key, id_key]:
+                        continue  # Already stored in core columns
+                    if v is not None:
+                        custom_dict[str(k).strip()] = str(v).strip()
+
+                # Inject Class Scope if provided via Class Cards flow
+                if req_class_id: custom_dict['class_id'] = req_class_id
+                if req_class_year: custom_dict['class_year'] = req_class_year
+                if req_division: custom_dict['division'] = req_division
+                if req_branch: custom_dict['branch'] = req_branch
+
+                custom_data_str = json.dumps(custom_dict)
 
                 # Get next display_id
                 c.execute("SELECT COALESCE(MAX(display_id), 0) + 1 FROM faces WHERE vendor_id = ?", (vendor_id,))
                 next_display_id = c.fetchone()[0]
 
-                # Insert into faces: 
-                # Note: Dept, Desig, Shift are now handled via custom_data if present in Excel
-                # We pass empty strings for them in the core table columns for now
                 c.execute("""
                     INSERT INTO faces (name, phone, department, designation, shift, vendor_id, custom_data, display_id)
                     VALUES (?, ?, '', '', '', ?, ?, ?)
                 """, (name, phone, vendor_id, custom_data_str, next_display_id))
-                
+
                 person_id = c.lastrowid
 
                 # Optional: Automated Login Creation ("Inking")
-                # Use id_key value if found in row
                 student_id_val = str(row.get(id_key) or "").strip() if id_key else ""
                 if inking_enabled and student_id_val and phone:
-                    # Check if user already exists
                     c.execute("SELECT username FROM system_users WHERE username = ?", (student_id_val,))
                     if not c.fetchone():
                         c.execute("""
@@ -161,6 +183,9 @@ def bulk_registration_upload():
         new_sync_fields = []
         
         for h in headers:
+            if h in [name_key, phone_key, id_key]:
+                continue # Skip core fields in custom config to avoid UI redundancy
+            
             field_name = str(h).strip()
             # Preserve existing metadata if the label matches (case-insensitive)
             existing_f = next((f for f in existing_fields if f.get('label', '').lower() == field_name.lower()), None)
@@ -172,14 +197,6 @@ def bulk_registration_upload():
                 "required": False,
                 "default": False
             }
-            
-            # Map core metadata so frontend can intelligently display them
-            if h == name_key:
-                field_config["is_name"] = True
-            if h == phone_key:
-                field_config["is_phone"] = True
-            if h == id_key:
-                field_config["is_id"] = True
                 
             new_sync_fields.append(field_config)
 
@@ -217,61 +234,77 @@ def bulk_registration_upload():
         c.execute("UPDATE vendors SET registration_config = ? WHERE id = ?", (json.dumps(new_reg_config), vendor_id))
 
         conn.commit()
-        conn.close()
-
         log_audit('bulk_registration', details={"success_count": success_count, "skipped_count": skipped_count, "filename": filename}, target_vendor_id=vendor_id)
 
         return jsonify({
-            "success": True, 
-            "message": f"Successfully registered {success_count} students.", 
+            "success": True,
+            "message": f"Successfully registered {success_count} students.",
             "skipped": skipped_count,
-            "errors": errors[:10] # Return first 10 errors
+            "errors": errors[:10]
         })
 
     except Exception as e:
         return jsonify({"error": f"Import failed: {str(e)}"}), 500
 
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
-@bulk_registration_bp.route("/bulk-registration/faculty-logins", methods=["GET"])
+
+EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')
+
+@bulk_registration_bp.route("/bulk-registration/faculty", methods=["POST"])
 @require_auth()
-def list_faculty_logins():
-    """Vendor-scoped endpoint to list all faculty accounts."""
+def create_faculty_single():
+    """Create a single faculty login account."""
+    from services.auth_service import hash_password
     vendor_id = g.vendor_id
+    data = request.json or {}
+
+    email = str(data.get('email') or '').strip().lower()
+    name = str(data.get('name') or '').strip()
+    phone = str(data.get('phone') or '').strip()
+    designation = str(data.get('designation') or '').strip() or 'Faculty'
+    password = str(data.get('password') or '1234').strip() or '1234'
+
+    if not email or not EMAIL_RE.match(email):
+        return jsonify({"error": "A valid email address is required"}), 400
+
     conn = get_db_connection()
     c = conn.cursor()
     try:
+        c.execute("SELECT username FROM system_users WHERE username = ? AND vendor_id = ?", (email, vendor_id))
+        if c.fetchone():
+            return jsonify({"error": "A faculty account with this email already exists"}), 409
+
+        name_val = name or email.split('@')[0]
+        c.execute(
+            "INSERT INTO faces (name, phone, designation, vendor_id) VALUES (?, ?, ?, ?)",
+            (name_val, phone, designation, vendor_id)
+        )
+        person_id = c.lastrowid
+
+        hashed = hash_password(password)
         c.execute("""
-            SELECT username, password_plain, last_active_at, has_set_password
-            FROM system_users
-            WHERE vendor_id = ? AND role = 'faculty'
-            ORDER BY username ASC
-        """, (vendor_id,))
-        rows = c.fetchall()
-        logins = []
-        for row in rows:
-            try:
-                r = dict(row)
-            except Exception:
-                r = {"username": row[0], "password_plain": row[1], "last_active_at": row[2], "has_set_password": row[3]}
-            logins.append({
-                "email": r.get("username"),
-                "password_plain": r.get("password_plain"),
-                "last_login": r.get("last_active_at"),
-                "status": "CHANGED" if r.get("has_set_password") == 1 else "DEFAULT"
-            })
-        return jsonify({"success": True, "logins": logins})
+            INSERT INTO system_users (username, password, password_plain, role, vendor_id, has_set_password, person_id)
+            VALUES (?, ?, ?, 'faculty', ?, 0, ?)
+        """, (email, hashed, password, vendor_id, person_id))
+        conn.commit()
+
+        log_audit('faculty_created_single', details={"email": email}, target_vendor_id=vendor_id)
+        return jsonify({"success": True, "message": f"Faculty {email} created."})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
 
 
-EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')
-
 @bulk_registration_bp.route("/bulk-registration/upload-faculty", methods=["POST"])
 @require_auth()
 def bulk_registration_upload_faculty():
-    """Extract email addresses from any column in an Excel/CSV and create faculty logins."""
+    """Extract faculty logins and metadata (Name, Phone, Designation) from Excel/CSV."""
     from services.auth_service import hash_password
     vendor_id = g.vendor_id
 
@@ -298,18 +331,48 @@ def bulk_registration_upload_faculty():
         if not data:
             return jsonify({"error": "File is empty"}), 400
 
-        # Collect every email found in any cell across every row
-        emails_found = set()
-        for row in data:
-            for val in row.values():
-                if val is None:
-                    continue
-                matches = EMAIL_RE.findall(str(val))
-                for m in matches:
-                    emails_found.add(m.lower().strip())
+        # Attempt to map columns
+        headers = list(data[0].keys())
+        email_key = None
+        name_key = None
+        phone_key = None
+        desig_key = None
 
-        if not emails_found:
-            return jsonify({"error": "No email addresses found in the file. Make sure at least one column contains emails (e.g. teacher@school.edu)."}), 400
+        for h in headers:
+            h_low = str(h).lower().strip()
+            if 'email' in h_low: email_key = h
+            elif 'name' in h_low: name_key = h
+            elif 'phone' in h_low or 'mobile' in h_low: phone_key = h
+            elif 'designation' in h_low or 'role' in h_low or 'desig' in h_low: desig_key = h
+
+        if not email_key:
+            # Fallback to searching all cells if no explicit email column
+            emails_to_process = []
+            for row in data:
+                for val in row.values():
+                    if val is None: continue
+                    matches = EMAIL_RE.findall(str(val))
+                    for m in matches:
+                        emails_to_process.append({
+                            'email': m.lower().strip(),
+                            'name': None,
+                            'phone': None,
+                            'designation': None
+                        })
+        else:
+            emails_to_process = []
+            for row in data:
+                email = str(row.get(email_key) or "").strip().lower()
+                if not email or not EMAIL_RE.match(email): continue
+                emails_to_process.append({
+                    'email': email,
+                    'name': str(row.get(name_key) or "").strip() if name_key else None,
+                    'phone': str(row.get(phone_key) or "").strip() if phone_key else None,
+                    'designation': str(row.get(desig_key) or "").strip() if desig_key else None
+                })
+
+        if not emails_to_process:
+            return jsonify({"error": "No valid email addresses found in the file."}), 400
 
         conn = get_db_connection()
         c = conn.cursor()
@@ -317,15 +380,31 @@ def bulk_registration_upload_faculty():
         created = 0
         skipped = 0
 
-        for email in emails_found:
+        for item in emails_to_process:
+            email = item['email']
             c.execute("SELECT username FROM system_users WHERE username = ? AND vendor_id = ?", (email, vendor_id))
             if c.fetchone():
                 skipped += 1
                 continue
+            
+            # Create a Face record for metadata
+            name_val = item['name']
+            if not name_val and email:
+                name_val = email.split('@')[0]
+            elif not name_val:
+                name_val = "Faculty"
+
             c.execute("""
-                INSERT INTO system_users (username, password, password_plain, role, vendor_id, has_set_password)
-                VALUES (?, ?, ?, 'faculty', ?, 0)
-            """, (email, hashed_default, "1234", vendor_id))
+                INSERT INTO faces (name, phone, designation, vendor_id)
+                VALUES (?, ?, ?, ?)
+            """, (name_val, item['phone'] or '', item['designation'] or 'Faculty', vendor_id))
+            person_id = c.lastrowid
+
+            # Create SystemUser
+            c.execute("""
+                INSERT INTO system_users (username, password, password_plain, role, vendor_id, has_set_password, person_id)
+                VALUES (?, ?, ?, 'faculty', ?, 0, ?)
+            """, (email, hashed_default, "1234", vendor_id, person_id))
             created += 1
 
         conn.commit()
@@ -342,3 +421,152 @@ def bulk_registration_upload_faculty():
 
     except Exception as e:
         return jsonify({"error": f"Faculty upload failed: {str(e)}"}), 500
+
+
+@bulk_registration_bp.route("/bulk-registration/faculty-logins", methods=["GET"])
+@require_auth()
+def list_faculty_logins():
+    """Vendor-scoped endpoint to list all faculty accounts with metadata."""
+    vendor_id = g.vendor_id
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        # Join with faces to get Name, Phone, Designation
+        c.execute("""
+            SELECT u.username, u.password_plain, u.last_active_at, u.has_set_password,
+                   f.name, f.phone, f.designation
+            FROM system_users u
+            LEFT JOIN faces f ON u.person_id = f.id
+            WHERE u.vendor_id = ? AND u.role = 'faculty'
+            ORDER BY u.username ASC
+        """, (vendor_id,))
+        rows = c.fetchall()
+        logins = []
+        for row in rows:
+            try:
+                r = dict(row)
+            except Exception:
+                r = {
+                    "username": row[0], "password_plain": row[1], "last_active_at": row[2], 
+                    "has_set_password": row[3], "name": row[4], "phone": row[5], "designation": row[6]
+                }
+            logins.append({
+                "email": r.get("username"),
+                "password_plain": r.get("password_plain"),
+                "last_login": r.get("last_active_at"),
+                "status": "CHANGED" if r.get("has_set_password") == 1 else "DEFAULT",
+                "name": r.get("name") or "",
+                "phone": r.get("phone") or "",
+                "designation": r.get("designation") or ""
+            })
+        return jsonify({"success": True, "logins": logins})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@bulk_registration_bp.route("/bulk-registration/faculty/<username>", methods=["DELETE"])
+@require_auth()
+def delete_faculty_login(username):
+    """Delete a specific faculty login and its linked face record."""
+    vendor_id = g.vendor_id
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        # Get person_id before deleting
+        c.execute("SELECT person_id FROM system_users WHERE username = ? AND vendor_id = ?", (username, vendor_id))
+        row = c.fetchone()
+        person_id = row[0] if row else None
+
+        # 1. Clear sessions
+        c.execute("DELETE FROM active_sessions WHERE username = ? AND vendor_id = ?", (username, vendor_id))
+        
+        # 2. Delete the user
+        c.execute("DELETE FROM system_users WHERE username = ? AND vendor_id = ? AND role = 'faculty'", (username, vendor_id))
+        
+        # 3. Delete the linked face record if exists
+        if person_id:
+            c.execute("DELETE FROM faces WHERE id = ? AND vendor_id = ?", (person_id, vendor_id))
+        
+        if c.rowcount == 0 and not person_id:
+            return jsonify({"error": "Faculty user not found"}), 404
+            
+        conn.commit()
+        from app import socketio
+        socketio.emit('persons_updated', {'vendor_id': vendor_id, 'target': 'faculty'}, room=f"vendor_{vendor_id}")
+        
+        log_audit('faculty_deleted', details={"username": username}, target_vendor_id=vendor_id)
+        return jsonify({"success": True, "message": f"Faculty {username} deleted."})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@bulk_registration_bp.route("/bulk-registration/faculty/<username>", methods=["PUT"])
+@require_auth()
+def update_faculty_login(username):
+    """Update metadata and password for a specific faculty login."""
+    from services.auth_service import hash_password
+    vendor_id = g.vendor_id
+    data = request.json or {}
+    
+    new_password = data.get("password")
+    new_name = data.get("name")
+    new_phone = data.get("phone")
+    new_designation = data.get("designation")
+    new_email = data.get("email") # New username
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        # Get person_id
+        c.execute("SELECT person_id FROM system_users WHERE username = ? AND vendor_id = ?", (username, vendor_id))
+        row = c.fetchone()
+        if not row:
+            return jsonify({"error": "Faculty user not found"}), 404
+        person_id = row[0]
+
+        # 1. Update system_users
+        if new_password:
+            hashed_pw = hash_password(new_password)
+            c.execute("""
+                UPDATE system_users 
+                SET password = ?, password_plain = ?, has_set_password = 1
+                WHERE username = ? AND vendor_id = ?
+            """, (hashed_pw, new_password, username, vendor_id))
+        
+        if new_email and new_email != username:
+            # Check if new username is taken
+            c.execute("SELECT 1 FROM system_users WHERE username = ?", (new_email,))
+            if c.fetchone():
+                return jsonify({"error": "Username already taken"}), 409
+            c.execute("UPDATE system_users SET username = ? WHERE username = ? AND vendor_id = ?", (new_email, username, vendor_id))
+            username = new_email
+
+        # 2. Update faces record
+        if person_id:
+            c.execute("""
+                UPDATE faces 
+                SET name = COALESCE(?, name), 
+                    phone = COALESCE(?, phone), 
+                    designation = COALESCE(?, designation)
+                WHERE id = ? AND vendor_id = ?
+            """, (new_name, new_phone, new_designation, person_id, vendor_id))
+        elif new_name or new_phone or new_designation:
+            # Create Face record if it somehow didn't exist
+            c.execute("""
+                INSERT INTO faces (name, phone, designation, vendor_id)
+                VALUES (?, ?, ?, ?)
+            """, (new_name or username.split('@')[0], new_phone or '', new_designation or 'Faculty', vendor_id))
+            new_person_id = c.lastrowid
+            c.execute("UPDATE system_users SET person_id = ? WHERE username = ? AND vendor_id = ?", (new_person_id, username, vendor_id))
+            
+        conn.commit()
+        log_audit('faculty_updated', details={"username": username}, target_vendor_id=vendor_id)
+        return jsonify({"success": True, "message": f"Faculty {username} updated.", "new_username": username})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()

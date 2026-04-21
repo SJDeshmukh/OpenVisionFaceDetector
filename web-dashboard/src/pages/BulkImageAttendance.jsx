@@ -43,6 +43,7 @@ const BulkImageAttendance = () => {
   const [regenerating, setRegenerating] = useState({});
   const overridesRef = useRef(new Map()); // key: `${itemId}:${faceIndex}` -> dataURL
   const [useClientAI, setUseClientAI] = useState(false);
+  const [showMeshFaces, setShowMeshFaces] = useState({}); // key: globalIndex -> bool
 
   // Load user-scoped batch ID once user is available
   useEffect(() => {
@@ -147,7 +148,8 @@ const BulkImageAttendance = () => {
         console.log('[DEBUG_FETCH_PEOPLE] Count:', res.data?.persons?.length);
         const list = (res.data?.persons || []).map(p => ({
           id: p.person_id || p.id,
-          name: p.name
+          name: p.name,
+          display_id: p.display_id
         })).filter(p => p.id && p.name);
         list.sort((a, b) => a.name.localeCompare(b.name));
         setPeople(list);
@@ -712,6 +714,9 @@ const BulkImageAttendance = () => {
   const rosterMap = Object.fromEntries(lectureRoster.map(r => [String(r.person_id), r.status]));
   const presentCount = Object.values(rosterMap).filter(s => s === 'present').length;
 
+  // True while any batch item is still being processed — blocks new uploads
+  const isProcessing = batchItems.some(i => i.status === 'processing' || i.status === 'pending');
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -725,7 +730,9 @@ const BulkImageAttendance = () => {
             value={`${selectedClass.class_year}|${selectedClass.division}|${selectedClass.branch}`}
             onChange={(e) => {
               const [y, d, b] = e.target.value.split('|');
-              setSelectedClass({ class_year: y || '', division: d || '', branch: b || '' });
+              const newClass = { class_year: y || '', division: d || '', branch: b || '' };
+              setSelectedClass(newClass);
+              localStorage.setItem('lastClassFilter', JSON.stringify(newClass));
               setSelectedSubject(''); // reset subject on class change
             }}
           >
@@ -788,14 +795,14 @@ const BulkImageAttendance = () => {
 
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
         <div className="flex flex-wrap items-center gap-3">
-          <label className={`inline-flex items-center gap-2 px-4 py-2 ${(!scopeSelected || !selectedLectureId) ? 'bg-slate-200 text-slate-500 cursor-not-allowed' : 'bg-indigo-600 text-white hover:bg-indigo-700 cursor-pointer'} rounded-lg transition-colors`}>
+          <label className={`inline-flex items-center gap-2 px-4 py-2 ${(!scopeSelected || !selectedLectureId || isProcessing) ? 'bg-slate-200 text-slate-500 cursor-not-allowed' : 'bg-indigo-600 text-white hover:bg-indigo-700 cursor-pointer'} rounded-lg transition-colors`}>
             <><Upload size={18} /><span>Upload Images</span></>
             <input
               type="file"
               accept="image/*"
               multiple
               className="hidden"
-              disabled={loading || !scopeSelected || !selectedLectureId}
+              disabled={loading || !scopeSelected || !selectedLectureId || isProcessing}
               onChange={(e) => {
                 if (e.target.files?.length > 0) addFilesToPending(e.target.files);
                 e.target.value = '';
@@ -804,11 +811,17 @@ const BulkImageAttendance = () => {
           </label>
           <button
             onClick={scanPendingFiles}
-            disabled={!scopeSelected || pendingFiles.length === 0 || !selectedLectureId}
-            className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
-            title="Queue images one-by-one, then press to scan"
+            disabled={!scopeSelected || pendingFiles.length === 0 || !selectedLectureId || isProcessing || loading}
+            className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors inline-flex items-center gap-2"
+            title={isProcessing ? 'Wait for current images to finish processing' : loading ? 'Uploading images…' : 'Queue images one-by-one, then press to scan'}
           >
-            Scan Attendance ({pendingFiles.length})
+            {isProcessing ? (
+              <><Loader2 size={16} className="animate-spin" /><span>Processing... ({batchItems.filter(i => i.status === 'done' || i.status === 'failed').length}/{batchItems.length})</span></>
+            ) : loading ? (
+              <><Loader2 size={16} className="animate-spin" /><span>Uploading...</span></>
+            ) : (
+              <span>Scan Attendance ({pendingFiles.length})</span>
+            )}
           </button>
           <div className="text-sm font-medium flex items-center gap-2">
             {batchItems.some(i => i.status === 'processing' || i.status === 'pending') ? (
@@ -853,15 +866,26 @@ const BulkImageAttendance = () => {
           <button
             onClick={async () => {
               const id = batchLsKey ? localStorage.getItem(batchLsKey) : batchId;
-              if (!id) return;
-              if (!confirm('End session and clear server cache?')) return;
-              await axios.post(`${API_URL}/class-batch/clear`, { batch_id: id }, { headers: { Authorization: `Bearer ${user?.token}` } });
+              if (!confirm('End session and clear all data for a fresh start?')) return;
+              try {
+                if (id) await axios.post(`${API_URL}/class-batch/clear`, { batch_id: id }, { headers: { Authorization: `Bearer ${user?.token}` } });
+              } catch (_) {}
+              // Clear persisted keys
               if (batchLsKey) localStorage.removeItem(batchLsKey);
               localStorage.removeItem('active_lecture_id');
+              localStorage.removeItem('lastClassFilter');
+              // Reset all local state
               setBatchId('');
               setSelectedLectureId('');
               setBatchItems([]);
-              setFaces([]); setAssign({});
+              setFaces([]);
+              setAssign({});
+              setPendingFiles([]);
+              setShowMeshFaces({});
+              setRegenerating({});
+              const emptyClass = { class_year: '', division: '', branch: '' };
+              setSelectedClass(emptyClass);
+              setSelectedSubject('');
             }}
             className="px-3 py-2 rounded-lg bg-red-50 text-red-600 border border-red-200 hover:bg-red-100"
           >
@@ -905,9 +929,23 @@ const BulkImageAttendance = () => {
 
                 {item.mappedFaces && item.mappedFaces.length > 0 && (
                   <div className="p-4 bg-slate-50 border-t">
-                    <h3 className="text-sm font-semibold text-slate-700 mb-3 flex items-center gap-2">
-                      <Users size={14} /> Detected Faces ({item.mappedFaces.length})
-                    </h3>
+                    {(() => {
+                      const confirmed = item.mappedFaces.filter(f => f.landmarks_3d && f.landmarks_3d.length > 0);
+                      const total = item.mappedFaces.length;
+                      const filtered = total - confirmed.length;
+                      return (
+                        <h3 className="text-sm font-semibold text-slate-700 mb-3 flex items-center gap-2">
+                          <Users size={14} />
+                          Detected Faces ({confirmed.length > 0 ? confirmed.length : total})
+                          {filtered > 0 && (
+                            <span className="text-[10px] font-normal text-slate-400" title={`${filtered} detection(s) removed — no 3D landmark mesh found (likely false positives)`}>
+                              · {filtered} filtered
+                            </span>
+                          )}
+                        </h3>
+                      );
+                    })()}
+
                     <div className="flex items-center gap-2 mb-3">
                       <span className="text-xs text-slate-600">Similarity threshold</span>
                       <input
@@ -922,35 +960,55 @@ const BulkImageAttendance = () => {
                       <span className="text-xs text-slate-600">%</span>
                     </div>
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">
-                      {item.mappedFaces.map(f => (
-                        <div key={f.globalIndex} className="border rounded-xl p-2 bg-white shadow-sm flex flex-col">
+                      {((() => {
+                        const withLmk = item.mappedFaces.filter(f => f.landmarks_3d && f.landmarks_3d.length > 0);
+                        return withLmk.length > 0 ? withLmk : item.mappedFaces;
+                      })()).map(f => {
+                        const sharpness = typeof f.sharpness === 'number' ? f.sharpness : null;
+                        const isBlurry = sharpness !== null && sharpness < 80;
+                        const isMarginal = sharpness !== null && sharpness >= 80 && sharpness < 150;
+                        return (
+                        <div key={f.globalIndex} className={`border rounded-xl p-2 bg-white shadow-sm flex flex-col ${isBlurry ? 'border-orange-300' : ''}`}>
                           <div className="w-full aspect-square mb-2 bg-slate-100 rounded-lg overflow-hidden border relative group">
-                            <img src={(f.thumbs?.face || f.thumb)} alt={`face-${f.globalIndex}`} className="w-full h-full object-cover" />
+                            <img
+                              src={showMeshFaces[f.globalIndex] && f.thumbs?.lmk ? f.thumbs.lmk : (f.thumbs?.face || f.thumb)}
+                              alt={`face-${f.globalIndex}`}
+                              className={`w-full h-full object-cover transition-opacity duration-200 ${isBlurry && !showMeshFaces[f.globalIndex] ? 'opacity-90' : ''}`}
+                            />
 
-                            {/* 3D Landmarks Overlay */}
-                            {f.landmarks_3d && Array.isArray(f.landmarks_3d) && (
-                              <svg className="absolute inset-0 w-full h-full pointer-events-none opacity-80"
-                                viewBox={`0 0 ${Math.max(1, f.box[2] - f.box[0])} ${Math.max(1, f.box[3] - f.box[1])}`} preserveAspectRatio="none">
-                                {f.landmarks_3d.map((pt, i) => (
-                                  <circle key={`lmk-${i}`} cx={pt[0]} cy={pt[1]} r={Math.max(0.7, (f.box[2] - f.box[0]) / 50)} fill="#10B981" fillOpacity="0.9" />
-                                ))}
-                              </svg>
+                            {/* Mesh toggle button — shown only when lmk thumbnail is available */}
+                            {f.thumbs?.lmk && (
+                              <button
+                                onClick={() => setShowMeshFaces(prev => ({ ...prev, [f.globalIndex]: !prev[f.globalIndex] }))}
+                                className={`absolute top-1 right-1 px-1.5 py-0.5 text-[9px] font-bold rounded shadow transition-colors ${showMeshFaces[f.globalIndex] ? 'bg-emerald-600 text-white border border-emerald-500' : 'bg-black/50 text-emerald-300 border border-emerald-500/50 hover:bg-black/70'}`}
+                                title={showMeshFaces[f.globalIndex] ? 'Show photo' : 'Show 3D landmark mesh'}
+                              >
+                                {showMeshFaces[f.globalIndex] ? 'PHOTO' : '3D'}
+                              </button>
                             )}
 
-                            {/* 3D Ready Badge */}
-                            {f.struct_vec && (
-                              <div className="absolute top-1 right-1 bg-emerald-600 border border-emerald-400 text-white text-[9px] font-bold px-1.5 py-0.5 rounded shadow">
-                                3D Ready
+                            {/* Quality / Sharpness Badge */}
+                            {isBlurry ? (
+                              <div className="absolute top-1 left-1 bg-orange-500 border border-orange-400 text-white text-[9px] font-bold px-1.5 py-0.5 rounded shadow" title={`Sharpness: ${sharpness} — blurry face, enhance recommended`}>
+                                BLUR
                               </div>
-                            )}
+                            ) : isMarginal ? (
+                              <div className="absolute top-1 left-1 bg-amber-400 border border-amber-300 text-white text-[9px] font-bold px-1.5 py-0.5 rounded shadow" title={`Sharpness: ${sharpness} — slightly soft`}>
+                                SOFT
+                              </div>
+                            ) : sharpness !== null ? (
+                              <div className="absolute top-1 left-1 bg-emerald-600/80 text-white text-[9px] font-bold px-1.5 py-0.5 rounded shadow" title={`Sharpness: ${sharpness} — clear`}>
+                                CLEAR
+                              </div>
+                            ) : null}
 
-                            {/* Re-generate Button overlay */}
-                            {assign[f.globalIndex] && (
+                            {/* Enhance button — only for blurry/soft faces that have an assignment */}
+                            {assign[f.globalIndex] && (isBlurry || isMarginal) && (
                               <button
                                 onClick={() => handleRegenerate(f)}
                                 disabled={regenerating[f.globalIndex]}
-                                className="absolute bottom-1 right-1 bg-indigo-600/90 hover:bg-indigo-700 text-white p-1.5 rounded-lg shadow-lg backdrop-blur transition-all transform hover:scale-105 disabled:opacity-50"
-                                title="Restore from reference HQ image"
+                                className={`absolute bottom-1 right-1 ${isBlurry ? 'bg-orange-500/90 hover:bg-orange-600' : 'bg-amber-500/90 hover:bg-amber-600'} text-white p-1.5 rounded-lg shadow-lg backdrop-blur transition-all transform hover:scale-105 disabled:opacity-50`}
+                                title={isBlurry ? 'Enhance blurry face using reference photo' : 'Sharpen soft face using reference photo'}
                               >
                                 {regenerating[f.globalIndex] ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
                               </button>
@@ -959,7 +1017,10 @@ const BulkImageAttendance = () => {
                           {assign[f.globalIndex] ? (
                             <div className="mb-2">
                               <span className="inline-block px-2 py-0.5 text-[10px] rounded bg-emerald-600 text-white">
-                                {peopleById.current?.get(String(assign[f.globalIndex])) || 'Assigned'}
+                                {(() => {
+                                  const p = people.find(person => String(person.id) === String(assign[f.globalIndex]));
+                                  return p ? `${p.name} (#${p.display_id})` : 'Assigned';
+                                })()}
                               </span>
                             </div>
                           ) : null}
@@ -970,7 +1031,7 @@ const BulkImageAttendance = () => {
                           >
                             <option value="">Assign person…</option>
                             {people.map(p => (
-                              <option key={p.id} value={p.id}>{p.name}</option>
+                              <option key={p.id} value={p.id}>{p.name} (#{p.display_id})</option>
                             ))}
                           </select>
                           <div className="text-[10px] text-slate-500">
@@ -997,7 +1058,7 @@ const BulkImageAttendance = () => {
                               : '—'}
                           </div>
                         </div>
-                      ))}
+                      ); })}
                     </div>
                   </div>
                 )}

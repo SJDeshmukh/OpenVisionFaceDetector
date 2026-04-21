@@ -36,6 +36,8 @@ const Reports = () => {
     bar_data: [],
     summary: {
       total_users: 0,
+      total_students: 0,
+      total_faculty: 0,
       present_today: 0,
       absent_today: 0,
       late_today: 0
@@ -233,9 +235,20 @@ const Reports = () => {
         <>
           {/* Summary Cards */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            {/* Total Users — bifurcated into Students + Faculty */}
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-              <p className="text-sm text-slate-500">Total Users</p>
+              <p className="text-sm text-slate-500 mb-2">Total Registered</p>
               <p className="text-2xl font-bold text-slate-800">{analytics.summary.total_users}</p>
+              <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-semibold">
+                <span className="flex items-center gap-1.5 text-blue-600">
+                  <span className="w-2 h-2 rounded-full bg-blue-500 inline-block" />
+                  {analytics.summary.total_students ?? analytics.summary.total_users} Students
+                </span>
+                <span className="flex items-center gap-1.5 text-indigo-600">
+                  <span className="w-2 h-2 rounded-full bg-indigo-500 inline-block" />
+                  {analytics.summary.total_faculty ?? 0} Faculty
+                </span>
+              </div>
             </div>
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
               <p className="text-sm text-slate-500">Present Today</p>

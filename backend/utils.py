@@ -67,7 +67,7 @@ REGISTRATION_TEMPLATES = {
 
 # --- Configuration & Globals ---
 DATABASE_URL = os.environ.get("DATABASE_URL")
-LOW_RAM_MODE = str(os.environ.get("LOW_RAM_MODE", "1")).strip().lower() in ("1", "true", "yes", "y")
+LOW_RAM_MODE = str(os.environ.get("LOW_RAM_MODE", "0")).strip().lower() in ("1", "true", "yes", "y")
 
 try:
     DET_MAX_SIDE_DEFAULT = int(os.environ.get("DET_MAX_SIDE", "640" if LOW_RAM_MODE else "1280"))
@@ -85,6 +85,51 @@ _FAISS_LOCK = Lock() if USE_FAISS else None
 import uuid
 import redis
 import sqlite3
+import numpy as np
+import io
+try:
+    from PIL import Image
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except ImportError:
+    Image = None
+
+import cv2
+
+# --- Image Decoding Utilities ---
+def decode_image_to_rgb(body: bytes) -> np.ndarray | None:
+    """Decodes image bytes (JPEG, PNG, HEIC, etc.) to an RGB NumPy array."""
+    if not body:
+        return None
+    
+    # Try Pillow first (handles HEIC, WebP, etc.)
+    if Image:
+        try:
+            with Image.open(io.BytesIO(body)) as img:
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
+                return np.array(img)
+        except Exception as e:
+            # logger.warning(f"Pillow decode failed: {e}")
+            pass
+            
+    # Fallback to OpenCV
+    try:
+        arr = np.frombuffer(body, dtype=np.uint8)
+        bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if bgr is not None:
+            return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    except Exception:
+        pass
+        
+    return None
+
+def decode_image_to_bgr(body: bytes) -> np.ndarray | None:
+    """Decodes image bytes (JPEG, PNG, HEIC, etc.) to a BGR NumPy array (OpenCV format)."""
+    rgb = decode_image_to_rgb(body)
+    if rgb is not None:
+        return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    return None
 
 # --- Database Utilities ---
 def get_table_columns(conn, table_name):

@@ -9,6 +9,7 @@ python-dotenv
 itsdangerous
 requests
 Pillow
+pillow-heif
 flask-sqlalchemy
 pydantic
 sqlalchemy

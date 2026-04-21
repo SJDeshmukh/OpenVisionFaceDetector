@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# OpenVision Master Setup Script (v5.0 - Containerized & Scalable)
+# OpenVision Master Setup Script (v5.1 - Containerized & Scalable)
 # ==============================================================================
 # This script automates the setup of the Face Detection system.
 # Handles dependencies, Docker installation, OR Bare-Metal Systemd setup.
@@ -38,7 +38,6 @@ sudo pkill -f celery || true
 for port in 80 5001 5432 6379 5173 443; do
     echo "Ensuring port $port is free..."
     sudo fuser -k ${port}/tcp 2>/dev/null || true
-    # Fallback to lsof if fuser fails or is missing
     PID=$(sudo lsof -t -i:$port 2>/dev/null || true)
     if [ ! -z "$PID" ]; then
         echo "Forcing kill on port $port (PID: $PID)..."
@@ -110,12 +109,36 @@ EOF
 
     echo "CONTAINERIZED DEPLOYMENT COMPLETE!"
 else
+    # ─────────────────────────────────────────────────────────────────────────
     # BARE-METAL SETUP (Systemd Mode)
-    echo "==> [2/8] Fixing Permissions and Installing Dependencies..."
+    # ─────────────────────────────────────────────────────────────────────────
+
+    echo "==> [2/8] Fixing Permissions and Installing System Dependencies..."
     sudo chown -R $USER:$USER $(pwd) 2>/dev/null || true
-    
-    sudo apt-get update
-    sudo apt-get install -y python3-pip python3-venv postgresql postgresql-contrib redis-server nginx libgl1 libglib2.0-0 psmisc lsof curl
+
+    sudo apt-get update -y
+    # libheif-dev  → needed if pillow-heif must build from source (HEIC image support)
+    # libgl1 / libglib2.0-0 → OpenCV headless runtime
+    # psmisc / lsof / fuser → port cleanup tools
+    sudo apt-get install -y \
+        python3-pip python3-venv \
+        postgresql postgresql-contrib \
+        redis-server \
+        nginx \
+        libgl1 libglib2.0-0 \
+        libheif-dev \
+        psmisc lsof curl \
+        build-essential
+
+    # ── Node.js 20.x ─────────────────────────────────────────────────────────
+    # Required for building the React frontend. Not included in default Ubuntu.
+    if ! command -v node &> /dev/null; then
+        echo "Installing Node.js 20.x..."
+        curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+        sudo apt-get install -y nodejs
+    else
+        echo "Node.js already installed: $(node --version)"
+    fi
 
     echo "==> [3/8] Configuring Database..."
     sudo systemctl start postgresql
@@ -124,14 +147,24 @@ else
     sudo -u postgres psql -c "ALTER USER postgres WITH PASSWORD 'postgres';" || true
     sudo systemctl restart postgresql redis-server
 
-    echo "==> [4/8] Setting up Virtual Environment..."
+    echo "==> [4/8] Setting up Python Virtual Environment..."
     if [ ! -d "backend/.venv" ]; then
         python3 -m venv backend/.venv
     fi
     source backend/.venv/bin/activate
     pip install --upgrade pip
+
+    echo "Installing Python dependencies..."
     pip install -r backend/requirements.txt
-    pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+    # ── PyTorch (CPU-only) ────────────────────────────────────────────────────
+    # Skip re-installation if torch is already present to save time (~1.5 GB).
+    if python3 -c "import torch" 2>/dev/null; then
+        echo "PyTorch already installed, skipping download."
+    else
+        echo "Installing PyTorch (CPU)..."
+        pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+    fi
 
     echo "==> [5/8] Managing Environment (.env)..."
     if [ ! -f "backend/.env" ]; then
@@ -158,15 +191,26 @@ EOF
     echo "==> [7/8] Building Frontend & Configuring Nginx..."
     echo "Building web-dashboard for production..."
     cd web-dashboard
-    npm run build || echo "Warning: Frontend build failed. Check RAM/Swap."
+
+    # Install npm packages (required on every fresh clone / after package.json changes)
+    echo "Installing npm packages..."
+    npm install --legacy-peer-deps
+
+    # Build with a memory cap so the process doesn't OOM on low-RAM instances
+    echo "Running production build..."
+    NODE_OPTIONS="--max-old-space-size=1024" npm run build || {
+        echo "ERROR: Frontend build failed."
+        exit 1
+    }
 
     if [ ! -d "dist" ]; then
         echo "ERROR: 'dist' folder was not created. Build failed."
         exit 1
     fi
 
-    echo "Moving frontend assets to /var/www/face_detection..."
+    echo "Deploying frontend assets to /var/www/face_detection..."
     sudo mkdir -p /var/www/face_detection
+    sudo rm -rf /var/www/face_detection/*
     sudo cp -r dist/* /var/www/face_detection/
     sudo chown -R www-data:www-data /var/www/face_detection
     sudo chmod -R 755 /var/www/face_detection
@@ -183,7 +227,7 @@ EOF
     GUNICORN_PATH="$WORKING_DIR/backend/.venv/bin/gunicorn"
     CELERY_PATH="$WORKING_DIR/backend/.venv/bin/celery"
 
-    # Create Backend Service
+    # Backend Service
     sudo bash -c "cat <<EOF > /etc/systemd/system/openvision-backend.service
 [Unit]
 Description=Gunicorn instance to serve OpenVision Face Detection
@@ -204,7 +248,7 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF"
 
-    # Create Celery Service
+    # Celery Worker Service
     sudo bash -c "cat <<EOF > /etc/systemd/system/openvision-celery.service
 [Unit]
 Description=Celery worker for OpenVision Face Detection
@@ -228,14 +272,15 @@ EOF"
     sudo systemctl enable openvision-backend openvision-celery
     sudo systemctl restart openvision-backend openvision-celery
 
-    # Firewall setup
+    # Firewall — allow HTTP (80) and direct API access (5001)
     sudo ufw allow 80/tcp || true
     sudo ufw allow 5001/tcp || true
 
+    PUBLIC_IP=$(curl -s https://api.ipify.org || echo "YOUR_IP")
     echo "=============================================================================="
     echo "PRODUCTION BARE-METAL SETUP COMPLETE!"
     echo "=============================================================================="
-    echo "- Dashboard: http://$(curl -s https://api.ipify.org || echo "YOUR_IP")"
-    echo "- API:       http://$(curl -s https://api.ipify.org || echo "YOUR_IP")/api"
+    echo "- Dashboard: http://$PUBLIC_IP"
+    echo "- API:       http://$PUBLIC_IP/api"
     echo "=============================================================================="
 fi

@@ -97,26 +97,41 @@ def get_report_filters():
     if not has_reg_config:
         visible_standard_filters = {"department": True, "designation": True, "shift": True, "phone": True}
 
-    # ---- also include bulk attendance custom fields as dynamic filters ----
-    if 'bulk_image_attendance' in vendor_features:
-        try:
-            c.execute("SELECT fields FROM bulk_attendance_config WHERE vendor_id = ?", (vendor_id,))
-            bulk_row = c.fetchone()
-            if bulk_row:
-                bulk_fields = json.loads(bulk_row['fields'] or '[]')
-                existing_keys = {f['key'] for f in enabled_dynamic_fields}
-                for bf in bulk_fields:
-                    bkey = str(bf.get('name', '')).strip()
-                    if not bkey or bkey in existing_keys:
-                        continue
-                    enabled_dynamic_fields.append({
-                        "key": bkey,
-                        "label": str(bf.get('label') or bkey),
-                        "options": bf.get('options') or []
-                    })
-                    existing_keys.add(bkey)
-        except Exception:
-            pass
+    # ---- always include bulk registration Excel headers as dynamic filters ----
+    try:
+        c.execute("SELECT fields FROM bulk_attendance_config WHERE vendor_id = ?", (vendor_id,))
+        bulk_row = c.fetchone()
+        if bulk_row:
+            bulk_fields = json.loads(bulk_row['fields'] or '[]')
+            existing_keys = {f['key'] for f in enabled_dynamic_fields}
+            for bf in bulk_fields:
+                bkey = str(bf.get('name', '')).strip()
+                if not bkey or bkey in existing_keys:
+                    continue
+                enabled_dynamic_fields.append({
+                    "key": bkey,
+                    "label": str(bf.get('label') or bkey),
+                    "options": bf.get('options') or []
+                })
+                existing_keys.add(bkey)
+    except Exception:
+        pass
+
+    # ---- add class scope fields (class_year, division, branch) from custom_data ----
+    # These are set during bulk import but not in bulk_attendance_config
+    existing_keys = {f['key'] for f in enabled_dynamic_fields}
+    for scope_field in [
+        {"key": "class_year", "label": "Class / Year"},
+        {"key": "division", "label": "Division / Section"},
+        {"key": "branch", "label": "Branch / Department"},
+    ]:
+        if scope_field["key"] not in existing_keys:
+            enabled_dynamic_fields.append({
+                "key": scope_field["key"],
+                "label": scope_field["label"],
+                "options": []
+            })
+            existing_keys.add(scope_field["key"])
 
     # ---- collect active request-level filters for cascading ----
     req_dept  = request.args.get('department', '')
@@ -226,9 +241,26 @@ def get_analytics(valid_data: PayrollReportRequest):
         try: timetable = json.loads(company_row['live_timetable'])
         except: pass
             
-    # 2. Fetch Persons
+    # 2. Fetch all faces, then separate faculty from students.
+    #    Faculty upload creates face records too, so we must exclude them from
+    #    the student attendance denominator (absent/present calculations).
     c.execute("SELECT id, name, department, designation FROM faces WHERE vendor_id = ?", (vendor_id,))
-    persons = {row['id']: dict(row) for row in c.fetchall()}
+    all_faces = {row['id']: dict(row) for row in c.fetchall()}
+
+    # Identify faculty person_ids via system_users
+    c.execute("""
+        SELECT person_id FROM system_users
+        WHERE vendor_id = ? AND role = 'faculty' AND person_id IS NOT NULL
+    """, (vendor_id,))
+    faculty_ids = {row[0] for row in c.fetchall()}
+
+    total_faculty = len(faculty_ids)
+    total_all = len(all_faces)
+
+    # Analytics (present/absent/late) runs on students only —
+    # faculty face records skew absent_today if they never check in.
+    persons = {pid: info for pid, info in all_faces.items() if pid not in faculty_ids}
+    total_students = len(persons)
     
     # 3. Fetch Attendance
     try:
@@ -295,7 +327,7 @@ def get_analytics(valid_data: PayrollReportRequest):
     today_str = datetime.now().strftime('%Y-%m-%d')
     present_today = daily_stats[today_str]["present"]
     late_today = daily_stats[today_str]["late"]
-    absent_today = max(0, total_persons - present_today)
+    absent_today = max(0, total_students - present_today)
     on_time_today = max(0, present_today - late_today)
 
     pie_data = [
@@ -308,13 +340,13 @@ def get_analytics(valid_data: PayrollReportRequest):
     for d_str in all_dates:
         p = daily_stats[d_str]["present"]
         l = daily_stats[d_str]["late"]
-        a = max(0, total_persons - p)
+        a = max(0, total_students - p)
         try:
             d_name = datetime.strptime(d_str, '%Y-%m-%d').strftime('%a')
-        except: 
+        except:
             d_name = d_str
         bar_data.append({
-            "name": d_name, "date": d_str, "present": p, "absent": a, "late": l, "total": total_persons
+            "name": d_name, "date": d_str, "present": p, "absent": a, "late": l, "total": total_students
         })
 
     result = {
@@ -324,9 +356,11 @@ def get_analytics(valid_data: PayrollReportRequest):
         "pie_data": pie_data,
         "dept_data": [],
         "summary": {
-            "total_users": total_persons,
+            "total_users": total_all,
+            "total_students": total_students,
+            "total_faculty": total_faculty,
             "present_today": present_today,
-            "absent_today": absent_today,
+            "absent_today": absent_today,   # based on students only
             "late_today": late_today,
             "avg_attendance": round(sum(p['attendance_rate'] for p in person_stats.values()) / len(person_stats), 1) if person_stats else 0
         }

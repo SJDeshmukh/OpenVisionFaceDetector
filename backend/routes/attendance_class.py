@@ -7,8 +7,9 @@ import threading
 from flask import Blueprint, request, jsonify
 from utils import (
     get_db_connection, _ensure_class_batch_tables, 
-    _VENDOR_EMB_CACHE
+    _VENDOR_EMB_CACHE, decode_image_to_bgr
 )
+import cv2
 from services.face_service import (
     _normalize_vec, _decode_data_uri_to_rgb, _ensure_vendor_emb_cache, _suggest_from_cache
 )
@@ -62,7 +63,17 @@ def class_batch_add(valid_data: ClassBatchAddSchema):
     seq_base = int(time.time())
     for idx, f in enumerate(files):
         raw = f.read()
-        img_b64 = 'data:image/jpeg;base64,' + base64.b64encode(raw).decode('ascii')
+        # Ensure image is in a browser-supported format (convert HEIC/etc to JPEG)
+        bgr = decode_image_to_bgr(raw)
+        if bgr is not None:
+            ok, buf = cv2.imencode('.jpg', bgr, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if ok:
+                img_b64 = 'data:image/jpeg;base64,' + base64.b64encode(buf).decode('ascii')
+            else:
+                img_b64 = 'data:image/jpeg;base64,' + base64.b64encode(raw).decode('ascii')
+        else:
+            img_b64 = 'data:image/jpeg;base64,' + base64.b64encode(raw).decode('ascii')
+            
         item_id = uuid.uuid4().hex[:12]
         c.execute("INSERT INTO class_batch_items (id, batch_id, seq, image_b64, annotated_b64, faces_json, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
                   (item_id, bid, seq_base + idx, img_b64, '', '[]', 'pending'))
@@ -114,6 +125,15 @@ def class_batch_add_inferred():
     created_ids = []
     for item in items_data:
         image_b64 = item.get('image_b64')
+        # Ensure image is in a browser-supported format
+        header, encoded = image_b64.split(',', 1) if ',' in image_b64 else ('', image_b64)
+        raw = base64.b64decode(encoded)
+        bgr = decode_image_to_bgr(raw)
+        if bgr is not None:
+            ok, buf = cv2.imencode('.jpg', bgr, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if ok:
+                image_b64 = 'data:image/jpeg;base64,' + base64.b64encode(buf).decode('ascii')
+        
         faces_inferred = item.get('faces') or []
         seq = item.get('seq') or int(time.time())
         item_id = uuid.uuid4().hex[:12]

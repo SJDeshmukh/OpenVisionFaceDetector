@@ -9,7 +9,7 @@ from threading import Lock
 # Local imports to avoid circular dependencies where needed
 # In a real refactor, these caches should probably live here.
 
-from utils import get_db_connection, _VENDOR_EMB_CACHE, _now_ts, USE_FAISS, _faiss, _FAISS_LOCK, LOW_RAM_MODE
+from utils import get_db_connection, _VENDOR_EMB_CACHE, _now_ts, USE_FAISS, _faiss, _FAISS_LOCK, LOW_RAM_MODE, decode_image_to_rgb
 from db_factory import get_table_columns
 
 def get_realtime_engine():
@@ -76,11 +76,7 @@ def _decode_data_uri_to_rgb(uri: str):
             raw = base64.b64decode(b64)
         else:
             raw = base64.b64decode(uri)
-        arr = np.frombuffer(raw, dtype=np.uint8)
-        bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-        if bgr is None:
-            return None
-        return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        return decode_image_to_rgb(raw)
     except Exception:
         return None
 
@@ -279,39 +275,45 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
                     img_rgb = _decode_data_uri_to_rgb(uri)
                     if img_rgb is None:
                         continue
-                    try:
-                        det_ann, det_crops, det_df, _ = mfd_app.detect_faces(
-                            image_input=img_rgb,
-                            enhancer="GFPGAN",
-                            enhance_level=0.5,
-                            gfpgan_upscale=1,
-                            codeformer_w=0.5,
-                            compute_embeddings=False,
-                            crop_mode="Face",
-                            portrait_scale=3.0,
-                            preclean_whole=False,
-                            preclean_level=0.2,
-                            det_max_side=640
-                        )
-                        crop = det_crops[0] if (isinstance(det_crops, list) and len(det_crops) > 0) else img_rgb
-                        # Align registration crop to ArcFace template using 3DDFA landmarks.
-                        # Must match the alignment applied at attendance time for consistent embeddings.
-                        if det_df is not None and hasattr(det_df, 'iloc') and len(det_df) > 0:
-                            row0 = det_df.iloc[0]
-                            lmks_global_reg = row0.get('landmarks_3d', [])
-                            if lmks_global_reg and len(lmks_global_reg) >= 68:
-                                bx1_r, by1_r = int(row0['x1']), int(row0['y1'])
-                                lmks_local_reg = np.array(lmks_global_reg, dtype=np.float32)
-                                lmks_local_reg[:, 0] -= bx1_r
-                                lmks_local_reg[:, 1] -= by1_r
-                                crop = mfd_app._align_to_arcface_112(crop, lmks_local_reg)
-                    except Exception:
-                        crop = img_rgb
+
+                    det_ann, det_crops, det_df, _ = mfd_app.detect_faces(
+                        image_input=img_rgb,
+                        enhancer="GFPGAN",
+                        enhance_level=0.5,
+                        gfpgan_upscale=1,
+                        codeformer_w=0.5,
+                        compute_embeddings=False,
+                        crop_mode="Face",
+                        portrait_scale=3.0,
+                        preclean_whole=False,
+                        preclean_level=0.2,
+                        det_max_side=640
+                    )
+                    crop = det_crops[0] if (isinstance(det_crops, list) and len(det_crops) > 0) else img_rgb
+                    # Extract local landmarks from detection result.
+                    lmks_local_reg = None
+                    if det_df is not None and hasattr(det_df, 'iloc') and len(det_df) > 0:
+                        row0 = det_df.iloc[0]
+                        lmks_global_reg = row0.get('landmarks_3d', [])
+                        if lmks_global_reg and len(lmks_global_reg) >= 68:
+                            bx1_r, by1_r = int(row0['x1']), int(row0['y1'])
+                            lmks_local_reg = np.array(lmks_global_reg, dtype=np.float32)
+                            lmks_local_reg[:, 0] -= bx1_r
+                            lmks_local_reg[:, 1] -= by1_r
+                    
+                    struct_vec_reg = None
+                    if lmks_local_reg is not None:
+                        struct_vec_reg = _extract_structural_vector(lmks_local_reg)
 
                     emb = mfd_app.get_embedder().embed(crop)
                     emb = _normalize_vec(emb)
                     if emb is not None and emb.size > 0:
-                        items.append({'person_id': int(pid), 'name': str(nm), 'vec': emb})
+                        items.append({
+                            'person_id': int(pid), 
+                            'name': str(nm), 
+                            'vec': emb,
+                            'struct_vec': struct_vec_reg
+                        })
                 except Exception:
                     continue
         _VENDOR_EMB_CACHE[key] = {'ts': _now_ts(), 'sig': current_sig, 'items': items, 'dim': (items[0]['vec'].size if items else 0)}
@@ -482,11 +484,9 @@ def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3, struct_vec=
 
 def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
     try:
-        arr = np.frombuffer(image_bytes, dtype=np.uint8)
-        bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-        if bgr is None:
+        rgb = decode_image_to_rgb(image_bytes)
+        if rgb is None:
             return [], ''
-        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         from multiple_face_detection import app as mfd_app
         lr = LOW_RAM_MODE
         # fast=True skips all enhancement — ArcFace is robust on raw crops
@@ -500,7 +500,9 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
             preclean_whole = False
             preclean_level = 0.0
             portrait_scale = float(params.get('portrait_scale') or 1.2)
-            det_max_side = int(params.get('det_max_side') or 640)
+            # fast=True means skip GFPGAN, NOT degrade detection resolution.
+            # Keep det_max_side at 1280 so tiling works on group photos.
+            det_max_side = int(params.get('det_max_side') or 1280)
         else:
             enhancer = params.get('enhancer') or "GFPGAN"
             portrait_scale = float(params.get('portrait_scale') or 1.5)
@@ -556,25 +558,46 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                                 lmks_local = np.array(landmarks_3d).copy()
                                 lmks_local[:, 0] -= cx1
                                 lmks_local[:, 1] -= cy1
-                                # Draw global landmarks on annotated image
-                                for pt in landmarks_3d:
-                                    cv2.circle(draw, (int(pt[0]), int(pt[1])), 1, (0, 255, 0), -1)
+                                # Draw 68-point facial mesh on annotated image (BGR colors)
+                                _MESH_REGIONS = [
+                                    (list(range(0, 17)),        (160, 160, 160), False),  # jaw
+                                    (list(range(17, 22)),       (0, 165, 255),   False),  # left brow
+                                    (list(range(22, 27)),       (0, 165, 255),   False),  # right brow
+                                    (list(range(27, 31)),       (0, 255, 255),   False),  # nose bridge
+                                    (list(range(31, 36)),       (0, 210, 255),   False),  # nose base
+                                    (list(range(36, 42)) + [36],(255, 230, 0),   True),   # left eye (closed)
+                                    (list(range(42, 48)) + [42],(255, 230, 0),   True),   # right eye (closed)
+                                    (list(range(48, 60)) + [48],(80, 50, 255),   True),   # outer lip (closed)
+                                    (list(range(60, 68)) + [60],(60, 30, 200),   True),   # inner lip (closed)
+                                ]
+                                pts_2d = [(int(pt[0]), int(pt[1])) for pt in landmarks_3d]
+                                if len(pts_2d) >= 68:
+                                    for indices, color, _ in _MESH_REGIONS:
+                                        for k in range(len(indices) - 1):
+                                            p1 = pts_2d[indices[k]]
+                                            p2 = pts_2d[indices[k + 1]]
+                                            cv2.line(draw, p1, p2, color, 1, cv2.LINE_AA)
+                                    # Z-depth coloring: normalize z to map near=green, far=blue
+                                    pts_z = [float(pt[2]) if len(pt) > 2 else 0.0 for pt in landmarks_3d]
+                                    z_min, z_max = min(pts_z), max(pts_z)
+                                    z_range = max(z_max - z_min, 1.0)
+                                    for idx, (px, py) in enumerate(pts_2d):
+                                        t = (pts_z[idx] - z_min) / z_range  # 0=near, 1=far
+                                        dot_color = (int(255 * t), int(220 * (1 - t)), int(60 + 60 * (1 - t)))
+                                        cv2.circle(draw, (px, py), 3, dot_color, -1, cv2.LINE_AA)
+                                else:
+                                    for pt in pts_2d:
+                                        cv2.circle(draw, pt, 2, (0, 255, 0), -1)
                             except Exception:
                                 pass
                         
-                        # Align to ArcFace 112×112 canonical pose using 3DDFA landmarks.
-                        # Landmarks are already in pure_face local coordinates.
-                        if lmks_local is not None and len(lmks_local) >= 68:
-                            pure_face_aligned = mfd_app._align_to_arcface_112(pure_face, lmks_local)
-                        else:
-                            pure_face_aligned = pure_face
+                        # Full pipeline: RealESRGAN → scale lmks → align → GFPGAN.
+                        # Identical to registration path → consistent embedding domain.
+                        emb_crop_112, face_display = mfd_app.prepare_embedding_crop(pure_face, lmks_local)
 
-                        # Optional GFPGAN enhancement on the aligned crop (non-fast mode only).
-                        pure_face_enh = mfd_app.get_gfpgan_manager().enhance_crop(pure_face_aligned, fidelity=0.4, upscale=1, landmarks=None) if not fast else pure_face_aligned
-
-                        emb = mfd_app.get_embedder().embed(pure_face_enh)
+                        emb = mfd_app.get_embedder().embed(emb_crop_112)
                         emb_norm = _normalize_vec(emb)
-                        
+
                         # Extract Structural Vector
                         struct_vec_val = None
                         struct_vec_b64 = ''
@@ -585,28 +608,60 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                                     struct_vec_b64 = base64.b64encode(struct_vec_val.astype(np.float32).tobytes()).decode('ascii')
                             except Exception:
                                 pass
-                        
+
                         emb_vec_b64 = base64.b64encode(emb_norm.astype(np.float32).tobytes()).decode('ascii') if emb_norm.size > 0 else ''
-                        
-                        # Portrait enhancement
+
+                        # Sharpness score — Laplacian variance on raw face crop (before any enhancement).
+                        # Higher = sharper. < 80 = blurry, > 150 = acceptably sharp.
+                        _BLUR_THRESHOLD = 80.0
+                        try:
+                            gray_face = cv2.cvtColor(pure_face, cv2.COLOR_RGB2GRAY)
+                            sharpness_score = float(cv2.Laplacian(gray_face, cv2.CV_64F).var())
+                        except Exception:
+                            sharpness_score = 999.0  # assume sharp on error
+                        is_blurry = sharpness_score < _BLUR_THRESHOLD
+
+                        # Portrait thumbnail: only apply GFPGAN for blurry faces.
+                        # Sharp faces get their natural crop — enhancement degrades them.
                         try:
                             px1, py1, px2, py2 = mfd_app._compute_portrait_box(bx1, by1, bx2, by2, iw, ih, scale=3.0, margin=0.5)
                             portrait = img_rgb[py1:py2, px1:px2]
-                            portrait_enh = mfd_app.get_gfpgan_manager().enhance_crop(portrait, upscale=gfp_up, whole=True, fidelity=0.5) if not fast and portrait.size > 0 else portrait
+                            if portrait.size > 0 and is_blurry:
+                                with mfd_app._gfpgan_lock:
+                                    portrait_enh = mfd_app.get_gfpgan_manager().enhance_crop(portrait, upscale=1, whole=True, fidelity=0.5)
+                            else:
+                                portrait_enh = portrait
                         except Exception:
                             portrait_enh = None
-                        
-                        # Encode thumbnails
-                        ok, buf = cv2.imencode('.jpg', cv2.cvtColor(pure_face_enh, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
+
+                        # Encode thumbnails — face_display is RealESRGAN-enhanced natural crop
+                        ok, buf = cv2.imencode('.jpg', cv2.cvtColor(face_display, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
                         okp, bufp = cv2.imencode('.jpg', cv2.cvtColor(portrait_enh, cv2.COLOR_RGB2BGR) if portrait_enh is not None else np.zeros((1,1,3), np.uint8), [cv2.IMWRITE_JPEG_QUALITY, 85])
-                        
+
+                        # Landmark mesh thumbnail — crop the face region from the annotated draw buffer
+                        lmk_thumb_b64 = None
+                        try:
+                            pad_lmk = int(max(bx2 - bx1, by2 - by1) * 0.35)
+                            lx1 = max(0, bx1 - pad_lmk); ly1 = max(0, by1 - pad_lmk)
+                            lx2 = min(draw.shape[1], bx2 + pad_lmk); ly2 = min(draw.shape[0], by2 + pad_lmk)
+                            lmk_region = draw[ly1:ly2, lx1:lx2]
+                            if lmk_region.size > 0:
+                                lmk_resized = cv2.resize(lmk_region, (240, 240), interpolation=cv2.INTER_AREA)
+                                ok_lmk, buf_lmk = cv2.imencode('.jpg', lmk_resized, [cv2.IMWRITE_JPEG_QUALITY, 88])
+                                if ok_lmk:
+                                    lmk_thumb_b64 = f"data:image/jpeg;base64,{base64.b64encode(buf_lmk).decode('ascii')}"
+                        except Exception:
+                            pass
+
                         f_entry = {
                             "index": i,
                             "box": [bx1, by1, bx2, by2],
                             "score": float(score_str) if score_str else None,
+                            "sharpness": round(sharpness_score, 1),
                             "thumbs": {
-                                "face": f"data:image/jpeg;base64,{base64.b64encode(buf).decode('ascii')}" if ok else None, 
-                                "portrait": f"data:image/jpeg;base64,{base64.b64encode(bufp).decode('ascii')}" if (okp and portrait_enh is not None) else None
+                                "face": f"data:image/jpeg;base64,{base64.b64encode(buf).decode('ascii')}" if ok else None,
+                                "portrait": f"data:image/jpeg;base64,{base64.b64encode(bufp).decode('ascii')}" if (okp and portrait_enh is not None) else None,
+                                "lmk": lmk_thumb_b64
                             },
                             "emb_vec": emb_vec_b64,
                             "struct_vec": struct_vec_b64,
@@ -645,8 +700,14 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                 # Cleanup internal fields before returning
                 if 'emb_norm' in f: del f['emb_norm']
                 if 'struct_vec_val' in f: del f['struct_vec_val']
-            
-            faces = face_data
+
+            # Second-stage filter: only keep faces the 3D engine confirmed as real.
+            # A face with no landmarks_3d is almost certainly a detector false positive
+            # (background blob, partial body part, etc.).
+            # Guard: if the 3D engine isn't running at all (no face has landmarks),
+            # skip filtering so the UI still shows something.
+            has_any_landmarks = any(f.get('landmarks_3d') for f in face_data)
+            faces = [f for f in face_data if f.get('landmarks_3d')] if has_any_landmarks else face_data
 
             ok2, ann = cv2.imencode('.jpg', draw, [cv2.IMWRITE_JPEG_QUALITY, 85])
             annotated_b64 = f"data:image/jpeg;base64,{base64.b64encode(ann.tobytes()).decode('ascii')}" if ok2 else ''

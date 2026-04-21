@@ -717,30 +717,109 @@ def _load_image(image_input):
             return None
     return None
 
-def _detect_boxes_with_downscale(bgr_image: np.ndarray, max_side: int = 1280):
-    h, w = bgr_image.shape[:2]
-    scale = 1.0
-    if max(h, w) > max_side:
-        scale = max_side / float(max(h, w))
-        bgr_small = cv2.resize(bgr_image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
-    else:
-        bgr_small = bgr_image
+def _nms_boxes(boxes: np.ndarray, scores: np.ndarray, iou_thresh: float = 0.45) -> np.ndarray:
+    """Pure-numpy NMS. Returns indices of kept boxes sorted by descending score."""
+    if len(boxes) == 0:
+        return np.array([], dtype=np.int32)
+    x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+    areas = np.maximum(0, x2 - x1 + 1) * np.maximum(0, y2 - y1 + 1)
+    order = scores.argsort()[::-1]
+    keep = []
+    while order.size > 0:
+        i = order[0]
+        keep.append(int(i))
+        if order.size == 1:
+            break
+        xx1 = np.maximum(x1[i], x1[order[1:]])
+        yy1 = np.maximum(y1[i], y1[order[1:]])
+        xx2 = np.minimum(x2[i], x2[order[1:]])
+        yy2 = np.minimum(y2[i], y2[order[1:]])
+        inter = np.maximum(0, xx2 - xx1 + 1) * np.maximum(0, yy2 - yy1 + 1)
+        iou = inter / np.maximum(1, areas[i] + areas[order[1:]] - inter)
+        order = order[1:][iou <= iou_thresh]
+    return np.array(keep, dtype=np.int32)
+
+
+def _run_detector_on_bgr(bgr: np.ndarray, conf_threshold: float = 0.35):
+    """Run the best available detector; returns (boxes[N,4], scores[N])."""
     rd = get_retina_det()
     if rd is not None:
         try:
-            rlt = rd.detect_faces(bgr_small, conf_threshold=0.5)
+            rlt = rd.detect_faces(bgr, conf_threshold=conf_threshold)
             if rlt is not None and len(rlt) > 0:
-                boxes_s = rlt[:, 0:4].astype(np.float32)
-                scores = rlt[:, 4].astype(np.float32)
-            else:
-                boxes_s, scores = np.zeros((0, 4), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+                return rlt[:, 0:4].astype(np.float32), rlt[:, 4].astype(np.float32)
+            return np.zeros((0, 4), dtype=np.float32), np.zeros((0,), dtype=np.float32)
         except Exception:
-            boxes_s, scores = get_detector().detect(bgr_small)
+            pass
+    boxes, scores = get_detector().detect(bgr)
+    return boxes, scores
+
+
+def _detect_boxes_with_downscale(bgr_image: np.ndarray, max_side: int = 1280):
+    """
+    Detect faces with two complementary passes:
+    1. Tiled pass (for images > 1000px): 800px tiles with 25% overlap so small/distant
+       faces are seen at high resolution instead of being shrunk away.
+    2. Full-image pass at max_side: catches large faces that straddle tile boundaries.
+    Results from both passes are merged with NMS (iou_thresh=0.40).
+    Confidence threshold lowered to 0.35 to recover angled / partially-occluded faces.
+    """
+    h, w = bgr_image.shape[:2]
+    _CONF = 0.35
+    _TILE_TRIGGER = 1000   # enable tiling when any dimension > this
+    _TILE_SIZE    = 800    # each tile is at most 800×800
+    _TILE_OVERLAP = 0.25   # 25% overlap prevents faces straddling tile edges
+    _TILE_MIN_UP  = 480    # upscale tiles smaller than this so tiny faces are visible
+
+    all_boxes: list  = []
+    all_scores: list = []
+
+    # ── Tiled pass ──────────────────────────────────────────────────────────
+    if max(h, w) > _TILE_TRIGGER:
+        stride = int(_TILE_SIZE * (1 - _TILE_OVERLAP))
+        for ty in range(0, h, stride):
+            for tx in range(0, w, stride):
+                tx2, ty2 = min(w, tx + _TILE_SIZE), min(h, ty + _TILE_SIZE)
+                tile = bgr_image[ty:ty2, tx:tx2]
+                th, tw = tile.shape[:2]
+                if th < 48 or tw < 48:
+                    continue
+                ts = 1.0
+                if max(th, tw) < _TILE_MIN_UP:
+                    ts = _TILE_MIN_UP / float(max(th, tw))
+                    tile = cv2.resize(tile, (int(tw * ts), int(th * ts)), interpolation=cv2.INTER_LINEAR)
+                b, s = _run_detector_on_bgr(tile, _CONF)
+                if len(b) > 0:
+                    b = b.astype(np.float32) / ts      # undo tile upscale
+                    b[:, [0, 2]] += tx                  # offset to full-image coords
+                    b[:, [1, 3]] += ty
+                    all_boxes.append(b)
+                    all_scores.append(s)
+
+    # ── Full-image pass ──────────────────────────────────────────────────────
+    scale = min(1.0, max_side / float(max(h, w, 1)))
+    if scale < 1.0:
+        bgr_full = cv2.resize(bgr_image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
     else:
-        boxes_s, scores = get_detector().detect(bgr_small)
-    if scale != 1.0 and len(boxes_s) > 0:
-        boxes_s = (boxes_s.astype(np.float32) / scale).astype(np.float32)
-    return boxes_s, scores
+        bgr_full = bgr_image
+    b_full, s_full = _run_detector_on_bgr(bgr_full, _CONF)
+    if len(b_full) > 0:
+        if scale < 1.0:
+            b_full = (b_full.astype(np.float32) / scale)
+        all_boxes.append(b_full)
+        all_scores.append(s_full)
+
+    if not all_boxes:
+        return np.zeros((0, 4), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+
+    merged_boxes  = np.vstack(all_boxes).astype(np.float32)
+    merged_scores = np.concatenate(all_scores).astype(np.float32)
+
+    if len(merged_boxes) > 1:
+        keep = _nms_boxes(merged_boxes, merged_scores, iou_thresh=0.40)
+        return merged_boxes[keep], merged_scores[keep]
+
+    return merged_boxes, merged_scores
 
 def _compute_portrait_box(x1, y1, x2, y2, w, h, scale: float = 3.0, margin: float = 0.5):
     face_w = max(1, x2 - x1)
@@ -893,6 +972,67 @@ def _align_to_arcface_112(crop_rgb: np.ndarray, lmks_68) -> np.ndarray:
         return cv2.resize(crop_rgb, (112, 112), interpolation=cv2.INTER_LANCZOS4)
 
 
+def prepare_embedding_crop(pure_face: np.ndarray, lmks_local=None):
+    """Full consistent pipeline for both registration and attendance:
+      1. Real-ESRGAN ×2 if face is small  → sharper pixels, more for GFPGAN to work with
+      2. Scale landmarks to match upscaled image
+      3. Align to 112×112 ArcFace template  → remove pose variation
+      4. GFPGAN on aligned 112×112           → consistent identity normalisation
+
+    Returns (emb_crop_112, display_crop) where:
+      emb_crop_112  — 112×112 aligned+restored crop ready for ArcFace
+      display_crop  — Real-ESRGAN output before alignment (natural look for UI)
+    """
+    if pure_face is None or pure_face.size == 0:
+        return pure_face, pure_face
+
+    # ── Step 1: Real-ESRGAN upscale for small faces ──────────────────────────
+    fh, fw = pure_face.shape[:2]
+    scale_factor = 1.0
+    try:
+        if min(fh, fw) < 160:
+            with _realesrgan_lock:
+                enhanced = get_realesrgan_manager().upscale(pure_face, scale=2)
+            scale_factor = enhanced.shape[0] / max(fh, 1)
+        else:
+            enhanced = pure_face
+    except Exception:
+        enhanced = pure_face
+
+    display_crop = enhanced  # natural-looking, used for face card thumbnail
+
+    # ── Step 2: Scale landmarks to match upscaled dimensions ─────────────────
+    lmks_scaled = None
+    if lmks_local is not None:
+        try:
+            arr = np.asarray(lmks_local, dtype=np.float32)
+            if arr.ndim == 2 and arr.shape[0] >= 68:
+                if scale_factor != 1.0:
+                    arr = arr.copy()
+                    arr[:, 0] *= scale_factor
+                    arr[:, 1] *= scale_factor
+                lmks_scaled = arr
+        except Exception:
+            pass
+
+    # ── Step 3: Align to ArcFace 112×112 ─────────────────────────────────────
+    aligned = _align_to_arcface_112(enhanced, lmks_scaled)
+
+    # ── Step 4: GFPGAN on aligned 112×112 ────────────────────────────────────
+    # Small 112×112 input = fast GFPGAN inference (~200ms vs ~900ms on large crops).
+    # Applied consistently to both registration and attendance so embeddings
+    # are always in the same GFPGAN-normalised domain.
+    try:
+        with _gfpgan_lock:
+            emb_crop = get_gfpgan_manager().enhance_crop(
+                aligned, upscale=1, whole=False, fidelity=0.4
+            )
+    except Exception:
+        emb_crop = aligned
+
+    return emb_crop, display_crop
+
+
 def get_embedder():
     global _embedder
     if _embedder is None:
@@ -946,8 +1086,9 @@ def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0
 
         try:
             from backend.utils import LOW_RAM_MODE
-            if LOW_RAM_MODE and det_max_side > 640:
-                det_max_side = 640
+            # Cap at 1024 on low-RAM instances (was 640, but tiling needs room to work).
+            if LOW_RAM_MODE and det_max_side > 1024:
+                det_max_side = 1024
         except Exception:
             pass
 
@@ -1037,15 +1178,8 @@ def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0
             emb_crops = []
             for i, bx1, by1, bx2, by2, _, emb_crop in face_meta:
                 lmks_local = lmks_local_emb_map.get(i)
-                if enhancer != "None" and emb_crop.size > 0:
-                    with _gfpgan_lock:
-                        emb_crop = get_gfpgan_manager().enhance_crop(
-                            emb_crop, upscale=1, whole=False, fidelity=0.4, landmarks=lmks_local
-                        )
-                # Align to ArcFace canonical 112×112 template using 3DDFA landmarks.
-                # This corrects for head tilt and pose variation before embedding.
-                if lmks_local is not None:
-                    emb_crop = _align_to_arcface_112(emb_crop, lmks_local)
+                # Full pipeline: RealESRGAN → scale lmks → align → GFPGAN → 112×112
+                emb_crop, _ = prepare_embedding_crop(emb_crop, lmks_local)
                 emb_crops.append(emb_crop)
 
             with _embedder_lock:

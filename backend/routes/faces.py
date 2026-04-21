@@ -12,7 +12,7 @@ import cv2
 from services.auth_service import authenticate_vendor_access, extract_token, verify_token, check_vendor_status, hash_password
 import db_factory
 from db_factory import set_row_factory
-from utils import get_db_connection, LOW_RAM_MODE, _VENDOR_EMB_CACHE, reset_sequence, ALL_FEATURES, cache_delete_vendor_prefix, cache_delete, require_feature, cache_get, cache_set
+from utils import get_db_connection, LOW_RAM_MODE, _VENDOR_EMB_CACHE, reset_sequence, ALL_FEATURES, cache_delete_vendor_prefix, cache_delete, require_feature, cache_get, cache_set, decode_image_to_bgr, decode_image_to_rgb
 from services.face_service import _ensure_vendor_emb_cache, _normalize_vec, _suggest_from_cache
 from storage import upload_base64_image, presigned_url_for_key, OBJECT_STORAGE_ENABLED, compress_image
 import db_factory
@@ -122,9 +122,9 @@ def detect_faces_basic():
                 file = base64.b64decode(payload)
         if not file:
             return jsonify({"error": "image required"}), 400
+        
         img_hash = hashlib.sha256(file).hexdigest()
-        arr = np.frombuffer(file, dtype=np.uint8)
-        bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        bgr = decode_image_to_bgr(file)
         if bgr is None:
             return jsonify({"error": "invalid image"}), 400
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
@@ -477,11 +477,11 @@ def get_persons():
                 if is_pg:
                     f = "( (custom_data::jsonb->>'class_year' = ? OR custom_data::jsonb->>'Year' = ?) AND (custom_data::jsonb->>'division' = ? OR custom_data::jsonb->>'Division' = ?) AND (custom_data::jsonb->>'branch' = ? OR custom_data::jsonb->>'Branch' = ?) )"
                     class_filters.append(f)
-                    params += [str(y), str(y), str(d), str(d), str(b), str(b)]
+                    params.extend([str(y), str(y), str(d), str(d), str(b), str(b)])
                 else:
                     f = "( (custom_data LIKE ? OR custom_data LIKE ?) AND (custom_data LIKE ? OR custom_data LIKE ?) AND (custom_data LIKE ? OR custom_data LIKE ?) )"
                     class_filters.append(f)
-                    params += [f'%\"class_year\":\"{y}\"%', f'%\"Year\":\"{y}\"%', f'%\"division\":\"{d}\"%', f'%\"Division\":\"{d}\"%', f'%\"branch\":\"{b}\"%', f'%\"Branch\":\"{b}\"%']
+                    params.extend([f'%\"class_year\":\"{y}\"%', f'%\"Year\":\"{y}\"%', f'%\"division\":\"{d}\"%', f'%\"Division\":\"{d}\"%', f'%\"branch\":\"{b}\"%', f'%\"Branch\":\"{b}\"%'])
             
             if class_filters:
                 query += " AND (" + " OR ".join(class_filters) + ")"
@@ -497,7 +497,7 @@ def get_persons():
     if class_year:
         if is_pg:
             query += " AND (custom_data::jsonb->>'class_year' = ? OR custom_data::jsonb->>'Year' = ? OR custom_data::jsonb->>'year' = ?)"
-            params += [str(class_year), str(class_year), str(class_year)]
+            params.extend([str(class_year), str(class_year), str(class_year)])
         else:
             query += " AND (custom_data LIKE ? OR custom_data LIKE ? OR custom_data LIKE ?)"
             params += [f'%\"class_year\":\"{class_year}\"%', f'%\"Year\":\"{class_year}\"%', f'%\"year\":\"{class_year}\"%']
@@ -518,6 +518,9 @@ def get_persons():
             query += " AND (custom_data LIKE ? OR custom_data LIKE ?)"
             params += [f'%\"branch\":\"{branch}\"%', f'%\"Branch\":\"{branch}\"%']
             
+    # Default sorting to ensure stability (Display ID based)
+    query += " ORDER BY display_id ASC"
+
     # Optional pagination
     try:
         limit = int(request.args.get('limit', 500))
@@ -784,6 +787,12 @@ def upload_face():
                 fields.append("vendor_id=?"); params.append(vendor_id)
             if custom_data is not None:
                 fields.append("custom_data=?"); params.append(custom_data)
+            
+            # Allow manual override of display_id/Student ID
+            display_id = data.get("display_id")
+            if display_id is not None:
+                fields.append("display_id=?"); params.append(display_id)
+
             if not fields:
                 new_id = person_id
             else:
@@ -1079,6 +1088,9 @@ def download_faces():
         query += " WHERE vendor_id = ?"
         params.append(vendor_id)
         
+    # Default sorting by Display ID
+    query += " ORDER BY display_id ASC"
+    
     # Optional pagination
     try:
         limit = int(request.args.get('limit', 500))
@@ -1438,39 +1450,55 @@ def delete_face_by_id(person_id):
 def delete_all_faces():
     from app import get_db_connection, socketio
     vendor_id = request.vendor_id
+    target = request.args.get('target', 'people')
+    
     if not vendor_id:
         return jsonify({"error": "Vendor ID required"}), 400
     
     conn = get_db_connection()
     c = conn.cursor()
     try:
-        # 1. Cleanup all related records for this vendor
-        c.execute("DELETE FROM attendance WHERE vendor_id = ?", (vendor_id,))
-        c.execute("DELETE FROM student_parents WHERE vendor_id = ?", (vendor_id,))
-        c.execute("DELETE FROM leave_requests WHERE vendor_id = ?", (vendor_id,))
-        c.execute("DELETE FROM lecture_attendance WHERE vendor_id = ?", (vendor_id,))
-        c.execute("DELETE FROM person_embeddings WHERE vendor_id = ?", (vendor_id,))
-        c.execute("DELETE FROM parent_tokens WHERE vendor_id = ?", (vendor_id,))
-        c.execute("DELETE FROM parent_users WHERE vendor_id = ?", (vendor_id,))
-        c.execute("DELETE FROM system_users WHERE vendor_id = ? AND role = 'student'", (vendor_id,))
-        
-        # 2. Delete all faces
-        c.execute("DELETE FROM faces WHERE vendor_id = ?", (vendor_id,))
-        
-        # 3. Reset registration configuration as requested
-        c.execute("UPDATE bulk_attendance_config SET fields = '[]' WHERE vendor_id = ?", (vendor_id,))
-        c.execute("UPDATE vendors SET registration_config = '[]' WHERE id = ?", (vendor_id,))
+        if target == 'faculty':
+            # Only delete faculty logins and their linked face records
+            c.execute("DELETE FROM active_sessions WHERE vendor_id = ? AND username IN (SELECT username FROM system_users WHERE vendor_id = ? AND role = 'faculty')", (vendor_id, vendor_id))
+            
+            # Delete linked faces first to maintain integrity (if any)
+            c.execute("""
+                DELETE FROM faces 
+                WHERE id IN (SELECT person_id FROM system_users WHERE vendor_id = ? AND role = 'faculty' AND person_id IS NOT NULL)
+            """, (vendor_id,))
+            
+            c.execute("DELETE FROM system_users WHERE vendor_id = ? AND role = 'faculty'", (vendor_id,))
+            message = "All faculty logins and profile data cleared."
+        else:
+            # 1. Cleanup all related records for this vendor (Students)
+            c.execute("DELETE FROM attendance WHERE vendor_id = ?", (vendor_id,))
+            c.execute("DELETE FROM student_parents WHERE vendor_id = ?", (vendor_id,))
+            c.execute("DELETE FROM leave_requests WHERE vendor_id = ?", (vendor_id,))
+            c.execute("DELETE FROM lecture_attendance WHERE vendor_id = ?", (vendor_id,))
+            c.execute("DELETE FROM person_embeddings WHERE vendor_id = ?", (vendor_id,))
+            c.execute("DELETE FROM parent_tokens WHERE vendor_id = ?", (vendor_id,))
+            c.execute("DELETE FROM parent_users WHERE vendor_id = ?", (vendor_id,))
+            c.execute("DELETE FROM system_users WHERE vendor_id = ? AND role = 'student'", (vendor_id,))
+            
+            # 2. Delete all faces
+            c.execute("DELETE FROM faces WHERE vendor_id = ?", (vendor_id,))
+            
+            # 3. Reset registration configuration as requested
+            c.execute("UPDATE bulk_attendance_config SET fields = '[]' WHERE vendor_id = ?", (vendor_id,))
+            c.execute("UPDATE vendors SET registration_config = '[]' WHERE id = ?", (vendor_id,))
+            message = "All students and configurations cleared."
         
         conn.commit()
         
         cache_delete_vendor_prefix(vendor_id)
         cache_delete("admin_stats")
         
-        socketio.emit('persons_updated', {'vendor_id': vendor_id}, room=f"vendor_{vendor_id}")
+        socketio.emit('persons_updated', {'vendor_id': vendor_id, 'target': target}, room=f"vendor_{vendor_id}")
         socketio.emit('attendance_updated', {'vendor_id': vendor_id}, room=f"vendor_{vendor_id}")
         socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
         
-        return jsonify({"status": "success", "message": "All students and configurations cleared."})
+        return jsonify({"status": "success", "message": message})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
@@ -1507,7 +1535,7 @@ def regenerate_face():
         # Decode target image
         import numpy as np
         import cv2
-        
+
         t_b64 = str(target_b64)
         if ',' in t_b64: t_b64 = t_b64.split(',')[1]
         target_bytes = base64.b64decode(t_b64)
@@ -1516,6 +1544,20 @@ def regenerate_face():
         if target_bgr is None:
             return jsonify({"error": "Failed to decode target image"}), 400
         target_rgb = cv2.cvtColor(target_bgr, cv2.COLOR_BGR2RGB)
+
+        # Skip enhancement for already-sharp faces — warping a reference onto a clear
+        # face usually makes it look worse, not better.
+        _REGEN_BLUR_THRESHOLD = 150.0
+        gray_t = cv2.cvtColor(target_bgr, cv2.COLOR_BGR2GRAY)
+        sharpness = float(cv2.Laplacian(gray_t, cv2.CV_64F).var())
+        if sharpness >= _REGEN_BLUR_THRESHOLD:
+            return jsonify({
+                "success": True,
+                "image": target_b64,
+                "skipped": True,
+                "sharpness": round(sharpness, 1),
+                "reason": "Face is already sharp — enhancement skipped"
+            })
         
         # Decode reference image
         r_b64 = str(ref_b64)

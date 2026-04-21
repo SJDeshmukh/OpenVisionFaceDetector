@@ -13,10 +13,32 @@ import {
   Upload,
   X,
   User,
-  Camera
+  Camera,
+  ChevronLeft,
+  BookOpen
 } from 'lucide-react';
 import { useSocket } from '../context/SocketContext';
 import { API_URL, BASE_URL } from '../config';
+import { motion, AnimatePresence } from 'framer-motion';
+
+const Toast = ({ message, type, onClose }) => (
+  <motion.div
+    initial={{ opacity: 0, y: 50, scale: 0.9 }}
+    animate={{ opacity: 1, y: 0, scale: 1 }}
+    exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.2 } }}
+    className={`fixed bottom-6 right-6 z-[9999] flex items-center gap-3 px-5 py-3 rounded-xl shadow-2xl border ${
+      type === 'success' 
+        ? 'bg-emerald-50 border-emerald-100 text-emerald-800' 
+        : 'bg-rose-50 border-rose-100 text-rose-800'
+    }`}
+  >
+    <div className={`w-2 h-2 rounded-full ${type === 'success' ? 'bg-emerald-500' : 'bg-rose-500'} animate-pulse`} />
+    <span className="font-medium text-sm">{message}</span>
+    <button onClick={onClose} className="ml-2 hover:bg-black/5 p-1 rounded-md transition-colors">
+      <X size={14} className="opacity-60" />
+    </button>
+  </motion.div>
+);
 
 const People = () => {
   const { user } = useAuth();
@@ -37,7 +59,8 @@ const People = () => {
     photo: null,
     photoPreview: null,
     templates: '',
-    class_id: ''
+    class_id: '',
+    display_id: ''
   });
   const [submitting, setSubmitting] = useState(false);
   const [vendorConfig, setVendorConfig] = useState([]);
@@ -51,9 +74,42 @@ const People = () => {
   const [facultyUploadProgress, setFacultyUploadProgress] = useState(null);
   const [facultyUploadResult, setFacultyUploadResult] = useState(null);
   const [facultyUploadError, setFacultyUploadError] = useState(null);
+  
+  const [bulkImportPhase, setBulkImportPhase] = useState('cards'); // 'cards' | 'upload'
+  const [selectedBulkClass, setSelectedBulkClass] = useState(null);
+
   const [activeTab, setActiveTab] = useState('people'); // 'people' | 'faculty'
   const [facultyLogins, setFacultyLogins] = useState([]);
   const [facultyLoading, setFacultyLoading] = useState(false);
+  
+  // Faculty Edit State
+  const [isFacultyEditModalOpen, setIsFacultyEditModalOpen] = useState(false);
+  const [selectedFaculty, setSelectedFaculty] = useState(null);
+  const [facultyFormData, setFacultyFormData] = useState({
+    name: '',
+    email: '',
+    phone: '',
+    designation: '',
+    password: ''
+  });
+
+  // Add Faculty (single) State
+  const [isAddFacultyModalOpen, setIsAddFacultyModalOpen] = useState(false);
+  const [addFacultyFormData, setAddFacultyFormData] = useState({
+    name: '', email: '', phone: '', designation: '', password: '1234'
+  });
+
+  // Toast State
+  const [toasts, setToasts] = useState([]);
+  const addToast = (message, type = 'success') => {
+    const id = Math.random().toString(36).substr(2, 9);
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
+  };
+
+  // Class Selection View State
+  const [selectedClassForView, setSelectedClassForView] = useState(null);
+  const isBulkAttendanceEnabled = user?.features?.includes('bulk_image_attendance');
 
   const { socket, joinVendor } = useSocket();
   useEffect(() => {
@@ -212,7 +268,8 @@ const People = () => {
       photo: null,
       photoPreview: null,
       templates: '',
-      class_id: ''
+      class_id: '',
+      display_id: ''
     });
     setIsModalOpen(true);
   };
@@ -220,6 +277,21 @@ const People = () => {
   const handleEdit = (user) => {
     setIsEditing(true);
     const dynamicFields = user.custom_data || {};
+
+    // Find class_id if missing but class scope exists (Backward compatibility for bulk imports)
+    let classId = user.custom_data?.class_id || '';
+    if (!classId && user.custom_data?.class_year && (user.custom_data?.division || user.custom_data?.Section)) {
+       const year = user.custom_data.class_year;
+       const div = user.custom_data.division || user.custom_data.Section;
+       const branch = user.custom_data.branch || user.custom_data.Department;
+
+       const matchedClass = vendorClasses.find(c => 
+         String(c.class_year) === String(year) && 
+         String(c.division) === String(div) &&
+         (!branch || String(c.branch) === String(branch))
+       );
+       if (matchedClass) classId = matchedClass.id;
+    }
 
     setFormData({
       id: user.person_id || user.id,
@@ -235,7 +307,8 @@ const People = () => {
           ? user.face_image
           : (user.face_image ? `data:image/jpeg;base64,${user.face_image}` : null)),
       templates: user.templates || '',
-      class_id: user.custom_data?.class_id || '',
+      class_id: classId,
+      display_id: user.display_id || '',
       ...dynamicFields
     });
     setIsModalOpen(true);
@@ -260,23 +333,95 @@ const People = () => {
   };
 
   const handleClearAll = async () => {
-    if (window.confirm("CRITICAL: This will delete ALL registered people and reset the registration configuration. This action cannot be undone. Are you sure?")) {
+    const isFacultyTab = activeTab === 'faculty';
+    const confirmMsg = isFacultyTab 
+      ? "This will delete ALL faculty login accounts. Students and attendance records will NOT be affected. Are you sure?"
+      : "CRITICAL: This will delete ALL registered students, their facial data, and reset the registration configuration. This action cannot be undone. Are you sure?";
+
+    if (window.confirm(confirmMsg)) {
       try {
-        const resp = await axios.delete(`${API_URL}/sync/delete-all`);
+        const url = isFacultyTab ? `${API_URL}/sync/delete-all?target=faculty` : `${API_URL}/sync/delete-all`;
+        const resp = await axios.delete(url);
+        
         if (resp.data && resp.data.status === 'success') {
-          setUsers([]);
-          // Clear stale cache
-          localStorage.removeItem(`people_cache_${user?.vendor_id}`);
-          // Re-fetch config so the UI reflects the cleared state
-          fetchConfig();
-          alert("All data and configurations cleared. Upload a new Excel to start fresh.");
+          addToast(isFacultyTab ? "All faculty accounts cleared" : "All people data cleared", 'success');
+          if (isFacultyTab) {
+            setFacultyLogins([]);
+          } else {
+            setUsers([]);
+            setSelectedClassForView(null);
+            fetchConfig(); // Refresh registration config (it resets on clear all)
+          }
         } else {
-          alert(resp.data?.error || "Failed to clear all");
+          addToast(resp.data?.error || "Failed to clear all", 'error');
         }
       } catch (error) {
         console.error("Error clearing all:", error);
-        alert(error.response?.data?.error || "Failed to clear data.");
+        addToast(error.response?.data?.error || "Failed to clear all data", 'error');
       }
+    }
+  };
+
+  const handleEditFaculty = (faculty) => {
+    setSelectedFaculty(faculty);
+    setFacultyFormData({
+      name: faculty.name || '',
+      email: faculty.email || '',
+      phone: faculty.phone || '',
+      designation: faculty.designation || '',
+      password: '' // Don't show old password
+    });
+    setIsFacultyEditModalOpen(true);
+  };
+
+  const saveFacultyChanges = async (e) => {
+    e.preventDefault();
+    setSubmitting(true);
+    try {
+      const resp = await axios.put(`${API_URL}/bulk-registration/faculty/${selectedFaculty.email}`, facultyFormData);
+      if (resp.data && resp.data.success) {
+        addToast("Faculty updated successfully", 'success');
+        setIsFacultyEditModalOpen(false);
+        fetchFacultyLogins();
+      } else {
+        addToast(resp.data?.error || "Failed to update faculty", 'error');
+      }
+    } catch (e) {
+      console.error("Error updating faculty:", e);
+      addToast(e.response?.data?.error || "Update failed", 'error');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const createFacultySingle = async (e) => {
+    e.preventDefault();
+    setSubmitting(true);
+    try {
+      const res = await axios.post(`${API_URL}/bulk-registration/faculty`, addFacultyFormData);
+      if (res.data?.success) {
+        addToast('Faculty added successfully', 'success');
+        setIsAddFacultyModalOpen(false);
+        setAddFacultyFormData({ name: '', email: '', phone: '', designation: '', password: '1234' });
+        fetchFacultyLogins();
+      } else {
+        addToast(res.data?.error || 'Failed to add faculty', 'error');
+      }
+    } catch (e) {
+      addToast(e.response?.data?.error || 'Failed to add faculty', 'error');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleDeleteFaculty = async (email) => {
+    if (!window.confirm(`Delete faculty ${email}? This cannot be undone.`)) return;
+    try {
+      await axios.delete(`${API_URL}/bulk-registration/faculty/${encodeURIComponent(email)}`);
+      setFacultyLogins(prev => prev.filter(f => f.email !== email));
+      addToast('Faculty deleted successfully', 'success');
+    } catch (e) {
+      addToast(e.response?.data?.error || 'Delete failed', 'error');
     }
   };
 
@@ -303,6 +448,7 @@ const People = () => {
         name: formData.name,
         face_image: formData.photo,
         templates: formData.templates,
+        display_id: formData.display_id,
         ...formData // Spread all other dynamic fields
       };
 
@@ -434,9 +580,27 @@ const People = () => {
   };
 
   const filteredUsers = useMemo(() => {
-    if (!searchTerm) return users;
+    let result = users;
+    
+    // Filter by selected class if in class view
+    if (selectedClassForView) {
+      if (selectedClassForView.id === 'unassigned') {
+        result = result.filter(u => !u.custom_data?.class_id && !u.custom_data?.class_year);
+      } else {
+        result = result.filter(u => 
+          String(u.custom_data?.class_id) === String(selectedClassForView.id) ||
+          (
+            String(u.custom_data?.class_year) === String(selectedClassForView.class_year) &&
+            String(u.custom_data?.division) === String(selectedClassForView.division) &&
+            (!u.custom_data?.branch || String(u.custom_data?.branch) === String(selectedClassForView.branch))
+          )
+        );
+      }
+    }
+
+    if (!searchTerm) return result;
     const lowerSearch = searchTerm.toLowerCase();
-    return users.filter(u => {
+    return result.filter(u => {
       if ((u.name || '').toLowerCase().includes(lowerSearch) || 
           (String(u.id || '')).includes(lowerSearch) ||
           (String(u.display_id || '')).includes(lowerSearch) ||
@@ -467,54 +631,53 @@ const People = () => {
       return false;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [users, searchTerm]);
+  }, [users, searchTerm, selectedClassForView]);
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-slate-800">{user?.role === 'faculty' ? 'My Students' : 'People Management'}</h1>
           <p className="text-slate-500">{user?.role === 'faculty' ? 'Students enrolled in your assigned classes.' : `Manage ${personLabel.toLowerCase()}s and their facial data.`}</p>
         </div>
+        
         {user?.role !== 'faculty' && (
-          <div className="flex space-x-3">
-            {(user?.role === 'super_admin' || user?.features?.includes('bulk_image_attendance') || user?.features?.includes('mobile_app')) && (
-              <button
-                onClick={openAddModal}
-                className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all text-sm font-medium shadow-sm hover:shadow-md"
-              >
-                <Plus size={20} />
-                <span>Add {personLabel}</span>
-              </button>
+          <div className="flex items-center gap-2">
+            {activeTab === 'people' && (
+              <>
+                <button
+                  onClick={openAddModal}
+                  className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 font-medium transition-all shadow-lg shadow-blue-500/20"
+                >
+                  <Plus size={18} /> Add {personLabel}
+                </button>
+                <button
+                  onClick={() => setIsBulkImportModalOpen(true)}
+                  className="flex items-center gap-2 bg-white border border-slate-200 text-slate-700 px-4 py-2 rounded-lg hover:bg-slate-50 font-medium transition-all shadow-sm"
+                >
+                  <Upload size={18} /> Bulk Import
+                </button>
+              </>
             )}
-            <button
-              onClick={() => setIsBulkImportModalOpen(true)}
-              className="flex items-center space-x-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 transition-all text-sm font-medium shadow-sm hover:shadow-md"
-            >
-              <Upload size={20} />
-              <span>Bulk Import</span>
-            </button>
-            {(user?.features?.includes('bulk_image_attendance') || user?.features?.includes('classes')) && (
-              <button
-                onClick={() => setIsFacultyUploadModalOpen(true)}
-                className="flex items-center space-x-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-all text-sm font-medium shadow-sm hover:shadow-md"
-              >
-                <Upload size={20} />
-                <span>Upload Faculty Logins</span>
-              </button>
-            )}
-            {users.length > 0 && (
-              <button
-                onClick={handleClearAll}
-                className="flex items-center space-x-2 px-4 py-2 bg-white border border-red-100 text-red-600 rounded-lg hover:bg-red-50 transition-all text-sm font-medium shadow-sm hover:shadow-md"
-              >
-                <Trash2 size={20} />
-                <span>Clear All People</span>
-              </button>
+            {activeTab === 'faculty' && (
+              <>
+                <button
+                  onClick={() => setIsAddFacultyModalOpen(true)}
+                  className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 font-medium transition-all shadow-lg shadow-indigo-500/20"
+                >
+                  <Plus size={18} /> Add Faculty
+                </button>
+                <button
+                  onClick={() => setIsFacultyUploadModalOpen(true)}
+                  className="flex items-center gap-2 bg-white border border-slate-200 text-slate-700 px-4 py-2 rounded-lg hover:bg-slate-50 font-medium transition-all shadow-sm"
+                >
+                  <Upload size={18} /> Bulk Upload Faculty
+                </button>
+              </>
             )}
           </div>
         )}
-        </div>
+      </div>
 
       {/* Tab switcher — only show for non-faculty admins */}
       {user?.role !== 'faculty' && (user?.features?.includes('bulk_image_attendance') || user?.features?.includes('classes')) && (
@@ -535,16 +698,32 @@ const People = () => {
       )}
 
       {/* Faculty Logins Tab */}
-      {activeTab === 'faculty' && (
-        <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
-          <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+      {activeTab === 'faculty' && (<div className="bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
+          <div className="px-8 py-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
             <div>
-              <h3 className="font-bold text-slate-800">Faculty Accounts</h3>
-              <p className="text-xs text-slate-500 mt-0.5">Logins created via Excel upload. Default password is <code className="bg-amber-50 text-amber-700 px-1 rounded font-mono font-bold">1234</code> until changed.</p>
+              <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                <Shield size={20} className="text-indigo-600" />
+                Faculty Accounts
+              </h3>
+              <p className="text-sm text-slate-500 mt-1 italic">Logins created via Excel upload. Default password is <span className="text-amber-600 font-bold">1234</span> until changed.</p>
             </div>
-            <button onClick={fetchFacultyLogins} className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg text-xs font-medium transition-all">
-              <Download size={13} /> Refresh
-            </button>
+            <div className="flex gap-2">
+              <button 
+                onClick={handleClearAll}
+                className="flex items-center gap-2 px-4 py-2 bg-white border border-rose-200 text-rose-600 font-bold rounded-lg hover:bg-rose-50 transition-all shadow-sm"
+              >
+                <Trash2 size={16} />
+                Clear All Faculty
+              </button>
+              <button 
+                onClick={fetchFacultyLogins}
+                disabled={facultyLoading}
+                className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-600 font-bold rounded-lg hover:bg-slate-50 transition-all shadow-sm disabled:opacity-50"
+              >
+                <Upload size={16} className={facultyLoading ? 'animate-spin' : ''} />
+                Refresh
+              </button>
+            </div>
           </div>
           {facultyLoading ? (
             <div className="py-12 text-center text-slate-400 text-sm">Loading faculty...</div>
@@ -563,6 +742,7 @@ const People = () => {
                     <th className="px-6 py-3 font-semibold">Current Password</th>
                     <th className="px-6 py-3 font-semibold">Last Login</th>
                     <th className="px-6 py-3 font-semibold">Status</th>
+                    <th className="px-6 py-3 font-semibold text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -590,6 +770,24 @@ const People = () => {
                           </span>
                         )}
                       </td>
+                      <td className="px-6 py-3 text-right">
+                        <div className="flex justify-end space-x-2">
+                          <button
+                            onClick={() => handleEditFaculty(f)}
+                            className="p-1 text-slate-400 hover:text-indigo-600 transition-colors"
+                            title="Edit Password"
+                          >
+                            <Edit2 size={15} />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteFaculty(f.email)}
+                            className="p-1 text-slate-400 hover:text-red-500 transition-colors"
+                            title="Delete Faculty"
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -600,131 +798,205 @@ const People = () => {
       )}
 
       {/* Filters & Search + Table — only shown on people tab */}
-      {activeTab === 'people' && <>
-      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col sm:flex-row gap-4 justify-between items-center">
-        <div className="relative w-full sm:w-96">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
-          <input
-            type="text"
-            placeholder={`Search ${personLabel.toLowerCase()}s by name or ID...`}
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-          />
-        </div>
-        <div className="flex items-center space-x-3 w-full sm:w-auto">
-          <button className="flex items-center space-x-2 px-3 py-2 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 text-sm font-medium">
-            <Filter size={16} />
-            <span>Filters</span>
-          </button>
-          <button className="flex items-center space-x-2 px-3 py-2 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 text-sm font-medium">
-            <Download size={16} />
-            <span>Export</span>
-          </button>
-        </div>
-      </div>
+      {activeTab === 'people' && (
+        <>
+          {isBulkAttendanceEnabled && !selectedClassForView ? (
+            <div className="mt-4">
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h2 className="text-xl font-bold text-slate-800">Select Class</h2>
+                  <p className="text-sm text-slate-500">View and manage students by their assigned classes.</p>
+                </div>
+              </div>
+              
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                {vendorClasses.map((cls) => {
+                  const studentsInClass = users.filter(u => 
+                    String(u.custom_data?.class_id) === String(cls.id) ||
+                    (
+                      String(u.custom_data?.class_year) === String(cls.class_year) &&
+                      String(u.custom_data?.division) === String(cls.division) &&
+                      (!u.custom_data?.branch || String(u.custom_data?.branch) === String(cls.branch))
+                    )
+                  ).length;
 
-      {/* Table */}
-      <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="bg-slate-50 border-b border-slate-200">
-                <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">{nameHeader}</th>
-                {tableColumns.map(col => (
-                  <th key={col.field} className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                    {col.label}
-                  </th>
-                ))}
-                {user?.role !== 'faculty' && <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Actions</th>}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {loading ? (
-                <tr>
-                  <td colSpan={tableColumns.length + 2} className="px-6 py-8 text-center text-slate-500">Loading {personLabel.toLowerCase()}s...</td>
-                </tr>
-              ) : filteredUsers.length === 0 ? (
-                <tr>
-                  <td colSpan={tableColumns.length + 2} className="px-6 py-8 text-center text-slate-500">No {personLabel.toLowerCase()}s found.</td>
-                </tr>
-              ) : (
-                filteredUsers.map((person, idx) => (
-                  <tr key={idx} className="hover:bg-slate-50/80 transition-colors">
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="flex items-center">
-                        {person.face_image || person.image_url ? (
-                          <img
-                            src={
-                              person.image_url
-                                ? person.image_url
-                                : (person.face_image.startsWith('http')
-                                  ? person.face_image
-                                  : (person.face_image.startsWith('data:')
-                                    ? person.face_image
-                                    : `data:image/jpeg;base64,${person.face_image}`))
-                            }
-                            alt={person.name}
-                            className="h-10 w-10 rounded-full object-cover mr-3 border border-slate-200"
-                          />
-                        ) : (
-                          <div className="h-10 w-10 rounded-full bg-slate-200 flex items-center justify-center text-slate-600 font-bold text-sm mr-3">
-                            {person.name.charAt(0)}
-                          </div>
-                        )}
-                        <div>
-                          <div className="text-sm font-medium text-slate-900">{person.name}</div>
-                          <div className="text-xs text-slate-500 font-mono">#{person.display_id || person.id}</div>
-                          <div className="text-xs text-slate-500">
-                            {person.custom_data?.student_id || ""}
-                          </div>
+                  return (
+                    <button
+                      key={cls.id}
+                      onClick={() => setSelectedClassForView(cls)}
+                      className="flex flex-col p-5 bg-white border border-slate-200 rounded-xl hover:border-blue-500 hover:shadow-md transition-all group text-left relative overflow-hidden"
+                    >
+                      <div className="absolute top-0 right-0 p-2 opacity-10 group-hover:opacity-20 transition-opacity">
+                        <BookOpen size={64} className="-rotate-12 translate-x-4 translate-y-2" />
+                      </div>
+                      
+                      <div className="flex items-center gap-2 mb-3">
+                        <div className="w-10 h-10 bg-blue-50 rounded-lg flex items-center justify-center text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition-all">
+                          <BookOpen size={20} />
                         </div>
+                        <span className="text-xs font-bold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full">{cls.division}</span>
                       </div>
-                    </td>
-
-                    {tableColumns.map(col => (
-                      <td key={col.field} className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
-                        {getCellValue(person, col.field)}
-                      </td>
-                    ))}
-
-                    {user?.role !== 'faculty' && <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                      <div className="flex justify-end space-x-2">
-                        <button
-                          onClick={() => handleEdit(person)}
-                          className="p-1 text-slate-400 hover:text-blue-600 transition-colors">
-                          <Edit2 size={16} />
-                        </button>
-                        <button
-                          onClick={() => handleDelete(person.id, person.name)}
-                          className="p-1 text-slate-400 hover:text-red-600 transition-colors">
-                          <Trash2 size={16} />
-                        </button>
-                        <button className="p-1 text-slate-400 hover:text-slate-600 transition-colors">
-                          <MoreVertical size={16} />
-                        </button>
+                      
+                      <div className="relative z-10">
+                        <h3 className="font-bold text-slate-800 text-lg leading-tight group-hover:text-blue-700 transition-colors">
+                          {cls.class_year}
+                        </h3>
+                        <p className="text-sm text-slate-500 font-medium mt-1">{cls.branch}</p>
                       </div>
-                    </td>}
-                  </tr>
-                ))
+                      
+                      <div className="mt-4 pt-4 border-t border-slate-100 flex items-center justify-between text-xs font-bold text-slate-400">
+                        <span>{studentsInClass} STUDENTS</span>
+                        <span className="text-blue-500 group-hover:translate-x-1 transition-transform">VIEW ALL →</span>
+                      </div>
+                    </button>
+                  );
+                })}
+                
+                {/* Direct Access for unassigned students */}
+                <button
+                   onClick={() => setSelectedClassForView({ id: 'unassigned', class_year: 'Unassigned', branch: 'No Class' })}
+                   className="flex flex-col p-5 bg-slate-50 border border-slate-200 border-dashed rounded-xl hover:bg-slate-100 transition-all text-left"
+                >
+                   <div className="w-10 h-10 bg-slate-200 rounded-lg flex items-center justify-center text-slate-500 mb-3">
+                     <User size={20} />
+                   </div>
+                   <h3 className="font-bold text-slate-600">Unassigned</h3>
+                   <p className="text-sm text-slate-400 mt-1">Students not in any class</p>
+                   <div className="mt-auto pt-4 text-[10px] font-bold text-slate-400">VIEW REMAINING</div>
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              {isBulkAttendanceEnabled && selectedClassForView && (
+                <div className="flex items-center justify-between mb-8">
+                  <div className="flex items-center gap-4">
+                    <button
+                      onClick={() => setSelectedClassForView(null)}
+                      className="p-2 hover:bg-white rounded-xl transition-all border border-transparent hover:border-slate-200 shadow-sm group"
+                    >
+                      <ChevronLeft size={24} className="text-slate-400 group-hover:text-blue-600" />
+                    </button>
+                    <div>
+                      <h2 className="text-3xl font-black text-slate-800 tracking-tight flex items-center gap-3">
+                        {selectedClassForView.class_year} - {selectedClassForView.branch}
+                        <span className="text-sm font-bold bg-blue-100 text-blue-700 px-3 py-1 rounded-full uppercase tracking-wider">
+                          Division {selectedClassForView.division || selectedClassForView.Section}
+                        </span>
+                      </h2>
+                      <p className="text-slate-500 font-medium mt-1">Manage students and registration records for this class</p>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={handleClearAll}
+                    className="flex items-center gap-2 px-5 py-2.5 bg-white border border-rose-200 text-rose-600 font-bold rounded-xl hover:bg-rose-50 transition-all shadow-sm group"
+                  >
+                    <Trash2 size={18} className="group-hover:scale-110 transition-transform" />
+                    Clear All Students
+                  </button>
+                </div>
               )}
-            </tbody>
-          </table>
-        </div>
+              {/* Table */}
+              <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden text-sm">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 text-xs uppercase tracking-wider">
+                        <th className="px-6 py-4 font-bold">{nameHeader}</th>
+                        {tableColumns.map(col => (
+                          <th key={col.field} className="px-6 py-4 font-bold">
+                            {col.label}
+                          </th>
+                        ))}
+                        {user?.role !== 'faculty' && <th className="px-6 py-4 font-bold text-right">Actions</th>}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {loading ? (
+                        <tr>
+                          <td colSpan={tableColumns.length + 2} className="px-6 py-8 text-center text-slate-400 italic">Loading students...</td>
+                        </tr>
+                      ) : filteredUsers.length === 0 ? (
+                        <tr>
+                          <td colSpan={tableColumns.length + 2} className="px-6 py-8 text-center text-slate-400">No records found.</td>
+                        </tr>
+                      ) : (
+                        filteredUsers.map((person, idx) => (
+                          <tr key={idx} className="hover:bg-slate-50/60 transition-colors">
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <div className="flex items-center">
+                                {person.face_image || person.image_url ? (
+                                  <img
+                                    src={
+                                      person.image_url
+                                        ? person.image_url
+                                        : (person.face_image.startsWith('http')
+                                          ? person.face_image
+                                          : (person.face_image.startsWith('data:')
+                                            ? person.face_image
+                                            : `data:image/jpeg;base64,${person.face_image}`))
+                                    }
+                                    alt={person.name}
+                                    className="h-10 w-10 rounded-xl object-cover mr-3 border border-slate-200 shadow-sm"
+                                  />
+                                ) : (
+                                  <div className="h-10 w-10 rounded-xl bg-slate-100 flex items-center justify-center text-slate-400 font-bold text-sm mr-3 border border-slate-200">
+                                    {person.name?.charAt(0)}
+                                  </div>
+                                )}
+                                <div>
+                                  <div className="text-sm font-bold text-slate-800 tracking-tight">{person.name}</div>
+                                  <div className="text-[10px] text-slate-400 font-mono uppercase">#{person.display_id || person.id}</div>
+                                </div>
+                              </div>
+                            </td>
 
-        {/* Pagination */}
-        <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-between">
-          <div className="text-sm text-slate-500">
-            Showing <span className="font-medium">1</span> to <span className="font-medium">{filteredUsers.length}</span> of <span className="font-medium">{filteredUsers.length}</span> results
-          </div>
-          <div className="flex space-x-2">
-            <button className="px-3 py-1 border border-slate-200 rounded text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50" disabled>Previous</button>
-            <button className="px-3 py-1 border border-slate-200 rounded text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50" disabled>Next</button>
-          </div>
-        </div>
-      </div>
+                            {tableColumns.map(col => (
+                              <td key={col.field} className="px-6 py-4 whitespace-nowrap text-slate-600 font-medium">
+                                {getCellValue(person, col.field)}
+                              </td>
+                            ))}
 
-      </>}
+                            {user?.role !== 'faculty' && (
+                              <td className="px-6 py-4 whitespace-nowrap text-right">
+                                <div className="flex justify-end space-x-2">
+                                  <button
+                                    onClick={() => handleEdit(person)}
+                                    className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
+                                  >
+                                    <Edit2 size={16} />
+                                  </button>
+                                  <button
+                                    onClick={() => handleDelete(person.id, person.name)}
+                                    className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
+                                  >
+                                    <Trash2 size={16} />
+                                  </button>
+                                </div>
+                              </td>
+                            )}
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Pagination info */}
+              <div className="mt-4 flex items-center justify-between text-xs text-slate-500 font-medium bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                <div>
+                  Showing <span className="font-bold text-slate-800">1</span> to <span className="font-bold text-slate-800">{filteredUsers.length}</span> of <span className="font-bold text-slate-800">{filteredUsers.length}</span> results
+                </div>
+                <div className="flex gap-2">
+                   <button className="px-3 py-1.5 border border-slate-200 rounded-lg opacity-50 cursor-not-allowed">Previous</button>
+                   <button className="px-3 py-1.5 border border-slate-200 rounded-lg opacity-50 cursor-not-allowed">Next</button>
+                </div>
+              </div>
+            </>
+          )}
+        </>
+      )}
 
       {/* Registration Modal */}
       {isModalOpen && (
@@ -776,6 +1048,21 @@ const People = () => {
                     required
                   />
                 </div>
+              </div>
+
+              {/* Student ID / Roll Number */}
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-700">
+                  Student Roll No / ID
+                  <span className="text-xs text-slate-400 ml-2">(Optional - Auto-assigned if empty)</span>
+                </label>
+                <input
+                  type="number"
+                  value={formData.display_id || ''}
+                  onChange={(e) => setFormData({ ...formData, display_id: e.target.value })}
+                  placeholder="e.g. 1"
+                  className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                />
               </div>
 
               {/* Phone Field */}
@@ -905,6 +1192,8 @@ const People = () => {
                   setIsBulkImportModalOpen(false);
                   setBulkImportError(null);
                   setBulkImportProgress(null);
+                  setBulkImportPhase('cards');
+                  setSelectedBulkClass(null);
                 }} 
                 className="p-2 hover:bg-slate-200 rounded-lg transition-colors"
               >
@@ -912,15 +1201,62 @@ const People = () => {
               </button>
             </div>
             
-            <div className="p-8 text-center">
-              {!bulkImportProgress ? (
+            <div className={`p-8 text-center ${bulkImportPhase === 'cards' ? 'max-h-[70vh] overflow-y-auto' : ''}`}>
+              {bulkImportPhase === 'cards' ? (
                 <>
+                  <BookOpen size={48} className="mx-auto text-blue-500 mb-4 opacity-80" />
+                  <h3 className="text-lg font-bold text-slate-800 mb-2">Select Target Class</h3>
+                  <p className="text-sm text-slate-500 mb-6">Which class are these students from? Their records will be auto-assigned to this class.</p>
+                  
+                  <div className="grid grid-cols-1 gap-3">
+                    {vendorClasses.map((cls) => (
+                      <button
+                        key={cls.id}
+                        onClick={() => {
+                          setSelectedBulkClass(cls);
+                          setBulkImportPhase('upload');
+                        }}
+                        className="flex flex-col items-start p-4 bg-slate-50 hover:bg-white border border-slate-200 hover:border-blue-400 rounded-xl transition-all group text-left shadow-sm hover:shadow-md"
+                      >
+                        <div className="flex items-center justify-between w-full mb-1">
+                          <span className="font-bold text-slate-800 group-hover:text-blue-600 transition-colors">
+                            {cls.class_year} - {cls.branch} ({cls.division})
+                          </span>
+                          <span className="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-bold">SELECT</span>
+                        </div>
+                        <span className="text-xs text-slate-500">{cls.subjects || 'Multiple Subjects'}</span>
+                      </button>
+                    ))}
+                    
+                    <button
+                      onClick={() => {
+                        setSelectedBulkClass(null);
+                        setBulkImportPhase('upload');
+                      }}
+                      className="flex items-center justify-center p-4 border border-dashed border-slate-300 rounded-xl hover:border-slate-400 hover:bg-slate-50 transition-all text-slate-500 text-sm font-medium"
+                    >
+                      Skip Class Assignment
+                    </button>
+                  </div>
+                </>
+              ) : !bulkImportProgress ? (
+                <>
+                  <button 
+                    onClick={() => setBulkImportPhase('cards')}
+                    className="flex items-center gap-1.5 text-xs font-bold text-blue-600 hover:text-blue-700 mb-6 transition-colors"
+                  >
+                    <ChevronLeft size={14} /> Back to Class Selection
+                  </button>
+                  
                   <div className="w-20 h-20 bg-blue-50 rounded-3xl flex items-center justify-center mx-auto mb-6 text-blue-600 ring-4 ring-blue-50/50">
                     <Upload size={32} />
                   </div>
-                  <h3 className="text-lg font-semibold text-slate-800 mb-2">Upload Registration File</h3>
+                  <h3 className="text-lg font-semibold text-slate-800 mb-2">Upload {selectedBulkClass ? `${selectedBulkClass.class_year} - ${selectedBulkClass.branch}` : 'Registration'} File</h3>
                   <p className="text-slate-500 text-sm mb-6 leading-relaxed">
-                    Upload a CSV or Excel file containing your {personLabel.toLowerCase()} data. Headers will be used as registration fields.
+                    {selectedBulkClass 
+                      ? `Select the Excel/CSV file for students of ${selectedBulkClass.class_year} ${selectedBulkClass.division}.`
+                      : `Upload a CSV or Excel file containing your ${personLabel.toLowerCase()} data. Headers will be used as registration fields.`
+                    }
                   </p>
                   
                   <div className="flex flex-col gap-3">
@@ -936,6 +1272,13 @@ const People = () => {
                           const formData = new FormData();
                           formData.append('file', file);
                           
+                          if (selectedBulkClass) {
+                            formData.append('class_id', selectedBulkClass.id);
+                            formData.append('class_year', selectedBulkClass.class_year);
+                            formData.append('division', selectedBulkClass.division);
+                            formData.append('branch', selectedBulkClass.branch);
+                          }
+                          
                           setBulkImportProgress('uploading');
                           setBulkImportError(null);
                           
@@ -949,6 +1292,8 @@ const People = () => {
                               setTimeout(() => {
                                 setIsBulkImportModalOpen(false);
                                 setBulkImportProgress(null);
+                                setBulkImportPhase('cards');
+                                setSelectedBulkClass(null);
                                 fetchUsers();
                                 fetchConfig(); // Re-fetch config so new Excel headers become table columns
                               }, 2000);
@@ -1109,6 +1454,218 @@ const People = () => {
           </div>
         </div>
       )}
+      {/* Add Faculty (Single) Modal */}
+      {isAddFacultyModalOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            className="bg-white rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden border border-slate-200"
+          >
+            <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+              <div>
+                <h2 className="text-xl font-bold text-slate-800">Add Faculty</h2>
+                <p className="text-xs text-slate-500 mt-0.5 uppercase font-bold tracking-tight">Create a new faculty login account</p>
+              </div>
+              <button onClick={() => setIsAddFacultyModalOpen(false)} className="p-2 hover:bg-slate-200 rounded-lg transition-colors">
+                <X size={20} className="text-slate-500" />
+              </button>
+            </div>
+
+            <form onSubmit={createFacultySingle} className="p-6 space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-bold text-slate-700">Full Name</label>
+                  <input
+                    type="text"
+                    value={addFacultyFormData.name}
+                    onChange={(e) => setAddFacultyFormData({ ...addFacultyFormData, name: e.target.value })}
+                    className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:outline-none"
+                    placeholder="Enter name"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-bold text-slate-700">Phone Number</label>
+                  <input
+                    type="text"
+                    value={addFacultyFormData.phone}
+                    onChange={(e) => setAddFacultyFormData({ ...addFacultyFormData, phone: e.target.value })}
+                    className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:outline-none"
+                    placeholder="Enter phone"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-bold text-slate-700">Email <span className="text-red-500">*</span></label>
+                <input
+                  type="email"
+                  required
+                  value={addFacultyFormData.email}
+                  onChange={(e) => setAddFacultyFormData({ ...addFacultyFormData, email: e.target.value })}
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:outline-none font-medium"
+                  placeholder="faculty@example.com"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-bold text-slate-700">Designation / Role</label>
+                <input
+                  type="text"
+                  value={addFacultyFormData.designation}
+                  onChange={(e) => setAddFacultyFormData({ ...addFacultyFormData, designation: e.target.value })}
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:outline-none"
+                  placeholder="e.g. Professor, HOD"
+                />
+              </div>
+
+              <div className="space-y-2 pt-2 border-t border-slate-100">
+                <label className="text-sm font-bold text-slate-700">
+                  Initial Password
+                  <span className="text-[10px] font-bold text-slate-400 font-mono tracking-tight ml-2">(default: 1234)</span>
+                </label>
+                <input
+                  type="text"
+                  value={addFacultyFormData.password}
+                  onChange={(e) => setAddFacultyFormData({ ...addFacultyFormData, password: e.target.value })}
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none font-mono"
+                  placeholder="1234"
+                />
+                <p className="text-[10px] text-slate-400 italic">Faculty will be prompted to change this on first login.</p>
+              </div>
+
+              <div className="flex gap-3 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setIsAddFacultyModalOpen(false)}
+                  className="flex-1 px-4 py-3 bg-white border border-slate-200 rounded-xl text-slate-600 hover:bg-slate-50 font-bold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submitting || !addFacultyFormData.email}
+                  className="flex-1 px-4 py-3 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 font-bold shadow-lg shadow-indigo-500/30 disabled:opacity-50"
+                >
+                  {submitting ? 'Creating...' : 'Create Faculty'}
+                </button>
+              </div>
+            </form>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Faculty Edit Modal */}
+      {isFacultyEditModalOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            className="bg-white rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden border border-slate-200"
+          >
+            <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+              <div>
+                <h2 className="text-xl font-bold text-slate-800">Edit Faculty Profile</h2>
+                <p className="text-xs text-slate-500 mt-0.5 tracking-tight uppercase font-bold">Updating {selectedFaculty?.email}</p>
+              </div>
+              <button onClick={() => setIsFacultyEditModalOpen(false)} className="p-2 hover:bg-slate-200 rounded-lg transition-colors">
+                <X size={20} className="text-slate-500" />
+              </button>
+            </div>
+            
+            <form onSubmit={saveFacultyChanges} className="p-6 space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-bold text-slate-700">Full Name</label>
+                  <input
+                    type="text"
+                    value={facultyFormData.name}
+                    onChange={(e) => setFacultyFormData({ ...facultyFormData, name: e.target.value })}
+                    className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:outline-none"
+                    placeholder="Enter name"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-bold text-slate-700">Phone Number</label>
+                  <input
+                    type="text"
+                    value={facultyFormData.phone}
+                    onChange={(e) => setFacultyFormData({ ...facultyFormData, phone: e.target.value })}
+                    className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:outline-none"
+                    placeholder="Enter phone"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-bold text-slate-700">Email (Username)</label>
+                <input
+                  type="email"
+                  value={facultyFormData.email}
+                  onChange={(e) => setFacultyFormData({ ...facultyFormData, email: e.target.value })}
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:outline-none font-medium"
+                  placeholder="faculty@example.com"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-bold text-slate-700">Designation / Role</label>
+                <input
+                  type="text"
+                  value={facultyFormData.designation}
+                  onChange={(e) => setFacultyFormData({ ...facultyFormData, designation: e.target.value })}
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:outline-none font-medium"
+                  placeholder="e.g. Professor, HOD"
+                />
+              </div>
+
+              <div className="space-y-2 pt-2 border-t border-slate-100">
+                <label className="text-sm font-bold text-slate-700 flex items-center gap-2">
+                  Reset Password
+                  <span className="text-[10px] font-bold text-slate-400 font-mono tracking-tight">(OPTIONAL)</span>
+                </label>
+                <input
+                  type="text"
+                  value={facultyFormData.password}
+                  onChange={(e) => setFacultyFormData({ ...facultyFormData, password: e.target.value })}
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none font-mono"
+                  placeholder="New password"
+                />
+                <p className="text-[10px] text-slate-400 italic">Leave empty to keep current password. Faculty will be notified of change.</p>
+              </div>
+
+              <div className="flex gap-3 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setIsFacultyEditModalOpen(false)}
+                  className="flex-1 px-4 py-3 bg-white border border-slate-200 rounded-xl text-slate-600 hover:bg-slate-50 font-bold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="flex-1 px-4 py-3 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 font-bold shadow-lg shadow-indigo-500/30 group"
+                >
+                  {submitting ? 'Updating...' : 'Save Profile'}
+                </button>
+              </div>
+            </form>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Toast Notifications */}
+      <AnimatePresence>
+        {toasts.map(toast => (
+          <Toast 
+            key={toast.id} 
+            message={toast.message} 
+            type={toast.type} 
+            onClose={() => setToasts(prev => prev.filter(t => t.id !== toast.id))} 
+          />
+        ))}
+      </AnimatePresence>
     </div>
   );
 };
