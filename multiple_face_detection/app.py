@@ -1027,13 +1027,19 @@ def prepare_embedding_crop(pure_face: np.ndarray, lmks_local=None, skip_enhancem
     try:
         # Smart adaptive scaling: x4 for tiny, x2 for small, None for large
         # This keeps 'time efficiency' high by only using heavy models where needed.
+        # CRITICAL: Even if skip_enhancement is True (Fast Mode), 
+        # we MUST upscale tiny faces if we want any chance of matching.
+        # ArcFace (112x112) cannot match a 20x20 blurry crop.
         target_scale = 1
-        if not skip_enhancement:
-            min_dim = min(fh, fw)
-            if min_dim < 80:
-                target_scale = 4
-            elif min_dim < 160:
-                target_scale = 2
+        min_dim = min(fh, fw)
+        if min_dim < 80:
+            target_scale = 4
+        elif min_dim < 160:
+            target_scale = 2
+        
+        # In fast mode, we cap scale at 2 to balance speed, unless very tiny
+        if skip_enhancement and target_scale > 2:
+            target_scale = 2
         
         if target_scale > 1:
             print(f"[MFD] Adaptive Upscale x{target_scale} for {fw}x{fh} crop", flush=True)
@@ -1066,18 +1072,26 @@ def prepare_embedding_crop(pure_face: np.ndarray, lmks_local=None, skip_enhancem
     aligned = _align_to_arcface_112(enhanced, lmks_scaled)
 
     # ── Step 4: GFPGAN on aligned 112×112 ────────────────────────────────────
-    # Small 112×112 input = fast GFPGAN inference (~200ms vs ~900ms on large crops).
+    # Small 112×112 input = fast GFPGAN inference (~150ms).
     # Applied consistently to both registration and attendance so embeddings
     # are always in the same GFPGAN-normalised domain.
-    if skip_enhancement:
+    
+    # In fast mode, we only use GFPGAN if it's tiny (matching is difficult otherwise)
+    # or if skip_enhancement is False.
+    is_tiny = min(fh, fw) < 60
+    should_run_gfp = (not skip_enhancement) or is_tiny
+    
+    if not should_run_gfp:
         emb_crop = aligned
     else:
         try:
             with _gfpgan_lock:
+                # Use higher fidelity for attendance (0.5) to avoid over-hallucinating
                 emb_crop = get_gfpgan_manager().enhance_crop(
-                    aligned, upscale=1, whole=False, fidelity=0.4
+                    aligned, upscale=1, whole=False, fidelity=0.5
                 )
-        except Exception:
+        except Exception as e:
+            print(f"[GFPGAN] Enhancement failed: {e}", flush=True)
             emb_crop = aligned
 
     return emb_crop, display_crop

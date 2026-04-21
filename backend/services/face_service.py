@@ -636,12 +636,13 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                             px1, py1, px2, py2 = mfd_app._compute_portrait_box(bx1, by1, bx2, by2, iw, ih, scale=3.0, margin=0.5)
                             portrait = img_rgb[py1:py2, px1:px2]
                             
-                            # Only enhance if it's blurry AND the user hasn't explicitly disabled all enhancement
-                            should_enhance = is_blurry and params.get('enhancer') != 'None'
+                            # Enhance if blurry OR if it's tiny (pixels < 60px)
+                            is_tiny = min(bx2-bx1, by2-by1) < 60
+                            should_enhance = (is_blurry or is_tiny) and params.get('enhancer') != 'None'
                             
                             if portrait.size > 0 and should_enhance:
                                 with mfd_app._gfpgan_lock:
-                                    portrait_enh = mfd_app.get_gfpgan_manager().enhance_crop(portrait, upscale=1, whole=True, fidelity=0.5)
+                                    portrait_enh = mfd_app.get_gfpgan_manager().enhance_crop(portrait, upscale=1, whole=False, fidelity=0.5)
                             else:
                                 portrait_enh = portrait
                         except Exception:
