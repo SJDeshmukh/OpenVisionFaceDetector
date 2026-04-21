@@ -282,7 +282,18 @@ async function startBackendIfNeeded() {
   // Start Redis first
   await startRedis();
 
+  const isPortInUse = !(await canBindPort(backendPort, backendHost));
+  if (isPortInUse) {
+    process.stdout.write(`Backend port ${backendPort} is already in use. Checking if healthy...\n`);
+    if (await isBackendReachable()) {
+      process.stdout.write("Existing backend is healthy. Skipping startup.\n");
+      return;
+    }
+    process.stdout.write("Existing backend is not responding correctly. Cleanup might have failed.\n");
+  }
+
   process.stdout.write(`Starting backend (http://${backendHost}:${backendPort})...\n`);
+
 
   const pythonPath = process.platform === "win32" ? "../backend/.venv/Scripts/python.exe" : "../backend/.venv/bin/python3";
   const pythonCmd = fs.existsSync(path.resolve(process.cwd(), pythonPath)) ? pythonPath : "python3";
