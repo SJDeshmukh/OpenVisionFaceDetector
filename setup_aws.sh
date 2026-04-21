@@ -206,11 +206,16 @@ EOF
         echo "Warning: MobileNetV3 download failed, will fallback at runtime."
     fi
 
+    # ── [6/8] Initializing Database Schema ────────────────────────────────────
     echo "==> [6/8] Initializing Database Schema..."
     cd backend
     source .venv/bin/activate
+    
+    # HARDCODED PATHS: Ensure the migration can find all modules
+    export PYTHONPATH="$WORKING_DIR/backend:$WORKING_DIR"
     export DATABASE_URL="postgresql://postgres:postgres@localhost:5432/face_detection"
     export DB_TYPE="postgres"
+    
     python3 migrate_to_postgres.py || echo "Warning: migrate_to_postgres.py encountered issues."
     cd ..
 
