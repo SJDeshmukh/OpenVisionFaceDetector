@@ -220,20 +220,10 @@ class GFPGANManager:
         if crop_rgb is None or crop_rgb.size == 0:
             return crop_rgb
         
-        # Dual-Stage Strategy: If crop is low-res, use RealESRGAN first to provide a cleaner "pixel-hint"
+        # Dual-Stage Strategy REMOVED for CPU performance.
+        # Pre-upscaling should be handled by the caller (e.g. prepare_embedding_crop)
+        # to allow smart gating (e.g. Lancet/Sharpen vs AI).
         processed_input = crop_rgb
-        h_c, w_c = crop_rgb.shape[:2]
-        if min(h_c, w_c) < 128:
-            try:
-                # Use global RealESRGAN if available
-                from .app import get_realesrgan_manager
-                re_mgr = get_realesrgan_manager()
-                if re_mgr:
-                    # Upscale at least to 256 for GFPGAN to see better features
-                    processed_input = re_mgr.upscale(crop_rgb, scale=2)
-                    print(f"[GFPGAN] Pre-upscaled small crop ({w_c}x{h_c}) with RealESRGAN.", flush=True)
-            except Exception:
-                pass
 
         try:
             restorer = self.load(upscale=upscale)
@@ -1229,8 +1219,12 @@ def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0
                 emb_crops[idx] = ec
 
         if n > 0:
-            # Use max_workers based on CPU count or a sensible default for I/O + AI mix
-            with ThreadPoolExecutor(max_workers=min(n, (os.cpu_count() or 4) * 2)) as pool:
+            # CPU Optimized Concurrency: EC2 t3.medium has 2 vCPUs. 
+            # High workers (>4) crash on CPU during heavy AI ops.
+            from utils import LOW_RAM_MODE
+            max_cpu_workers = 2 if LOW_RAM_MODE else 4
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(n, max_cpu_workers)) as pool:
                 list(pool.map(_process_single_face, range(n)))
 
         crops = [c for c in crops_out if c is not None and c.size > 0]
