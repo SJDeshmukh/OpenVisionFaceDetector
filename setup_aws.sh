@@ -47,9 +47,9 @@ done
 
 echo "System cleaned. Proceeding with setup..."
 
-echo "==> [1/8] Configuring 2GB Swap File for RAM Stability..."
+echo "==> [1/8] Configuring 4GB Swap File for RAM Stability..."
 if [ ! -f /swapfile ] && [ ! -L /swapfile ]; then
-    sudo fallocate -l 2G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048
+    sudo fallocate -l 4G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=4096
     sudo chmod 600 /swapfile
     sudo mkswap /swapfile
     sudo swapon /swapfile
@@ -59,6 +59,11 @@ if [ ! -f /swapfile ] && [ ! -L /swapfile ]; then
 else
     echo "Swap already exists, skipping creation."
 fi
+# Tune swap behaviour for low-RAM instances
+sudo sysctl -w vm.swappiness=30 2>/dev/null || true
+sudo sysctl -w vm.vfs_cache_pressure=50 2>/dev/null || true
+grep -q 'vm.swappiness' /etc/sysctl.conf || echo 'vm.swappiness=30' | sudo tee -a /etc/sysctl.conf
+grep -q 'vm.vfs_cache_pressure' /etc/sysctl.conf || echo 'vm.vfs_cache_pressure=50' | sudo tee -a /etc/sysctl.conf
 
 if [[ "$USE_DOCKER" =~ ^[Yy]$ ]]; then
     echo "==> [2/6] Installing Docker and Docker Compose..."
@@ -157,18 +162,16 @@ else
     echo "Installing Python dependencies..."
     pip install -r backend/requirements.txt
 
-    # ── PyTorch (CPU-only) ────────────────────────────────────────────────────
-    # Skip re-installation if torch is already present to save time (~1.5 GB).
-    if python3 -c "import torch" 2>/dev/null; then
-        echo "PyTorch already installed, skipping download."
-    else
-        echo "Installing PyTorch (CPU)..."
-        pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-    fi
-
     echo "==> [5/8] Managing Environment (.env)..."
     if [ ! -f "backend/.env" ]; then
         PUBLIC_IP=$(curl -s https://api.ipify.org || echo "localhost")
+        # Detect RAM to intelligently set LOW_RAM_MODE
+        TOTAL_RAM=$(free -g | awk '/^Mem:/{print $2}')
+        LRM=1
+        if [ "$TOTAL_RAM" -ge 3 ]; then
+            echo "Direct RAM detected (${TOTAL_RAM}GB), disabling LOW_RAM_MODE for performance..."
+            LRM=0
+        fi
         cat <<EOF > backend/.env
 SECRET_KEY=$(openssl rand -base64 32)
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/face_detection
@@ -176,8 +179,27 @@ REDIS_URL=redis://localhost:6379/0
 CELERY_BROKER_URL=redis://localhost:6379/0
 BACKEND_URL=http://$PUBLIC_IP:5001
 FRONTEND_URL=http://$PUBLIC_IP
-LOW_RAM_MODE=1
+LOW_RAM_MODE=$LRM
 EOF
+    fi
+
+    echo "==> [6/8] Pre-downloading AI Models (Improved First-Start Experience)..."
+    # Ensure directories exist
+    mkdir -p multiple_face_detection/models/realesrgan
+    mkdir -p multiple_face_detection/models/gfpgan
+    mkdir -p backend/standalone_live_mesh/3DDFA-V3/assets
+
+    # RealESRGAN x4plus (required for the new high-quality upscale)
+    if [ ! -f "multiple_face_detection/models/realesrgan/RealESRGAN_x4plus.pth" ]; then
+        echo "Downloading RealESRGAN_x4plus..."
+        curl -L "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth" -o multiple_face_detection/models/realesrgan/RealESRGAN_x4plus.pth
+    fi
+
+    # MobileNetV3 Backbone for 3DDFA (for better CPU performance)
+    if [ ! -f "backend/standalone_live_mesh/3DDFA-V3/assets/net_recon_mbnet.pth" ]; then
+        echo "Downloading MobileNetV3 3DDFA backbone..."
+        curl -L "https://github.com/cleardusk/3DDFA_V2/releases/download/v2.0/mbnet_v3.pth" -o backend/standalone_live_mesh/3DDFA-V3/assets/net_recon_mbnet.pth 2>/dev/null || \
+        echo "Warning: MobileNetV3 download failed, will fallback at runtime."
     fi
 
     echo "==> [6/8] Initializing Database Schema..."
@@ -263,8 +285,13 @@ User=$USER
 Group=www-data
 WorkingDirectory=$WORKING_DIR/backend
 Environment=\"PATH=$WORKING_DIR/backend/.venv/bin\"
+Environment=\"PYTHONPATH=$WORKING_DIR/backend\"
+Environment=\"LOW_RAM_MODE=1\"
+Environment=\"OMP_NUM_THREADS=1\"
+Environment=\"MKL_NUM_THREADS=1\"
+Environment=\"OPENBLAS_NUM_THREADS=1\"
 EnvironmentFile=$WORKING_DIR/backend/.env
-ExecStart=$CELERY_PATH -A celery_app worker --loglevel=info --concurrency=1 --pool=solo
+ExecStart=$CELERY_PATH -A celery_app worker --loglevel=info --concurrency=1 --pool=solo -n worker1@%h
 Restart=always
 RestartSec=10
 
