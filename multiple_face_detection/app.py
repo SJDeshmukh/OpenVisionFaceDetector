@@ -612,8 +612,13 @@ _3d_engine_lock = threading.Lock()
 _active_detections = 0
 _active_detections_lock = threading.Lock()
 
+try:
+    from backend.utils import LOW_RAM_MODE
+except:
+    LOW_RAM_MODE = False
+
 # Unload TTL (seconds of idle before models are released)
-_UNLOAD_TTL = 300
+_UNLOAD_TTL = 30 if LOW_RAM_MODE else 300
 
 # Background GC thread — checks every 60 s, only unloads when fully idle
 _gc_thread_started = False
@@ -626,7 +631,7 @@ def _start_model_gc_thread():
 
     def _gc_loop():
         while True:
-            time.sleep(60)
+            time.sleep(10 if LOW_RAM_MODE else 60)
             with _active_detections_lock:
                 idle = (_active_detections == 0)
             if idle:
@@ -635,25 +640,25 @@ def _start_model_gc_thread():
     t = threading.Thread(target=_gc_loop, daemon=True, name="mfd-model-gc")
     t.start()
 
-def _check_and_unload_models():
+def _check_and_unload_models(force: bool = False):
     """Release memory by unloading models that haven't been used recently."""
     global _gfpgan_manager, _embedder, _realesrgan_manager, _mesh_engine
     now = time.time()
     
     # Check GFPGAN
-    if _gfpgan_manager and _gfpgan_manager._restorer and (now - _gfpgan_manager._last_used > _UNLOAD_TTL):
+    if _gfpgan_manager and _gfpgan_manager._restorer and (force or (now - _gfpgan_manager._last_used > _UNLOAD_TTL)):
         _gfpgan_manager._restorer = None
-        print("[MEM] Unloaded GFPGAN model to free RAM")
+        print(f"[MEM] Unloaded GFPGAN model to free RAM{' (FORCE)' if force else ''}", flush=True)
         
     # Check Embedder
-    if _embedder and _embedder._model and (now - _embedder._last_used > _UNLOAD_TTL):
+    if _embedder and _embedder._model and (force or (now - _embedder._last_used > _UNLOAD_TTL)):
         _embedder._model = None
-        print("[MEM] Unloaded FaceEmbedder model to free RAM")
+        print(f"[MEM] Unloaded FaceEmbedder model to free RAM{' (FORCE)' if force else ''}", flush=True)
 
     # Check RealESRGAN
-    if _realesrgan_manager and _realesrgan_manager._upsampler and (now - _realesrgan_manager._last_used > _UNLOAD_TTL):
+    if _realesrgan_manager and _realesrgan_manager._upsampler and (force or (now - _realesrgan_manager._last_used > _UNLOAD_TTL)):
         _realesrgan_manager._upsampler = None
-        print("[MEM] Unloaded RealESRGAN model to free RAM")
+        print(f"[MEM] Unloaded RealESRGAN model to free RAM{' (FORCE)' if force else ''}", flush=True)
         
     # Periodic GC if anything was unloaded
     import gc
@@ -1171,6 +1176,10 @@ def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0
                 out_crop = temp
             crops_out.append(out_crop)
 
+        # In LOW_RAM_MODE, unload upsampler/restorer immediately after the enhancement loop
+        if LOW_RAM_MODE:
+            _check_and_unload_models(force=True)
+
         crops = [c for c in crops_out if c is not None and c.size > 0]
 
         # ── Phase 3: Batch ArcFace — ONE forward pass for all N faces ────────
@@ -1184,6 +1193,9 @@ def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0
 
             with _embedder_lock:
                 all_embs = get_embedder().embed_batch(emb_crops)
+
+            if LOW_RAM_MODE:
+                _check_and_unload_models(force=True)
 
             for i, emb in enumerate(all_embs):
                 if emb is not None and emb.size > 0:
