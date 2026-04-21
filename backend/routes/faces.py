@@ -1342,64 +1342,76 @@ def delete_face_by_id(person_id):
         deleted_display_id = del_row[0] if del_row else None
         target_vendor_id = del_row[1] if del_row else None
 
-        # 1. Cleanup related records FIRST to avoid FK violations in PostgreSQL
+        # 1. Cleanup related records FIRST to avoid FK violations in PostgreSQL.
+        #    Each statement is individually guarded so one missing table never
+        #    skips the critical system_users delete that causes the FK violation.
         import logging
         logger = logging.getLogger(__name__)
-        try:
-            # Cleanup using person_id (which is a unique PK for the face)
-            logger.info(f"Cleaning up associated records for person_id={person_id}")
-            
-            c.execute("DELETE FROM attendance WHERE person_id = ?", (person_id,))
-            c.execute("DELETE FROM student_parents WHERE person_id = ?", (person_id,))
-            c.execute("UPDATE parent_users SET selected_person_id = NULL WHERE selected_person_id = ?", (person_id,))
-            c.execute("DELETE FROM parent_users WHERE selected_person_id = ?", (person_id,))
-            
-            # Cleanup leave requests and system users associated with this person
-            c.execute("DELETE FROM leave_requests WHERE student_id = ?", (person_id,))
-            c.execute("DELETE FROM system_users WHERE person_id = ?", (person_id,))
-            if sn:
-                c.execute("DELETE FROM system_users WHERE username = ?", (sn,))
-            
-            # Delete all embeddings for the deleted person
-            c.execute("DELETE FROM person_embeddings WHERE person_id = ?", (person_id,))
-            
-            logger.info("Cleanup successful for person_id=%s", person_id)
-        except Exception as cleanup_err:
-            logger.error(f"Cleanup failed for person_id={person_id}: {cleanup_err}")
+        logger.info(f"Cleaning up associated records for person_id={person_id}")
 
+        for _sql, _args in [
+            ("DELETE FROM attendance WHERE person_id = ?",                          (person_id,)),
+            ("DELETE FROM student_parents WHERE person_id = ?",                     (person_id,)),
+            ("UPDATE parent_users SET selected_person_id = NULL WHERE selected_person_id = ?", (person_id,)),
+            ("DELETE FROM leave_requests WHERE student_id = ?",                     (person_id,)),
+            ("DELETE FROM lecture_attendance WHERE person_id = ?",                  (person_id,)),
+            ("DELETE FROM person_embeddings WHERE person_id = ?",                   (person_id,)),
+            # system_users MUST be deleted before faces due to FK constraint
+            ("DELETE FROM system_users WHERE person_id = ?",                        (person_id,)),
+        ]:
+            try:
+                c.execute(_sql, _args)
+            except Exception as _e:
+                logger.warning(f"Cleanup step skipped (person_id={person_id}): {_sql!r} → {_e}")
+
+        if sn:
+            for _sql, _args in [
+                ("DELETE FROM system_users WHERE username = ?", (sn,)),
+            ]:
+                try:
+                    c.execute(_sql, _args)
+                except Exception as _e:
+                    logger.warning(f"Cleanup (sn) skipped: {_sql!r} → {_e}")
+
+        # Clear embedding cache for this vendor
         try:
             for k in list(_VENDOR_EMB_CACHE.keys()):
                 if isinstance(k, (int, str)) and str(k).startswith(str(target_vendor_id)):
                     del _VENDOR_EMB_CACHE[k]
                 elif isinstance(k, tuple) and len(k) > 0 and k[0] == target_vendor_id:
                     del _VENDOR_EMB_CACHE[k]
-            
-            c.execute("DELETE FROM lecture_attendance WHERE person_id = ?", (person_id,))
-            c.execute("DELETE FROM person_embeddings WHERE person_id = ?", (person_id,))
-            
-            if sn:
-                c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (target_vendor_id, sn))
-                c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND student_number = ?", (target_vendor_id, sn))
-            if phone:
+        except Exception:
+            pass
+
+        # Clean up parent/token relations — each guarded independently
+        if sn:
+            for _sql, _args in [
+                ("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (target_vendor_id, sn)),
+                ("DELETE FROM parent_users WHERE vendor_id = ? AND student_number = ?",  (target_vendor_id, sn)),
+            ]:
                 try:
-                    c.execute("SELECT id, student_number FROM parent_users WHERE vendor_id = ? AND contact_phone = ?", (target_vendor_id, str(phone).strip()))
-                    rows_pu = c.fetchall() or []
-                    parent_ids = [row[0] for row in rows_pu if row and row[0] is not None]
-                    if parent_ids:
-                        ph_placeholders = ",".join(["?"] * len(parent_ids))
-                        c.execute(f"DELETE FROM student_parents WHERE vendor_id = ? AND parent_id IN ({ph_placeholders})", [target_vendor_id, *parent_ids])
-                    for pu_row in rows_pu:
-                        try:
-                            sn_val = pu_row[1]
-                            if sn_val:
-                                c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (target_vendor_id, str(sn_val).strip()))
-                        except Exception:
-                            pass
-                    c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND contact_phone = ?", (target_vendor_id, str(phone).strip()))
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.error(f"Error cleaning up relations for face {person_id}: {e}")
+                    c.execute(_sql, _args)
+                except Exception as _e:
+                    logger.warning(f"Parent cleanup skipped: {_sql!r} → {_e}")
+
+        if phone:
+            try:
+                c.execute("SELECT id, student_number FROM parent_users WHERE vendor_id = ? AND contact_phone = ?", (target_vendor_id, str(phone).strip()))
+                rows_pu = c.fetchall() or []
+                parent_ids = [row[0] for row in rows_pu if row and row[0] is not None]
+                if parent_ids:
+                    ph_placeholders = ",".join(["?"] * len(parent_ids))
+                    c.execute(f"DELETE FROM student_parents WHERE vendor_id = ? AND parent_id IN ({ph_placeholders})", [target_vendor_id, *parent_ids])
+                for pu_row in rows_pu:
+                    try:
+                        sn_val = pu_row[1]
+                        if sn_val:
+                            c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (target_vendor_id, str(sn_val).strip()))
+                    except Exception:
+                        pass
+                c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND contact_phone = ?", (target_vendor_id, str(phone).strip()))
+            except Exception as e:
+                logger.warning(f"Phone-based parent cleanup skipped for person_id={person_id}: {e}")
 
         # 2. Finally delete the face record
         if vendor_id:
