@@ -1018,80 +1018,75 @@ def prepare_embedding_crop(pure_face: np.ndarray, lmks_local=None, skip_enhancem
       emb_crop_112  — 112×112 aligned+restored crop ready for ArcFace
       display_crop  — Real-ESRGAN output before alignment (natural look for UI)
     """
+def prepare_embedding_crop(pure_face: np.ndarray, lmks_local=None, skip_enhancement: bool = False):
+    """Refined for CPU efficiency:
+      1. Fast Lanczos4 + Sharpening instead of heavy RealESRGAN
+      2. AI Upscale ONLY for microscopic faces (< 48px)
+      3. AI Restoration (GFPGAN) ONLY for ultra-tiny faces (< 32px) in Fast mode
+    """
     if pure_face is None or pure_face.size == 0:
         return pure_face, pure_face
 
-    # ── Step 1: Real-ESRGAN adaptive upscale ────────────────────────────────
     fh, fw = pure_face.shape[:2]
-    scale_factor = 1.0
-    try:
-        # Smart adaptive scaling: x4 for tiny, x2 for small, None for large
-        # This keeps 'time efficiency' high by only using heavy models where needed.
-        # CRITICAL: Even if skip_enhancement is True (Fast Mode), 
-        # we MUST upscale tiny faces if we want any chance of matching.
-        # ArcFace (112x112) cannot match a 20x20 blurry crop.
-        target_scale = 1
-        min_dim = min(fh, fw)
-        if min_dim < 80:
-            target_scale = 4
-        elif min_dim < 160:
-            target_scale = 2
-        
-        # In fast mode, we cap scale at 2 to balance speed, unless very tiny
-        if skip_enhancement and target_scale > 2:
-            target_scale = 2
-        
-        if target_scale > 1:
-            print(f"[MFD] Adaptive Upscale x{target_scale} for {fw}x{fh} crop", flush=True)
-            with _realesrgan_lock:
-                enhanced = get_realesrgan_manager().upscale(pure_face, scale=target_scale)
-            scale_factor = enhanced.shape[0] / max(fh, 1)
+    min_dim = min(fh, fw)
+    
+    # ── Step 1: Smart Resize & Sharpen (Fast CV path) ──────────────────────
+    # Instead of heavy RealESRGAN, we use high-quality Lanczos4 + Sharpening.
+    # This is ~100x faster than AI on CPU.
+    target_scale = 1
+    if min_dim < 64:
+        target_scale = 2
+    
+    if target_scale > 1:
+        # If microscopic, use AI ONLY if skip_enhancement is False (High Quality)
+        # Otherwise use Lanczos (Fast)
+        if not skip_enhancement and min_dim < 48:
+            try:
+                with _realesrgan_lock:
+                    enhanced = get_realesrgan_manager().upscale(pure_face, scale=2)
+            except Exception:
+                enhanced = cv2.resize(pure_face, (fw*2, fh*2), interpolation=cv2.INTER_LANCZOS4)
         else:
-            enhanced = pure_face
-    except Exception as e:
-        print(f"[RealESRGAN] Adaptive upscale error: {e}", flush=True)
+            enhanced = cv2.resize(pure_face, (fw*target_scale, fh*target_scale), interpolation=cv2.INTER_LANCZOS4)
+            # Fast Sharpening
+            enhanced = _clahe_luminance(enhanced, clip_limit=1.5)
+            enhanced = _unsharp_mask(enhanced, strength=0.6, kernel=3)
+    else:
         enhanced = pure_face
 
-    display_crop = enhanced  # natural-looking, used for face card thumbnail
+    display_crop = enhanced
+    scale_factor = enhanced.shape[0] / max(fh, 1)
 
-    # ── Step 2: Scale landmarks to match upscaled dimensions ─────────────────
+    # ── Step 2: Scale landmarks ──────────────────────────────────────────────
     lmks_scaled = None
     if lmks_local is not None:
         try:
             arr = np.asarray(lmks_local, dtype=np.float32)
-            if arr.ndim == 2 and arr.shape[0] >= 68:
-                if scale_factor != 1.0:
-                    arr = arr.copy()
-                    arr[:, 0] *= scale_factor
-                    arr[:, 1] *= scale_factor
-                lmks_scaled = arr
+            if scale_factor != 1.0:
+                arr = arr.copy()
+                arr[:, 0] *= scale_factor
+                arr[:, 1] *= scale_factor
+            lmks_scaled = arr
         except Exception:
             pass
 
     # ── Step 3: Align to ArcFace 112×112 ─────────────────────────────────────
     aligned = _align_to_arcface_112(enhanced, lmks_scaled)
 
-    # ── Step 4: GFPGAN on aligned 112×112 ────────────────────────────────────
-    # Small 112×112 input = fast GFPGAN inference (~150ms).
-    # Applied consistently to both registration and attendance so embeddings
-    # are always in the same GFPGAN-normalised domain.
-    
-    # In fast mode, we only use GFPGAN if it's tiny (matching is difficult otherwise)
-    # or if skip_enhancement is False.
-    is_tiny = min(fh, fw) < 60
-    should_run_gfp = (not skip_enhancement) or is_tiny
+    # ── Step 4: Selective Normalization (GFPGAN) ──────────────────────────────
+    # GFPGAN only if not skipped OR if the face is truly microscopic (< 32px)
+    is_microscopic = min_dim < 32
+    should_run_gfp = (not skip_enhancement) or (is_microscopic)
     
     if not should_run_gfp:
         emb_crop = aligned
     else:
         try:
             with _gfpgan_lock:
-                # Use higher fidelity for attendance (0.5) to avoid over-hallucinating
                 emb_crop = get_gfpgan_manager().enhance_crop(
                     aligned, upscale=1, whole=False, fidelity=0.5
                 )
-        except Exception as e:
-            print(f"[GFPGAN] Enhancement failed: {e}", flush=True)
+        except Exception:
             emb_crop = aligned
 
     return emb_crop, display_crop
