@@ -72,8 +72,7 @@ fi
 npx concurrently \
   --kill-others \
   --prefix "[{name}]" \
-  --names "BACKEND,CELERY,FRONTEND" \
-  --prefix-colors "blue,yellow,green" \
-  "cd backend && source .venv/bin/activate && python app.py" \
-  "cd backend && source .venv/bin/activate && celery -A celery_app worker --loglevel=info --pool=solo --concurrency=1 --include tasks" \
+  --names "DEV-ENV" \
+  --prefix-colors "green" \
   "cd web-dashboard && npm run dev"
+
