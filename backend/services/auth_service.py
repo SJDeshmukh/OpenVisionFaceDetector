@@ -215,6 +215,19 @@ def authenticate_vendor_access():
             except Exception:
                 pass  # If active_sessions is unavailable, fall through to other checks
 
+        # Faculty web tokens are also validated against active_sessions.
+        # When a faculty logs in on a new device/browser the old session row is
+        # deleted immediately, so any in-flight request with the old token is
+        # rejected right away rather than waiting for the 24 h JWT expiry.
+        if token and role == 'faculty':
+            try:
+                c.execute("SELECT 1 FROM active_sessions WHERE token = ? LIMIT 1", (token,))
+                if not c.fetchone():
+                    conn.close()
+                    return None, (jsonify({"error": "Session expired. Please log in again.", "code": "UNAUTHORIZED"}), 401)
+            except Exception:
+                pass
+
         conn.close()
 
         if not user_row:

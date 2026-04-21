@@ -393,6 +393,10 @@ def login():
                     else:
                         c.execute("DELETE FROM active_sessions WHERE platform = 'web' AND last_active < datetime('now','-1 day')")
                     c.execute("DELETE FROM active_sessions WHERE username = ? AND platform = 'web' AND (device_id IS NULL OR device_id = '')", (username,))
+                    # Faculty: one active session at a time — kick out any existing
+                    # web session the moment they log in from a new device/browser.
+                    if user.get('role') == 'faculty':
+                        c.execute("DELETE FROM active_sessions WHERE username = ? AND platform = 'web'", (username,))
                     conn.commit()
                 except Exception:
                     pass
