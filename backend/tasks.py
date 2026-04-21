@@ -389,16 +389,6 @@ def process_class_batch_items(batch_id, vendor_id, params):
     
     print(f"[CELERY] process_class_batch_items: batch {batch_id} has {len(items)} items pending.", flush=True)
 
-    if items:
-        # Strict memory-safety check for t3.micro/low-RAM environments
-        try:
-            from multiple_face_detection.app import is_bulk_attendance_allowed
-            if not is_bulk_attendance_allowed():
-                print(f"[CELERY] SKIPPING BATCH {batch_id}: Bulk Image Attendance feature not enabled for any vendor.", flush=True)
-                return
-        except Exception as e:
-            print(f"[CELERY] Feature check failed in worker: {e}", flush=True)
-
     for item in items:
         item_id, img_b64 = item[0], item[1]
         try:

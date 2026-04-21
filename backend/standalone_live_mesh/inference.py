@@ -21,7 +21,7 @@ class RealTimeEngine:
         class Args:
             def __init__(self):
                 self.device = device
-                self.backbone = "resnet50"
+                self.backbone = "mbnetv3"
                 self.useTex = False
                 self.extractTex = False
                 self.ldm68 = True

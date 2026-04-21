@@ -59,20 +59,9 @@ if [ "$1" == "--setup-only" ]; then
     exit 0
 fi
 
-# --- 3. Start Concurrent Services ---
-echo "📡 Starting Services Concurrently..."
-cd "$ROOT_DIR"
+# --- 3. Start Consolidated Development Stack ---
+echo "📡 Starting Services via dev.mjs..."
+cd "$ROOT_DIR/web-dashboard"
 
-# Ensure concurrently is available, otherwise run via npx
-if ! command -v concurrently >/dev/null 2>&1; then
-    echo "⬇️ Installing concurrency tool..."
-    npm install --no-save concurrently
-fi
-
-npx concurrently \
-  --kill-others \
-  --prefix "[{name}]" \
-  --names "DEV-ENV" \
-  --prefix-colors "green" \
-  "cd web-dashboard && npm run dev"
-
+# Delegate all orchestration (Backend, Celery, Redis, Frontend) to dev.mjs
+npm run dev

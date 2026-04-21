@@ -17,8 +17,6 @@ import urllib.request
 import urllib.parse
 import base64
 
-_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
 def is_bulk_attendance_allowed() -> bool:
     """Checks if ANY active vendor has bulk_image_attendance enabled."""
     try:
@@ -120,7 +118,7 @@ def init_third_party_paths(base_dir: str):
         pass
 
 # Initialize immediately (LIGHTWEIGHT ONLY)
-# _BASE_DIR moved to top
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # init_third_party_paths(_BASE_DIR) # DEFERRED to save memory
 
 # PATCH: RealESRGAN missing version fix (DEFERRED)
@@ -317,19 +315,28 @@ class RealESRGANManager:
         self._upsampler = None
         self._last_used = 0
 
-    def _ensure_weights(self) -> str:
-        dst = os.path.join(self._weights_dir, "RealESRGAN_x2plus.pth")
+    def _ensure_weights(self, scale: int = 2) -> str:
+        model_name = "RealESRGAN_x4plus.pth" if scale == 4 else "RealESRGAN_x2plus.pth"
+        dst = os.path.join(self._weights_dir, model_name)
         if os.path.exists(dst) and os.path.getsize(dst) > 5 * 1024 * 1024:
             return dst
-        url = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth"
+        
+        # Download URLs
+        url_map = {
+            "RealESRGAN_x4plus.pth": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth",
+            "RealESRGAN_x2plus.pth": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth"
+        }
+        url = url_map.get(model_name)
+        if not url: return ""
+        
         try:
             import urllib.request
-            print(f"[RealESRGAN] Downloading RealESRGAN_x2plus.pth...", flush=True)
+            print(f"[RealESRGAN] Downloading {model_name}...", flush=True)
             urllib.request.urlretrieve(url, dst)
             if os.path.exists(dst) and os.path.getsize(dst) > 5 * 1024 * 1024:
                 return dst
         except Exception as e:
-            print(f"[RealESRGAN] Download failed: {e}", flush=True)
+            print(f"[RealESRGAN] Download failed for {model_name}: {e}", flush=True)
             return ""
         return ""
 
@@ -338,6 +345,15 @@ class RealESRGANManager:
             print("[RealESRGAN] Bulk attendance feature not enabled for any vendor. Skipping model load.", flush=True)
             return None
         init_third_party_paths(_BASE_DIR)
+        
+        # Reload if scale factor changed
+        if self._upsampler is not None:
+            if getattr(self._upsampler, 'model_scale', 2) == upscale:
+                return self._upsampler
+            else:
+                print(f"[RealESRGAN] Reloading restorer with new upscale factor {upscale}...", flush=True)
+                self._upsampler = None
+
         # PATCH: RealESRGAN missing version fix
         try:
             import realesrgan
@@ -345,9 +361,8 @@ class RealESRGANManager:
                 realesrgan.__version__ = '0.2.5.0'
         except Exception:
             pass
-        if self._upsampler is not None:
-            return self._upsampler
-        model_path = self._ensure_weights()
+            
+        model_path = self._ensure_weights(scale=upscale)
         if not model_path: return None
         try:
             import torch
@@ -363,21 +378,32 @@ class RealESRGANManager:
                 from realesrgan import RealESRGANer
                 from basicsr.archs.rrdbnet_arch import RRDBNet
                 device = "cuda" if torch.cuda.is_available() else ("mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu")
-                # x2plus model uses RRDBNet with 23 blocks
-                model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=2)
-                tile_val = int(os.environ.get("REAL_ESRGAN_TILE", "800"))
+                
+                # RRDBNet config depends on scale
+                # x2plus (scale=2, num_block=23)
+                # x4plus (scale=4, num_block=23)
+                model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=upscale)
+                
+                # Optimized Tiling for Apple Silicon (M4 Mac)
+                # Smaller tiles (400) usually perform better than large ones (800) for small crops
+                tile_val = int(os.environ.get("REAL_ESRGAN_TILE", "400"))
                 tile_pad_val = int(os.environ.get("REAL_ESRGAN_TILE_PAD", "10"))
+                
+                # Half precision (FP16) for marked speedups on MPS/CUDA
+                use_half = (device != "cpu")
+                
                 self._upsampler = RealESRGANer(
-                    scale=2,
+                    scale=upscale,
                     model_path=model_path,
                     model=model,
                     tile=tile_val,
                     tile_pad=tile_pad_val,
                     pre_pad=0,
-                    half=False,
+                    half=use_half,
                     device=device
                 )
-                print(f"[RealESRGAN] Loaded model: {model_path} on {device} (tile={tile_val})", flush=True)
+                self._upsampler.model_scale = upscale
+                print(f"[RealESRGAN] Loaded x{upscale} model: {model_path} on {device} (tile={tile_val}, hpf={use_half})", flush=True)
             finally:
                 torch.load = _orig_load
             return self._upsampler
@@ -391,13 +417,20 @@ class RealESRGANManager:
         if rgb is None or rgb.size == 0: return rgb
         self._last_used = time.time()
         try:
+            # Smart scale selection: model scale must match 'scale' requested
+            # to avoid blurry results from outscale factor.
+            # However, x2 and x4 are our targets.
+            target_scale = 4 if scale > 2 else 2
+            
             if scale <= 1: return rgb
-            upsampler = self.load()
+            upsampler = self.load(upscale=target_scale)
             if upsampler is None:
                 print("[RealESRGAN] Upsampler not available, returning original.", flush=True)
                 return rgb
             bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-            # Clip scale to what's reasonable (model is x2, but RealESRGANer can do outscale)
+            # Use outscale=1.0 because we are using the actual model scale
+            # If they asked for x2 but we loaded x4, outscale would handle it,
+            # but here we prefer direct model inference.
             out, _ = upsampler.enhance(bgr, outscale=scale)
             return cv2.cvtColor(out, cv2.COLOR_BGR2RGB)
         except Exception as e:
@@ -407,9 +440,6 @@ class RealESRGANManager:
 _realesrgan_manager = None
 def get_realesrgan_manager():
     global _realesrgan_manager
-    if not is_bulk_attendance_allowed():
-        if _realesrgan_manager: _check_and_unload_models(force=True)
-        return None
     from utils import LOW_RAM_MODE
     if LOW_RAM_MODE: _check_and_unload_models()
     if _realesrgan_manager is None:
@@ -617,13 +647,8 @@ _3d_engine_lock = threading.Lock()
 _active_detections = 0
 _active_detections_lock = threading.Lock()
 
-try:
-    from backend.utils import LOW_RAM_MODE
-except:
-    LOW_RAM_MODE = False
-
 # Unload TTL (seconds of idle before models are released)
-_UNLOAD_TTL = 30 if LOW_RAM_MODE else 300
+_UNLOAD_TTL = 300
 
 # Background GC thread — checks every 60 s, only unloads when fully idle
 _gc_thread_started = False
@@ -636,7 +661,7 @@ def _start_model_gc_thread():
 
     def _gc_loop():
         while True:
-            time.sleep(10 if LOW_RAM_MODE else 60)
+            time.sleep(60)
             with _active_detections_lock:
                 idle = (_active_detections == 0)
             if idle:
@@ -645,34 +670,26 @@ def _start_model_gc_thread():
     t = threading.Thread(target=_gc_loop, daemon=True, name="mfd-model-gc")
     t.start()
 
-def _check_and_unload_models(force: bool = False):
+def _check_and_unload_models():
     """Release memory by unloading models that haven't been used recently."""
     global _gfpgan_manager, _embedder, _realesrgan_manager, _mesh_engine
     now = time.time()
     
     # Check GFPGAN
-    if _gfpgan_manager and _gfpgan_manager._restorer and (force or (now - _gfpgan_manager._last_used > _UNLOAD_TTL)):
+    if _gfpgan_manager and _gfpgan_manager._restorer and (now - _gfpgan_manager._last_used > _UNLOAD_TTL):
         _gfpgan_manager._restorer = None
-        print(f"[MEM] Unloaded GFPGAN model to free RAM{' (FORCE)' if force else ''}", flush=True)
+        print("[MEM] Unloaded GFPGAN model to free RAM")
         
     # Check Embedder
-    if _embedder and _embedder._model and (force or (now - _embedder._last_used > _UNLOAD_TTL)):
+    if _embedder and _embedder._model and (now - _embedder._last_used > _UNLOAD_TTL):
         _embedder._model = None
-        print(f"[MEM] Unloaded FaceEmbedder model to free RAM{' (FORCE)' if force else ''}", flush=True)
+        print("[MEM] Unloaded FaceEmbedder model to free RAM")
 
     # Check RealESRGAN
-    if _realesrgan_manager and _realesrgan_manager._upsampler and (force or (now - _realesrgan_manager._last_used > _UNLOAD_TTL)):
+    if _realesrgan_manager and _realesrgan_manager._upsampler and (now - _realesrgan_manager._last_used > _UNLOAD_TTL):
         _realesrgan_manager._upsampler = None
-        print(f"[MEM] Unloaded RealESRGAN model to free RAM{' (FORCE)' if force else ''}", flush=True)
+        print("[MEM] Unloaded RealESRGAN model to free RAM")
         
-    # Check 3D Mesh Engine
-    if _mesh_engine is not None and (force or (now - getattr(_mesh_engine, '_last_used', 0) > _UNLOAD_TTL)):
-        # Standalone live mesh engine might not have a simple 'None' to unload if it's a module
-        # but we can at least drop the global reference if we have one.
-        # NOTE: get_realtime_engine in app.py returns the engine instance.
-        _mesh_engine = None
-        print(f"[MEM] Released 3D Mesh Engine to free RAM{' (FORCE)' if force else ''}", flush=True)
-
     # Periodic GC if anything was unloaded
     import gc
     gc.collect()
@@ -691,9 +708,6 @@ def get_detector():
 
 def get_gfpgan_manager():
     global _gfpgan_manager
-    if not is_bulk_attendance_allowed():
-        if _gfpgan_manager: _check_and_unload_models(force=True)
-        return None
     from utils import LOW_RAM_MODE
     if LOW_RAM_MODE: _check_and_unload_models()
     if _gfpgan_manager is None:
@@ -993,7 +1007,7 @@ def _align_to_arcface_112(crop_rgb: np.ndarray, lmks_68) -> np.ndarray:
         return cv2.resize(crop_rgb, (112, 112), interpolation=cv2.INTER_LANCZOS4)
 
 
-def prepare_embedding_crop(pure_face: np.ndarray, lmks_local=None):
+def prepare_embedding_crop(pure_face: np.ndarray, lmks_local=None, skip_enhancement: bool = False):
     """Full consistent pipeline for both registration and attendance:
       1. Real-ESRGAN ×2 if face is small  → sharper pixels, more for GFPGAN to work with
       2. Scale landmarks to match upscaled image
@@ -1007,17 +1021,29 @@ def prepare_embedding_crop(pure_face: np.ndarray, lmks_local=None):
     if pure_face is None or pure_face.size == 0:
         return pure_face, pure_face
 
-    # ── Step 1: Real-ESRGAN upscale for small faces ──────────────────────────
+    # ── Step 1: Real-ESRGAN adaptive upscale ────────────────────────────────
     fh, fw = pure_face.shape[:2]
     scale_factor = 1.0
     try:
-        if min(fh, fw) < 160:
+        # Smart adaptive scaling: x4 for tiny, x2 for small, None for large
+        # This keeps 'time efficiency' high by only using heavy models where needed.
+        target_scale = 1
+        if not skip_enhancement:
+            min_dim = min(fh, fw)
+            if min_dim < 80:
+                target_scale = 4
+            elif min_dim < 160:
+                target_scale = 2
+        
+        if target_scale > 1:
+            print(f"[MFD] Adaptive Upscale x{target_scale} for {fw}x{fh} crop", flush=True)
             with _realesrgan_lock:
-                enhanced = get_realesrgan_manager().upscale(pure_face, scale=2)
+                enhanced = get_realesrgan_manager().upscale(pure_face, scale=target_scale)
             scale_factor = enhanced.shape[0] / max(fh, 1)
         else:
             enhanced = pure_face
-    except Exception:
+    except Exception as e:
+        print(f"[RealESRGAN] Adaptive upscale error: {e}", flush=True)
         enhanced = pure_face
 
     display_crop = enhanced  # natural-looking, used for face card thumbnail
@@ -1043,13 +1069,16 @@ def prepare_embedding_crop(pure_face: np.ndarray, lmks_local=None):
     # Small 112×112 input = fast GFPGAN inference (~200ms vs ~900ms on large crops).
     # Applied consistently to both registration and attendance so embeddings
     # are always in the same GFPGAN-normalised domain.
-    try:
-        with _gfpgan_lock:
-            emb_crop = get_gfpgan_manager().enhance_crop(
-                aligned, upscale=1, whole=False, fidelity=0.4
-            )
-    except Exception:
+    if skip_enhancement:
         emb_crop = aligned
+    else:
+        try:
+            with _gfpgan_lock:
+                emb_crop = get_gfpgan_manager().enhance_crop(
+                    aligned, upscale=1, whole=False, fidelity=0.4
+                )
+        except Exception:
+            emb_crop = aligned
 
     return emb_crop, display_crop
 
@@ -1092,9 +1121,9 @@ def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0
 
     print(f"[MFD] detect_faces called: enhancer={enhancer!r} compute_embeddings={compute_embeddings} det_max_side={det_max_side}", flush=True)
 
+    global _active_detections
     _start_model_gc_thread()
 
-    global _active_detections
     with _active_detections_lock:
         _active_detections += 1
 
@@ -1143,84 +1172,75 @@ def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0
             emb_crop = rgb[f1y1:f1y2, f1x1:f1x2]
             face_meta.append((i, bx1, by1, bx2, by2, display_crop, emb_crop))
 
-        # ── Phase 2a: 3D landmarks for ALL faces in parallel (CPU-only) ─────
-        if engine is not None and n > 0:
-            with ThreadPoolExecutor(max_workers=min(n, os.cpu_count() or 4)) as pool3d:
-                fut_map = {
-                    pool3d.submit(_extract_3d_for_face, engine, rgb, bx1, by1, bx2, by2, w, h): i
-                    for i, bx1, by1, bx2, by2, _, _ in face_meta
-                }
-                lmks_local_emb_map = {}
-                for fut in as_completed(fut_map):
-                    i = fut_map[fut]
-                    try:
-                        lg, sv, lmks_local = fut.result()
-                        landmarks_3d_list[i] = lg
-                        struct_vec_list[i]   = sv
-                        lmks_local_emb_map[i] = lmks_local
-                    except Exception:
-                        lmks_local_emb_map[i] = None
-        else:
-            lmks_local_emb_map = {i: None for i in range(n)}
+        # ── Phase 2: Parallel Face Processing (3D + Enhancement + Embed Preparation) ──
+        crops_out = [None] * n
+        landmarks_3d_list = [[] for _ in range(n)]
+        struct_vec_list = [[] for _ in range(n)]
+        emb_crops = [None] * n
+        lmks_local_emb_map = {}
 
-        # ── Phase 2b: Display crop enhancement (GFPGAN/RealESRGAN, if not fast) ─
-        crops_out = []
-        for i, bx1, by1, bx2, by2, display_crop, emb_crop in face_meta:
-            if display_crop.size == 0:
-                crops_out.append(display_crop)
-                continue
-            temp = display_crop
-            if enhancer != "None" and min(display_crop.shape[:2]) > 0:
-                short_side = min(display_crop.shape[:2])
-                if short_side < 256:
-                    calc_scale = min(2, max(int(gfpgan_upscale), max(2, int(np.ceil(256 / short_side)))))
-                    with _realesrgan_lock:
-                        temp = get_realesrgan_manager().upscale(display_crop, scale=calc_scale)
-                elif gfpgan_upscale > 1:
-                    with _realesrgan_lock:
-                        temp = get_realesrgan_manager().upscale(display_crop, scale=int(gfpgan_upscale))
-            if enhancer == "None":
-                out_crop = temp
-            elif enhancer == "OpenCV":
-                out_crop = enhance_face_crop(temp, level=enhance_level)
-            elif enhancer in ("GFPGAN", "GFPGAN+CodeFormer"):
-                with _gfpgan_lock:
-                    out_crop = get_gfpgan_manager().enhance_crop(temp, upscale=1, whole=(crop_mode == "Portrait"), fidelity=0.4)
-                if enhancer == "GFPGAN+CodeFormer":
-                    out_crop = get_codeformer_manager().refine_crop(out_crop, fidelity=codeformer_w, upscale=1)
-            else:
-                out_crop = temp
-            crops_out.append(out_crop)
+        def _process_single_face(idx):
+            _, bx1, by1, bx2, by2, display_crop, emb_crop = face_meta[idx]
+            
+            # 1. 3D Landmarks (CPU-only, no lock)
+            lg, sv, lmks_local = _extract_3d_for_face(engine, rgb, bx1, by1, bx2, by2, w, h)
+            landmarks_3d_list[idx] = lg
+            struct_vec_list[idx] = sv
+            
+            # 2. Display Enhancement
+            out_crop = display_crop
+            if display_crop.size > 0:
+                temp = display_crop
+                if enhancer != "None":
+                    short_side = min(display_crop.shape[:2])
+                    if short_side < 256:
+                        calc_scale = min(2, max(int(gfpgan_upscale), max(2, int(np.ceil(256 / short_side)))))
+                        with _realesrgan_lock:
+                            temp = get_realesrgan_manager().upscale(display_crop, scale=calc_scale)
+                    elif gfpgan_upscale > 1:
+                        with _realesrgan_lock:
+                            temp = get_realesrgan_manager().upscale(display_crop, scale=int(gfpgan_upscale))
+                
+                if enhancer == "OpenCV":
+                    out_crop = enhance_face_crop(temp, level=enhance_level)
+                elif enhancer in ("GFPGAN", "GFPGAN+CodeFormer"):
+                    with _gfpgan_lock:
+                        out_crop = get_gfpgan_manager().enhance_crop(temp, upscale=1, whole=(crop_mode == "Portrait"), fidelity=0.4)
+                    if enhancer == "GFPGAN+CodeFormer":
+                        out_crop = get_codeformer_manager().refine_crop(out_crop, fidelity=codeformer_w, upscale=1)
+                else:
+                    out_crop = temp
+            crops_out[idx] = out_crop
 
-        # In LOW_RAM_MODE, unload upsampler/restorer immediately after the enhancement loop
-        if LOW_RAM_MODE:
-            _check_and_unload_models(force=True)
+            # 3. Preparation for ArcFace (Alignment + Enhancement)
+            if compute_embeddings:
+                # Honor the 'None' enhancer to skip heavy models for attendance speed
+                skip_heavy = (enhancer == "None" or enhancer == "OpenCV")
+                ec, _ = prepare_embedding_crop(emb_crop, lmks_local, skip_enhancement=skip_heavy)
+                emb_crops[idx] = ec
+
+        if n > 0:
+            # Use max_workers based on CPU count or a sensible default for I/O + AI mix
+            with ThreadPoolExecutor(max_workers=min(n, (os.cpu_count() or 4) * 2)) as pool:
+                list(pool.map(_process_single_face, range(n)))
 
         crops = [c for c in crops_out if c is not None and c.size > 0]
+        final_embs = [None] * n
 
         # ── Phase 3: Batch ArcFace — ONE forward pass for all N faces ────────
         if compute_embeddings and n > 0:
-            emb_crops = []
-            for i, bx1, by1, bx2, by2, _, emb_crop in face_meta:
-                lmks_local = lmks_local_emb_map.get(i)
-                # Full pipeline: RealESRGAN → scale lmks → align → GFPGAN → 112×112
-                emb_crop, _ = prepare_embedding_crop(emb_crop, lmks_local)
-                emb_crops.append(emb_crop)
+            valid_emb_crops = [ec for ec in emb_crops if ec is not None]
+            valid_idx = [i for i, ec in enumerate(emb_crops) if ec is not None]
+            
+            if valid_emb_crops:
+                with _embedder_lock:
+                    all_embs = get_embedder().embed_batch(valid_emb_crops)
 
-            with _embedder_lock:
-                all_embs = get_embedder().embed_batch(emb_crops)
-
-            if LOW_RAM_MODE:
-                _check_and_unload_models(force=True)
-
-            for i, emb in enumerate(all_embs):
-                if emb is not None and emb.size > 0:
-                    embeds_rows.append({
-                        "index": i,
-                        "len": int(emb.size),
-                        "norm": float(np.linalg.norm(emb)),
-                        "first5": list(map(float, emb[:5])) if emb.size >= 5 else []
-                    })
+                for out_i, emb in enumerate(all_embs):
+                    orig_i = valid_idx[out_i]
+                    if emb is not None and emb.size > 0:
+                        # Normalize here to save time in caller
+                        final_embs[orig_i] = emb / (np.linalg.norm(emb) + 1e-6)
 
         df = pd.DataFrame([
             {"x1": int(b[0]), "y1": int(b[1]), "x2": int(b[2]), "y2": int(b[3]), "score": float(scores[i])}

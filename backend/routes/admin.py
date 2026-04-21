@@ -1782,10 +1782,18 @@ def delete_vendor(vendor_id):
             except Exception:
                 pass
         tables = [
-            "class_batches", "attendance", "leave_requests", "student_parents", 
-            "person_embeddings", "system_users", "parent_tokens", "parent_users", 
-            "faces", "leave_staff", "vendor_device_slots", "vendor_devices", 
-            "active_sessions", "invoices", "subscriptions", "companies", "audit_logs"
+            # Child tables first (they reference faces/parent_users/lectures which reference vendors)
+            "lecture_attendance", "face_reset_requests", "student_parents",
+            "advances", "leave_requests", "person_embeddings",
+            "class_batch_items",
+            # Tables that reference vendors directly
+            "class_batches", "attendance", "lectures",
+            "system_users", "parent_tokens", "parent_users",
+            "faces", "leave_staff", "vendor_device_slots", "vendor_devices",
+            "active_sessions", "invoices", "subscriptions", "companies",
+            "bulk_attendance_config", "registration_batches",
+            "subject_master", "classes",
+            "audit_logs",
         ]
         for t in tables:
             key = "target_vendor_id" if t == "audit_logs" else "vendor_id"

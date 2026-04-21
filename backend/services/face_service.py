@@ -591,12 +591,20 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                             except Exception:
                                 pass
                         
-                        # Full pipeline: RealESRGAN → scale lmks → align → GFPGAN.
-                        # Identical to registration path → consistent embedding domain.
-                        emb_crop_112, face_display = mfd_app.prepare_embedding_crop(pure_face, lmks_local)
-
-                        emb = mfd_app.get_embedder().embed(emb_crop_112)
-                        emb_norm = _normalize_vec(emb)
+                        # Optimization: Use pre-computed embedding from the batched detect_faces call
+                        # This skips TWO redundant heavy AI model passes (Enhancement + Embedding) per face.
+                        emb_norm = None
+                        if df_emb is not None and i < len(df_emb):
+                            emb_norm = df_emb[i]
+                        
+                        if emb_norm is None:
+                            # Fallback if somehow missing, but honor 'fast' mode
+                            emb_crop_112, face_display = mfd_app.prepare_embedding_crop(pure_face, lmks_local, skip_enhancement=fast)
+                            emb = mfd_app.get_embedder().embed(emb_crop_112)
+                            emb_norm = _normalize_vec(emb)
+                        else:
+                            # We still need face_display for the thumbnail, use fast path
+                            _, face_display = mfd_app.prepare_embedding_crop(pure_face, lmks_local, skip_enhancement=fast)
 
                         # Extract Structural Vector
                         struct_vec_val = None
@@ -621,12 +629,17 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                             sharpness_score = 999.0  # assume sharp on error
                         is_blurry = sharpness_score < _BLUR_THRESHOLD
 
-                        # Portrait thumbnail: only apply GFPGAN for blurry faces.
-                        # Sharp faces get their natural crop — enhancement degrades them.
+                        # Portrait thumbnail: selective enhancement for blurry faces.
+                        # Even in 'fast' mode, we enhance blurry faces to maintain visual quality
+                        # unless the enhancer was explicitly set to 'None'.
                         try:
                             px1, py1, px2, py2 = mfd_app._compute_portrait_box(bx1, by1, bx2, by2, iw, ih, scale=3.0, margin=0.5)
                             portrait = img_rgb[py1:py2, px1:px2]
-                            if portrait.size > 0 and is_blurry:
+                            
+                            # Only enhance if it's blurry AND the user hasn't explicitly disabled all enhancement
+                            should_enhance = is_blurry and params.get('enhancer') != 'None'
+                            
+                            if portrait.size > 0 and should_enhance:
                                 with mfd_app._gfpgan_lock:
                                     portrait_enh = mfd_app.get_gfpgan_manager().enhance_crop(portrait, upscale=1, whole=True, fidelity=0.5)
                             else:

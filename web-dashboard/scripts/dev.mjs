@@ -200,21 +200,13 @@ let shuttingDown = false;
 const REDIS_URL = "redis://127.0.0.1:6379/0";
 
 async function startRedis() {
-  const busy = await canBindPort(6379, "127.0.0.1");
-  if (!busy) {
-    process.stdout.write("Redis already running (system service or another process).\n");
-    // We mark it as started so Celery doesn't skip
-    redisProc = { name: "redis-existing" };
-    return;
-  }
-
   process.stdout.write("Starting Redis server...\n");
   try {
     // Try to find redis-server in standard paths or the system PATH
-    const redisPath = fs.existsSync("/opt/homebrew/opt/redis/bin/redis-server") 
-        ? "/opt/homebrew/opt/redis/bin/redis-server" 
-        : "redis-server";
-        
+    const redisPath = fs.existsSync("/opt/homebrew/opt/redis/bin/redis-server")
+      ? "/opt/homebrew/opt/redis/bin/redis-server"
+      : "redis-server";
+
     redisProc = spawnProc(redisPath, ["--daemonize", "no", "--port", "6379"], {
       name: "redis",
       stdio: "pipe",
@@ -227,7 +219,6 @@ async function startRedis() {
     process.stderr.write("Falling back to thread-based processing (no Celery).\n");
   }
 }
-
 
 async function startCeleryWorker() {
   if (!redisProc) {
@@ -282,18 +273,7 @@ async function startBackendIfNeeded() {
   // Start Redis first
   await startRedis();
 
-  const isPortInUse = !(await canBindPort(backendPort, backendHost));
-  if (isPortInUse) {
-    process.stdout.write(`Backend port ${backendPort} is already in use. Checking if healthy...\n`);
-    if (await isBackendReachable()) {
-      process.stdout.write("Existing backend is healthy. Skipping startup.\n");
-      return;
-    }
-    process.stdout.write("Existing backend is not responding correctly. Cleanup might have failed.\n");
-  }
-
   process.stdout.write(`Starting backend (http://${backendHost}:${backendPort})...\n`);
-
 
   const pythonPath = process.platform === "win32" ? "../backend/.venv/Scripts/python.exe" : "../backend/.venv/bin/python3";
   const pythonCmd = fs.existsSync(path.resolve(process.cwd(), pythonPath)) ? pythonPath : "python3";
@@ -326,10 +306,9 @@ async function startBackendIfNeeded() {
 async function startFrontend() {
   await cleanupPorts();
   await performAudit();
-  await startBackendIfNeeded();
+  const backendPromise = startBackendIfNeeded();
 
   const { port } = await findFrontendPort();
-
 
   process.stdout.write(`Starting frontend (http://${host}:${port})...\n`);
   vite = spawnProc(
@@ -507,8 +486,7 @@ async function startFrontend() {
     }
   }
 
-  // startBackendIfNeeded is now awaited earlier
-
+  await backendPromise;
 
   // Keep the process alive without triggering an unsettled top-level await warning
   setInterval(() => { }, 3600000);
