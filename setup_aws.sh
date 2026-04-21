@@ -268,7 +268,8 @@ User=$USER
 Group=www-data
 WorkingDirectory=$WORKING_DIR/backend
 Environment=\"PATH=$WORKING_DIR/backend/.venv/bin\"
-Environment=\"LOW_RAM_MODE=1\"
+Environment=\"PYTHONPATH=$WORKING_DIR/backend:$WORKING_DIR\"
+Environment=\"LOW_RAM_MODE=$LRM\"
 EnvironmentFile=$WORKING_DIR/backend/.env
 ExecStart=$GUNICORN_PATH --worker-class eventlet -w 1 -b 0.0.0.0:5001 app:app --timeout 600
 Restart=always
@@ -289,8 +290,8 @@ User=$USER
 Group=www-data
 WorkingDirectory=$WORKING_DIR/backend
 Environment=\"PATH=$WORKING_DIR/backend/.venv/bin\"
-Environment=\"PYTHONPATH=$WORKING_DIR/backend\"
-Environment=\"LOW_RAM_MODE=1\"
+Environment=\"PYTHONPATH=$WORKING_DIR/backend:$WORKING_DIR\"
+Environment=\"LOW_RAM_MODE=$LRM\"
 Environment=\"OMP_NUM_THREADS=1\"
 Environment=\"MKL_NUM_THREADS=1\"
 Environment=\"OPENBLAS_NUM_THREADS=1\"
