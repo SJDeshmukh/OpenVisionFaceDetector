@@ -254,6 +254,12 @@ class RealTimeEngine:
                 all_landmarks[crop_i] = lmks_mapped
                 valid_idx += 1
 
+        # Diagnostic: confirm Z-depth is present
+        for _lm in all_landmarks:
+            if hasattr(_lm, 'shape') and len(_lm) > 0:
+                print(f"[3DDFA] Landmark shape={_lm.shape}, Z-range=[{_lm[:,2].min():.2f}, {_lm[:,2].max():.2f}]", flush=True)
+                break
+
         return all_landmarks
 
     def extract_landmarks(self, frame_np: np.ndarray) -> list:

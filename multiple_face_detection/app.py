@@ -68,19 +68,41 @@ def _is_bulk_attendance_uncached() -> bool:
     return False
 
 def _extract_structural_vector(lmks):
-    """Imported from centralized backend.utils"""
+    """Delegates to canonical 204-dim pose-aligned implementation."""
     try:
-        from backend.utils import _extract_structural_vector as _ev
+        from backend.services.face_service import _extract_structural_vector as _ev
         return _ev(lmks)
     except Exception:
-        # Fallback to local copy if import fails (redundant but safe)
+        # Inline fallback: pose-aligned full-mesh (must match face_service.py exactly)
         if lmks is None or len(lmks) != 68: return np.array([], dtype=np.float32)
+        lmks = np.array(lmks, dtype=np.float32)
+        # Pad 2D landmarks to 3D with z=0
+        if lmks.ndim == 2 and lmks.shape[1] == 2:
+            lmks = np.column_stack([lmks, np.zeros(len(lmks), dtype=np.float32)])
+        if lmks.ndim != 2 or lmks.shape[1] != 3:
+            return np.array([], dtype=np.float32)
+        # Rigid alignment to canonical frontal frame
         le = np.mean(lmks[36:42], axis=0); re = np.mean(lmks[42:48], axis=0)
-        iod = np.linalg.norm(le - re)
-        if iod < 1e-5: return np.array([], dtype=np.float32)
-        n = lmks[33]; v = [np.linalg.norm(lmks[i]-n)/iod for i in range(68) if i!=33]
-        v = np.array(v, dtype=np.float32); nm = np.linalg.norm(v)
-        return v/nm if nm > 1e-7 else v
+        x_axis = re - le; x_n = np.linalg.norm(x_axis)
+        if x_n > 1e-5:
+            x_axis /= x_n
+            y_raw = lmks[27] - lmks[8]
+            y_axis = y_raw - np.dot(y_raw, x_axis) * x_axis; y_n = np.linalg.norm(y_axis)
+            if y_n > 1e-5:
+                y_axis /= y_n
+                z_axis = np.cross(x_axis, y_axis); z_n = np.linalg.norm(z_axis)
+                if z_n > 1e-5:
+                    z_axis /= z_n
+                    R = np.column_stack([x_axis, y_axis, z_axis])
+                    center = (le + re) / 2.0
+                    lmks = ((R.T @ (lmks - center).T).T + center).astype(np.float32)
+        anchor = lmks[27]
+        le2 = np.mean(lmks[36:42], axis=0); re2 = np.mean(lmks[42:48], axis=0)
+        iod = float(np.linalg.norm(le2 - re2))
+        if iod < 1e-5: iod = 1.0
+        mesh_norm = (lmks - anchor) / iod
+        v = mesh_norm.flatten().astype(np.float32); nm = np.linalg.norm(v)
+        return (v / nm) if nm > 1e-6 else v
 
 def _normalize_vec(v):
     if v is None: return np.array([], dtype=np.float32)

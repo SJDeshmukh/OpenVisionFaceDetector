@@ -17,37 +17,65 @@ def get_realtime_engine():
     from app import get_realtime_engine as _get
     return _get()
 
-def _extract_structural_vector(lmks):
+def _align_landmarks_3d(lmks: np.ndarray) -> np.ndarray:
     """
-    Extracts a pose-invariant geometric ratio vector from 68-point landmarks.
-    Focuses on physiological proportions (ratios) rather than absolute distances.
+    Remove head pose (yaw/pitch/roll) by rotating the 3D mesh into a
+    canonical frontal frame defined by the eye line (X) and the
+    orthogonalized nose-bridge→chin vector (Y).
+    Handles both 2D (68,2) and 3D (68,3) landmarks by padding 2D→3D.
+    Falls back to the original landmarks on degenerate input.
     """
-    if lmks is None or len(lmks) != 68:
-        return np.array([], dtype=np.float32)
+    lmks = np.array(lmks, dtype=np.float32)
+    # Pad 2D landmarks to 3D with z=0 so cross product and rotation work
+    if lmks.ndim == 2 and lmks.shape[1] == 2:
+        lmks = np.column_stack([lmks, np.zeros(len(lmks), dtype=np.float32)])
+
+    if lmks.ndim != 2 or lmks.shape[1] != 3:
+        return lmks  # unexpected shape, skip alignment
 
     le = np.mean(lmks[36:42], axis=0)
     re = np.mean(lmks[42:48], axis=0)
-    nose_tip = lmks[33]
-    mouth_l = lmks[48]
-    mouth_r = lmks[54]
-    chin = lmks[8]
-    forehead_top = lmks[27]
 
-    iod = np.linalg.norm(le - re)
-    if iod < 1e-5: return np.array([], dtype=np.float32)
+    x_axis = re - le
+    x_norm = np.linalg.norm(x_axis)
+    if x_norm < 1e-5:
+        return lmks
+    x_axis /= x_norm
 
-    nose_to_chin = np.linalg.norm(nose_tip - chin) / iod
-    eye_to_nose = np.linalg.norm((le + re)/2 - nose_tip) / iod
-    mouth_width = np.linalg.norm(mouth_l - mouth_r) / iod
-    face_height = np.linalg.norm(forehead_top - chin) / iod
-    jaw_breadth = np.linalg.norm(lmks[4] - lmks[12]) / iod
+    y_raw = lmks[27] - lmks[8]  # nose bridge → chin
+    y_axis = y_raw - np.dot(y_raw, x_axis) * x_axis  # orthogonalize against X
+    y_norm = np.linalg.norm(y_axis)
+    if y_norm < 1e-5:
+        return lmks
+    y_axis /= y_norm
 
-    key_indices = [0, 4, 8, 12, 16, 17, 21, 22, 26, 36, 39, 42, 45, 48, 51, 54, 57, 60, 64, 66]
-    vec = [nose_to_chin, eye_to_nose, mouth_width, face_height, jaw_breadth]
-    for idx in key_indices:
-        vec.append(np.linalg.norm(lmks[idx] - nose_tip) / iod)
+    z_axis = np.cross(x_axis, y_axis)
+    z_norm = np.linalg.norm(z_axis)
+    if z_norm < 1e-5:
+        return lmks
+    z_axis /= z_norm
 
-    v = np.array(vec, dtype=np.float32)
+    # R columns are face axes in world space; R^T maps face frame → canonical
+    R = np.column_stack([x_axis, y_axis, z_axis])
+    center = (le + re) / 2.0
+    return ((R.T @ (lmks - center).T).T + center).astype(np.float32)
+
+
+def _extract_structural_vector(lmks):
+    # Pose-aligned full-mesh: align to canonical frontal frame first,
+    # then 68pts × N coords anchored to nose bridge, scaled by IOD, L2-normalized
+    # Output: 204-dim (3D) or 136-dim (2D) depending on input landmark depth
+    if lmks is None or len(lmks) != 68:
+        return np.array([], dtype=np.float32)
+    lmks = np.array(lmks, dtype=np.float32)
+    lmks = _align_landmarks_3d(lmks)  # always returns (68, 3) after padding
+    anchor = lmks[27]  # nose bridge (after alignment)
+    le = np.mean(lmks[36:42], axis=0)
+    re = np.mean(lmks[42:48], axis=0)
+    iod = float(np.linalg.norm(le - re))
+    if iod < 1e-5: iod = 1.0
+    mesh_norm = (lmks - anchor) / iod
+    v = mesh_norm.flatten().astype(np.float32)
     n = np.linalg.norm(v)
     return (v / n) if n > 1e-6 else v
 
@@ -590,21 +618,40 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                         except Exception as e:
                             print(f"[FACE_SVC] Error processing landmarks: {e}", flush=True)
                         
-                        # Optimization: Use pre-computed embedding from the batched detect_faces call
-                        # This skips TWO redundant heavy AI model passes (Enhancement + Embedding) per face.
+                        # Adaptive upscaling: determine scale factor from face pixel size
+                        _face_min_side = min(pure_face.shape[:2])
+                        if _face_min_side < 80:
+                            _up_scale = 4
+                        elif _face_min_side < 160:
+                            _up_scale = 2
+                        else:
+                            _up_scale = 1
+
+                        # Use pre-computed batch embedding only for normal-sized faces.
+                        # Tiny/small faces need adaptive upscale + GFPGAN for accurate ArcFace input.
                         emb_norm = None
-                        if df_emb is not None and i < len(df_emb):
+                        if df_emb is not None and i < len(df_emb) and _up_scale == 1:
                             emb_norm = df_emb[i]
-                        
+                            _, face_display = mfd_app.prepare_embedding_crop(pure_face, lmks_local, skip_enhancement=True)
+
                         if emb_norm is None:
-                            # Fallback if somehow missing, but honor 'fast' mode
-                            emb_crop_112, face_display = mfd_app.prepare_embedding_crop(pure_face, lmks_local, skip_enhancement=fast)
+                            embed_face = pure_face
+                            embed_lmks = lmks_local
+                            # RealESRGAN upscale for small faces (skip in fast mode for speed)
+                            if _up_scale > 1 and not fast:
+                                try:
+                                    embed_face = mfd_app.get_realesrgan_manager().upscale(embed_face, scale=_up_scale)
+                                    if embed_lmks is not None:
+                                        embed_lmks = embed_lmks.copy()
+                                        embed_lmks[:, 0] *= _up_scale
+                                        embed_lmks[:, 1] *= _up_scale
+                                except Exception:
+                                    pass
+                            # Always apply GFPGAN after upscaling; skip only in fast mode for full-size faces
+                            skip_enh = fast and _up_scale == 1
+                            emb_crop_112, face_display = mfd_app.prepare_embedding_crop(embed_face, embed_lmks, skip_enhancement=skip_enh)
                             emb = mfd_app.get_embedder().embed(emb_crop_112)
                             emb_norm = _normalize_vec(emb)
-                        else:
-                            # Skip GFPGAN entirely — we already have the embedding.
-                            # Only need face_display for the thumbnail.
-                            _, face_display = mfd_app.prepare_embedding_crop(pure_face, lmks_local, skip_enhancement=True)
 
                         # Extract Structural Vector
                         struct_vec_val = None

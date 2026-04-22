@@ -742,36 +742,64 @@ def vendor_has_feature(vendor_id, feature_name):
     except Exception:
         return False
 
+def _align_landmarks_3d(lmks):
+    """
+    Remove head pose (yaw/pitch/roll) by rotating the 3D mesh into a
+    canonical frontal frame defined by the eye line (X) and the
+    orthogonalized nose-bridge→chin vector (Y).
+    Handles both 2D (68,2) and 3D (68,3) landmarks by padding 2D→3D.
+    Falls back to the original landmarks on degenerate input.
+    """
+    import numpy as np
+    lmks = np.array(lmks, dtype=np.float32)
+    # Pad 2D landmarks to 3D with z=0
+    if lmks.ndim == 2 and lmks.shape[1] == 2:
+        lmks = np.column_stack([lmks, np.zeros(len(lmks), dtype=np.float32)])
+    if lmks.ndim != 2 or lmks.shape[1] != 3:
+        return lmks
+    le = np.mean(lmks[36:42], axis=0)
+    re = np.mean(lmks[42:48], axis=0)
+
+    x_axis = re - le
+    x_norm = np.linalg.norm(x_axis)
+    if x_norm < 1e-5:
+        return lmks
+    x_axis /= x_norm
+
+    y_raw = lmks[27] - lmks[8]  # nose bridge → chin
+    y_axis = y_raw - np.dot(y_raw, x_axis) * x_axis  # orthogonalize against X
+    y_norm = np.linalg.norm(y_axis)
+    if y_norm < 1e-5:
+        return lmks
+    y_axis /= y_norm
+
+    z_axis = np.cross(x_axis, y_axis)
+    z_norm = np.linalg.norm(z_axis)
+    if z_norm < 1e-5:
+        return lmks
+    z_axis /= z_norm
+
+    # R columns are face axes in world space; R^T maps face frame → canonical
+    R = np.column_stack([x_axis, y_axis, z_axis])
+    center = (le + re) / 2.0
+    return ((R.T @ (lmks - center).T).T + center).astype(np.float32)
+
+
 def _extract_structural_vector(lmks):
     """
-    Extracts a pose-invariant geometric ratio vector from 68-point landmarks.
-    Focuses on physiological proportions (ratios) rather than absolute distances.
+    204-dim pose-aligned full-mesh: align to canonical frontal frame first,
+    then 68pts × 3 coords anchored to nose bridge, scaled by IOD, L2-normalized.
     """
     import numpy as np
     if lmks is None or len(lmks) != 68: return np.array([], dtype=np.float32)
-
+    lmks = np.array(lmks, dtype=np.float32)
+    lmks = _align_landmarks_3d(lmks)
+    anchor = lmks[27]  # nose bridge (after alignment)
     le = np.mean(lmks[36:42], axis=0)
     re = np.mean(lmks[42:48], axis=0)
-    nose_tip = lmks[33]
-    mouth_l = lmks[48]
-    mouth_r = lmks[54]
-    chin = lmks[8]
-    forehead_top = lmks[27]
-
-    iod = np.linalg.norm(le - re)
-    if iod < 1e-5: return np.array([], dtype=np.float32)
-
-    nose_to_chin = np.linalg.norm(nose_tip - chin) / iod
-    eye_to_nose = np.linalg.norm((le + re)/2 - nose_tip) / iod
-    mouth_width = np.linalg.norm(mouth_l - mouth_r) / iod
-    face_height = np.linalg.norm(forehead_top - chin) / iod
-    jaw_breadth = np.linalg.norm(lmks[4] - lmks[12]) / iod
-
-    key_indices = [0, 4, 8, 12, 16, 17, 21, 22, 26, 36, 39, 42, 45, 48, 51, 54, 57, 60, 64, 66]
-    vec = [nose_to_chin, eye_to_nose, mouth_width, face_height, jaw_breadth]
-    for idx in key_indices:
-        vec.append(np.linalg.norm(lmks[idx] - nose_tip) / iod)
-
-    v = np.array(vec, dtype=np.float32)
+    iod = float(np.linalg.norm(le - re))
+    if iod < 1e-5: iod = 1.0
+    mesh_norm = (lmks - anchor) / iod
+    v = mesh_norm.flatten().astype(np.float32)
     n = np.linalg.norm(v)
     return (v / n) if n > 1e-6 else v

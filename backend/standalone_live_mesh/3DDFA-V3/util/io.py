@@ -133,6 +133,12 @@ def back_resize_ldms(ldms, trans_params):
     ldms[:, 0] = ldms[:, 0] / w * w0
     ldms[:, 1] = ldms[:, 1] / h * h0
 
+    # Scale Z-depth proportionally so it matches the X,Y image-space scale.
+    # Without this, Z stays in 224×224 model-space while X,Y are in image-space.
+    if ldms.shape[1] > 2:
+        avg_scale = float((w0 / max(w, 1) + h0 / max(h, 1)) / 2.0)
+        ldms[:, 2] = ldms[:, 2] * avg_scale
+
     return ldms
 
 def write_obj_with_colors(obj_name, vertices, triangles, colors):
