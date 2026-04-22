@@ -19,7 +19,22 @@ import torch
 import multiprocessing
 import gc
 
+_bulk_attendance_cache = {"v": None, "ts": 0.0}
+_BULK_CACHE_TTL = 60.0
+
 def is_bulk_attendance_allowed() -> bool:
+    """Checks if ANY active vendor has bulk_image_attendance enabled. Cached 60 s."""
+    import time as _t
+    _now = _t.monotonic()
+    if _bulk_attendance_cache["v"] is not None and (_now - _bulk_attendance_cache["ts"]) < _BULK_CACHE_TTL:
+        return _bulk_attendance_cache["v"]
+    result = _is_bulk_attendance_uncached()
+    _bulk_attendance_cache["v"] = result
+    _bulk_attendance_cache["ts"] = _now
+    return result
+
+def _is_bulk_attendance_uncached() -> bool:
+    """Actual DB lookup — called at most once per 60 s."""
     """Checks if ANY active vendor has bulk_image_attendance enabled."""
     try:
         # Use existing backend utils if possible
@@ -649,7 +664,7 @@ _active_detections = 0
 _active_detections_lock = threading.Lock()
 
 # Unload TTL (seconds of idle before models are released)
-# Set to 1 year (permanent persistence) as requested.
+# Keep models hot permanently — unloading causes 20-30s reload on next request
 _UNLOAD_TTL = int(os.environ.get("AI_MODEL_TTL", 31536000))
 
 # Background GC thread — checks periodically
@@ -663,8 +678,7 @@ def _start_model_gc_thread():
 
     def _gc_loop():
         while True:
-            time.sleep(300) # Check less frequently
-            # Note: Model unloading is disabled to keep models 'hot' permanently once loaded.
+            time.sleep(300)  # Models stay loaded permanently once hot
             pass
 
     t = threading.Thread(target=_gc_loop, daemon=True, name="mfd-model-gc")
@@ -805,6 +819,28 @@ def _run_detector_on_bgr(bgr: np.ndarray, conf_threshold: float = 0.35):
     return boxes, scores, None
 
 
+
+def _run_tile_worker(tile_args):
+    """Thread worker: detect faces on one image tile, return offset-corrected detections."""
+    tile, tx, ty, ts, conf = tile_args
+    b, s, k = _run_detector_on_bgr(tile, conf)
+    if len(b) == 0:
+        return None
+    b = b.astype(np.float32) / ts
+    b[:, [0, 2]] += tx
+    b[:, [1, 3]] += ty
+    if k is not None:
+        k = k.astype(np.float32) / ts
+        if k.ndim == 3:
+            k[..., 0] += tx
+            k[..., 1] += ty
+        else:
+            k[:, 0::2] += tx
+            k[:, 1::2] += ty
+    else:
+        k = np.zeros((len(b), 10), dtype=np.float32)
+    return (b, s, k)
+
 def _detect_boxes_with_downscale(bgr_image: np.ndarray, max_side: int = 1280):
     h, w = bgr_image.shape[:2]
     _CONF = 0.35
@@ -817,41 +853,35 @@ def _detect_boxes_with_downscale(bgr_image: np.ndarray, max_side: int = 1280):
     all_scores: list = []
     all_kpts: list   = []
 
-    # ── Tiled pass ──────────────────────────────────────────────────────────
+    # ── Tiled pass (parallel) ────────────────────────────────────────────────
     if max(h, w) > _TILE_TRIGGER:
         stride = int(_TILE_SIZE * (1 - _TILE_OVERLAP))
-        for ty in range(0, h, stride):
-            for tx in range(0, w, stride):
-                tx2, ty2 = min(w, tx + _TILE_SIZE), min(h, ty + _TILE_SIZE)
-                tile = bgr_image[ty:ty2, tx:tx2]
-                th, tw = tile.shape[:2]
-                if th < 48 or tw < 48: continue
-                ts = 1.0
-                if max(th, tw) < _TILE_MIN_UP:
-                    ts = _TILE_MIN_UP / float(max(th, tw))
-                    tile = cv2.resize(tile, (int(tw * ts), int(th * ts)), interpolation=cv2.INTER_LINEAR)
-                
-                b, s, k = _run_detector_on_bgr(tile, _CONF)
-                if len(b) > 0:
-                    b = b.astype(np.float32) / ts
-                    b[:, [0, 2]] += tx
-                    b[:, [1, 3]] += ty
-                    all_boxes.append(b)
-                    all_scores.append(s)
-                    if k is not None:
-                        k = k.astype(np.float32) / ts
-                        # Correct: k is (N, 5, 2), so k[..., 0] is X, k[..., 1] is Y
-                        if k.ndim == 3:
-                            k[..., 0] += tx
-                            k[..., 1] += ty
-                        else:
-                            k[:, 0::2] += tx
-                            k[:, 1::2] += ty
-                        all_kpts.append(k)
-                    else:
-                        all_kpts.append(np.zeros((len(b), 10), dtype=np.float32))
+        _tile_args = []
+        for _ty in range(0, h, stride):
+            for _tx in range(0, w, stride):
+                _tx2, _ty2 = min(w, _tx + _TILE_SIZE), min(h, _ty + _TILE_SIZE)
+                _tile = bgr_image[_ty:_ty2, _tx:_tx2]
+                _th, _tw = _tile.shape[:2]
+                if _th < 48 or _tw < 48:
+                    continue
+                _ts = 1.0
+                if max(_th, _tw) < _TILE_MIN_UP:
+                    _ts = _TILE_MIN_UP / float(max(_th, _tw))
+                    _tile = cv2.resize(_tile, (int(_tw * _ts), int(_th * _ts)), interpolation=cv2.INTER_LINEAR)
+                _tile_args.append((_tile, _tx, _ty, _ts, _CONF))
 
-    # ── Full-image pass ──────────────────────────────────────────────────────
+        if _tile_args:
+            from concurrent.futures import ThreadPoolExecutor as _TPE
+            _n_tile_w = min(len(_tile_args), max(1, os.cpu_count() or 2))
+            with _TPE(max_workers=_n_tile_w) as _tp:
+                for _res in _tp.map(_run_tile_worker, _tile_args):
+                    if _res is not None:
+                        b, s, k = _res
+                        all_boxes.append(b)
+                        all_scores.append(s)
+                        all_kpts.append(k)
+
+    # ── Full-image pass    # ── Full-image pass ──────────────────────────────────────────────────────
     scale = min(1.0, max_side / float(max(h, w, 1)))
     bgr_full = bgr_image if scale >= 1.0 else cv2.resize(bgr_image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
     b_full, s_full, k_full = _run_detector_on_bgr(bgr_full, _CONF)
@@ -1235,7 +1265,9 @@ def detect_faces(image_input, enhancer="GFPGAN", enhance_level=0.5, gfpgan_upsca
         except Exception:
             LOW_RAM_MODE = False
 
+        _t_det_start = time.time()
         boxes, scores, kpts = _detect_boxes_with_downscale(bgr, max_side=int(det_max_side))
+        print(f"[TIMING] Detection: {time.time()-_t_det_start:.3f}s  found={len(boxes)} faces", flush=True)
         h, w = rgb.shape[:2]
         # Use the same device as the main app for the 3D engine
         try:
@@ -1280,6 +1312,7 @@ def detect_faces(image_input, enhancer="GFPGAN", enhance_level=0.5, gfpgan_upsca
         emb_crops = [None] * n
 
         # Phase 2a: Batch Landmarks
+        _t_ldm_start = time.time()
         if n > 0 and engine:
             crops_for_ldm = []
             kpts_for_ldm = []
@@ -1322,7 +1355,8 @@ def detect_faces(image_input, enhancer="GFPGAN", enhance_level=0.5, gfpgan_upsca
                     struct_vec_list[idx] = _extract_structural_vector(lmks)
             
             if n > 0:
-                print(f"[3D_ENGINE] Extracted landmarks for {success_3d}/{n} faces.", flush=True)
+                _t_ldm = time.time() - _t_ldm_start
+                print(f"[TIMING] 3D landmarks: {_t_ldm:.3f}s for {n} faces ({success_3d} ok) = {_t_ldm/max(n,1):.3f}s/face", flush=True)
 
         def _process_single_face_internal(idx):
             # Unpack 10 elements: (idx, x1, y1, x2, y2, ex1, ey1, d_crop, e_crop, gk)
@@ -1379,12 +1413,14 @@ def detect_faces(image_input, enhancer="GFPGAN", enhance_level=0.5, gfpgan_upsca
                         emb_crops[ridx] = rec
             else:
                 # AWS / THREADED MODE
-                with ThreadPoolExecutor(max_workers=4) as pool:
+                _aws_workers = min(n, max(2, os.cpu_count() or 2))
+                with ThreadPoolExecutor(max_workers=_aws_workers) as pool:
                     pool.map(_process_single_face_internal, range(n))
 
         crops = [c for c in crops_out if c is not None and c.size > 0]
         
         # Phase 3: Batch Embeddings
+        _t_emb_start = time.time()
         embs_out = [None] * n
         if compute_embeddings and n > 0:
             valid_ec = [ec for ec in emb_crops if ec is not None]
@@ -1397,6 +1433,8 @@ def detect_faces(image_input, enhancer="GFPGAN", enhance_level=0.5, gfpgan_upsca
                         orig_i = valid_idx[out_i]
                         embs_out[orig_i] = _normalize_vec(emb)
 
+        if compute_embeddings and n > 0:
+            print(f"[TIMING] Embedding: {time.time()-_t_emb_start:.3f}s for {n} faces", flush=True)
         df = pd.DataFrame([
             {"x1": int(b[0]), "y1": int(b[1]), "x2": int(b[2]), "y2": int(b[3]), "score": float(scores[i])}
             for i, b in enumerate(boxes)

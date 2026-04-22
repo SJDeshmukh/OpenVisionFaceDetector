@@ -61,9 +61,13 @@ def class_batch_add(valid_data: ClassBatchAddSchema):
     if not files: conn.close(); return jsonify({"error": "no images"}), 400
     created = []
     seq_base = int(time.time())
+    _t_upload_total = time.time()
     for idx, f in enumerate(files):
+        _t_img = time.time()
         raw = f.read()
+        raw_kb = len(raw) / 1024
         # Ensure image is in a browser-supported format (convert HEIC/etc to JPEG)
+        _t_decode = time.time()
         bgr = decode_image_to_bgr(raw)
         if bgr is not None:
             ok, buf = cv2.imencode('.jpg', bgr, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -74,10 +78,25 @@ def class_batch_add(valid_data: ClassBatchAddSchema):
         else:
             img_b64 = 'data:image/jpeg;base64,' + base64.b64encode(raw).decode('ascii')
             
+        _t_encode_done = time.time()
         item_id = uuid.uuid4().hex[:12]
+        _t_db = time.time()
         c.execute("INSERT INTO class_batch_items (id, batch_id, seq, image_b64, annotated_b64, faces_json, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
                   (item_id, bid, seq_base + idx, img_b64, '', '[]', 'pending'))
         created.append(item_id)
+        _decode_ms = (_t_encode_done - _t_decode) * 1000
+        _db_ms     = (time.time() - _t_db) * 1000
+        _total_ms  = (time.time() - _t_img) * 1000
+        import logging as _lg
+        _lg.getLogger(__name__).info(
+            f"[UPLOAD_TIMING] img={idx} size={raw_kb:.0f}KB "
+            f"decode={_decode_ms:.0f}ms db_write={_db_ms:.0f}ms total={_total_ms:.0f}ms"
+        )
+    _all_ms = (time.time() - _t_upload_total) * 1000
+    import logging as _lg2
+    _lg2.getLogger(__name__).info(
+        f"[UPLOAD_TIMING] {len(files)} images stored in {_all_ms:.0f}ms total"
+    )
     conn.commit(); conn.close()
     
     import threading, logging as _log
