@@ -875,7 +875,7 @@ def _detect_boxes_with_downscale(bgr_image: np.ndarray, max_side: int = 1280):
     merged_kpts   = np.vstack(all_kpts).astype(np.float32)
 
     if len(merged_boxes) > 1:
-        keep = _nms_boxes(merged_boxes, merged_scores, iou_thresh=0.40)
+        keep = _nms_boxes(merged_boxes, merged_scores, iou_thresh=0.30)
         return merged_boxes[keep], merged_scores[keep], merged_kpts[keep]
 
     return merged_boxes, merged_scores, merged_kpts
@@ -1300,7 +1300,15 @@ def detect_faces(image_input, enhancer="GFPGAN", enhance_level=0.5, gfpgan_upsca
 
             all_lmks = engine.extract_landmarks_batch(crops_for_ldm, kpts_for_ldm)
             success_3d = 0
+            # Minimum detection confidence to run 3D landmarks.
+            # Low-score faces (backs of heads, partial views) produce false-positive meshes.
+            _3D_CONF_MIN = 0.50
             for idx, lmks in enumerate(all_lmks):
+                face_score = float(scores[idx]) if idx < len(scores) else 0.0
+                if face_score < _3D_CONF_MIN:
+                    # Skip 3D landmarks for low-confidence detections
+                    landmarks_3d_list[idx] = []
+                    continue
                 if lmks is not None and len(lmks) > 0:
                     # Offset back to global image coordinates using expanded crop offsets
                     ex1_off = face_meta[idx][5]

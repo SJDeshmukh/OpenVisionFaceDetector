@@ -565,6 +565,13 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                         bx1, by1, bx2, by2 = [int(v) for v in box]
                         landmarks_3d = []
                     
+                    
+                    # ── False-Positive Gate ──
+                    # If this "face" doesn't have 3D landmarks, it's either a false positive
+                    # or a low-confidence detection (back of head, partial profile). Drop it.
+                    if landmarks_3d is None or len(landmarks_3d) == 0:
+                        continue
+                    
                     cv2.rectangle(draw, (bx1, by1), (bx2, by2), (0, 180, 255), 2)
                     
                     bx1 = max(0, bx1); by1 = max(0, by1); bx2 = min(iw, bx2); by2 = min(ih, by2)
@@ -573,14 +580,13 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                     
                     if pure_face.size > 0:
                         lmks_local = None
-                        if landmarks_3d is not None and len(landmarks_3d) > 0:
-                            try:
-                                # For thumbnail mesh and embeddings, we need crop-local landmarks
-                                lmks_local = np.array(landmarks_3d).copy()
-                                lmks_local[:, 0] -= cx1
-                                lmks_local[:, 1] -= cy1
-                            except Exception as e:
-                                print(f"[FACE_SVC] Error processing landmarks: {e}", flush=True)
+                        try:
+                            # For thumbnail mesh and embeddings, we need crop-local landmarks
+                            lmks_local = np.array(landmarks_3d).copy()
+                            lmks_local[:, 0] -= cx1
+                            lmks_local[:, 1] -= cy1
+                        except Exception as e:
+                            print(f"[FACE_SVC] Error processing landmarks: {e}", flush=True)
                         
                         # Optimization: Use pre-computed embedding from the batched detect_faces call
                         # This skips TWO redundant heavy AI model passes (Enhancement + Embedding) per face.
@@ -668,7 +674,18 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                         except Exception:
                             portrait_enh = None
 
-                        # Encode thumbnails — face_display is RealESRGAN-enhanced natural crop
+                        # ── Smooth the FACE thumbnail (this is what the UI actually shows!) ──
+                        # face_display from prepare_embedding_crop is a raw crop — needs smoothing
+                        if fast and face_display is not None and face_display.size > 0:
+                            fd_h, fd_w = face_display.shape[:2]
+                            fd_min = min(fd_h, fd_w)
+                            if fd_min < 200:
+                                fd_scale = max(2, int(np.ceil(200 / fd_min)))
+                                face_display = cv2.resize(face_display, (fd_w * fd_scale, fd_h * fd_scale), interpolation=cv2.INTER_LANCZOS4)
+                            face_display = cv2.bilateralFilter(face_display, 9, 75, 75)
+                            face_display = cv2.GaussianBlur(face_display, (3, 3), 0.5)
+
+                        # Encode thumbnails
                         ok, buf = cv2.imencode('.jpg', cv2.cvtColor(face_display, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
                         okp, bufp = cv2.imencode('.jpg', cv2.cvtColor(portrait_enh, cv2.COLOR_RGB2BGR) if portrait_enh is not None else np.zeros((1,1,3), np.uint8), [cv2.IMWRITE_JPEG_QUALITY, 85])
 
