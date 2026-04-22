@@ -32,6 +32,12 @@ cachetools
 # Database (Postgres support)
 psycopg2-binary
 
+# AI & Computer Vision (Face Enhancement)
+basicsr
+gfpgan
+realesrgan
+facexlib
+
 # AWS (S3 storage + Lambda)
 boto3
 awsgi

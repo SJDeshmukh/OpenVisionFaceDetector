@@ -1,21 +1,23 @@
 import os
 import sys
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Tuple
-
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+from typing import List, Tuple, Dict, Any
 import cv2
 try:
     import gradio as gr  # optional; not required in production
 except Exception:
     gr = None
 import numpy as np
-
+import pandas as pd
 import json
 import time
 import urllib.request
 import urllib.parse
 import base64
+import torch
+import multiprocessing
+import gc
 
 def is_bulk_attendance_allowed() -> bool:
     """Checks if ANY active vendor has bulk_image_attendance enabled."""
@@ -41,35 +43,37 @@ def is_bulk_attendance_allowed() -> bool:
                     return True
             except:
                 continue
+            return True
     except Exception as e:
-        # If DB fails or not initialized, assume False to save resources
+        # If DB fails or not initialized, check for FORCE environment variable
+        if os.environ.get("FORCE_3D_ENGINE", "0") in ("1", "true", "yes"):
+             return True
         print(f"[MFD] Feature check failed: {e}", flush=True)
         return False
     return False
 
 def _extract_structural_vector(lmks):
-    if lmks is None or len(lmks) != 68:
-        return np.array([], dtype=np.float32)
-    left_eye_center = np.mean(lmks[36:42], axis=0)
-    right_eye_center = np.mean(lmks[42:48], axis=0)
-    interocular_dist = np.linalg.norm(left_eye_center - right_eye_center)
-    if interocular_dist < 1e-5: return np.array([], dtype=np.float32)
-    
-    nose = lmks[33]
-    vec = []
-    for i in range(68):
-        if i == 33: continue 
-        d = np.linalg.norm(lmks[i] - nose) / interocular_dist
-        vec.append(d)
-        
-    v = np.array(vec, dtype=np.float32)
-    norm = np.linalg.norm(v)
-    if norm > 1e-5:
-        v = v / norm
-    return v
+    """Imported from centralized backend.utils"""
+    try:
+        from backend.utils import _extract_structural_vector as _ev
+        return _ev(lmks)
+    except Exception:
+        # Fallback to local copy if import fails (redundant but safe)
+        if lmks is None or len(lmks) != 68: return np.array([], dtype=np.float32)
+        le = np.mean(lmks[36:42], axis=0); re = np.mean(lmks[42:48], axis=0)
+        iod = np.linalg.norm(le - re)
+        if iod < 1e-5: return np.array([], dtype=np.float32)
+        n = lmks[33]; v = [np.linalg.norm(lmks[i]-n)/iod for i in range(68) if i!=33]
+        v = np.array(v, dtype=np.float32); nm = np.linalg.norm(v)
+        return v/nm if nm > 1e-7 else v
+
+def _normalize_vec(v):
+    if v is None: return np.array([], dtype=np.float32)
+    nm = np.linalg.norm(v)
+    return v / nm if nm > 1e-7 else v
 
 _mesh_engine = None
-def get_realtime_engine():
+def get_realtime_engine(device=None):
     global _mesh_engine
     try:
         from backend.utils import LOW_RAM_MODE
@@ -95,7 +99,10 @@ def get_realtime_engine():
             sys.path.append(mesh_dir)
         try:
             from standalone_live_mesh.inference import get_realtime_engine as _get
-            _mesh_engine = _get()
+            if device is not None:
+                _mesh_engine = _get(device=device)
+            else:
+                _mesh_engine = _get()
             return _mesh_engine
         except Exception as e:
             print(f"[3D_ENGINE] Error loading mesh engine: {e}", flush=True)
@@ -382,6 +389,10 @@ class RealESRGANManager:
                 # Half precision (FP16) for marked speedups on MPS/CUDA
                 use_half = (device != "cpu")
                 
+                # Enable tiling for better quality on large images/patches
+                tile_val = 400
+                tile_pad_val = 10
+                
                 self._upsampler = RealESRGANer(
                     scale=upscale,
                     model_path=model_path,
@@ -393,7 +404,7 @@ class RealESRGANManager:
                     device=device
                 )
                 self._upsampler.model_scale = upscale
-                print(f"[RealESRGAN] Loaded x{upscale} model: {model_path} on {device} (tile={tile_val}, hpf={use_half})", flush=True)
+                print(f"[RealESRGAN] Loaded x{upscale} model: {model_path} on {device} (tile={tile_val}, pad={tile_pad_val}, hpf={use_half})", flush=True)
             finally:
                 torch.load = _orig_load
             return self._upsampler
@@ -638,9 +649,10 @@ _active_detections = 0
 _active_detections_lock = threading.Lock()
 
 # Unload TTL (seconds of idle before models are released)
-_UNLOAD_TTL = 300
+# Set to 1 year (permanent persistence) as requested.
+_UNLOAD_TTL = int(os.environ.get("AI_MODEL_TTL", 31536000))
 
-# Background GC thread — checks every 60 s, only unloads when fully idle
+# Background GC thread — checks periodically
 _gc_thread_started = False
 
 def _start_model_gc_thread():
@@ -651,11 +663,9 @@ def _start_model_gc_thread():
 
     def _gc_loop():
         while True:
-            time.sleep(60)
-            with _active_detections_lock:
-                idle = (_active_detections == 0)
-            if idle:
-                _check_and_unload_models()
+            time.sleep(300) # Check less frequently
+            # Note: Model unloading is disabled to keep models 'hot' permanently once loaded.
+            pass
 
     t = threading.Thread(target=_gc_loop, daemon=True, name="mfd-model-gc")
     t.start()
@@ -771,33 +781,41 @@ def _run_detector_on_bgr(bgr: np.ndarray, conf_threshold: float = 0.35):
     if rd is not None:
         try:
             rlt = rd.detect_faces(bgr, conf_threshold=conf_threshold)
-            if rlt is not None and len(rlt) > 0:
-                return rlt[:, 0:4].astype(np.float32), rlt[:, 4].astype(np.float32)
-            return np.zeros((0, 4), dtype=np.float32), np.zeros((0,), dtype=np.float32)
-        except Exception:
+            
+            if isinstance(rlt, tuple) and len(rlt) == 2:
+                bboxes, landmarks = rlt
+                if bboxes is not None and len(bboxes) > 0:
+                    boxes = bboxes[:, 0:4].astype(np.float32)
+                    scores = bboxes[:, 4].astype(np.float32)
+                    # landmarks shape: (N, 5, 2). Flatten to (N, 10) for compatibility
+                    kpts = landmarks.reshape(len(bboxes), 10).astype(np.float32) if landmarks is not None else None
+                    return boxes, scores, kpts
+                return np.zeros((0, 4), dtype=np.float32), np.zeros((0,), dtype=np.float32), None
+            elif rlt is not None and len(rlt) > 0:
+                boxes = rlt[:, 0:4].astype(np.float32)
+                scores = rlt[:, 4].astype(np.float32)
+                # Keypoints (5 pts * 2 = 10 cols starting from index 5)
+                kpts = rlt[:, 5:15].astype(np.float32) if rlt.shape[1] >= 15 else None
+                return boxes, scores, kpts
+            return np.zeros((0, 4), dtype=np.float32), np.zeros((0,), dtype=np.float32), None
+        except Exception as e:
+            print(f"[MFD] RetinaDet error: {e}", flush=True)
             pass
     boxes, scores = get_detector().detect(bgr)
-    return boxes, scores
+    return boxes, scores, None
 
 
 def _detect_boxes_with_downscale(bgr_image: np.ndarray, max_side: int = 1280):
-    """
-    Detect faces with two complementary passes:
-    1. Tiled pass (for images > 1000px): 800px tiles with 25% overlap so small/distant
-       faces are seen at high resolution instead of being shrunk away.
-    2. Full-image pass at max_side: catches large faces that straddle tile boundaries.
-    Results from both passes are merged with NMS (iou_thresh=0.40).
-    Confidence threshold lowered to 0.35 to recover angled / partially-occluded faces.
-    """
     h, w = bgr_image.shape[:2]
     _CONF = 0.35
-    _TILE_TRIGGER = 1000   # enable tiling when any dimension > this
-    _TILE_SIZE    = 800    # each tile is at most 800×800
-    _TILE_OVERLAP = 0.25   # 25% overlap prevents faces straddling tile edges
-    _TILE_MIN_UP  = 480    # upscale tiles smaller than this so tiny faces are visible
+    _TILE_TRIGGER = 1000
+    _TILE_SIZE    = 800
+    _TILE_OVERLAP = 0.25
+    _TILE_MIN_UP  = 480
 
     all_boxes: list  = []
     all_scores: list = []
+    all_kpts: list   = []
 
     # ── Tiled pass ──────────────────────────────────────────────────────────
     if max(h, w) > _TILE_TRIGGER:
@@ -807,53 +825,81 @@ def _detect_boxes_with_downscale(bgr_image: np.ndarray, max_side: int = 1280):
                 tx2, ty2 = min(w, tx + _TILE_SIZE), min(h, ty + _TILE_SIZE)
                 tile = bgr_image[ty:ty2, tx:tx2]
                 th, tw = tile.shape[:2]
-                if th < 48 or tw < 48:
-                    continue
+                if th < 48 or tw < 48: continue
                 ts = 1.0
                 if max(th, tw) < _TILE_MIN_UP:
                     ts = _TILE_MIN_UP / float(max(th, tw))
                     tile = cv2.resize(tile, (int(tw * ts), int(th * ts)), interpolation=cv2.INTER_LINEAR)
-                b, s = _run_detector_on_bgr(tile, _CONF)
+                
+                b, s, k = _run_detector_on_bgr(tile, _CONF)
                 if len(b) > 0:
-                    b = b.astype(np.float32) / ts      # undo tile upscale
-                    b[:, [0, 2]] += tx                  # offset to full-image coords
+                    b = b.astype(np.float32) / ts
+                    b[:, [0, 2]] += tx
                     b[:, [1, 3]] += ty
                     all_boxes.append(b)
                     all_scores.append(s)
+                    if k is not None:
+                        k = k.astype(np.float32) / ts
+                        # Correct: k is (N, 5, 2), so k[..., 0] is X, k[..., 1] is Y
+                        if k.ndim == 3:
+                            k[..., 0] += tx
+                            k[..., 1] += ty
+                        else:
+                            k[:, 0::2] += tx
+                            k[:, 1::2] += ty
+                        all_kpts.append(k)
+                    else:
+                        all_kpts.append(np.zeros((len(b), 10), dtype=np.float32))
 
     # ── Full-image pass ──────────────────────────────────────────────────────
     scale = min(1.0, max_side / float(max(h, w, 1)))
-    if scale < 1.0:
-        bgr_full = cv2.resize(bgr_image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
-    else:
-        bgr_full = bgr_image
-    b_full, s_full = _run_detector_on_bgr(bgr_full, _CONF)
+    bgr_full = bgr_image if scale >= 1.0 else cv2.resize(bgr_image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+    b_full, s_full, k_full = _run_detector_on_bgr(bgr_full, _CONF)
     if len(b_full) > 0:
         if scale < 1.0:
             b_full = (b_full.astype(np.float32) / scale)
+            if k_full is not None:
+                k_full = (k_full.astype(np.float32) / scale)
         all_boxes.append(b_full)
         all_scores.append(s_full)
+        if k_full is not None:
+            all_kpts.append(k_full)
+        else:
+            all_kpts.append(np.zeros((len(b_full), 10), dtype=np.float32))
 
     if not all_boxes:
-        return np.zeros((0, 4), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+        return np.zeros((0, 4), dtype=np.float32), np.zeros((0,), dtype=np.float32), None
 
     merged_boxes  = np.vstack(all_boxes).astype(np.float32)
     merged_scores = np.concatenate(all_scores).astype(np.float32)
+    merged_kpts   = np.vstack(all_kpts).astype(np.float32)
 
     if len(merged_boxes) > 1:
         keep = _nms_boxes(merged_boxes, merged_scores, iou_thresh=0.40)
-        return merged_boxes[keep], merged_scores[keep]
+        return merged_boxes[keep], merged_scores[keep], merged_kpts[keep]
 
-    return merged_boxes, merged_scores
+    return merged_boxes, merged_scores, merged_kpts
 
 def _compute_portrait_box(x1, y1, x2, y2, w, h, scale: float = 3.0, margin: float = 0.5):
     face_w = max(1, x2 - x1)
     face_h = max(1, y2 - y1)
     cx = (x1 + x2) // 2
+    
+    # Calculate target height based on scale
+    target_h = int(face_h * scale)
+    # Calculate target width to maintain a reasonable aspect ratio (e.g., 2:3 or 1:1.5)
+    target_w = int(target_h * 0.7) # Standard portrait ratio
+    
     top = max(0, int(y1 - margin * face_h))
-    bottom = int(y1 + scale * face_h)
-    left = max(0, int(cx - (0.5 + margin) * face_w))
-    right = int(cx + (0.5 + margin) * face_w)
+    bottom = min(h, top + target_h)
+    
+    left = max(0, cx - target_w // 2)
+    right = min(w, left + target_w)
+    
+    # Re-center if we hit the right edge
+    if right == w:
+        left = max(0, w - target_w)
+        
     x1n, y1n, x2n, y2n = _clip_box(left, top, right, bottom, w, h)
     return x1n, y1n, x2n, y2n
 
@@ -967,52 +1013,35 @@ _ARCFACE_TEMPLATE = np.array([
     [70.7299, 92.2041],  # right mouth corner
 ], dtype=np.float32)
 
-def _align_to_arcface_112(crop_rgb: np.ndarray, lmks_68) -> np.ndarray:
-    """Affine-warp a face crop to the ArcFace 112×112 canonical template.
-
-    Uses 5 key points derived from 68-point 3DDFA landmarks (local crop coords).
-    Falls back to plain resize if alignment fails.
-    """
+def _align_to_arcface_112(crop_rgb, lmks_68):
+    """Aligns face to ArcFace standard 112x112 using 5-point template."""
     if crop_rgb is None or crop_rgb.size == 0:
         return crop_rgb
+    if lmks_68 is None or len(lmks_68) != 68:
+        return cv2.resize(crop_rgb, (112, 112), interpolation=cv2.INTER_LANCZOS4)
     try:
-        pts = np.asarray(lmks_68, dtype=np.float32)
-        if pts.ndim != 2 or pts.shape[0] < 68:
-            raise ValueError("need 68-pt landmarks")
-        xy = pts[:, :2]  # drop z
+        xy = np.array(lmks_68)
+        # Standard ArcFace 5-point mapping
         src = np.array([
-            xy[36:42].mean(axis=0),   # left eye
-            xy[42:48].mean(axis=0),   # right eye
-            xy[30],                   # nose tip
+            np.mean(xy[36:42], axis=0), # left eye
+            np.mean(xy[42:48], axis=0), # right eye
+            xy[33],                   # nose
             xy[48],                   # left mouth corner
             xy[54],                   # right mouth corner
         ], dtype=np.float32)
         M, _ = cv2.estimateAffinePartial2D(src, _ARCFACE_TEMPLATE, method=cv2.LMEDS)
         if M is None:
-            raise ValueError("affine estimation failed")
-        return cv2.warpAffine(crop_rgb, M, (112, 112),
-                              flags=cv2.INTER_LANCZOS4,
-                              borderMode=cv2.BORDER_REFLECT)
+            return cv2.resize(crop_rgb, (112, 112), interpolation=cv2.INTER_LANCZOS4)
+        return cv2.warpAffine(crop_rgb, M, (112, 112), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REFLECT)
     except Exception:
         return cv2.resize(crop_rgb, (112, 112), interpolation=cv2.INTER_LANCZOS4)
 
-
 def prepare_embedding_crop(pure_face: np.ndarray, lmks_local=None, skip_enhancement: bool = False):
-    """Full consistent pipeline for both registration and attendance:
-      1. Real-ESRGAN ×2 if face is small  → sharper pixels, more for GFPGAN to work with
-      2. Scale landmarks to match upscaled image
-      3. Align to 112×112 ArcFace template  → remove pose variation
-      4. GFPGAN on aligned 112×112           → consistent identity normalisation
-
-    Returns (emb_crop_112, display_crop) where:
-      emb_crop_112  — 112×112 aligned+restored crop ready for ArcFace
-      display_crop  — Real-ESRGAN output before alignment (natural look for UI)
     """
-def prepare_embedding_crop(pure_face: np.ndarray, lmks_local=None, skip_enhancement: bool = False):
-    """Refined for CPU efficiency:
-      1. Fast Lanczos4 + Sharpening instead of heavy RealESRGAN
-      2. AI Upscale ONLY for microscopic faces (< 48px)
-      3. AI Restoration (GFPGAN) ONLY for ultra-tiny faces (< 32px) in Fast mode
+    Refined for CPU efficiency:
+    1. Fast Lanczos4 + Sharpening instead of heavy RealESRGAN
+    2. AI Upscale ONLY for microscopic faces (< 48px)
+    3. AI Restoration (GFPGAN) ONLY for ultra-tiny faces (< 32px) in Fast mode
     """
     if pure_face is None or pure_face.size == 0:
         return pure_face, pure_face
@@ -1021,24 +1050,20 @@ def prepare_embedding_crop(pure_face: np.ndarray, lmks_local=None, skip_enhancem
     min_dim = min(fh, fw)
     
     # ── Step 1: Smart Resize & Sharpen (Fast CV path) ──────────────────────
-    # Instead of heavy RealESRGAN, we use high-quality Lanczos4 + Sharpening.
-    # This is ~100x faster than AI on CPU.
     target_scale = 1
     if min_dim < 64:
         target_scale = 2
     
     if target_scale > 1:
-        # If microscopic, use AI ONLY if skip_enhancement is False (High Quality)
-        # Otherwise use Lanczos (Fast)
         if not skip_enhancement and min_dim < 48:
             try:
+                # We use the lock here as this might be called from threads or processes
                 with _realesrgan_lock:
                     enhanced = get_realesrgan_manager().upscale(pure_face, scale=2)
             except Exception:
                 enhanced = cv2.resize(pure_face, (fw*2, fh*2), interpolation=cv2.INTER_LANCZOS4)
         else:
             enhanced = cv2.resize(pure_face, (fw*target_scale, fh*target_scale), interpolation=cv2.INTER_LANCZOS4)
-            # Fast Sharpening
             enhanced = _clahe_luminance(enhanced, clip_limit=1.5)
             enhanced = _unsharp_mask(enhanced, strength=0.6, kernel=3)
     else:
@@ -1063,10 +1088,12 @@ def prepare_embedding_crop(pure_face: np.ndarray, lmks_local=None, skip_enhancem
     # ── Step 3: Align to ArcFace 112×112 ─────────────────────────────────────
     aligned = _align_to_arcface_112(enhanced, lmks_scaled)
 
-    # ── Step 4: Selective Normalization (GFPGAN) ──────────────────────────────
-    # GFPGAN only if not skipped OR if the face is truly microscopic (< 32px)
-    is_microscopic = min_dim < 32
-    should_run_gfp = (not skip_enhancement) or (is_microscopic)
+    # GFPGAN gating — only run if explicitly requested (skip_enhancement=False).
+    # ArcFace is robust on raw aligned crops; GFPGAN adds latency without accuracy gain.
+    import torch
+    has_gpu = torch.cuda.is_available() or (hasattr(torch.backends, "mps") and torch.backends.mps.is_available())
+    
+    should_run_gfp = has_gpu and (not skip_enhancement)
     
     if not should_run_gfp:
         emb_crop = aligned
@@ -1114,9 +1141,77 @@ def _extract_3d_for_face(engine, rgb, bx1, by1, bx2, by2, img_w, img_h):
 
 
 
-def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0.5, gfpgan_upscale: int = 2, codeformer_w: float = 0.5, compute_embeddings: bool = False, crop_mode: str = "Face", portrait_scale: float = 3.0, preclean_whole: bool = False, preclean_level: float = 0.4, det_max_side: int = 1280):
-    import pandas as pd
-    import gc
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+import multiprocessing
+import torch
+
+# Global worker state for ProcessPool
+_worker_gfpgan = None
+_worker_realesrgan = None
+_worker_engine = None
+
+def _init_worker():
+    """Initializer for ProcessPool workers to pre-load non-heavy resources if needed."""
+    # We load heavy models lazily in the worker to save memory
+    pass
+
+def _process_face_worker(task_data):
+    """
+    Stand-alone worker function for ProcessPool.
+    Handles enhancement of a single face crop.
+    """
+    (idx, display_crop, emb_crop, enhancer, enhance_level, gfpgan_upscale, codeformer_w, lmks_local, gk) = task_data
+    
+    if display_crop is None or display_crop.size == 0:
+        return idx, display_crop, None
+        
+    out_crop = display_crop
+    temp = display_crop
+    
+    # 1. RealESRGAN (if needed)
+    if enhancer != "None":
+        short_side = min(display_crop.shape[:2])
+        has_gpu = torch.cuda.is_available() or (hasattr(torch.backends, "mps") and torch.backends.mps.is_available())
+        
+        # Lowered threshold to 512 to ensure even medium faces get density boost
+        if short_side < 512 and has_gpu:
+            calc_scale = min(2, max(int(gfpgan_upscale), max(2, int(np.ceil(512 / short_side)))))
+            temp = get_realesrgan_manager().upscale(display_crop, scale=calc_scale)
+        elif gfpgan_upscale > 1 and has_gpu:
+            temp = get_realesrgan_manager().upscale(display_crop, scale=int(gfpgan_upscale))
+
+    # 2. Enhancer
+    if enhancer == "OpenCV":
+        out_crop = enhance_face_crop(temp, level=enhance_level)
+    elif enhancer in ("GFPGAN", "GFPGAN+CodeFormer"):
+        # Fidelity reverted to 0.2 (Requested) to avoid 'painted' smoothing artifacts
+        out_crop = get_gfpgan_manager().enhance_crop(temp, upscale=1, fidelity=0.2)
+        if enhancer == "GFPGAN+CodeFormer":
+            out_crop = get_codeformer_manager().refine_crop(out_crop, fidelity=codeformer_w, upscale=1)
+        
+        # Post-Enhancement Sharpening (Softer USM)
+        try:
+            if out_crop is not None and out_crop.size > 0:
+                # Use a milder weight (1.2 instead of 1.5) to avoid noise
+                blurred = cv2.GaussianBlur(out_crop, (0, 0), 2)
+                out_crop = cv2.addWeighted(out_crop, 1.2, blurred, -0.2, 0)
+        except Exception:
+            pass
+    else:
+        # Enhancer is "None" or unsupported
+        # Special case: If user requested upscaling (gfpgan_upscale > 1), we still do tiling upscaling
+        # even if GFPGAN restoration is disabled. This is the "Tiling-only" mode.
+        out_crop = temp
+
+    # 3. Preparation for ArcFace
+    skip_heavy = (enhancer == "None" or enhancer == "OpenCV")
+    ec, _ = prepare_embedding_crop(emb_crop, lmks_local, skip_enhancement=skip_heavy)
+    
+    return idx, out_crop, ec
+
+def detect_faces(image_input, enhancer="GFPGAN", enhance_level=0.5, gfpgan_upscale=2, codeformer_w=0.5, 
+                 compute_embeddings=False, crop_mode="Face", portrait_scale=3.0, 
+                 preclean_whole=False, preclean_level=0.4, det_max_side=1280):
 
     print(f"[MFD] detect_faces called: enhancer={enhancer!r} compute_embeddings={compute_embeddings} det_max_side={det_max_side}", flush=True)
 
@@ -1135,28 +1230,33 @@ def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0
 
         try:
             from backend.utils import LOW_RAM_MODE
-            # Cap at 1024 on low-RAM instances (was 640, but tiling needs room to work).
             if LOW_RAM_MODE and det_max_side > 1024:
                 det_max_side = 1024
         except Exception:
-            pass
+            LOW_RAM_MODE = False
 
-        boxes, scores = _detect_boxes_with_downscale(bgr, max_side=int(det_max_side))
-
+        boxes, scores, kpts = _detect_boxes_with_downscale(bgr, max_side=int(det_max_side))
         h, w = rgb.shape[:2]
-        engine = get_realtime_engine()
+        # Use the same device as the main app for the 3D engine
+        try:
+            import torch
+            _dev = "mps" if torch.backends.mps.is_available() else "cpu"
+        except Exception:
+            _dev = "cpu"
+        engine = get_realtime_engine(device=_dev)
         n = len(boxes)
 
-        # ── Phase 1: Build per-face crops + annots (cheap, serial) ─────────
-        anns: List[Tuple[List[int], str]] = []
-        face_meta = []   # (i, bx1,by1,bx2,by2, display_crop, emb_crop)
-        landmarks_3d_list = [[] for _ in range(n)]
-        struct_vec_list   = [[] for _ in range(n)]
-        embeds_rows: List[dict] = []
-
+        anns = []
+        face_meta = []  # (idx, bx1, by1, bx2, by2, display_crop, emb_crop, global_kpts)
         for i in range(n):
             bx1, by1, bx2, by2 = [int(v) for v in boxes[i].tolist()]
             x1, y1, x2, y2 = _clip_box(bx1, by1, bx2, by2, w, h)
+            
+            # Keypoints for alignment (5-point)
+            gk = kpts[i] if (kpts is not None and i < len(kpts)) else None
+            if gk is not None and np.all(gk == 0):
+                gk = None
+            
             s = float(scores[i])
             if crop_mode == "Portrait":
                 px1, py1, px2, py2 = _compute_portrait_box(x1, y1, x2, y2, w, h, scale=float(portrait_scale), margin=0.5)
@@ -1165,108 +1265,178 @@ def detect_faces(image_input, enhancer: str = "GFPGAN", enhance_level: float = 0
             else:
                 ann_box = [x1, y1, x2, y2]
                 display_crop = rgb_for_det[y1:y2, x1:x2]
-            anns.append((ann_box, f"{s:.2f}"))
-            # Tight 1.2× crop for ArcFace (consistent across all resolutions)
-            f1x1, f1y1, f1x2, f1y2 = _compute_centered_box(bx1, by1, bx2, by2, w, h, scale=1.2)
-            emb_crop = rgb[f1y1:f1y2, f1x1:f1x2]
-            face_meta.append((i, bx1, by1, bx2, by2, display_crop, emb_crop))
+            
+            # Detection boxes (x1,y1,x2,y2) and Expanded boxes (ex1,ey1,ex2,ey2)
+            ex1, ey1, ex2, ey2 = _compute_centered_box(bx1, by1, bx2, by2, w, h, scale=1.2)
+            d_crop = bgr[y1:y2, x1:x2]
+            e_crop = bgr[ey1:ey2, ex1:ex2]
+            
+            face_meta.append((i, x1, y1, x2, y2, ex1, ey1, d_crop, e_crop, gk))
+            anns.append({"box": ann_box, "score": s, "landmarks_5": gk.tolist() if gk is not None else None})
 
-        # ── Phase 2: Parallel Face Processing (3D + Enhancement + Embed Preparation) ──
         crops_out = [None] * n
         landmarks_3d_list = [[] for _ in range(n)]
         struct_vec_list = [[] for _ in range(n)]
         emb_crops = [None] * n
-        lmks_local_emb_map = {}
 
-        def _process_single_face(idx):
-            _, bx1, by1, bx2, by2, display_crop, emb_crop = face_meta[idx]
+        # Phase 2a: Batch Landmarks
+        if n > 0 and engine:
+            crops_for_ldm = []
+            kpts_for_ldm = []
+            for m in face_meta:
+                # ex1, ey1 are the offsets for the expanded crop e_crop
+                idx, x1, y1, x2, y2, ex1, ey1, d_crop, e_crop, gk = m
+                # Convert global keypoints to crop-local for the landmark engine
+                if gk is not None:
+                    # Fix: reshape flattened keypoints [x1,y1,x2,y2,x3,y3,x4,y4,x5,y5] to (5, 2)
+                    kpts_arr = np.array(gk, dtype=np.float32).reshape(5, 2)
+                    kpts_rescaled = kpts_arr.copy()
+                    kpts_rescaled[:, 0] -= ex1
+                    kpts_rescaled[:, 1] -= ey1
+                    kpts_for_ldm.append(kpts_rescaled)
+                else:
+                    kpts_for_ldm.append(None)
+                crops_for_ldm.append(e_crop)
+
+            all_lmks = engine.extract_landmarks_batch(crops_for_ldm, kpts_for_ldm)
+            success_3d = 0
+            for idx, lmks in enumerate(all_lmks):
+                if lmks is not None and len(lmks) > 0:
+                    # Offset back to global image coordinates using expanded crop offsets
+                    ex1_off = face_meta[idx][5]
+                    ey1_off = face_meta[idx][6]
+                    lmks[:, 0] += ex1_off
+                    lmks[:, 1] += ey1_off
+                    success_3d += 1
+                
+                landmarks_3d_list[idx] = lmks
+                if lmks is not None and len(lmks) > 0:
+                    struct_vec_list[idx] = _extract_structural_vector(lmks)
             
-            # 1. 3D Landmarks (CPU-only, no lock)
-            lg, sv, lmks_local = _extract_3d_for_face(engine, rgb, bx1, by1, bx2, by2, w, h)
-            landmarks_3d_list[idx] = lg
-            struct_vec_list[idx] = sv
+            if n > 0:
+                print(f"[3D_ENGINE] Extracted landmarks for {success_3d}/{n} faces.", flush=True)
+
+        def _process_single_face_internal(idx):
+            # Unpack 10 elements: (idx, x1, y1, x2, y2, ex1, ey1, d_crop, e_crop, gk)
+            _, _, _, _, _, _, _, d_crop, e_crop, gk = face_meta[idx]
+            lmks = landmarks_3d_list[idx]
             
-            # 2. Display Enhancement
-            out_crop = display_crop
-            if display_crop.size > 0:
-                temp = display_crop
-                if enhancer != "None":
-                    short_side = min(display_crop.shape[:2])
-                    if short_side < 256:
-                        calc_scale = min(2, max(int(gfpgan_upscale), max(2, int(np.ceil(256 / short_side)))))
-                        with _realesrgan_lock:
-                            temp = get_realesrgan_manager().upscale(display_crop, scale=calc_scale)
-                    elif gfpgan_upscale > 1:
-                        with _realesrgan_lock:
-                            temp = get_realesrgan_manager().upscale(display_crop, scale=int(gfpgan_upscale))
+            # Enhancement
+            out_c = d_crop
+            if d_crop.size > 0 and enhancer != "None":
+                temp = d_crop
+                has_gpu = torch.cuda.is_available() or (hasattr(torch.backends, "mps") and torch.backends.mps.is_available())
+                short_s = min(d_crop.shape[:2])
+                
+                if short_s < 256 and has_gpu:
+                    with _realesrgan_lock:
+                        temp = get_realesrgan_manager().upscale(d_crop, scale=2)
                 
                 if enhancer == "OpenCV":
-                    out_crop = enhance_face_crop(temp, level=enhance_level)
+                    out_c = enhance_face_crop(temp, level=enhance_level)
                 elif enhancer in ("GFPGAN", "GFPGAN+CodeFormer"):
                     with _gfpgan_lock:
-                        out_crop = get_gfpgan_manager().enhance_crop(temp, upscale=1, whole=(crop_mode == "Portrait"), fidelity=0.4)
+                        # Increased fidelity for smoother, more natural faces
+                        out_c = get_gfpgan_manager().enhance_crop(temp, upscale=1, whole=(crop_mode == "Portrait"), fidelity=0.55)
                     if enhancer == "GFPGAN+CodeFormer":
-                        out_crop = get_codeformer_manager().refine_crop(out_crop, fidelity=codeformer_w, upscale=1)
+                        out_c = get_codeformer_manager().refine_crop(out_c, fidelity=codeformer_w, upscale=1)
                 else:
-                    out_crop = temp
-            crops_out[idx] = out_crop
+                    out_c = temp
+            crops_out[idx] = out_c
 
-            # 3. Preparation for ArcFace (Alignment + Enhancement)
             if compute_embeddings:
-                # Honor the 'None' enhancer to skip heavy models for attendance speed
-                skip_heavy = (enhancer == "None" or enhancer == "OpenCV")
-                ec, _ = prepare_embedding_crop(emb_crop, lmks_local, skip_enhancement=skip_heavy)
+                skip_h = (enhancer == "None" or enhancer == "OpenCV")
+                ec, _ = prepare_embedding_crop(e_crop, lmks, skip_enhancement=skip_h)
                 emb_crops[idx] = ec
 
+        # Phase 2b: Execution (Parallel)
         if n > 0:
-            # CPU Optimized Concurrency: EC2 t3.medium has 2 vCPUs. 
-            # High workers (>4) crash on CPU during heavy AI ops.
-            from utils import LOW_RAM_MODE
-            max_cpu_workers = 2 if LOW_RAM_MODE else 4
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=min(n, max_cpu_workers)) as pool:
-                list(pool.map(_process_single_face, range(n)))
+            has_gpu = torch.cuda.is_available() or (hasattr(torch.backends, "mps") and torch.backends.mps.is_available())
+            from backend.utils import LOW_RAM_MODE
+            
+            if has_gpu and not LOW_RAM_MODE:
+                # LOCAL MAC PERFORMANCE MODE
+                task_list = []
+                for i in range(n):
+                    # Unpack 10 elements: (idx, x1, y1, x2, y2, ex1, ey1, d_crop, e_crop, gk)
+                    _, _, _, _, _, _, _, d_crop, e_crop, gk = face_meta[i]
+                    # Ensure we pass the 3D landmarks for mesh drawing if needed (though drawing is typically done in backend)
+                    task_list.append((i, d_crop, e_crop, enhancer, enhance_level, gfpgan_upscale, codeformer_w, landmarks_3d_list[i], gk))
+                
+                max_procs = min(n, 4)
+                with ProcessPoolExecutor(max_workers=max_procs, initializer=_init_worker) as ex:
+                    res = list(ex.map(_process_face_worker, task_list))
+                    for ridx, rout, rec in res:
+                        crops_out[ridx] = rout
+                        emb_crops[ridx] = rec
+            else:
+                # AWS / THREADED MODE
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    pool.map(_process_single_face_internal, range(n))
 
         crops = [c for c in crops_out if c is not None and c.size > 0]
-        final_embs = [None] * n
-
-        # ── Phase 3: Batch ArcFace — ONE forward pass for all N faces ────────
+        
+        # Phase 3: Batch Embeddings
+        embs_out = [None] * n
         if compute_embeddings and n > 0:
-            valid_emb_crops = [ec for ec in emb_crops if ec is not None]
+            valid_ec = [ec for ec in emb_crops if ec is not None]
             valid_idx = [i for i, ec in enumerate(emb_crops) if ec is not None]
-            
-            if valid_emb_crops:
+            if valid_ec:
                 with _embedder_lock:
-                    all_embs = get_embedder().embed_batch(valid_emb_crops)
-
+                    all_embs = get_embedder().embed_batch(valid_ec)
                 for out_i, emb in enumerate(all_embs):
-                    orig_i = valid_idx[out_i]
-                    if emb is not None and emb.size > 0:
-                        # Normalize here to save time in caller
-                        final_embs[orig_i] = emb / (np.linalg.norm(emb) + 1e-6)
+                    if emb is not None:
+                        orig_i = valid_idx[out_i]
+                        embs_out[orig_i] = _normalize_vec(emb)
 
         df = pd.DataFrame([
             {"x1": int(b[0]), "y1": int(b[1]), "x2": int(b[2]), "y2": int(b[3]), "score": float(scores[i])}
             for i, b in enumerate(boxes)
         ])
-        df_emb = pd.DataFrame(embeds_rows)
 
         if len(landmarks_3d_list) == len(df):
-            df['landmarks_3d'] = landmarks_3d_list
+            # Convert to lists/native types for JSON serializability
+            final_ldms = []
+            for l in landmarks_3d_list:
+                if l is not None and hasattr(l, 'tolist'):
+                    final_ldms.append(l.tolist())
+                else:
+                    final_ldms.append(l if l is not None else [])
+            df['landmarks_3d'] = final_ldms
             df['struct_vec'] = struct_vec_list
 
         annotated = (rgb, anns)
-
         gc.collect()
+        
+        # Return embs_out to avoid redundant embedder calls in face_service.py
+        return annotated, crops, df, pd.Series(embs_out)
 
     finally:
         with _active_detections_lock:
             _active_detections -= 1
-    
-    return annotated, crops, df, df_emb
 
-# Start GC thread as soon as this module is imported
-_start_model_gc_thread()
+def init_all_models():
+    """Explicitly pre-load all AI models for zero-latency startup."""
+    print("[PRELOAD] Initializing comprehensive AI suite...", flush=True)
+    try:
+        get_detector()
+        get_retina_det()
+        get_embedder()._load() # Load weights
+        get_gfpgan_manager().load()
+        get_realesrgan_manager().load()
+        get_realtime_engine()
+        print("[PRELOAD] All AI models (Detection, Enhancement, 3D, Embedding) are ready.", flush=True)
+    except Exception as e:
+        print(f"[PRELOAD] Error during pre-loading: {e}", flush=True)
+
+# Start GC thread and pre-load models as soon as this module is imported, but ONLY in the main process
+# and ONLY if PRELOAD_AI_MODELS is set to '1' or 'true'.
+if __name__ == "multiple_face_detection.app" or __name__ == "__main__":
+    if multiprocessing.current_process().name == "MainProcess":
+        preload_flag = str(os.environ.get("PRELOAD_AI_MODELS", "0")).lower() in ("1", "true", "yes")
+        if preload_flag:
+            _start_model_gc_thread()
+            init_all_models()
 
 def detect_faces_ui6(image_input, enhancer, enhance_level, gfpgan_upscale, codeformer_w, compute_embeddings):
     return detect_faces(
@@ -1338,8 +1508,9 @@ if __name__ == "__main__" and os.getenv("ENABLE_GRADIO_UI", "0").strip().lower()
                 rows.append([cid, tstr, int(it.get("count", 0)), names])
                 choices.append(cid)
                 labels.append(f"{tstr} ({cid[:6]})")
+            import pandas as pd
             df = pd.DataFrame(rows, columns=["id", "time", "count", "names"])
-            return df, gr.Dropdown(choices=choices, value=(choices[0] if choices else None), label="Chunk ID"), gr.Dropdown.update(choices=choices)
+            return df, gr.Dropdown(choices=choices, value=(choices[0] if choices else None), label="Chunk ID"), gr.Dropdown(choices=choices)
 
         def load_chunk(cid: str):
             if not cid:
@@ -1382,8 +1553,9 @@ if __name__ == "__main__" and os.getenv("ENABLE_GRADIO_UI", "0").strip().lower()
                         names = ", ".join(sorted(set(it.get("names", []))))
                         filt.append([cid, tstr, int(it.get("count", 0)), names])
                         choices.append(cid)
+                import pandas as pd
                 df = pd.DataFrame(filt, columns=["id", "time", "count", "names"])
-                return df, gr.Dropdown.update(choices=choices, value=(choices[0] if choices else None))
+                return df, gr.Dropdown(choices=choices, value=(choices[0] if choices else None))
 
             def load_user_chunk(username: str, cid: str):
                 if not cid:

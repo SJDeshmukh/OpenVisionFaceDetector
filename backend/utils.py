@@ -88,11 +88,12 @@ import sqlite3
 import numpy as np
 import io
 try:
-    from PIL import Image
+    from PIL import Image, ImageOps
     from pillow_heif import register_heif_opener
     register_heif_opener()
 except ImportError:
     Image = None
+    ImageOps = None
 
 import cv2
 
@@ -106,6 +107,7 @@ def decode_image_to_rgb(body: bytes) -> np.ndarray | None:
     if Image:
         try:
             with Image.open(io.BytesIO(body)) as img:
+                img = ImageOps.exif_transpose(img)
                 if img.mode != "RGB":
                     img = img.convert("RGB")
                 return np.array(img)
@@ -739,3 +741,33 @@ def vendor_has_feature(vendor_id, feature_name):
         return False
     except Exception:
         return False
+
+def _extract_structural_vector(lmks):
+    """
+    Extracts a pose-invariant geometric ratio vector from 68-point landmarks.
+    Source of truth for all face recognition components.
+    """
+    if lmks is None or len(lmks) != 68:
+        return np.array([], dtype=np.float32)
+    
+    # Anchor points for normalization
+    left_eye_center = np.mean(lmks[36:42], axis=0)
+    right_eye_center = np.mean(lmks[42:48], axis=0)
+    interocular_dist = float(np.linalg.norm(left_eye_center - right_eye_center))
+    if interocular_dist < 1e-5: 
+        return np.array([], dtype=np.float32)
+    
+    nose = lmks[33]
+    vec = []
+    # 67 dimensions: distances from nose tip to every other point, normalized by IOD
+    for i in range(68):
+        if i == 33: continue 
+        dist = float(np.linalg.norm(lmks[i] - nose)) / interocular_dist
+        vec.append(dist)
+        
+    v = np.array(vec, dtype=np.float32)
+    # Final unit normalization for cosine similarity compatibility
+    norm = float(np.linalg.norm(v))
+    if norm > 1e-7:
+        v = v / norm
+    return v

@@ -21,7 +21,7 @@ class RealTimeEngine:
         class Args:
             def __init__(self):
                 self.device = device
-                self.backbone = "mbnetv3"
+                self.backbone = "resnet50"
                 self.useTex = False
                 self.extractTex = False
                 self.ldm68 = True
@@ -113,7 +113,145 @@ class RealTimeEngine:
         
         return out_frame
 
+    def extract_landmarks_for_crop(self, face_rgb: np.ndarray) -> list:
+        """
+        Extracts 3D landmarks for a single face crop without re-detecting.
+        Used for maximum speed when the face location is already known.
+        """
+        if face_rgb is None or face_rgb.size == 0:
+            return []
+            
+        try:
+            from util.preprocess import align_img
+            img_pil = Image.fromarray(face_rgb)
+            H, W = face_rgb.shape[:2]
+            
+            # Since it's a crop of the face, we assume the face is centered.
+            # We use dummy 5-point landmarks for alignment (corners + center)
+            # as a fallback if MTCNN is skipped.
+            # But better: just use a standard alignment for the crop.
+            landmarks = np.array([
+                [W*0.3, H*0.35], [W*0.7, H*0.35], # eyes
+                [W*0.5, H*0.55], # nose
+                [W*0.35, H*0.75], [W*0.65, H*0.75] # mouth
+            ]).astype(np.float32)
+            
+            # Match 3DDFA-V3 Coordinate System (Y is inverted internally)
+            landmarks_inv = landmarks.copy()
+            landmarks_inv[:, -1] = H - 1 - landmarks_inv[:, -1]
+            
+            trans_params, im, _, _ = align_img(img_pil, landmarks_inv, self.lm3d_std)
+            import torch
+            im_tensor = torch.tensor(np.array(im)/255., dtype=torch.float32).permute(2, 0, 1).unsqueeze(0)
+            
+            self.recon_model.input_img = im_tensor.to(self.args.device)
+            results = self.recon_model.forward()
+            
+            if "ldm68" in results:
+                lmks = results["ldm68"][0]
+                lmks_to_map = lmks.copy()
+                lmks_to_map[:, 1] = 224 - 1 - lmks_to_map[:, 1]
+                tp = np.array(trans_params, dtype=np.float32)
+                lmks_mapped = back_resize_ldms(lmks_to_map.astype(np.float32), tp)
+                return [lmks_mapped]
+        except Exception as e:
+            print(f"[inference] extract_landmarks_for_crop error: {e}")
+            
+        return []
+
+    def extract_landmarks_batch(self, face_crops: list, face_keypoints: list = None) -> list:
+        """
+        Massively fast batch processing of 3D landmarks for N faces.
+        Returns a list of 68-point landmark arrays.
+        """
+        if not face_crops:
+            return []
+            
+        from util.preprocess import align_img
+        import torch
+        
+        tensors = []
+        metadata = [] # stores (trans_params, crop_index) for each face to map back
+        
+        for i, crop in enumerate(face_crops):
+            if crop is None or crop.size == 0:
+                continue
+            
+            try:
+                H, W = crop.shape[:2]
+                # Fix: face_crops are BGR from detect_faces, but PIL needs RGB
+                img_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+                img_pil = Image.fromarray(img_rgb)
+                
+                # Use detector keypoints for high-precision alignment if available
+                if face_keypoints is not None and i < len(face_keypoints) and face_keypoints[i] is not None:
+                    # face_keypoints[i] should be (5, 2) crop-local coords
+                    landmarks = face_keypoints[i].astype(np.float32)
+                else:
+                    # Fallback to hardcoded ratios if no keypoints provided
+                    landmarks = np.array([
+                        [W*0.3, H*0.35], [W*0.7, H*0.35],
+                        [W*0.5, H*0.55],
+                        [W*0.35, H*0.75], [W*0.65, H*0.75]
+                    ]).astype(np.float32)
+                
+                landmarks_inv = landmarks.copy()
+                landmarks_inv[:, -1] = H - 1 - landmarks_inv[:, -1]
+                
+                # Use align_img which correctly computes trans_params as [w0, h0, s, tx, ty]
+                # This fixes two bugs:
+                # 1. RESCALE_FACTOR was 1000/224≈4.46 instead of 102.0
+                # 2. trans_params was (t, s) instead of [w0, h0, s, tx, ty]
+                trans_params, im, _, _ = align_img(img_pil, landmarks_inv, self.lm3d_std)
+                
+                # Sanity check: scale s is trans_params[2]
+                s = float(trans_params[2])  
+                if s > 50.0 or s < 0.01:
+                    print(f"[inference] Warning: Crazy scale s={s} detected. Skipping face {i}.", flush=True)
+                    continue
+                    
+                t = torch.tensor(np.array(im)/255., dtype=torch.float32).permute(2, 0, 1)
+                tensors.append(t)
+                metadata.append((trans_params, i))
+            except Exception:
+                import traceback
+                print(f"[inference] Preprocessing error:\n{traceback.format_exc()}", flush=True)
+                continue
+                
+        if not tensors:
+            return [[] for _ in range(len(face_crops))]
+            
+        # Run Batch Forward Pass
+        batch_tensor = torch.stack(tensors).to(self.args.device)
+        self.recon_model.input_img = batch_tensor
+        results = self.recon_model.forward(render=False)
+        
+        all_landmarks = [[] for _ in range(len(face_crops))]
+        valid_idx = 0
+        
+        if "ldm68" in results:
+            ldm68_batch = results["ldm68"] # (B, 68, 3)
+            for meta_idx in range(len(metadata)):
+                if valid_idx >= len(ldm68_batch): break
+                
+                lmks = ldm68_batch[valid_idx]
+                if hasattr(lmks, "cpu"):
+                    lmks = lmks.cpu().numpy()
+                trans_params, crop_i = metadata[meta_idx]
+                
+                lmks_to_map = lmks.copy()
+                lmks_to_map[:, 1] = 224 - 1 - lmks_to_map[:, 1]
+                # trans_params is now correctly [w0, h0, s, tx, ty] from align_img
+                lmks_mapped = back_resize_ldms(lmks_to_map.astype(np.float32), trans_params)
+                
+                all_landmarks[crop_i] = lmks_mapped
+                valid_idx += 1
+                
+        return all_landmarks
+
     def extract_landmarks(self, frame_np: np.ndarray) -> list:
+        # Legacy support for full-frame landmark extraction
+        # (This still uses detection because it doesn't know where faces are)
         img_pil = Image.fromarray(frame_np)
         facial_landmarks = self.mtcnn.detect_faces(frame_np)
         if not facial_landmarks:
@@ -148,15 +286,14 @@ class RealTimeEngine:
                 tp = np.array(trans_params, dtype=np.float32)
                 lmks_mapped = back_resize_ldms(lmks_to_map.astype(np.float32), tp)
                 results_list.append(lmks_mapped)
-                # If we are in extract_landmarks for a face crop, we usually only want the primary face
                 break 
                 
         return results_list
 
-def get_realtime_engine():
+def get_realtime_engine(device="cpu"):
     global _REALTIME_ENGINE
     if _REALTIME_ENGINE is None:
-        _REALTIME_ENGINE = RealTimeEngine(device="cpu")
+        _REALTIME_ENGINE = RealTimeEngine(device=device)
     return _REALTIME_ENGINE
 
 def process_webcam_frame(frame: np.ndarray) -> np.ndarray:

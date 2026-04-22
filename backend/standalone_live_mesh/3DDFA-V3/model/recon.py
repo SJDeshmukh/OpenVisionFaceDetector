@@ -453,7 +453,7 @@ class face_model:
             seg[:,:,i] = mask.squeeze()
         return seg
 
-    def forward(self, no_pca = False):
+    def forward(self, no_pca = False, render = True):
         assert self.net_recon.training == False
         alpha = self.net_recon(self.input_img)
 
@@ -467,6 +467,17 @@ class face_model:
 
         # face vertice in 2d image plane
         v2d = self.to_image(v3d)
+
+        if not render:
+            result_dict = {
+                'v3d': v3d.detach().cpu().numpy(),
+                'v2d': v2d.detach().cpu().numpy(),
+                'alpha': {k: v.detach().cpu().numpy() for k, v in alpha_dict.items()},
+            }
+            if self.args.ldm68:
+                v2d_68 = self.get_landmarks_68(v2d)
+                result_dict['ldm68'] = v2d_68.detach().cpu().numpy()
+            return result_dict
 
         # compute face texture with albedo and lighting
         face_albedo = self.compute_albedo(alpha_dict['alb'])

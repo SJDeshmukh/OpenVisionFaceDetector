@@ -17,46 +17,19 @@ def get_realtime_engine():
     return _get()
 
 def _extract_structural_vector(lmks):
-    """
-    Extracts a pose-invariant geometric ratio vector from 68-point landmarks.
-    Focuses on physiological proportions (ratios) rather than absolute distances.
-    """
-    if lmks is None or len(lmks) != 68:
-        return np.array([], dtype=np.float32)
-    
-    # Key Anchor Points
-    le = np.mean(lmks[36:42], axis=0)  # Left Eye Center
-    re = np.mean(lmks[42:48], axis=0)  # Right Eye Center
-    nose_tip = lmks[33]
-    mouth_l = lmks[48]
-    mouth_r = lmks[54]
-    chin = lmks[8]
-    forehead_top = lmks[27] # Reference point on nose bridge
-    
-    # Fundamental distances for ratios
-    iod = np.linalg.norm(le - re)  # Interocular Distance (Base Unit)
-    if iod < 1e-5: return np.array([], dtype=np.float32)
-    
-    # 1. Broad Facial Ratios
-    nose_to_chin = np.linalg.norm(nose_tip - chin) / iod
-    eye_to_nose = np.linalg.norm((le + re)/2 - nose_tip) / iod
-    mouth_width = np.linalg.norm(mouth_l - mouth_r) / iod
-    face_height = np.linalg.norm(forehead_top - chin) / iod
-    jaw_breadth = np.linalg.norm(lmks[4] - lmks[12]) / iod
-    
-    # 2. Key landmark relative distances to nose tip (normalized by IOD)
-    # We take 20 key points to avoid noise from individual jitter
-    key_indices = [0, 4, 8, 12, 16, 17, 21, 22, 26, 36, 39, 42, 45, 48, 51, 54, 57, 60, 64, 66]
-    vec = [nose_to_chin, eye_to_nose, mouth_width, face_height, jaw_breadth]
-    
-    for idx in key_indices:
-        d = np.linalg.norm(lmks[idx] - nose_tip) / iod
-        vec.append(d)
-        
-    v = np.array(vec, dtype=np.float32)
-    # Final normalization into a unit vector for dot product similarity
-    n = np.linalg.norm(v)
-    return (v / n) if n > 1e-6 else v
+    """Imported from centralized backend.utils"""
+    try:
+        from utils import _extract_structural_vector as _ev
+        return _ev(lmks)
+    except Exception:
+        # Fallback to local 67-dim logic if import fails
+        if lmks is None or len(lmks) != 68: return np.array([], dtype=np.float32)
+        le = np.mean(lmks[36:42], axis=0); re = np.mean(lmks[42:48], axis=0)
+        iod = np.linalg.norm(le - re)
+        if iod < 1e-5: return np.array([], dtype=np.float32)
+        n = lmks[33]; v = [np.linalg.norm(lmks[i]-n)/iod for i in range(68) if i!=33]
+        v = np.array(v, dtype=np.float32); nm = np.linalg.norm(v)
+        return v/nm if nm > 1e-7 else v
 
 def _normalize_vec(v: np.ndarray) -> np.ndarray:
     if v is None or v.size == 0:
@@ -484,6 +457,7 @@ def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3, struct_vec=
 
 def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
     try:
+        _t0 = time.time()
         rgb = decode_image_to_rgb(image_bytes)
         if rgb is None:
             return [], ''
@@ -523,6 +497,8 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
             preclean_level=preclean_level,
             det_max_side=det_max_side,
         )
+        _t1 = time.time()
+        print(f"[FACE_SVC] detect_faces took {_t1-_t0:.1f}s", flush=True)
         faces = []
         class_year = params.get('class_year'); division = params.get('division'); branch = params.get('branch')
         vcache = _ensure_vendor_emb_cache(vendor_id, class_year=class_year, division=division, branch=branch)
@@ -530,13 +506,55 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
             img_rgb, anns = annotated
             draw = cv2.cvtColor(img_rgb.copy(), cv2.COLOR_RGB2BGR)
             
-            # Step 1: Pre-process all faces to get embeddings and structural vectors
+            # ── Phase A: Batch-draw ALL 3D meshes on annotated image at once ──
+            _MESH_REGIONS = [
+                (list(range(0, 17)),        (160, 160, 160), False),  # jaw
+                (list(range(17, 22)),       (0, 165, 255),   False),  # left brow
+                (list(range(22, 27)),       (0, 165, 255),   False),  # right brow
+                (list(range(27, 31)),       (0, 255, 255),   False),  # nose bridge
+                (list(range(31, 36)),       (0, 210, 255),   False),  # nose base
+                (list(range(36, 42)) + [36],(255, 230, 0),   True),   # left eye (closed)
+                (list(range(42, 48)) + [42],(255, 230, 0),   True),   # right eye (closed)
+                (list(range(48, 60)) + [48],(80, 50, 255),   True),   # outer lip (closed)
+                (list(range(60, 68)) + [60],(60, 30, 200),   True),   # inner lip (closed)
+            ]
+            mesh_drawn = 0
+            for i, ann in enumerate(anns or []):
+                if df is not None and hasattr(df, 'iloc') and i < len(df):
+                    row = df.iloc[i]
+                    landmarks_3d = row.get('landmarks_3d', [])
+                else:
+                    landmarks_3d = []
+                if landmarks_3d is not None and len(landmarks_3d) >= 68:
+                    try:
+                        pts_2d_global = [(int(pt[0]), int(pt[1])) for pt in landmarks_3d]
+                        for indices, color, _ in _MESH_REGIONS:
+                            for k in range(len(indices) - 1):
+                                p1 = pts_2d_global[indices[k]]
+                                p2 = pts_2d_global[indices[k + 1]]
+                                cv2.line(draw, p1, p2, color, 3, cv2.LINE_AA)
+                        # Z-depth coloring
+                        pts_z = [float(pt[2]) if len(pt) > 2 else 0.0 for pt in landmarks_3d]
+                        z_min, z_max = min(pts_z), max(pts_z)
+                        z_range = max(z_max - z_min, 1.0)
+                        for idx, (px, py) in enumerate(pts_2d_global):
+                            t = (pts_z[idx] - z_min) / z_range
+                            dot_color = (int(255 * t), int(220 * (1 - t)), int(60 + 60 * (1 - t)))
+                            cv2.circle(draw, (px, py), 6, dot_color, -1, cv2.LINE_AA)
+                        mesh_drawn += 1
+                    except Exception:
+                        pass
+            if mesh_drawn > 0:
+                print(f"[FACE_SVC] Drew 68-pt mesh for {mesh_drawn} faces (batch).", flush=True)
+
+            # ── Phase B: Per-face thumbnail generation & embeddings ──
             face_data = []
             embeddings_map = {} # {local_index: emb_norm}
-            
-            for i, (box, score_str) in enumerate(anns or []):
-                x1, y1, x2, y2 = [int(v) for v in box]
-                cv2.rectangle(draw, (x1, y1), (x2, y2), (0, 180, 255), 2)
+            for i, ann in enumerate(anns or []):
+                # ann is now a dict: {"box": [x1,y1,x2,y2], "score": float, "landmarks_5": [...]}
+                box = ann.get('box', [0,0,0,0])
+                score_str = str(ann.get('score', 0.0))
+                # Skip drawing the portrait box from ann['box'], calculate true face box first
                 if i < len(crops):
                     ih, iw = img_rgb.shape[:2]
                     if df is not None and hasattr(df, 'iloc') and i < len(df):
@@ -544,8 +562,10 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                         bx1, by1, bx2, by2 = int(row['x1']), int(row['y1']), int(row['x2']), int(row['y2'])
                         landmarks_3d = row.get('landmarks_3d', [])
                     else:
-                        bx1, by1, bx2, by2 = x1, y1, x2, y2
+                        bx1, by1, bx2, by2 = [int(v) for v in box]
                         landmarks_3d = []
+                    
+                    cv2.rectangle(draw, (bx1, by1), (bx2, by2), (0, 180, 255), 2)
                     
                     bx1 = max(0, bx1); by1 = max(0, by1); bx2 = min(iw, bx2); by2 = min(ih, by2)
                     cx1, cy1, cx2, cy2 = mfd_app._compute_centered_box(bx1, by1, bx2, by2, iw, ih, scale=1.2)
@@ -553,43 +573,14 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                     
                     if pure_face.size > 0:
                         lmks_local = None
-                        if landmarks_3d:
+                        if landmarks_3d is not None and len(landmarks_3d) > 0:
                             try:
+                                # For thumbnail mesh and embeddings, we need crop-local landmarks
                                 lmks_local = np.array(landmarks_3d).copy()
                                 lmks_local[:, 0] -= cx1
                                 lmks_local[:, 1] -= cy1
-                                # Draw 68-point facial mesh on annotated image (BGR colors)
-                                _MESH_REGIONS = [
-                                    (list(range(0, 17)),        (160, 160, 160), False),  # jaw
-                                    (list(range(17, 22)),       (0, 165, 255),   False),  # left brow
-                                    (list(range(22, 27)),       (0, 165, 255),   False),  # right brow
-                                    (list(range(27, 31)),       (0, 255, 255),   False),  # nose bridge
-                                    (list(range(31, 36)),       (0, 210, 255),   False),  # nose base
-                                    (list(range(36, 42)) + [36],(255, 230, 0),   True),   # left eye (closed)
-                                    (list(range(42, 48)) + [42],(255, 230, 0),   True),   # right eye (closed)
-                                    (list(range(48, 60)) + [48],(80, 50, 255),   True),   # outer lip (closed)
-                                    (list(range(60, 68)) + [60],(60, 30, 200),   True),   # inner lip (closed)
-                                ]
-                                pts_2d = [(int(pt[0]), int(pt[1])) for pt in landmarks_3d]
-                                if len(pts_2d) >= 68:
-                                    for indices, color, _ in _MESH_REGIONS:
-                                        for k in range(len(indices) - 1):
-                                            p1 = pts_2d[indices[k]]
-                                            p2 = pts_2d[indices[k + 1]]
-                                            cv2.line(draw, p1, p2, color, 1, cv2.LINE_AA)
-                                    # Z-depth coloring: normalize z to map near=green, far=blue
-                                    pts_z = [float(pt[2]) if len(pt) > 2 else 0.0 for pt in landmarks_3d]
-                                    z_min, z_max = min(pts_z), max(pts_z)
-                                    z_range = max(z_max - z_min, 1.0)
-                                    for idx, (px, py) in enumerate(pts_2d):
-                                        t = (pts_z[idx] - z_min) / z_range  # 0=near, 1=far
-                                        dot_color = (int(255 * t), int(220 * (1 - t)), int(60 + 60 * (1 - t)))
-                                        cv2.circle(draw, (px, py), 3, dot_color, -1, cv2.LINE_AA)
-                                else:
-                                    for pt in pts_2d:
-                                        cv2.circle(draw, pt, 2, (0, 255, 0), -1)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                print(f"[FACE_SVC] Error processing landmarks: {e}", flush=True)
                         
                         # Optimization: Use pre-computed embedding from the batched detect_faces call
                         # This skips TWO redundant heavy AI model passes (Enhancement + Embedding) per face.
@@ -603,13 +594,14 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                             emb = mfd_app.get_embedder().embed(emb_crop_112)
                             emb_norm = _normalize_vec(emb)
                         else:
-                            # We still need face_display for the thumbnail, use fast path
-                            _, face_display = mfd_app.prepare_embedding_crop(pure_face, lmks_local, skip_enhancement=fast)
+                            # Skip GFPGAN entirely — we already have the embedding.
+                            # Only need face_display for the thumbnail.
+                            _, face_display = mfd_app.prepare_embedding_crop(pure_face, lmks_local, skip_enhancement=True)
 
                         # Extract Structural Vector
                         struct_vec_val = None
                         struct_vec_b64 = ''
-                        if landmarks_3d:
+                        if landmarks_3d is not None and len(landmarks_3d) > 0:
                             try:
                                 struct_vec_val = _extract_structural_vector(lmks_local)
                                 if struct_vec_val.size > 0:
@@ -629,22 +621,50 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                             sharpness_score = 999.0  # assume sharp on error
                         is_blurry = sharpness_score < _BLUR_THRESHOLD
 
-                        # Portrait thumbnail: selective enhancement for blurry faces.
-                        # Even in 'fast' mode, we enhance blurry faces to maintain visual quality
-                        # unless the enhancer was explicitly set to 'None'.
+                        # Portrait thumbnail: smooth ALL faces for natural display
                         try:
                             px1, py1, px2, py2 = mfd_app._compute_portrait_box(bx1, by1, bx2, by2, iw, ih, scale=3.0, margin=0.5)
                             portrait = img_rgb[py1:py2, px1:px2]
                             
-                            # Enhance if blurry OR if it's tiny (pixels < 60px)
                             is_tiny = min(bx2-bx1, by2-by1) < 60
-                            should_enhance = (is_blurry or is_tiny) and params.get('enhancer') != 'None'
                             
-                            if portrait.size > 0 and should_enhance:
+                            if portrait.size > 0 and fast:
+                                # ALWAYS smooth in fast mode — this is lightweight CV (~10ms/face)
+                                ph, pw = portrait.shape[:2]
+                                min_portrait_dim = min(ph, pw)
+                                
+                                # Step 1: Upscale small portraits for smooth display
+                                if min_portrait_dim < 200:
+                                    scale = max(2, int(np.ceil(200 / min_portrait_dim)))
+                                    portrait_enh = cv2.resize(portrait, (pw * scale, ph * scale), interpolation=cv2.INTER_LANCZOS4)
+                                else:
+                                    portrait_enh = portrait.copy()
+                                
+                                # Step 2: Bilateral filter — smooths noise while keeping edges
+                                portrait_enh = cv2.bilateralFilter(portrait_enh, 9, 75, 75)
+                                
+                                # Step 3: Light Gaussian blur to remove remaining blockiness
+                                portrait_enh = cv2.GaussianBlur(portrait_enh, (3, 3), 0.5)
+                            elif portrait.size > 0 and (is_blurry or is_tiny) and params.get('enhancer') != 'None':
+                                # Non-fast quality mode: full GFPGAN enhancement
+                                if is_tiny:
+                                    portrait = cv2.bilateralFilter(portrait, 5, 50, 50)
                                 with mfd_app._gfpgan_lock:
-                                    portrait_enh = mfd_app.get_gfpgan_manager().enhance_crop(portrait, upscale=1, whole=False, fidelity=0.5)
+                                    portrait_enh = mfd_app.get_gfpgan_manager().enhance_crop(portrait, upscale=1, whole=False, fidelity=0.7)
                             else:
-                                portrait_enh = portrait
+                                portrait_enh = portrait.copy() if portrait.size > 0 else None
+
+                            # Draw 3D Landmarks on the portrait thumbnail for immediate visual feedback in the UI gallery
+                            if portrait_enh is not None and landmarks_3d is not None and len(landmarks_3d) > 0:
+                                try:
+                                    for pt in landmarks_3d:
+                                        # Map global coordinates to portrait-local coordinates
+                                        lpx, lpy = int(pt[0] - px1), int(pt[1] - py1)
+                                        if 0 <= lpx < portrait_enh.shape[1] and 0 <= lpy < portrait_enh.shape[0]:
+                                            # Radius 3 for thumbnails (half of the global radius 6)
+                                            cv2.circle(portrait_enh, (lpx, lpy), 3, (0, 255, 0), -1)
+                                except Exception as e:
+                                    print(f"[FACE_SVC] Thumbnail landmark error: {e}", flush=True)
                         except Exception:
                             portrait_enh = None
 
@@ -679,7 +699,7 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                             },
                             "emb_vec": emb_vec_b64,
                             "struct_vec": struct_vec_b64,
-                            "landmarks_3d": landmarks_3d,
+                            "landmarks_3d": landmarks_3d.tolist() if hasattr(landmarks_3d, 'tolist') else landmarks_3d,
                             "emb_norm": emb_norm, # Internal use
                             "struct_vec_val": struct_vec_val # Internal use
                         }
@@ -720,11 +740,13 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
             # (background blob, partial body part, etc.).
             # Guard: if the 3D engine isn't running at all (no face has landmarks),
             # skip filtering so the UI still shows something.
-            has_any_landmarks = any(f.get('landmarks_3d') for f in face_data)
-            faces = [f for f in face_data if f.get('landmarks_3d')] if has_any_landmarks else face_data
+            has_any_landmarks = any(f.get('landmarks_3d') is not None and len(f.get('landmarks_3d')) > 0 for f in face_data)
+            faces = [f for f in face_data if f.get('landmarks_3d') is not None and len(f.get('landmarks_3d')) > 0] if has_any_landmarks else face_data
 
             ok2, ann = cv2.imencode('.jpg', draw, [cv2.IMWRITE_JPEG_QUALITY, 85])
             annotated_b64 = f"data:image/jpeg;base64,{base64.b64encode(ann.tobytes()).decode('ascii')}" if ok2 else ''
+            _t2 = time.time()
+            print(f"[FACE_SVC] Per-face processing took {_t2-_t1:.1f}s for {len(faces)} faces", flush=True)
         else:
             annotated_b64 = ''
         return faces, annotated_b64

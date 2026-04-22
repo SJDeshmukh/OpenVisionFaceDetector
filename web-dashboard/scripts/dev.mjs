@@ -253,6 +253,7 @@ async function startCeleryWorker() {
           KMP_DUPLICATE_LIB_OK: "TRUE",
           OMP_NUM_THREADS: "1",
           OPENCV_NUM_THREADS: "1",
+          PRELOAD_AI_MODELS: "1",
         },
       });
       celeryProcs.push(proc);
@@ -290,6 +291,7 @@ async function startBackendIfNeeded() {
       KMP_DUPLICATE_LIB_OK: "TRUE",
       OMP_NUM_THREADS: "1",
       OPENCV_NUM_THREADS: "1",
+      PRELOAD_AI_MODELS: "1",
     },
   });
   try {

@@ -19,25 +19,19 @@ import db_factory
 from db_factory import set_row_factory
 from concurrent.futures import ThreadPoolExecutor
 def _extract_structural_vector(lmks):
-    if lmks is None or len(lmks) != 68:
-        return np.array([], dtype=np.float32)
-    left_eye_center = np.mean(lmks[36:42], axis=0)
-    right_eye_center = np.mean(lmks[42:48], axis=0)
-    interocular_dist = np.linalg.norm(left_eye_center - right_eye_center)
-    if interocular_dist < 1e-5: return np.array([], dtype=np.float32)
-    
-    nose = lmks[33]
-    vec = []
-    for i in range(68):
-        if i == 33: continue 
-        d = np.linalg.norm(lmks[i] - nose) / interocular_dist
-        vec.append(d)
-        
-    v = np.array(vec, dtype=np.float32)
-    norm = np.linalg.norm(v)
-    if norm > 1e-5:
-        v = v / norm
-    return v
+    """Imported from centralized backend.utils"""
+    try:
+        from utils import _extract_structural_vector as _ev
+        return _ev(lmks)
+    except Exception:
+        # Fallback to local 67-dim logic if import fails
+        if lmks is None or len(lmks) != 68: return np.array([], dtype=np.float32)
+        le = np.mean(lmks[36:42], axis=0); re = np.mean(lmks[42:48], axis=0)
+        iod = np.linalg.norm(le - re)
+        if iod < 1e-5: return np.array([], dtype=np.float32)
+        n = lmks[33]; v = [np.linalg.norm(lmks[i]-n)/iod for i in range(68) if i!=33]
+        v = np.array(v, dtype=np.float32); nm = np.linalg.norm(v)
+        return v/nm if nm > 1e-7 else v
 
 def _get_redis():
     try:
