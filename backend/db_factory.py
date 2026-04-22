@@ -583,7 +583,9 @@ def _init_pg_schema_on_conn(conn):
         ("attendance", "branch", "TEXT"),
         ("attendance", "subject", "TEXT"),
         ("attendance", "lecture_id", "INTEGER"),
-        ("attendance", "attendance_date", "DATE")
+        ("attendance", "attendance_date", "DATE"),
+        ("person_embeddings", "struct_vec", "BYTEA"),
+        ("person_embeddings", "landmarks_3d", "TEXT"),
     ]
     
     for table, col, col_type in cols:
@@ -767,7 +769,13 @@ def init_sqlite_schema(conn):
             cur.execute(f"ALTER TABLE advances ADD COLUMN {col}")
         except Exception:
             pass
-            
+
+    for col in ["struct_vec BLOB", "landmarks_3d TEXT"]:
+        try:
+            cur.execute(f"ALTER TABLE person_embeddings ADD COLUMN {col}")
+        except Exception:
+            pass
+
     conn.commit()
     cur.close()
 

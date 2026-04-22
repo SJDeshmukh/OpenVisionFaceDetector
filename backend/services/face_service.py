@@ -4,6 +4,7 @@ import cv2
 import base64
 import time
 import sqlite3
+import json
 from threading import Lock
 
 # Local imports to avoid circular dependencies where needed
@@ -17,19 +18,46 @@ def get_realtime_engine():
     return _get()
 
 def _extract_structural_vector(lmks):
-    """Imported from centralized backend.utils"""
-    try:
-        from utils import _extract_structural_vector as _ev
-        return _ev(lmks)
-    except Exception:
-        # Fallback to local 67-dim logic if import fails
-        if lmks is None or len(lmks) != 68: return np.array([], dtype=np.float32)
-        le = np.mean(lmks[36:42], axis=0); re = np.mean(lmks[42:48], axis=0)
-        iod = np.linalg.norm(le - re)
-        if iod < 1e-5: return np.array([], dtype=np.float32)
-        n = lmks[33]; v = [np.linalg.norm(lmks[i]-n)/iod for i in range(68) if i!=33]
-        v = np.array(v, dtype=np.float32); nm = np.linalg.norm(v)
-        return v/nm if nm > 1e-7 else v
+    """
+    Extracts a 204-dimensional geometric mesh signature (68 pts * 3 coords).
+    Normalized for translation and scale, but preserves 3D physical shape.
+    """
+    if lmks is None or len(lmks) != 68: return np.array([], dtype=np.float32)
+    
+    # Anchor point: Nose bridge (top of nose)
+    anchor = lmks[27] if len(lmks) > 27 else lmks[0]
+    
+    # Scale factor: Inter-ocular distance (36-45)
+    # Using 3D distance for extreme-pose robustness
+    le = np.mean(lmks[36:42], axis=0) if len(lmks) >= 42 else lmks[36]
+    re = np.mean(lmks[42:48], axis=0) if len(lmks) >= 48 else lmks[45]
+    iod = np.linalg.norm(le - re)
+    if iod < 1e-5: iod = 1.0
+    
+    # Normalize mesh: Centering and Scaling
+    mesh_norm = (lmks - anchor) / iod
+    
+    # Flatten to 204-dim vector
+    v = mesh_norm.flatten().astype(np.float32)
+    return v
+
+def _calculate_pose(lmks):
+    """Estimates Yaw, Pitch, Roll in degrees from 3D landmarks."""
+    if lmks is None or len(lmks) < 68: return 0.0, 0.0, 0.0
+    # Simplistic geometric estimation:
+    # Yaw: nose tip relative to jaw width
+    jaw_w = np.linalg.norm(lmks[0] - lmks[16])
+    nose_x = lmks[30][0] - (lmks[0][0] + lmks[16][0])/2
+    yaw = (nose_x / jaw_w) * 90 if jaw_w > 0 else 0
+    
+    # Pitch: nose depth relative to eyes-to-mouth height
+    eye_y = (lmks[36][1] + lmks[45][1])/2
+    mouth_y = lmks[62][1]
+    face_h = abs(eye_y - mouth_y)
+    nose_y = lmks[30][1] - (eye_y + mouth_y)/2
+    pitch = (nose_y / face_h) * 90 if face_h > 0 else 0
+    
+    return float(abs(yaw)), float(abs(pitch)), 0.0
 
 def _normalize_vec(v: np.ndarray) -> np.ndarray:
     if v is None or v.size == 0:
@@ -70,9 +98,9 @@ def _apply_contrastive_refinement(sims: list, penalty_scale: float = 0.2) -> lis
         
         gap = s1 - s2
         
-        # AMBIGUITY DETECTION: If the model is collapsed (both high sim) 
-        # but the gap is tiny (< 5%), flag it.
-        if s1 > 0.7 and gap < 0.05:
+        # AMBIGUITY DETECTION: If the model is collapsed (both high sim)
+        # but the gap is tiny (< 3%), flag it as ambiguous.
+        if s1 > 0.7 and gap < 0.03:
             top1['is_ambiguous'] = True
             top2['is_ambiguous'] = True
         
@@ -183,9 +211,9 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
                     
                     s_vec = None
                     if sb:
-                        sd = np.frombuffer(sb, dtype=np.float32)
+                        sd = np.frombuffer(sb, dtype=np.float32).copy()
                         if sd.size > 0:
-                            s_vec = sd
+                            s_vec = _normalize_vec(sd)
                     
                     if vb and dim > 0:
                         v = np.frombuffer(vb, dtype=np.float32)
@@ -321,6 +349,7 @@ def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3, struct_vec=
         v = _normalize_vec(vec)
         if cache is None or not cache.get('items') or v.size == 0:
             return []
+        
         # Helper to deduplicate by person_id, keeping highest similarity
         def _dedup(raw, topk):
             best = {}
@@ -329,106 +358,63 @@ def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3, struct_vec=
                 if pid not in best or entry['similarity'] > best[pid]['similarity']:
                     best[pid] = entry
             return sorted(best.values(), key=lambda x: x['similarity'], reverse=True)[:topk]
+
+        candidates = []
         if cache.get('faiss_index') is not None and USE_FAISS:
             try:
                 q = v.reshape(1, -1).astype(np.float32)
-                # Search more than topk to account for duplicate person_ids
-                search_k = min(topk * 5, len(cache['items']))
+                search_k = min(topk * 20, len(cache['items']))
                 if _FAISS_LOCK:
-                    with _FAISS_LOCK:
-                        D, I = cache['faiss_index'].search(q, search_k)
+                    with _FAISS_LOCK: D, I = cache['faiss_index'].search(q, search_k)
                 else:
                     D, I = cache['faiss_index'].search(q, search_k)
-                raw = []
-                fmap = cache.get('faiss_map') or []
+                
                 for rank, idx in enumerate(I[0].tolist()):
-                    if idx < 0 or idx >= len(fmap):
-                        continue
-                    pid, nm = fmap[idx]
-                    sim = float(D[0][rank]) if D is not None else 0.0
-                    
-                    if struct_vec is not None:
-                        match_item = next((x for x in cache['items'] if x['person_id'] == int(pid)), None)
-                        if match_item and match_item.get('struct_vec') is not None:
-                            s_u = match_item['struct_vec']
-                            if s_u.size == struct_vec.size:
-                                struct_sim = float(np.dot(s_u, struct_vec))
-                                # Weighting: 60% 3D Structural Mesh, 40% Facial Embeddings (ArcFace)
-                                sim = (sim * 0.40) + (struct_sim * 0.60)
-                    
-                    # Check for perfect scope match
-                    is_perfect = True
-                    # Find matching item in cache to check scope
-                    match_item = next((x for x in cache.get('items', []) if x['person_id'] == int(pid)), None)
-                    if match_item:
-                        if class_year and str(match_item.get('class_year') or '') != str(class_year): is_perfect = False
-                        if division and str(match_item.get('division') or '') != str(division): is_perfect = False
-                        if branch and str(match_item.get('branch') or '') != str(branch): is_perfect = False
+                    if idx < 0 or idx >= len(cache['items']): continue
+                    item = cache['items'][idx]
+                    candidates.append((item, float(D[0][rank])))
+            except Exception: pass
+        
+        if not candidates:
+            # Linear scan fallback
+            candidates = [(it, float(np.dot(it['vec'], v))) for it in cache['items']]
 
-                    # STRICT FILTERING: If any scope is provided, only include perfect matches
-                    if (class_year or division or branch) and not is_perfect:
-                        continue
-
-                    raw.append({'person_id': int(pid), 'name': str(nm), 'similarity': sim, 'perfect_scope': is_perfect})
-                
-                deduped = _dedup(raw, topk * 2) # Get more candidates for refinement
-                refined = _apply_contrastive_refinement(deduped)[:topk]
-                
-                # Fetch images for the results
-                try:
-                    pids = [int(r['person_id']) for r in refined]
-                    if pids:
-                        conn = get_db_connection()
-                        c = conn.cursor()
-                        ph = ",".join(["?"]*len(pids))
-                        c.execute(f"SELECT id, face_image, custom_data FROM faces WHERE id IN ({ph})", pids)
-                        img_rows = c.fetchall() or []
-                        imap = {int(r[0]): (r[1], r[2]) for r in img_rows}
-                        for r in refined:
-                            img, custom = imap.get(int(r['person_id']), (None, None))
-                            r['face_image'] = img
-                            if custom:
-                                try:
-                                    cd = json.loads(custom) if isinstance(custom, str) else custom
-                                    r['student_number'] = cd.get('student_number')
-                                except Exception:
-                                    pass
-                        conn.close()
-                except Exception:
-                    pass
-                
-                return refined
-            except Exception:
-                pass
-        sims = []
-        for it in cache['items']:
-            u = it['vec']
-            if u.size != v.size:
-                continue
-            sim = float(np.dot(u, v))
-            
-            if struct_vec is not None and it.get('struct_vec') is not None:
-                s_u = it['struct_vec']
-                if s_u.size == struct_vec.size:
-                    struct_sim = float(np.dot(s_u, struct_vec))
-                    # Weighting: 60% 3D Structural Mesh, 40% Facial Embeddings (ArcFace)
-                    sim = (sim * 0.40) + (struct_sim * 0.60)
-                    
+        raw = []
+        for item, arcface_sim in candidates:
+            # 1. SCOPE FILTERING
             is_perfect = True
-            if class_year and str(it.get('class_year') or '') != str(class_year): is_perfect = False
-            if division and str(it.get('division') or '') != str(division): is_perfect = False
-            if branch and str(it.get('branch') or '') != str(branch): is_perfect = False
+            if class_year and str(item.get('class_year') or '') != str(class_year): is_perfect = False
+            if division and str(item.get('division') or '') != str(division): is_perfect = False
+            if branch and str(item.get('branch') or '') != str(branch): is_perfect = False
+            if (class_year or division or branch) and not is_perfect: continue
+
+            # 2. ADAPTIVE 3D MATCHING
+            sim = arcface_sim
+            struct_sim = 0.0
+            if struct_vec is not None and item.get('struct_vec') is not None:
+                s_u = item['struct_vec']
+                if s_u.size == struct_vec.size and struct_vec.size > 0:
+                    try:
+                        # 3D Mesh Correlation
+                        # Dot product of normalized coordinates
+                        struct_sim = float(np.dot(s_u, struct_vec))
+                        # Weighting: 60% 3D Structural Mesh, 40% Facial Embeddings (ArcFace)
+                        sim = (arcface_sim * 0.40) + (struct_sim * 0.60)
+                    except Exception: pass
             
-            # STRICT FILTERING: If any scope is provided, only include perfect matches
-            if (class_year or division or branch) and not is_perfect:
-                continue
-                    
-            sims.append({'person_id': it['person_id'], 'name': it['name'], 'similarity': sim, 'perfect_scope': is_perfect})
+            raw.append({
+                'person_id': int(item['person_id']), 
+                'name': str(item.get('name', 'Unknown')), 
+                'similarity': sim,
+                'arcface_pure': arcface_sim,
+                'struct_pure': struct_sim,
+                'perfect_scope': is_perfect
+            })
+            
+        # Deduplicate and take topk
+        refined = _dedup(raw, topk)
         
-        deduped = _dedup(sims, topk * 2)
-        refined = _apply_contrastive_refinement(deduped)[:topk]
-        
-        # Fetch images for the results
+        # 3. IMAGE & METADATA FETCHING
         try:
             pids = [int(r['person_id']) for r in refined]
             if pids:
@@ -436,21 +422,18 @@ def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3, struct_vec=
                 c = conn.cursor()
                 ph = ",".join(["?"]*len(pids))
                 c.execute(f"SELECT id, face_image, custom_data FROM faces WHERE id IN ({ph})", pids)
-                img_rows = c.fetchall() or []
-                imap = {int(r[0]): (r[1], r[2]) for r in img_rows}
+                imap = {int(r[0]): (r[1], r[2]) for r in (c.fetchall() or [])}
                 for r in refined:
                     img, custom = imap.get(int(r['person_id']), (None, None))
                     r['face_image'] = img
                     if custom:
                         try:
                             cd = json.loads(custom) if isinstance(custom, str) else custom
-                            r['student_number'] = cd.get('student_number')
-                        except Exception:
-                            pass
+                            r['student_number'] = cd.get('student_id') or cd.get('student_number')
+                        except Exception: pass
                 conn.close()
-        except Exception:
-            pass
-            
+        except Exception: pass
+        
         return refined
     except Exception:
         return []
@@ -724,31 +707,16 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                         if emb_norm.size > 0:
                             embeddings_map[len(face_data)-1] = emb_norm
 
-            # Step 2: Intra-batch Clustering
-            clusters = _cluster_batch_embeddings(embeddings_map, threshold=0.90)
-            
-            # Step 3: Identify Clusters and Assign
-            for cluster in clusters:
-                centroid = cluster['centroid']
-                # Pick the best structural vector from the cluster for identification leverage
-                best_sv = None
-                best_s = -1.0
-                for f_idx in cluster['indices']:
-                    f = face_data[f_idx]
-                    f_score = f.get('score')
-                    if f_score is not None and float(f_score) > best_s:
-                        best_s = float(f_score)
-                        best_sv = f.get('struct_vec_val')
-                
-                sugg = _suggest_from_cache(centroid, vcache, topk=3, struct_vec=best_sv, class_year=class_year, division=division, branch=branch)
-                for f_idx in cluster['indices']:
-                    face_data[f_idx]['suggestions'] = sugg
-            
-            # Step 4: Fallback for any non-clustered faces (should be none, but safe)
+            # Per-face individual lookup: each face gets its own suggestion from its own
+            # embedding + struct_vec. Centroid-based cluster lookups caused every face in a
+            # cluster (often different people grouped by demographic similarity) to share one
+            # wrong suggestion.
             for f in face_data:
-                if 'suggestions' not in f:
-                    f['suggestions'] = _suggest_from_cache(f['emb_norm'], vcache, topk=3, struct_vec=f['struct_vec_val'], class_year=class_year, division=division, branch=branch)
-                # Cleanup internal fields before returning
+                f['suggestions'] = _suggest_from_cache(
+                    f['emb_norm'], vcache, topk=3,
+                    struct_vec=f['struct_vec_val'],
+                    class_year=class_year, division=division, branch=branch
+                )
                 if 'emb_norm' in f: del f['emb_norm']
                 if 'struct_vec_val' in f: del f['struct_vec_val']
 

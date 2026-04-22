@@ -18,20 +18,7 @@ from storage import upload_base64_image, presigned_url_for_key, OBJECT_STORAGE_E
 import db_factory
 from db_factory import set_row_factory
 from concurrent.futures import ThreadPoolExecutor
-def _extract_structural_vector(lmks):
-    """Imported from centralized backend.utils"""
-    try:
-        from utils import _extract_structural_vector as _ev
-        return _ev(lmks)
-    except Exception:
-        # Fallback to local 67-dim logic if import fails
-        if lmks is None or len(lmks) != 68: return np.array([], dtype=np.float32)
-        le = np.mean(lmks[36:42], axis=0); re = np.mean(lmks[42:48], axis=0)
-        iod = np.linalg.norm(le - re)
-        if iod < 1e-5: return np.array([], dtype=np.float32)
-        n = lmks[33]; v = [np.linalg.norm(lmks[i]-n)/iod for i in range(68) if i!=33]
-        v = np.array(v, dtype=np.float32); nm = np.linalg.norm(v)
-        return v/nm if nm > 1e-7 else v
+from services.face_service import _extract_structural_vector, _calculate_pose
 
 def _get_redis():
     try:
@@ -122,170 +109,15 @@ def detect_faces_basic():
         if bgr is None:
             return jsonify({"error": "invalid image"}), 400
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        from tasks import detect_faces_task
         try:
-            from multiple_face_detection import app as mfd_app
-        except Exception:
-            # Fallback to current pipeline if import fails
-            return jsonify({"error": "multiple_face_detection not available in environment"}), 500
-        # Robust defaults aligned with multiple_face_detection UI
-        # Accept optional overrides from request JSON
-        enhancer = (data.get('enhancer') if 'data' in locals() and isinstance(data, dict) else None) or "GFPGAN"
-        crop_mode = (data.get('crop_mode') if 'data' in locals() and isinstance(data, dict) else None) or "Portrait"
-        lr = LOW_RAM_MODE
-        if lr:
-            gfp_up = int((data.get('gfpgan_upscale') if 'data' in locals() and isinstance(data, dict) else None) or 1)
-            preclean_whole = bool((data.get('preclean_whole') if 'data' in locals() and isinstance(data, dict) else None) if 'data' in locals() else False)
-            preclean_level = float((data.get('preclean_level') if 'data' in locals() and isinstance(data, dict) else None) or 0.2)
-        else:
-            gfp_up = int((data.get('gfpgan_upscale') if 'data' in locals() and isinstance(data, dict) else None) or 2)
-            preclean_whole = bool((data.get('preclean_whole') if 'data' in locals() and isinstance(data, dict) else None) if 'data' in locals() else True)
-            preclean_level = float((data.get('preclean_level') if 'data' in locals() and isinstance(data, dict) else None) or 0.4)
-        # Redis result cache (optional)
-        cache_ttl = int(os.environ.get("DETECT_CACHE_TTL", "300"))
-        cache_key = f"detect:v1:{vendor_id}:{enhancer}:{gfp_up}:{crop_mode}:{int(preclean_whole)}:{preclean_level}:{img_hash}"
-        redis = _get_redis()
-        if redis:
-            try:
-                cached = redis.get(cache_key)
-                if cached:
-                    return jsonify(json.loads(cached))
-            except Exception:
-                pass
-        def _heavy_detect():
-            return mfd_app.detect_faces(
-                image_input=rgb,
-                enhancer=enhancer,
-                enhance_level=0.5,
-                gfpgan_upscale=gfp_up,
-                codeformer_w=0.5,
-                compute_embeddings=True,
-                crop_mode=crop_mode,
-                portrait_scale=3.0,
-                preclean_whole=preclean_whole,
-                preclean_level=preclean_level,
-                det_max_side=1280
-            )
-        if eventlet:
-            annotated, crops, df, df_emb = eventlet.tpool.execute(_heavy_detect)
-        else:
-            fut = _INFER_EXECUTOR.submit(_heavy_detect)
-            annotated, crops, df, df_emb = fut.result()
-        faces = []
-        # Build vendor embedding cache once
-        class_year = (data.get('class_year') if 'data' in locals() and isinstance(data, dict) else None)
-        division = (data.get('division') if 'data' in locals() and isinstance(data, dict) else None)
-        branch = (data.get('branch') if 'data' in locals() and isinstance(data, dict) else None)
-        vcache = _ensure_vendor_emb_cache(vendor_id, class_year=class_year, division=division, branch=branch)
-        if isinstance(annotated, tuple) and len(annotated) == 2:
-            img_rgb, anns = annotated
-            draw = cv2.cvtColor(img_rgb.copy(), cv2.COLOR_RGB2BGR)
-            for i, (box, score_str) in enumerate(anns or []):
-                x1, y1, x2, y2 = [int(v) for v in box]
-                cv2.rectangle(draw, (x1, y1), (x2, y2), (0, 180, 255), 2)
-                # thumbnails from crops list by index alignment
-                if i < len(crops):
-                    crop_rgb = crops[i]
-                    ih, iw = img_rgb.shape[:2]
-                    # Get original face bounding box from df (raw detector output, no padding)
-                    if df is not None and hasattr(df, 'iloc') and i < len(df):
-                        row = df.iloc[i]
-                        bx1, by1, bx2, by2 = int(row['x1']), int(row['y1']), int(row['x2']), int(row['y2'])
-                    else:
-                        bx1, by1, bx2, by2 = x1, y1, x2, y2
-                    # Pure face crop - NO padding, just the detector box
-                    bx1 = max(0, bx1); by1 = max(0, by1)
-                    bx2 = min(iw, bx2); by2 = min(ih, by2)
-                    # Use a balanced centered box for the thumbnail crop (1.2x tight for embedding consistency)
-                    cx1, cy1, cx2, cy2 = mfd_app._compute_centered_box(bx1, by1, bx2, by2, iw, ih, scale=1.2)
-                    pure_face = img_rgb[cy1:cy2, cx1:cx2]
+            # We must pass the raw base64 string because detect_faces_task base64 decodes it
+            task_result = detect_faces_task.apply_async(args=[img_b64, data, vendor_id]).get(timeout=60)
+            faces = task_result.get("faces", [])
+            annotated_b64 = task_result.get("annotated_b64", "")
+        except Exception as e:
+            return jsonify({"error": f"Celery inference timeout or failure: {str(e)}"}), 500
 
-
-                    # --- Processing Steps ---
-                    
-                    # 1. 3DDFA-V3 Landmarks (Now GLOBAL from df)
-                    landmarks_3d = []
-                    struct_vec_val = None
-                    struct_vec_b64 = ""
-                    try:
-                        if df is not None and hasattr(df, 'iloc') and i < len(df):
-                            row = df.iloc[i]
-                            if 'landmarks_3d' in row and isinstance(row['landmarks_3d'], list) and len(row['landmarks_3d']) > 0:
-                                landmarks_3d = row['landmarks_3d']
-                                # Draw on full annotated image (landmarks are now GLOBAL)
-                                for pt in landmarks_3d:
-                                    dx, dy = int(pt[0]), int(pt[1])
-                                    cv2.circle(draw, (dx, dy), 1, (0, 255, 0), -1)
-                                
-                                if 'struct_vec' in row and isinstance(row['struct_vec'], list) and len(row['struct_vec']) > 0:
-                                    struct_vec_val = np.array(row['struct_vec'], dtype=np.float32)
-                                    struct_vec_b64 = base64.b64encode(struct_vec_val.tobytes()).decode('ascii')
-                    except Exception as e:
-                        print(f"[FACES] Landmark integration error: {e}", flush=True)
-
-                    # 2. Enhance pure_face for better thumbnail visibility & 3. Embedding and Suggestions (from enhanced face)
-                    emb_vec_b64 = ""
-                    sugg = []
-                    try:
-                        if pure_face.size > 0:
-                            lmks_local = None
-                            if landmarks_3d:
-                                try:
-                                    lmks_local = np.array(landmarks_3d).copy()
-                                    lmks_local[:, 0] -= cx1
-                                    lmks_local[:, 1] -= cy1
-                                except Exception:
-                                    pass
-                            pure_face = mfd_app.get_gfpgan_manager().enhance_crop(pure_face, fidelity=0.9, upscale=2, landmarks=lmks_local)
-                            if min(pure_face.shape[:2]) < 512:
-                                scale_f = 512.0 / min(pure_face.shape[:2])
-                                pure_face = cv2.resize(pure_face, (int(pure_face.shape[1] * scale_f), int(pure_face.shape[0] * scale_f)), interpolation=cv2.INTER_LANCZOS4)
-
-                        # 3. Embedding and Suggestions (from enhanced face)
-                        # CRITICAL: Use pure_face (enhanced) to match face_service.py cache logic
-                        emb = mfd_app.get_embedder().embed(pure_face)
-                        emb_norm = _normalize_vec(emb)
-                        if emb_norm.size > 0:
-                            emb_vec_b64 = base64.b64encode(emb_norm.astype(np.float32).tobytes()).decode('ascii')
-                        
-                        sugg = _suggest_from_cache(emb_norm, vcache, topk=3, struct_vec=struct_vec_val, class_year=class_year, division=division, branch=branch)
-                    except Exception:
-                        pass
-
-                    # 4. Portrait Crop (scale=3.0)
-                    port_b64 = ""
-                    try:
-                        px1, py1, px2, py2 = mfd_app._compute_portrait_box(bx1, by1, bx2, by2, iw, ih, scale=3.0, margin=0.5)
-                        portrait = img_rgb[py1:py2, px1:px2]
-                        if not lr:
-                            portrait = mfd_app.get_gfpgan_manager().enhance_crop(portrait, upscale=gfp_up, whole=True) if portrait.size > 0 else portrait
-                        okp, bufp = cv2.imencode('.jpg', cv2.cvtColor(portrait, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
-                        if okp:
-                            port_b64 = base64.b64encode(bufp.tobytes()).decode('ascii')
-                    except Exception:
-                        pass
-
-                    # 5. Final Thumbnail Encode and Collect
-                    okf, buff = cv2.imencode('.jpg', cv2.cvtColor(pure_face, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
-                    face_b64 = base64.b64encode(buff.tobytes()).decode('ascii') if okf else ''
-
-                    faces.append({
-                        "index": i,
-                        "box": [bx1, by1, bx2, by2],
-                        "score": float(score_str) if score_str else None,
-                        "thumbs": {
-                            "face": f"data:image/jpeg;base64,{face_b64}" if face_b64 else None,
-                            "portrait": f"data:image/jpeg;base64,{port_b64}" if port_b64 else None
-                        },
-                        "suggestions": sugg,
-                        "emb_vec": emb_vec_b64,
-                        "struct_vec": struct_vec_b64,
-                        "landmarks_3d": landmarks_3d
-                    })
-
-            ok2, ann = cv2.imencode('.jpg', draw, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            annotated_b64 = f"data:image/jpeg;base64,{base64.b64encode(ann.tobytes()).decode('ascii')}" if ok2 else ''
-        else:
-            annotated_b64 = ''
         resp = {"faces": faces, "count": len(faces), "annotated_image": annotated_b64}
         redis = _get_redis()
         if redis:

@@ -241,21 +241,22 @@ def parent_register_face():
             return jsonify({"status": "success"})
 
         # Fallback to backend processing (e.g. for web portals registering parents)
-        from multiple_face_detection import app as mfd_app
-        img_rgb = _decode_data_uri_to_rgb(face_image)
-        if img_rgb is None:
+        from tasks import detect_faces_task
+        data_part = face_image.split(",")[-1] if "," in face_image else face_image
+        try:
+            result = detect_faces_task.apply_async(args=[data_part, {"fast": True}, vendor_id]).get(timeout=60)
+            faces = result.get("faces", [])
+            if not faces:
+                 conn.close()
+                 return jsonify({"error": "No face detected"}), 400
+            
+            face_template = faces[0].get("emb_vec", "")
+            if not face_template:
+                 conn.close()
+                 return jsonify({"error": "No embedding generated"}), 400
+        except Exception as e:
             conn.close()
-            return jsonify({"error": "Invalid image"}), 400
-
-        det_ann, det_crops, _, _ = mfd_app.detect_faces(img_rgb, compute_embeddings=False, crop_mode="Face")
-        if not det_crops:
-             conn.close()
-             return jsonify({"error": "No face detected"}), 400
-        
-        crop = det_crops[0]
-        emb = mfd_app.get_embedder().embed(crop)
-        emb = _normalize_vec(emb)
-        face_template = base64.b64encode(emb.astype(np.float32).tobytes()).decode('ascii')
+            return jsonify({"error": f"Inference failed or timed out: {str(e)}"}), 500
 
         c.execute("UPDATE parent_users SET face_image = ?, face_template = ? WHERE student_number = ? AND vendor_id = ?", 
                   (face_image, face_template, student_number, vendor_id))
@@ -299,17 +300,23 @@ def parent_approve_request():
         if not parent or not parent.get('face_template'):
             return jsonify({"error": "Parent face not registered"}), 400
         
-        from multiple_face_detection import app as mfd_app
-        img_rgb = _decode_data_uri_to_rgb(captured_face)
-        det_ann, det_crops, _, _ = mfd_app.detect_faces(img_rgb, compute_embeddings=False, crop_mode="Face")
-        if not det_crops:
-            return jsonify({"error": "No face detected in captured image"}), 400
-        
-        emb = mfd_app.get_embedder().embed(det_crops[0])
-        emb = _normalize_vec(emb)
-        
-        stored_template = np.frombuffer(base64.b64decode(parent['face_template']), dtype=np.float32)
-        similarity = float(np.dot(emb, stored_template))
+        from tasks import detect_faces_task
+        data_part = captured_face.split(",")[-1] if "," in captured_face else captured_face
+        try:
+            result = detect_faces_task.apply_async(args=[data_part, {"fast": True}, vendor_id]).get(timeout=60)
+            faces = result.get("faces", [])
+            if not faces:
+                return jsonify({"error": "No face detected in captured image"}), 400
+            
+            emb_vec_b64 = faces[0].get("emb_vec", "")
+            if not emb_vec_b64:
+                return jsonify({"error": "Failed to extract embeddings"}), 500
+                
+            emb = np.frombuffer(base64.b64decode(emb_vec_b64), dtype=np.float32)
+            stored_template = np.frombuffer(base64.b64decode(parent['face_template']), dtype=np.float32)
+            similarity = float(np.dot(emb, stored_template))
+        except Exception as e:
+            return jsonify({"error": f"Inference failed or timed out: {str(e)}"}), 500
         
         if similarity < 0.6:
              return jsonify({"error": "Face verification failed", "similarity": similarity}), 401

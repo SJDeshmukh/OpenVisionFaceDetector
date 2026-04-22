@@ -744,30 +744,20 @@ def vendor_has_feature(vendor_id, feature_name):
 
 def _extract_structural_vector(lmks):
     """
-    Extracts a pose-invariant geometric ratio vector from 68-point landmarks.
-    Source of truth for all face recognition components.
+    Extracts a 204-dimensional geometric mesh signature (68 pts * 3 coords).
+    Normalized for translation and scale, but preserves 3D physical shape.
     """
-    if lmks is None or len(lmks) != 68:
-        return np.array([], dtype=np.float32)
+    import numpy as np
+    if lmks is None or len(lmks) != 68: return np.array([], dtype=np.float32)
     
-    # Anchor points for normalization
-    left_eye_center = np.mean(lmks[36:42], axis=0)
-    right_eye_center = np.mean(lmks[42:48], axis=0)
-    interocular_dist = float(np.linalg.norm(left_eye_center - right_eye_center))
-    if interocular_dist < 1e-5: 
-        return np.array([], dtype=np.float32)
+    # Anchor point: Nose bridge (top of nose)
+    anchor = lmks[27] if len(lmks) > 27 else lmks[0]
     
-    nose = lmks[33]
-    vec = []
-    # 67 dimensions: distances from nose tip to every other point, normalized by IOD
-    for i in range(68):
-        if i == 33: continue 
-        dist = float(np.linalg.norm(lmks[i] - nose)) / interocular_dist
-        vec.append(dist)
-        
-    v = np.array(vec, dtype=np.float32)
-    # Final unit normalization for cosine similarity compatibility
-    norm = float(np.linalg.norm(v))
-    if norm > 1e-7:
-        v = v / norm
-    return v
+    # Scale factor: Inter-ocular distance (36-45)
+    le = np.mean(lmks[36:42], axis=0) if len(lmks) >= 42 else lmks[36]
+    re = np.mean(lmks[42:48], axis=0) if len(lmks) >= 48 else lmks[45]
+    iod = np.linalg.norm(le - re)
+    if iod < 1e-5: iod = 1.0
+    
+    mesh_norm = (lmks - anchor) / iod
+    return mesh_norm.flatten().astype(np.float32)

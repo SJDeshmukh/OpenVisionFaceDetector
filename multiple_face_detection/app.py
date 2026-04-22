@@ -745,7 +745,7 @@ def get_retina_det():
     if _retina_det is None:
         try:
             from facexlib.detection import init_detection_model
-            _retina_det = init_detection_model('retinaface_resnet50', half=False)
+            _retina_det = init_detection_model('retinaface_mobile0.25', half=False)
         except Exception:
             _retina_det = False # Use False as a "tried but failed" marker
     return _retina_det if _retina_det is not False else None
@@ -1079,24 +1079,22 @@ def prepare_embedding_crop(pure_face: np.ndarray, lmks_local=None, skip_enhancem
     fh, fw = pure_face.shape[:2]
     min_dim = min(fh, fw)
     
-    # ── Step 1: Smart Resize & Sharpen (Fast CV path) ──────────────────────
+    # ── Step 1: Real-ESRGAN adaptive upscale ────────────────────────────────
     target_scale = 1
-    if min_dim < 64:
-        target_scale = 2
+    if not skip_enhancement:
+        if min_dim < 80:
+            target_scale = 4
+        elif min_dim < 160:
+            target_scale = 2
     
-    if target_scale > 1:
-        if not skip_enhancement and min_dim < 48:
-            try:
-                # We use the lock here as this might be called from threads or processes
-                with _realesrgan_lock:
-                    enhanced = get_realesrgan_manager().upscale(pure_face, scale=2)
-            except Exception:
-                enhanced = cv2.resize(pure_face, (fw*2, fh*2), interpolation=cv2.INTER_LANCZOS4)
+    try:
+        if target_scale > 1:
+            with _realesrgan_lock:
+                enhanced = get_realesrgan_manager().upscale(pure_face, scale=target_scale)
         else:
-            enhanced = cv2.resize(pure_face, (fw*target_scale, fh*target_scale), interpolation=cv2.INTER_LANCZOS4)
-            enhanced = _clahe_luminance(enhanced, clip_limit=1.5)
-            enhanced = _unsharp_mask(enhanced, strength=0.6, kernel=3)
-    else:
+            enhanced = pure_face
+    except Exception as e:
+        print(f"[RealESRGAN] Adaptive upscale error: {e}", flush=True)
         enhanced = pure_face
 
     display_crop = enhanced

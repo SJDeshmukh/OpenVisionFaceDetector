@@ -195,6 +195,11 @@ def class_batch_commit(valid_data: ClassBatchCommitSchema):
     except Exception: return jsonify({"error": "embedder unavailable"}), 500
     saved = 0
     person_name_cache = {}
+    # Track which persons had their old embeddings cleared in this session.
+    # On first encounter of a person, clear ALL their previous embeddings so this
+    # batch fully replaces the prior registration. On subsequent encounters of the
+    # same person within the same batch, just INSERT (accumulate multiple views).
+    _cleared_persons = set()
     for a in assigns:
         try:
             item_id, face_index, person_id = a.item_id, a.face_index, a.person_id
@@ -238,11 +243,14 @@ def class_batch_commit(valid_data: ClassBatchCommitSchema):
                     if s_emb.size > 0: struct_blob = s_emb.astype(np.float32).tobytes()
                 except Exception: pass
             lmks_json = json.dumps(landmarks_3d) if landmarks_3d else None
-            
-            # CRITICAL FIX: Delete old (potentially bad/collapsed) embeddings for this person
-            # before saving the high-quality "learned" one from the bulk scan.
-            c.execute("DELETE FROM person_embeddings WHERE person_id = ? AND vendor_id = ?", (pid_key, vendor_id))
-            
+
+            # First time we see this person in the commit: replace ALL their old embeddings
+            # so this session's photos become the authoritative registration set.
+            if pid_key not in _cleared_persons:
+                c.execute("DELETE FROM person_embeddings WHERE person_id = ? AND vendor_id = ?", (pid_key, vendor_id))
+                _cleared_persons.add(pid_key)
+
+            # INSERT: accumulates multiple face embeddings per person within this batch
             c.execute("INSERT INTO person_embeddings (vendor_id, person_id, class_year, division, branch, vec, dim, struct_vec, landmarks_3d) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (vendor_id, int(person_id), str(class_year), str(division), str(branch), vec_blob, dim, struct_blob, lmks_json))
             
             # Update the main student profile image with this "labeling" crop if they don't have one,

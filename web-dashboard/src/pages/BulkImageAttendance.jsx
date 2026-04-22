@@ -549,6 +549,8 @@ const BulkImageAttendance = () => {
     }
   };
 
+
+
   const markOne = async (f) => {
     const personId = assign[f.globalIndex];
     if (!personId) {
@@ -852,6 +854,7 @@ const BulkImageAttendance = () => {
           >
             Save Embeddings
           </button>
+
           <button
             onClick={markAll}
             disabled={faces.length === 0 || isMarkingAll}
