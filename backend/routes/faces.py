@@ -18,7 +18,7 @@ from storage import upload_base64_image, presigned_url_for_key, OBJECT_STORAGE_E
 import db_factory
 from db_factory import set_row_factory
 from concurrent.futures import ThreadPoolExecutor
-from services.face_service import _extract_structural_vector, _calculate_pose
+from services.face_service import _extract_structural_vector
 
 def _get_redis():
     try:
@@ -322,27 +322,27 @@ def get_persons():
     
     if class_year:
         if is_pg:
-            query += " AND (custom_data::jsonb->>'class_year' = ? OR custom_data::jsonb->>'Year' = ? OR custom_data::jsonb->>'year' = ?)"
+            query += " AND (LOWER(TRIM(custom_data::jsonb->>'class_year')) = LOWER(TRIM(?)) OR LOWER(TRIM(custom_data::jsonb->>'Year')) = LOWER(TRIM(?)) OR LOWER(TRIM(custom_data::jsonb->>'year')) = LOWER(TRIM(?)))"
             params.extend([str(class_year), str(class_year), str(class_year)])
         else:
-            query += " AND (custom_data LIKE ? OR custom_data LIKE ? OR custom_data LIKE ?)"
-            params += [f'%\"class_year\":\"{class_year}\"%', f'%\"Year\":\"{class_year}\"%', f'%\"year\":\"{class_year}\"%']
+            query += " AND (LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ?)"
+            params += [f'%\"class_year\":\"{class_year.lower()}\"%', f'%\"year\":\"{class_year.lower()}\"%', f'%\"Year\":\"{class_year.lower()}\"%']
             
     if division:
         if is_pg:
-            query += " AND (custom_data::jsonb->>'division' = ? OR custom_data::jsonb->>'Division' = ?)"
+            query += " AND (LOWER(TRIM(custom_data::jsonb->>'division')) = LOWER(TRIM(?)) OR LOWER(TRIM(custom_data::jsonb->>'Division')) = LOWER(TRIM(?)))"
             params += [str(division), str(division)]
         else:
-            query += " AND (custom_data LIKE ? OR custom_data LIKE ?)"
-            params += [f'%\"division\":\"{division}\"%', f'%\"Division\":\"{division}\"%']
+            query += " AND (LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ?)"
+            params += [f'%\"division\":\"{division.lower()}\"%', f'%\"Division\":\"{division.lower()}\"%']
             
     if branch:
         if is_pg:
-            query += " AND (custom_data::jsonb->>'branch' = ? OR custom_data::jsonb->>'Branch' = ?)"
+            query += " AND (LOWER(TRIM(custom_data::jsonb->>'branch')) = LOWER(TRIM(?)) OR LOWER(TRIM(custom_data::jsonb->>'Branch')) = LOWER(TRIM(?)))"
             params += [str(branch), str(branch)]
         else:
-            query += " AND (custom_data LIKE ? OR custom_data LIKE ?)"
-            params += [f'%\"branch\":\"{branch}\"%', f'%\"Branch\":\"{branch}\"%']
+            query += " AND (LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ?)"
+            params += [f'%\"branch\":\"{branch.lower()}\"%', f'%\"Branch\":\"{branch.lower()}\"%']
             
     # Default sorting to ensure stability (Display ID based)
     query += " ORDER BY display_id ASC"
@@ -438,6 +438,25 @@ def upload_face():
     if branch: custom_dict['branch'] = branch
     
     custom_data = json.dumps(custom_dict) if custom_dict else None
+    
+    # --- AUTOMATED EXTRACTION FOR NEW UPLOADS ---
+    # If the request comes with an image but no embeddings/struct_vec, compute them now
+    # to ensure the re-identification engine has the required data (60:40 weighted matching).
+    if face_image and not templates_list and not templates and not struct_vec_list and not struct_vec:
+        try:
+            from services.face_service import _detect_faces_from_bytes
+            header, encoded = face_image.split(',', 1) if ',' in face_image else ('', face_image)
+            raw = base64.b64decode(encoded)
+            # Use 'fast' mode to skip heavy enhancement but still get precise 3D landmarks
+            faces_found, _ = _detect_faces_from_bytes(raw, {"fast": True}, vendor_id)
+            if faces_found:
+                # Use the first detected face as the primary template
+                f = faces_found[0]
+                templates_list = [f['emb_vec']]
+                struct_vec_list = [f['struct_vec']]
+                landmarks_3d_list = [f['landmarks_3d']]
+        except Exception as e:
+            print(f"[FACES_ROUTE] Auto-extraction failed: {e}", flush=True)
 
     # Use caller's vendor_id. If SuperAdmin, allow overriding via payload.
     vendor_id = caller_vendor_id

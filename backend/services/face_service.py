@@ -19,45 +19,37 @@ def get_realtime_engine():
 
 def _extract_structural_vector(lmks):
     """
-    Extracts a 204-dimensional geometric mesh signature (68 pts * 3 coords).
-    Normalized for translation and scale, but preserves 3D physical shape.
+    Extracts a pose-invariant geometric ratio vector from 68-point landmarks.
+    Focuses on physiological proportions (ratios) rather than absolute distances.
     """
-    if lmks is None or len(lmks) != 68: return np.array([], dtype=np.float32)
-    
-    # Anchor point: Nose bridge (top of nose)
-    anchor = lmks[27] if len(lmks) > 27 else lmks[0]
-    
-    # Scale factor: Inter-ocular distance (36-45)
-    # Using 3D distance for extreme-pose robustness
-    le = np.mean(lmks[36:42], axis=0) if len(lmks) >= 42 else lmks[36]
-    re = np.mean(lmks[42:48], axis=0) if len(lmks) >= 48 else lmks[45]
-    iod = np.linalg.norm(le - re)
-    if iod < 1e-5: iod = 1.0
-    
-    # Normalize mesh: Centering and Scaling
-    mesh_norm = (lmks - anchor) / iod
-    
-    # Flatten to 204-dim vector
-    v = mesh_norm.flatten().astype(np.float32)
-    return v
+    if lmks is None or len(lmks) != 68:
+        return np.array([], dtype=np.float32)
 
-def _calculate_pose(lmks):
-    """Estimates Yaw, Pitch, Roll in degrees from 3D landmarks."""
-    if lmks is None or len(lmks) < 68: return 0.0, 0.0, 0.0
-    # Simplistic geometric estimation:
-    # Yaw: nose tip relative to jaw width
-    jaw_w = np.linalg.norm(lmks[0] - lmks[16])
-    nose_x = lmks[30][0] - (lmks[0][0] + lmks[16][0])/2
-    yaw = (nose_x / jaw_w) * 90 if jaw_w > 0 else 0
-    
-    # Pitch: nose depth relative to eyes-to-mouth height
-    eye_y = (lmks[36][1] + lmks[45][1])/2
-    mouth_y = lmks[62][1]
-    face_h = abs(eye_y - mouth_y)
-    nose_y = lmks[30][1] - (eye_y + mouth_y)/2
-    pitch = (nose_y / face_h) * 90 if face_h > 0 else 0
-    
-    return float(abs(yaw)), float(abs(pitch)), 0.0
+    le = np.mean(lmks[36:42], axis=0)
+    re = np.mean(lmks[42:48], axis=0)
+    nose_tip = lmks[33]
+    mouth_l = lmks[48]
+    mouth_r = lmks[54]
+    chin = lmks[8]
+    forehead_top = lmks[27]
+
+    iod = np.linalg.norm(le - re)
+    if iod < 1e-5: return np.array([], dtype=np.float32)
+
+    nose_to_chin = np.linalg.norm(nose_tip - chin) / iod
+    eye_to_nose = np.linalg.norm((le + re)/2 - nose_tip) / iod
+    mouth_width = np.linalg.norm(mouth_l - mouth_r) / iod
+    face_height = np.linalg.norm(forehead_top - chin) / iod
+    jaw_breadth = np.linalg.norm(lmks[4] - lmks[12]) / iod
+
+    key_indices = [0, 4, 8, 12, 16, 17, 21, 22, 26, 36, 39, 42, 45, 48, 51, 54, 57, 60, 64, 66]
+    vec = [nose_to_chin, eye_to_nose, mouth_width, face_height, jaw_breadth]
+    for idx in key_indices:
+        vec.append(np.linalg.norm(lmks[idx] - nose_tip) / iod)
+
+    v = np.array(vec, dtype=np.float32)
+    n = np.linalg.norm(v)
+    return (v / n) if n > 1e-6 else v
 
 def _normalize_vec(v: np.ndarray) -> np.ndarray:
     if v is None or v.size == 0:
@@ -99,8 +91,8 @@ def _apply_contrastive_refinement(sims: list, penalty_scale: float = 0.2) -> lis
         gap = s1 - s2
         
         # AMBIGUITY DETECTION: If the model is collapsed (both high sim)
-        # but the gap is tiny (< 3%), flag it as ambiguous.
-        if s1 > 0.7 and gap < 0.03:
+        # but the gap is tiny (< 5%), flag it.
+        if s1 > 0.7 and gap < 0.05:
             top1['is_ambiguous'] = True
             top2['is_ambiguous'] = True
         
@@ -178,15 +170,16 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
         try:
             q = "SELECT person_id, vec, dim, struct_vec, class_year, division, branch FROM person_embeddings WHERE vendor_id = ?"
             args = [int(vendor_id or 0)]
+            
+            # Case-insensitive robust filtering for Postgres/SQLite
             if class_year:
-                # STRICT FILTERING: Only include students from the EXACT class if one is specified
-                q += " AND class_year = ?"
+                q += " AND (LOWER(TRIM(class_year)) = LOWER(TRIM(?)) OR class_year IS NULL OR class_year = '')"
                 args.append(str(class_year))
             if division:
-                q += " AND division = ?"
+                q += " AND LOWER(TRIM(division)) = LOWER(TRIM(?))"
                 args.append(str(division))
             if branch:
-                q += " AND branch = ?"
+                q += " AND LOWER(TRIM(branch)) = LOWER(TRIM(?))"
                 args.append(str(branch))
             c.execute(q, args)
             rows_emb = c.fetchall() or []
@@ -363,16 +356,25 @@ def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3, struct_vec=
         if cache.get('faiss_index') is not None and USE_FAISS:
             try:
                 q = v.reshape(1, -1).astype(np.float32)
-                search_k = min(topk * 20, len(cache['items']))
+                # Search more than topk to account for refinement and duplicates
+                search_k = min(topk * 10, len(cache['items']))
                 if _FAISS_LOCK:
                     with _FAISS_LOCK: D, I = cache['faiss_index'].search(q, search_k)
                 else:
                     D, I = cache['faiss_index'].search(q, search_k)
                 
+                # FAISS map facilitates mapping indices to person_ids
+                fmap = cache.get('faiss_map') or []
                 for rank, idx in enumerate(I[0].tolist()):
-                    if idx < 0 or idx >= len(cache['items']): continue
-                    item = cache['items'][idx]
-                    candidates.append((item, float(D[0][rank])))
+                    if idx < 0 or idx >= len(fmap): continue
+                    pid, nm = fmap[idx]
+                    arcface_sim = float(D[0][rank])
+                    
+                    # Match item for structural and scope data
+                    item = next((x for x in cache['items'] if x['person_id'] == int(pid)), None)
+                    if not item: continue
+
+                    candidates.append((item, arcface_sim))
             except Exception: pass
         
         if not candidates:
@@ -381,12 +383,29 @@ def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3, struct_vec=
 
         raw = []
         for item, arcface_sim in candidates:
-            # 1. SCOPE FILTERING
+            # 1. SCOPE FILTERING (Case-insensitive & Robust)
             is_perfect = True
-            if class_year and str(item.get('class_year') or '') != str(class_year): is_perfect = False
-            if division and str(item.get('division') or '') != str(division): is_perfect = False
-            if branch and str(item.get('branch') or '') != str(branch): is_perfect = False
-            if (class_year or division or branch) and not is_perfect: continue
+            
+            # Use lowercase trimmed strings for comparison
+            target_year = str(class_year or "").strip().lower()
+            target_div = str(division or "").strip().lower()
+            target_branch = str(branch or "").strip().lower()
+            
+            item_year = str(item.get('class_year') or "").strip().lower()
+            item_div = str(item.get('division') or "").strip().lower()
+            item_branch = str(item.get('branch') or "").strip().lower()
+
+            if target_year and item_year != target_year: is_perfect = False
+            if target_div and item_div != target_div: is_perfect = False
+            if target_branch and item_branch != target_branch: is_perfect = False
+            
+            # Flexible filtering: If student has NO class assigned, they match ANY class filter 
+            # (Matches 11b5fbd4 flexible behavior)
+            if target_year and item_year == "": is_perfect = True
+            
+            # If a strict class scope was requested and this person is not in it, skip.
+            if (target_year or target_div or target_branch) and not is_perfect:
+                continue
 
             # 2. ADAPTIVE 3D MATCHING
             sim = arcface_sim
@@ -395,8 +414,7 @@ def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3, struct_vec=
                 s_u = item['struct_vec']
                 if s_u.size == struct_vec.size and struct_vec.size > 0:
                     try:
-                        # 3D Mesh Correlation
-                        # Dot product of normalized coordinates
+                        # 3D Mesh Correlation (68pts * 3coords = 204 values)
                         struct_sim = float(np.dot(s_u, struct_vec))
                         # Weighting: 60% 3D Structural Mesh, 40% Facial Embeddings (ArcFace)
                         sim = (arcface_sim * 0.40) + (struct_sim * 0.60)
@@ -411,8 +429,9 @@ def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3, struct_vec=
                 'perfect_scope': is_perfect
             })
             
-        # Deduplicate and take topk
-        refined = _dedup(raw, topk)
+        # Deduplicate and apply contrastive refinement (Separates top candidates)
+        deduped = _dedup(raw, topk * 2) 
+        refined = _apply_contrastive_refinement(deduped)
         
         # 3. IMAGE & METADATA FETCHING
         try:
@@ -707,16 +726,28 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                         if emb_norm.size > 0:
                             embeddings_map[len(face_data)-1] = emb_norm
 
-            # Per-face individual lookup: each face gets its own suggestion from its own
-            # embedding + struct_vec. Centroid-based cluster lookups caused every face in a
-            # cluster (often different people grouped by demographic similarity) to share one
-            # wrong suggestion.
+            # Step 2: Intra-batch Clustering
+            clusters = _cluster_batch_embeddings(embeddings_map, threshold=0.90)
+
+            # Step 3: Identify Clusters and Assign suggestions
+            for cluster in clusters:
+                centroid = cluster['centroid']
+                best_sv = None
+                best_s = -1.0
+                for f_idx in cluster['indices']:
+                    f = face_data[f_idx]
+                    f_score = f.get('score')
+                    if f_score is not None and float(f_score) > best_s:
+                        best_s = float(f_score)
+                        best_sv = f.get('struct_vec_val')
+                sugg = _suggest_from_cache(centroid, vcache, topk=3, struct_vec=best_sv, class_year=class_year, division=division, branch=branch)
+                for f_idx in cluster['indices']:
+                    face_data[f_idx]['suggestions'] = sugg
+
+            # Step 4: Fallback for any non-clustered faces
             for f in face_data:
-                f['suggestions'] = _suggest_from_cache(
-                    f['emb_norm'], vcache, topk=3,
-                    struct_vec=f['struct_vec_val'],
-                    class_year=class_year, division=division, branch=branch
-                )
+                if 'suggestions' not in f:
+                    f['suggestions'] = _suggest_from_cache(f['emb_norm'], vcache, topk=3, struct_vec=f['struct_vec_val'], class_year=class_year, division=division, branch=branch)
                 if 'emb_norm' in f: del f['emb_norm']
                 if 'struct_vec_val' in f: del f['struct_vec_val']
 

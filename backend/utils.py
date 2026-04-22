@@ -744,20 +744,34 @@ def vendor_has_feature(vendor_id, feature_name):
 
 def _extract_structural_vector(lmks):
     """
-    Extracts a 204-dimensional geometric mesh signature (68 pts * 3 coords).
-    Normalized for translation and scale, but preserves 3D physical shape.
+    Extracts a pose-invariant geometric ratio vector from 68-point landmarks.
+    Focuses on physiological proportions (ratios) rather than absolute distances.
     """
     import numpy as np
     if lmks is None or len(lmks) != 68: return np.array([], dtype=np.float32)
-    
-    # Anchor point: Nose bridge (top of nose)
-    anchor = lmks[27] if len(lmks) > 27 else lmks[0]
-    
-    # Scale factor: Inter-ocular distance (36-45)
-    le = np.mean(lmks[36:42], axis=0) if len(lmks) >= 42 else lmks[36]
-    re = np.mean(lmks[42:48], axis=0) if len(lmks) >= 48 else lmks[45]
+
+    le = np.mean(lmks[36:42], axis=0)
+    re = np.mean(lmks[42:48], axis=0)
+    nose_tip = lmks[33]
+    mouth_l = lmks[48]
+    mouth_r = lmks[54]
+    chin = lmks[8]
+    forehead_top = lmks[27]
+
     iod = np.linalg.norm(le - re)
-    if iod < 1e-5: iod = 1.0
-    
-    mesh_norm = (lmks - anchor) / iod
-    return mesh_norm.flatten().astype(np.float32)
+    if iod < 1e-5: return np.array([], dtype=np.float32)
+
+    nose_to_chin = np.linalg.norm(nose_tip - chin) / iod
+    eye_to_nose = np.linalg.norm((le + re)/2 - nose_tip) / iod
+    mouth_width = np.linalg.norm(mouth_l - mouth_r) / iod
+    face_height = np.linalg.norm(forehead_top - chin) / iod
+    jaw_breadth = np.linalg.norm(lmks[4] - lmks[12]) / iod
+
+    key_indices = [0, 4, 8, 12, 16, 17, 21, 22, 26, 36, 39, 42, 45, 48, 51, 54, 57, 60, 64, 66]
+    vec = [nose_to_chin, eye_to_nose, mouth_width, face_height, jaw_breadth]
+    for idx in key_indices:
+        vec.append(np.linalg.norm(lmks[idx] - nose_tip) / iod)
+
+    v = np.array(vec, dtype=np.float32)
+    n = np.linalg.norm(v)
+    return (v / n) if n > 1e-6 else v
