@@ -1,9 +1,13 @@
 import time
+import threading
 import os
 import sys
 import numpy as np
 from PIL import Image
 import cv2
+
+# Serialize concurrent Celery-thread calls: self.recon_model.input_img is shared state
+_inference_lock = threading.Lock()
 
 # Add 3DDFA-V3 to path for internal imports
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -224,10 +228,12 @@ class RealTimeEngine:
             return [[] for _ in range(len(face_crops))]
 
         # Single batched forward pass — model called once for all faces
+        # Lock required: concurrent threads share recon_model.input_img (mutable state)
         _t_fwd = time.time()
-        batch_tensor = torch.stack(tensors).to(self.args.device)
-        self.recon_model.input_img = batch_tensor
-        results = self.recon_model.forward(render=False)
+        with _inference_lock:
+            batch_tensor = torch.stack(tensors).to(self.args.device)
+            self.recon_model.input_img = batch_tensor
+            results = self.recon_model.forward(render=False)
         print(f"[TIMING] 3D forward pass: {time.time()-_t_fwd:.3f}s for {len(tensors)} tensors", flush=True)
 
         all_landmarks = [[] for _ in range(len(face_crops))]

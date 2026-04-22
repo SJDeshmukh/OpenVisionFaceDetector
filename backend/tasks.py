@@ -618,3 +618,33 @@ def search_embedding_task(img_b64, params, vendor_id):
 
 if celery:
     search_embedding_task = celery.task(name="tasks.search_embedding")(search_embedding_task)
+
+
+# ── Model pre-warming ────────────────────────────────────────────────────────
+# Load all ML models when the worker process starts, BEFORE accepting any task.
+# Without this, the first batch task triggers a 14-16s cold-start penalty.
+from celery.signals import worker_ready
+
+@worker_ready.connect
+def _pre_warm_models(sender=None, **kwargs):
+    import time as _t0_mod
+    import os as _os
+    import sys as _sys
+    _os.environ.setdefault("FORCE_3D_ENGINE", "1")
+    BASE = "/home/ubuntu/OpenVisionFaceDetector"
+    for _p in [BASE + "/backend", BASE]:
+        if _p not in _sys.path:
+            _sys.path.insert(0, _p)
+    _t0 = _t0_mod.time()
+    print("[WORKER] Pre-warming ML models...", flush=True)
+    try:
+        from multiple_face_detection.app import get_retina_det, get_realtime_engine, get_embedder
+        get_retina_det()
+        print(f"[WORKER] RetinaFace ready ({_t0_mod.time()-_t0:.1f}s)", flush=True)
+        get_realtime_engine()
+        print(f"[WORKER] 3D engine ready ({_t0_mod.time()-_t0:.1f}s)", flush=True)
+        get_embedder()._load()
+        print(f"[WORKER] All models hot in {_t0_mod.time()-_t0:.1f}s — tasks will start fast", flush=True)
+    except Exception:
+        import traceback as _tb
+        print(f"[WORKER] Pre-warm error:\n{_tb.format_exc()}", flush=True)

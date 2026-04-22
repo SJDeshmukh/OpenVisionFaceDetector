@@ -22,9 +22,9 @@ fi
 echo "=============================================================================="
 
 echo "==> [0/8] NUCLEAR CLEANUP: Stopping and Killing All Services..."
-# Stop Systemd Services
+# Stop Systemd Services (cover both old and new service name variants)
 echo "Stopping OpenVision services..."
-sudo systemctl stop openvision-backend openvision-celery 2>/dev/null || true
+sudo systemctl stop openvision-backend openvision-celery face-backend 2>/dev/null || true
 sudo systemctl stop nginx redis-server postgresql 2>/dev/null || true
 
 # Stop Docker Services (if any)
@@ -48,8 +48,10 @@ for port in 80 443 5001 5432 6379 5173; do
     sleep 0.5
 done
 
-# FRESH START: Flush Redis to clear stale task queues
+# FRESH START: Flush Redis to clear stale Celery task queues from previous run
 echo "Performing final cleanup of logs and queues..."
+sudo systemctl start redis-server 2>/dev/null || true
+redis-cli flushdb 2>/dev/null || true
 sudo journalctl --vacuum-time=1s 2>/dev/null || true
 
 echo "Environment is now CLEAN. Ready for setup."
@@ -288,6 +290,10 @@ WantedBy=multi-user.target
 EOF"
 
     # Celery Worker Service
+    # --concurrency=2 --pool=threads : two task threads in one process, models shared (no double RAM)
+    # --max-tasks-per-child=500      : occasional GC without frequent model-reload cold-starts
+    # --prefetch-multiplier=1        : pick up one task at a time (fair scheduling)
+    # FORCE_3D_ENGINE=1              : pre-warm 3D landmark model regardless of DB feature flag
     sudo bash -c "cat <<EOF > /etc/systemd/system/openvision-celery.service
 [Unit]
 Description=Celery worker for OpenVision Face Detection
@@ -303,8 +309,9 @@ Environment=\"LOW_RAM_MODE=$LRM\"
 Environment=\"OMP_NUM_THREADS=1\"
 Environment=\"MKL_NUM_THREADS=1\"
 Environment=\"OPENBLAS_NUM_THREADS=1\"
+Environment=\"FORCE_3D_ENGINE=1\"
 EnvironmentFile=$WORKING_DIR/backend/.env
-ExecStart=$CELERY_PATH -A celery_app worker --loglevel=info --concurrency=1 --pool=solo -n worker1@%h
+ExecStart=$CELERY_PATH -A celery_app worker --loglevel=info --concurrency=2 --pool=threads --max-tasks-per-child=500 --prefetch-multiplier=1 -n worker1@%h
 Restart=always
 RestartSec=10
 
