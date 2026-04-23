@@ -32,11 +32,13 @@ cachetools
 # Database (Postgres support)
 psycopg2-binary
 
-# AI & Computer Vision (Face Enhancement)
+# AI & Computer Vision (Face Recognition & Enhancement)
 basicsr
 gfpgan
 realesrgan
 facexlib
+onnxruntime
+onnx
 
 # AWS (S3 storage + Lambda)
 boto3

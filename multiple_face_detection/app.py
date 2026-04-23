@@ -551,7 +551,7 @@ class FaceEmbedder:
         return self._available
 
     def embed(self, crop_rgb: np.ndarray) -> np.ndarray:
-        if crop_rgb is None or crop_rgb.size == 0 or self._available is not True:
+        if crop_rgb is None or crop_rgb.size == 0 or self._available is not True or self._embedder is None:
             return np.zeros((0,), dtype=np.float32)
         try:
             # FacePluginEmbedder handles resizing internally
@@ -1104,12 +1104,6 @@ def prepare_embedding_crop(pure_face: np.ndarray, lmks_local=None, skip_enhancem
 
     return emb_crop, display_crop
 
-
-def get_embedder():
-    global _embedder
-    if _embedder is None:
-        _embedder = FaceEmbedder(sdk_dir=os.path.join(os.path.dirname(__file__), "sdk_src"))
-    return _embedder
 
 def _extract_3d_for_face(engine, rgb, bx1, by1, bx2, by2, img_w, img_h):
     """Extract 3D landmarks for one face crop (CPU-only, no lock needed). Returns (lmks_global, struct_vec, lmks_local_emb)."""
