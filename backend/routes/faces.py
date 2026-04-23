@@ -440,23 +440,28 @@ def upload_face():
     custom_data = json.dumps(custom_dict) if custom_dict else None
     
     # --- AUTOMATED EXTRACTION FOR NEW UPLOADS ---
-    # If the request comes with an image but no embeddings/struct_vec, compute them now
-    # to ensure the re-identification engine has the required data (60:40 weighted matching).
-    if face_image and not templates_list and not templates and not struct_vec_list and not struct_vec:
+    # We always re-extract embeddings from the face_image if provided to ensure
+    # OCP (FacePlugin) compatibility, bypassing any ArcFace templates from the scan.
+    if face_image:
         try:
-            from services.face_service import _detect_faces_from_bytes
-            header, encoded = face_image.split(',', 1) if ',' in face_image else ('', face_image)
-            raw = base64.b64decode(encoded)
-            # Use 'fast' mode to skip heavy enhancement but still get precise 3D landmarks
-            faces_found, _ = _detect_faces_from_bytes(raw, {"fast": True}, vendor_id)
-            if faces_found:
-                # Use the first detected face as the primary template
-                f = faces_found[0]
-                templates_list = [f['emb_vec']]
-                struct_vec_list = [f['struct_vec']]
-                landmarks_3d_list = [f['landmarks_3d']]
+            from services.face_service import _decode_data_uri_to_rgb
+            from multiple_face_detection import app as mfd_app
+            img_rgb = _decode_data_uri_to_rgb(face_image)
+            if img_rgb is not None:
+                emb = mfd_app.get_embedder().embed(img_rgb)
+                if emb is not None and emb.size > 0:
+                    templates_list = [base64.b64encode(emb.astype(np.float32).tobytes()).decode('utf-8')]
+                    # Also compute struct_vec for 3D matching consistency
+                    engine = mfd_app.get_realtime_engine()
+                    if engine:
+                        lmks = engine.extract_landmarks(img_rgb)
+                        if lmks:
+                            sv = mfd_app._extract_structural_vector(lmks[0])
+                            if sv is not None and sv.size > 0:
+                                struct_vec_list = [base64.b64encode(sv.astype(np.float32).tobytes()).decode('utf-8')]
+                                landmarks_3d_list = [lmks[0].tolist()]
         except Exception as e:
-            print(f"[FACES_ROUTE] Auto-extraction failed: {e}", flush=True)
+            print(f"[FACES_ROUTE] OCP Auto-extraction failed: {e}", flush=True)
 
     # Use caller's vendor_id. If SuperAdmin, allow overriding via payload.
     vendor_id = caller_vendor_id

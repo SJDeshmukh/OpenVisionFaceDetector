@@ -6,6 +6,7 @@ import time
 import sqlite3
 import json
 from threading import Lock
+import os
 
 # Local imports to avoid circular dependencies where needed
 # In a real refactor, these caches should probably live here.
@@ -135,7 +136,7 @@ def _apply_contrastive_refinement(sims: list, penalty_scale: float = 0.2) -> lis
         
     return sorted(sims, key=lambda x: x['similarity'], reverse=True)
 
-def _cluster_batch_embeddings(embeddings_map: dict, threshold: float = 0.90) -> list:
+def _cluster_batch_embeddings(embeddings_map: dict, threshold: float = 0.75) -> list:
     """
     Groups embeddings that belong to the same person within a batch (Intra-batch Clustering).
     embeddings_map: {global_index: embedding_vector}
@@ -150,7 +151,7 @@ def _cluster_batch_embeddings(embeddings_map: dict, threshold: float = 0.90) -> 
         target_cluster = None
         
         for c in clusters:
-            sim = float(np.dot(c['centroid'], v))
+            sim = (float(np.dot(c['centroid'], v)) + 1.0) / 2.0
             if sim > threshold and sim > top_sim:
                 top_sim = sim
                 target_cluster = c
@@ -362,7 +363,10 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
             _VENDOR_EMB_CACHE[key]['items'] = _VENDOR_EMB_CACHE[key]['items'][:max_items]
         return _VENDOR_EMB_CACHE[key]
         return _VENDOR_EMB_CACHE[key]
-    except Exception:
+    except Exception as e:
+        import traceback
+        print(f"[_ensure_vendor_emb_cache] EXCEPTION: {e}", flush=True)
+        traceback.print_exc()
         return None
 
 def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3, struct_vec=None, class_year=None, division=None, branch=None) -> list:
@@ -396,7 +400,8 @@ def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3, struct_vec=
                 for rank, idx in enumerate(I[0].tolist()):
                     if idx < 0 or idx >= len(fmap): continue
                     pid, nm = fmap[idx]
-                    arcface_sim = float(D[0][rank])
+                    dot_val = float(D[0][rank]) if D is not None else 0.0
+                    arcface_sim = (dot_val + 1.0) / 2.0
                     
                     # Match item for structural and scope data
                     item = next((x for x in cache['items'] if x['person_id'] == int(pid)), None)
@@ -407,7 +412,7 @@ def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3, struct_vec=
         
         if not candidates:
             # Linear scan fallback
-            candidates = [(it, float(np.dot(it['vec'], v))) for it in cache['items']]
+            candidates = [(it, (float(np.dot(it['vec'], v)) + 1.0) / 2.0) for it in cache['items']]
 
         raw = []
         for item, arcface_sim in candidates:

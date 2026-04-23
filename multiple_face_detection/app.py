@@ -18,6 +18,7 @@ import base64
 import torch
 import multiprocessing
 import gc
+from multiple_face_detection.mobile_embedder import FacePluginEmbedder
 
 _bulk_attendance_cache = {"v": None, "ts": 0.0}
 _BULK_CACHE_TTL = 60.0
@@ -478,7 +479,10 @@ class RealESRGANManager:
 _realesrgan_manager = None
 def get_realesrgan_manager():
     global _realesrgan_manager
-    from utils import LOW_RAM_MODE
+    try:
+        from backend.utils import LOW_RAM_MODE
+    except ImportError:
+        from utils import LOW_RAM_MODE
     if LOW_RAM_MODE: _check_and_unload_models()
     if _realesrgan_manager is None:
         _realesrgan_manager = RealESRGANManager(base_dir=os.path.dirname(__file__))
@@ -531,109 +535,47 @@ class CodeFormerManager:
             return crop_rgb
 
 class FaceEmbedder:
-    def __init__(self):
-        self._model = None
+    def __init__(self, sdk_dir: str):
         self._available = None
-        self._mode = "arcface"
-        self._device = "cpu"
-        self._last_used = 0
+        self._embedder = None
+        self._load()
 
-    def _check_available(self) -> bool:
-        if self._available is not None:
-            return self._available
+    def _load(self):
         try:
-            import torch  # noqa
-            from facexlib.recognition import arcface_arch  # noqa
-            from facexlib.utils import load_file_from_url  # noqa
+            # We ignore sdk_dir now as we use the specific FacePlugin models in multiple_face_detection/models/
+            self._embedder = FacePluginEmbedder()
             self._available = True
         except Exception as e:
-            print(f"FaceEmbedder failed to load facexlib reqs: {e}")
+            print(f"[FACEPLUGIN] Error loading ONNX models: {e}")
             self._available = False
         return self._available
 
-    def _load(self):
-        if not is_bulk_attendance_allowed():
-            print("[FaceEmbedder] Bulk attendance feature not enabled for any vendor. Skipping model load.", flush=True)
-            return None
-        init_third_party_paths(_BASE_DIR)
-        if self._model is not None:
-            return self._model
-        if not self._check_available():
-            return None
-        try:
-            import torch
-            if torch.cuda.is_available():
-                self._device = "cuda"
-            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available() and torch.backends.mps.is_built():
-                self._device = "mps"
-            else:
-                self._device = "cpu"
-        except Exception:
-            self._device = "cpu"
-            
-        import torch
-        from facexlib.recognition.arcface_arch import Backbone
-        from facexlib.utils import load_file_from_url
-        try:
-            m = Backbone(num_layers=50, drop_ratio=0.6, mode='ir_se')
-            url = 'https://github.com/xinntao/facexlib/releases/download/v0.1.0/recognition_arcface_ir_se50.pth'
-            model_path = load_file_from_url(url=url, model_dir='facexlib/weights', progress=True, file_name=None, save_dir=None)
-            
-            # Use weights_only=False to bypass PyTorch 2.0+ warnings on older weights
-            import warnings
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                state = torch.load(model_path, map_location=self._device, weights_only=False)
-                
-            m.load_state_dict(state, strict=True)
-            m = m.to(self._device).eval()
-            self._model = m
-            print(f"ArcFace model loaded on {self._device}")
-        except Exception as e:
-            print(f"Error loading ArcFace model weights: {e}")
-            self._model = None
-            
-        return self._model
-
     def embed(self, crop_rgb: np.ndarray) -> np.ndarray:
-        result = self.embed_batch([crop_rgb])
-        return result[0] if result else np.zeros((0,), dtype=np.float32)
+        if crop_rgb is None or crop_rgb.size == 0 or self._available is not True:
+            return np.zeros((0,), dtype=np.float32)
+        try:
+            # FacePluginEmbedder handles resizing internally
+            # We convert RGB to BGR as that's what the FacePlugin models usually expect
+            bgr = cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2BGR)
+            feature = self._embedder.embed(bgr)
+            return np.asarray(feature, dtype=np.float32).flatten()
+        except Exception as e:
+            print(f"[FACEPLUGIN] Embedding error: {e}", flush=True)
+            return np.zeros((0,), dtype=np.float32)
 
     def embed_batch(self, crops: list) -> list:
-        """Run all face crops through ArcFace in a single forward pass."""
         if not crops:
             return []
-        self._last_used = time.time()
-        m = self._load()
-        if m is None:
-            return [np.zeros((0,), dtype=np.float32)] * len(crops)
-        try:
-            import torch
-            import torchvision.transforms as T
-            t = T.Compose([
-                T.ToTensor(),
-                T.Resize((112, 112)),
-                T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-            ])
-            tensors, valid_idx = [], []
-            for i, crop in enumerate(crops):
-                if crop is not None and crop.size > 0:
-                    tensors.append(t(crop))
-                    valid_idx.append(i)
-            if not tensors:
-                return [np.zeros((0,), dtype=np.float32)] * len(crops)
-            batch = torch.stack(tensors).to(self._device)
-            with torch.no_grad():
-                feats = m(batch)
-                feats = torch.nn.functional.normalize(feats, dim=1)
-            feats_np = feats.cpu().numpy().astype(np.float32)
-            results = [np.zeros((0,), dtype=np.float32)] * len(crops)
-            for out_i, orig_i in enumerate(valid_idx):
-                results[orig_i] = feats_np[out_i]
-            return results
-        except Exception as e:
-            print(f"[EMBEDDER] embed_batch error: {e}", flush=True)
-            return [np.zeros((0,), dtype=np.float32)] * len(crops)
+        results = []
+        for crop in crops:
+            results.append(self.embed(crop))
+        return results
+        if not crops:
+            return []
+        results = []
+        for crop in crops:
+            results.append(self.embed(crop))
+        return results
 
 class FaceDetector:
     def __init__(self, sdk_dir: str):
@@ -716,9 +658,10 @@ def _check_and_unload_models():
         _gfpgan_manager._restorer = None
         print("[MEM] Unloaded GFPGAN model to free RAM")
         
-    # Check Embedder
-    if _embedder and _embedder._model and (now - _embedder._last_used > _UNLOAD_TTL):
-        _embedder._model = None
+    if _embedder and _embedder._get_face_feature and (now - _embedder._last_used > _UNLOAD_TTL):
+        _embedder._get_face_feature = None
+        _embedder._get_face_landmark = None
+        _embedder._available = None
         print("[MEM] Unloaded FaceEmbedder model to free RAM")
 
     # Check RealESRGAN
@@ -744,7 +687,10 @@ def get_detector():
 
 def get_gfpgan_manager():
     global _gfpgan_manager
-    from utils import LOW_RAM_MODE
+    try:
+        from backend.utils import LOW_RAM_MODE
+    except ImportError:
+        from utils import LOW_RAM_MODE
     if LOW_RAM_MODE: _check_and_unload_models()
     if _gfpgan_manager is None:
         _gfpgan_manager = GFPGANManager(base_dir=os.path.dirname(__file__))
@@ -759,7 +705,7 @@ def get_codeformer_manager():
 def get_embedder():
     global _embedder
     if _embedder is None:
-        _embedder = FaceEmbedder()
+        _embedder = FaceEmbedder(sdk_dir=os.path.join(os.path.dirname(__file__), "sdk_src"))
     return _embedder
 
 def get_retina_det():
@@ -1162,7 +1108,7 @@ def prepare_embedding_crop(pure_face: np.ndarray, lmks_local=None, skip_enhancem
 def get_embedder():
     global _embedder
     if _embedder is None:
-        _embedder = FaceEmbedder()
+        _embedder = FaceEmbedder(sdk_dir=os.path.join(os.path.dirname(__file__), "sdk_src"))
     return _embedder
 
 def _extract_3d_for_face(engine, rgb, bx1, by1, bx2, by2, img_w, img_h):
@@ -1253,9 +1199,9 @@ def _process_face_worker(task_data):
         # even if GFPGAN restoration is disabled. This is the "Tiling-only" mode.
         out_crop = temp
 
-    # 3. Preparation for ArcFace
-    skip_heavy = (enhancer == "None" or enhancer == "OpenCV")
-    ec, _ = prepare_embedding_crop(emb_crop, lmks_local, skip_enhancement=skip_heavy)
+    # 3. Preparation for FacePlugin
+    # Faceplugin requires a full face box, not an ArcFace tightly-warped 112x112 affine image.
+    ec = emb_crop
     
     return idx, out_crop, ec
 
@@ -1409,17 +1355,9 @@ def detect_faces(image_input, enhancer="GFPGAN", enhance_level=0.5, gfpgan_upsca
             if compute_embeddings:
                 skip_h = (enhancer == "None" or enhancer == "OpenCV")
                 
-                # Critical Fix: lmks are currently in GLOBAL coordinates.
-                # Must convert them back to local e_crop coordinates for cv2.warpAffine 
-                # inside prepare_embedding_crop to work correctly.
-                lmks_local = None
-                if lmks is not None and len(lmks) > 0:
-                    lmks_local = lmks.copy()
-                    lmks_local[:, 0] -= face_meta[idx][5]  # ex1
-                    lmks_local[:, 1] -= face_meta[idx][6]  # ey1
-                    
-                ec, _ = prepare_embedding_crop(e_crop, lmks_local, skip_enhancement=skip_h)
-                emb_crops[idx] = ec
+                # Faceplugin handles its own alignment internally.
+                # Provide the raw expanded crop rather than an ArcFace warped 112x112 crop.
+                emb_crops[idx] = e_crop
 
         # Phase 2b: Execution (Parallel)
         if n > 0:

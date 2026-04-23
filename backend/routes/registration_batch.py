@@ -193,22 +193,13 @@ def registration_batch_commit(valid_data: RegistrationBatchCommitSchema):
                           (uri, name, phone, json.dumps(custom_data), person_id, vendor_id))
 
             # Process Embedding
-            emb_vec_b64 = face.get('emb_vec') or ''
-            if emb_vec_b64:
-                try:
-                    raw_bytes = base64.b64decode(emb_vec_b64)
-                    emb = np.frombuffer(raw_bytes, dtype=np.float32).copy()
-                    emb = _normalize_vec(emb)
-                except Exception:
-                    emb = None
+            # Always re-extract embedding for OCP/FacePlugin compatibility on commit
+            img_rgb = _decode_data_uri_to_rgb(uri)
+            if img_rgb is not None:
+                emb = mfd_app.get_embedder().embed(img_rgb)
+                emb = _normalize_vec(emb)
             else:
                 emb = None
-                
-            if emb is None or emb.size == 0:
-                img_rgb = _decode_data_uri_to_rgb(uri)
-                if img_rgb is not None:
-                    emb = mfd_app.get_embedder().embed(img_rgb)
-                    emb = _normalize_vec(emb)
             
             if emb is not None and emb.size > 0:
                 vec_blob, dim = emb.astype(np.float32).tobytes(), int(emb.size)
