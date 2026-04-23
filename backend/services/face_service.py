@@ -442,10 +442,11 @@ def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3, struct_vec=
                 s_u = item['struct_vec']
                 if s_u.size == struct_vec.size and struct_vec.size > 0:
                     try:
-                        # 3D Mesh Correlation (68pts * 3coords = 204 values)
+                        # 3D Mesh Correlation (computed for diagnostics only)
                         struct_sim = float(np.dot(s_u, struct_vec))
-                        # Weighting: 60% 3D Structural Mesh, 40% Facial Embeddings (ArcFace)
-                        sim = (arcface_sim * 0.40) + (struct_sim * 0.60)
+                        # User requested disabling 3D logic for matching: relying 100% on ArcFace for distinct feature separation
+                        sim = arcface_sim
+
                     except Exception: pass
             
             raw.append({

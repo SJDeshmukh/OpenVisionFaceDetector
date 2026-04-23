@@ -3,7 +3,7 @@
 # Default to port 10000 if PORT is not set (Render default)
 # On EC2, you might set PORT=80 in .env or docker run command
 PORT="${PORT:-10000}"
-CELERY_CONCURRENCY="${CELERY_CONCURRENCY:-2}"
+CELERY_CONCURRENCY="${CELERY_CONCURRENCY:-1}"
 
 echo "Starting deployment on port $PORT..."
 

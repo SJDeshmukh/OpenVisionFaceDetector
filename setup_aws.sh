@@ -110,7 +110,7 @@ REDIS_URL=redis://redis:6379/0
 CELERY_BROKER_URL=redis://redis:6379/0
 BACKEND_URL=http://$PUBLIC_IP:5001
 FRONTEND_URL=http://$PUBLIC_IP
-LOW_RAM_MODE=1
+LOW_RAM_MODE=0
 EOF
     else
         sed -i "s|localhost:5432|db:5432|g" backend/.env
@@ -119,7 +119,7 @@ EOF
 
     echo "==> [5/6] Building and Starting Containers..."
     sudo docker compose build api worker
-    sudo docker compose up -d --scale worker=2
+    sudo docker compose up -d --scale worker=1
 
     echo "CONTAINERIZED DEPLOYMENT COMPLETE!"
 else
@@ -311,7 +311,7 @@ Environment=\"MKL_NUM_THREADS=1\"
 Environment=\"OPENBLAS_NUM_THREADS=1\"
 Environment=\"FORCE_3D_ENGINE=1\"
 EnvironmentFile=$WORKING_DIR/backend/.env
-ExecStart=$CELERY_PATH -A celery_app worker --loglevel=info --concurrency=2 --pool=threads --max-tasks-per-child=500 --prefetch-multiplier=1 -n worker1@%h
+ExecStart=$CELERY_PATH -A celery_app worker --loglevel=info --concurrency=1 --pool=threads --max-tasks-per-child=500 --prefetch-multiplier=1 -n worker1@%h
 Restart=always
 RestartSec=10
 

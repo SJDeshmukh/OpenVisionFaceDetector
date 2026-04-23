@@ -1072,7 +1072,7 @@ def _align_to_arcface_112(crop_rgb, lmks_68):
     if lmks_68 is None or len(lmks_68) != 68:
         return cv2.resize(crop_rgb, (112, 112), interpolation=cv2.INTER_LANCZOS4)
     try:
-        xy = np.array(lmks_68)
+        xy = np.array(lmks_68)[:, :2]
         # Standard ArcFace 5-point mapping
         src = np.array([
             np.mean(xy[36:42], axis=0), # left eye
@@ -1408,7 +1408,17 @@ def detect_faces(image_input, enhancer="GFPGAN", enhance_level=0.5, gfpgan_upsca
 
             if compute_embeddings:
                 skip_h = (enhancer == "None" or enhancer == "OpenCV")
-                ec, _ = prepare_embedding_crop(e_crop, lmks, skip_enhancement=skip_h)
+                
+                # Critical Fix: lmks are currently in GLOBAL coordinates.
+                # Must convert them back to local e_crop coordinates for cv2.warpAffine 
+                # inside prepare_embedding_crop to work correctly.
+                lmks_local = None
+                if lmks is not None and len(lmks) > 0:
+                    lmks_local = lmks.copy()
+                    lmks_local[:, 0] -= face_meta[idx][5]  # ex1
+                    lmks_local[:, 1] -= face_meta[idx][6]  # ey1
+                    
+                ec, _ = prepare_embedding_crop(e_crop, lmks_local, skip_enhancement=skip_h)
                 emb_crops[idx] = ec
 
         # Phase 2b: Execution (Parallel)

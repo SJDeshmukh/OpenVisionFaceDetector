@@ -256,8 +256,11 @@ class RealTimeEngine:
 
         # Diagnostic: confirm Z-depth is present
         for _lm in all_landmarks:
-            if hasattr(_lm, 'shape') and len(_lm) > 0:
-                print(f"[3DDFA] Landmark shape={_lm.shape}, Z-range=[{_lm[:,2].min():.2f}, {_lm[:,2].max():.2f}]", flush=True)
+            if isinstance(_lm, np.ndarray) and _lm.ndim == 2 and _lm.shape[0] > 0:
+                if _lm.shape[1] >= 3:
+                    print(f"[3DDFA] Landmark 3D detected: shape={_lm.shape}, Z-range=[{_lm[:,2].min():.2f}, {_lm[:,2].max():.2f}]", flush=True)
+                else:
+                    print(f"[3DDFA] Landmark 2D fallback: shape={_lm.shape}", flush=True)
                 break
 
         return all_landmarks
