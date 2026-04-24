@@ -344,7 +344,7 @@ EOF
     # KillMode=mixed + TimeoutStopSec: systemd kills the master with SIGTERM,
     # then sends SIGKILL to any remaining workers after 15s so the port is
     # always released before the next start attempt.
-    sudo bash -c "cat <<EOF > /etc/systemd/system/openvision-backend.service
+    sudo tee /etc/systemd/system/openvision-backend.service > /dev/null <<UNIT
 [Unit]
 Description=Gunicorn instance to serve OpenVision Face Detection
 After=network.target postgresql.service redis.service
@@ -353,11 +353,11 @@ After=network.target postgresql.service redis.service
 User=$USER
 Group=www-data
 WorkingDirectory=$WORKING_DIR/backend
-Environment=\"PATH=$WORKING_DIR/backend/.venv/bin\"
-Environment=\"PYTHONPATH=$WORKING_DIR/backend:$WORKING_DIR\"
-Environment=\"LOW_RAM_MODE=$LRM\"
+Environment="PATH=$WORKING_DIR/backend/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONPATH=$WORKING_DIR/backend:$WORKING_DIR"
+Environment="LOW_RAM_MODE=$LRM"
 EnvironmentFile=$WORKING_DIR/backend/.env
-ExecStartPre=/bin/bash -c 'fuser -k -9 5001/tcp 2>/dev/null || true; sleep 1'
+ExecStartPre=/bin/bash -c '/usr/bin/fuser -k -9 5001/tcp 2>/dev/null || true; /bin/sleep 1'
 ExecStart=$GUNICORN_PATH --worker-class eventlet -w 1 -b 0.0.0.0:5001 app:app --timeout 600
 ExecStop=/bin/kill -s TERM \$MAINPID
 KillMode=mixed
@@ -367,7 +367,7 @@ RestartSec=8
 
 [Install]
 WantedBy=multi-user.target
-EOF"
+UNIT
 
     # Celery Worker Service
     sudo bash -c "cat <<EOF > /etc/systemd/system/openvision-celery.service
