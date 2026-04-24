@@ -37,6 +37,9 @@ dump.rdb
 *.weights
 *.pb
 
+# Per-vendor metric learning projections (generated at runtime)
+backend/metric_models/
+
 # Specific models to include
 !backend/standalone_live_mesh/3DDFA-V3/assets/net_recon.pth
 !backend/standalone_live_mesh/3DDFA-V3/assets/net_recon_mbnet.pth

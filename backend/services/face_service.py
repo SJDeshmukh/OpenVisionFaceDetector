@@ -413,6 +413,24 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
             except Exception:
                 max_items = 200
             _VENDOR_EMB_CACHE[key]['items'] = _VENDOR_EMB_CACHE[key]['items'][:max_items]
+
+        # ── Metric projection (triplet-trained linear W) ─────────────────────
+        # Load the per-vendor projection matrix trained by metric_learning.py.
+        # Pre-build per-person centroids in projected space so inference is a
+        # single matrix–vector multiply + argmax rather than per-embedding scan.
+        # Skipped in LOW_RAM_MODE to conserve memory on small instances.
+        if items and not LOW_RAM_MODE:
+            try:
+                from metric_learning import load_projection, build_proj_centroids
+                _W = load_projection(int(vendor_id))
+                if _W is not None:
+                    _proj_c = build_proj_centroids(_W, items)
+                    if _proj_c:
+                        _VENDOR_EMB_CACHE[key]['proj_W']         = _W
+                        _VENDOR_EMB_CACHE[key]['proj_centroids'] = _proj_c
+            except Exception:
+                pass  # metric projection is optional — fall back to raw cosine
+
         return _VENDOR_EMB_CACHE[key]
         return _VENDOR_EMB_CACHE[key]
     except Exception as e:
@@ -420,6 +438,126 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
         print(f"[_ensure_vendor_emb_cache] EXCEPTION: {e}", flush=True)
         traceback.print_exc()
         return None
+
+def _suggest_via_projection(
+    vec: np.ndarray,
+    proj_W: np.ndarray,
+    proj_centroids: dict,
+    cache: dict,
+    topk: int,
+    struct_vec,
+    class_year,
+    division,
+    branch,
+) -> list:
+    """
+    Match a probe embedding against per-person projected centroids.
+
+    Replaces the FAISS/linear-scan path when a trained projection W is
+    available.  Each person is represented by a single centroid (mean of all
+    their projected augmented embeddings) so matching is O(n_people).
+
+    Similarity is cosine in projected space, rescaled to [0,1] via (s+1)/2.
+    Scope filtering and contrastive refinement are identical to the raw path.
+    Falls back gracefully (returns []) on any error so the caller can retry
+    with the FAISS/linear path.
+    """
+    from metric_learning import project as _project
+    proj_probe = _project(proj_W, vec)   # (PROJ_DIM,), unit-norm
+
+    # One representative item per person (for scope / name / struct_vec lookup)
+    person_meta: dict[int, dict] = {}
+    for it in cache.get("items", []):
+        pid = int(it["person_id"])
+        if pid not in person_meta:
+            person_meta[pid] = it
+
+    target_year   = str(class_year or "").strip().lower()
+    target_div    = str(division   or "").strip().lower()
+    target_branch = str(branch     or "").strip().lower()
+    scope_active  = bool(target_year or target_div or target_branch)
+
+    raw = []
+    for pid, centroid in proj_centroids.items():
+        item = person_meta.get(pid)
+        if item is None:
+            continue
+
+        # ── Scope filter (mirrors existing logic exactly) ────────────────
+        if scope_active:
+            item_year   = str(item.get("class_year") or "").strip().lower()
+            item_div    = str(item.get("division")   or "").strip().lower()
+            item_branch = str(item.get("branch")     or "").strip().lower()
+
+            ok = True
+            if target_year   and item_year   != target_year:   ok = False
+            if target_div    and item_div    != target_div:    ok = False
+            if target_branch and item_branch != target_branch: ok = False
+            # Unassigned student matches any class scope
+            if target_year and item_year == "":
+                ok = True
+            if not ok:
+                continue
+
+        # ── Cosine similarity in projected space → [0, 1] ────────────────
+        proj_sim = float(np.dot(proj_probe, centroid))      # both unit-norm
+        sim      = (proj_sim + 1.0) / 2.0                   # scale to [0, 1]
+
+        # Structural similarity (diagnostic, not used for ranking)
+        struct_sim = 0.0
+        if struct_vec is not None and item.get("struct_vec") is not None:
+            s_u = item["struct_vec"]
+            if s_u.size == struct_vec.size > 0:
+                struct_sim = float(np.dot(s_u, struct_vec))
+
+        raw.append({
+            "person_id":    pid,
+            "name":         str(item.get("name", "Unknown")),
+            "similarity":   sim,
+            "arcface_pure": sim,
+            "struct_pure":  struct_sim,
+            "perfect_scope": True,
+        })
+
+    if not raw:
+        return []
+
+    raw.sort(key=lambda x: x["similarity"], reverse=True)
+
+    # Dedup (centroid path already has one entry per person, but keep for safety)
+    best: dict[int, dict] = {}
+    for e in raw:
+        pid = e["person_id"]
+        if pid not in best or e["similarity"] > best[pid]["similarity"]:
+            best[pid] = e
+    deduped = sorted(best.values(), key=lambda x: x["similarity"], reverse=True)[: topk * 2]
+
+    refined = _apply_contrastive_refinement(deduped)
+
+    # Fetch face images and student metadata
+    try:
+        pids = [int(r["person_id"]) for r in refined]
+        if pids:
+            conn = get_db_connection()
+            c    = conn.cursor()
+            ph   = ",".join(["?"] * len(pids))
+            c.execute(f"SELECT id, face_image, custom_data FROM faces WHERE id IN ({ph})", pids)
+            imap = {int(row[0]): (row[1], row[2]) for row in (c.fetchall() or [])}
+            conn.close()
+            for r in refined:
+                img, custom = imap.get(int(r["person_id"]), (None, None))
+                r["face_image"] = img
+                if custom:
+                    try:
+                        cd = json.loads(custom) if isinstance(custom, str) else custom
+                        r["student_number"] = cd.get("student_id") or cd.get("student_number")
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    return refined
+
 
 def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3, struct_vec=None, class_year=None, division=None, branch=None) -> list:
     try:
@@ -435,6 +573,22 @@ def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3, struct_vec=
                 if pid not in best or entry['similarity'] > best[pid]['similarity']:
                     best[pid] = entry
             return sorted(best.values(), key=lambda x: x['similarity'], reverse=True)[:topk]
+
+        # ── Metric projection path ───────────────────────────────────────────
+        # When a triplet-trained W exists for this vendor, use projected centroid
+        # matching instead of FAISS/linear scan.  Same-person embeddings cluster
+        # tightly and different-person embeddings push apart in the projected
+        # space, giving cleaner similarity scores especially for far/blurry faces.
+        _proj_W  = cache.get('proj_W')
+        _proj_c  = cache.get('proj_centroids')
+        if _proj_W is not None and _proj_c:
+            try:
+                return _suggest_via_projection(
+                    v, _proj_W, _proj_c, cache, topk,
+                    struct_vec, class_year, division, branch,
+                )
+            except Exception:
+                pass   # fall through to FAISS / linear scan on any error
 
         candidates = []
         if cache.get('faiss_index') is not None and USE_FAISS:

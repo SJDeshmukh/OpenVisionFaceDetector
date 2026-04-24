@@ -941,16 +941,23 @@ def upload_face():
                 pass
 
         conn.commit()
-        
+
+        # Schedule async metric projection retrain (3-second debounce).
+        try:
+            from metric_learning import schedule_retrain as _sched_retrain
+            _sched_retrain(int(vendor_id or 0))
+        except Exception:
+            pass
+
         # Invalidate vendor-specific caches and global stats
         if vendor_id:
             cache_delete_vendor_prefix(vendor_id)
         cache_delete("admin_stats")
-        
+
         # Real-time update for Vendor Dashboard (People List) and SuperAdmin (Limits)
         socketio.emit('persons_updated', {'vendor_id': vendor_id}, room=f"vendor_{vendor_id}")
         socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
-        
+
         return jsonify({"status": "success", "message": f"Face for {name} saved.", "person_id": new_id})
     except Exception as e:
         return jsonify({"error": str(e)}), 500

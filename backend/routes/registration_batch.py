@@ -239,6 +239,16 @@ def registration_batch_commit(valid_data: RegistrationBatchCommitSchema):
             continue
             
     conn.commit()
+
+    # Schedule async metric projection retrain (debounced 3 s).
+    # Batch commits may register 30+ people at once; the debounce means we
+    # train once on the complete dataset rather than 30 overlapping times.
+    try:
+        from metric_learning import schedule_retrain as _sched_retrain
+        _sched_retrain(int(vendor_id or 0))
+    except Exception:
+        pass
+
     # Invalidate cache for this vendor
     try:
         prefix = f"{int(vendor_id or 0)}_"
