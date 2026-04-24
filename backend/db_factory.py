@@ -315,6 +315,15 @@ class PostgresConnectionWrapper:
         if self._closed:
             return
         self._closed = True
+        # Always rollback any uncommitted/aborted transaction before returning to pool
+        # to prevent poisoned connections from cascading to other requests.
+        try:
+            if ext:
+                status = self.conn.get_transaction_status()
+                if status != ext.TRANSACTION_STATUS_IDLE:
+                    self.conn.rollback()
+        except Exception:
+            pass
         pool = get_pg_pool()
         if pool:
             try:
@@ -326,13 +335,13 @@ class PostgresConnectionWrapper:
         else:
             try: self.conn.close()
             except: pass
-            
+
     def __del__(self):
         try:
             self.close()
         except:
             pass
-        
+
     def rollback(self):
         self.conn.rollback()
 
@@ -495,6 +504,7 @@ def _init_pg_schema_on_conn(conn):
         "CREATE TABLE IF NOT EXISTS registration_batches (id TEXT PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), status TEXT DEFAULT 'active', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS registration_batch_items (id TEXT PRIMARY KEY, batch_id TEXT REFERENCES registration_batches(id), seq INTEGER, image_b64 TEXT, annotated_b64 TEXT, faces_json TEXT, status TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS subject_master (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), class_year TEXT, branch TEXT, subject_name TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, class_year, branch, subject_name))",
+        "CREATE TABLE IF NOT EXISTS class_thresholds (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), class_year TEXT, division TEXT, branch TEXT, threshold REAL, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, class_year, division, branch))",
 
         # --- Performance Indices ---
         "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_time ON attendance(vendor_id, timestamp)",
@@ -695,6 +705,7 @@ def init_sqlite_schema(conn):
         "CREATE TABLE IF NOT EXISTS registration_batches (id TEXT PRIMARY KEY, vendor_id INTEGER, status TEXT DEFAULT 'active', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS registration_batch_items (id TEXT PRIMARY KEY, batch_id TEXT, seq INTEGER, image_b64 TEXT, annotated_b64 TEXT, faces_json TEXT, status TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS subject_master (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, class_year TEXT, branch TEXT, subject_name TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, class_year, branch, subject_name))",
+        "CREATE TABLE IF NOT EXISTS class_thresholds (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, class_year TEXT, division TEXT, branch TEXT, threshold REAL, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, class_year, division, branch))",
 
         # --- Performance Indices ---
         "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_time ON attendance(vendor_id, timestamp)",

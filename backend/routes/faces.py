@@ -49,6 +49,35 @@ def rate_limit(*args, **kwargs):
 
 faces_bp = Blueprint('faces_bp', __name__)
 
+def _unassign_faculty_from_classes(c, conn, vendor_id, usernames):
+    """Remove faculty assignments from classes.mapped_subjects for the given usernames."""
+    if not usernames or not vendor_id:
+        return
+    username_set = set(str(u) for u in usernames if u)
+    if not username_set:
+        return
+    try:
+        c.execute("SELECT id, mapped_subjects FROM classes WHERE vendor_id = ?", (vendor_id,))
+        rows = c.fetchall() or []
+        for row in rows:
+            cls_id = row[0]
+            ms_raw = row[1]
+            try:
+                ms = json.loads(ms_raw) if ms_raw else []
+            except Exception:
+                continue
+            updated = False
+            for entry in ms:
+                if isinstance(entry, dict) and entry.get('faculty') in username_set:
+                    entry['faculty'] = None
+                    updated = True
+            if updated:
+                c.execute("UPDATE classes SET mapped_subjects = ? WHERE id = ?",
+                          (json.dumps(ms), cls_id))
+    except Exception:
+        pass
+
+
 def reindex_vendor_faces(conn, vendor_id):
     """Re-assigns display_id for all faces in a vendor to be gapless [1, 2, 3...]."""
     if not vendor_id:
@@ -1018,6 +1047,15 @@ def delete_face(name):
             affected_vendors[v_id].append(d_id)
             # CRITICAL: Clean up embeddings for this person
             c.execute("DELETE FROM person_embeddings WHERE person_id = ?", (p_id,))
+            # If this face is a faculty member, unassign from classes
+            try:
+                c.execute("SELECT username FROM system_users WHERE person_id = ? AND role = 'faculty'", (p_id,))
+                fac_rows = c.fetchall() or []
+                fac_usernames = [row[0] for row in fac_rows if row[0]]
+                if fac_usernames and v_id:
+                    _unassign_faculty_from_classes(c, conn, v_id, fac_usernames)
+            except Exception:
+                pass
 
         if vendor_id:
             c.execute("DELETE FROM faces WHERE name = ? AND vendor_id = ?", (name, vendor_id))
@@ -1199,6 +1237,16 @@ def delete_face_by_id(person_id):
         logger = logging.getLogger(__name__)
         logger.info(f"Cleaning up associated records for person_id={person_id}")
 
+        # If this person is a faculty member, unassign them from classes before deletion
+        try:
+            c.execute("SELECT username FROM system_users WHERE person_id = ? AND role = 'faculty'", (person_id,))
+            fac_rows = c.fetchall() or []
+            fac_usernames = [r[0] for r in fac_rows if r[0]]
+            if fac_usernames and target_vendor_id:
+                _unassign_faculty_from_classes(c, conn, target_vendor_id, fac_usernames)
+        except Exception as _e:
+            logger.warning(f"Faculty class unassign skipped for person_id={person_id}: {_e}")
+
         for _sql, _args in [
             ("DELETE FROM attendance WHERE person_id = ?",                          (person_id,)),
             ("DELETE FROM student_parents WHERE person_id = ?",                     (person_id,)),
@@ -1321,15 +1369,21 @@ def delete_all_faces():
     c = conn.cursor()
     try:
         if target == 'faculty':
-            # Only delete faculty logins and their linked face records
+            # Collect faculty usernames before deletion so we can unassign from classes
+            c.execute("SELECT username FROM system_users WHERE vendor_id = ? AND role = 'faculty'", (vendor_id,))
+            faculty_usernames = [r[0] for r in (c.fetchall() or []) if r[0]]
+
+            # Unassign these faculty from all class subject mappings
+            _unassign_faculty_from_classes(c, conn, vendor_id, faculty_usernames)
+
             c.execute("DELETE FROM active_sessions WHERE vendor_id = ? AND username IN (SELECT username FROM system_users WHERE vendor_id = ? AND role = 'faculty')", (vendor_id, vendor_id))
-            
+
             # Delete linked faces first to maintain integrity (if any)
             c.execute("""
-                DELETE FROM faces 
+                DELETE FROM faces
                 WHERE id IN (SELECT person_id FROM system_users WHERE vendor_id = ? AND role = 'faculty' AND person_id IS NOT NULL)
             """, (vendor_id,))
-            
+
             c.execute("DELETE FROM system_users WHERE vendor_id = ? AND role = 'faculty'", (vendor_id,))
             message = "All faculty logins and profile data cleared."
         else:
@@ -1338,13 +1392,26 @@ def delete_all_faces():
             c.execute("DELETE FROM student_parents WHERE vendor_id = ?", (vendor_id,))
             c.execute("DELETE FROM leave_requests WHERE vendor_id = ?", (vendor_id,))
             c.execute("DELETE FROM lecture_attendance WHERE vendor_id = ?", (vendor_id,))
-            c.execute("DELETE FROM person_embeddings WHERE vendor_id = ?", (vendor_id,))
             c.execute("DELETE FROM parent_tokens WHERE vendor_id = ?", (vendor_id,))
             c.execute("DELETE FROM parent_users WHERE vendor_id = ?", (vendor_id,))
             c.execute("DELETE FROM system_users WHERE vendor_id = ? AND role = 'student'", (vendor_id,))
-            
-            # 2. Delete all faces
-            c.execute("DELETE FROM faces WHERE vendor_id = ?", (vendor_id,))
+
+            # 2. Delete student faces only — preserve faces linked to faculty accounts
+            c.execute("""
+                DELETE FROM faces WHERE vendor_id = ?
+                AND id NOT IN (
+                    SELECT person_id FROM system_users
+                    WHERE vendor_id = ? AND role = 'faculty' AND person_id IS NOT NULL
+                )
+            """, (vendor_id, vendor_id))
+            # Also scope embeddings to student-only faces
+            c.execute("""
+                DELETE FROM person_embeddings WHERE vendor_id = ?
+                AND person_id NOT IN (
+                    SELECT person_id FROM system_users
+                    WHERE vendor_id = ? AND role = 'faculty' AND person_id IS NOT NULL
+                )
+            """, (vendor_id, vendor_id))
             
             # 3. Reset registration configuration as requested
             c.execute("UPDATE bulk_attendance_config SET fields = '[]' WHERE vendor_id = ?", (vendor_id,))

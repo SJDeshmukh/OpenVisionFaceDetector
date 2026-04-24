@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# OpenVision Master Setup Script (v5.1 - Containerized & Scalable)
+# OpenVision Master Setup Script (v5.2 - Reliable Port Handling)
 # ==============================================================================
-# This script automates the setup of the Face Detection system.
-# Handles dependencies, Docker installation, OR Bare-Metal Systemd setup.
-# ==============================================================================
-
 set -e
 
 echo "=============================================================================="
@@ -21,41 +17,69 @@ else
 fi
 echo "=============================================================================="
 
+# Set WORKING_DIR once at the top so every step can reference it
+WORKING_DIR=$(pwd)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Helper: wait until a TCP port is confirmed free (up to $2 seconds)
+# ──────────────────────────────────────────────────────────────────────────────
+wait_port_free() {
+    local port=$1
+    local timeout=${2:-15}
+    local elapsed=0
+    while sudo ss -tlnp "sport = :${port}" 2>/dev/null | grep -q ":${port}"; do
+        if [ $elapsed -ge $timeout ]; then
+            echo "  WARNING: port $port still in use after ${timeout}s — forcing kill"
+            sudo fuser -k -9 ${port}/tcp 2>/dev/null || true
+            sleep 1
+            return
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+}
+
 echo "==> [0/8] NUCLEAR CLEANUP: Stopping and Killing All Services..."
-# Stop Systemd Services (cover both old and new service name variants)
-echo "Stopping OpenVision services..."
+
+# 1. Stop systemd services gracefully (covers old and new service name variants)
+echo "Stopping systemd services..."
 sudo systemctl stop openvision-backend openvision-celery face-backend 2>/dev/null || true
 sudo systemctl stop nginx redis-server postgresql 2>/dev/null || true
+sleep 2
 
-# Stop Docker Services (if any)
+# 2. Stop any Docker containers
 if command -v docker &> /dev/null; then
     echo "Stopping Docker containers..."
-    sudo docker ps -q | xargs -r sudo docker stop || true
+    sudo docker ps -q | xargs -r sudo docker stop 2>/dev/null || true
 fi
 
-# Deep Kill by Process Name
+# 3. Deep-kill by process name (catches processes outside systemd)
 echo "Killing lingering Gunicorn, Celery, and Python workers..."
-sudo pkill -9 -f gunicorn || true
-sudo pkill -9 -f celery || true
-sudo pkill -9 -f "python3 app.py" || true
-sudo killall -9 gunicorn celery 2>/dev/null || true
+sudo pkill -9 -f gunicorn 2>/dev/null || true
+sudo pkill -9 -f celery   2>/dev/null || true
+sudo pkill -9 -f "python3 app.py" 2>/dev/null || true
+sudo pkill -9 -f "python app.py"  2>/dev/null || true
+sleep 2
 
-# Force release ports (The most critical part for [Errno 98])
+# 4. Force-release each port and then VERIFY it is actually free
+echo "Releasing and verifying ports..."
 for port in 80 443 5001 5432 6379 5173; do
-    echo "Forcefully releasing port $port..."
+    echo "  Releasing port $port..."
     sudo fuser -k -9 ${port}/tcp 2>/dev/null || true
-    # Wait a moment for OS to release the socket
-    sleep 0.5
+    wait_port_free $port 10
+    echo "  Port $port confirmed free."
 done
 
-# FRESH START: Flush Redis to clear stale Celery task queues from previous run
-echo "Performing final cleanup of logs and queues..."
+# 5. Flush stale Celery queues from Redis
+echo "Flushing stale Redis queues..."
 sudo systemctl start redis-server 2>/dev/null || true
+sleep 1
 redis-cli flushdb 2>/dev/null || true
 sudo journalctl --vacuum-time=1s 2>/dev/null || true
 
 echo "Environment is now CLEAN. Ready for setup."
 
+# ──────────────────────────────────────────────────────────────────────────────
 echo "==> [1/8] Configuring 4GB Swap File for RAM Stability..."
 if [ ! -f /swapfile ] && [ ! -L /swapfile ]; then
     sudo fallocate -l 4G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=4096
@@ -68,13 +92,14 @@ if [ ! -f /swapfile ] && [ ! -L /swapfile ]; then
 else
     echo "Swap already exists, skipping creation."
 fi
-# Tune swap behaviour for low-RAM instances
 sudo sysctl -w vm.swappiness=30 2>/dev/null || true
 sudo sysctl -w vm.vfs_cache_pressure=50 2>/dev/null || true
-grep -q 'vm.swappiness' /etc/sysctl.conf || echo 'vm.swappiness=30' | sudo tee -a /etc/sysctl.conf
+grep -q 'vm.swappiness'       /etc/sysctl.conf || echo 'vm.swappiness=30'       | sudo tee -a /etc/sysctl.conf
 grep -q 'vm.vfs_cache_pressure' /etc/sysctl.conf || echo 'vm.vfs_cache_pressure=50' | sudo tee -a /etc/sysctl.conf
 
+# ──────────────────────────────────────────────────────────────────────────────
 if [[ "$USE_DOCKER" =~ ^[Yy]$ ]]; then
+
     echo "==> [2/6] Installing Docker and Docker Compose..."
     if ! command -v docker &> /dev/null; then
         sudo apt-get update
@@ -86,21 +111,18 @@ if [[ "$USE_DOCKER" =~ ^[Yy]$ ]]; then
         sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
     fi
 
-    # Add user to docker group
     sudo usermod -aG docker $USER || true
 
-    # Ensure docker-compose command is available
     if ! command -v docker-compose &> /dev/null; then
         sudo ln -s /usr/libexec/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose || true
     fi
 
-    # Stop and clear ports (redundant but safe)
     sudo docker ps -q --filter "publish=5001" | xargs sudo docker stop 2>/dev/null || true
     sudo docker compose down --remove-orphans 2>/dev/null || true
     sudo docker system prune -f --volumes || true
     sleep 2
 
-    echo "==> [4/6] Initializing Docker Environment (.env)..."
+    echo "==> [3/6] Initializing Docker Environment (.env)..."
     if [ ! -f "backend/.env" ]; then
         PUBLIC_IP=$(curl -s https://api.ipify.org || echo "localhost")
         cat <<EOF > backend/.env
@@ -117,23 +139,21 @@ EOF
         sed -i "s|127.0.0.1:6379|redis:6379|g" backend/.env
     fi
 
-    echo "==> [5/6] Building and Starting Containers..."
+    echo "==> [4/6] Building and Starting Containers..."
     sudo docker compose build api worker
     sudo docker compose up -d --scale worker=1
 
     echo "CONTAINERIZED DEPLOYMENT COMPLETE!"
+
 else
-    # ─────────────────────────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────────────
     # BARE-METAL SETUP (Systemd Mode)
-    # ─────────────────────────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────────────
 
     echo "==> [2/8] Fixing Permissions and Installing System Dependencies..."
-    sudo chown -R $USER:$USER $(pwd) 2>/dev/null || true
+    sudo chown -R $USER:$USER "$WORKING_DIR" 2>/dev/null || true
 
     sudo apt-get update -y
-    # libheif-dev  → needed if pillow-heif must build from source (HEIC image support)
-    # libgl1 / libglib2.0-0 → OpenCV headless runtime
-    # psmisc / lsof / fuser → port cleanup tools
     sudo apt-get install -y \
         python3-pip python3-venv \
         postgresql postgresql-contrib \
@@ -142,10 +162,9 @@ else
         libgl1 libglib2.0-0 \
         libheif-dev \
         psmisc lsof curl \
-        build-essential
+        build-essential \
+        certbot python3-certbot-nginx
 
-    # ── Node.js 20.x ─────────────────────────────────────────────────────────
-    # Required for building the React frontend. Not included in default Ubuntu.
     if ! command -v node &> /dev/null; then
         echo "Installing Node.js 20.x..."
         curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
@@ -174,11 +193,10 @@ else
     echo "==> [5/8] Managing Environment (.env)..."
     if [ ! -f "backend/.env" ]; then
         PUBLIC_IP=$(curl -s https://api.ipify.org || echo "localhost")
-        # Detect RAM to intelligently set LOW_RAM_MODE
         TOTAL_RAM=$(free -g | awk '/^Mem:/{print $2}')
         LRM=1
         if [ "$TOTAL_RAM" -ge 3 ]; then
-            echo "Direct RAM detected (${TOTAL_RAM}GB), disabling LOW_RAM_MODE for performance..."
+            echo "RAM detected: ${TOTAL_RAM}GB — disabling LOW_RAM_MODE"
             LRM=0
         fi
         cat <<EOF > backend/.env
@@ -190,52 +208,39 @@ BACKEND_URL=http://$PUBLIC_IP:5001
 FRONTEND_URL=http://$PUBLIC_IP
 LOW_RAM_MODE=$LRM
 EOF
+    else
+        # Read LRM from existing .env for use in systemd units below
+        LRM=$(grep -oP '(?<=LOW_RAM_MODE=)\d' backend/.env 2>/dev/null || echo "1")
     fi
 
     echo "==> [6/8] Pre-downloading AI Models..."
-    # Create required directories upfront
     mkdir -p multiple_face_detection/models/realesrgan
     mkdir -p multiple_face_detection/models/gfpgan
     mkdir -p backend/standalone_live_mesh/3DDFA-V3/assets
 
-    # Delegate all downloads to the unified downloader script.
-    # It resolves paths from its own location so it works from any cwd,
-    # and skips any file that already exists and is non-empty.
     echo "Running unified model downloader (skips if already present)..."
     python3 backend/download_models.py || echo "Warning: Some model downloads failed — check above for details."
 
-    # ── [6/8] Initializing Database Schema ────────────────────────────────────
-    echo "==> [6/8] Initializing Database Schema..."
-    cd backend
+    echo "==> [7/8] Building Frontend & Configuring Nginx..."
+
+    # ── Schema migration (uses WORKING_DIR which is now correctly set) ─────────
+    echo "Initializing database schema..."
+    cd "$WORKING_DIR/backend"
     source .venv/bin/activate
-    
-    # HARDCODED PATHS: Ensure the migration can find all modules
     export PYTHONPATH="$WORKING_DIR/backend:$WORKING_DIR"
     export DATABASE_URL="postgresql://postgres:postgres@localhost:5432/face_detection"
     export DB_TYPE="postgres"
-    
     python3 migrate_to_postgres.py || echo "Warning: migrate_to_postgres.py encountered issues."
-    cd ..
+    cd "$WORKING_DIR"
 
-    echo "==> [7/8] Building Frontend & Configuring Nginx..."
     echo "Building web-dashboard for production..."
-    cd web-dashboard
-
-    # Install npm packages (required on every fresh clone / after package.json changes)
-    echo "Installing npm packages..."
+    cd "$WORKING_DIR/web-dashboard"
     npm install --legacy-peer-deps
-
-    # react-is is a peer dependency of recharts not always auto-installed;
-    # rolldown-vite fails the build if it is missing, so force it here.
     npm install react-is --legacy-peer-deps
-
-    # Build with a memory cap so the process doesn't OOM on low-RAM instances
-    echo "Running production build..."
     NODE_OPTIONS="--max-old-space-size=1024" npm run build || {
         echo "ERROR: Frontend build failed."
         exit 1
     }
-
     if [ ! -d "dist" ]; then
         echo "ERROR: 'dist' folder was not created. Build failed."
         exit 1
@@ -247,7 +252,7 @@ EOF
     sudo cp -r dist/* /var/www/face_detection/
     sudo chown -R www-data:www-data /var/www/face_detection
     sudo chmod -R 755 /var/www/face_detection
-    cd ..
+    cd "$WORKING_DIR"
 
     echo "Deploying Nginx configuration..."
     sudo cp nginx_face_detection.conf /etc/nginx/sites-available/face_detection
@@ -255,12 +260,33 @@ EOF
     sudo rm -f /etc/nginx/sites-enabled/default
     sudo nginx -t && sudo systemctl restart nginx
 
-    echo "==> [8/8] Configuring Systemd Services (Auto-Restart)..."
-    WORKING_DIR=$(pwd)
+    echo "==> [8/9] Provisioning SSL Certificate (Let's Encrypt)..."
+    # --no-redirect = certbot selection 1 (keep HTTP alongside HTTPS, no forced redirect)
+    # --non-interactive + --agree-tos + --register-unsafely-without-email = fully unattended
+    sudo certbot --nginx \
+        -d tapinx.in \
+        -d www.tapinx.in \
+        --non-interactive \
+        --agree-tos \
+        --register-unsafely-without-email \
+        --no-redirect \
+        2>&1 || echo "Warning: Certbot failed — check DNS resolution for tapinx.in and re-run 'sudo certbot --nginx -d tapinx.in -d www.tapinx.in' manually."
+
+    # Enable auto-renewal (certbot installs a systemd timer; this is a belt-and-suspenders cron)
+    (crontab -l 2>/dev/null | grep -v certbot; echo "0 3 * * * sudo certbot renew --quiet --nginx") | crontab -
+    echo "SSL auto-renewal cron registered (runs daily at 03:00)."
+
+    # Allow HTTPS through firewall
+    sudo ufw allow 443/tcp || true
+
+    echo "==> [9/9] Configuring Systemd Services (Auto-Restart)..."
     GUNICORN_PATH="$WORKING_DIR/backend/.venv/bin/gunicorn"
     CELERY_PATH="$WORKING_DIR/backend/.venv/bin/celery"
 
     # Backend Service
+    # KillMode=mixed + TimeoutStopSec: systemd kills the master with SIGTERM,
+    # then sends SIGKILL to any remaining workers after 15s so the port is
+    # always released before the next start attempt.
     sudo bash -c "cat <<EOF > /etc/systemd/system/openvision-backend.service
 [Unit]
 Description=Gunicorn instance to serve OpenVision Face Detection
@@ -274,19 +300,19 @@ Environment=\"PATH=$WORKING_DIR/backend/.venv/bin\"
 Environment=\"PYTHONPATH=$WORKING_DIR/backend:$WORKING_DIR\"
 Environment=\"LOW_RAM_MODE=$LRM\"
 EnvironmentFile=$WORKING_DIR/backend/.env
+ExecStartPre=/bin/bash -c 'fuser -k -9 5001/tcp 2>/dev/null || true; sleep 1'
 ExecStart=$GUNICORN_PATH --worker-class eventlet -w 1 -b 0.0.0.0:5001 app:app --timeout 600
+ExecStop=/bin/kill -s TERM \$MAINPID
+KillMode=mixed
+TimeoutStopSec=15
 Restart=always
-RestartSec=5
+RestartSec=8
 
 [Install]
 WantedBy=multi-user.target
 EOF"
 
     # Celery Worker Service
-    # --concurrency=2 --pool=threads : two task threads in one process, models shared (no double RAM)
-    # --max-tasks-per-child=500      : occasional GC without frequent model-reload cold-starts
-    # --prefetch-multiplier=1        : pick up one task at a time (fair scheduling)
-    # FORCE_3D_ENGINE=1              : pre-warm 3D landmark model regardless of DB feature flag
     sudo bash -c "cat <<EOF > /etc/systemd/system/openvision-celery.service
 [Unit]
 Description=Celery worker for OpenVision Face Detection
@@ -305,6 +331,8 @@ Environment=\"OPENBLAS_NUM_THREADS=1\"
 Environment=\"FORCE_3D_ENGINE=1\"
 EnvironmentFile=$WORKING_DIR/backend/.env
 ExecStart=$CELERY_PATH -A celery_app worker --loglevel=info --concurrency=1 --pool=threads --max-tasks-per-child=500 --prefetch-multiplier=1 -n worker1@%h
+KillMode=mixed
+TimeoutStopSec=20
 Restart=always
 RestartSec=10
 
@@ -314,17 +342,19 @@ EOF"
 
     sudo systemctl daemon-reload
     sudo systemctl enable openvision-backend openvision-celery
-    sudo systemctl restart openvision-backend openvision-celery
 
-    # Firewall — allow HTTP (80) and direct API access (5001)
-    sudo ufw allow 80/tcp || true
+    # Services were already stopped and ports released above — use 'start', not 'restart'
+    sudo systemctl start openvision-backend openvision-celery
+
+    # Firewall — allow HTTP (80), HTTPS (443), and direct API access (5001)
+    sudo ufw allow 80/tcp   || true
+    sudo ufw allow 443/tcp  || true
     sudo ufw allow 5001/tcp || true
 
-    PUBLIC_IP=$(curl -s https://api.ipify.org || echo "YOUR_IP")
     echo "=============================================================================="
     echo "PRODUCTION BARE-METAL SETUP COMPLETE!"
     echo "=============================================================================="
-    echo "- Dashboard: http://$PUBLIC_IP"
-    echo "- API:       http://$PUBLIC_IP/api"
+    echo "- Dashboard: https://tapinx.in"
+    echo "- API:       https://tapinx.in/api"
     echo "=============================================================================="
 fi
