@@ -1,8 +1,65 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# OpenVision Master Setup Script (v5.2 - Reliable Port Handling)
+# OpenVision Master Setup Script (v5.3 - Stop Command + Reliable Port Handling)
+# ==============================================================================
+#
+# Usage:
+#   bash setup_aws.sh          — interactive full setup
+#   bash setup_aws.sh stop     — gracefully stop all services and free all ports
+#
 # ==============================================================================
 set -e
+
+# ──────────────────────────────────────────────────────────────────────────────
+# STOP COMMAND — graceful shutdown of every OpenVision service and port
+# ──────────────────────────────────────────────────────────────────────────────
+if [[ "${1:-}" == "stop" ]]; then
+    echo "=============================================================================="
+    echo "OpenVision — Stopping All Services"
+    echo "=============================================================================="
+
+    echo "  [1/4] Stopping systemd services..."
+    sudo systemctl stop openvision-backend openvision-celery 2>/dev/null && echo "  openvision-backend + celery stopped." || echo "  (services were not running)"
+    sudo systemctl stop nginx              2>/dev/null && echo "  nginx stopped."          || true
+    sudo systemctl stop redis-server       2>/dev/null && echo "  redis stopped."          || true
+    sudo systemctl stop postgresql         2>/dev/null && echo "  postgresql stopped."     || true
+
+    echo "  [2/4] Killing any lingering process by name..."
+    sudo pkill -TERM -f gunicorn  2>/dev/null && sleep 2 || true
+    sudo pkill -9    -f gunicorn  2>/dev/null || true
+    sudo pkill -TERM -f celery    2>/dev/null && sleep 2 || true
+    sudo pkill -9    -f celery    2>/dev/null || true
+    sudo pkill -9    -f "python3 app.py" 2>/dev/null || true
+
+    echo "  [3/4] Releasing all ports..."
+    for port in 80 443 5001 5432 6379 5173; do
+        if sudo fuser ${port}/tcp &>/dev/null 2>&1; then
+            sudo fuser -k -9 ${port}/tcp 2>/dev/null || true
+            echo "  Port $port released."
+        else
+            echo "  Port $port already free."
+        fi
+    done
+    sleep 1
+
+    echo "  [4/4] Stopping Docker containers (if any)..."
+    if command -v docker &>/dev/null; then
+        RUNNING=$(sudo docker ps -q 2>/dev/null)
+        if [ -n "$RUNNING" ]; then
+            echo "$RUNNING" | xargs sudo docker stop
+            echo "  Docker containers stopped."
+        else
+            echo "  No Docker containers running."
+        fi
+    fi
+
+    echo "=============================================================================="
+    echo "All OpenVision services stopped. Ports 80, 443, 5001, 5432, 6379 are free."
+    echo "To restart:  sudo systemctl start openvision-backend openvision-celery nginx"
+    echo "To redeploy: bash setup_aws.sh"
+    echo "=============================================================================="
+    exit 0
+fi
 
 echo "=============================================================================="
 echo "Deployment Mode Selection"
