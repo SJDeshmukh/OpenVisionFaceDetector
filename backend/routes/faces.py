@@ -475,21 +475,16 @@ def upload_face():
         try:
             from services.face_service import _decode_data_uri_to_rgb
             from multiple_face_detection import app as mfd_app
-            from utils import prepare_augmented_embeddings
             img_rgb_base = _decode_data_uri_to_rgb(face_image)
             if img_rgb_base is not None:
-                # Augment the detected CROP, not the raw photo.
-                # prepare_augmented_embeddings: detects face → crops → augments crop → embeds.
-                # Augmenting the crop ensures the embedder sees genuinely different poses;
-                # augmenting the full image is mostly undone by the internal alignment step.
-                emb_list = prepare_augmented_embeddings(img_rgb_base, mfd_app)
-                if not emb_list:
-                    # Fallback: if detection fails on the uploaded photo (already a crop),
-                    # augment it directly.
-                    for aug_img in get_face_augmentations(img_rgb_base):
-                        emb = mfd_app.get_embedder().embed(aug_img)
-                        if emb is not None and emb.size > 0:
-                            emb_list.append(_normalize_vec(emb))
+                # face_image is already a detected+refined crop from the pipeline.
+                # Augment the crop directly — re-running face detection here is
+                # redundant and fails on tight crops that have no margin.
+                emb_list = []
+                for aug_img in get_face_augmentations(img_rgb_base):
+                    emb = mfd_app.get_embedder().embed(aug_img)
+                    if emb is not None and emb.size > 0:
+                        emb_list.append(_normalize_vec(emb))
 
                 if emb_list:
                     templates_list = [

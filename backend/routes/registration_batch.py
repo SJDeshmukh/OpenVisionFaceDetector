@@ -194,19 +194,15 @@ def registration_batch_commit(valid_data: RegistrationBatchCommitSchema):
                           (uri, name, phone, json.dumps(custom_data), person_id, vendor_id))
 
             # Process Embedding
-            # Always re-extract embedding for OCP/FacePlugin compatibility on commit
+            # uri is the face thumbnail — already a detected+refined crop from the pipeline.
+            # Augment the crop directly without re-detecting.
             img_rgb_base = _decode_data_uri_to_rgb(uri)
             all_embs = []
             if img_rgb_base is not None:
-                # Augment the detected crop, not the raw photo — see faces.py for rationale.
-                from utils import prepare_augmented_embeddings
-                all_embs = prepare_augmented_embeddings(img_rgb_base, mfd_app)
-                if not all_embs:
-                    # Fallback: face_image is already a tight crop (batch registration path)
-                    for aug_img in get_face_augmentations(img_rgb_base):
-                        emb = mfd_app.get_embedder().embed(aug_img)
-                        if emb is not None and emb.size > 0:
-                            all_embs.append(_normalize_vec(emb))
+                for aug_img in get_face_augmentations(img_rgb_base):
+                    emb = mfd_app.get_embedder().embed(aug_img)
+                    if emb is not None and emb.size > 0:
+                        all_embs.append(_normalize_vec(emb))
             
             if all_embs:
                 # Update embedding
