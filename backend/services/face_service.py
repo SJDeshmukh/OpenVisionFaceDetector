@@ -102,38 +102,90 @@ def _decode_data_uri_to_rgb(uri: str):
     except Exception:
         return None
 
+def _estimate_pose_yaw(landmarks) -> float:
+    """
+    Estimates horizontal face turn (yaw proxy) from 2D face landmarks.
+    Returns 0.0 (frontal) → 1.0 (full side profile).
+    Uses asymmetry of outer-eye-to-nose distances (dlib 68-point layout).
+    Robust: returns 0.0 on any error so it never blocks a match.
+    """
+    try:
+        lm = np.asarray(landmarks, dtype=np.float32)
+        if lm.ndim != 2 or lm.shape[0] < 46 or lm.shape[1] < 2:
+            return 0.0
+        left_outer_x  = lm[36, 0]   # outer left-eye corner
+        right_outer_x = lm[45, 0]   # outer right-eye corner
+        nose_x        = lm[30, 0]   # nose tip
+        eye_span = abs(right_outer_x - left_outer_x)
+        if eye_span < 1.0:
+            return 0.0
+        eye_center_x = (left_outer_x + right_outer_x) / 2.0
+        return float(min(1.0, abs(nose_x - eye_center_x) / eye_span))
+    except Exception:
+        return 0.0
+
+
+def _quality_min_sim(sharpness: float, pose_yaw: float, face_score: float) -> float:
+    """
+    Minimum ArcFace cosine similarity (0→1 scale) required to emit a suggestion.
+
+    Quality tiers (Laplacian variance):
+        CLEAR  (≥150) + frontal → 0.72
+        SOFT   (80–150)         → 0.74
+        BLUR   (<80)            → 0.78
+    Pose penalty:
+        yaw 0.30–0.45 → +0.04  (~25-40° turn)
+        yaw >0.45     → +0.07  (>40° turn, semi-profile)
+    Detector-score penalty:
+        score < 0.70  → +0.02
+    """
+    if sharpness < 80:
+        base = 0.78
+    elif sharpness < 150:
+        base = 0.74
+    else:
+        base = 0.72
+
+    if pose_yaw > 0.45:
+        base += 0.07
+    elif pose_yaw > 0.30:
+        base += 0.04
+
+    if face_score < 0.70:
+        base += 0.02
+
+    return min(base, 0.92)
+
+
 def _apply_contrastive_refinement(sims: list, penalty_scale: float = 0.2) -> list:
     """
     Pushes dissimilar identities apart if they are too close (Embedding Separation).
     """
     if len(sims) < 2:
         return sims
-        
+
     top1 = sims[0]
     top2 = sims[1]
-    
+
     # Only refine if they are different identities and both have significant similarity
     if top1['person_id'] != top2['person_id'] and top1['similarity'] > 0.4:
         s1 = top1['similarity']
         s2 = top2['similarity']
-        
+
         gap = s1 - s2
-        
-        # AMBIGUITY DETECTION: If the model is collapsed (both high sim)
-        # but the gap is tiny (< 5%), flag it.
-        if s1 > 0.7 and gap < 0.05:
+
+        # AMBIGUITY DETECTION: flag when top-2 scores are too close (gap < 8%)
+        # or when the winner itself is below the reliable-match zone (< 0.78).
+        if (s1 > 0.65 and gap < 0.08) or (s1 < 0.78 and gap < 0.05):
             top1['is_ambiguous'] = True
             top2['is_ambiguous'] = True
-        
-        # If the gap is small (< 10%), the identification is ambiguous.
-        # We push them away from each other mathematically.
+
+        # Accentuate the winner, penalize the runner-up if they are too close
         overlap = max(0.0, 1.0 - gap)
         penalty = overlap * penalty_scale
-        
-        # Accentuate the winner, penalize the runner-up if they are too close
-        top1['similarity'] = min(1.0, float(s1 + (gap * 0.1))) 
+        top1['similarity'] = min(1.0, float(s1 + (gap * 0.1)))
         top2['similarity'] = max(0.0, float(s2 - penalty))
-        
+
     return sorted(sims, key=lambda x: x['similarity'], reverse=True)
 
 def _cluster_batch_embeddings(embeddings_map: dict, threshold: float = 0.75) -> list:
@@ -803,6 +855,18 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                     f['suggestions'] = _suggest_from_cache(f['emb_norm'], vcache, topk=3, struct_vec=f['struct_vec_val'], class_year=class_year, division=division, branch=branch)
                 if 'emb_norm' in f: del f['emb_norm']
                 if 'struct_vec_val' in f: del f['struct_vec_val']
+
+            # Step 5: Quality-aware suggestion gate — raise the bar for blurry / extreme-pose faces
+            for f in face_data:
+                f_sharpness  = f.get('sharpness', 999.0)
+                f_lmks       = f.get('landmarks_3d')
+                f_det_score  = float(f.get('score') or 1.0)
+                pose_yaw     = _estimate_pose_yaw(f_lmks) if f_lmks else 0.0
+                min_sim      = _quality_min_sim(f_sharpness, pose_yaw, f_det_score)
+                f['min_sim']   = round(min_sim, 3)
+                f['pose_yaw']  = round(pose_yaw, 3)
+                if f.get('suggestions'):
+                    f['suggestions'] = [s for s in f['suggestions'] if s['similarity'] >= min_sim]
 
             # Second-stage filter: only keep faces the 3D engine confirmed as real.
             # A face with no landmarks_3d is almost certainly a detector false positive

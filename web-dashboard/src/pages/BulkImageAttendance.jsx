@@ -37,7 +37,7 @@ const BulkImageAttendance = () => {
   const [zoomLevel, setZoomLevel] = useState(1);
   const pinchStartDist = useRef(null);
   const pinchStartZoom = useRef(1);
-  const [simThreshold, setSimThreshold] = useState(0.6);
+  const [simThreshold, setSimThreshold] = useState(0.72);
   const peopleById = useRef(null);
   const [pendingFiles, setPendingFiles] = useState([]); // queued File objects to be scanned together
   const [regenerating, setRegenerating] = useState({});
@@ -366,7 +366,12 @@ const BulkImageAttendance = () => {
             nextAssign[f.globalIndex] = String(f.assigned_person_id);
           } else {
             const top = Array.isArray(f.suggestions) && f.suggestions.length ? f.suggestions[0] : null;
-            const ok = top && typeof top.similarity === 'number' ? top.similarity >= simThreshold : !!top?.person_id;
+            const isBlurryFace = typeof f.sharpness === 'number' && f.sharpness < 80;
+            const isExtremePose = typeof f.pose_yaw === 'number' && f.pose_yaw > 0.45;
+            const isAmbiguous = top?.is_ambiguous === true;
+            // Don't auto-assign blurry+ambiguous or extreme-pose faces — require manual review
+            const skipAutoAssign = (isBlurryFace && isAmbiguous) || isExtremePose;
+            const ok = !skipAutoAssign && top && typeof top.similarity === 'number' ? top.similarity >= simThreshold : false;
             nextAssign[f.globalIndex] = ok && top?.person_id ? String(top.person_id) : '';
           }
         }
@@ -970,8 +975,10 @@ const BulkImageAttendance = () => {
                         const sharpness = typeof f.sharpness === 'number' ? f.sharpness : null;
                         const isBlurry = sharpness !== null && sharpness < 80;
                         const isMarginal = sharpness !== null && sharpness >= 80 && sharpness < 150;
+                        const isExtremePose = typeof f.pose_yaw === 'number' && f.pose_yaw > 0.45;
+                        const hasNoMatch = !Array.isArray(f.suggestions) || f.suggestions.length === 0;
                         return (
-                        <div key={f.globalIndex} className={`border rounded-xl p-2 bg-white shadow-sm flex flex-col ${isBlurry ? 'border-orange-300' : ''}`}>
+                        <div key={f.globalIndex} className={`border rounded-xl p-2 bg-white shadow-sm flex flex-col ${isExtremePose ? 'border-red-300 bg-red-50/30' : isBlurry ? 'border-orange-300' : hasNoMatch ? 'border-slate-300 opacity-80' : ''}`}>
                           <div className="w-full aspect-square mb-2 bg-slate-100 rounded-lg overflow-hidden border relative group">
                             <img
                               src={showMeshFaces[f.globalIndex] && f.thumbs?.lmk ? f.thumbs.lmk : (f.thumbs?.face || f.thumb)}
@@ -1004,6 +1011,13 @@ const BulkImageAttendance = () => {
                                 CLEAR
                               </div>
                             ) : null}
+
+                            {/* Extreme pose badge */}
+                            {isExtremePose && (
+                              <div className="absolute top-1 left-10 bg-red-500 border border-red-400 text-white text-[9px] font-bold px-1.5 py-0.5 rounded shadow" title={`Extreme angle (yaw ${typeof f.pose_yaw === 'number' ? (f.pose_yaw * 100).toFixed(0) : '?'}%) — identification unreliable`}>
+                                ANGLED
+                              </div>
+                            )}
 
                             {/* Enhance button — only for blurry/soft faces that have an assignment */}
                             {assign[f.globalIndex] && (isBlurry || isMarginal) && (
@@ -1058,7 +1072,11 @@ const BulkImageAttendance = () => {
                                   )}
                                 </>
                               )
-                              : '—'}
+                              : (typeof f.pose_yaw === 'number' && f.pose_yaw > 0.45)
+                                ? <span className="text-red-500 font-semibold" title={`Extreme pose angle (yaw ${(f.pose_yaw * 100).toFixed(0)}%) — match confidence too low`}>Extreme angle, no match</span>
+                                : (typeof f.sharpness === 'number' && f.sharpness < 80)
+                                  ? <span className="text-orange-500 font-semibold" title="Face too blurry for reliable identification">Too blurry, no confident match</span>
+                                  : <span className="text-slate-400 italic">No confident match</span>}
                           </div>
                         </div>
                       ); })}

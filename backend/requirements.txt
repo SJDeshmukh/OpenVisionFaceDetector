@@ -47,7 +47,7 @@ gfpgan
 realesrgan
 facexlib
 onnxruntime
-onnx
+onnx<1.17
 
 # AWS (S3 storage + Lambda)
 boto3
