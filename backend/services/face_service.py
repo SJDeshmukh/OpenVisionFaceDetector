@@ -140,11 +140,11 @@ def _quality_min_sim(sharpness: float, pose_yaw: float, face_score: float) -> fl
         score < 0.70  → +0.02
     """
     if sharpness < 80:
-        base = 0.78
+        base = 0.76   # BLUR — still strict, just marginally relaxed from 0.78
     elif sharpness < 150:
-        base = 0.74
+        base = 0.72   # SOFT — aligned with frontend default threshold
     else:
-        base = 0.72
+        base = 0.68   # CLEAR frontal — reliable enough at this score
 
     if pose_yaw > 0.45:
         base += 0.07

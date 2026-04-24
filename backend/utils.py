@@ -133,6 +133,114 @@ def decode_image_to_bgr(body: bytes) -> np.ndarray | None:
         return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
     return None
 
+def get_face_augmentations(img_rgb: np.ndarray) -> list[np.ndarray]:
+    """
+    Generates augmented views to maximise recognition coverage across real-world conditions.
+    Covers: lighting variation, head tilt, mild perspective (seat rows), distance blur,
+    and combined transforms.  Returns ~14 views from a single crop.
+    """
+    if img_rgb is None or img_rgb.size == 0:
+        return []
+
+    h, w = img_rgb.shape[:2]
+    center = (w // 2, h // 2)
+    augs = [img_rgb]
+
+    # ── 1. Horizontal flip ────────────────────────────────────────────────────
+    try:
+        augs.append(cv2.flip(img_rgb, 1))
+    except Exception: pass
+
+    # ── 2. Lighting (classroom has uneven / artificial lighting) ─────────────
+    try:
+        augs.append(cv2.convertScaleAbs(img_rgb, alpha=1.25, beta=15))   # brighter
+        augs.append(cv2.convertScaleAbs(img_rgb, alpha=0.75, beta=-15))  # darker
+        augs.append(cv2.convertScaleAbs(img_rgb, alpha=1.10, beta=5))    # mild warm
+    except Exception: pass
+
+    # ── 3. Head-tilt rotation (seats cause 5-15° natural tilt) ──────────────
+    try:
+        for angle in [8, -8, 15, -15]:
+            M = cv2.getRotationMatrix2D(center, angle, 1.0)
+            augs.append(cv2.warpAffine(img_rgb, M, (w, h), borderMode=cv2.BORDER_REFLECT_101))
+    except Exception: pass
+
+    # ── 4. Horizontal perspective warp (simulate seated-row 3D turn ~15-20°) ─
+    try:
+        pts_src = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
+        shift = int(w * 0.10)   # ~10% width shift
+        for pts_dst in [
+            np.float32([[shift, 0], [w, 0], [w - shift, h], [0, h]]),   # slight left turn
+            np.float32([[0, 0], [w - shift, 0], [w, h], [shift, h]]),   # slight right turn
+        ]:
+            M_p = cv2.getPerspectiveTransform(pts_src, pts_dst)
+            warped = cv2.warpPerspective(img_rgb, M_p, (w, h), borderMode=cv2.BORDER_REFLECT_101)
+            augs.append(warped)
+    except Exception: pass
+
+    # ── 5. Distance blur (back-row faces are softer / lower-res) ────────────
+    try:
+        augs.append(cv2.GaussianBlur(img_rgb, (3, 3), 0.8))
+    except Exception: pass
+
+    # ── 6. Combined: flip + darker (common real-world pairing) ───────────────
+    try:
+        flipped_dark = cv2.convertScaleAbs(cv2.flip(img_rgb, 1), alpha=0.80, beta=-10)
+        augs.append(flipped_dark)
+    except Exception: pass
+
+    return augs
+
+
+def prepare_augmented_embeddings(img_rgb: np.ndarray, mfd_app) -> list:
+    """
+    Given a full image, finds the primary face, crops it,
+    generates ~14 augmented versions of the CROP, and returns their embeddings.
+
+    Augmenting the CROP (not the raw photo) is critical: the embedder aligns
+    the face geometrically before extracting features, so augmentations applied
+    to the uncropped image are mostly normalised away.  Applying them to the
+    already-cropped face ensures the model sees genuinely diverse views.
+    Returns: List of 512-d embeddings (numpy arrays).
+    """
+    try:
+        # 1. Detect faces in the original image
+        # We use fast=True to get raw crops quickly
+        det_ann, det_crops, det_df, _ = mfd_app.detect_faces(
+            image_input=img_rgb,
+            compute_embeddings=False,
+            crop_mode="Face",
+            portrait_scale=1.5,
+            enhancer="None", # Skip enhancement during registration to keep it raw/consistent
+            det_max_side=1280
+        )
+        
+        if not det_crops or len(det_crops) == 0:
+            print("[UTILS] No face detected during augmentation prep.")
+            return []
+            
+        # 2. Take the primary face crop
+        primary_crop = det_crops[0]
+        
+        # 3. Generate 6 augmented versions of the CROP
+        augmented_crops = get_face_augmentations(primary_crop)
+        
+        # 4. Extract embeddings for each augmented crop
+        embedder = mfd_app.get_embedder()
+        embeddings = []
+        for crop in augmented_crops:
+            # FacePlugin/ONNX embedder handles resizing internally
+            emb = embedder.embed(crop)
+            if emb is not None and emb.size > 0:
+                embeddings.append(emb)
+                
+        return embeddings
+    except Exception as e:
+        print(f"[UTILS] prepare_augmented_embeddings failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
 # --- Database Utilities ---
 def get_table_columns(conn, table_name):
     """Returns a list of column names for a given table."""

@@ -130,6 +130,7 @@ def registration_batch_commit(valid_data: RegistrationBatchCommitSchema):
         
     saved = 0
     from services.face_service import _normalize_vec, _decode_data_uri_to_rgb, _VENDOR_EMB_CACHE
+    from utils import get_face_augmentations
     
     for a in assigns:
         try:
@@ -194,34 +195,47 @@ def registration_batch_commit(valid_data: RegistrationBatchCommitSchema):
 
             # Process Embedding
             # Always re-extract embedding for OCP/FacePlugin compatibility on commit
-            img_rgb = _decode_data_uri_to_rgb(uri)
-            if img_rgb is not None:
-                emb = mfd_app.get_embedder().embed(img_rgb)
-                emb = _normalize_vec(emb)
-            else:
-                emb = None
+            img_rgb_base = _decode_data_uri_to_rgb(uri)
+            all_embs = []
+            if img_rgb_base is not None:
+                # Augment the detected crop, not the raw photo — see faces.py for rationale.
+                from utils import prepare_augmented_embeddings
+                all_embs = prepare_augmented_embeddings(img_rgb_base, mfd_app)
+                if not all_embs:
+                    # Fallback: face_image is already a tight crop (batch registration path)
+                    for aug_img in get_face_augmentations(img_rgb_base):
+                        emb = mfd_app.get_embedder().embed(aug_img)
+                        if emb is not None and emb.size > 0:
+                            all_embs.append(_normalize_vec(emb))
             
-            if emb is not None and emb.size > 0:
-                vec_blob, dim = emb.astype(np.float32).tobytes(), int(emb.size)
-                struct_vec_b64 = face.get('struct_vec') or ''
-                struct_blob = None
-                if struct_vec_b64:
-                    try:
-                        s_bytes = base64.b64decode(struct_vec_b64)
-                        s_emb = np.frombuffer(s_bytes, dtype=np.float32).copy()
-                        if s_emb.size > 0:
-                            struct_blob = s_emb.astype(np.float32).tobytes()
-                    except Exception:
-                        pass
-                landmarks_3d = face.get('landmarks_3d') or []
-                lmks_json = json.dumps(landmarks_3d) if landmarks_3d else None
-                
+            if all_embs:
                 # Update embedding
                 c.execute("DELETE FROM person_embeddings WHERE person_id = ? AND vendor_id = ?", (person_id, vendor_id))
-                c.execute("""
-                    INSERT INTO person_embeddings (vendor_id, person_id, class_year, division, branch, vec, dim, struct_vec, landmarks_3d) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (vendor_id, person_id, a.class_year or "", a.division or "", a.branch or "", vec_blob, dim, struct_blob, lmks_json))
+                
+                for idx, emb in enumerate(all_embs):
+                    vec_blob, dim = emb.astype(np.float32).tobytes(), int(emb.size)
+                    
+                    # Store structural data only for the primary (original) image
+                    struct_blob = None
+                    lmks_json = None
+                    
+                    if idx == 0:
+                        struct_vec_b64 = face.get('struct_vec') or ''
+                        if struct_vec_b64:
+                            try:
+                                s_bytes = base64.b64decode(struct_vec_b64)
+                                s_emb = np.frombuffer(s_bytes, dtype=np.float32).copy()
+                                if s_emb.size > 0:
+                                    struct_blob = s_emb.astype(np.float32).tobytes()
+                            except Exception:
+                                pass
+                        landmarks_3d = face.get('landmarks_3d') or []
+                        lmks_json = json.dumps(landmarks_3d) if landmarks_3d else None
+
+                    c.execute("""
+                        INSERT INTO person_embeddings (vendor_id, person_id, class_year, division, branch, vec, dim, struct_vec, landmarks_3d) 
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (vendor_id, person_id, a.class_year or "", a.division or "", a.branch or "", vec_blob, dim, struct_blob, lmks_json))
 
             saved += 1
         except Exception as e:

@@ -12,7 +12,7 @@ import cv2
 from services.auth_service import authenticate_vendor_access, extract_token, verify_token, check_vendor_status, hash_password
 import db_factory
 from db_factory import set_row_factory
-from utils import get_db_connection, LOW_RAM_MODE, _VENDOR_EMB_CACHE, reset_sequence, ALL_FEATURES, cache_delete_vendor_prefix, cache_delete, require_feature, cache_get, cache_set, decode_image_to_bgr, decode_image_to_rgb
+from utils import get_db_connection, LOW_RAM_MODE, _VENDOR_EMB_CACHE, reset_sequence, ALL_FEATURES, cache_delete_vendor_prefix, cache_delete, require_feature, cache_get, cache_set, decode_image_to_bgr, decode_image_to_rgb, get_face_augmentations
 from services.face_service import _ensure_vendor_emb_cache, _normalize_vec, _suggest_from_cache
 from storage import upload_base64_image, presigned_url_for_key, OBJECT_STORAGE_ENABLED, compress_image
 import db_factory
@@ -475,20 +475,37 @@ def upload_face():
         try:
             from services.face_service import _decode_data_uri_to_rgb
             from multiple_face_detection import app as mfd_app
-            img_rgb = _decode_data_uri_to_rgb(face_image)
-            if img_rgb is not None:
-                emb = mfd_app.get_embedder().embed(img_rgb)
-                if emb is not None and emb.size > 0:
-                    templates_list = [base64.b64encode(emb.astype(np.float32).tobytes()).decode('utf-8')]
-                    # Also compute struct_vec for 3D matching consistency
-                    engine = mfd_app.get_realtime_engine()
-                    if engine:
-                        lmks = engine.extract_landmarks(img_rgb)
-                        if lmks:
-                            sv = mfd_app._extract_structural_vector(lmks[0])
-                            if sv is not None and sv.size > 0:
-                                struct_vec_list = [base64.b64encode(sv.astype(np.float32).tobytes()).decode('utf-8')]
-                                landmarks_3d_list = [lmks[0].tolist()]
+            from utils import prepare_augmented_embeddings
+            img_rgb_base = _decode_data_uri_to_rgb(face_image)
+            if img_rgb_base is not None:
+                # Augment the detected CROP, not the raw photo.
+                # prepare_augmented_embeddings: detects face → crops → augments crop → embeds.
+                # Augmenting the crop ensures the embedder sees genuinely different poses;
+                # augmenting the full image is mostly undone by the internal alignment step.
+                emb_list = prepare_augmented_embeddings(img_rgb_base, mfd_app)
+                if not emb_list:
+                    # Fallback: if detection fails on the uploaded photo (already a crop),
+                    # augment it directly.
+                    for aug_img in get_face_augmentations(img_rgb_base):
+                        emb = mfd_app.get_embedder().embed(aug_img)
+                        if emb is not None and emb.size > 0:
+                            emb_list.append(_normalize_vec(emb))
+
+                if emb_list:
+                    templates_list = [
+                        base64.b64encode(e.astype(np.float32).tobytes()).decode('utf-8')
+                        for e in emb_list
+                    ]
+
+                # Structural vector from the original image (used for 3D pose consistency)
+                engine = mfd_app.get_realtime_engine()
+                if engine:
+                    lmks = engine.extract_landmarks(img_rgb_base)
+                    if lmks:
+                        sv = mfd_app._extract_structural_vector(lmks[0])
+                        if sv is not None and sv.size > 0:
+                            struct_vec_list = [base64.b64encode(sv.astype(np.float32).tobytes()).decode('utf-8')]
+                            landmarks_3d_list = [lmks[0].tolist()]
         except Exception as e:
             print(f"[FACES_ROUTE] OCP Auto-extraction failed: {e}", flush=True)
 
