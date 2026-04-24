@@ -37,21 +37,30 @@ class RealTimeEngine:
                 self.seg_visible = False
         
         from model.recon import face_model
-        from mtcnn import MTCNN
         from util.preprocess import load_lm3d
-        
+
         self.args = Args()
         self.recon_model = face_model(self.args)
-        self.mtcnn = MTCNN()
+        self._mtcnn = None  # lazy-loaded on first use to avoid Metal GPU deadlock
         self.lm3d_std = load_lm3d()
-        print("[inference] RealTimeEngine ready.")
+        print("[inference] RealTimeEngine ready.", flush=True)
+
+    def _get_mtcnn(self):
+        # MTCNN uses TensorFlow Metal, which deadlocks when PyTorch MPS models are already
+        # loaded in the same process. Lazy-load with TF forced to CPU to avoid the hang.
+        if self._mtcnn is None:
+            import tensorflow as tf
+            tf.config.set_visible_devices([], 'GPU')
+            from mtcnn import MTCNN
+            self._mtcnn = MTCNN()
+        return self._mtcnn
 
     def process_frame(self, frame_np: np.ndarray) -> np.ndarray:
         # frame_np: RGB (H, W, 3)
         img_pil = Image.fromarray(frame_np)
-        
+
         # Detection
-        facial_landmarks = self.mtcnn.detect_faces(frame_np)
+        facial_landmarks = self._get_mtcnn().detect_faces(frame_np)
         if not facial_landmarks:
             return frame_np
             
@@ -269,7 +278,7 @@ class RealTimeEngine:
         # Legacy support for full-frame landmark extraction
         # (This still uses detection because it doesn't know where faces are)
         img_pil = Image.fromarray(frame_np)
-        facial_landmarks = self.mtcnn.detect_faces(frame_np)
+        facial_landmarks = self._get_mtcnn().detect_faces(frame_np)
         if not facial_landmarks:
             return []
             

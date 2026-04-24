@@ -32,7 +32,16 @@ cachetools
 # Database (Postgres support)
 psycopg2-binary
 
-# AI & Computer Vision (Face Recognition & Enhancement)
+# AI / Deep Learning core
+torch
+torchvision
+tensorflow
+mtcnn
+scipy
+scikit-image
+albumentations
+
+# Face Recognition & Enhancement
 basicsr
 gfpgan
 realesrgan

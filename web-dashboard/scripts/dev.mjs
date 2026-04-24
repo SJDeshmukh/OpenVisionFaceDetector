@@ -53,7 +53,13 @@ async function performAudit() {
 
   process.stdout.write("\n--- Step 2: Auditing AI Models ---\n");
   try {
-    execSync(`${pythonCmd} ../backend/download_models.py`, { stdio: "inherit" });
+    // Resolve the backend directory so the downloader works regardless of
+    // where `npm run dev` is invoked from (project root or web-dashboard/).
+    const backendDir = path.resolve(process.cwd(), "../backend");
+    const downloaderScript = path.join(backendDir, "download_models.py");
+    const venvPython = path.join(backendDir, process.platform === "win32" ? ".venv/Scripts/python.exe" : ".venv/bin/python3");
+    const python = fs.existsSync(venvPython) ? venvPython : "python3";
+    execSync(`${python} ${downloaderScript}`, { stdio: "inherit" });
     process.stdout.write("Model audit complete.\n");
   } catch (e) {
     process.stderr.write(`Warning: Model audit failed: ${e.message}\n`);

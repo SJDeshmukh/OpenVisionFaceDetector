@@ -192,24 +192,17 @@ LOW_RAM_MODE=$LRM
 EOF
     fi
 
-    echo "==> [6/8] Pre-downloading AI Models (Improved First-Start Experience)..."
-    # Ensure directories exist
+    echo "==> [6/8] Pre-downloading AI Models..."
+    # Create required directories upfront
     mkdir -p multiple_face_detection/models/realesrgan
     mkdir -p multiple_face_detection/models/gfpgan
     mkdir -p backend/standalone_live_mesh/3DDFA-V3/assets
 
-    # RealESRGAN x4plus (required for the new high-quality upscale)
-    if [ ! -f "multiple_face_detection/models/realesrgan/RealESRGAN_x4plus.pth" ]; then
-        echo "Downloading RealESRGAN_x4plus..."
-        curl -L "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth" -o multiple_face_detection/models/realesrgan/RealESRGAN_x4plus.pth
-    fi
-
-    # MobileNetV3 Backbone for 3DDFA (for better CPU performance)
-    if [ ! -f "backend/standalone_live_mesh/3DDFA-V3/assets/net_recon_mbnet.pth" ]; then
-        echo "Downloading MobileNetV3 3DDFA backbone..."
-        curl -L "https://github.com/cleardusk/3DDFA_V2/releases/download/v2.0/mbnet_v3.pth" -o backend/standalone_live_mesh/3DDFA-V3/assets/net_recon_mbnet.pth 2>/dev/null || \
-        echo "Warning: MobileNetV3 download failed, will fallback at runtime."
-    fi
+    # Delegate all downloads to the unified downloader script.
+    # It resolves paths from its own location so it works from any cwd,
+    # and skips any file that already exists and is non-empty.
+    echo "Running unified model downloader (skips if already present)..."
+    python3 backend/download_models.py || echo "Warning: Some model downloads failed — check above for details."
 
     # ── [6/8] Initializing Database Schema ────────────────────────────────────
     echo "==> [6/8] Initializing Database Schema..."
