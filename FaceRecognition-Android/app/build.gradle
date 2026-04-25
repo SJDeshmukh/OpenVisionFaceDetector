@@ -36,7 +36,7 @@ android {
         }
         attendx {
             dimension "brand"
-            applicationId "com.faceplugin.attendx"
+            applicationId "com.faceplugin.facerecognition"
             buildConfigField "Boolean", "IS_ATTENDX", "true"
         }
 

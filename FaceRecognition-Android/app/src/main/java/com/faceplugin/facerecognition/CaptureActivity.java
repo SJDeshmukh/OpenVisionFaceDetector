@@ -167,7 +167,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
 
                 new Thread(() -> {
                     Bitmap faceImage = Utils.cropFace(capturedBitmap, capturedFace);
-                    byte[] templates = FaceSDK.templateExtraction(capturedBitmap, capturedFace);
+                    byte[] templates = FaceSDKWrapper.INSTANCE.templateExtraction(capturedBitmap, capturedFace);
 
                     DBManager dbManager = new DBManager(context);
                     final int min = 10000;
@@ -292,7 +292,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
         param.check_liveness = true;
         param.check_liveness_level = SettingsActivity.getLivenessLevel(this);
 
-        List<FaceBox> faceBoxes = FaceSDK.faceDetection(capturedBitmap, param);
+        List<FaceBox> faceBoxes = FaceSDKWrapper.INSTANCE.faceDetection(capturedBitmap, param);
         if(faceBoxes != null && faceBoxes.size() > 0) {
             if(faceBoxes.get(0).liveness > SettingsActivity.getLivenessThreshold(context)) {
                 String msg = String.format("Liveness: Real, score = %.03f", faceBoxes.get(0).liveness);
@@ -360,7 +360,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
                     ", rot: " + rotationDegrees + ", mode: " + cameraMode + ", buffer: " + nv21.length);
             }
 
-            Bitmap bitmap = FaceSDK.yuv2Bitmap(nv21, image.getWidth(), image.getHeight(), cameraMode);
+            Bitmap bitmap = FaceSDKWrapper.INSTANCE.yuv2Bitmap(nv21, image.getWidth(), image.getHeight(), cameraMode);
 
             if (bitmap == null) {
                 imageProxy.close();
@@ -381,7 +381,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
             param.check_eye_closeness = true;
             param.check_mouth_opened = true;
 
-            List<FaceBox> faceBoxes = FaceSDK.faceDetection(bitmap, param);
+            List<FaceBox> faceBoxes = FaceSDKWrapper.INSTANCE.faceDetection(bitmap, param);
             FACE_CAPTURE_STATE faceCaptureState = checkFace(faceBoxes, this, bitmap.getWidth(), bitmap.getHeight());
 
             if(captureView.viewMode == CaptureView.VIEW_MODE.REPEAT_NO_FACE_PREPARE) {
