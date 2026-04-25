@@ -1137,7 +1137,7 @@ def delete_face(name):
                     [vid, *ids],
                 )
                 c.execute(
-                    f"DELETE FROM parent_users WHERE vendor_id = ? AND selected_person_id IN ({placeholders})",
+                    f"DELETE FROM parent_users WHERE vendor_id = ? AND selected_person_id IN ({placeholders}) AND NOT EXISTS (SELECT 1 FROM student_parents WHERE parent_id = parent_users.id)",
                     [vid, *ids],
                 )
                 # Delete leave requests and lecture attendance for the deleted person(s)
@@ -1176,7 +1176,7 @@ def delete_face(name):
                         del _VENDOR_EMB_CACHE[k]
                 for sn in sorted(student_numbers_by_vendor.get(int(vid), set())):
                     c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (vid, sn))
-                    c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND student_number = ?", (vid, sn))
+                    c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND student_number = ? AND NOT EXISTS (SELECT 1 FROM student_parents WHERE parent_id = parent_users.id)", (vid, sn))
                 for ph in sorted(phones_by_vendor.get(int(vid), set())):
                     try:
                         c.execute("SELECT id, student_number FROM parent_users WHERE vendor_id = ? AND contact_phone = ?", (vid, ph))
@@ -1192,7 +1192,7 @@ def delete_face(name):
                                     c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (vid, str(sn_val).strip()))
                             except Exception:
                                 pass
-                        c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND contact_phone = ?", (vid, ph))
+                        c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND contact_phone = ? AND NOT EXISTS (SELECT 1 FROM student_parents WHERE parent_id = parent_users.id)", (vid, ph))
                     except Exception:
                         pass
         except Exception:
@@ -1327,7 +1327,7 @@ def delete_face_by_id(person_id):
         if sn:
             for _sql, _args in [
                 ("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (target_vendor_id, sn)),
-                ("DELETE FROM parent_users WHERE vendor_id = ? AND student_number = ?",  (target_vendor_id, sn)),
+                ("DELETE FROM parent_users WHERE vendor_id = ? AND student_number = ? AND NOT EXISTS (SELECT 1 FROM student_parents WHERE parent_id = parent_users.id)",  (target_vendor_id, sn)),
             ]:
                 try:
                     c.execute(_sql, _args)
@@ -1349,7 +1349,7 @@ def delete_face_by_id(person_id):
                             c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (target_vendor_id, str(sn_val).strip()))
                     except Exception:
                         pass
-                c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND contact_phone = ?", (target_vendor_id, str(phone).strip()))
+                c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND contact_phone = ? AND NOT EXISTS (SELECT 1 FROM student_parents WHERE parent_id = parent_users.id)", (target_vendor_id, str(phone).strip()))
             except Exception as e:
                 logger.warning(f"Phone-based parent cleanup skipped for person_id={person_id}: {e}")
 
@@ -1435,7 +1435,7 @@ def delete_all_faces():
             c.execute("DELETE FROM leave_requests WHERE vendor_id = ?", (vendor_id,))
             c.execute("DELETE FROM lecture_attendance WHERE vendor_id = ?", (vendor_id,))
             c.execute("DELETE FROM parent_tokens WHERE vendor_id = ?", (vendor_id,))
-            c.execute("DELETE FROM parent_users WHERE vendor_id = ?", (vendor_id,))
+            c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND NOT EXISTS (SELECT 1 FROM student_parents WHERE parent_id = parent_users.id)", (vendor_id,))
             c.execute("DELETE FROM system_users WHERE vendor_id = ? AND role = 'student'", (vendor_id,))
 
             # 2. Delete student faces only — preserve faces linked to faculty accounts
