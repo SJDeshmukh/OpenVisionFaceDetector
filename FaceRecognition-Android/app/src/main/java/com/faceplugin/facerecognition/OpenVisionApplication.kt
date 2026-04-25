@@ -10,8 +10,14 @@ import kotlin.system.exitProcess
 
 class OpenVisionApplication : Application() {
 
+    companion object {
+        var instance: OpenVisionApplication? = null
+            private set
+    }
+
     override fun onCreate() {
         super.onCreate()
+        instance = this
         MyGlobal.context = applicationContext
 
         // Initialize FaceSDK at application startup — this guarantees it is ready

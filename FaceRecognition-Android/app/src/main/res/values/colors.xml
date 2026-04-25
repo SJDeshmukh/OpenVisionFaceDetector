@@ -28,6 +28,7 @@
     <color name="vision_success">@color/status_success</color>
     <color name="vision_warning">@color/status_warning</color>
     <color name="vision_error">@color/status_error</color>
+    <color name="vision_red">@color/status_error</color>
     
     <color name="vision_text_primary">@color/text_primary</color>
     <color name="vision_text_secondary">@color/text_secondary</color>

@@ -54,16 +54,19 @@ def public_vendors():
 @public_bp.route('/business-types', methods=['GET'])
 def public_business_types():
     """
-    Returns a list of business types (verticals).
-    Now dynamic - fetches unique verticals from the vendors table and merges with defaults.
+    Returns all supported business types.
+    AttendX is a single type; TapInX is split into sub-types (Hostel, School/College,
+    Daily Wages) so the mobile app can show the right options and gate parent login
+    per sub-type.
     """
     logger.info(f"Public business-types requested from {current_app.name}")
-    
-    # Default list of business types exactly matching the Super Admin dashboard requirements
-    default_types = {
-        "bulk_attendance_attendx": {
-            "value": "bulk_attendance_attendx", 
-            "label": "AttendX", 
+
+    final_list = [
+        # ── AttendX ──────────────────────────────────────────────────────────
+        {
+            "value": "bulk_attendance_attendx",
+            "label": "AttendX",
+            "app_type": "attendx",
             "allow_parent_login": True,
             "default_frontend_bundle_id": "attendx_bulk_ui",
             "default_registration_config": [
@@ -73,34 +76,55 @@ def public_business_types():
                 {"field": "phone", "label": "Parent/Contact Mobile", "type": "text", "required": True}
             ]
         },
-        "checkin_checkout_tapinx": {
-            "value": "checkin_checkout_tapinx", 
-            "label": "TapInX", 
+        # ── TapInX — Hostel ──────────────────────────────────────────────────
+        {
+            "value": "hostel",
+            "label": "Hostel",
+            "app_type": "tapinx",
             "allow_parent_login": True,
             "default_frontend_bundle_id": "tapinx_ui",
             "default_registration_config": [
                 {"field": "student_id", "label": "Student ID", "type": "text", "required": True},
-                {"field": "phone", "label": "Parent Mobile Number", "type": "text", "required": True},
-                {"field": "class_section", "label": "Class/Section", "type": "text", "required": True}
+                {"field": "phone", "label": "Student Mobile Number", "type": "text", "required": True},
+                {"field": "class_section", "label": "Class/Section", "type": "text", "required": False}
             ]
         },
-        "enterprise": {
-            "value": "enterprise", 
-            "label": "Enterprise (Custom)", 
+        # ── TapInX — School / College ─────────────────────────────────────────
+        {
+            "value": "school",
+            "label": "School / College",
+            "app_type": "tapinx",
+            "allow_parent_login": True,
+            "default_frontend_bundle_id": "tapinx_ui",
+            "default_registration_config": [
+                {"field": "student_id", "label": "Student ID", "type": "text", "required": True},
+                {"field": "phone", "label": "Student Mobile Number", "type": "text", "required": True},
+                {"field": "class_section", "label": "Class/Section", "type": "text", "required": False}
+            ]
+        },
+        # ── TapInX — Daily Wages (no parent login) ───────────────────────────
+        {
+            "value": "daily_wages",
+            "label": "Daily Wages",
+            "app_type": "tapinx",
+            "allow_parent_login": False,
+            "default_frontend_bundle_id": "tapinx_ui",
+            "default_registration_config": [
+                {"field": "employee_id", "label": "Employee ID", "type": "text", "required": True},
+                {"field": "phone", "label": "Contact Mobile", "type": "text", "required": False},
+                {"field": "department", "label": "Department", "type": "text", "required": False}
+            ]
+        },
+        # ── Enterprise ───────────────────────────────────────────────────────
+        {
+            "value": "enterprise",
+            "label": "Enterprise (Custom)",
+            "app_type": "other",
             "allow_parent_login": False,
             "default_frontend_bundle_id": "default_attendance",
             "default_registration_config": []
         }
-    }
-
-    # Return in a fixed order: AttendX, TapInX, Enterprise
-    final_list = [
-        default_types["bulk_attendance_attendx"],
-        default_types["checkin_checkout_tapinx"],
-        default_types["enterprise"]
     ]
-    
+
     logger.info(f"Returning {len(final_list)} business types.")
-    return jsonify({
-        "business_types": final_list
-    })
+    return jsonify({"business_types": final_list})

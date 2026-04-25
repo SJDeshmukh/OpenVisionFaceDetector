@@ -93,7 +93,7 @@ class OwnerInsightsFragment : Fragment() {
         tvAction.text = activity.get("action")?.asString ?: ""
         tvAction.setTextColor(resources.getColor(R.color.vision_text_primary, null))
         tvAction.textSize = 14f
-        tvAction.textStyle = android.graphics.Typeface.BOLD
+        tvAction.setTypeface(null, android.graphics.Typeface.BOLD)
         
         val tvMeta = TextView(context)
         val timestamp = activity.get("timestamp")?.asString ?: ""

@@ -21,6 +21,11 @@ import java.security.MessageDigest
 import android.animation.AnimatorSet
 import android.animation.ObjectAnimator
 import android.widget.ImageView
+import android.content.Context
+import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 
 class LoginActivity : AppCompatActivity() {
 
@@ -116,6 +121,7 @@ class LoginActivity : AppCompatActivity() {
         }
 
         btnLogin.setOnClickListener {
+            haptic()
             if (isParentLogin) {
                 val studentId = etStudentId.text.toString().trim()
                 val mobile = etMobileNumber.text.toString().trim()
@@ -142,6 +148,10 @@ class LoginActivity : AppCompatActivity() {
                              
                              val vertical = response.body()?.getVertical()
                              val hasBulkAttendance = response.body()?.getHasBulkAttendance() ?: false
+                             val appMode = try { response.body()?.let {
+                                 val jo = com.google.gson.Gson().toJsonTree(it).asJsonObject
+                                 jo.get("app_mode")?.asString
+                             } } catch (_: Exception) { null }
                              val editor = prefs.edit()
                              if (token != null) editor.putString("token", token)
                              if (role != null) editor.putString("role", role)
@@ -153,10 +163,11 @@ class LoginActivity : AppCompatActivity() {
                              editor.putString("parent_mobile_number", mobile)
                              if (vertical != null) editor.putString("parent_vendor_vertical", vertical)
                              editor.putBoolean("parent_has_bulk_attendance", hasBulkAttendance)
+                             if (appMode != null) editor.putString("parent_app_mode", appMode)
                              editor.apply()
-                             
+
                              if (token != null) RetrofitClient.setAuthToken(token)
-                             
+
                              runLogoShineThenNavigate()
                         } else {
                              var errorMsg = "Login Failed"
@@ -527,6 +538,23 @@ class LoginActivity : AppCompatActivity() {
         builder.setNegativeButton("Cancel") { dialog, which -> dialog.cancel() }
 
         builder.show()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun haptic() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vm = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+                vm.defaultVibrator.vibrate(VibrationEffect.createOneShot(40, VibrationEffect.DEFAULT_AMPLITUDE))
+            } else {
+                val v = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    v.vibrate(VibrationEffect.createOneShot(40, VibrationEffect.DEFAULT_AMPLITUDE))
+                } else {
+                    v.vibrate(40)
+                }
+            }
+        } catch (_: Exception) {}
     }
 
     private fun offlineLoginHash(username: String, password: String): String {

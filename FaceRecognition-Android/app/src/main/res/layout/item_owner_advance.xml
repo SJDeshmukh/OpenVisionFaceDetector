@@ -59,8 +59,7 @@
             android:id="@+id/layout_advance_actions"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gap="12dp">
+            android:orientation="horizontal">
             <Button
                 android:id="@+id/btn_approve_advance"
                 android:layout_width="0dp"

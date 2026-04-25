@@ -3,10 +3,14 @@ package com.faceplugin.facerecognition
 import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.widget.Button
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -33,11 +37,11 @@ class ParentActivity : AppCompatActivity() {
         setContentView(R.layout.activity_parent)
 
         findViewById<Button>(R.id.btn_parent_logout).setOnClickListener {
-            performLogout()
+            haptic(); performLogout()
         }
 
         findViewById<Button>(R.id.btn_change_face).setOnClickListener {
-            showFaceResetConfirmation()
+            haptic(); showFaceResetConfirmation()
         }
 
         val bottomNav = findViewById<BottomNavigationView>(R.id.bottom_navigation)
@@ -98,6 +102,23 @@ class ParentActivity : AppCompatActivity() {
         )
     }
 
+    @Suppress("DEPRECATION")
+    private fun haptic() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vm = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+                vm.defaultVibrator.vibrate(VibrationEffect.createOneShot(40, VibrationEffect.DEFAULT_AMPLITUDE))
+            } else {
+                val v = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    v.vibrate(VibrationEffect.createOneShot(40, VibrationEffect.DEFAULT_AMPLITUDE))
+                } else {
+                    v.vibrate(40)
+                }
+            }
+        } catch (_: Exception) {}
+    }
+
     fun performLogout() {
         RetrofitClient.getService().parentLogout().enqueue(object : Callback<JsonObject> {
             override fun onResponse(call: Call<JsonObject>, response: Response<JsonObject>) {}
@@ -146,7 +167,8 @@ class ParentActivity : AppCompatActivity() {
                 } else {
                     val errorBody = response.errorBody()?.string()
                     val errorMessage = try {
-                        com.google.gson.JsonParser.parseString(errorBody).asJsonObject.get("error").asString
+                        com.google.gson.Gson().fromJson(errorBody, com.google.gson.JsonObject::class.java)
+                            ?.get("error")?.asString ?: "Failed to submit request"
                     } catch (e: Exception) {
                         "Failed to submit request"
                     }

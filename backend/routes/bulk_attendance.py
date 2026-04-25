@@ -330,10 +330,10 @@ def mark_lecture_attendance(lecture_id):
 
     conn.commit()
     conn.close()
-    
+
     # Invalidate attendance cache to show new records immediately
     cache_delete_vendor_prefix(vendor_id)
-    
+
     # Notify connected clients for real-time updates
     try:
         if 'socketio' in current_app.extensions:
@@ -341,7 +341,28 @@ def mark_lecture_attendance(lecture_id):
             socketio.emit('attendance_updated', {'vendor_id': vendor_id}, room=f"vendor_{vendor_id}")
     except Exception as e:
         logger.warning(f"Failed to emit attendance_updated socket event: {e}")
-    
+
+    # Push FCM notification to parents for each present student (fire-and-forget)
+    try:
+        from notifications import notify_parent_async
+        _ts_label = datetime.now().strftime('%I:%M %p')
+        for entry in entries:
+            try:
+                _pid = int(entry.get('person_id', 0))
+                _status = entry.get('status', 'present')
+                if _pid and _status == 'present':
+                    _subj_label = l_subj or "Lecture"
+                    notify_parent_async(
+                        _pid, vendor_id,
+                        title=f"Attendance Marked — {_subj_label}",
+                        body=f"Present at {_ts_label}",
+                        data={"type": "lecture_attendance", "lecture_id": str(lecture_id), "person_id": str(_pid)}
+                    )
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     return jsonify({"status": "marked", "count": marked})
 
 

@@ -710,6 +710,23 @@ def parent_login():
         pass
     c = conn.cursor()
     try:
+        # Block parent login for business types that do not support it (e.g. daily wages).
+        try:
+            _is_pg_chk = getattr(conn, "_is_pg", False)
+            if _is_pg_chk:
+                c.execute("SELECT vertical FROM vendors WHERE id = %s", (vendor_id,))
+            else:
+                c.execute("SELECT vertical FROM vendors WHERE id = ?", (vendor_id,))
+            _vchk = c.fetchone()
+            if _vchk:
+                _vvert = _vchk[0] if isinstance(_vchk, (list, tuple)) else _vchk.get('vertical')
+                _NO_PARENT_LOGIN_VERTICALS = {'daily_wages', 'factory', 'enterprise'}
+                if str(_vvert or '').lower() in _NO_PARENT_LOGIN_VERTICALS:
+                    conn.close()
+                    return jsonify({"error": "Parent login is not available for this business type"}), 403
+        except Exception:
+            pass
+
         def _digits(s):
             try:
                 return "".join(ch for ch in str(s or "") if ch.isdigit())
@@ -739,18 +756,30 @@ def parent_login():
                 cd = None
             sn_val = ""
             if isinstance(cd, dict):
-                # Only check for student_id or id_number
                 sn_val = str(
-                    cd.get("student_id") or 
+                    cd.get("student_id") or
                     cd.get("id_number") or
+                    cd.get("student_number") or
                     ""
                 ).strip()
             if not sn_val and fallback_search_text and str(student_id).lower() in str(fallback_search_text).lower():
                 sn_val = str(student_id).strip()
             return sn_val
         def _find_student_person_id(vendor_to_check):
+            # Search both faces.phone and custom_data (school/hostel may store phone
+            # as 'student_phone' inside custom_data rather than the core phone column).
+            is_pg = getattr(conn, "_is_pg", False)
             try:
-                c.execute("SELECT id, phone, custom_data FROM faces WHERE vendor_id = ? AND phone LIKE ?", (vendor_to_check, f"%{mobile_tail}%"))
+                if is_pg:
+                    c.execute(
+                        "SELECT id, phone, custom_data FROM faces WHERE vendor_id = %s AND (phone LIKE %s OR custom_data::text LIKE %s)",
+                        (vendor_to_check, f"%{mobile_tail}%", f"%{mobile_tail}%")
+                    )
+                else:
+                    c.execute(
+                        "SELECT id, phone, custom_data FROM faces WHERE vendor_id = ? AND (phone LIKE ? OR custom_data LIKE ?)",
+                        (vendor_to_check, f"%{mobile_tail}%", f"%{mobile_tail}%")
+                    )
                 candidates2 = c.fetchall() or []
                 for st in candidates2:
                     try:
@@ -872,8 +901,9 @@ def parent_login():
                     
                     # Extract ID from custom data
                     sn = str(
-                        cd.get("student_id") or 
+                        cd.get("student_id") or
                         cd.get("id_number") or
+                        cd.get("student_number") or
                         ""
                     ).strip().lower()
                     
@@ -929,20 +959,31 @@ def parent_login():
         token_username = f"parent_{actual_vendor_id}_{student_id}"
         token = generate_token_with_claims(token_username, "parent", {"sv": int(session_version)})
 
-        # Fetch vendor vertical and feature flags for the app to adapt its UI
+        # Fetch vendor vertical, bundle, and feature flags for the app to adapt its UI
         vendor_vertical = None
         has_bulk_attendance = False
+        frontend_bundle_id = None
+        app_mode = None
         try:
-            c.execute("SELECT vertical FROM vendors WHERE id = ?", (actual_vendor_id,))
+            c.execute("SELECT vertical, frontend_bundle_id FROM vendors WHERE id = ?", (actual_vendor_id,))
             vrow = c.fetchone()
             if vrow:
-                vendor_vertical = vrow[0] if isinstance(vrow, (list, tuple)) else vrow.get('vertical')
+                if isinstance(vrow, (list, tuple)):
+                    vendor_vertical = vrow[0]
+                    frontend_bundle_id = vrow[1] if len(vrow) > 1 else None
+                else:
+                    vendor_vertical = vrow.get('vertical')
+                    frontend_bundle_id = vrow.get('frontend_bundle_id')
             c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (actual_vendor_id,))
             srow = c.fetchone()
             if srow:
                 raw = srow[0] if isinstance(srow, (list, tuple)) else srow.get('features')
                 feats = json.loads(raw) if isinstance(raw, str) else (list(raw) if raw else [])
                 has_bulk_attendance = 'bulk_image_attendance' in feats
+            if frontend_bundle_id == 'attendx_bulk_ui':
+                app_mode = 'attendx'
+            elif frontend_bundle_id == 'tapinx_ui':
+                app_mode = 'tapinx'
         except Exception:
             pass
 
@@ -958,11 +999,40 @@ def parent_login():
             "face_registered": bool(face_template),
             "face_template": face_template,
             "vertical": vendor_vertical,
-            "has_bulk_attendance": has_bulk_attendance
+            "has_bulk_attendance": has_bulk_attendance,
+            "frontend_bundle_id": frontend_bundle_id,
+            "app_mode": app_mode
         })
     except Exception as e:
         conn.close()
         return jsonify({"error": str(e)}), 500
+
+@auth_bp.route("/parents/update-fcm-token", methods=["POST"])
+def parent_update_fcm_token():
+    from app import get_db_connection
+    auth_header = request.headers.get('Authorization')
+    if not auth_header:
+        return jsonify({"error": "Unauthorized"}), 401
+    token = extract_token(auth_header)
+    if not token:
+        return jsonify({"error": "Invalid token"}), 401
+    data_jwt = verify_token(token)
+    if not data_jwt or data_jwt.get('role') != 'parent':
+        return jsonify({"error": "Unauthorized"}), 401
+    fcm_token = (request.get_json(silent=True) or {}).get('fcm_token', '')
+    if not fcm_token:
+        return jsonify({"error": "fcm_token required"}), 400
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute("UPDATE parent_users SET fcm_token = ? WHERE username = ?", (fcm_token, data_jwt['username']))
+        conn.commit()
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
 
 @auth_bp.route("/parents/logout", methods=["POST"])
 def parent_logout():

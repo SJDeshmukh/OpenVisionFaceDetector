@@ -342,6 +342,22 @@ def person_event(valid_data: PersonEventSchema):
         if vendor_id_to_check and socketio:
             ev = {"name": name, "timestamp": current_time_obj.strftime('%Y-%m-%d %H:%M:%S'), "status": new_status, "is_late": is_late, "activity": activity_name, "vendor_id": vendor_id_to_check, "device_id": curr_dev_id, "captured_image": captured_image}
             socketio.emit('attendance_updated', ev, room=f"vendor_{vendor_id_to_check}")
+
+        # Push notification to parent (fire-and-forget, never blocks response)
+        if person_id and vendor_id_to_check:
+            try:
+                from notifications import notify_parent_async
+                _ts_label = current_time_obj.strftime('%I:%M %p')
+                _action = "Checked In" if new_status == "CHECK_IN" else "Checked Out"
+                notify_parent_async(
+                    person_id, vendor_id_to_check,
+                    title=f"{name} — {_action}",
+                    body=f"{_action} at {_ts_label}",
+                    data={"type": "checkin_out", "status": new_status, "person_id": str(person_id)}
+                )
+            except Exception:
+                pass
+
         conn.close()
         return jsonify({"speak": True, "text": f"{name}: {new_status.title()}", "status": new_status, "is_late": is_late, "activity": activity_name, "person_id": person_id})
     except Exception as e:

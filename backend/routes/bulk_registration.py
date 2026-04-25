@@ -56,18 +56,26 @@ def bulk_registration_upload():
         req_branch = request.form.get('branch')
 
         headers = list(data[0].keys())
-        
+
         # Mapping Logic - Expanded for better auto-identification
         name_targets = ["name", "full name", "student name", "employee name", "person name", "first name"]
-        id_targets = ["student id", "student_id", "id", "id number", "roll number", "admission number"]
-        phone_targets = ["mobile", "phone", "contact", "whatsapp", "parent number", "alternative number", "student mobile number", "student mobile"]
+        id_targets = [
+            "student id", "student_id", "student number", "student_number", "student no",
+            "roll number", "roll no", "roll num", "enrollment number", "enrollment no",
+            "enroll no", "admission number", "admission no", "id number", "id"
+        ]
+        phone_targets = [
+            "mobile", "phone", "contact", "whatsapp", "parent number", "parent mobile",
+            "alternative number", "student mobile number", "student mobile", "student phone",
+            "student contact", "contact number", "contact mobile"
+        ]
         dept_targets = ["department", "dept", "branch", "class", "section"]
         desig_targets = ["designation", "role", "post"]
         shift_targets = ["shift", "timing"]
 
         name_key = next((h for h in headers if _fuzzy_match(h, name_targets)), None)
         phone_key = next((h for h in headers if _fuzzy_match(h, phone_targets)), None)
-        
+
         # Identify ID column for Automated Login Creation logic
         id_key = next((h for h in headers if _fuzzy_match(h, id_targets)), None)
         if not id_key and data:
@@ -84,6 +92,13 @@ def bulk_registration_upload():
 
         conn = get_db_connection()
         c = conn.cursor()
+
+        # Determine the correct custom_data key for student ID based on vendor vertical.
+        # AttendX uses 'student_number'; TapInX / school / hostel use 'student_id'.
+        c.execute("SELECT vertical FROM vendors WHERE id = ?", (vendor_id,))
+        _vrow = c.fetchone()
+        _vendor_vertical = (_vrow[0] if isinstance(_vrow, (list, tuple)) else (_vrow.get('vertical') or '')) if _vrow else ''
+        student_id_custom_key = 'student_number' if _vendor_vertical == 'bulk_attendance_attendx' else 'student_id'
 
         # Get features for automated login creation ("Inking")
         c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
@@ -137,13 +152,21 @@ def bulk_registration_upload():
                     skipped_count += 1
                     continue
 
-                # Exclude core fields from custom_data to avoid database redundancy
+                # Build custom_data; exclude name and phone (stored in core columns)
                 custom_dict = {}
                 for k, v in row.items():
                     if k in [name_key, phone_key, id_key]:
-                        continue  # Already stored in core columns
+                        continue
                     if v is not None:
                         custom_dict[str(k).strip()] = str(v).strip()
+
+                # Always store student ID in custom_data under the normalised key so
+                # the parent login lookup (_extract_student_number_from_custom_data)
+                # can find it regardless of what the Excel column was named.
+                if id_key:
+                    id_val = str(row.get(id_key) or '').strip()
+                    if id_val:
+                        custom_dict[student_id_custom_key] = id_val
 
                 # Inject Class Scope if provided via Class Cards flow
                 if req_class_id: custom_dict['class_id'] = req_class_id
