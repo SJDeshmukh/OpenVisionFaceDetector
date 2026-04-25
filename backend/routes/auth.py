@@ -888,7 +888,7 @@ def parent_login():
                 actual_vendor_id = None
         if not row:
             is_pg = getattr(conn, "_is_pg", False)
-            # Search faces with the provided vendor_id first
+            # Search faces with the provided vendor_id strictly
             # Search both phone column and custom_data JSON
             if is_pg:
                 c.execute("""
@@ -907,14 +907,6 @@ def parent_login():
                     )
                 """, (vendor_id, f"%{mobile_tail}%", f"%{mobile_tail}%"))
             potential_students = c.fetchall() or []
-            
-            # If not found with that vendor_id, try searching ALL vendors (for convenience)
-            if not potential_students:
-                if is_pg:
-                    c.execute("SELECT id, vendor_id, phone, custom_data FROM faces WHERE phone LIKE %s OR custom_data::text LIKE %s", (f"%{mobile_tail}%", f"%{mobile_tail}%"))
-                else:
-                    c.execute("SELECT id, vendor_id, phone, custom_data FROM faces WHERE phone LIKE ? OR custom_data LIKE ?", (f"%{mobile_tail}%", f"%{mobile_tail}%"))
-                potential_students = c.fetchall() or []
 
             def _check_student_match(st_row):
                 try:
@@ -1104,18 +1096,32 @@ def get_parent_attendance():
             return jsonify({"error": "Invalid or Expired Token"}), 401
         parent_id = pu['id']
         vendor_id = pu['vendor_id']
-        limit = int(request.args.get('limit', 50))
-        date_filter = (request.args.get('date') or "").strip()
-        if not date_filter:
-            date_filter = datetime.now().strftime("%Y-%m-%d")
-        c.execute("""
+        limit = int(request.args.get('limit', 100))
+        start_date = (request.args.get('start_date') or request.args.get('date') or "").strip()
+        end_date = (request.args.get('end_date') or "").strip()
+        
+        if not start_date:
+            start_date = datetime.now().strftime("%Y-%m-%d")
+        
+        query = """
             SELECT a.id, a.name, a.timestamp, a.status, a.activity, a.is_late, a.person_id 
             FROM attendance a
             JOIN student_parents sp ON sp.person_id = a.person_id
-            WHERE sp.parent_id = ? AND a.vendor_id = ? AND date(a.timestamp) = ?
-            ORDER BY a.timestamp DESC
-            LIMIT ?
-        """, (parent_id, vendor_id, date_filter, limit))
+            WHERE sp.parent_id = ? AND a.vendor_id = ?
+        """
+        params = [parent_id, vendor_id]
+        
+        if end_date:
+            query += " AND date(a.timestamp) >= ? AND date(a.timestamp) <= ?"
+            params.extend([start_date, end_date])
+        else:
+            query += " AND date(a.timestamp) = ?"
+            params.append(start_date)
+            
+        query += " ORDER BY a.timestamp DESC LIMIT ?"
+        params.append(limit)
+        
+        c.execute(query, tuple(params))
         rows = c.fetchall() or []
         conn.close()
         
@@ -1130,7 +1136,7 @@ def get_parent_attendance():
                 d['timestamp'] = ts.replace('T', ' ')
             formatted_attendance.append(d)
 
-        return jsonify({"attendance": formatted_attendance, "date": date_filter})
+        return jsonify({"attendance": formatted_attendance, "start_date": start_date, "end_date": end_date})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1147,9 +1153,11 @@ def parent_student_day():
     if not data or data.get('role') != 'parent':
         return jsonify({"error": "Invalid or Expired Token"}), 401
 
-    date_filter = (request.args.get("date") or "").strip()
-    if not date_filter:
-        date_filter = datetime.now().strftime("%Y-%m-%d")
+    start_date = (request.args.get("start_date") or request.args.get("date") or "").strip()
+    end_date = (request.args.get("end_date") or "").strip()
+    
+    if not start_date:
+        start_date = datetime.now().strftime("%Y-%m-%d")
 
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
@@ -1207,15 +1215,23 @@ def parent_student_day():
         if not student_row:
             return jsonify({"error": "No identity found"}), 404
 
-        c.execute(
-            """
+        query = """
             SELECT id, name, timestamp, status, activity, is_late, person_id
             FROM attendance
-            WHERE vendor_id = ? AND person_id = ? AND date(timestamp) = ?
-            ORDER BY timestamp ASC
-            """,
-            (vendor_id, person_id, date_filter),
-        )
+            WHERE vendor_id = ? AND person_id = ?
+        """
+        params = [vendor_id, person_id]
+        
+        if end_date:
+            query += " AND date(timestamp) >= ? AND date(timestamp) <= ?"
+            params.extend([start_date, end_date])
+        else:
+            query += " AND date(timestamp) = ?"
+            params.append(start_date)
+            
+        query += " ORDER BY timestamp ASC"
+        
+        c.execute(query, tuple(params))
         rows = c.fetchall() or []
         attendance = []
         for r in rows:
@@ -1247,7 +1263,8 @@ def parent_student_day():
             student_custom = {}
 
         return jsonify({
-            "date": date_filter,
+            "start_date": start_date,
+            "end_date": end_date,
             "vendor_id": vendor_id,
             "student": {
                 "person_id": student_row["id"],
