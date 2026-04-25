@@ -1107,17 +1107,17 @@ def delete_face(name):
                 by_vendor.setdefault(int(vid), []).append(int(pid))
                 sn = None
                 try:
-                    c_data = r[3]
+                    c_data = r[4]  # custom_data is column index 4
                     if c_data:
                         cd = json.loads(c_data) if isinstance(c_data, str) else c_data
                         if isinstance(cd, dict):
-                            sn = str(cd.get("student_id") or cd.get("id_number") or "").strip()
+                            sn = str(cd.get("student_id") or cd.get("student_number") or cd.get("id_number") or "").strip()
                 except Exception:
                     sn = None
                 if sn:
                     student_numbers_by_vendor.setdefault(int(vid), set()).add(sn)
                 try:
-                    ph = r[2]
+                    ph = r[3]  # phone is column index 3
                     if ph:
                         phones_by_vendor.setdefault(int(vid), set()).add(str(ph).strip())
                 except Exception:
@@ -1140,11 +1140,34 @@ def delete_face(name):
                     f"DELETE FROM parent_users WHERE vendor_id = ? AND selected_person_id IN ({placeholders})",
                     [vid, *ids],
                 )
+                # Delete leave requests and lecture attendance for the deleted person(s)
+                try:
+                    c.execute(
+                        f"DELETE FROM leave_requests WHERE vendor_id = ? AND student_id IN ({placeholders})",
+                        [vid, *ids],
+                    )
+                except Exception:
+                    pass
+                try:
+                    c.execute(
+                        f"DELETE FROM lecture_attendance WHERE vendor_id = ? AND person_id IN ({placeholders})",
+                        [vid, *ids],
+                    )
+                except Exception:
+                    pass
                 # Delete all embeddings for the deleted person(s)
                 c.execute(
                     f"DELETE FROM person_embeddings WHERE vendor_id = ? AND person_id IN ({placeholders})",
                     [vid, *ids],
                 )
+                # Delete system_users (student logins) for the deleted person(s)
+                try:
+                    c.execute(
+                        f"DELETE FROM system_users WHERE person_id IN ({placeholders})",
+                        ids,
+                    )
+                except Exception:
+                    pass
                 # Invalidate embedding cache for this vendor
                 for k in list(_VENDOR_EMB_CACHE.keys()):
                     if isinstance(k, (int, str)) and str(k).startswith(str(vid)):
