@@ -1191,10 +1191,11 @@ def parent_student_day():
                 sn = ""
                 try:
                     cd = json.loads(cd_raw) if cd_raw else {}
-                    sn = str(cd.get("student_id") or cd.get("id_number") or "").strip()
+                    if isinstance(cd, dict):
+                        sn = str(cd.get("student_number") or cd.get("student number") or cd.get("id_number") or cd.get("id number") or cd.get("roll_number") or cd.get("roll number") or cd.get("enrollment_number") or cd.get("enrollment number") or cd.get("student_id") or "").strip()
                 except Exception:
                     sn = ""
-                if student_number and sn == student_number:
+                if student_number and sn.lower() == student_number.lower():
                     student_row = r
                     person_id = r["id"]
                     break
@@ -1254,7 +1255,7 @@ def parent_student_day():
                 "phone": student_row["phone"],
                 "department": student_row["department"] if "department" in (student_row.keys() if hasattr(student_row, 'keys') else []) else None,
                 "designation": student_row["designation"] if "designation" in (student_row.keys() if hasattr(student_row, 'keys') else []) else None,
-                "student_number": student_custom.get("student_number") or student_number,
+                "student_number": str(student_custom.get("student_number") or student_custom.get("student number") or student_custom.get("id_number") or student_custom.get("id number") or student_custom.get("roll_number") or student_custom.get("roll number") or student_custom.get("enrollment_number") or student_custom.get("enrollment number") or student_custom.get("student_id") or student_number).strip(),
                 "face_image": base64.b64encode(student_row["face_image"]).decode('utf-8') if student_row["face_image"] else None,
                 "custom_data": student_custom,
             },
