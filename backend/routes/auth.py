@@ -920,19 +920,8 @@ def parent_login():
                 try:
                     c_data_raw = _row_get(st_row, 3, 'custom_data')
                     if not c_data_raw: return False
-                    
-                    # If it's already a dict, use it; otherwise parse JSON
-                    cd = c_data_raw if isinstance(c_data_raw, dict) else json.loads(c_data_raw)
-                    
-                    # Extract ID from custom data
-                    sn = str(
-                        cd.get("student_id") or
-                        cd.get("id_number") or
-                        cd.get("student_number") or
-                        ""
-                    ).strip().lower()
-                    
-                    return sn == str(student_id).strip().lower()
+                    sn = _extract_student_number_from_custom_data(c_data_raw, fallback_search_text=c_data_raw)
+                    return sn.lower() == str(student_id).strip().lower()
                 except Exception:
                     return False
 
