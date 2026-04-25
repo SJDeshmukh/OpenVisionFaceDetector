@@ -754,17 +754,42 @@ def parent_login():
                 cd = json.loads(c_data_raw) if isinstance(c_data_raw, str) else c_data_raw
             except Exception:
                 cd = None
-            sn_val = ""
-            if isinstance(cd, dict):
-                sn_val = str(
-                    cd.get("student_id") or
-                    cd.get("id_number") or
-                    cd.get("student_number") or
-                    ""
-                ).strip()
-            if not sn_val and fallback_search_text and str(student_id).lower() in str(fallback_search_text).lower():
-                sn_val = str(student_id).strip()
-            return sn_val
+            if not isinstance(cd, dict):
+                if fallback_search_text and str(student_id).lower() in str(fallback_search_text).lower():
+                    return str(student_id).strip()
+                return ""
+
+            sid_lower = str(student_id).strip().lower()
+
+            # Priority keys — check all, prefer the one that matches what the parent entered.
+            # Covers: underscore variants, space variants (from Excel headers stored as-is),
+            # and id_number. "student_id" is intentionally last because it is often the
+            # display roll number (1, 2, 3...) not the real enrollment ID.
+            priority_keys = [
+                "student_number", "student number",
+                "id_number",      "id number",
+                "roll_number",    "roll number",
+                "enrollment_number", "enrollment number",
+                "student_id",
+            ]
+            candidates = []
+            for k in priority_keys:
+                v = cd.get(k)
+                if v and str(v).strip():
+                    candidates.append(str(v).strip())
+
+            # If any candidate exactly matches what the parent typed, return it immediately.
+            for c_val in candidates:
+                if c_val.lower() == sid_lower:
+                    return c_val
+
+            # Broad scan: any custom_data value that matches (handles any column name).
+            for v in cd.values():
+                if v and str(v).strip().lower() == sid_lower:
+                    return str(v).strip()
+
+            # Fallback: return first non-empty candidate so _check_student_match can compare.
+            return candidates[0] if candidates else ""
         def _find_student_person_id(vendor_to_check):
             # Search both faces.phone and custom_data (school/hostel may store phone
             # as 'student_phone' inside custom_data rather than the core phone column).
