@@ -40,7 +40,7 @@ def test_identification(image_path, vendor_id=1):
 if __name__ == "__main__":
     # Path to an actual image from the find_by_name results
     # Use one from backend/audit_images/
-    test_img = "/Users/hashteelab/Documents/trae_projects/face_detection/backend/audit_images/1773123157555_15a849b7_webcam-1773123157442.jpg"
+    test_img = "/Users/hashteelab/Documents/trae_projects/face_detection/backend/audit_images/1773127283732_aa04d3b2_Screenshot 2026-03-03 at 4.00.28\u202fPM.png"
     
     # Run test
     test_identification(test_img)

@@ -140,6 +140,52 @@ def decode_image_to_bgr(body: bytes) -> np.ndarray | None:
         return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
     return None
 
+def extract_student_number_from_custom_data(c_data_raw, search_term=None):
+    """
+    Extracts a student enrollment number from the custom_data JSON field.
+    Priority: student_number, student number, id_number, id number, student_id.
+    """
+    if not c_data_raw:
+        return ""
+    try:
+        cd = json.loads(c_data_raw) if isinstance(c_data_raw, str) else c_data_raw
+    except Exception:
+        cd = None
+        
+    if not isinstance(cd, dict):
+        if search_term and str(search_term).lower() in str(c_data_raw).lower():
+            return str(search_term).strip()
+        return ""
+
+    # Priority keys for student/employee ID
+    priority_keys = [
+        "student_number", "student number",
+        "id_number",      "id number",
+        "employee_id",    "employee id",
+        "student_id",     "student id"
+    ]
+    
+    # 1. Try to find an exact match for one of the priority keys
+    for k in priority_keys:
+        val = str(cd.get(k) or "").strip()
+        if val:
+            return val
+            
+    # 2. Try case-insensitive matching for keys
+    cd_lower = {str(k).lower(): v for k, v in cd.items()}
+    for k in priority_keys:
+        val = str(cd_lower.get(k) or "").strip()
+        if val:
+            return val
+            
+    # 3. Fallback: if search_term is provided and exists in any value, return search_term
+    if search_term:
+        st_lower = str(search_term).lower()
+        if any(st_lower in str(v).lower() for v in cd.values()):
+            return str(search_term).strip()
+
+    return ""
+
 def get_face_augmentations(img_rgb: np.ndarray) -> list[np.ndarray]:
     """
     Generates augmented views to maximise recognition coverage across real-world conditions.

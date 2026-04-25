@@ -747,49 +747,7 @@ def parent_login():
         row = None
         actual_vendor_id = None
         resolved_person_id = None
-        def _extract_student_number_from_custom_data(c_data_raw, fallback_search_text=None):
-            if not c_data_raw:
-                return ""
-            try:
-                cd = json.loads(c_data_raw) if isinstance(c_data_raw, str) else c_data_raw
-            except Exception:
-                cd = None
-            if not isinstance(cd, dict):
-                if fallback_search_text and str(student_id).lower() in str(fallback_search_text).lower():
-                    return str(student_id).strip()
-                return ""
-
-            sid_lower = str(student_id).strip().lower()
-
-            # Priority keys — check all, prefer the one that matches what the parent entered.
-            # Covers: underscore variants, space variants (from Excel headers stored as-is),
-            # and id_number. "student_id" is intentionally last because it is often the
-            # display roll number (1, 2, 3...) not the real enrollment ID.
-            priority_keys = [
-                "student_number", "student number",
-                "id_number",      "id number",
-                "roll_number",    "roll number",
-                "enrollment_number", "enrollment number",
-                "student_id",
-            ]
-            candidates = []
-            for k in priority_keys:
-                v = cd.get(k)
-                if v and str(v).strip():
-                    candidates.append(str(v).strip())
-
-            # If any candidate exactly matches what the parent typed, return it immediately.
-            for c_val in candidates:
-                if c_val.lower() == sid_lower:
-                    return c_val
-
-            # Broad scan: any custom_data value that matches (handles any column name).
-            for v in cd.values():
-                if v and str(v).strip().lower() == sid_lower:
-                    return str(v).strip()
-
-            # Fallback: return first non-empty candidate so _check_student_match can compare.
-            return candidates[0] if candidates else ""
+        from utils import extract_student_number_from_custom_data
         def _find_student_person_id(vendor_to_check):
             # Search both faces.phone and custom_data (school/hostel may store phone
             # as 'student_phone' inside custom_data rather than the core phone column).
@@ -810,7 +768,7 @@ def parent_login():
                     try:
                         pid2 = _row_get(st, 0, "id")
                         c_data2 = _row_get(st, 2, "custom_data")
-                        sn2 = _extract_student_number_from_custom_data(c_data2, fallback_search_text=c_data2)
+                        sn2 = extract_student_number_from_custom_data(c_data2, search_term=student_id)
                         if sn2.lower() == str(student_id).strip().lower():
                             return int(pid2) if pid2 is not None else None
                     except Exception:
@@ -838,7 +796,7 @@ def parent_login():
                         c_data = _row_get(st, 1, "custom_data")
                         if not c_data:
                             continue
-                        sn = _extract_student_number_from_custom_data(c_data, fallback_search_text=c_data)
+                        sn = extract_student_number_from_custom_data(c_data, search_term=student_id)
                         if sn.lower() == str(student_id).strip().lower():
                             exists = True
                             break
@@ -865,7 +823,7 @@ def parent_login():
                 for st in vv:
                     try:
                         cd = _row_get(st, 1, "custom_data")
-                        sn = _extract_student_number_from_custom_data(cd, fallback_search_text=cd)
+                        sn = extract_student_number_from_custom_data(cd, search_term=student_id)
                         if sn.lower() == str(student_id).strip().lower():
                             ok = True
                             resolved_person_id = _row_get(st, 0, "id")
