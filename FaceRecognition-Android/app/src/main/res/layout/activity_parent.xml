@@ -1,62 +1,48 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.coordinatorlayout.widget.CoordinatorLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:background="@color/vision_navy_900">
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="center_vertical"
-        android:padding="16dp">
-        <ImageView
-            android:id="@+id/iv_parent_logo"
-            android:layout_width="34dp"
-            android:layout_height="34dp"
-            android:src="@drawable/openvision_logo"
-            android:layout_marginEnd="10dp"/>
-        <TextView
-            android:id="@+id/tv_parent_title"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Parent Portal"
-            android:textStyle="bold"
-            android:textSize="18sp"
-            android:textColor="@color/vision_text_primary"/>
-        <Button
-            android:id="@+id/btn_change_face"
-            android:layout_width="wrap_content"
-            android:layout_height="40dp"
-            android:text="Change Face"
-            android:backgroundTint="@color/vision_navy_700"
-            android:textColor="@android:color/white"
-            android:layout_marginEnd="8dp"
-            style="@style/ButtonStyle"/>
-        <Button
-            android:id="@+id/btn_parent_logout"
-            android:layout_width="wrap_content"
-            android:layout_height="40dp"
-            android:text="Logout"
-            android:backgroundTint="@android:color/holo_red_light"
-            android:textColor="@android:color/white"
-            style="@style/ButtonStyle"/>
-    </LinearLayout>
+    android:background="@drawable/bg_home_gradient">
 
+    <!-- Fragment container -->
     <FrameLayout
         android:id="@+id/parent_fragment_container"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1" />
+        android:layout_height="match_parent"
+        android:paddingBottom="80dp"/>
 
-    <com.google.android.material.bottomnavigation.BottomNavigationView
-        android:id="@+id/bottom_navigation"
+    <!-- Bottom navigation + FAB layer -->
+    <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="#1E1E1E"
-        app:itemIconTint="@color/white"
-        app:itemTextColor="@color/white"
-        app:menu="@menu/parent_bottom_nav_menu" />
-</LinearLayout>
+        android:layout_gravity="bottom">
+
+        <com.google.android.material.bottomnavigation.BottomNavigationView
+            android:id="@+id/bottom_navigation"
+            android:layout_width="match_parent"
+            android:layout_height="72dp"
+            android:background="@drawable/bg_bottom_nav"
+            app:itemIconTint="@color/selector_nav_item"
+            app:itemTextColor="@color/selector_nav_item"
+            app:itemIconSize="24dp"
+            app:labelVisibilityMode="labeled" />
+
+        <!-- Center FAB sits above the bottom nav -->
+        <com.google.android.material.floatingactionbutton.FloatingActionButton
+            android:id="@+id/fab_scan"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|center_horizontal"
+            android:layout_marginTop="-24dp"
+            android:src="@drawable/ic_nav_scan"
+            android:backgroundTint="@color/indigo_mid"
+            app:fabSize="normal"
+            app:rippleColor="@color/neon_cyan"
+            app:elevation="8dp"
+            android:contentDescription="Scan face"/>
+
+    </FrameLayout>
+
+</androidx.coordinatorlayout.widget.CoordinatorLayout>

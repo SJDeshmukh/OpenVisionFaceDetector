@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:paddingStart="20dp"
+    android:paddingEnd="20dp"
+    android:paddingTop="52dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="History"
+        android:textSize="24sp"
+        android:textStyle="bold"
+        android:textColor="@android:color/white"
+        android:layout_marginBottom="4dp"/>
+    <TextView
+        android:id="@+id/tv_history_subtitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="All check-in &amp; check-out events"
+        android:textSize="13sp"
+        android:textColor="#66FFFFFF"
+        android:layout_marginBottom="16dp"/>
+
+    <!-- TapInX: single date picker -->
+    <LinearLayout
+        android:id="@+id/row_hist_single_date"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginBottom="16dp">
+        <EditText
+            android:id="@+id/et_hist_date"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:hint="Select date"
+            android:background="@drawable/bg_history_item"
+            android:inputType="none"
+            android:focusable="false"
+            android:singleLine="true"
+            android:padding="12dp"
+            android:textColor="@android:color/white"
+            android:textColorHint="#66FFFFFF"
+            android:textSize="14sp"/>
+        <Button
+            android:id="@+id/btn_hist_load"
+            android:layout_width="wrap_content"
+            android:layout_height="44dp"
+            android:text="Load"
+            android:backgroundTint="@color/indigo_mid"
+            android:textColor="@android:color/white"
+            android:layout_marginStart="10dp"
+            style="?android:attr/borderlessButtonStyle"/>
+    </LinearLayout>
+
+    <!-- AttendX: date range picker -->
+    <LinearLayout
+        android:id="@+id/row_hist_date_range"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginBottom="8dp"
+        android:visibility="gone">
+        <EditText
+            android:id="@+id/et_hist_range_start"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:hint="From"
+            android:background="@drawable/bg_history_item"
+            android:inputType="none"
+            android:focusable="false"
+            android:singleLine="true"
+            android:padding="10dp"
+            android:textSize="13sp"
+            android:textColor="@android:color/white"
+            android:textColorHint="#66FFFFFF"/>
+        <EditText
+            android:id="@+id/et_hist_range_end"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:hint="To"
+            android:background="@drawable/bg_history_item"
+            android:inputType="none"
+            android:focusable="false"
+            android:singleLine="true"
+            android:padding="10dp"
+            android:textSize="13sp"
+            android:textColor="@android:color/white"
+            android:textColorHint="#66FFFFFF"
+            android:layout_marginStart="8dp"/>
+        <Button
+            android:id="@+id/btn_hist_range_load"
+            android:layout_width="wrap_content"
+            android:layout_height="44dp"
+            android:text="Load"
+            android:backgroundTint="@color/indigo_mid"
+            android:textColor="@android:color/white"
+            android:layout_marginStart="8dp"
+            style="?android:attr/borderlessButtonStyle"/>
+    </LinearLayout>
+
+    <!-- Summary line (AttendX only) -->
+    <TextView
+        android:id="@+id/tv_hist_summary"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:textSize="12sp"
+        android:textColor="#99FFFFFF"
+        android:layout_marginBottom="12dp"
+        android:visibility="gone"/>
+
+    <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+        android:id="@+id/swipe_refresh_history"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:overScrollMode="never">
+            <LinearLayout
+                android:id="@+id/history_list_container"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingBottom="16dp"/>
+        </ScrollView>
+    </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
+
+</LinearLayout>

@@ -353,7 +353,7 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
 
                     det_ann, det_crops, det_df, _ = mfd_app.detect_faces(
                         image_input=img_rgb,
-                        enhancer="GFPGAN",
+                        enhancer="None",   # no GFPGAN — Real-ESRGAN handles small faces during inference
                         enhance_level=0.5,
                         gfpgan_upscale=1,
                         codeformer_w=0.5,
@@ -361,7 +361,7 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
                         crop_mode="Face",
                         portrait_scale=3.0,
                         preclean_whole=False,
-                        preclean_level=0.2,
+                        preclean_level=0.0,
                         det_max_side=640
                     )
                     crop = det_crops[0] if (isinstance(det_crops, list) and len(det_crops) > 0) else img_rgb
@@ -382,10 +382,25 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
 
                     emb = mfd_app.get_embedder().embed(crop)
                     emb = _normalize_vec(emb)
+                    # Gallery TTA: average original + horizontally flipped embedding.
+                    # This creates a centroid that covers mild left/right head turns,
+                    # matching the range of poses seen in classroom photos without
+                    # requiring multiple registration captures per student.
+                    if emb is not None and emb.size > 0:
+                        try:
+                            crop_bgr = cv2.cvtColor(crop, cv2.COLOR_RGB2BGR) if crop.shape[2] == 3 else crop
+                            flipped_crop = cv2.flip(crop_bgr, 1)
+                            flipped_rgb = cv2.cvtColor(flipped_crop, cv2.COLOR_BGR2RGB)
+                            emb_flip = mfd_app.get_embedder().embed(flipped_rgb)
+                            emb_flip = _normalize_vec(emb_flip)
+                            if emb_flip.size == emb.size:
+                                emb = _normalize_vec(emb + emb_flip)
+                        except Exception:
+                            pass
                     if emb is not None and emb.size > 0:
                         items.append({
-                            'person_id': int(pid), 
-                            'name': str(nm), 
+                            'person_id': int(pid),
+                            'name': str(nm),
                             'vec': emb,
                             'struct_vec': struct_vec_reg
                         })
@@ -809,9 +824,14 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                     
                     
                     # ── False-Positive Gate ──
-                    # If this "face" doesn't have 3D landmarks, it's either a false positive
-                    # or a low-confidence detection (back of head, partial profile). Drop it.
+                    # No 3D landmarks → back-of-head, partial profile, or background blob.
                     if landmarks_3d is None or len(landmarks_3d) == 0:
+                        continue
+                    # Aspect ratio gate: a valid face box is roughly square (0.5–2.0).
+                    # Ears, shoulders, and other body parts produce very narrow boxes
+                    # (width/height < 0.4 or > 2.5) and should be discarded.
+                    _fw = bx2 - bx1; _fh = by2 - by1
+                    if _fh > 0 and not (0.4 <= (_fw / _fh) <= 2.5):
                         continue
                     
                     cv2.rectangle(draw, (bx1, by1), (bx2, by2), (0, 180, 255), 2)
@@ -849,7 +869,8 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                         if emb_norm is None:
                             embed_face = pure_face
                             embed_lmks = lmks_local
-                            # RealESRGAN upscale for small faces (skip in fast mode for speed)
+                            # RealESRGAN upscale for small faces — preserves real pixel structure,
+                            # no hallucination risk. Skip in fast mode for speed.
                             if _up_scale > 1 and not fast:
                                 try:
                                     embed_face = mfd_app.get_realesrgan_manager().upscale(embed_face, scale=_up_scale)
@@ -859,11 +880,25 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                                         embed_lmks[:, 1] *= _up_scale
                                 except Exception:
                                     pass
-                            # Always apply GFPGAN after upscaling; skip only in fast mode for full-size faces
-                            skip_enh = fast and _up_scale == 1
-                            emb_crop_112, face_display = mfd_app.prepare_embedding_crop(embed_face, embed_lmks, skip_enhancement=skip_enh)
+                            # Never run GFPGAN for embedding — it regenerates face structure from a GAN
+                            # prior and embeds invented features, not the real person's geometry.
+                            # Real-ESRGAN above is sufficient: it upscales without synthesizing.
+                            emb_crop_112, face_display = mfd_app.prepare_embedding_crop(embed_face, embed_lmks, skip_enhancement=True)
                             emb = mfd_app.get_embedder().embed(emb_crop_112)
                             emb_norm = _normalize_vec(emb)
+                            # TTA: embed horizontally flipped crop and average with original.
+                            # Robustifies matching against slightly turned faces — the gallery
+                            # has one frontal photo per person; the averaged embedding bridges
+                            # the gap to mild left/right turns without extra registration cost.
+                            if emb_norm.size > 0:
+                                try:
+                                    flipped_112 = cv2.flip(emb_crop_112, 1)
+                                    emb_flip = mfd_app.get_embedder().embed(flipped_112)
+                                    emb_flip = _normalize_vec(emb_flip)
+                                    if emb_flip.size == emb_norm.size:
+                                        emb_norm = _normalize_vec(emb_norm + emb_flip)
+                                except Exception:
+                                    pass
 
                         # Extract Structural Vector
                         struct_vec_val = None
@@ -912,12 +947,25 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                                 
                                 # Step 3: Light Gaussian blur to remove remaining blockiness
                                 portrait_enh = cv2.GaussianBlur(portrait_enh, (3, 3), 0.5)
-                            elif portrait.size > 0 and (is_blurry or is_tiny) and params.get('enhancer') != 'None':
-                                # Non-fast quality mode: full GFPGAN enhancement
-                                if is_tiny:
-                                    portrait = cv2.bilateralFilter(portrait, 5, 50, 50)
-                                with mfd_app._gfpgan_lock:
-                                    portrait_enh = mfd_app.get_gfpgan_manager().enhance_crop(portrait, upscale=1, whole=False, fidelity=0.7)
+                            elif portrait.size > 0 and (is_blurry or is_tiny):
+                                # Blurry/tiny portrait: Real-ESRGAN upscale + CLAHE + bilateral.
+                                # Replaced GFPGAN here — it hallucinated facial structure on
+                                # low-quality crops, making displayed faces look uncanny.
+                                ph2, pw2 = portrait.shape[:2]
+                                min_dim2 = min(ph2, pw2)
+                                if min_dim2 < 160:
+                                    up2 = max(2, int(np.ceil(160 / min_dim2)))
+                                    try:
+                                        portrait = mfd_app.get_realesrgan_manager().upscale(portrait, scale=up2)
+                                    except Exception:
+                                        portrait = cv2.resize(portrait, (pw2 * up2, ph2 * up2), interpolation=cv2.INTER_LANCZOS4)
+                                portrait_lab = cv2.cvtColor(portrait, cv2.COLOR_RGB2LAB)
+                                l_ch, a_ch, b_ch = cv2.split(portrait_lab)
+                                clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4))
+                                l_ch = clahe.apply(l_ch)
+                                portrait_lab = cv2.merge([l_ch, a_ch, b_ch])
+                                portrait = cv2.cvtColor(portrait_lab, cv2.COLOR_LAB2RGB)
+                                portrait_enh = cv2.bilateralFilter(portrait, 9, 60, 60)
                             else:
                                 portrait_enh = portrait.copy() if portrait.size > 0 else None
 
@@ -986,7 +1034,11 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                             embeddings_map[len(face_data)-1] = emb_norm
 
             # Step 2: Intra-batch Clustering
-            clusters = _cluster_batch_embeddings(embeddings_map, threshold=0.90)
+            # 0.83: looser than the old 0.90 so multiple crops of the same student
+            # in different poses/lighting get grouped before matching. At 0.90 the
+            # same person shot from slightly different angles was treated as two
+            # separate unknowns and each fell below the confidence threshold alone.
+            clusters = _cluster_batch_embeddings(embeddings_map, threshold=0.83)
 
             # Step 3: Identify Clusters and Assign suggestions
             for cluster in clusters:
@@ -1016,9 +1068,17 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                 f_lmks       = f.get('landmarks_3d')
                 f_det_score  = float(f.get('score') or 1.0)
                 pose_yaw     = _estimate_pose_yaw(f_lmks) if f_lmks else 0.0
+                f['pose_yaw'] = round(pose_yaw, 3)
+                # Hard pose rejection: yaw > 0.55 means ~50°+ turn (near-profile).
+                # ArcFace embeddings for near-profile faces are too far from the
+                # frontal gallery embedding to produce reliable matches — returning
+                # ambiguous suggestions is worse than returning none at all.
+                if pose_yaw > 0.55:
+                    f['suggestions'] = []
+                    f['min_sim'] = 1.0
+                    continue
                 min_sim      = _quality_min_sim(f_sharpness, pose_yaw, f_det_score)
                 f['min_sim']   = round(min_sim, 3)
-                f['pose_yaw']  = round(pose_yaw, 3)
                 if f.get('suggestions'):
                     f['suggestions'] = [s for s in f['suggestions'] if s['similarity'] >= min_sim]
 

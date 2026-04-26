@@ -92,18 +92,36 @@ class ParentAttendanceWorker(appContext: Context, params: WorkerParameters) : Wo
             if (!granted) return
         }
 
-        val title = "$name • $status"
-        val content = listOf(timestamp, activity, if (place.isNotBlank()) place else null).filterNotNull().filter { it.isNotBlank() }.joinToString(" • ")
+        val isIn  = status == "CHECK_IN"
+        val emoji = if (isIn) "✅" else "👋"
+        val verb  = if (isIn) "Checked In" else "Checked Out"
+        val title = "$emoji $name $verb"
+        val content = listOf(timestamp, activity, place).filter { it.isNotBlank() }.joinToString(" • ")
+
+        // Tap → open ParentActivity (home screen)
+        val tapIntent = android.content.Intent(applicationContext, ParentActivity::class.java).apply {
+            flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK
+        }
+        val pi = android.app.PendingIntent.getActivity(
+            applicationContext, 0, tapIntent,
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+        )
 
         val notif = NotificationCompat.Builder(applicationContext, "parent_attendance_bg")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle(title)
-            .setContentText(content)
+            .setContentText(content.ifBlank { "Tap to view attendance" })
+            .setStyle(NotificationCompat.BigTextStyle().bigText(content.ifBlank { "Tap to view attendance" }))
+            .setContentIntent(pi)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
             .build()
 
-        NotificationManagerCompat.from(applicationContext).notify((System.currentTimeMillis() % Int.MAX_VALUE).toInt(), notif)
+        try {
+            NotificationManagerCompat.from(applicationContext)
+                .notify((System.currentTimeMillis() % Int.MAX_VALUE).toInt(), notif)
+        } catch (_: SecurityException) {}
     }
 
     private fun createChannel() {

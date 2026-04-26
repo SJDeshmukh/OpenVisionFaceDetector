@@ -31,12 +31,12 @@ android {
     productFlavors {
         tapinx {
             dimension "brand"
-            applicationId "com.faceplugin.facerecognition"
+            applicationId "com.tapinx.parent"
             buildConfigField "Boolean", "IS_ATTENDX", "false"
         }
         attendx {
             dimension "brand"
-            applicationId "com.faceplugin.facerecognition"
+            applicationId "com.attendx.parent"
             buildConfigField "Boolean", "IS_ATTENDX", "true"
         }
 
@@ -117,4 +117,7 @@ dependencies {
 
     // Location
     implementation 'com.google.android.gms:play-services-location:21.0.1'
+
+    // Charts
+    implementation 'com.github.PhilJay:MPAndroidChart:v3.1.0'
 }

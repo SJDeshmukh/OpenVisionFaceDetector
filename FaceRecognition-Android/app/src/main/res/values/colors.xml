@@ -49,6 +49,22 @@
     <color name="white">#FFFFFF</color>
     <color name="black">#000000</color>
 
+    <!-- New UX Accent Palette -->
+    <color name="electric_blue">#3B82F6</color>
+    <color name="deep_indigo">#312E81</color>
+    <color name="indigo_mid">#4F46E5</color>
+    <color name="neon_cyan">#06B6D4</color>
+    <color name="purple_accent">#7C3AED</color>
+    <color name="gradient_start">#0F0C29</color>
+    <color name="gradient_mid">#1E1B4B</color>
+    <color name="gradient_end">#111827</color>
+    <color name="glass_bg">#26FFFFFF</color>
+    <color name="glass_stroke">#33FFFFFF</color>
+    <color name="present_green">#10B981</color>
+    <color name="absent_red">#EF4444</color>
+    <color name="late_amber">#F59E0B</color>
+    <color name="chip_bg">#1AFFFFFF</color>
+
     <!-- Android standard names -->
     <color name="colorPrimary">@color/primary_brand</color>
     <color name="colorPrimaryVariant">@color/primary_brand_dark</color>
