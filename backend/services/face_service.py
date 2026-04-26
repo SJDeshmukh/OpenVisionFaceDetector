@@ -301,14 +301,39 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
                 pid_list = list(id_set)
                 ph = ",".join(["?"] * len(pid_list))
                 try:
-                    c.execute(f"SELECT id, name FROM faces WHERE id IN ({ph})", pid_list)
+                    # Fetch name AND face_image so we can apply gallery TTA to
+                    # pre-computed embeddings. The stored vec was generated from a
+                    # single frontal capture; averaging it with the flip embedding
+                    # of the same image makes the centroid cover mild head turns.
+                    c.execute(f"SELECT id, name, face_image FROM faces WHERE id IN ({ph})", pid_list)
                     nmrows = c.fetchall() or []
                     nmap = {}
+                    flip_map = {}  # pid → flipped embedding
                     for nr in nmrows:
-                        nid = nr['id'] if isinstance(nr, sqlite3.Row) else nr[0]
-                        nmap[int(nid)] = nr['name'] if isinstance(nr, sqlite3.Row) else nr[1]
+                        nid = int(nr['id'] if isinstance(nr, sqlite3.Row) else nr[0])
+                        nmap[nid] = nr['name'] if isinstance(nr, sqlite3.Row) else nr[1]
+                        uri = nr['face_image'] if isinstance(nr, sqlite3.Row) else nr[2]
+                        if uri:
+                            try:
+                                img_rgb = _decode_data_uri_to_rgb(uri)
+                                if img_rgb is not None:
+                                    img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+                                    flipped_bgr = cv2.flip(img_bgr, 1)
+                                    flipped_rgb = cv2.cvtColor(flipped_bgr, cv2.COLOR_BGR2RGB)
+                                    from multiple_face_detection import app as mfd_app
+                                    emb_f = mfd_app.get_embedder().embed(flipped_rgb)
+                                    emb_f = _normalize_vec(emb_f)
+                                    if emb_f.size > 0:
+                                        flip_map[nid] = emb_f
+                            except Exception:
+                                pass
                     for it in items:
                         it['name'] = nmap.get(it['person_id'], '')
+                        # Blend stored embedding with flipped embedding to get a
+                        # pose-robust centroid without re-registering anyone.
+                        fv = flip_map.get(it['person_id'])
+                        if fv is not None and fv.size == it['vec'].size:
+                            it['vec'] = _normalize_vec(it['vec'] + fv)
                 except Exception:
                     pass
         except Exception:
