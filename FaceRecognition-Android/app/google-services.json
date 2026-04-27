@@ -9,26 +9,7 @@
       "client_info": {
         "mobilesdk_app_id": "1:960559763908:android:d3fd66be51b50cf6a65491",
         "android_client_info": {
-          "package_name": "com.tapinx.parent"
-        }
-      },
-      "oauth_client": [],
-      "api_key": [
-        {
-          "current_key": "AIzaSyAZX70-tTuWsru_CajR1vI1DDTCVZoYgig"
-        }
-      ],
-      "services": {
-        "appinvite_service": {
-          "other_platform_oauth_client": []
-        }
-      }
-    },
-    {
-      "client_info": {
-        "mobilesdk_app_id": "1:960559763908:android:6ed36832a75aa713a65491",
-        "android_client_info": {
-          "package_name": "com.attendx.parent"
+          "package_name": "com.faceplugin.facerecognition"
         }
       },
       "oauth_client": [],

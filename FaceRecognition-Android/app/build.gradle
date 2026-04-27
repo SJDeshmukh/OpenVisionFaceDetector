@@ -32,12 +32,12 @@ android {
     productFlavors {
         tapinx {
             dimension "brand"
-            applicationId "com.tapinx.parent"
+            applicationId "com.faceplugin.facerecognition"
             buildConfigField "Boolean", "IS_ATTENDX", "false"
         }
         attendx {
             dimension "brand"
-            applicationId "com.attendx.parent"
+            applicationId "com.faceplugin.facerecognition"
             buildConfigField "Boolean", "IS_ATTENDX", "true"
         }
 
