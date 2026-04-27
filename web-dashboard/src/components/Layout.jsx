@@ -6,7 +6,7 @@ const Layout = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   return (
-    <div className="min-h-screen bg-slate-50 font-inter text-slate-900">
+    <div className="min-h-screen font-inter w-full">
       <Sidebar isOpen={isSidebarOpen} onClose={() => setIsSidebarOpen(false)} />
       <Topbar onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)} />
       <main className="lg:pl-64 pt-16 min-h-screen transition-all duration-300">

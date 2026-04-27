@@ -969,15 +969,19 @@ def download_faces():
     set_row_factory(conn)
     c = conn.cursor()
     
-    query = "SELECT * FROM faces"
+    query = """
+        SELECT f.*, su.role as system_role
+        FROM faces f
+        LEFT JOIN system_users su ON f.id = su.person_id
+    """
     params = []
     
     if vendor_id:
-        query += " WHERE vendor_id = ?"
+        query += " WHERE f.vendor_id = ?"
         params.append(vendor_id)
         
     # Default sorting by Display ID
-    query += " ORDER BY display_id ASC"
+    query += " ORDER BY f.display_id ASC"
     
     # Optional pagination
     try:
@@ -1005,6 +1009,7 @@ def download_faces():
             "department": r.get("department", ""),
             "designation": r.get("designation", ""),
             "shift": r.get("shift", ""),
+            "role": r.get("system_role"),
             "custom_data": json.loads(r["custom_data"]) if r.get("custom_data") else {}
         }
         try:

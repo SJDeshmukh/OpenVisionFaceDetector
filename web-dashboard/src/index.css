@@ -45,6 +45,55 @@
   --color-light-gray:  #8080B0;
 }
 
+/* ─── Variables ─────────────────────────────────────────── */
+:root {
+  --bg-body: #07071A;
+  --text-main: #FFFFFF;
+  --bg-sidebar: linear-gradient(180deg, #0A0924 0%, #080818 65%, #050510 100%);
+  --border-sidebar: rgba(124, 58, 255, 0.12);
+  --shadow-sidebar: 4px 0 32px rgba(0,0,0,0.6);
+  --bg-topbar: rgba(7, 7, 26, 0.88);
+  --shadow-topbar: 0 4px 24px rgba(0,0,0,0.4);
+  --text-muted: #8080B0;
+  --text-muted-hover: #fff;
+  --bg-nav-active: linear-gradient(90deg, rgba(124,58,255,0.22) 0%, rgba(124,58,255,0.06) 100%);
+  --bg-nav-hover: rgba(255,255,255,0.04);
+  --text-nav-hover: #C4C4E0;
+  --bg-btn-ghost: rgba(124,58,255,0.06);
+  --bg-btn-ghost-hover: rgba(124,58,255,0.14);
+  --bg-search: rgba(255,255,255,0.04);
+  --border-search: rgba(124,58,255,0.12);
+  --border-search-focus: rgba(124,58,255,0.45);
+  --border-top: rgba(124,58,255,0.1);
+  --overlay-bg: rgba(4,4,20,0.82);
+  --user-chip-bg: rgba(124,58,255,0.06);
+  --user-chip-text: #5050A0;
+}
+
+[data-theme="light"] {
+  --bg-body: #F3F4F6;
+  --text-main: #111827;
+  --bg-sidebar: linear-gradient(180deg, #FFFFFF 0%, #F9FAFB 100%);
+  --border-sidebar: rgba(124, 58, 255, 0.1);
+  --shadow-sidebar: 4px 0 32px rgba(0,0,0,0.05);
+  --bg-topbar: rgba(255, 255, 255, 0.88);
+  --shadow-topbar: 0 4px 24px rgba(0,0,0,0.05);
+  --text-muted: #6B7280;
+  --text-muted-hover: #111827;
+  --bg-nav-active: linear-gradient(90deg, rgba(124,58,255,0.15) 0%, rgba(124,58,255,0.05) 100%);
+  --bg-nav-hover: rgba(0,0,0,0.04);
+  --text-nav-hover: #374151;
+  --bg-btn-ghost: rgba(124,58,255,0.08);
+  --bg-btn-ghost-hover: rgba(124,58,255,0.16);
+  --bg-search: rgba(0,0,0,0.03);
+  --border-search: rgba(124,58,255,0.15);
+  --border-search-focus: rgba(124,58,255,0.4);
+  --border-top: rgba(124,58,255,0.1);
+  --overlay-bg: rgba(244,247,254,0.6);
+  --user-chip-bg: rgba(124,58,255,0.08);
+  --user-chip-text: #4B5563;
+}
+
 /* ─── Base ─────────────────────────────────────────── */
 @layer base {
   *, *::before, *::after {
@@ -57,8 +106,8 @@
   }
 
   body {
-    background-color: #07071A;
-    color: #FFFFFF;
+    background-color: var(--bg-body);
+    color: var(--text-main);
     font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
   }
 

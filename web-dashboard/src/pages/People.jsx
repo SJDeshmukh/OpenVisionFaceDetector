@@ -320,6 +320,8 @@ const People = () => {
         const resp = await axios.delete(`${API_URL}/sync/delete/id/${id}`);
         if (resp.data && resp.data.status === 'success') {
           setUsers(prev => prev.filter(u => u.id !== id));
+          fetchUsers(); // Re-fetch to pull newly calculated display_ids
+          addToast("Student deleted successfully.", 'success');
         } else {
           const msg = resp.data?.error || 'Failed to delete';
           alert(msg);
@@ -585,7 +587,7 @@ const People = () => {
     // Filter by selected class if in class view
     if (selectedClassForView) {
       if (selectedClassForView.id === 'unassigned') {
-        result = result.filter(u => !u.custom_data?.class_id && !u.custom_data?.class_year);
+        result = result.filter(u => !u.custom_data?.class_id && !u.custom_data?.class_year && u.role !== 'faculty');
       } else {
         result = result.filter(u => 
           String(u.custom_data?.class_id) === String(selectedClassForView.id) ||

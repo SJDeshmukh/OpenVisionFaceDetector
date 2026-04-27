@@ -6,7 +6,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   LayoutDashboard, Users, ClipboardList, Video, FileText, Settings,
   Shield, Bell, Search, LogOut, CalendarClock, DollarSign, Activity,
-  Menu, X, FileCheck, Zap, ChevronRight
+  Menu, X, FileCheck, Zap, ChevronRight, Moon, Sun
 } from 'lucide-react';
 import { Image as ImageIcon } from 'lucide-react';
 
@@ -130,7 +130,7 @@ export const Sidebar = ({ isOpen, onClose }) => {
             variants={overlayVariants}
             initial="hidden" animate="visible" exit="exit"
             className="fixed inset-0 z-30 lg:hidden"
-            style={{ background: 'rgba(4,4,20,0.82)', backdropFilter: 'blur(5px)' }}
+            style={{ background: 'var(--overlay-bg)', backdropFilter: 'blur(5px)' }}
             onClick={onClose}
           />
         )}
@@ -142,9 +142,9 @@ export const Sidebar = ({ isOpen, onClose }) => {
           isOpen ? 'translate-x-0' : '-translate-x-full'
         } lg:translate-x-0`}
         style={{
-          background: 'linear-gradient(180deg, #0A0924 0%, #080818 65%, #050510 100%)',
-          borderRight: '1px solid rgba(124, 58, 255, 0.12)',
-          boxShadow: '4px 0 32px rgba(0,0,0,0.6)',
+          background: 'var(--bg-sidebar)',
+          borderRight: '1px solid var(--border-sidebar)',
+          boxShadow: 'var(--shadow-sidebar)',
         }}
       >
         {/* Logo */}
@@ -270,16 +270,26 @@ export const Sidebar = ({ isOpen, onClose }) => {
 export const Topbar = ({ onToggleSidebar }) => {
   const { user, staffSession } = useAuth();
   const [searchFocused, setSearchFocused] = useState(false);
+  const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark');
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('theme', theme);
+  }, [theme]);
+
+  const toggleTheme = () => {
+    setTheme(prev => (prev === 'dark' ? 'light' : 'dark'));
+  };
 
   return (
     <header
       className="fixed top-0 left-0 lg:left-64 right-0 h-16 z-30 flex items-center justify-between px-4 lg:px-8 transition-all duration-300"
       style={{
-        background: 'rgba(7, 7, 26, 0.88)',
+        background: 'var(--bg-topbar)',
         backdropFilter: 'blur(20px)',
         WebkitBackdropFilter: 'blur(20px)',
-        borderBottom: '1px solid rgba(124, 58, 255, 0.1)',
-        boxShadow: '0 4px 24px rgba(0,0,0,0.4)',
+        borderBottom: '1px solid var(--border-top)',
+        boxShadow: 'var(--shadow-topbar)',
       }}
     >
       <div className="flex items-center gap-4 flex-1 max-w-xl">
@@ -334,6 +344,17 @@ export const Topbar = ({ onToggleSidebar }) => {
             className="absolute top-2 right-2 w-2 h-2 rounded-full animate-pulse"
             style={{ background: '#FF2D87', boxShadow: '0 0 6px rgba(255,45,135,0.8)' }}
           />
+        </button>
+
+        {/* Theme Toggle */}
+        <button
+          onClick={toggleTheme}
+          className="relative p-2.5 rounded-xl transition-all duration-200"
+          style={{ color: '#8080B0', background: 'rgba(124,58,255,0.06)' }}
+          onMouseEnter={e => { e.currentTarget.style.background = 'rgba(124,58,255,0.14)'; e.currentTarget.style.color = '#9B6AFF'; }}
+          onMouseLeave={e => { e.currentTarget.style.background = 'rgba(124,58,255,0.06)'; e.currentTarget.style.color = '#8080B0'; }}
+        >
+          {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
         </button>
 
         {/* Divider */}
