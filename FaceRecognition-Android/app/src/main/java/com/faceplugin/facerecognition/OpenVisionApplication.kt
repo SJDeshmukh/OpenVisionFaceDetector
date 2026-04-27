@@ -25,9 +25,17 @@ class OpenVisionApplication : Application() {
         try {
             val ret = FaceSDKWrapper.ensureInitialized(applicationContext)
             if (ret != FaceSDK.SDK_SUCCESS) {
-                Log.e("OpenVision", "FaceSDK init failed in Application: $ret")
+                val errName = when (ret) {
+                    FaceSDK.SDK_LICENSE_KEY_ERROR  -> "SDK_LICENSE_KEY_ERROR (-1)"
+                    FaceSDK.SDK_LICENSE_APPID_ERROR -> "SDK_LICENSE_APPID_ERROR (-2) — license was issued for a different applicationId; reinstall the correct APK"
+                    FaceSDK.SDK_LICENSE_EXPIRED    -> "SDK_LICENSE_EXPIRED (-3)"
+                    FaceSDK.SDK_NO_ACTIVATED       -> "SDK_NO_ACTIVATED (-4)"
+                    FaceSDK.SDK_INIT_ERROR         -> "SDK_INIT_ERROR (-5)"
+                    else -> "UNKNOWN ($ret)"
+                }
+                Log.e("OpenVision", "FaceSDK init FAILED: $errName")
             } else {
-                Log.i("OpenVision", "FaceSDK initialized in Application.onCreate")
+                Log.i("OpenVision", "FaceSDK initialized successfully in Application.onCreate")
             }
         } catch (e: Exception) {
             Log.e("OpenVision", "FaceSDK init exception", e)

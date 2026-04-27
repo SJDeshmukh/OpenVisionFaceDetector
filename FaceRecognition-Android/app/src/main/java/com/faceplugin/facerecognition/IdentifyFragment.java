@@ -220,7 +220,31 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             faceView.setMeshEnabled(false);
         }
 
+        // Ensure FaceSDK is initialised — retry here in case Application.onCreate failed
+        if (!FaceSDKWrapper.INSTANCE.isInitialized()) {
+            int sdkRet = FaceSDKWrapper.INSTANCE.ensureInitialized(requireContext().getApplicationContext());
+            if (sdkRet != com.ocp.facesdk.FaceSDK.SDK_SUCCESS) {
+                String errMsg = getSdkErrorMessage(sdkRet);
+                Log.e(TAG, "FaceSDK init failed in fragment: " + sdkRet + " — " + errMsg);
+                if (statusText != null) {
+                    statusText.setText("⚠ Face detection unavailable\n" + errMsg);
+                    statusText.setTextColor(android.graphics.Color.parseColor("#FF5555"));
+                }
+            }
+        }
+
         return view;
+    }
+
+    private static String getSdkErrorMessage(int code) {
+        switch (code) {
+            case -1: return "License key invalid (contact support)";
+            case -2: return "App ID mismatch — reinstall the app";
+            case -3: return "License expired";
+            case -4: return "SDK not activated";
+            case -5: return "SDK init error (device not supported)";
+            default: return "Unknown error (" + code + ")";
+        }
     }
 
     @Override

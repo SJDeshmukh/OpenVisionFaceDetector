@@ -91,23 +91,28 @@ public class Utils {
      * Hardcoded 720x1280 can fail or stretch on some devices.
      */
     public static android.util.Size getOptimalResolution(Context context) {
-        // Default fallback
+        // Always request portrait dimensions — CameraX handles rotation via setTargetRotation.
+        // Using landscape sizes confuses CameraX on tablets whose natural orientation is landscape.
         int targetWidth = 720;
         int targetHeight = 1280;
-        
+
         try {
             android.util.DisplayMetrics metrics = context.getResources().getDisplayMetrics();
-            float aspectRatio = (float) metrics.heightPixels / (float) metrics.widthPixels;
-            
-            // If aspect ratio is significantly different from 16:9, adjust
-            if (Math.abs(aspectRatio - (16f/9f)) > 0.1) {
-                // Keep width at 720 and adjust height to maintain aspect ratio
+            // Use min/max so the result is always portrait (height >= width) regardless of
+            // whether the display is currently in landscape (Redmi tablets, etc.)
+            int shortSide = Math.min(metrics.widthPixels, metrics.heightPixels);
+            int longSide  = Math.max(metrics.widthPixels, metrics.heightPixels);
+
+            if (shortSide > 0 && longSide > 0) {
+                float aspectRatio = (float) longSide / (float) shortSide;
+                // Clamp aspect ratio to reasonable camera range [4:3, 16:9]
+                aspectRatio = Math.max(1.33f, Math.min(1.78f, aspectRatio));
                 targetHeight = (int) (targetWidth * aspectRatio);
             }
         } catch (Exception e) {
             e.printStackTrace();
         }
-        
+
         return new android.util.Size(targetWidth, targetHeight);
     }
 
