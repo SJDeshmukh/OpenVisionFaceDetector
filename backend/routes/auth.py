@@ -476,8 +476,8 @@ def login():
                     error_msg = "Access Denied: Recharge the plan"
                 return jsonify({"error": error_msg}), 403
             
-            if user['role'] == 'vendor_admin' and not web_login_enabled:
-                 return jsonify({"error": "Access Denied: Web Login Disabled"}), 403
+            if not web_login_enabled and platform == 'web':
+                 return jsonify({"error": "Access Denied: Web Login Disabled for this vendor"}), 403
         else:
             frontend_bundle_id = 'enterprise_custom_ui'
             backend_service_id = 'default_api'

@@ -1786,7 +1786,6 @@ def delete_vendor(vendor_id):
             # Child tables first (they reference faces/parent_users/lectures which reference vendors)
             "lecture_attendance", "face_reset_requests", "student_parents",
             "advances", "leave_requests", "person_embeddings",
-            "class_batch_items",
             # Tables that reference vendors directly
             "class_batches", "attendance", "lectures",
             "system_users", "parent_tokens", "parent_users",
@@ -1824,6 +1823,33 @@ def delete_vendor(vendor_id):
                 
                 sql_delete_items = f"DELETE FROM class_batch_items WHERE batch_id IN ({', '.join(['%s' if is_pg else '?' for _ in batch_ids])})"
                 c.execute(sql_delete_items, tuple(batch_ids))
+        except Exception:
+            pass
+
+        # Manual handle for registration_batch_items (referenced by registration_batches)
+        try:
+            sql_reg_batches = "SELECT id FROM registration_batches WHERE vendor_id = %s" if is_pg else "SELECT id FROM registration_batches WHERE vendor_id = ?"
+            c.execute(sql_reg_batches, (vendor_id,))
+            reg_batch_ids = [r[0] if not isinstance(r, dict) else r['id'] for r in c.fetchall()]
+            
+            if reg_batch_ids:
+                placeholders = ', '.join(['%s' if is_pg else '?'] * len(reg_batch_ids))
+                sql_items = f"SELECT * FROM registration_batch_items WHERE batch_id IN ({placeholders})"
+                c.execute(sql_items, tuple(reg_batch_ids))
+                cols = [d[0] for d in c.description] if hasattr(c, "description") and c.description else []
+                
+                sql_insert_items = "INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES (%s, %s, %s)" if is_pg else "INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES (?, ?, ?)"
+                
+                while True:
+                    rows = c.fetchmany(100)
+                    if not rows:
+                        break
+                    for r in rows:
+                        row = r if isinstance(r, dict) else {cols[i]: r[i] for i in range(len(cols))}
+                        c.execute(sql_insert_items, (vendor_id, "registration_batch_items", json.dumps(row, default=_json_default)))
+                
+                sql_delete_items = f"DELETE FROM registration_batch_items WHERE batch_id IN ({', '.join(['%s' if is_pg else '?' for _ in reg_batch_ids])})"
+                c.execute(sql_delete_items, tuple(reg_batch_ids))
         except Exception:
             pass
 
