@@ -4,6 +4,7 @@ from datetime import datetime, date, timedelta
 from services.auth_service import authenticate_vendor_access, verify_password, generate_token, check_vendor_status, verify_token, hash_password, generate_token_with_claims, extract_token
 from middleware.handlers import rate_limit
 import json
+import base64
 import sqlite3
 import logging
 from db_factory import get_table_columns
@@ -368,7 +369,21 @@ def login():
                 vendor_vertical = vrow[0] if vrow else None
             except Exception:
                 vendor_vertical = None
-                
+
+            # Brand segregation: reject cross-brand logins
+            # (TapInX app must not access AttendX vendors and vice versa)
+            app_brand = (request.headers.get('X-App-Brand') or '').strip().lower()
+            if app_brand and vendor_vertical:
+                attendx_verticals = {'bulk_attendance_attendx', 'attendx'}
+                tapinx_verticals  = {'school', 'hostel', 'daily_wages', 'tapinx', 'wages', 'factory', 'enterprise'}
+                v_lower = vendor_vertical.lower()
+                if app_brand == 'attendx' and v_lower not in attendx_verticals:
+                    conn.close()
+                    return jsonify({"error": "This business is not registered on AttendX"}), 403
+                if app_brand == 'tapinx' and v_lower in attendx_verticals:
+                    conn.close()
+                    return jsonify({"error": "This business is not registered on TapInX"}), 403
+
             try:
                 c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (user['vendor_id'],))
                 sub_row = c.fetchone()
@@ -833,11 +848,13 @@ def parent_login():
                 if ok:
                     pid_tmp = _row_get(row, 0, "id")
                     try:
-                        c.execute("UPDATE parent_users SET vendor_id = ? WHERE id = ?", (vendor_id, pid_tmp))
+                        new_username = f"parent_{vendor_id}_{student_id}"
+                        c.execute("UPDATE parent_users SET vendor_id = %s, username = %s WHERE id = %s" if getattr(conn, "_is_pg", False) else "UPDATE parent_users SET vendor_id = ?, username = ? WHERE id = ?", (vendor_id, new_username, pid_tmp))
                         conn.commit()
+                        actual_vendor_id = vendor_id
                     except Exception:
+                        actual_vendor_id = vendor_id
                         pass
-                    actual_vendor_id = vendor_id
                 else:
                     row = None
                     actual_vendor_id = None
@@ -1141,36 +1158,39 @@ def parent_student_day():
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     try:
-        c.execute("SELECT id, vendor_id, student_number, selected_person_id, contact_phone, session_version FROM parent_users WHERE username = ?", (data['username'],))
+        c.execute("SELECT id, vendor_id, student_number, selected_person_id, contact_phone, session_version FROM parent_users WHERE username = %s" if getattr(conn, "_is_pg", False) else "SELECT id, vendor_id, student_number, selected_person_id, contact_phone, session_version FROM parent_users WHERE username = ?", (data['username'],))
         pu = c.fetchone()
         if not pu:
+            conn.close()
             return jsonify({"error": "Parent not found"}), 404
+        
         token_sv = data.get("sv")
-        pu_sv = pu["session_version"] if "session_version" in pu.keys() else 1
-        if token_sv is None or int(token_sv) != int(pu_sv or 1):
+        pu_sv = (pu[5] if isinstance(pu, (list, tuple)) else pu.get("session_version")) or 1
+        if token_sv is None or int(token_sv) != int(pu_sv):
+            conn.close()
             return jsonify({"error": "Invalid or Expired Token"}), 401
 
-        parent_id = pu["id"]
-        vendor_id = pu["vendor_id"]
-        student_number = str(pu["student_number"] or "").strip()
-        person_id = pu["selected_person_id"]
-        contact_phone = pu["contact_phone"]
+        parent_id = pu[0] if isinstance(pu, (list, tuple)) else pu["id"]
+        vendor_id = pu[1] if isinstance(pu, (list, tuple)) else pu["vendor_id"]
+        student_number = str((pu[2] if isinstance(pu, (list, tuple)) else pu["student_number"]) or "").strip()
+        person_id = pu[3] if isinstance(pu, (list, tuple)) else pu["selected_person_id"]
+        contact_phone = pu[4] if isinstance(pu, (list, tuple)) else pu["contact_phone"]
 
         if not person_id:
-            c.execute("SELECT person_id FROM student_parents WHERE vendor_id = ? AND parent_id = ? ORDER BY id DESC LIMIT 1", (vendor_id, parent_id))
+            c.execute("SELECT person_id FROM student_parents WHERE vendor_id = %s AND parent_id = %s ORDER BY id DESC LIMIT 1" if getattr(conn, "_is_pg", False) else "SELECT person_id FROM student_parents WHERE vendor_id = ? AND parent_id = ? ORDER BY id DESC LIMIT 1", (vendor_id, parent_id))
             r = c.fetchone()
             if r:
-                person_id = r["person_id"]
+                person_id = r[0] if isinstance(r, (list, tuple)) else r["person_id"]
 
         student_row = None
         if person_id:
-            c.execute("SELECT id, name, phone, department, designation, custom_data, face_image FROM faces WHERE vendor_id = ? AND id = ?", (vendor_id, person_id))
+            c.execute("SELECT id, name, phone, department, designation, custom_data, face_image FROM faces WHERE vendor_id = %s AND id = %s" if getattr(conn, "_is_pg", False) else "SELECT id, name, phone, department, designation, custom_data, face_image FROM faces WHERE vendor_id = ? AND id = ?", (vendor_id, person_id))
             student_row = c.fetchone()
 
         if not student_row:
             phone_digits = "".join(ch for ch in str(contact_phone or "") if ch.isdigit())
             phone_tail = phone_digits[-10:] if len(phone_digits) >= 10 else phone_digits
-            c.execute("SELECT id, name, phone, department, designation, custom_data, face_image FROM faces WHERE vendor_id = ? AND phone LIKE ?", (vendor_id, f"%{phone_tail}%"))
+            c.execute("SELECT id, name, phone, department, designation, custom_data, face_image FROM faces WHERE vendor_id = %s AND phone LIKE %s" if getattr(conn, "_is_pg", False) else "SELECT id, name, phone, department, designation, custom_data, face_image FROM faces WHERE vendor_id = ? AND phone LIKE ?", (vendor_id, f"%{phone_tail}%"))
             candidates = c.fetchall() or []
             for r in candidates:
                 cd_raw = r["custom_data"]
@@ -1251,7 +1271,7 @@ def parent_student_day():
                 "department": student_row["department"] if "department" in (student_row.keys() if hasattr(student_row, 'keys') else []) else None,
                 "designation": student_row["designation"] if "designation" in (student_row.keys() if hasattr(student_row, 'keys') else []) else None,
                 "student_number": str(student_custom.get("student_number") or student_custom.get("student number") or student_custom.get("id_number") or student_custom.get("id number") or student_custom.get("roll_number") or student_custom.get("roll number") or student_custom.get("enrollment_number") or student_custom.get("enrollment number") or student_custom.get("student_id") or student_number).strip(),
-                "face_image": base64.b64encode(student_row["face_image"]).decode('utf-8') if student_row["face_image"] else None,
+            "face_image": (student_row["face_image"] if isinstance(student_row["face_image"], str) else base64.b64encode(student_row["face_image"]).decode('utf-8')) if student_row["face_image"] else None,
                 "custom_data": student_custom,
             },
             "check_in": check_in,

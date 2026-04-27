@@ -282,13 +282,36 @@ def mark_lecture_attendance(lecture_id):
         l_branch = lecture[4] if len(lecture) > 4 else ''
         date_str = lecture[5] if len(lecture) > 5 else ''
 
+    # Build lecture class key for validation (empty means no restriction)
+    lecture_class_year   = (l_year or '').strip()
+    lecture_class_div    = (l_div  or '').strip()
+    lecture_has_class    = bool(lecture_class_year or lecture_class_div)
+
     now = client_now or datetime.now().isoformat()
     marked = 0
+    skipped_class_mismatch = 0
     for entry in entries:
         try:
             pid = int(entry.get('person_id'))
             status = entry.get('status', 'present')
             l_id = int(entry.get('lecture_id') or lecture_id)
+
+            # Class segregation: skip students whose class doesn't match this lecture
+            if lecture_has_class:
+                c.execute("SELECT custom_data FROM faces WHERE id = ? AND vendor_id = ?", (pid, vendor_id))
+                face_row = c.fetchone()
+                if face_row:
+                    raw_cd = face_row[0] if isinstance(face_row, (list, tuple)) else face_row.get('custom_data')
+                    try:
+                        cd = json.loads(raw_cd) if raw_cd else {}
+                    except Exception:
+                        cd = {}
+                    student_class = str(cd.get('class_section') or cd.get('class') or '').strip().lower()
+                    year_ok = (not lecture_class_year) or (lecture_class_year.lower() in student_class)
+                    div_ok  = (not lecture_class_div)  or (lecture_class_div.lower()  in student_class)
+                    if not (year_ok and div_ok):
+                        skipped_class_mismatch += 1
+                        continue
             if status not in ('present', 'absent'):
                 status = 'present'
             c.execute(
@@ -363,7 +386,10 @@ def mark_lecture_attendance(lecture_id):
     except Exception:
         pass
 
-    return jsonify({"status": "marked", "count": marked})
+    result = {"status": "marked", "count": marked}
+    if skipped_class_mismatch:
+        result["skipped_class_mismatch"] = skipped_class_mismatch
+    return jsonify(result)
 
 
 # ── Per-student lecture history (vendor view) ──────────────────────────────────
@@ -421,12 +447,11 @@ def get_parent_lecture_attendance():
     conn = _row(get_db_connection())
     c    = conn.cursor()
 
-    c.execute(
-        "SELECT id, vendor_id, selected_person_id, session_version FROM parent_users WHERE username = ?",
-        (token_data['username'],)
-    )
+    c.execute("SELECT id, vendor_id, selected_person_id, session_version FROM parent_users WHERE username = %s" if getattr(conn, "_is_pg", False) else "SELECT id, vendor_id, selected_person_id, session_version FROM parent_users WHERE username = ?", (token_data['username'],))
     pu = c.fetchone()
     if not pu:
+        import logging
+        logging.error(f"[DEBUG] Parent not found in lecture-attendance for username: '{token_data.get('username')}'")
         conn.close()
         return jsonify({"error": "Parent not found"}), 404
 
@@ -452,27 +477,63 @@ def get_parent_lecture_attendance():
         conn.close()
         return jsonify({"error": "No student linked to this parent account"}), 404
 
+    # Resolve student's class_section for lecture filtering
+    c.execute("SELECT custom_data FROM faces WHERE id = ? AND vendor_id = ?" if not getattr(conn, "_is_pg", False) else "SELECT custom_data FROM faces WHERE id = %s AND vendor_id = %s", (person_id, vendor_id))
+    face_row = c.fetchone()
+    student_class = ''
+    if face_row:
+        raw_cd = face_row[0] if isinstance(face_row, (list, tuple)) else face_row.get('custom_data')
+        try:
+            cd = json.loads(raw_cd) if raw_cd else {}
+            student_class = str(cd.get('class_section') or cd.get('class') or '').strip().lower()
+        except Exception:
+            pass
+
     start_date = request.args.get('start_date', '').strip()
     end_date   = request.args.get('end_date',   '').strip()
 
-    q = """
+    is_pg = getattr(conn, "_is_pg", False)
+    ph = "%s" if is_pg else "?"
+
+    q = f"""
         SELECT l.id AS lecture_id, l.subject, l.class_year, l.division, l.branch,
                l.lecture_date, l.start_time, l.teacher,
                COALESCE(la.status, 'absent') AS status,
                la.marked_at
         FROM lectures l
         LEFT JOIN lecture_attendance la
-               ON la.lecture_id = l.id AND la.person_id = ?
-        WHERE l.vendor_id = ?
+               ON la.lecture_id = l.id AND la.person_id = {ph}
+        WHERE l.vendor_id = {ph}
     """
     params = [person_id, vendor_id]
     if start_date:
-        q += " AND l.lecture_date >= ?"; params.append(start_date)
+        q += f" AND l.lecture_date >= {ph}"; params.append(start_date)
     if end_date:
-        q += " AND l.lecture_date <= ?"; params.append(end_date)
+        q += f" AND l.lecture_date <= {ph}"; params.append(end_date)
     q += " ORDER BY l.lecture_date DESC, l.start_time DESC"
 
-    c.execute(q, params)
-    rows = [dict(r) for r in (c.fetchall() or [])]
+    c.execute(q, tuple(params))
+    rows = []
+    for r in (c.fetchall() or []):
+        d = dict(r)
+        # Class segregation: skip lectures that explicitly target a different class
+        if student_class:
+            l_class_year = str(d.get('class_year') or '').strip().lower()
+            l_class_div  = str(d.get('division')   or '').strip().lower()
+            if l_class_year and l_class_year not in student_class:
+                continue
+            if l_class_div and l_class_div not in student_class:
+                continue
+        # Format date for mobile app regex: YYYY-MM-DD
+        if 'lecture_date' in d and d['lecture_date']:
+            try:
+                if hasattr(d['lecture_date'], 'strftime'):
+                    d['lecture_date'] = d['lecture_date'].strftime('%Y-%m-%d')
+                else:
+                    d['lecture_date'] = str(d['lecture_date'])[:10]
+            except Exception:
+                pass
+        rows.append(d)
+        
     conn.close()
     return jsonify({"attendance": rows, "person_id": person_id})

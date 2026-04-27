@@ -7,9 +7,9 @@
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:960559763908:android:6ed36832a75aa713a65491",
+        "mobilesdk_app_id": "1:960559763908:android:d3fd66be51b50cf6a65491",
         "android_client_info": {
-          "package_name": "attendx.com"
+          "package_name": "com.tapinx.parent"
         }
       },
       "oauth_client": [],
@@ -26,9 +26,9 @@
     },
     {
       "client_info": {
-        "mobilesdk_app_id": "1:960559763908:android:d3fd66be51b50cf6a65491",
+        "mobilesdk_app_id": "1:960559763908:android:6ed36832a75aa713a65491",
         "android_client_info": {
-          "package_name": "tapinx.com"
+          "package_name": "com.attendx.parent"
         }
       },
       "oauth_client": [],

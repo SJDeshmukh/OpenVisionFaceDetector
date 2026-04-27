@@ -86,6 +86,7 @@ class AttendanceListenerService : Service() {
             mSocket?.on(Socket.EVENT_CONNECT) {
                 mSocket?.emit("join_student_number", data)
             }
+            // Legacy event (kept for backwards-compat with older server versions)
             mSocket?.on("student_attendance") { args ->
                 try {
                     val obj = args[0] as JSONObject
@@ -95,6 +96,21 @@ class AttendanceListenerService : Service() {
                     val place  = obj.optString("device_name", obj.optString("place", ""))
                     if (status == "CHECK_IN" || status == "CHECK_OUT") {
                         fireAlertNotification(name, status, ts, place)
+                    }
+                } catch (_: Exception) {}
+            }
+
+            // Primary notification event emitted by notify_parent_async() on the server
+            mSocket?.on("new_notification") { args ->
+                try {
+                    val obj   = args[0] as JSONObject
+                    val title = obj.optString("title", "")
+                    val body  = obj.optString("body", "")
+                    val ts    = obj.optString("timestamp", "")
+                    val dataObj = obj.optJSONObject("data")
+                    val status  = dataObj?.optString("status", "") ?: ""
+                    if (title.isNotBlank()) {
+                        fireGenericNotification(title, body, ts, status)
                     }
                 } catch (_: Exception) {}
             }
@@ -135,6 +151,32 @@ class AttendanceListenerService : Service() {
             .setVibrate(longArrayOf(0, 200, 100, 200))
             .build()
 
+        try {
+            NotificationManagerCompat.from(this)
+                .notify((System.currentTimeMillis() % Int.MAX_VALUE).toInt(), notif)
+        } catch (_: SecurityException) {}
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun fireGenericNotification(title: String, body: String, timestamp: String, status: String) {
+        val tapIntent = Intent(this, ParentActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        }
+        val pi = PendingIntent.getActivity(
+            this, 0, tapIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notif = NotificationCompat.Builder(this, CHANNEL_ALERT)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle(title)
+            .setContentText(body.ifBlank { "Tap to view attendance" })
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body.ifBlank { "Tap to view attendance" }))
+            .setContentIntent(pi)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setVibrate(longArrayOf(0, 200, 100, 200))
+            .build()
         try {
             NotificationManagerCompat.from(this)
                 .notify((System.currentTimeMillis() % Int.MAX_VALUE).toInt(), notif)

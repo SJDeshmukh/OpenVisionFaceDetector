@@ -230,9 +230,10 @@ class BusinessSelectActivity : AppCompatActivity() {
                             val value = try { obj.get("value")?.asString } catch (_: Exception) { null }
                             val label = try { obj.get("label")?.asString } catch (_: Exception) { null }
                             val allowParentLogin = try { obj.get("allow_parent_login")?.asBoolean } catch (_: Exception) { null }
+                            val appType = try { obj.get("app_type")?.asString ?: "" } catch (_: Exception) { "" }
                             if (!value.isNullOrBlank()) {
                                 val v = value.trim()
-                                parsed.add(BusinessTypeItem(v, (label ?: v).trim(), allowParentLogin ?: v.equals("school", true)))
+                                parsed.add(BusinessTypeItem(v, (label ?: v).trim(), allowParentLogin ?: v.equals("school", true), appType.trim()))
                             }
                         } else if (el.isJsonPrimitive) {
                             val value = try { el.asString } catch (_: Exception) { null }
@@ -243,8 +244,10 @@ class BusinessSelectActivity : AppCompatActivity() {
                         }
                     } catch (_: Exception) {}
                 }
+                val expectedAppType = if (BuildConfig.IS_ATTENDX) "attendx" else "tapinx"
                 val list = parsed
                     .filter { it.value.isNotBlank() }
+                    .filter { it.appType.isBlank() || it.appType.equals(expectedAppType, ignoreCase = true) }
                     .distinctBy { it.value.lowercase(Locale.US) }
                     .sortedBy { it.label.lowercase(Locale.US) }
                 if (list.isNotEmpty()) {
@@ -311,15 +314,19 @@ class BusinessSelectActivity : AppCompatActivity() {
             for (x in arr) {
                 if (!x.isJsonObject) continue
                 val obj = x.asJsonObject
-                val value = try { obj.get("value")?.asString } catch (_: Exception) { null }
-                val label = try { obj.get("label")?.asString } catch (_: Exception) { null }
-                val allow = try { obj.get("allow_parent_login")?.asBoolean } catch (_: Exception) { null }
+                val value   = try { obj.get("value")?.asString } catch (_: Exception) { null }
+                val label   = try { obj.get("label")?.asString } catch (_: Exception) { null }
+                val allow   = try { obj.get("allow_parent_login")?.asBoolean } catch (_: Exception) { null }
+                val appType = try { obj.get("app_type")?.asString ?: "" } catch (_: Exception) { "" }
                 if (!value.isNullOrBlank()) {
                     val v = value.trim()
-                    out.add(BusinessTypeItem(v, (label ?: v).trim(), allow ?: v.equals("school", true)))
+                    out.add(BusinessTypeItem(v, (label ?: v).trim(), allow ?: v.equals("school", true), appType.trim()))
                 }
             }
-            out.distinctBy { it.value.lowercase(Locale.US) }.sortedBy { it.label.lowercase(Locale.US) }
+            val expectedType = if (BuildConfig.IS_ATTENDX) "attendx" else "tapinx"
+            out.filter { it.appType.isBlank() || it.appType.equals(expectedType, ignoreCase = true) }
+               .distinctBy { it.value.lowercase(Locale.US) }
+               .sortedBy { it.label.lowercase(Locale.US) }
         } catch (_: Exception) {
             emptyList()
         }
@@ -332,12 +339,13 @@ class BusinessSelectActivity : AppCompatActivity() {
             o.addProperty("value", t.value)
             o.addProperty("label", t.label)
             o.addProperty("allow_parent_login", t.allowParentLogin)
+            o.addProperty("app_type", t.appType)
             arr.add(o)
         }
         prefs.edit().putString("cached_business_types_json", arr.toString()).apply()
     }
 
-    private data class BusinessTypeItem(val value: String, val label: String, val allowParentLogin: Boolean)
+    private data class BusinessTypeItem(val value: String, val label: String, val allowParentLogin: Boolean, val appType: String = "")
 
     private class BusinessTypeCardAdapter(
         items: List<BusinessTypeItem>,

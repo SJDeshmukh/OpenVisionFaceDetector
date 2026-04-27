@@ -32,12 +32,12 @@ android {
     productFlavors {
         tapinx {
             dimension "brand"
-            applicationId "tapinx.com"
+            applicationId "com.tapinx.parent"
             buildConfigField "Boolean", "IS_ATTENDX", "false"
         }
         attendx {
             dimension "brand"
-            applicationId "attendx.com"
+            applicationId "com.attendx.parent"
             buildConfigField "Boolean", "IS_ATTENDX", "true"
         }
 

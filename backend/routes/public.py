@@ -1,4 +1,4 @@
-from flask import Blueprint, jsonify, current_app
+from flask import Blueprint, jsonify, current_app, request
 import sqlite3
 import os
 import logging
@@ -54,12 +54,13 @@ def public_vendors():
 @public_bp.route('/business-types', methods=['GET'])
 def public_business_types():
     """
-    Returns all supported business types.
-    AttendX is a single type; TapInX is split into sub-types (Hostel, School/College,
-    Daily Wages) so the mobile app can show the right options and gate parent login
-    per sub-type.
+    Returns business types filtered to the requesting app brand.
+    X-App-Brand: AttendX  →  only attendx types
+    X-App-Brand: TapInX   →  only tapinx types
+    No header              →  all types (web dashboard / legacy)
     """
-    logger.info(f"Public business-types requested from {current_app.name}")
+    app_brand = (request.headers.get('X-App-Brand') or '').strip().lower()
+    logger.info(f"Public business-types requested, brand='{app_brand}'")
 
     final_list = [
         # ── AttendX ──────────────────────────────────────────────────────────
@@ -126,5 +127,11 @@ def public_business_types():
         }
     ]
 
-    logger.info(f"Returning {len(final_list)} business types.")
+    # Filter by brand if the mobile app identified itself
+    if app_brand == 'attendx':
+        final_list = [t for t in final_list if t.get('app_type') == 'attendx']
+    elif app_brand == 'tapinx':
+        final_list = [t for t in final_list if t.get('app_type') == 'tapinx']
+
+    logger.info(f"Returning {len(final_list)} business types for brand='{app_brand}'.")
     return jsonify({"business_types": final_list})
