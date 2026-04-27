@@ -1058,25 +1058,45 @@ def get_parent_attendance():
         start_date = (request.args.get('start_date') or request.args.get('date') or "").strip()
         end_date = (request.args.get('end_date') or "").strip()
         
-        if not start_date:
-            start_date = datetime.now().strftime("%Y-%m-%d")
+        person_id = pu.get('selected_person_id')
+        if not person_id:
+            c.execute("SELECT person_id FROM student_parents WHERE parent_id = ? LIMIT 1", (parent_id,))
+            sp = c.fetchone()
+            person_id = sp[0] if sp else None
+
+        if not person_id:
+            conn.close()
+            return jsonify({"error": "No student linked to this parent account"}), 404
+
+        params = [vendor_id, person_id]
         
         query = """
             SELECT a.id, a.name, a.timestamp, a.status, a.activity, a.is_late, a.person_id 
             FROM attendance a
-            JOIN student_parents sp ON sp.person_id = a.person_id
-            WHERE sp.parent_id = ? AND a.vendor_id = ?
+            WHERE a.vendor_id = %s AND a.person_id = %s
+        """ if getattr(conn, "_is_pg", False) else """
+            SELECT a.id, a.name, a.timestamp, a.status, a.activity, a.is_late, a.person_id 
+            FROM attendance a
+            WHERE a.vendor_id = ? AND a.person_id = ?
         """
-        params = [parent_id, vendor_id]
         
-        if end_date:
-            query += " AND date(a.timestamp) >= ? AND date(a.timestamp) <= ?"
+        if end_date and start_date:
+            if getattr(conn, "_is_pg", False):
+                query += " AND date(a.timestamp) >= %s AND date(a.timestamp) <= %s"
+            else:
+                query += " AND date(a.timestamp) >= ? AND date(a.timestamp) <= ?"
             params.extend([start_date, end_date])
-        else:
-            query += " AND date(a.timestamp) = ?"
+        elif start_date:
+            if getattr(conn, "_is_pg", False):
+                query += " AND date(a.timestamp) = %s"
+            else:
+                query += " AND date(a.timestamp) = ?"
             params.append(start_date)
             
-        query += " ORDER BY a.timestamp DESC LIMIT ?"
+        if getattr(conn, "_is_pg", False):
+            query += " ORDER BY a.timestamp DESC LIMIT %s"
+        else:
+            query += " ORDER BY a.timestamp DESC LIMIT ?"
         params.append(limit)
         
         c.execute(query, tuple(params))
