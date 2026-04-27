@@ -80,7 +80,11 @@ class ParentHomeFragment : Fragment() {
                     if (response.code() in listOf(401, 403)) {
                         (activity as? ParentActivity)?.performLogout(); return
                     }
-                    val body = response.body() ?: return
+                    if (!response.isSuccessful || response.body() == null) {
+                        showHomeError("Unable to load data. Please contact your administrator.")
+                        return
+                    }
+                    val body = response.body()!!
                     val list = try { body.getAsJsonArray("attendance") } catch (_: Exception) { null }
 
                     val container = root.findViewById<LinearLayout>(R.id.lecture_list_container_home)
@@ -114,8 +118,20 @@ class ParentHomeFragment : Fragment() {
                     root.findViewById<TextView>(R.id.tv_lec_summary).text =
                         "Today: $present / $total lectures present"
                 }
-                override fun onFailure(call: Call<JsonObject>, t: Throwable) {}
+                override fun onFailure(call: Call<JsonObject>, t: Throwable) {
+                    if (!isAdded) return
+                    showHomeError("Connection error. Check your internet and try again.")
+                }
             })
+    }
+
+    private fun showHomeError(msg: String) {
+        if (!isAdded) return
+        try {
+            root.findViewById<TextView>(R.id.tv_ai_insight).text = msg
+            updateStats(0, 0)
+            root.findViewById<LinearLayout>(R.id.lecture_list_container_home)?.removeAllViews()
+        } catch (_: Exception) {}
     }
 
     private fun loadStudentMeta() {
@@ -166,7 +182,12 @@ class ParentHomeFragment : Fragment() {
             override fun onResponse(call: Call<JsonObject>, response: Response<JsonObject>) {
                 if (!isAdded) return
                 if (response.code() in listOf(401, 403)) { (activity as? ParentActivity)?.performLogout(); return }
-                val body = response.body() ?: return
+                if (!response.isSuccessful || response.body() == null) {
+                    root.findViewById<TextView>(R.id.tv_home_student_name)?.text = "Student"
+                    root.findViewById<TextView>(R.id.tv_ai_insight)?.text = "No data found. Please contact your administrator."
+                    return
+                }
+                val body = response.body()!!
                 val student = try { body.getAsJsonObject("student") } catch (_: Exception) { null }
                 val name = try { student?.get("name")?.asString } catch (_: Exception) { null }
                 val faceImg = try { student?.get("face_image")?.asString } catch (_: Exception) { null }
@@ -210,7 +231,10 @@ class ParentHomeFragment : Fragment() {
                     }
                 }
             }
-            override fun onFailure(call: Call<JsonObject>, t: Throwable) {}
+            override fun onFailure(call: Call<JsonObject>, t: Throwable) {
+                if (!isAdded) return
+                root.findViewById<TextView>(R.id.tv_ai_insight)?.text = "Connection error. Check your internet."
+            }
         })
     }
 
@@ -219,7 +243,11 @@ class ParentHomeFragment : Fragment() {
         RetrofitClient.getService().getParentAttendance().enqueue(object : Callback<JsonObject> {
             override fun onResponse(call: Call<JsonObject>, response: Response<JsonObject>) {
                 if (!isAdded) return
-                val body = response.body() ?: return
+                if (!response.isSuccessful || response.body() == null) {
+                    updateStats(0, 0)
+                    return
+                }
+                val body = response.body()!!
                 val list = try { body.getAsJsonArray("attendance") } catch (_: Exception) { return }
                 val days = mutableSetOf<String>()
                 val presentDays = mutableSetOf<String>()
@@ -240,7 +268,9 @@ class ParentHomeFragment : Fragment() {
                 root.findViewById<TextView>(R.id.tv_stat_absent).text = "$absent"
                 root.findViewById<TextView>(R.id.tv_ai_insight).text = buildInsight(present, absent, rate)
             }
-            override fun onFailure(call: Call<JsonObject>, t: Throwable) {}
+            override fun onFailure(call: Call<JsonObject>, t: Throwable) {
+                if (isAdded) updateStats(0, 0)
+            }
         })
     }
 

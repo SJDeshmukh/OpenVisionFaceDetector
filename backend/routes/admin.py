@@ -193,7 +193,8 @@ def impersonate_vendor():
             actor = current_user['username'] if current_user else 'unknown'
         else:
             actor = 'system'
-    except:
+    except Exception:
+        logger.debug("Actor token lookup failed", exc_info=True)
         actor = 'system'
         
     log_audit('impersonate_vendor', {'impersonated_user': user['username']}, target_vendor_id=vendor_id, actor=actor)
@@ -827,7 +828,7 @@ def get_vendors():
         if v.get('features'):
             try:
                 v['features'] = json.loads(v['features'])
-            except:
+            except (json.JSONDecodeError, ValueError):
                 v['features'] = []
         else:
             v['features'] = []

@@ -1,4 +1,5 @@
 from flask import Blueprint, request, jsonify, send_file, g
+import logging
 import sqlite3
 import json
 import base64
@@ -9,6 +10,8 @@ import time
 from datetime import datetime
 import numpy as np
 import cv2
+
+logger = logging.getLogger(__name__)
 from services.auth_service import authenticate_vendor_access, extract_token, verify_token, check_vendor_status, hash_password
 import db_factory
 from db_factory import set_row_factory
@@ -315,7 +318,7 @@ def get_persons():
                     ms = json.loads(cl[3]) if cl[3] else []
                     if any(m.get('faculty') == g.username for m in ms):
                         assigned_classes.append((cl[0], cl[1], cl[2])) # (year, div, branch)
-                except: pass
+                except (json.JSONDecodeError, ValueError): pass
             
             if not assigned_classes:
                 conn.close()
@@ -383,27 +386,14 @@ def get_persons():
         if limit > 0:
             query += " LIMIT ? OFFSET ?"
             params += [limit, offset]
-    except:
+    except (ValueError, TypeError):
         pass
     try:
-        # Debug logging
-        print(f"[DEBUG_PERSONS] Params Recvd: year={class_year}, div={division}, branch={branch}", flush=True)
-        print(f"[DEBUG_PERSONS] Final Query: {query}", flush=True)
-        print(f"[DEBUG_PERSONS] Final Params: {params}", flush=True)
         c.execute(query, params)
         rows = c.fetchall()
-        print(f"[DEBUG_PERSONS] Rows found: {len(rows)}", flush=True)
-        for r in rows[:5]: 
-             # Safe logging regardless of row factory
-             if isinstance(r, dict):
-                 print(f"[DEBUG_PERSONS] Sample Row: ID={r.get('id')}, Name={r.get('name')}, CustomData={str(r.get('custom_data'))[:100]}...", flush=True)
-             else:
-                 print(f"[DEBUG_PERSONS] Sample Row: ID={r[0]}, Name={r[2]}, CustomData={str(r[9])[:100]}...", flush=True)
         conn.close()
     except Exception as e:
-        print(f"[DEBUG_PERSONS] ERROR: {e}", flush=True)
-        import traceback
-        traceback.print_exc()
+        logger.error("Persons query failed", exc_info=True)
         if conn: conn.close()
         return jsonify({"error": str(e)}), 500
     
@@ -996,7 +986,7 @@ def download_faces():
         if limit > 0:
             query += " LIMIT ? OFFSET ?"
             params += [limit, offset]
-    except:
+    except (ValueError, TypeError):
         pass
     c.execute(query, params)
     rows = c.fetchall()

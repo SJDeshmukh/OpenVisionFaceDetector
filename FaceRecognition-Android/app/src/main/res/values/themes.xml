@@ -1,41 +1,49 @@
 <resources>
     <style name="Theme.FaceAttribute" parent="Theme.Material3.Dark.NoActionBar">
-        <!-- Primary Brand Colors -->
+        <!-- Brand -->
         <item name="colorPrimary">@color/primary_brand</item>
         <item name="colorOnPrimary">@color/text_primary</item>
-        <item name="colorPrimaryContainer">@color/bg_surface</item>
-        <item name="colorOnPrimaryContainer">@color/primary_brand</item>
-        
-        <!-- Secondary Colors -->
-        <item name="colorSecondary">@color/primary_brand_dark</item>
+        <item name="colorPrimaryContainer">@color/bg_elevated</item>
+        <item name="colorOnPrimaryContainer">@color/primary_brand_light</item>
+
+        <!-- Secondary (Cyan) -->
+        <item name="colorSecondary">@color/accent_cyan</item>
         <item name="colorOnSecondary">@color/text_primary</item>
-        <item name="colorSecondaryContainer">@color/border_color</item>
+        <item name="colorSecondaryContainer">@color/bg_overlay</item>
         <item name="colorOnSecondaryContainer">@color/text_primary</item>
-        
-        <!-- Background & Surface -->
+
+        <!-- Surfaces -->
         <item name="android:colorBackground">@color/bg_main</item>
         <item name="colorOnBackground">@color/text_primary</item>
         <item name="colorSurface">@color/bg_surface</item>
         <item name="colorOnSurface">@color/text_primary</item>
-        
-        <!-- Status Bar -->
+
+        <!-- Status bar -->
         <item name="android:statusBarColor">@color/bg_main</item>
         <item name="android:windowLightStatusBar">false</item>
-        
-        <!-- Typography Defaults -->
+
+        <!-- Typography -->
         <item name="android:fontFamily">sans-serif</item>
     </style>
-    
-    <!-- Typography Styles -->
+
+    <!-- ── Typography Scale ──────────────────────────── -->
     <style name="Typography">
         <item name="android:textColor">@color/text_primary</item>
         <item name="android:fontFamily">sans-serif</item>
+    </style>
+
+    <style name="Typography.Display">
+        <item name="android:textSize">34sp</item>
+        <item name="android:fontFamily">sans-serif-black</item>
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:letterSpacing">-0.02</item>
     </style>
 
     <style name="Typography.H1">
         <item name="android:textSize">28sp</item>
         <item name="android:fontFamily">sans-serif-black</item>
         <item name="android:textColor">@color/text_primary</item>
+        <item name="android:letterSpacing">-0.01</item>
     </style>
 
     <style name="Typography.H2">
@@ -45,7 +53,7 @@
     </style>
 
     <style name="Typography.H3">
-        <item name="android:textSize">22sp</item>
+        <item name="android:textSize">20sp</item>
         <item name="android:fontFamily">sans-serif-bold</item>
         <item name="android:textColor">@color/text_primary</item>
     </style>
@@ -56,55 +64,107 @@
         <item name="android:textColor">@color/text_primary</item>
     </style>
 
+    <style name="Typography.BodySmall">
+        <item name="android:textSize">14sp</item>
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:textColor">@color/text_secondary</item>
+    </style>
+
     <style name="Typography.Caption">
         <item name="android:textSize">12sp</item>
         <item name="android:fontFamily">sans-serif-medium</item>
-        <item name="android:textColor">@color/text_secondary</item>
+        <item name="android:textColor">@color/text_muted</item>
     </style>
 
     <style name="Typography.Micro">
         <item name="android:textSize">10sp</item>
         <item name="android:fontFamily">sans-serif-bold</item>
-        <item name="android:textColor">@color/text_secondary</item>
+        <item name="android:textColor">@color/text_muted</item>
+        <item name="android:letterSpacing">0.06</item>
     </style>
 
-    <!-- Custom Button Style (Gradient) -->
+    <style name="Typography.Label">
+        <item name="android:textSize">11sp</item>
+        <item name="android:fontFamily">sans-serif-bold</item>
+        <item name="android:textColor">@color/text_muted</item>
+        <item name="android:letterSpacing">0.1</item>
+    </style>
+
+    <!-- ── Button Styles ────────────────────────────── -->
+
+    <!-- Primary Gradient Button -->
     <style name="ButtonStyle" parent="Widget.Material3.Button">
         <item name="android:background">@drawable/bg_button_gradient_primary</item>
         <item name="backgroundTint">@null</item>
         <item name="android:textColor">@color/text_primary</item>
-        <item name="cornerRadius">12dp</item>
+        <item name="cornerRadius">14dp</item>
         <item name="android:fontFamily">sans-serif-medium</item>
-        <item name="android:textSize">16sp</item>
-        <item name="android:minHeight">56dp</item>
-        <item name="android:elevation">4dp</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:minHeight">54dp</item>
+        <item name="android:elevation">8dp</item>
+        <item name="android:stateListAnimator">@null</item>
+        <item name="android:letterSpacing">0.02</item>
     </style>
 
-    <!-- Outline Button Style (for inactive tabs) -->
+    <!-- Ghost/Outline Button -->
     <style name="ButtonStyleOutline" parent="Widget.Material3.Button.OutlinedButton">
-        <item name="android:textColor">@color/vision_text_secondary</item>
-        <item name="cornerRadius">12dp</item>
+        <item name="android:textColor">@color/text_secondary</item>
+        <item name="strokeColor">@color/border_active</item>
+        <item name="strokeWidth">1.5dp</item>
+        <item name="cornerRadius">14dp</item>
         <item name="android:fontFamily">sans-serif-medium</item>
-        <item name="android:textSize">16sp</item>
-        <item name="android:minHeight">56dp</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:minHeight">54dp</item>
     </style>
 
-    <!-- Glassmorphism Card Style -->
+    <!-- Accent (Cyan) Button -->
+    <style name="ButtonStyleAccent" parent="Widget.Material3.Button">
+        <item name="android:background">@drawable/bg_button_gradient_accent</item>
+        <item name="backgroundTint">@null</item>
+        <item name="android:textColor">@color/bg_main</item>
+        <item name="cornerRadius">14dp</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:minHeight">54dp</item>
+        <item name="android:elevation">6dp</item>
+        <item name="android:stateListAnimator">@null</item>
+    </style>
+
+    <!-- ── Card / Surface Styles ────────────────────── -->
+
+    <!-- Glass Card -->
     <style name="CardStyle">
         <item name="android:background">@drawable/bg_glass_card</item>
-        <item name="android:elevation">4dp</item>
+        <item name="android:elevation">6dp</item>
     </style>
 
+    <!-- Elevated Card -->
+    <style name="CardStyleElevated">
+        <item name="android:background">@drawable/bg_card_elevated</item>
+        <item name="android:elevation">12dp</item>
+    </style>
+
+    <!-- ── Image ─────────────────────────────────────── -->
     <style name="roundedImageView">
         <item name="cornerFamily">rounded</item>
-        <item name="cornerSize">24dp</item>
+        <item name="cornerSize">20dp</item>
     </style>
 
+    <!-- ── Bottom Sheet ──────────────────────────────── -->
     <style name="CustomBottomSheetDialogTheme" parent="Theme.Design.Light.BottomSheetDialog">
         <item name="bottomSheetStyle">@style/CustomBottomSheetStyle</item>
     </style>
 
     <style name="CustomBottomSheetStyle" parent="Widget.Design.BottomSheet.Modal">
         <item name="android:background">@android:color/transparent</item>
+    </style>
+
+    <!-- ── Status Badge ───────────────────────────────── -->
+    <style name="BadgeStyle">
+        <item name="android:textSize">11sp</item>
+        <item name="android:fontFamily">sans-serif-bold</item>
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:paddingHorizontal">10dp</item>
+        <item name="android:paddingVertical">4dp</item>
     </style>
 </resources>

@@ -406,7 +406,7 @@ def update_company_settings(company_id):
                     feats = json.loads(features_str) if features_str else []
                     if "shifts" in feats:
                         has_shifts = True
-                except:
+                except (json.JSONDecodeError, ValueError):
                     pass
             
             if not has_shifts:
@@ -458,7 +458,7 @@ def get_company_details(company_id):
         if data.get(key):
             try:
                 data[key] = json.loads(data[key])
-            except:
+            except (json.JSONDecodeError, ValueError):
                 data[key] = []
     return jsonify(data)
 
@@ -561,7 +561,7 @@ def list_classes():
                 ms = []
                 try:
                     ms = json.loads(ms_raw) if ms_raw else []
-                except: pass
+                except (json.JSONDecodeError, ValueError): pass
                 
                 # Check if this faculty is assigned to any subject in this class
                 if any(m.get('faculty') == g.username for m in ms):
@@ -583,7 +583,7 @@ def list_classes():
             mapped_subjects_list = []
             try:
                 mapped_subjects_list = json.loads(r[5]) if r[5] else []
-            except:
+            except (json.JSONDecodeError, ValueError):
                 pass
 
             items.append({

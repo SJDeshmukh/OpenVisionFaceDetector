@@ -1,8 +1,11 @@
 from flask import Blueprint, request, jsonify, send_file
+import logging
 import sqlite3
 import base64
 from datetime import datetime
 import time
+
+logger = logging.getLogger(__name__)
 
 # Mock auth decorators for streaming
 def vendor_required(f):
@@ -50,8 +53,8 @@ def upload_stream_frame():
                     conn_auth.close()
                     if u_row and u_row[0]:
                         vendor_id = u_row[0]
-            except:
-                pass
+            except Exception:
+                logger.debug("Auth token lookup failed in stream upload", exc_info=True)
 
         data = request.json
         image_data = data.get("image") # Base64 string
@@ -61,7 +64,7 @@ def upload_stream_frame():
         if data.get("vendor_id"):
             try:
                 vendor_id = int(data.get("vendor_id"))
-            except:
+            except (ValueError, TypeError):
                 pass
         
         if not image_data:
@@ -89,7 +92,7 @@ def upload_stream_frame():
         
         return jsonify({"status": "success"})
     except Exception as e:
-        pass # print(f"Stream Upload Error: {e}")
+        logger.warning("Stream upload error", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 
@@ -109,7 +112,7 @@ def view_stream_frame():
     if not target_vendor_id:
         try:
             target_vendor_id = int(request.args.get('vendor_id', 1))
-        except:
+        except (ValueError, TypeError):
             target_vendor_id = 1
             
     target_device_id = request.args.get('device_id', 'default')

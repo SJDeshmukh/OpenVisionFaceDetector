@@ -93,7 +93,24 @@
             </intent-filter>
         </activity>
 
-        <!-- Real-time attendance listener — keeps socket alive even when app is closed -->
+        <!-- FCM: receives push tokens + foreground messages; system handles closed-app delivery -->
+        <service
+            android:name=".AppFirebaseMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <!-- FCM: default notification channel + icon for system-displayed notifications -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="parent_attendance_alert" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/openvision_logo" />
+
+        <!-- Real-time attendance listener — keeps socket alive even when app is open -->
         <service
             android:name=".AttendanceListenerService"
             android:exported="false"

@@ -1,88 +1,119 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Brand Palette -->
-    <color name="primary_brand">#60a5fa</color>
-    <color name="primary_brand_dark">#0284c7</color>
-    <color name="status_success">#22c55e</color>
-    <color name="status_error">#ef4444</color>
-    <color name="status_warning">#f59e0b</color>
+    <!-- ═══════════════════════════════════════════════
+         Brand Palette — TapInX Design System 2.0
+         Primary: Electric Violet  #7C3AFF
+         Accent:  Neon Cyan        #06D6FF
+         ═══════════════════════════════════════════════ -->
 
-    <!-- Theme Colors (Dark Mode Default) -->
-    <color name="bg_main">#0a0a0a</color>
-    <color name="bg_surface">#111827</color>
-    <color name="bg_input">#14FFFFFF</color>
-    <color name="text_primary">#ffffff</color>
-    <color name="text_secondary">#94a3b8</color>
-    <color name="text_tertiary">#64748b</color>
-    <color name="border_color">#1f2937</color>
+    <!-- Core Brand -->
+    <color name="primary_brand">#7C3AFF</color>
+    <color name="primary_brand_dark">#5B1EE8</color>
+    <color name="primary_brand_light">#9B6AFF</color>
+    <color name="accent_cyan">#06D6FF</color>
+    <color name="accent_cyan_light">#40E4FF</color>
+    <color name="accent_pink">#FF2D87</color>
 
-    <!-- Legacy Mappings for VisionX (Mapping to new design system) -->
+    <!-- Status -->
+    <color name="status_success">#00E87A</color>
+    <color name="status_success_dark">#00B860</color>
+    <color name="status_error">#FF3B3B</color>
+    <color name="status_warning">#FFB020</color>
+
+    <!-- Deep Space Surfaces (ARGB format for Android) -->
+    <!-- #07071A = bg base -->
+    <color name="bg_main">#07071A</color>
+    <!-- #0D0C2A = surface cards -->
+    <color name="bg_surface">#0D0C2A</color>
+    <!-- #131230 = elevated card -->
+    <color name="bg_elevated">#131230</color>
+    <!-- #1A1940 = selected/hover -->
+    <color name="bg_overlay">#1A1940</color>
+    <!-- Input: 6% white over bg -->
+    <color name="bg_input">#0F0F0F</color>
+
+    <!-- Text -->
+    <color name="text_primary">#FFFFFF</color>
+    <color name="text_secondary">#C4C4E0</color>
+    <color name="text_tertiary">#8080B0</color>
+    <color name="text_muted">#8080B0</color>
+    <color name="text_dim">#505080</color>
+
+    <!-- Borders (ARGB) -->
+    <!-- rgba(124,58,255,0.18) = #2E7C3AFF -->
+    <color name="border_color">#2E7C3AFF</color>
+    <!-- rgba(124,58,255,0.35) = #597C3AFF -->
+    <color name="border_active">#597C3AFF</color>
+    <!-- rgba(6,214,255,0.25) = #4006D6FF -->
+    <color name="border_accent">#4006D6FF</color>
+
+    <!-- Glass / Transparency -->
+    <!-- rgba(255,255,255,0.06) = #0FFFFFFF -->
+    <color name="glass_bg">#0FFFFFFF</color>
+    <!-- rgba(124,58,255,0.15) = #267C3AFF -->
+    <color name="glass_stroke">#267C3AFF</color>
+    <color name="glass_shadow">#66000000</color>
+
+    <!-- Gradient ramp -->
+    <color name="gradient_start">#07071A</color>
+    <color name="gradient_mid">#100F38</color>
+    <color name="gradient_end">#0D0C2A</color>
+    <color name="gradient_brand_start">#7C3AFF</color>
+    <color name="gradient_brand_end">#06D6FF</color>
+
+    <!-- Attendance status -->
+    <color name="present_green">@color/status_success</color>
+    <color name="absent_red">@color/status_error</color>
+    <color name="late_amber">@color/status_warning</color>
+
+    <!-- ─── Legacy aliases (names used by layouts/code) ─────── -->
     <color name="vision_navy_900">@color/bg_main</color>
     <color name="vision_navy_800">@color/bg_surface</color>
-    <color name="vision_navy_700">@color/border_color</color>
-    
+    <color name="vision_navy_700">@color/bg_elevated</color>
     <color name="vision_blue">@color/primary_brand</color>
-    <color name="vision_cyan">@color/primary_brand_dark</color>
+    <color name="vision_cyan">@color/accent_cyan</color>
     <color name="vision_violet">@color/primary_brand</color>
-    
     <color name="vision_success">@color/status_success</color>
     <color name="vision_warning">@color/status_warning</color>
     <color name="vision_error">@color/status_error</color>
     <color name="vision_red">@color/status_error</color>
-    
     <color name="vision_text_primary">@color/text_primary</color>
     <color name="vision_text_secondary">@color/text_secondary</color>
-    <color name="vision_text_tertiary">@color/text_tertiary</color>
-    
+    <color name="vision_text_tertiary">@color/text_muted</color>
     <color name="glass_surface_light">@color/bg_surface</color>
     <color name="glass_stroke_light">@color/border_color</color>
-    <color name="glass_shadow">#40000000</color>
-    
     <color name="primary_blue">@color/primary_brand</color>
     <color name="primary_dark_blue">@color/bg_main</color>
     <color name="background_dark">@color/bg_main</color>
     <color name="background_card_dark">@color/bg_surface</color>
-    <color name="background_input_dark">@color/bg_input</color>
-    
+    <color name="background_input_dark">@color/glass_bg</color>
     <color name="success_green">@color/status_success</color>
     <color name="error_red">@color/status_error</color>
     <color name="white">#FFFFFF</color>
     <color name="black">#000000</color>
+    <color name="electric_blue">@color/primary_brand</color>
+    <color name="deep_indigo">#1A0844</color>
+    <color name="indigo_mid">@color/primary_brand</color>
+    <color name="neon_cyan">@color/accent_cyan</color>
+    <color name="purple_accent">@color/primary_brand_light</color>
+    <color name="chip_bg">#1A7C3AFF</color>
 
-    <!-- New UX Accent Palette -->
-    <color name="electric_blue">#3B82F6</color>
-    <color name="deep_indigo">#312E81</color>
-    <color name="indigo_mid">#4F46E5</color>
-    <color name="neon_cyan">#06B6D4</color>
-    <color name="purple_accent">#7C3AED</color>
-    <color name="gradient_start">#0F0C29</color>
-    <color name="gradient_mid">#1E1B4B</color>
-    <color name="gradient_end">#111827</color>
-    <color name="glass_bg">#26FFFFFF</color>
-    <color name="glass_stroke">#33FFFFFF</color>
-    <color name="present_green">#10B981</color>
-    <color name="absent_red">#EF4444</color>
-    <color name="late_amber">#F59E0B</color>
-    <color name="chip_bg">#1AFFFFFF</color>
-
-    <!-- Android standard names -->
+    <!-- Android Material names -->
     <color name="colorPrimary">@color/primary_brand</color>
     <color name="colorPrimaryVariant">@color/primary_brand_dark</color>
     <color name="colorOnPrimary">@color/text_primary</color>
-    <color name="colorSecondary">@color/primary_brand_dark</color>
+    <color name="colorSecondary">@color/accent_cyan</color>
     <color name="colorSurface">@color/bg_surface</color>
     <color name="colorBackground">@color/bg_main</color>
-
-    <!-- Compatibility Aliases -->
     <color name="background_card">@color/bg_surface</color>
     <color name="primary_sky_blue">@color/primary_brand</color>
     <color name="primary_soft_blue">@color/primary_brand</color>
     <color name="secondary_mint_green">@color/status_success</color>
-    <color name="secondary_lavender">@color/primary_brand</color>
+    <color name="secondary_lavender">@color/primary_brand_light</color>
     <color name="ai_neon_blue">@color/primary_brand</color>
     <color name="ai_glass_surface">@color/bg_surface</color>
-    <color name="pink_touch">@color/primary_brand</color>
-    <color name="pink_700">@color/primary_brand_dark</color>
+    <color name="pink_touch">@color/accent_pink</color>
+    <color name="pink_700">@color/accent_pink</color>
     <color name="md_theme_light_onBackground">@color/text_primary</color>
     <color name="ai_deep_black">@color/bg_main</color>
     <color name="ai_text_primary">@color/text_primary</color>

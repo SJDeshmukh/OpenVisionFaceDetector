@@ -1,6 +1,7 @@
 plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
+    id 'com.google.gms.google-services'
 }
 
 android {
@@ -31,12 +32,12 @@ android {
     productFlavors {
         tapinx {
             dimension "brand"
-            applicationId "com.tapinx.parent"
+            applicationId "tapinx.com"
             buildConfigField "Boolean", "IS_ATTENDX", "false"
         }
         attendx {
             dimension "brand"
-            applicationId "com.attendx.parent"
+            applicationId "attendx.com"
             buildConfigField "Boolean", "IS_ATTENDX", "true"
         }
 
@@ -120,4 +121,8 @@ dependencies {
 
     // Charts
     implementation 'com.github.PhilJay:MPAndroidChart:v3.1.0'
+
+    // Firebase Cloud Messaging — background push notifications (app-closed delivery)
+    implementation platform('com.google.firebase:firebase-bom:33.7.0')
+    implementation 'com.google.firebase:firebase-messaging-ktx'
 }

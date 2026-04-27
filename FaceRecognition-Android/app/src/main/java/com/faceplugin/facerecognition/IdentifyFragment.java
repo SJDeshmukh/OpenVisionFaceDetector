@@ -594,6 +594,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
 
     private void showStatusOverlay(String status) {
         if (getActivity() == null) return;
+        triggerHapticFeedback(status);
         getActivity().runOnUiThread(() -> {
             if ("CHECK_IN".equals(status)) {
                 if (ivStatusOverlay != null) {
@@ -648,6 +649,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
 
     private void showVerifyOverlay() {
         if (getActivity() == null) return;
+        triggerHapticFeedback("VERIFY");
         getActivity().runOnUiThread(() -> {
             if (ivStatusOverlay != null && isAdded()) {
                 ivStatusOverlay.setImageResource(R.drawable.ic_check_in_success);
@@ -750,6 +752,35 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         }
         // Always ensure timer is reset when hiding (or trying to hide)
         // logic handled in caller
+    }
+
+    private void triggerHapticFeedback(String eventType) {
+        try {
+            android.os.Vibrator vibrator = (android.os.Vibrator) requireContext().getSystemService(Context.VIBRATOR_SERVICE);
+            if (vibrator == null || !vibrator.hasVibrator()) return;
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                android.os.VibrationEffect effect;
+                if ("CHECK_IN".equals(eventType)) {
+                    // Double-pulse: strong hit + soft follow
+                    long[] timings = {0, 60, 80, 35};
+                    int[] amps = {0, 220, 0, 120};
+                    effect = android.os.VibrationEffect.createWaveform(timings, amps, -1);
+                } else if ("CHECK_OUT".equals(eventType)) {
+                    // Single medium pulse
+                    effect = android.os.VibrationEffect.createOneShot(75, 180);
+                } else {
+                    // Light tick for verify/unknown
+                    effect = android.os.VibrationEffect.createOneShot(25, 100);
+                }
+                vibrator.vibrate(effect);
+            } else {
+                if ("CHECK_IN".equals(eventType)) {
+                    vibrator.vibrate(new long[]{0, 60, 80, 35}, -1);
+                } else {
+                    vibrator.vibrate(new long[]{0, 75}, -1);
+                }
+            }
+        } catch (Exception ignored) {}
     }
 
     @Override

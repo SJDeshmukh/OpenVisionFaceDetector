@@ -131,7 +131,14 @@ class ParentAnalyticsFragment : Fragment() {
             .enqueue(object : Callback<JsonObject> {
                 override fun onResponse(call: Call<JsonObject>, response: Response<JsonObject>) {
                     if (!isAdded) return
-                    val body = response.body() ?: return
+                    if (response.code() in listOf(401, 403)) {
+                        (activity as? ParentActivity)?.performLogout(); return
+                    }
+                    if (!response.isSuccessful || response.body() == null) {
+                        showAnalyticsError("No data found. Please contact your administrator.")
+                        return
+                    }
+                    val body = response.body()!!
                     val list = try { body.getAsJsonArray("attendance") } catch (_: Exception) { return }
 
                     var present = 0
@@ -169,7 +176,9 @@ class ParentAnalyticsFragment : Fragment() {
                     updateBarChartFromMap(byDate)
                     updateInsight(present, absent, rate)
                 }
-                override fun onFailure(call: Call<JsonObject>, t: Throwable) {}
+                override fun onFailure(call: Call<JsonObject>, t: Throwable) {
+                    if (isAdded) showAnalyticsError("Connection error. Check your internet and try again.")
+                }
             })
     }
 
@@ -178,7 +187,14 @@ class ParentAnalyticsFragment : Fragment() {
         RetrofitClient.getService().getParentAttendance().enqueue(object : Callback<JsonObject> {
             override fun onResponse(call: Call<JsonObject>, response: Response<JsonObject>) {
                 if (!isAdded) return
-                val body = response.body() ?: return
+                if (response.code() in listOf(401, 403)) {
+                    (activity as? ParentActivity)?.performLogout(); return
+                }
+                if (!response.isSuccessful || response.body() == null) {
+                    showAnalyticsError("No data found. Please contact your administrator.")
+                    return
+                }
+                val body = response.body()!!
                 val list = try { body.getAsJsonArray("attendance") } catch (_: Exception) { return }
 
                 val (startStr, _) = filterDates()
@@ -214,7 +230,9 @@ class ParentAnalyticsFragment : Fragment() {
                 updateBarChartFromMap(LinkedHashMap(byDate))
                 updateInsight(present, absent, rate)
             }
-            override fun onFailure(call: Call<JsonObject>, t: Throwable) {}
+            override fun onFailure(call: Call<JsonObject>, t: Throwable) {
+                if (isAdded) showAnalyticsError("Connection error. Check your internet and try again.")
+            }
         })
     }
 
@@ -269,5 +287,19 @@ class ParentAnalyticsFragment : Fragment() {
             rate >= 50 -> "Fair at $rate% — $absent $label missed. There's room to improve."
             else -> "Attendance needs improvement: $rate% ($absent $label missed). Take action now."
         }
+    }
+
+    private fun showAnalyticsError(msg: String) {
+        if (!isAdded) return
+        try {
+            root.findViewById<TextView>(R.id.tv_analytics_present).text = "—"
+            root.findViewById<TextView>(R.id.tv_analytics_absent).text = "—"
+            root.findViewById<TextView>(R.id.tv_analytics_rate).text = "—"
+            root.findViewById<TextView>(R.id.tv_analytics_insight).text = msg
+            root.findViewById<com.github.mikephil.charting.charts.PieChart>(R.id.pie_chart).setNoDataText(msg)
+            root.findViewById<com.github.mikephil.charting.charts.BarChart>(R.id.bar_chart).setNoDataText(msg)
+            root.findViewById<com.github.mikephil.charting.charts.PieChart>(R.id.pie_chart).invalidate()
+            root.findViewById<com.github.mikephil.charting.charts.BarChart>(R.id.bar_chart).invalidate()
+        } catch (_: Exception) {}
     }
 }

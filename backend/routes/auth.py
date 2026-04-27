@@ -71,7 +71,7 @@ def get_current_user():
         if s_row and s_row[0]:
             try:
                 features = json.loads(s_row[0])
-            except:
+            except (json.JSONDecodeError, ValueError):
                 features = []
                 
     conn.close()
@@ -202,7 +202,7 @@ def login():
                         if isinstance(custom, str):
                             custom = json.loads(custom)
                         student_phone = custom.get('student_phone') or custom.get('phone') or custom.get('contact_phone')
-                    except: pass
+                    except (json.JSONDecodeError, ValueError): pass
 
                 if student_phone and str(password) == str(student_phone):
                     # SECURE HASHING: Hash the password being stored
@@ -918,7 +918,7 @@ def parent_login():
                 conn.commit()
             except Exception as _e:
                 try: conn.rollback()
-                except: pass
+                except Exception: pass
 
         token_username = f"parent_{actual_vendor_id}_{student_id}"
         token = generate_token_with_claims(token_username, "parent", {"sv": int(session_version)})
@@ -1089,7 +1089,7 @@ def get_parent_attendance():
             ts = d.get('timestamp')
             if ts and not isinstance(ts, str):
                 try: d['timestamp'] = ts.strftime("%Y-%m-%d %H:%M:%S")
-                except: pass
+                except (AttributeError, TypeError): pass
             elif ts and isinstance(ts, str) and 'T' in ts:
                 d['timestamp'] = ts.replace('T', ' ')
             formatted_attendance.append(d)
@@ -1197,7 +1197,7 @@ def parent_student_day():
             ts = d.get('timestamp')
             if ts and not isinstance(ts, str):
                 try: d['timestamp'] = ts.strftime("%Y-%m-%d %H:%M:%S")
-                except: pass
+                except (AttributeError, TypeError): pass
             elif ts and isinstance(ts, str) and 'T' in ts:
                 d['timestamp'] = ts.replace('T', ' ')
             attendance.append(d)
@@ -1314,7 +1314,7 @@ def logout():
     if auth_header:
         try:
             token = auth_header.split(" ")[1]
-        except:
+        except (IndexError, AttributeError):
             pass
     if not token:
         token = request.cookies.get('token')

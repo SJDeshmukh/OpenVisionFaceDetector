@@ -1,10 +1,13 @@
 import json
+import logging
 import sqlite3
 import numpy as np
 import base64
 from datetime import datetime, timedelta
 from collections import defaultdict
 from flask import Blueprint, request, jsonify
+
+logger = logging.getLogger(__name__)
 
 from utils import (
     get_db_connection, get_table_columns, parse_db_datetime, 
@@ -58,14 +61,15 @@ def get_attendance_filters(valid_data: AttendanceFilterSchema):
                         key = f.get("field") or f.get("key")
                         if key:
                             enabled_fields.append({"key": str(key), "label": str(f.get("label") or key), "options": f.get("options")})
-        except: pass
+        except Exception:
+            logger.debug("Failed to load registration config for vendor %s", vendor_id, exc_info=True)
 
     c.execute("SELECT name, department, designation, shift, phone, custom_data FROM faces WHERE vendor_id = ?", (vendor_id,))
     faces = []
     for r in c.fetchall():
         d = dict(r)
         try: d["custom"] = json.loads(d.get("custom_data") or "{}")
-        except: d["custom"] = {}
+        except (json.JSONDecodeError, ValueError): d["custom"] = {}
         faces.append(d)
     conn.close()
     
@@ -219,7 +223,8 @@ def person_event(valid_data: PersonEventSchema):
                 ca.execute("SELECT vendor_id FROM system_users WHERE username = ?", (ud['username'],))
                 ur = ca.fetchone(); conn_a.close()
                 if ur: kiosk_vendor_id = ur[0]
-        except: pass
+        except Exception:
+            logger.debug("Auth token lookup failed in person-event", exc_info=True)
 
     if recognized:
          conn_c = get_db_connection(); cc = conn_c.cursor(); fr = None
@@ -249,9 +254,9 @@ def person_event(valid_data: PersonEventSchema):
     current_time_obj = datetime.now()
     if ts_str:
         try: current_time_obj = datetime.strptime(ts_str, "%Y-%m-%dT%H:%M:%S.%f")
-        except:
+        except (ValueError, TypeError):
             try: current_time_obj = datetime.strptime(ts_str, "%Y-%m-%dT%H:%M:%S")
-            except: pass
+            except (ValueError, TypeError): pass
 
     if not detected: return jsonify({"speak": False})
     if detected and not recognized:
@@ -291,7 +296,8 @@ def person_event(valid_data: PersonEventSchema):
             c.execute("SELECT device_id FROM active_sessions WHERE token = ? LIMIT 1", (t2,))
             rd = c.fetchone()
             if rd: curr_dev_id = rd[0]
-    except: pass
+    except Exception:
+        logger.debug("Device ID lookup from session failed", exc_info=True)
     if not curr_dev_id: curr_dev_id = str(valid_data.device_id or '').strip() or None
 
     if person_id:
@@ -315,7 +321,7 @@ def person_event(valid_data: PersonEventSchema):
         try:
             lts = parse_db_datetime(last_record['timestamp'])
             if lts and (current_time_obj - lts).total_seconds() / 3600 > 16: new_status = 'CHECK_IN'
-        except: pass
+        except (ValueError, TypeError, AttributeError): pass
 
     activity_name, activity_type = "Work", "Work"
     # (Simplified activity/shift logic for core split - should be fully migrated from monolithic)
@@ -329,7 +335,8 @@ def person_event(valid_data: PersonEventSchema):
             sv = c.fetchone(); cd_sec = int(sv[0]) if sv else 30
             if 0 <= (datetime.now() - lts).total_seconds() < cd_sec:
                 conn.close(); return jsonify({"speak": False})
-        except: pass
+        except Exception:
+            logger.debug("Cooldown check failed", exc_info=True)
 
     is_late = 0
     # Full late logic here...
@@ -422,7 +429,7 @@ def public_attendance_by_student(valid_data: PublicAttendanceRequest):
             cd = json.loads(r[2])
             if str(cd.get('student_id') or cd.get('id_number') or '').strip() == student_number:
                 pid, vid = r[0], r[1]; break
-        except: pass
+        except (json.JSONDecodeError, ValueError): pass
     if not pid: conn.close(); return jsonify({"attendance": []})
     limit = int(request.args.get('limit', 50))
     c.execute("SELECT name, timestamp, status, activity FROM attendance WHERE person_id = ? ORDER BY timestamp DESC LIMIT ?", (pid, limit))

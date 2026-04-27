@@ -1,12 +1,15 @@
 import json
 import csv
 import io
+import logging
 import sqlite3
 from datetime import datetime, date, timedelta
 from collections import defaultdict
 from flask import Blueprint, request, jsonify, send_file, g
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment
+
+logger = logging.getLogger(__name__)
 
 from utils import (
     get_db_connection, get_table_columns, parse_db_date, parse_db_datetime, cache_get, cache_set,
@@ -239,8 +242,8 @@ def get_analytics(valid_data: PayrollReportRequest):
     company_row = c.fetchone()
     if company_row and company_row['live_timetable']:
         try: timetable = json.loads(company_row['live_timetable'])
-        except: pass
-            
+        except (json.JSONDecodeError, ValueError): pass
+
     # 2. Fetch all faces, then separate faculty from students.
     #    Faculty upload creates face records too, so we must exclude them from
     #    the student attendance denominator (absent/present calculations).
@@ -343,7 +346,7 @@ def get_analytics(valid_data: PayrollReportRequest):
         a = max(0, total_students - p)
         try:
             d_name = datetime.strptime(d_str, '%Y-%m-%d').strftime('%a')
-        except:
+        except (ValueError, TypeError):
             d_name = d_str
         bar_data.append({
             "name": d_name, "date": d_str, "present": p, "absent": a, "late": l, "total": total_students
@@ -492,10 +495,10 @@ def get_payroll_report(valid_data: PayrollReportRequest):
     if company_row:
         if company_row['live_timetable']:
             try: timetable = json.loads(company_row['live_timetable'])
-            except: pass
+            except (json.JSONDecodeError, ValueError): pass
         try:
             if company_row['working_hours']: company_working_hours = float(company_row['working_hours'])
-        except: pass
+        except (ValueError, TypeError): pass
 
     late_enabled = vendor_has_feature(vendor_id, "late_mark")
     
@@ -515,7 +518,8 @@ def get_payroll_report(valid_data: PayrollReportRequest):
         placeholders = ', '.join(['?'] * len(settings_keys))
         c.execute(f"SELECT key, value FROM system_settings WHERE key IN ({placeholders})", settings_keys)
         stored_settings = {row['key']: row['value'] for row in c.fetchall()}
-    except:
+    except Exception:
+        logger.warning("Failed to load system settings", exc_info=True)
         stored_settings = {}
 
     pf_pct = request.args.get('pf_percentage')
@@ -535,7 +539,7 @@ def get_payroll_report(valid_data: PayrollReportRequest):
         pf_pct = float(pf_pct)
         esi_pct = float(esi_pct)
         gratuity_pct = float(gratuity_pct)
-    except:
+    except (ValueError, TypeError):
         pf_pct = 12.0
         esi_pct = 0.75
         gratuity_pct = 4.81
@@ -547,7 +551,8 @@ def get_payroll_report(valid_data: PayrollReportRequest):
         extra = [col for col in (["late_allowance_days", "late_deduction_amount"] + payroll_fields) if col in fcols]
         extra_select = ", " + ", ".join(extra) if extra else ""
         c.execute(f"SELECT id, name, daily_wage, department, designation, face_image, phone, display_id, custom_data{extra_select} FROM faces WHERE vendor_id = ? ORDER BY id ASC", (vendor_id,))
-    except:
+    except Exception:
+        logger.debug("Extended faces columns unavailable, falling back to base columns", exc_info=True)
         c.execute("SELECT id, name, daily_wage, department, designation, face_image, phone FROM faces WHERE vendor_id = ? ORDER BY id ASC", (vendor_id,))
     
     persons = {row['id']: dict(row) for row in c.fetchall()}
@@ -603,7 +608,7 @@ def get_payroll_report(valid_data: PayrollReportRequest):
                     if start_dt_req <= sess_date <= end_dt_req and session.get('is_payable', False):
                         total_hours += (session.get('duration_mins', 0) / 60.0)
                         present_dates.add(sess_date)
-                except: continue
+                except (ValueError, TypeError): continue
 
         daily_wage = person_info.get('daily_wage') or 0
         hourly_rate = daily_wage / company_working_hours if daily_wage and company_working_hours > 0 else 0
@@ -633,7 +638,7 @@ def get_payroll_report(valid_data: PayrollReportRequest):
                 
                 today = date.today()
                 tenure_years = (today - jdate).days / 365.25
-            except:
+            except (ValueError, TypeError, AttributeError):
                 pass
         
         # Calculate Breakdown using the service
@@ -781,7 +786,7 @@ def export_payroll_daily():
             try:
                 tjson = info.get('shift') or ""
                 if tjson: timetable = json.loads(tjson) if isinstance(tjson, str) else (tjson or [])
-            except: pass
+            except (json.JSONDecodeError, ValueError): pass
             
             stats = calculate_daily_hours(records, timetable)
             per_day = defaultdict(float)
@@ -790,12 +795,12 @@ def export_payroll_daily():
                     sd = datetime.fromisoformat(s['start_ts']).date()
                     if start_dt_req <= sd <= end_dt_req and s.get('is_payable', False):
                         per_day[sd] += (s.get('duration_mins', 0) or 0)
-                except: continue
+                except (ValueError, TypeError): continue
 
             late_dates = sorted(set(parse_db_date(r['timestamp']) for r in records if r.get('is_late') == 1 and parse_db_date(r['timestamp']) and start_dt_req <= parse_db_date(r['timestamp']) <= end_dt_req))
             allowance = info.get('late_allowance_days') if info.get('late_allowance_days') is not None else global_allowance
             deduction_amt = info.get('late_deduction_amount') if info.get('late_deduction_amount') is not None else global_deduction
-            
+
             for d, mins in sorted(per_day.items()):
                 lm = 1 if d in late_dates else 0
                 idx = late_dates.index(d) + 1 if d in late_dates else 0
@@ -889,12 +894,12 @@ def export_payroll_excel():
                     sd = datetime.fromisoformat(s['start_ts']).date()
                     if start_dt_req <= sd <= end_dt_req and s.get('is_payable', False):
                         per_day[sd] += (s.get('duration_mins', 0) or 0)
-                except: continue
-            
+                except (ValueError, TypeError): continue
+
             late_dates = sorted(set(parse_db_date(r['timestamp']) for r in records if r.get('is_late') == 1 and parse_db_date(r['timestamp']) and start_dt_req <= parse_db_date(r['timestamp']) <= end_dt_req))
             allowance = info.get('late_allowance_days') if info.get('late_allowance_days') is not None else global_allowance
             deduction_amt = info.get('late_deduction_amount') if info.get('late_deduction_amount') is not None else global_deduction
-            
+
             for d, mins in sorted(per_day.items()):
                 lm = 1 if d in late_dates else 0
                 idx = late_dates.index(d) + 1 if d in late_dates else 0
@@ -942,7 +947,7 @@ def import_payroll_adjustments():
             try:
                 if row.get('late_allowance_days'): vals['late_allowance_days'] = int(row['late_allowance_days'])
                 if row.get('late_deduction_amount'): vals['late_deduction_amount'] = float(row['late_deduction_amount'])
-            except: pass
+            except (ValueError, TypeError): pass
             if vals:
                 c.execute("UPDATE faces SET late_allowance_days = ?, late_deduction_amount = ? WHERE vendor_id = ? AND id = ?", (vals.get('late_allowance_days'), vals.get('late_deduction_amount'), vendor_id, pid))
                 updated += 1

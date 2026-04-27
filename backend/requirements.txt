@@ -54,3 +54,6 @@ boto3
 awsgi
 huggingface_hub>=0.19.0
 qrcode
+
+# Firebase push notifications (FCM v1 API)
+firebase-admin

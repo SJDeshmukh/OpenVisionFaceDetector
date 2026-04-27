@@ -78,6 +78,8 @@ class ParentActivity : AppCompatActivity() {
 
         scheduleParentNotifications()
         ensureNotificationPermission()
+        // Keep FCM token current (token may have rotated since last login)
+        AppFirebaseMessagingService.registerCurrentToken(this)
         // Start persistent socket listener for real-time notifications
         AttendanceListenerService.start(this)
     }

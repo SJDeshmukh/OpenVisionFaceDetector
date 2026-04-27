@@ -168,6 +168,10 @@ class LoginActivity : AppCompatActivity() {
 
                              if (token != null) RetrofitClient.setAuthToken(token)
 
+                             // Register FCM token so backend can reach this device
+                             // even when the app is fully closed.
+                             AppFirebaseMessagingService.registerCurrentToken(this@LoginActivity)
+
                              runLogoShineThenNavigate()
                         } else {
                              var errorMsg = "Login Failed"

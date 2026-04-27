@@ -132,11 +132,6 @@ const BulkImageAttendance = () => {
   useEffect(() => {
     const fetchPeople = async () => {
       try {
-        console.log('[DEBUG_FETCH_PEOPLE] Params:', {
-          class_year: selectedClass.class_year,
-          division: selectedClass.division,
-          branch: selectedClass.branch
-        });
         const res = await axios.get(`${API_URL}/persons`, {
           params: {
             class_year: selectedClass.class_year,
@@ -145,7 +140,6 @@ const BulkImageAttendance = () => {
           },
           headers: { Authorization: `Bearer ${user?.token}` }
         });
-        console.log('[DEBUG_FETCH_PEOPLE] Count:', res.data?.persons?.length);
         const list = (res.data?.persons || []).map(p => ({
           id: p.person_id || p.id,
           name: p.name,
