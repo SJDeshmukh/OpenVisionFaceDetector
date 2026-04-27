@@ -177,19 +177,21 @@ def notify_parent_async(person_id, vendor_id, title: str, body: str, data: dict 
                 from .utils import get_db_connection
             conn = get_db_connection()
             c = conn.cursor()
+            is_pg = getattr(conn, "_is_pg", False)
+            ph = "%s" if is_pg else "?"
 
             # Find parents linked to this student
-            c.execute("""
+            c.execute(f"""
                 SELECT pu.id, pu.fcm_token, pu.student_number
                 FROM student_parents sp
                 JOIN parent_users pu ON pu.id = sp.parent_id
-                WHERE sp.person_id = ? AND sp.vendor_id = ?
+                WHERE sp.person_id = {ph} AND sp.vendor_id = {ph}
             """, (person_id, vendor_id))
             links = c.fetchall() or []
 
             # Self-healing: if no explicit link, look up by student_number in faces
             if not links:
-                c.execute("SELECT phone, custom_data FROM faces WHERE id = ?", (person_id,))
+                c.execute(f"SELECT phone, custom_data FROM faces WHERE id = {ph}", (person_id,))
                 found = c.fetchone()
                 if found:
                     s_cd = found[1] if isinstance(found, (list, tuple)) else found.get("custom_data")
@@ -200,7 +202,7 @@ def notify_parent_async(person_id, vendor_id, title: str, body: str, data: dict 
                     s_num = extract_student_number_from_custom_data(s_cd, search_term=None)
                     if s_num:
                         c.execute(
-                            "SELECT id, fcm_token, student_number FROM parent_users WHERE vendor_id = ? AND student_number = ?",
+                            f"SELECT id, fcm_token, student_number FROM parent_users WHERE vendor_id = {ph} AND student_number = {ph}",
                             (vendor_id, s_num),
                         )
                         links = c.fetchall() or []

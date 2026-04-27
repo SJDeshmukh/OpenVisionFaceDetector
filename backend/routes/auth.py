@@ -1006,7 +1006,8 @@ def parent_update_fcm_token():
     conn = get_db_connection()
     c = conn.cursor()
     try:
-        c.execute("UPDATE parent_users SET fcm_token = ? WHERE username = ?", (fcm_token, data_jwt['username']))
+        ph = "%s" if getattr(conn, "_is_pg", False) else "?"
+        c.execute(f"UPDATE parent_users SET fcm_token = {ph} WHERE username = {ph}", (fcm_token, data_jwt['username']))
         conn.commit()
         return jsonify({"ok": True})
     except Exception as e:
