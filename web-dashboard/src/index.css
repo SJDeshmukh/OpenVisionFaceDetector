@@ -68,30 +68,44 @@
   --overlay-bg: rgba(4,4,20,0.82);
   --user-chip-bg: rgba(124,58,255,0.06);
   --user-chip-text: #5050A0;
+  
+  /* Dynamic Component Variables */
+  --bg-card: rgba(17, 16, 50, 0.4);
+  --bg-card-alt: rgba(20, 20, 60, 0.3);
+  --border-card: rgba(124, 58, 255, 0.08); /* VERY subtle border for dark mode so it matches EnterpriseLayout sidebars */
+  --text-primary: #FFFFFF;
+  --text-secondary: #C4C4E0;
 }
 
 [data-theme="light"] {
-  --bg-body: #F3F4F6;
-  --text-main: #111827;
-  --bg-sidebar: linear-gradient(180deg, #FFFFFF 0%, #F9FAFB 100%);
-  --border-sidebar: rgba(124, 58, 255, 0.1);
-  --shadow-sidebar: 4px 0 32px rgba(0,0,0,0.05);
-  --bg-topbar: rgba(255, 255, 255, 0.88);
-  --shadow-topbar: 0 4px 24px rgba(0,0,0,0.05);
-  --text-muted: #6B7280;
-  --text-muted-hover: #111827;
-  --bg-nav-active: linear-gradient(90deg, rgba(124,58,255,0.15) 0%, rgba(124,58,255,0.05) 100%);
-  --bg-nav-hover: rgba(0,0,0,0.04);
-  --text-nav-hover: #374151;
-  --bg-btn-ghost: rgba(124,58,255,0.08);
-  --bg-btn-ghost-hover: rgba(124,58,255,0.16);
-  --bg-search: rgba(0,0,0,0.03);
-  --border-search: rgba(124,58,255,0.15);
-  --border-search-focus: rgba(124,58,255,0.4);
-  --border-top: rgba(124,58,255,0.1);
-  --overlay-bg: rgba(244,247,254,0.6);
-  --user-chip-bg: rgba(124,58,255,0.08);
-  --user-chip-text: #4B5563;
+  --bg-body: #F8FAFC;
+  --text-main: #0F172A;
+  --bg-sidebar: linear-gradient(180deg, #FFFFFF 0%, #F8FAFC 100%);
+  --border-sidebar: rgba(0, 0, 0, 0.06);
+  --shadow-sidebar: 4px 0 32px rgba(0,0,0,0.03);
+  --bg-topbar: rgba(255, 255, 255, 0.95);
+  --shadow-topbar: 0 4px 24px rgba(0,0,0,0.03);
+  --text-muted: #64748B;
+  --text-muted-hover: #0F172A;
+  --bg-nav-active: linear-gradient(90deg, rgba(124,58,255,0.12) 0%, rgba(124,58,255,0.02) 100%);
+  --bg-nav-hover: rgba(0,0,0,0.03);
+  --text-nav-hover: #334155;
+  --bg-btn-ghost: rgba(124,58,255,0.06);
+  --bg-btn-ghost-hover: rgba(124,58,255,0.12);
+  --bg-search: rgba(0,0,0,0.02);
+  --border-search: rgba(124,58,255,0.1);
+  --border-search-focus: rgba(124,58,255,0.3);
+  --border-top: rgba(0,0,0,0.06);
+  --overlay-bg: rgba(248,250,252,0.8);
+  --user-chip-bg: rgba(124,58,255,0.06);
+  --user-chip-text: #475569;
+  
+  /* Dynamic Component Variables */
+  --bg-card: #FFFFFF;
+  --bg-card-alt: #F8FAFC;
+  --border-card: #E2E8F0;
+  --text-primary: #0F172A;
+  --text-secondary: #64748B;
 }
 
 /* ─── Base ─────────────────────────────────────────── */
@@ -193,6 +207,28 @@
 
 /* ─── Utility Classes ───────────────────────────────── */
 
+@layer utilities {
+  /* Automatically map hardcoded tailwind classes used in legacy UI to our dynamic theme */
+  .bg-white {
+    background-color: var(--bg-card) !important;
+  }
+  .bg-slate-50, .bg-gray-50 {
+    background-color: var(--bg-card-alt) !important;
+  }
+  .text-slate-800, .text-gray-800, .text-slate-900, .text-gray-900 {
+    color: var(--text-primary) !important;
+  }
+  .text-slate-700, .text-gray-700 {
+    color: var(--text-primary) !important;
+  }
+  .text-slate-500, .text-slate-600, .text-gray-500, .text-gray-600 {
+    color: var(--text-secondary) !important;
+  }
+  .border-slate-100, .border-slate-200, .border-gray-100, .border-gray-200 {
+    border-color: var(--border-card) !important;
+  }
+}
+
 /* Gradient text */
 .gradient-text {
   background: linear-gradient(135deg, #7C3AFF 0%, #06D6FF 50%, #FF2D87 100%);
@@ -205,10 +241,10 @@
 
 /* Glass surface */
 .glass-surface {
-  background: rgba(13, 12, 42, 0.85);
+  background: var(--overlay-bg, rgba(13, 12, 42, 0.85));
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(124, 58, 255, 0.15);
+  border: 1px solid var(--border-card);
 }
 
 .glass-card {
