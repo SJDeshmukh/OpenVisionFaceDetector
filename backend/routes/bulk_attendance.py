@@ -368,7 +368,10 @@ def mark_lecture_attendance(lecture_id):
     # Push FCM notification to parents for each present student (fire-and-forget)
     try:
         from notifications import notify_parent_async
-        _ts_label = datetime.now().strftime('%I:%M %p')
+        try:
+            _ts_label = datetime.fromisoformat(now[:19]).strftime('%I:%M %p')
+        except Exception:
+            _ts_label = datetime.now().strftime('%I:%M %p')
         for entry in entries:
             try:
                 _pid = int(entry.get('person_id', 0))
