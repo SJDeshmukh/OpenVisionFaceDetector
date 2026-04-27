@@ -1,0 +1,175 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@drawable/bg_main_dark">
+
+    <!-- Header -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:padding="16dp"
+        android:paddingTop="48dp">
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:id="@+id/tv_scan_session"
+            android:text="No session selected"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:textColor="@android:color/white"/>
+        <TextView
+            android:id="@+id/tv_scan_mode"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="LIVE"
+            android:textSize="11sp"
+            android:textColor="@color/present_green"
+            android:textStyle="bold"/>
+    </LinearLayout>
+
+    <!-- Camera Preview (takes 55% of screen) -->
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="55">
+
+        <androidx.camera.view.PreviewView
+            android:id="@+id/faculty_preview"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"/>
+
+        <!-- Face detection overlay -->
+        <com.faceplugin.facerecognition.FaceView
+            android:id="@+id/faculty_face_view"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"/>
+
+        <!-- Status overlay during capture -->
+        <LinearLayout
+            android:id="@+id/layout_processing"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="#AA000000"
+            android:visibility="gone">
+            <com.github.ybq.android.spinkit.SpinKitView
+                android:layout_width="60dp"
+                android:layout_height="60dp"
+                app:SpinKit_Style="DoubleBounce"
+                android:layout_marginBottom="12dp"
+                style="@style/SpinKitView.Large.DoubleBounce"/>
+            <TextView
+                android:id="@+id/tv_processing_label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Processing faces…"
+                android:textSize="14sp"
+                android:textColor="@android:color/white"/>
+        </LinearLayout>
+
+        <!-- Capture FAB -->
+        <com.google.android.material.floatingactionbutton.FloatingActionButton
+            android:id="@+id/fab_capture"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|center_horizontal"
+            android:layout_marginBottom="16dp"
+            android:src="@drawable/ic_camera"
+            android:backgroundTint="@color/indigo_mid"
+            app:fabSize="normal"
+            app:rippleColor="@color/neon_cyan"
+            app:elevation="8dp"
+            android:contentDescription="Capture"/>
+    </FrameLayout>
+
+    <!-- Results panel -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="45"
+        android:orientation="vertical"
+        android:background="@drawable/bg_card_dark">
+
+        <!-- Results header -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:padding="12dp">
+            <TextView
+                android:id="@+id/tv_results_header"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Recognition Results"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:textColor="@android:color/white"/>
+            <TextView
+                android:id="@+id/tv_results_count"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0 faces"
+                android:textSize="12sp"
+                android:textColor="#99FFFFFF"/>
+        </LinearLayout>
+
+        <!-- Empty state -->
+        <TextView
+            android:id="@+id/tv_no_results"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Capture a photo to detect and recognise students"
+            android:textSize="13sp"
+            android:textColor="#66FFFFFF"
+            android:gravity="center"
+            android:padding="20dp"/>
+
+        <!-- Scan results list -->
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/rv_scan_results"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:visibility="gone"/>
+
+        <!-- Action buttons -->
+        <LinearLayout
+            android:id="@+id/row_action_buttons"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:padding="10dp"
+            android:visibility="gone">
+
+            <Button
+                android:id="@+id/btn_retake"
+                android:layout_width="0dp"
+                android:layout_height="44dp"
+                android:layout_weight="1"
+                android:text="Retake"
+                android:textColor="@android:color/white"
+                android:backgroundTint="@color/bg_surface"
+                android:layout_marginEnd="8dp"
+                style="?android:attr/borderlessButtonStyle"/>
+
+            <Button
+                android:id="@+id/btn_mark_attendance"
+                android:layout_width="0dp"
+                android:layout_height="44dp"
+                android:layout_weight="2"
+                android:text="Mark Attendance"
+                android:textColor="@android:color/white"
+                android:backgroundTint="@color/present_green"/>
+        </LinearLayout>
+    </LinearLayout>
+
+</LinearLayout>

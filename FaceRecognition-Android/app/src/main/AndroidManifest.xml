@@ -75,6 +75,10 @@
             android:exported="false"
             android:screenOrientation="portrait" />
         <activity
+            android:name=".FacultyActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+        <activity
             android:name=".ParentFaceRegistrationActivity"
             android:exported="false"
             android:screenOrientation="portrait" />

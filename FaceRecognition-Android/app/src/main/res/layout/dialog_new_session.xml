@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="20dp">
+
+    <EditText
+        android:id="@+id/et_subject"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Subject (e.g. Mathematics)"
+        android:inputType="text"
+        android:layout_marginBottom="12dp"/>
+
+    <EditText
+        android:id="@+id/et_class_year"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Class / Year (e.g. 10th, Sem 3)"
+        android:inputType="text"
+        android:layout_marginBottom="12dp"/>
+
+    <EditText
+        android:id="@+id/et_division"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Division / Section (e.g. A, B)"
+        android:inputType="text"/>
+
+</LinearLayout>

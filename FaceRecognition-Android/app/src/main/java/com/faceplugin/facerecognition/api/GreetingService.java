@@ -120,6 +120,26 @@ public interface GreetingService {
     @POST("api/parents/face-reset-request")
     Call<com.google.gson.JsonObject> requestFaceReset(@Body com.google.gson.JsonObject body);
 
+    // Faculty mobile endpoints
+    @GET("api/bulk-attendance/lectures")
+    Call<com.google.gson.JsonObject> getFacultyLectures(
+        @Query("class_year") String classYear,
+        @Query("division") String division,
+        @Query("date") String date
+    );
+
+    @POST("api/bulk-attendance/lectures")
+    Call<com.google.gson.JsonObject> createFacultyLecture(@Body com.google.gson.JsonObject body);
+
+    @POST("api/bulk-attendance/lectures/{lecture_id}/mark")
+    Call<com.google.gson.JsonObject> markFacultyLectureAttendance(
+        @Path("lecture_id") int lectureId,
+        @Body com.google.gson.JsonObject body
+    );
+
+    @POST("api/bulk-attendance/faculty/sync")
+    Call<com.google.gson.JsonObject> syncFacultyAttendance(@Body com.google.gson.JsonObject body);
+
 
     // Owner API
     @GET("api/owner/advances")

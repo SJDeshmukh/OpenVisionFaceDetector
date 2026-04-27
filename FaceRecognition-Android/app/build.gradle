@@ -33,11 +33,13 @@ android {
         tapinx {
             dimension "brand"
             applicationId "com.faceplugin.facerecognition"
+            resValue "string", "app_name", "TapInX"
             buildConfigField "Boolean", "IS_ATTENDX", "false"
         }
         attendx {
             dimension "brand"
-            applicationId "com.faceplugin.facerecognition"
+            applicationId "attendx.com"
+            resValue "string", "app_name", "AttendX"
             buildConfigField "Boolean", "IS_ATTENDX", "true"
         }
 

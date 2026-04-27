@@ -266,6 +266,8 @@ class LoginActivity : AppCompatActivity() {
                             }
                         } catch (_: Exception) {}
                         editor.putString("offline_login_hash", offlineLoginHash(username, password))
+                        val facultyName = body?.facultyDisplayName
+                        if (!facultyName.isNullOrBlank()) editor.putString("faculty_display_name", facultyName)
                         editor.apply()
 
                         // Set token in RetrofitClient
@@ -500,16 +502,15 @@ class LoginActivity : AppCompatActivity() {
 
     private fun getTargetActivity(prefs: android.content.SharedPreferences): Class<*> {
         val role = prefs.getString("role", null)
-        return if (role == "parent") {
-            if (prefs.getBoolean("face_registered", false)) {
+        return when {
+            role == "parent" -> if (prefs.getBoolean("face_registered", false)) {
                 ParentActivity::class.java
             } else {
                 ParentFaceRegistrationActivity::class.java
             }
-        } else if (role == "owner") {
-            OwnerActivity::class.java
-        } else {
-            MainActivity::class.java
+            role == "owner"   -> OwnerActivity::class.java
+            role == "faculty" -> FacultyActivity::class.java
+            else              -> MainActivity::class.java
         }
     }
 

@@ -5,7 +5,6 @@ import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import com.ocp.facesdk.FaceSDK
 import kotlin.system.exitProcess
 
 class OpenVisionApplication : Application() {
@@ -20,26 +19,11 @@ class OpenVisionApplication : Application() {
         instance = this
         MyGlobal.context = applicationContext
 
-        // Initialize FaceSDK at application startup — this guarantees it is ready
-        // regardless of which Activity the OS launches into (e.g. after login).
-        try {
-            val ret = FaceSDKWrapper.ensureInitialized(applicationContext)
-            if (ret != FaceSDK.SDK_SUCCESS) {
-                val errName = when (ret) {
-                    FaceSDK.SDK_LICENSE_KEY_ERROR  -> "SDK_LICENSE_KEY_ERROR (-1)"
-                    FaceSDK.SDK_LICENSE_APPID_ERROR -> "SDK_LICENSE_APPID_ERROR (-2) — license was issued for a different applicationId; reinstall the correct APK"
-                    FaceSDK.SDK_LICENSE_EXPIRED    -> "SDK_LICENSE_EXPIRED (-3)"
-                    FaceSDK.SDK_NO_ACTIVATED       -> "SDK_NO_ACTIVATED (-4)"
-                    FaceSDK.SDK_INIT_ERROR         -> "SDK_INIT_ERROR (-5)"
-                    else -> "UNKNOWN ($ret)"
-                }
-                Log.e("OpenVision", "FaceSDK init FAILED: $errName")
-            } else {
-                Log.i("OpenVision", "FaceSDK initialized successfully in Application.onCreate")
-            }
-        } catch (e: Exception) {
-            Log.e("OpenVision", "FaceSDK init exception", e)
-        }
+        // FaceSDK is initialized lazily:
+        // - MainActivity (kiosk/user role) → IdentifyFragment calls ensureInitialized on first frame
+        // - FacultyActivity (faculty role)  → ensureInitialized called in onStart
+        // - ParentActivity                  → models never loaded (saves ~50 MB RAM)
+        Log.i("OpenVision", "Application started — FaceSDK will init on demand")
 
         // Register Global Crash Handler
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()

@@ -19,7 +19,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
      public static CopyOnWriteArrayList<Person> personList = new CopyOnWriteArrayList<Person>();
 
     public DBManager(Context context) {
-        super(context, "mydb" , null, 12);
+        super(context, "mydb" , null, 13);
     }
 
     @Override
@@ -41,6 +41,11 @@ import java.util.concurrent.CopyOnWriteArrayList;
         db.execSQL(
                 "create table delete_queue " +
                         "(id integer primary key autoincrement, person_id text, local_uid text, name text, created_at text)"
+        );
+        db.execSQL(
+                "create table faculty_attendance_queue " +
+                        "(id integer primary key autoincrement, lecture_id integer, person_id text, student_name text, " +
+                        "class_section text, timestamp text, status text default 'present', confidence real, synced integer default 0)"
         );
     }
 
@@ -102,6 +107,65 @@ import java.util.concurrent.CopyOnWriteArrayList;
                 );
             } catch (Exception ignored) {}
         }
+        if (oldVersion < 13) {
+            try {
+                db.execSQL(
+                        "create table if not exists faculty_attendance_queue " +
+                                "(id integer primary key autoincrement, lecture_id integer, person_id text, student_name text, " +
+                                "class_section text, timestamp text, status text default 'present', confidence real, synced integer default 0)"
+                );
+            } catch (Exception ignored) {}
+        }
+    }
+
+    public void insertFacultyAttendance(int lectureId, String personId, String studentName,
+                                        String classSection, String timestamp, String status, float confidence) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues cv  = new ContentValues();
+        cv.put("lecture_id",   lectureId);
+        cv.put("person_id",    personId);
+        cv.put("student_name", studentName);
+        cv.put("class_section",classSection);
+        cv.put("timestamp",    timestamp);
+        cv.put("status",       status);
+        cv.put("confidence",   confidence);
+        cv.put("synced",       0);
+        db.insert("faculty_attendance_queue", null, cv);
+    }
+
+    public java.util.List<android.util.Pair<Integer, com.google.gson.JsonObject>> getUnsyncedFacultyAttendance() {
+        java.util.List<android.util.Pair<Integer, com.google.gson.JsonObject>> list = new java.util.ArrayList<>();
+        SQLiteDatabase db = this.getReadableDatabase();
+        Cursor c = db.rawQuery("SELECT id, lecture_id, person_id, student_name, timestamp, status, confidence FROM faculty_attendance_queue WHERE synced = 0", null);
+        while (c.moveToNext()) {
+            int rowId = c.getInt(0);
+            com.google.gson.JsonObject rec = new com.google.gson.JsonObject();
+            rec.addProperty("lecture_id",  c.getInt(1));
+            rec.addProperty("person_id",   c.getString(2));
+            rec.addProperty("student_name",c.getString(3));
+            rec.addProperty("timestamp",   c.getString(4));
+            rec.addProperty("status",      c.getString(5));
+            rec.addProperty("confidence",  c.getFloat(6));
+            list.add(new android.util.Pair<>(rowId, rec));
+        }
+        c.close();
+        return list;
+    }
+
+    public void markFacultyAttendanceSynced(int rowId) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues cv  = new ContentValues();
+        cv.put("synced", 1);
+        db.update("faculty_attendance_queue", cv, "id = ?", new String[]{String.valueOf(rowId)});
+    }
+
+    public int getUnsyncedFacultyCount() {
+        SQLiteDatabase db = this.getReadableDatabase();
+        Cursor c = db.rawQuery("SELECT COUNT(*) FROM faculty_attendance_queue WHERE synced = 0", null);
+        int count = 0;
+        if (c.moveToFirst()) count = c.getInt(0);
+        c.close();
+        return count;
     }
 
     private String ensureLocalUid(String localUid) {

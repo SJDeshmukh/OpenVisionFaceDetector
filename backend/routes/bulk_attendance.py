@@ -537,6 +537,86 @@ def get_parent_lecture_attendance():
             except Exception:
                 pass
         rows.append(d)
-        
+
     conn.close()
     return jsonify({"attendance": rows, "person_id": person_id})
+
+
+# ── Faculty Mobile Sync ───────────────────────────────────────────────────────
+
+@bulk_attendance_bp.route("/bulk-attendance/faculty/sync", methods=["POST"])
+@require_auth
+def faculty_sync_attendance():
+    """Accept queued attendance records from AttendX faculty mobile app.
+
+    Payload:
+        {
+          "records": [
+            {"lecture_id": 1, "person_id": "abc", "status": "present",
+             "timestamp": "2025-01-01T10:00:00", "confidence": 0.92}
+          ]
+        }
+    """
+    data_jwt = verify_token(request)
+    if not data_jwt:
+        return jsonify({"error": "Unauthorized"}), 401
+    if data_jwt.get("role") not in ("faculty", "vendor_admin", "super_admin"):
+        return jsonify({"error": "Forbidden"}), 403
+
+    vendor_id = data_jwt.get("vendor_id")
+    payload   = request.get_json(silent=True) or {}
+    records   = payload.get("records", [])
+    if not records:
+        return jsonify({"error": "No records provided"}), 400
+
+    conn = get_db_connection()
+    c    = conn.cursor()
+    is_pg = getattr(conn, "_is_pg", False)
+    ph    = "%s" if is_pg else "?"
+
+    synced = 0
+    errors = 0
+    now    = datetime.now().isoformat()
+
+    for rec in records:
+        try:
+            lecture_id = int(rec.get("lecture_id", 0))
+            person_id  = str(rec.get("person_id", "")).strip()
+            status     = str(rec.get("status", "present")).strip()
+            ts         = str(rec.get("timestamp", now))
+            if not lecture_id or not person_id:
+                errors += 1
+                continue
+
+            # Verify lecture belongs to vendor
+            c.execute(
+                f"SELECT id FROM lectures WHERE id = {ph} AND vendor_id = {ph}",
+                (lecture_id, vendor_id),
+            )
+            if not c.fetchone():
+                errors += 1
+                continue
+
+            if is_pg:
+                c.execute(
+                    """INSERT INTO lecture_attendance (lecture_id, vendor_id, person_id, status, marked_at)
+                       VALUES (%s, %s, %s, %s, %s)
+                       ON CONFLICT (lecture_id, person_id) DO UPDATE
+                       SET status = EXCLUDED.status, marked_at = EXCLUDED.marked_at""",
+                    (lecture_id, vendor_id, person_id, status, ts),
+                )
+            else:
+                c.execute(
+                    """INSERT OR REPLACE INTO lecture_attendance
+                       (lecture_id, vendor_id, person_id, status, marked_at)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (lecture_id, vendor_id, person_id, status, ts),
+                )
+            synced += 1
+        except Exception as e:
+            logger.warning("faculty_sync record error: %s", e)
+            errors += 1
+
+    conn.commit()
+    conn.close()
+    return jsonify({"synced": synced, "errors": errors})

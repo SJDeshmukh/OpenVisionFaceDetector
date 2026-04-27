@@ -416,10 +416,12 @@ def login():
                 except Exception:
                     pass
             elif platform == 'mobile':
-                # Faculty accounts are web-only — block mobile login
+                # Faculty: allowed on AttendX mobile, blocked elsewhere
                 if user['role'] == 'faculty':
-                    conn.close()
-                    return jsonify({"error": "Faculty accounts cannot log in via the mobile app."}), 403
+                    app_type = (data.get('app_type', '') if data else '').lower()
+                    if app_type != 'attendx':
+                        conn.close()
+                        return jsonify({"error": "Faculty accounts can only log in via the AttendX app."}), 403
 
                 # Owner mobile access requires the wages feature
                 if user['role'] == 'owner':
@@ -602,6 +604,11 @@ def login():
             conn.commit()
             conn.close()
 
+        # For faculty on mobile, include their display name
+        faculty_display_name = None
+        if user.get("role") == "faculty":
+            faculty_display_name = user.get("person_id") or user.get("username")
+
         resp = make_response(jsonify({
             "status": "success",
             "role": user["role"],
@@ -617,7 +624,8 @@ def login():
             "vertical": vendor_vertical,
             "device_slot_required": bool(locals().get('device_slot_required', False)),
             "available_slots": locals().get('available_slots', []),
-            "force_password_change": user.get('force_password_change', False)
+            "force_password_change": user.get('force_password_change', False),
+            "faculty_display_name": faculty_display_name,
         }))
 
         # For web logins: set an httpOnly cookie so the token is not accessible
