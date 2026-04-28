@@ -1041,15 +1041,28 @@ def download_faces():
     if vendor_id:
         if g.user_role == 'faculty':
             # 1. Identify which classes this faculty is assigned to
+            # First, from classes table (direct mapping)
             c.execute("SELECT class_year, division, branch, mapped_subjects FROM classes WHERE vendor_id = ?", (vendor_id,))
             all_classes = c.fetchall() or []
-            assigned_classes = []
+            assigned_set = set() # Use set to avoid duplicates (year, div, branch)
+            
             for cl in all_classes:
                 try:
                     ms = json.loads(cl[3]) if cl[3] else []
                     if any(_faculty_matches(m.get('faculty', ''), g.username) for m in ms):
-                        assigned_classes.append((cl[0], cl[1], cl[2])) # (year, div, branch)
+                        assigned_set.add((str(cl[0] or ''), str(cl[1] or ''), str(cl[2] or '')))
                 except (json.JSONDecodeError, ValueError): pass
+            
+            # Second, from lectures table (history/indirect mapping)
+            # Find classes where this faculty has taught a lecture
+            is_pg = getattr(conn, "_is_pg", False)
+            ph = "%s" if is_pg else "?"
+            c.execute(f"SELECT DISTINCT class_year, division, branch FROM lectures WHERE vendor_id = {ph} AND teacher = {ph}", (vendor_id, g.username))
+            lecture_classes = c.fetchall() or []
+            for lc in lecture_classes:
+                assigned_set.add((str(lc[0] or ''), str(lc[1] or ''), str(lc[2] or '')))
+            
+            assigned_classes = list(assigned_set)
             
             if not assigned_classes:
                 conn.close()
