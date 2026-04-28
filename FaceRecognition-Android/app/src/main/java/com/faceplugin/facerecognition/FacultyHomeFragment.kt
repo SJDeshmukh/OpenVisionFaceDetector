@@ -235,12 +235,26 @@ class FacultyHomeFragment : Fragment() {
             val p = persons[pos]
             holder.tvName.text = p.name ?: "Unknown"
 
-            // Subtitle: department / designation
+            // Subtitle: Roll Number · Class · Dept
             val subtitle = buildString {
-                if (!p.department.isNullOrBlank()) append(p.department)
-                if (!p.designation.isNullOrBlank()) {
+                try {
+                    val obj = org.json.JSONObject(p.customData ?: "{}")
+                    val roll = obj.optString("student_id") ?: obj.optString("roll_number") ?: obj.optString("id_number")
+                    if (!roll.isNullOrBlank()) {
+                        append("Roll: $roll")
+                    }
+                    
+                    val yr = obj.optString("class_year") ?: obj.optString("year")
+                    val div = obj.optString("division") ?: obj.optString("Division")
+                    if (!yr.isNullOrBlank() || !div.isNullOrBlank()) {
+                        if (isNotEmpty()) append(" · ")
+                        append("${yr ?: ""} ${div ?: ""}".trim())
+                    }
+                } catch (_: Exception) {}
+
+                if (!p.department.isNullOrBlank()) {
                     if (isNotEmpty()) append(" · ")
-                    append(p.designation)
+                    append(p.department)
                 }
             }
             if (subtitle.isNotBlank()) {

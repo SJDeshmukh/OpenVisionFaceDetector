@@ -1037,8 +1037,44 @@ def download_faces():
     params = []
     
     if vendor_id:
-        query += " WHERE f.vendor_id = ?"
-        params.append(vendor_id)
+        if g.user_role == 'faculty':
+            # 1. Identify which classes this faculty is assigned to
+            c.execute("SELECT class_year, division, branch, mapped_subjects FROM classes WHERE vendor_id = ?", (vendor_id,))
+            all_classes = c.fetchall() or []
+            assigned_classes = []
+            for cl in all_classes:
+                try:
+                    ms = json.loads(cl[3]) if cl[3] else []
+                    if any(_faculty_matches(m.get('faculty', ''), g.username) for m in ms):
+                        assigned_classes.append((cl[0], cl[1], cl[2])) # (year, div, branch)
+                except (json.JSONDecodeError, ValueError): pass
+            
+            if not assigned_classes:
+                conn.close()
+                return jsonify({"faces": []}) # No assigned classes = no students visible
+            
+            # 2. Build query to filter by these classes
+            query += " WHERE f.vendor_id = ?"
+            params.append(vendor_id)
+            
+            # Build a filter that matches ANY of the assigned classes
+            is_pg = getattr(conn, "_is_pg", False)
+            class_filters = []
+            for y, d, b in assigned_classes:
+                if is_pg:
+                    f = "( (f.custom_data::jsonb->>'class_year' = ? OR f.custom_data::jsonb->>'Year' = ?) AND (f.custom_data::jsonb->>'division' = ? OR f.custom_data::jsonb->>'Division' = ?) AND (f.custom_data::jsonb->>'branch' = ? OR f.custom_data::jsonb->>'Branch' = ?) )"
+                    class_filters.append(f)
+                    params.extend([str(y), str(y), str(d), str(d), str(b), str(b)])
+                else:
+                    f = "( (f.custom_data LIKE ? OR f.custom_data LIKE ?) AND (f.custom_data LIKE ? OR f.custom_data LIKE ?) AND (f.custom_data LIKE ? OR f.custom_data LIKE ?) )"
+                    class_filters.append(f)
+                    params.extend([f'%\"class_year\":\"{y}\"%', f'%\"Year\":\"{y}\"%', f'%\"division\":\"{d}\"%', f'%\"Division\":\"{d}\"%', f'%\"branch\":\"{b}\"%', f'%\"Branch\":\"{b}\"%'])
+            
+            if class_filters:
+                query += " AND (" + " OR ".join(class_filters) + ")"
+        else:
+            query += " WHERE f.vendor_id = ?"
+            params.append(vendor_id)
         
     # Default sorting by Display ID
     query += " ORDER BY f.display_id ASC"
