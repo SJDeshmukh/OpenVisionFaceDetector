@@ -264,21 +264,83 @@ def get_lecture(lecture_id):
         conn.close()
         return jsonify({"error": "Lecture not found"}), 404
 
+    # Extract metadata safely
+    if hasattr(lec, 'keys') and callable(lec.keys):
+        l_year = lec.get('class_year', '')
+        l_div  = lec.get('division', '')
+        l_branch = lec.get('branch', '')
+    else:
+        l_year = lec[3] if len(lec) > 3 else ''
+        l_div  = lec[4] if len(lec) > 4 else ''
+        l_branch = lec[5] if len(lec) > 5 else ''
+
+    # 1. Fetch current marked attendance
     c.execute(
-        """SELECT la.person_id, la.status, la.marked_at,
-                  f.name, f.face_image,
-                  f.custom_data
+        """SELECT la.person_id, la.status, la.marked_at, f.name, f.display_id, f.custom_data
            FROM lecture_attendance la
            JOIN faces f ON f.id = la.person_id
-           WHERE la.lecture_id = ? AND la.vendor_id = ?
-           ORDER BY f.name""",
+           WHERE la.lecture_id = ? AND la.vendor_id = ?""",
         (lecture_id, vendor_id)
     )
-    roster = [dict(r) for r in (c.fetchall() or [])]
+    marked_rows = c.fetchall() or []
+    marked_map  = {}
+    for mr in marked_rows:
+        marked_map[mr[0]] = {
+            "person_id": mr[0],
+            "status":    mr[1],
+            "marked_at": mr[2],
+            "name":      mr[3],
+            "display_id": mr[4],
+            "custom_data": mr[5]
+        }
+
+    # 2. Fetch all students who *should* be in this class
+    is_pg = getattr(conn, "_is_pg", False)
+    ph = "%s" if is_pg else "?"
+    c.execute(f"SELECT id, name, display_id, custom_data FROM faces WHERE vendor_id = {ph} ORDER BY name", (vendor_id,))
+    all_faces = c.fetchall() or []
+    
+    roster = []
+    l_year_norm = (l_year or '').strip().lower()
+    l_div_norm  = (l_div  or '').strip().lower()
+
+    for fr in all_faces:
+        fid   = fr[0]
+        fname = fr[1]
+        f_did = fr[2]
+        f_cd  = fr[3]
+        
+        # If student already has a record, use it
+        if fid in marked_map:
+            roster.append(marked_map[fid])
+            continue
+            
+        # Otherwise, check if they belong to this class
+        try:
+            cd = json.loads(f_cd) if isinstance(f_cd, str) else (f_cd if isinstance(f_cd, dict) else {})
+        except Exception: cd = {}
+        
+        s_year  = str(cd.get('class_year') or cd.get('year') or cd.get('Year') or '').strip().lower()
+        s_div   = str(cd.get('division') or cd.get('Division') or '').strip().lower()
+        s_class = str(cd.get('class_section') or cd.get('class') or '').strip().lower()
+        
+        year_ok = (not l_year_norm) or (l_year_norm in s_year) or (l_year_norm in s_class)
+        div_ok  = (not l_div_norm)  or (l_div_norm == s_div)  or (l_div_norm in s_class)
+        
+        if year_ok and div_ok:
+            roster.append({
+                "person_id": fid,
+                "status":    "absent",
+                "marked_at": None,
+                "name":      fname,
+                "display_id": f_did,
+                "custom_data": f_cd
+            })
+
     conn.close()
 
     result = dict(lec)
-    result['attendance']    = roster
+    result['attendance']    = sorted(roster, key=lambda x: (x['status'] != 'present', x['name'] or ''))
     result['present_count'] = sum(1 for r in roster if r['status'] == 'present')
     result['absent_count']  = sum(1 for r in roster if r['status'] == 'absent')
     return jsonify(result)
