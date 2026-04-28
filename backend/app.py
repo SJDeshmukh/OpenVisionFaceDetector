@@ -1,6 +1,3 @@
-import eventlet
-eventlet.monkey_patch()
-
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -85,23 +82,13 @@ try:
 except Exception:
     class Compress:
         def __init__(self, *args, **kwargs): pass
-# eventlet already patched at top
+# Using native threading (eventlet removed for stability)
 
 def _run_in_native_thread(fn, *args, **kwargs):
-    """Run a function in a native OS thread so it doesn't block the eventlet event loop.
-    Falls back to direct execution if eventlet is not available."""
-    if eventlet:
-        try:
-            def _worker():
-                try:
-                    eventlet.tpool.execute(fn, *args, **kwargs)
-                except Exception as ex:
-                    pass # print(f"tpool execution failed for {fn.__name__}: {ex}")
-            eventlet.spawn_n(_worker)
-        except Exception:
-            fn(*args, **kwargs)
-    else:
-        fn(*args, **kwargs)
+    """Run a function in a native OS thread.
+    Uses Python's threading since eventlet is removed."""
+    threading.Thread(target=fn, args=args, kwargs=kwargs, daemon=True).start()
+
 from services.llm_service import generate_greeting
 import uuid
 import time
@@ -204,7 +191,7 @@ setup_middleware(app)
 socketio = SocketIO(
     app,
     cors_allowed_origins="*",
-    async_mode='eventlet',
+    async_mode='threading',
     ping_timeout=60,
     ping_interval=25,
     allow_upgrades=True

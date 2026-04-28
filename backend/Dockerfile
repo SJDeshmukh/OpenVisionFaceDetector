@@ -12,4 +12,4 @@ COPY backend /app/backend
 WORKDIR /app/backend
 EXPOSE 5001
 ENV PORT=5001
-CMD ["gunicorn","-k","eventlet","-w","1","-b","0.0.0.0:5001","app:app"]
+CMD ["gunicorn", "--worker-class", "gthread", "-w", "1", "--threads", "4", "-b", "0.0.0.0:5001", "app:app"]

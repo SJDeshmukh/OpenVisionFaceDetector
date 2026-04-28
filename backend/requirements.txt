@@ -4,7 +4,6 @@ flask-cors
 flask-socketio
 Flask-Compress
 gunicorn
-eventlet
 python-dotenv
 itsdangerous
 requests

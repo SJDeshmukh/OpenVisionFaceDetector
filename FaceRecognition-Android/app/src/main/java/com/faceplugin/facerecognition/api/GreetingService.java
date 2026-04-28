@@ -149,9 +149,6 @@ public interface GreetingService {
     @GET("api/bulk-attendance/faculty/classes")
     Call<com.google.gson.JsonObject> getFacultyClasses();
 
-    @GET("api/bulk-attendance/faculty/download-students")
-    Call<SyncResponse> downloadFacultyStudents();
-
     @GET("api/bulk-attendance/faculty/class-students")
     Call<com.google.gson.JsonObject> getClassStudents(
         @Query("class_year") String classYear,

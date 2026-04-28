@@ -358,7 +358,7 @@ Environment="PYTHONPATH=$WORKING_DIR/backend:$WORKING_DIR"
 Environment="LOW_RAM_MODE=$LRM"
 EnvironmentFile=$WORKING_DIR/backend/.env
 ExecStartPre=/bin/bash -c '/usr/bin/fuser -k -9 5001/tcp 2>/dev/null || true; /bin/sleep 1'
-ExecStart=$GUNICORN_PATH --worker-class eventlet -w 1 -b 0.0.0.0:5001 app:app --timeout 600
+ExecStart=$GUNICORN_PATH --worker-class gthread -w 1 --threads 4 -b 0.0.0.0:5001 app:app --timeout 600
 ExecStop=/bin/kill -s TERM \$MAINPID
 KillMode=mixed
 TimeoutStopSec=15

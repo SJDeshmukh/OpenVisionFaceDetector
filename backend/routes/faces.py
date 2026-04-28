@@ -47,14 +47,10 @@ def _get_redis():
     except Exception:
         return None
 
-try:
-    import eventlet
-except ImportError:
-    eventlet = None
-
-# Thread-pool fallback for heavy CPU/GPU-bound work when eventlet isn't available
+import threading
+# Thread-pool fallback for heavy CPU/GPU-bound work
 _INFER_MAX_WORKERS = int(os.environ.get("INFER_THREADS", "2"))
-_INFER_EXECUTOR = ThreadPoolExecutor(max_workers=_INFER_MAX_WORKERS) if eventlet is None else None
+_INFER_EXECUTOR = ThreadPoolExecutor(max_workers=_INFER_MAX_WORKERS)
 
 
 # require_feature imported from utils.py

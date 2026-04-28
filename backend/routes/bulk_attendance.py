@@ -8,6 +8,7 @@ Bulk Attendance (Lecture-based) routes
 import json
 import sqlite3
 import logging
+import traceback
 import uuid as _uuid
 import threading as _threading
 import time as _time
@@ -357,15 +358,26 @@ def mark_lecture_attendance(lecture_id):
                 if face_row:
                     raw_cd = face_row[0] if isinstance(face_row, (list, tuple)) else face_row.get('custom_data')
                     try:
-                        cd = json.loads(raw_cd) if raw_cd else {}
+                        cd = json.loads(raw_cd) if isinstance(raw_cd, str) else (raw_cd if isinstance(raw_cd, dict) else {})
                     except Exception:
                         cd = {}
-                    student_class = str(cd.get('class_section') or cd.get('class') or '').strip().lower()
-                    year_ok = (not lecture_class_year) or (lecture_class_year.lower() in student_class)
-                    div_ok  = (not lecture_class_div)  or (lecture_class_div.lower()  in student_class)
-                    if not (year_ok and div_ok):
+                    
+                    # Robust extraction of student year/division/class from metadata
+                    s_year  = str(cd.get('class_year') or cd.get('year') or cd.get('Year') or '').strip().lower()
+                    s_div   = str(cd.get('division') or cd.get('Division') or '').strip().lower()
+                    s_class = str(cd.get('class_section') or cd.get('class') or '').strip().lower()
+                    
+                    # Normalize lecture values
+                    l_year_norm = str(lecture_class_year or '').strip().lower()
+                    l_div_norm  = str(lecture_class_div or '').strip().lower()
+                    
+                    year_match = (not l_year_norm) or (l_year_norm in s_year) or (l_year_norm in s_class)
+                    div_match  = (not l_div_norm)  or (l_div_norm == s_div)  or (l_div_norm in s_class)
+                    
+                    if not (year_match and div_match):
                         skipped_class_mismatch += 1
                         continue
+            
             if status not in ('present', 'absent'):
                 status = 'present'
             c.execute(
@@ -403,7 +415,10 @@ def mark_lecture_attendance(lecture_id):
                     )
             marked += 1
         except Exception as e:
-            logger.warning("Error marking lecture attendance for person %s: %s", entry.get('person_id'), e)
+            logger.error("Error marking lecture attendance for person %s: %s\n%s", 
+                         entry.get('person_id'), e, traceback.format_exc())
+            # Don't stop the whole batch for one failing record
+            pass
 
     conn.commit()
     conn.close()
@@ -443,10 +458,11 @@ def mark_lecture_attendance(lecture_id):
     except Exception:
         pass
 
-    result = {"status": "marked", "count": marked}
-    if skipped_class_mismatch:
-        result["skipped_class_mismatch"] = skipped_class_mismatch
-    return jsonify(result)
+    return jsonify({
+        "status": "marked", 
+        "count": marked, 
+        "skipped_class_mismatch": skipped_class_mismatch
+    })
 
 
 # ── Per-student lecture history (vendor view) ──────────────────────────────────
@@ -542,7 +558,16 @@ def get_parent_lecture_attendance():
         raw_cd = face_row[0] if isinstance(face_row, (list, tuple)) else face_row.get('custom_data')
         try:
             cd = json.loads(raw_cd) if raw_cd else {}
-            student_class = str(cd.get('class_section') or cd.get('class') or '').strip().lower()
+            # Robust metadata extraction (handles multiple key formats)
+            s_year = str(cd.get('class_year') or cd.get('year') or '').strip().lower()
+            s_div  = str(cd.get('division') or cd.get('Division') or '').strip().lower()
+            s_class = str(cd.get('class_section') or cd.get('class') or '').strip().lower()
+            
+            # Combine them for checking against lecture fields
+            student_class_context = f"{s_year} {s_div} {s_class}"
+            
+            # We overwrite student_class here so the logic below works
+            student_class = student_class_context.strip()
         except Exception:
             pass
 
@@ -573,10 +598,10 @@ def get_parent_lecture_attendance():
     rows = []
     for r in (c.fetchall() or []):
         d = dict(r)
-        # Class segregation: skip lectures that explicitly target a different class
         if student_class:
             l_class_year = str(d.get('class_year') or '').strip().lower()
             l_class_div  = str(d.get('division')   or '').strip().lower()
+            # If lecture has year/div, it must be found within the student's normalized class context
             if l_class_year and l_class_year not in student_class:
                 continue
             if l_class_div and l_class_div not in student_class:
@@ -833,9 +858,13 @@ def faculty_class_students():
                 cd = json.loads(raw_cd) if raw_cd else {}
             except Exception:
                 cd = {}
-            student_class = str(cd.get("class_section") or cd.get("class") or "").strip().lower()
-            year_ok = (not class_year) or (class_year.lower() in student_class)
-            div_ok  = (not division)   or (division.lower()   in student_class)
+            
+            s_year = str(cd.get('class_year') or cd.get('year') or '').strip().lower()
+            s_div  = str(cd.get('division') or cd.get('Division') or '').strip().lower()
+            s_class = str(cd.get('class_section') or cd.get('class') or '').strip().lower()
+            
+            year_ok = (not class_year) or (class_year.lower() in s_year) or (class_year.lower() in s_class)
+            div_ok  = (not division)   or (division.lower()   in s_div)  or (division.lower()   in s_class)
             if year_ok and div_ok:
                 filtered.append((fid, fname))
         if filtered:
@@ -845,159 +874,6 @@ def faculty_class_students():
 
     students = [{"id": str(r[0]), "name": r[1] or ""} for r in rows]
     return jsonify({"students": students})
-
-
-@bulk_attendance_bp.route("/bulk-attendance/faculty/download-students", methods=["GET"])
-@require_auth()
-def faculty_download_students():
-    """Return full face data for all students across the faculty's assigned classes.
-
-    This is like sync/download but scoped to the faculty's classes.
-    Response: {faces: [{id, name, templates, face_image, image_url, phone, department, designation, shift, custom_data}]}
-    """
-    if g.user_role not in ("faculty", "vendor_admin", "super_admin"):
-        return jsonify({"error": "Forbidden"}), 403
-
-    vendor_id = g.vendor_id
-    username  = g.username
-
-    conn  = get_db_connection()
-    c     = conn.cursor()
-    is_pg = getattr(conn, "_is_pg", False)
-    ph    = "%s" if is_pg else "?"
-
-    # 1. Get the faculty's assigned classes via mapped_subjects
-    c.execute(
-        f"SELECT class_year, division, mapped_subjects "
-        f"FROM classes WHERE vendor_id = {ph} ORDER BY class_year, division",
-        (vendor_id,)
-    )
-    class_rows = c.fetchall() or []
-
-    assigned_classes = []  # list of (class_year, division)
-    for r in class_rows:
-        try:
-            ms = json.loads(r[2]) if r[2] else []
-        except Exception:
-            ms = []
-
-        if g.user_role == "faculty":
-            def _fm(mf):
-                a = (mf or "").lower().strip(); b = username.lower().strip()
-                return a == b or a.split("@")[0] == b.split("@")[0] or a.split("@")[0] == b or a == b.split("@")[0]
-            if not any(_fm(m.get("faculty", "")) for m in ms):
-                continue
-        assigned_classes.append((r[0] or "", r[1] or ""))
-
-    # 2. Fallback: check lectures table for classes this teacher has taught
-    if not assigned_classes:
-        c.execute(
-            f"SELECT DISTINCT class_year, division FROM lectures "
-            f"WHERE teacher = {ph} AND vendor_id = {ph}",
-            (username, vendor_id),
-        )
-        for lr in (c.fetchall() or []):
-            cy = (lr[0] or "").strip()
-            dv = (lr[1] or "").strip()
-            if cy:
-                assigned_classes.append((cy, dv))
-
-    # 3. Final fallback: return ALL vendor faces if no class match at all
-    if not assigned_classes:
-        c.execute(
-            f"SELECT * FROM faces WHERE vendor_id = {ph} ORDER BY name",
-            (vendor_id,),
-        )
-        rows = c.fetchall() or []
-        faces = []
-        for row in rows:
-            r = dict(row) if hasattr(row, 'keys') else {}
-            if not r:
-                continue
-            face_item = {
-                "id":          r.get("id"),
-                "display_id":  r.get("display_id") or r.get("id"),
-                "name":        r.get("name"),
-                "templates":   r.get("templates"),
-                "face_image":  r.get("face_image"),
-                "phone":       r.get("phone", ""),
-                "department":  r.get("department", ""),
-                "designation": r.get("designation", ""),
-                "shift":       r.get("shift", ""),
-                "custom_data": json.loads(r["custom_data"]) if r.get("custom_data") else {},
-            }
-            try:
-                fi = face_item["face_image"]
-                if fi and isinstance(fi, str) and fi.startswith("s3://"):
-                    from routes.faces import presigned_url_for_key
-                    url = presigned_url_for_key(fi)
-                    face_item["face_image"] = ""
-                    face_item["image_url"]  = url
-            except Exception:
-                pass
-            faces.append(face_item)
-        conn.close()
-        return jsonify({"faces": faces})
-
-    # 4. Fetch faces matching the assigned classes via custom_data JSON fields
-    #    Students are linked to classes through custom_data.class_year / custom_data.division
-    faces = []
-    seen_ids = set()
-    for cy, div in assigned_classes:
-        if is_pg:
-            # PostgreSQL: use JSON operators
-            sql = (
-                f"SELECT * FROM faces WHERE vendor_id = {ph}"
-                f" AND LOWER(TRIM(custom_data::json->>'class_year')) = LOWER(TRIM({ph}))"
-            )
-            params = [vendor_id, cy]
-            if div:
-                sql += f" AND LOWER(TRIM(custom_data::json->>'division')) = LOWER(TRIM({ph}))"
-                params.append(div)
-            sql += " ORDER BY name"
-            c.execute(sql, params)
-        else:
-            c.execute(
-                f"SELECT * FROM faces WHERE vendor_id = {ph} ORDER BY name",
-                (vendor_id,),
-            )
-        rows = c.fetchall() or []
-        for row in rows:
-            r = dict(row) if hasattr(row, 'keys') else {}
-            if not r:
-                continue
-            fid = r.get("id")
-            if fid in seen_ids:
-                continue
-            seen_ids.add(fid)
-            face_item = {
-                "id":          fid,
-                "display_id":  r.get("display_id") or fid,
-                "name":        r.get("name"),
-                "templates":   r.get("templates"),
-                "face_image":  r.get("face_image"),
-                "phone":       r.get("phone", ""),
-                "department":  r.get("department", ""),
-                "designation": r.get("designation", ""),
-                "shift":       r.get("shift", ""),
-                "custom_data": json.loads(r["custom_data"]) if r.get("custom_data") else {},
-            }
-            try:
-                fi = face_item["face_image"]
-                if fi and isinstance(fi, str) and fi.startswith("s3://"):
-                    from routes.faces import presigned_url_for_key
-                    url = presigned_url_for_key(fi)
-                    if url:
-                        face_item["image_url"] = url
-                elif fi and isinstance(fi, str) and fi.startswith("http"):
-                    face_item["image_url"] = fi
-            except Exception:
-                pass
-            faces.append(face_item)
-
-    conn.close()
-    logger.info(f"Faculty {username}: download-students returning {len(faces)} faces across {len(assigned_classes)} classes")
-    return jsonify({"faces": faces})
 
 
 @bulk_attendance_bp.route("/bulk-attendance/faculty/save-embedding", methods=["POST"])

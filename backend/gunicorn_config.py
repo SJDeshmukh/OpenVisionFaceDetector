@@ -1,11 +1,15 @@
 # gunicorn_config.py
 import os
+from dotenv import load_dotenv
+load_dotenv() # Load environmental variables from .env early
+
+os.environ["OBJC_DISABLE_INITIALIZE_FORK_SAFETY"] = "YES"
 
 port = os.environ.get("PORT", "5001")
 bind = f"0.0.0.0:{port}"
 workers = 1
-worker_class = "eventlet"
-threads = 100
+worker_class = "gthread"
+threads = 4
 timeout = 120
 keepalive = 5
 loglevel = "info"
@@ -15,7 +19,7 @@ capture_output = True
 
 # Ensure the database and migrations are run on startup
 def on_starting(server):
-    print("Starting Gunicorn with eventlet worker...")
+    print("Starting Gunicorn with gthread worker...")
     try:
         import db_factory
         import migrate_to_postgres

@@ -1993,7 +1993,7 @@ def list_archived_vendors():
 def generate_invoice(vendor_id):
     from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
-    import eventlet
+    import threading
     is_async = request.args.get('async') == 'true'
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
@@ -2023,6 +2023,20 @@ def generate_invoice(vendor_id):
     device_cost_total = billed_device_count * cost_per_user
     
     monthly_cost = employee_cost_total + device_cost_total
+    
+    # Check for Setup Fee
+    setup_fee = 0
+    if sub['setup_fee'] and not sub['setup_fee_paid']:
+        setup_fee = sub['setup_fee']
+        
+    total_amount = monthly_cost + setup_fee
+    
+    # Check for Setup Fee
+    setup_fee = 0
+    if sub['setup_fee'] and not sub['setup_fee_paid']:
+        setup_fee = sub['setup_fee']
+        
+    total_amount = monthly_cost + setup_fee
     
     # Check for Setup Fee
     setup_fee = 0
@@ -2067,7 +2081,7 @@ def generate_invoice(vendor_id):
                 socketio.emit('job_completed', {'job_id': job_id, 'type': 'invoice_generate', 'vendor_id': vendor_id})
             except Exception as e:
                 fail_job(job_id, e)
-        eventlet.spawn_n(_bg)
+        threading.Thread(target=_bg, daemon=True).start()
         return jsonify({"success": True, "job_id": job_id, "processing": True})
     return jsonify({"success": True, "message": "Invoice Generated", "amount": total_amount})
 
