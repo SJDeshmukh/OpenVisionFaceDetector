@@ -95,15 +95,62 @@ def _unassign_faculty_from_classes(c, conn, vendor_id, usernames):
 
 
 def reindex_vendor_faces(conn, vendor_id):
-    """Re-assigns display_id for all faces in a vendor to be gapless [1, 2, 3...]."""
+    """Re-assigns display_id for all faces in a vendor, grouped by class and faculty, starting from 1."""
     if not vendor_id:
         return
+    import json
     c = conn.cursor()
-    # Get all faces for this vendor ordered by creation (id)
-    c.execute("SELECT id FROM faces WHERE vendor_id = ? ORDER BY id ASC", (vendor_id,))
-    faces = [r[0] for r in c.fetchall()]
-    for idx, fid in enumerate(faces):
-        c.execute("UPDATE faces SET display_id = ? WHERE id = ?", (idx + 1, fid))
+    
+    # 1. Get all faculty person_ids to distinguish them
+    c.execute("SELECT person_id FROM system_users WHERE vendor_id = ? AND role = 'faculty'", (vendor_id,))
+    faculty_person_ids = {r[0] for r in c.fetchall() if r[0]}
+    
+    # 2. Get all faces for this vendor
+    is_pg = getattr(conn, "_is_pg", False)
+    if is_pg:
+        c.execute("SELECT id, custom_data FROM faces WHERE vendor_id = %s ORDER BY id ASC", (vendor_id,))
+    else:
+        c.execute("SELECT id, custom_data FROM faces WHERE vendor_id = ? ORDER BY id ASC", (vendor_id,))
+    all_faces = c.fetchall()
+    
+    # Groups: { "faculty": [], "class:year:div": [], "unassigned": [] }
+    groups = {}
+    
+    for row in all_faces:
+        fid = row[0]
+        raw_cd = row[1]
+        
+        if fid in faculty_person_ids:
+            group_key = "faculty"
+        else:
+            try:
+                # Handle both string and dict/json types for custom_data
+                if isinstance(raw_cd, str):
+                    cd = json.loads(raw_cd) if raw_cd else {}
+                else:
+                    cd = raw_cd or {}
+                    
+                year = str(cd.get('class_year') or cd.get('year') or '').strip().lower()
+                div  = str(cd.get('division')  or cd.get('Division') or '').strip().lower()
+                if year or div:
+                    group_key = f"class:{year}:{div}"
+                else:
+                    group_key = "unassigned"
+            except:
+                group_key = "unassigned"
+        
+        if group_key not in groups:
+            groups[group_key] = []
+        groups[group_key].append(fid)
+
+    # 3. Re-index each group starting from 1
+    for group_key, fids in groups.items():
+        for idx, fid in enumerate(fids):
+            if is_pg:
+                c.execute("UPDATE faces SET display_id = %s WHERE id = %s", (idx + 1, fid))
+            else:
+                c.execute("UPDATE faces SET display_id = ? WHERE id = ?", (idx + 1, fid))
+            
     conn.commit()
 
 def vendor_required(f):
