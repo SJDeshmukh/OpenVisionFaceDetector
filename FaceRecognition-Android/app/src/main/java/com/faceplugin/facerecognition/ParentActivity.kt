@@ -1,11 +1,14 @@
 package com.faceplugin.facerecognition
 
 import android.Manifest
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -31,6 +34,16 @@ import retrofit2.Response
 class ParentActivity : AppCompatActivity() {
 
     private var currentNavId = R.id.nav_home
+    private val TAG = "ParentActivity"
+
+    private val authFailureReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (MyGlobal.ACTION_AUTH_FAILURE == intent.action) {
+                Log.w(TAG, "Auth failure detected, redirecting to Login")
+                performLogout()
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -78,10 +91,17 @@ class ParentActivity : AppCompatActivity() {
 
         scheduleParentNotifications()
         ensureNotificationPermission()
-        // Keep FCM token current (token may have rotated since last login)
         AppFirebaseMessagingService.registerCurrentToken(this)
         // Start persistent socket listener for real-time notifications
         AttendanceListenerService.start(this)
+        
+        val filter = IntentFilter(MyGlobal.ACTION_AUTH_FAILURE)
+        ContextCompat.registerReceiver(this, authFailureReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        try { unregisterReceiver(authFailureReceiver) } catch (_: Exception) {}
     }
 
     private fun loadFragment(fragment: Fragment) {

@@ -201,26 +201,31 @@ import java.util.concurrent.CopyOnWriteArrayList;
     public java.util.List<android.util.Pair<Integer, com.google.gson.JsonObject>> getUnsyncedFacultyAttendance() {
         java.util.List<android.util.Pair<Integer, com.google.gson.JsonObject>> list = new java.util.ArrayList<>();
         SQLiteDatabase db = this.getReadableDatabase();
-        Cursor c = db.rawQuery("SELECT id, lecture_id, person_id, student_name, timestamp, status, confidence, image FROM faculty_attendance_queue WHERE synced = 0", null);
-        while (c.moveToNext()) {
-            int rowId = c.getInt(0);
-            com.google.gson.JsonObject rec = new com.google.gson.JsonObject();
-            rec.addProperty("lecture_id",  c.getInt(1));
-            rec.addProperty("person_id",   c.getString(2));
-            rec.addProperty("student_name",c.getString(3));
-            rec.addProperty("timestamp",   c.getString(4));
-            rec.addProperty("status",      c.getString(5));
-            rec.addProperty("confidence",  c.getFloat(6));
-            
-            byte[] imgBlob = c.getBlob(7);
-            if (imgBlob != null && imgBlob.length > 0) {
-                String b64 = "data:image/jpeg;base64," + android.util.Base64.encodeToString(imgBlob, android.util.Base64.NO_WRAP);
-                rec.addProperty("image", b64);
-            }
+        Cursor c = null;
+        try {
+            c = db.rawQuery("SELECT id, lecture_id, person_id, student_name, timestamp, status, confidence, image FROM faculty_attendance_queue WHERE synced = 0", null);
+            while (c != null && c.moveToNext()) {
+                int rowId = c.getInt(0);
+                com.google.gson.JsonObject rec = new com.google.gson.JsonObject();
+                rec.addProperty("lecture_id",  c.getInt(1));
+                rec.addProperty("person_id",   c.getString(2));
+                rec.addProperty("student_name",c.getString(3));
+                rec.addProperty("timestamp",   c.getString(4));
+                rec.addProperty("status",      c.getString(5));
+                rec.addProperty("confidence",  c.getFloat(6));
+                
+                byte[] imgBlob = c.getBlob(7);
+                if (imgBlob != null && imgBlob.length > 0) {
+                    String b64 = "data:image/jpeg;base64," + android.util.Base64.encodeToString(imgBlob, android.util.Base64.NO_WRAP);
+                    rec.addProperty("image", b64);
+                }
 
-            list.add(new android.util.Pair<>(rowId, rec));
+                list.add(new android.util.Pair<>(rowId, rec));
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (c != null) try { c.close(); } catch (Exception ignored) {}
         }
-        c.close();
         return list;
     }
 
@@ -232,12 +237,16 @@ import java.util.concurrent.CopyOnWriteArrayList;
     }
 
     public int getUnsyncedFacultyCount() {
-        SQLiteDatabase db = this.getReadableDatabase();
-        Cursor c = db.rawQuery("SELECT COUNT(*) FROM faculty_attendance_queue WHERE synced = 0", null);
-        int count = 0;
-        if (c.moveToFirst()) count = c.getInt(0);
-        c.close();
-        return count;
+        try {
+            SQLiteDatabase db = this.getReadableDatabase();
+            Cursor c = db.rawQuery("SELECT COUNT(*) FROM faculty_attendance_queue WHERE synced = 0", null);
+            int count = 0;
+            if (c != null && c.moveToFirst()) count = c.getInt(0);
+            if (c != null) c.close();
+            return count;
+        } catch (Exception ignored) {
+            return 0;
+        }
     }
 
     private String ensureLocalUid(String localUid) {

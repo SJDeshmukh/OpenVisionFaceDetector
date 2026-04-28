@@ -9,6 +9,7 @@ import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
 import com.faceplugin.facerecognition.api.RetrofitClient
 import com.google.android.material.bottomnavigation.BottomNavigationView
+import androidx.core.content.ContextCompat
 
 class FacultyActivity : AppCompatActivity() {
 
@@ -58,7 +59,8 @@ class FacultyActivity : AppCompatActivity() {
             nav.selectedItemId = R.id.fnav_home
         }
         
-        registerReceiver(authFailureReceiver, IntentFilter(MyGlobal.ACTION_AUTH_FAILURE))
+        val filter = IntentFilter(MyGlobal.ACTION_AUTH_FAILURE)
+        ContextCompat.registerReceiver(this, authFailureReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         Log.i(TAG, "FacultyActivity ready")
     }
 

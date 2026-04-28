@@ -1028,13 +1028,15 @@ def download_faces():
     conn = get_db_connection()
     set_row_factory(conn)
     c = conn.cursor()
+    is_pg = getattr(conn, "_is_pg", False)
     
     query = """
         SELECT f.*, su.role as system_role
         FROM faces f
         LEFT JOIN system_users su ON f.id = su.person_id
     """
-    params = []
+    from typing import Any, List
+    params: List[Any] = []
     
     if vendor_id:
         if g.user_role == 'faculty':
@@ -1058,11 +1060,11 @@ def download_faces():
             params.append(vendor_id)
             
             # Build a filter that matches ANY of the assigned classes
-            is_pg = getattr(conn, "_is_pg", False)
+            ph = "%s" if is_pg else "?"
             class_filters = []
             for y, d, b in assigned_classes:
                 if is_pg:
-                    f = "( (f.custom_data::jsonb->>'class_year' = ? OR f.custom_data::jsonb->>'Year' = ?) AND (f.custom_data::jsonb->>'division' = ? OR f.custom_data::jsonb->>'Division' = ?) AND (f.custom_data::jsonb->>'branch' = ? OR f.custom_data::jsonb->>'Branch' = ?) )"
+                    f = f"( (f.custom_data::jsonb->>'class_year' = {ph} OR f.custom_data::jsonb->>'Year' = {ph}) AND (f.custom_data::jsonb->>'division' = {ph} OR f.custom_data::jsonb->>'Division' = {ph}) AND (f.custom_data::jsonb->>'branch' = {ph} OR f.custom_data::jsonb->>'Branch' = {ph}) )"
                     class_filters.append(f)
                     params.extend([str(y), str(y), str(d), str(d), str(b), str(b)])
                 else:

@@ -249,7 +249,6 @@ def create_lecture():
     lecture_id = c.lastrowid
     conn.close()
     return jsonify({"status": "created", "lecture_id": lecture_id}), 201
-    return jsonify({"status": "created", "lecture_id": lecture_id}), 201
 
 
 @bulk_attendance_bp.route("/bulk-attendance/lectures/<int:lecture_id>", methods=["GET"])
