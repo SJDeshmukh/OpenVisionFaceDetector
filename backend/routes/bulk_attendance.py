@@ -8,6 +8,9 @@ Bulk Attendance (Lecture-based) routes
 import json
 import sqlite3
 import logging
+import uuid as _uuid
+import threading as _threading
+import time as _time
 from flask import Blueprint, request, jsonify, g, current_app
 from datetime import datetime
 from services.auth_service import authenticate_vendor_access, require_auth, verify_token, extract_token
@@ -16,6 +19,57 @@ from utils import cache_delete_vendor_prefix
 
 logger = logging.getLogger(__name__)
 bulk_attendance_bp = Blueprint('bulk_attendance', __name__)
+
+# ── Async scan job store ───────────────────────────────────────────────────────
+_SCAN_JOBS: dict = {}
+_SCAN_JOBS_LOCK = _threading.Lock()
+
+
+def _cleanup_scan_jobs():
+    now = _time.time()
+    with _SCAN_JOBS_LOCK:
+        expired = [k for k, v in _SCAN_JOBS.items() if now - v.get("created_at", 0) > 600]
+        for k in expired:
+            del _SCAN_JOBS[k]
+
+
+def _run_scan_job(job_id: str, raw: bytes, params: dict, vendor_id: int):
+    try:
+        from services.face_service import _detect_faces_from_bytes
+        faces_raw, _ = _detect_faces_from_bytes(raw, params, vendor_id)
+    except Exception as exc:
+        logger.warning("async scan job %s error: %s", job_id, exc)
+        faces_raw = []
+
+    results = []
+    for face in faces_raw:
+        suggestions = face.get("suggestions") or []
+        if suggestions:
+            best       = suggestions[0]
+            person_id  = best.get("person_id")
+            name       = best.get("name") or "Unknown"
+            confidence = round(float(best.get("similarity", 0.0)) * 100, 1)
+            matched    = True
+        else:
+            person_id  = None
+            name       = "Unknown"
+            confidence = 0.0
+            matched    = False
+        face_thumb = (face.get("thumbs") or {}).get("face") or ""
+        emb_vec    = face.get("emb_vec") or ""
+        results.append({
+            "person_id":  str(person_id) if person_id is not None else None,
+            "name":       name,
+            "confidence": confidence,
+            "matched":    matched,
+            "face_thumb": face_thumb,
+            "emb_vec":    emb_vec,
+        })
+
+    with _SCAN_JOBS_LOCK:
+        if job_id in _SCAN_JOBS:
+            _SCAN_JOBS[job_id]["status"] = "done"
+            _SCAN_JOBS[job_id]["faces"]  = results
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -667,10 +721,10 @@ def faculty_sync_attendance():
 @bulk_attendance_bp.route("/bulk-attendance/faculty/scan", methods=["POST"])
 @require_auth()
 def faculty_scan_image():
-    """Faculty submits a photo; server runs fast-mode face detection and returns matches.
+    """Faculty submits a photo; starts async detection, returns job_id immediately.
 
     POST  {image: base64_str, lecture_id: int (optional)}
-    Returns {faces: [{person_id, name, confidence, matched, face_thumb}], count}
+    Returns {job_id, status: "processing"}  — poll /scan/status/<job_id>
     """
     import base64 as _b64
 
@@ -697,35 +751,141 @@ def faculty_scan_image():
 
     params = {"fast": True, "crop_mode": "Portrait", "det_max_side": 1280}
 
+    _cleanup_scan_jobs()
+    job_id = str(_uuid.uuid4())
+    with _SCAN_JOBS_LOCK:
+        _SCAN_JOBS[job_id] = {"status": "processing", "faces": [], "created_at": _time.time()}
+
+    t = _threading.Thread(target=_run_scan_job, args=(job_id, raw, params, vendor_id), daemon=True)
+    t.start()
+
+    return jsonify({"job_id": job_id, "status": "processing"})
+
+
+@bulk_attendance_bp.route("/bulk-attendance/faculty/scan/status/<job_id>", methods=["GET"])
+@require_auth()
+def faculty_scan_status(job_id):
+    """Poll for async scan result.
+
+    Returns {status: "processing"} or {status: "done", faces: [...], count: N}
+    """
+    if g.user_role not in ("faculty", "vendor_admin", "super_admin"):
+        return jsonify({"error": "Faculty access required"}), 403
+
+    with _SCAN_JOBS_LOCK:
+        job = dict(_SCAN_JOBS.get(job_id, {}))
+
+    if not job:
+        return jsonify({"error": "Job not found or expired"}), 404
+
+    if job["status"] == "processing":
+        return jsonify({"status": "processing"})
+
+    return jsonify({"status": "done", "faces": job["faces"], "count": len(job["faces"])})
+
+
+@bulk_attendance_bp.route("/bulk-attendance/faculty/class-students", methods=["GET"])
+@require_auth()
+def faculty_class_students():
+    """Return students in a specific class/division (for relabeling UI).
+
+    GET ?class_year=FY&division=A
+    Returns {students: [{id, name}]}
+    """
+    if g.user_role not in ("faculty", "vendor_admin", "super_admin"):
+        return jsonify({"error": "Forbidden"}), 403
+
+    vendor_id  = g.vendor_id
+    class_year = request.args.get("class_year", "").strip()
+    division   = request.args.get("division", "").strip()
+
+    conn   = get_db_connection()
+    c      = conn.cursor()
+    is_pg  = getattr(conn, "_is_pg", False)
+    ph     = "%s" if is_pg else "?"
+
+    c.execute(
+        f"""SELECT DISTINCT pe.person_id, f.name
+            FROM person_embeddings pe
+            JOIN faces f ON f.id = pe.person_id
+            WHERE pe.vendor_id = {ph}
+              AND LOWER(TRIM(pe.class_year)) = LOWER(TRIM({ph}))
+              AND LOWER(TRIM(pe.division))   = LOWER(TRIM({ph}))
+            ORDER BY f.name""",
+        (vendor_id, class_year, division),
+    )
+    rows = c.fetchall() or []
+    conn.close()
+
+    students = [{"id": str(r[0]), "name": r[1] or ""} for r in rows]
+    return jsonify({"students": students})
+
+
+@bulk_attendance_bp.route("/bulk-attendance/faculty/save-embedding", methods=["POST"])
+@require_auth()
+def faculty_save_embedding():
+    """Store a corrected face embedding (faculty relabels a student).
+
+    POST {person_id, emb_vec: base64(float32 bytes)}
+    """
+    import base64 as _b64, numpy as _np
+
+    if g.user_role not in ("faculty", "vendor_admin", "super_admin"):
+        return jsonify({"error": "Forbidden"}), 403
+
+    vendor_id    = g.vendor_id
+    data         = request.get_json(silent=True) or {}
+    person_id    = data.get("person_id")
+    emb_vec_b64  = data.get("emb_vec")
+
+    if not person_id or not emb_vec_b64:
+        return jsonify({"error": "person_id and emb_vec required"}), 400
+
     try:
-        from services.face_service import _detect_faces_from_bytes
-        faces_raw, _ = _detect_faces_from_bytes(raw, params, vendor_id)
-    except Exception as exc:
-        logger.warning("faculty_scan_image detection error: %s", exc)
-        faces_raw = []  # return empty result instead of crashing
+        vec_bytes = _b64.b64decode(emb_vec_b64)
+        emb       = _np.frombuffer(vec_bytes, dtype=_np.float32).copy()
+        if emb.size == 0:
+            return jsonify({"error": "empty embedding"}), 400
+    except Exception:
+        return jsonify({"error": "invalid emb_vec encoding"}), 400
 
-    results = []
-    for face in faces_raw:
-        suggestions = face.get("suggestions") or []
-        if suggestions:
-            best       = suggestions[0]
-            person_id  = best.get("person_id")
-            name       = best.get("name") or "Unknown"
-            confidence = round(float(best.get("similarity", 0.0)) * 100, 1)
-            matched    = True
-        else:
-            person_id  = None
-            name       = "Unknown"
-            confidence = 0.0
-            matched    = False
+    conn   = get_db_connection()
+    c      = conn.cursor()
+    is_pg  = getattr(conn, "_is_pg", False)
+    ph     = "%s" if is_pg else "?"
 
-        face_thumb = (face.get("thumbs") or {}).get("face") or ""
-        results.append({
-            "person_id":  str(person_id) if person_id is not None else None,
-            "name":       name,
-            "confidence": confidence,
-            "matched":    matched,
-            "face_thumb": face_thumb,
-        })
+    c.execute(f"SELECT id FROM faces WHERE id = {ph} AND vendor_id = {ph}", (person_id, vendor_id))
+    if not c.fetchone():
+        conn.close()
+        return jsonify({"error": "Person not found"}), 404
 
-    return jsonify({"faces": results, "count": len(results), "lecture_id": data.get("lecture_id")})
+    c.execute(f"SELECT class_year, division, branch FROM person_embeddings WHERE person_id = {ph} LIMIT 1", (person_id,))
+    row = c.fetchone()
+    class_year = row[0] if row else ""
+    division   = row[1] if row else ""
+    branch     = row[2] if row else ""
+
+    vec_blob = emb.astype(_np.float32).tobytes()
+    dim      = int(emb.size)
+    now      = datetime.now().isoformat()
+
+    if is_pg:
+        c.execute(
+            """INSERT INTO person_embeddings
+               (vendor_id, person_id, class_year, division, branch, vec, dim, created_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+            (vendor_id, person_id, class_year, division, branch, vec_blob, dim, now),
+        )
+    else:
+        c.execute(
+            """INSERT INTO person_embeddings
+               (vendor_id, person_id, class_year, division, branch, vec, dim, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (vendor_id, person_id, class_year, division, branch, vec_blob, dim, now),
+        )
+
+    conn.commit()
+    conn.close()
+    cache_delete_vendor_prefix(vendor_id)
+
+    return jsonify({"success": True})

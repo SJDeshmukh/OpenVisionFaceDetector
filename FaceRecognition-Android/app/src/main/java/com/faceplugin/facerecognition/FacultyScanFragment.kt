@@ -11,6 +11,8 @@ import android.graphics.ImageFormat
 import android.graphics.Rect
 import android.graphics.YuvImage
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Base64
 import android.util.Log
 import android.view.GestureDetector
@@ -84,6 +86,7 @@ class FacultyScanFragment : Fragment() {
     private lateinit var btnEndSession: Button
     private lateinit var tvPhotosHeader: TextView
     private lateinit var rvPhotoGrid: RecyclerView
+    private lateinit var btnMarkAll: Button
 
     // Data
     private val photoCards = mutableListOf<PhotoCard>()
@@ -101,11 +104,14 @@ class FacultyScanFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
         bindViews(view)
 
+        // Re-attach adapter to new RecyclerView (view is recreated on tab switch, data persists)
         photoAdapter = PhotoCardAdapter(photoCards) { card -> showCardDetail(card) }
         rvPhotoGrid.layoutManager = GridLayoutManager(requireContext(), 3)
         rvPhotoGrid.adapter = photoAdapter
 
         updateSessionLabel()
+        updatePhotosHeader()
+        refreshMarkAllVisibility()
         setupZoom()
         setupPinchZoom()
 
@@ -115,7 +121,6 @@ class FacultyScanFragment : Fragment() {
 
         val uriStr = arguments?.getString("image_uri")
         if (uriStr != null) {
-            // Opened from gallery picker — show session picker first, then import
             if (FacultySessionManager.currentSession == null) {
                 showSessionPicker { importGalleryImage(android.net.Uri.parse(uriStr)) }
             } else {
@@ -132,9 +137,15 @@ class FacultyScanFragment : Fragment() {
     override fun onDestroyView() {
         super.onDestroyView()
         cameraProvider?.unbindAll()
+        // Do NOT clear photoCards/allFaces — fragment is cached across tab switches
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
         cameraExecutor.shutdown()
         photoCards.forEach { it.thumbnail?.recycle() }
         photoCards.clear()
+        allFaces.clear()
     }
 
     // ── Session picker ────────────────────────────────────────────────────────
@@ -295,7 +306,10 @@ class FacultyScanFragment : Fragment() {
                     classYear = classYear, division = division, date = today, teacher = teacher
                 )
                 FacultySessionManager.setSession(ctx, session)
-                requireActivity().runOnUiThread { updateSessionLabel(); startCamera(); afterStart?.invoke() }
+                requireActivity().runOnUiThread {
+                    clearScanState()
+                    updateSessionLabel(); startCamera(); afterStart?.invoke()
+                }
             }
             override fun onFailure(call: Call<JsonObject>, t: Throwable) {
                 if (!isAdded) return
@@ -306,6 +320,7 @@ class FacultyScanFragment : Fragment() {
                 FacultySessionManager.setSession(ctx, session)
                 requireActivity().runOnUiThread {
                     Toast.makeText(ctx, "Offline — session saved locally", Toast.LENGTH_SHORT).show()
+                    clearScanState()
                     updateSessionLabel(); startCamera(); afterStart?.invoke()
                 }
             }
@@ -401,7 +416,11 @@ class FacultyScanFragment : Fragment() {
                     return true
                 }
             })
-        previewView.setOnTouchListener { v, ev -> detector.onTouchEvent(ev); v.performClick(); false }
+        previewView.setOnTouchListener { v, ev ->
+            val consumed = detector.onTouchEvent(ev)
+            if (ev.action == MotionEvent.ACTION_UP && !detector.isInProgress) v.performClick()
+            consumed
+        }
     }
 
     inner class FrameGrabber : ImageAnalysis.Analyzer {
@@ -470,28 +489,14 @@ class FacultyScanFragment : Fragment() {
         RetrofitClient.getService().scanFacultyImage(body).enqueue(object : Callback<JsonObject> {
             override fun onResponse(call: Call<JsonObject>, resp: Response<JsonObject>) {
                 if (!isAdded) return
-                if (resp.isSuccessful) {
-                    if (rowId >= 0) db.updatePendingImageStatus(rowId, "uploaded")
-                    val facesArr = resp.body()?.getAsJsonArray("faces") ?: com.google.gson.JsonArray()
-                    val newFaces = mutableListOf<ScanResult>()
-                    for (el in facesArr) {
-                        val face       = el.asJsonObject
-                        val personId   = face.get("person_id")?.takeIf { !it.isJsonNull }?.asString
-                        val name       = face.get("name")?.asString ?: "Unknown"
-                        val confidence = face.get("confidence")?.asFloat ?: 0f
-                        val thumbB64   = face.get("face_thumb")?.asString ?: ""
-                        val faceThumb  = decodeThumb(thumbB64)
-                        newFaces.add(ScanResult(faceThumb, personId, name, confidence,
-                            if (personId != null) "present" else "unknown"))
-                        mergeIntoAllFaces(personId, name, confidence, faceThumb)
-                    }
-                    requireActivity().runOnUiThread {
-                        card.faces.addAll(newFaces)
-                        card.status = PhotoStatus.DONE
-                        updateCard(card)
-                    }
-                } else {
-                    requireActivity().runOnUiThread { card.status = PhotoStatus.ERROR; updateCard(card) }
+                val respBody = resp.body()
+                val jobId    = respBody?.get("job_id")?.takeIf { !it.isJsonNull }?.asString
+                when {
+                    resp.isSuccessful && jobId != null -> pollScanResult(card, jobId, db, rowId, 0)
+                    resp.isSuccessful && respBody?.has("faces") == true ->
+                        processDirectResponse(card, respBody, db, rowId)
+                    else ->
+                        requireActivity().runOnUiThread { card.status = PhotoStatus.ERROR; updateCard(card) }
                 }
             }
             override fun onFailure(call: Call<JsonObject>, t: Throwable) {
@@ -501,21 +506,81 @@ class FacultyScanFragment : Fragment() {
         })
     }
 
+    private fun pollScanResult(card: PhotoCard, jobId: String, db: DBManager, rowId: Long, attempt: Int) {
+        if (!isAdded) return
+        if (attempt >= 90) {  // 90 × 2 s = 3 min max
+            requireActivity().runOnUiThread { card.status = PhotoStatus.ERROR; updateCard(card) }
+            return
+        }
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (!isAdded) return@postDelayed
+            RetrofitClient.getService().getScanStatus(jobId).enqueue(object : Callback<JsonObject> {
+                override fun onResponse(call: Call<JsonObject>, resp: Response<JsonObject>) {
+                    if (!isAdded) return
+                    val body   = resp.body()
+                    val status = body?.get("status")?.asString
+                    when {
+                        status == "done" -> processDirectResponse(card, body!!, db, rowId)
+                        status == "processing" -> pollScanResult(card, jobId, db, rowId, attempt + 1)
+                        else -> requireActivity().runOnUiThread { card.status = PhotoStatus.ERROR; updateCard(card) }
+                    }
+                }
+                override fun onFailure(call: Call<JsonObject>, t: Throwable) {
+                    if (!isAdded) return
+                    // Retry on transient network errors
+                    pollScanResult(card, jobId, db, rowId, attempt + 1)
+                }
+            })
+        }, 2000L)
+    }
+
+    private fun processDirectResponse(card: PhotoCard, body: JsonObject, db: DBManager, rowId: Long) {
+        if (rowId >= 0) db.updatePendingImageStatus(rowId, "uploaded")
+        val facesArr = body.getAsJsonArray("faces") ?: com.google.gson.JsonArray()
+        val newFaces = mutableListOf<ScanResult>()
+        for (el in facesArr) {
+            val face       = el.asJsonObject
+            val personId   = face.get("person_id")?.takeIf { !it.isJsonNull }?.asString
+            val name       = face.get("name")?.asString ?: "Unknown"
+            val confidence = face.get("confidence")?.asFloat ?: 0f
+            val thumbB64   = face.get("face_thumb")?.asString ?: ""
+            val embVec     = face.get("emb_vec")?.takeIf { !it.isJsonNull }?.asString ?: ""
+            val faceThumb  = decodeThumb(thumbB64)
+            newFaces.add(ScanResult(faceThumb, personId, name, confidence,
+                if (personId != null) "present" else "unknown", embVec))
+            mergeIntoAllFaces(personId, name, confidence, faceThumb, embVec)
+        }
+        requireActivity().runOnUiThread {
+            card.faces.addAll(newFaces)
+            card.status = PhotoStatus.DONE
+            updateCard(card)
+            refreshMarkAllVisibility()
+        }
+    }
+
     private fun updateCard(card: PhotoCard) {
         val idx = photoCards.indexOf(card)
         if (idx >= 0) photoAdapter.notifyItemChanged(idx)
     }
 
     @Synchronized
-    private fun mergeIntoAllFaces(personId: String?, name: String, confidence: Float, thumb: Bitmap?) {
+    private fun mergeIntoAllFaces(personId: String?, name: String, confidence: Float, thumb: Bitmap?, embVec: String = "") {
         if (personId == null) return
         val idx = allFaces.indexOfFirst { it.personId == personId }
         if (idx >= 0) {
-            if (confidence > allFaces[idx].confidence)
-                allFaces[idx] = allFaces[idx].copy(faceBitmap = thumb ?: allFaces[idx].faceBitmap, confidence = confidence)
+            if (confidence > allFaces[idx].confidence) {
+                val updated = allFaces[idx].copy(faceBitmap = thumb ?: allFaces[idx].faceBitmap, confidence = confidence)
+                if (embVec.isNotBlank()) updated.embVec = embVec
+                allFaces[idx] = updated
+            }
         } else {
-            allFaces.add(ScanResult(thumb, personId, name, confidence, "present"))
+            allFaces.add(ScanResult(thumb, personId, name, confidence, "present", embVec))
         }
+    }
+
+    private fun refreshMarkAllVisibility() {
+        val hasIdentified = allFaces.any { !it.personId.isNullOrBlank() }
+        btnMarkAll.visibility = if (hasIdentified) View.VISIBLE else View.GONE
     }
 
     // ── Capture animation ─────────────────────────────────────────────────────
@@ -577,6 +642,8 @@ class FacultyScanFragment : Fragment() {
                 orientation = LinearLayout.HORIZONTAL
                 gravity     = android.view.Gravity.CENTER_VERTICAL
                 setPadding(0, 10, 0, 10)
+                isClickable  = true
+                isFocusable  = true
             }
             val thumbPx = (64 * resources.displayMetrics.density).toInt()
             val iv = android.widget.ImageView(ctx).apply {
@@ -613,7 +680,13 @@ class FacultyScanFragment : Fragment() {
                         ?.let { i -> allFaces[i] = allFaces[i].copy(status = face.status) }
                 }
             }
-            col.addView(tvName); col.addView(tvConf); col.addView(tvToggle)
+            val tvRelabel = TextView(ctx).apply {
+                text = "✏ Relabel"; textSize = 11f
+                setTextColor(0xFF80D8FF.toInt())
+                setPadding(0, 4, 0, 0)
+                setOnClickListener { showRelabelDialog(face) }
+            }
+            col.addView(tvName); col.addView(tvConf); col.addView(tvToggle); col.addView(tvRelabel)
             row.addView(col)
             inner.addView(row)
 
@@ -634,6 +707,118 @@ class FacultyScanFragment : Fragment() {
 
     private fun statusLabel(s: String) = if (s == "present") "✓ Present (tap to mark absent)" else "✗ Absent (tap to mark present)"
     private fun statusColor(s: String) = if (s == "present") 0xFF4CAF50.toInt() else 0xFFF44336.toInt()
+
+    // ── Relabel dialog ────────────────────────────────────────────────────────
+
+    private fun showRelabelDialog(face: ScanResult) {
+        val ctx     = requireContext()
+        val session = FacultySessionManager.currentSession ?: return
+        val loading = Toast.makeText(ctx, "Loading students…", Toast.LENGTH_SHORT)
+        loading.show()
+
+        RetrofitClient.getService().getClassStudents(session.classYear, session.division)
+            .enqueue(object : Callback<JsonObject> {
+                override fun onResponse(call: Call<JsonObject>, resp: Response<JsonObject>) {
+                    if (!isAdded) return
+                    loading.cancel()
+                    val arr      = resp.body()?.getAsJsonArray("students") ?: com.google.gson.JsonArray()
+                    val ids      = mutableListOf<String>()
+                    val names    = mutableListOf<String>()
+                    for (el in arr) {
+                        val s = el.asJsonObject
+                        ids.add(s.get("id")?.asString ?: "")
+                        names.add(s.get("name")?.asString ?: "")
+                    }
+                    if (ids.isEmpty()) {
+                        requireActivity().runOnUiThread {
+                            Toast.makeText(ctx, "No students found for this class", Toast.LENGTH_SHORT).show()
+                        }
+                        return
+                    }
+
+                    requireActivity().runOnUiThread {
+                        val spinner = Spinner(ctx)
+                        spinner.adapter = ArrayAdapter(ctx, android.R.layout.simple_spinner_dropdown_item, names)
+                        val currentIdx = ids.indexOfFirst { it == face.personId }.coerceAtLeast(0)
+                        spinner.setSelection(currentIdx)
+
+                        AlertDialog.Builder(ctx)
+                            .setTitle("Relabel Face")
+                            .setMessage("Select the correct student:")
+                            .setView(spinner)
+                            .setPositiveButton("Save") { _, _ ->
+                                val pickedIdx  = spinner.selectedItemPosition
+                                val pickedId   = ids[pickedIdx]
+                                val pickedName = names[pickedIdx]
+                                relabelAndSave(face, pickedId, pickedName)
+                            }
+                            .setNegativeButton("Cancel", null)
+                            .show()
+                    }
+                }
+                override fun onFailure(call: Call<JsonObject>, t: Throwable) {
+                    if (!isAdded) return
+                    loading.cancel()
+                    requireActivity().runOnUiThread {
+                        Toast.makeText(ctx, "Could not load students", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            })
+    }
+
+    private fun relabelAndSave(face: ScanResult, newPersonId: String, newPersonName: String) {
+        val ctx = requireContext()
+        val oldId = face.personId
+
+        // Update local state immediately
+        face.personId   = newPersonId
+        face.personName = newPersonName
+        val idx = allFaces.indexOfFirst { it.personId == oldId || it.personId == newPersonId }
+        if (idx >= 0) {
+            allFaces[idx] = allFaces[idx].copy().also {
+                it.personId   = newPersonId
+                it.personName = newPersonName
+            }
+        } else {
+            allFaces.add(face)
+        }
+
+        if (face.embVec.isBlank()) {
+            Toast.makeText(ctx, "Relabeled (no embedding to save)", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val body = JsonObject().apply {
+            addProperty("person_id", newPersonId)
+            addProperty("emb_vec",   face.embVec)
+        }
+        RetrofitClient.getService().saveFaceEmbedding(body).enqueue(object : Callback<JsonObject> {
+            override fun onResponse(call: Call<JsonObject>, resp: Response<JsonObject>) {
+                if (!isAdded) return
+                requireActivity().runOnUiThread {
+                    if (resp.isSuccessful)
+                        Toast.makeText(ctx, "Relabeled & embedding saved", Toast.LENGTH_SHORT).show()
+                    else
+                        Toast.makeText(ctx, "Relabeled locally (sync failed)", Toast.LENGTH_SHORT).show()
+                }
+            }
+            override fun onFailure(call: Call<JsonObject>, t: Throwable) {
+                if (!isAdded) return
+                requireActivity().runOnUiThread {
+                    Toast.makeText(ctx, "Relabeled locally (offline)", Toast.LENGTH_SHORT).show()
+                }
+            }
+        })
+    }
+
+    // ── Mark All Present ──────────────────────────────────────────────────────
+
+    private fun markAllPresent() {
+        allFaces.forEach { it.status = "present" }
+        // Sync into photo card faces too
+        photoCards.forEach { card -> card.faces.forEach { f -> f.status = "present" } }
+        Toast.makeText(requireContext(), "Marked all ${allFaces.size} student(s) present", Toast.LENGTH_SHORT).show()
+    }
 
     // ── End session ───────────────────────────────────────────────────────────
 
@@ -711,6 +896,15 @@ class FacultyScanFragment : Fragment() {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    private fun clearScanState() {
+        photoCards.forEach { it.thumbnail?.recycle() }
+        photoCards.clear()
+        allFaces.clear()
+        photoAdapter.notifyDataSetChanged()
+        refreshMarkAllVisibility()
+        updatePhotosHeader()
+    }
+
     private fun updateSessionLabel() {
         tvScanSession.text = FacultySessionManager.currentSession?.displayLabel ?: "No session"
     }
@@ -762,6 +956,8 @@ class FacultyScanFragment : Fragment() {
         btnEndSession   = v.findViewById(R.id.btn_end_session)
         tvPhotosHeader  = v.findViewById(R.id.tv_photos_header)
         rvPhotoGrid     = v.findViewById(R.id.rv_photo_grid)
+        btnMarkAll      = v.findViewById(R.id.btn_mark_all)
+        btnMarkAll.setOnClickListener { markAllPresent() }
     }
 
     @Deprecated("Deprecated in Java")
@@ -824,10 +1020,11 @@ class PhotoCardAdapter(
 
 data class ScanResult(
     val faceBitmap: Bitmap?,
-    val personId:   String?,
-    val personName: String,
+    var personId:   String?,
+    var personName: String,
     val confidence: Float,
-    var status:     String = "present"
+    var status:     String = "present",
+    var embVec:     String = ""
 )
 
 class ScanResultAdapter(

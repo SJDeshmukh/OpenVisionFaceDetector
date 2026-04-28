@@ -13,18 +13,23 @@ class FacultyActivity : AppCompatActivity() {
 
     private lateinit var nav: BottomNavigationView
 
+    // Cache fragments so scan state (photos, faces) persists across tab switches
+    private val fragmentCache = mutableMapOf<Int, androidx.fragment.app.Fragment>()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_faculty)
 
         nav = findViewById(R.id.faculty_bottom_nav)
         nav.setOnItemSelectedListener { item ->
-            when (item.itemId) {
-                R.id.fnav_home    -> showFragment(FacultyHomeFragment())
-                R.id.fnav_scan    -> showFragment(FacultyScanFragment())
-                R.id.fnav_history -> showFragment(FacultyHistoryFragment())
-                R.id.fnav_profile -> showFragment(FacultyProfileFragment())
+            val frag = when (item.itemId) {
+                R.id.fnav_home    -> fragmentCache.getOrPut(R.id.fnav_home)    { FacultyHomeFragment() }
+                R.id.fnav_scan    -> fragmentCache.getOrPut(R.id.fnav_scan)    { FacultyScanFragment() }
+                R.id.fnav_history -> fragmentCache.getOrPut(R.id.fnav_history) { FacultyHistoryFragment() }
+                R.id.fnav_profile -> fragmentCache.getOrPut(R.id.fnav_profile) { FacultyProfileFragment() }
+                else -> return@setOnItemSelectedListener true
             }
+            showFragment(frag)
             true
         }
 
@@ -38,6 +43,7 @@ class FacultyActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        fragmentCache.clear()
         Log.i(TAG, "FacultyActivity destroyed")
     }
 
