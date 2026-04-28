@@ -137,6 +137,7 @@ def run_safe_migration():
         logger.error(f"Connection Failed: {e}")
         return False
     
+    success = True
     # Migration mappings: (table_name, sqlite_columns, pg_columns, conflict_col)
     tables = [
         ('vendors', 
@@ -175,20 +176,31 @@ def run_safe_migration():
         ('person_embeddings', ['id', 'vendor_id', 'person_id', 'class_year', 'division', 'branch', 'vec', 'dim', 'struct_vec', 'landmarks_3d', 'created_at'], None, 'id')
     ]
 
-    success = True
+    # Re-indexing Logic (Gapless display_id)
     try:
-        for table_name, columns, pg_columns, conflict_col in tables:
-            try:
-                migrate_table(sqlite_conn, pg_conn, table_name, columns, pg_columns, conflict_col)
-            except Exception as e:
-                logger.error(f"Failed to migrate table {table_name}: {e}")
-                success = False
-    finally:
-        sqlite_conn.close()
+        pg_conn = get_postgres_conn()
+        c_pg = pg_conn.cursor()
+        
+        logger.info("Starting global re-indexing of display_ids...")
+        c_pg.execute("SELECT DISTINCT vendor_id FROM faces")
+        vendor_ids = [r[0] for r in c_pg.fetchall() if r[0] is not None]
+        
+        for v_id in vendor_ids:
+            logger.info(f"  Re-indexing vendor {v_id}...")
+            c_pg.execute("SELECT id FROM faces WHERE vendor_id = %s ORDER BY id ASC", (v_id,))
+            faces = [r[0] for r in c_pg.fetchall()]
+            for idx, fid in enumerate(faces):
+                c_pg.execute("UPDATE faces SET display_id = %s WHERE id = %s", (idx + 1, fid))
+        
+        pg_conn.commit()
         pg_conn.close()
+        logger.info("Re-indexing complete.")
+    except Exception as e:
+        logger.error(f"Re-indexing failed: {e}")
+        success = False
 
     if success:
-        logger.info("Migration Complete Successfully.")
+        logger.info("Migration & Re-indexing Complete Successfully.")
     else:
         logger.warning("Migration completed with errors.")
     return success
