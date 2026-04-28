@@ -75,6 +75,7 @@ class FacultyScanFragment : Fragment() {
     private var useFrontCamera = false
     private var cameraControl: CameraControl? = null
     private var currentZoom = 0f
+    @Volatile private var cameraReady = false
 
     // Views
     private lateinit var previewView: PreviewView
@@ -86,7 +87,6 @@ class FacultyScanFragment : Fragment() {
     private lateinit var btnEndSession: Button
     private lateinit var tvPhotosHeader: TextView
     private lateinit var rvPhotoGrid: RecyclerView
-    private lateinit var btnMarkAll: Button
 
     // Data
     private val photoCards = mutableListOf<PhotoCard>()
@@ -134,10 +134,25 @@ class FacultyScanFragment : Fragment() {
         }
     }
 
+    override fun onHiddenChanged(hidden: Boolean) {
+        super.onHiddenChanged(hidden)
+        if (hidden) {
+            cameraProvider?.unbindAll()
+        } else {
+            // Fragment just became visible again
+            if (FacultySessionManager.currentSession == null) {
+                // Session was ended — show picker for new session
+                showSessionPicker(null)
+            } else {
+                startCamera()
+            }
+            updateSessionLabel()
+        }
+    }
+
     override fun onDestroyView() {
         super.onDestroyView()
         cameraProvider?.unbindAll()
-        // Do NOT clear photoCards/allFaces — fragment is cached across tab switches
     }
 
     override fun onDestroy() {
@@ -387,9 +402,12 @@ class FacultyScanFragment : Fragment() {
             .also { it.setAnalyzer(cameraExecutor, FrameGrabber()) }
         try {
             provider.unbindAll()
+            cameraReady = false
             val cam = provider.bindToLifecycle(viewLifecycleOwner, selector, preview, analyzer)
             cameraControl = cam.cameraControl
             cameraControl?.setLinearZoom(currentZoom)
+            // Allow camera auto-exposure/focus to stabilize
+            Handler(Looper.getMainLooper()).postDelayed({ cameraReady = true }, 800L)
         } catch (e: Exception) { Log.e(TAG, "Camera bind failed", e) }
     }
 
@@ -441,6 +459,9 @@ class FacultyScanFragment : Fragment() {
 
     private fun capturePhoto() {
         if (isCapturing) return
+        if (!cameraReady) {
+            Toast.makeText(context, "Camera warming up…", Toast.LENGTH_SHORT).show(); return
+        }
         val session = FacultySessionManager.currentSession
         if (session == null) { showSessionPicker(); return }
         val nv21 = latestNv21; val w = latestWidth; val h = latestHeight
@@ -474,7 +495,16 @@ class FacultyScanFragment : Fragment() {
                 isCapturing = false
             }
 
-            uploadCard(card, jpeg, rowId, db)
+            // Check connectivity — upload or save offline
+            if (NetworkUtils.isOnline(requireContext())) {
+                uploadCard(card, jpeg, rowId, db)
+            } else {
+                requireActivity().runOnUiThread {
+                    card.status = PhotoStatus.SAVED_OFFLINE
+                    updateCard(card)
+                    Toast.makeText(context, "Saved offline — will upload when connected", Toast.LENGTH_SHORT).show()
+                }
+            }
         }.start()
     }
 
@@ -579,8 +609,7 @@ class FacultyScanFragment : Fragment() {
     }
 
     private fun refreshMarkAllVisibility() {
-        val hasIdentified = allFaces.any { !it.personId.isNullOrBlank() }
-        btnMarkAll.visibility = if (hasIdentified) View.VISIBLE else View.GONE
+        // Mark All removed from scan tab — no-op kept for compatibility
     }
 
     // ── Capture animation ─────────────────────────────────────────────────────
@@ -628,6 +657,9 @@ class FacultyScanFragment : Fragment() {
                 return
             }
             PhotoStatus.DONE -> { /* fall through */ }
+            PhotoStatus.SAVED_OFFLINE -> {
+                Toast.makeText(ctx, "Image saved offline — upload when connected", Toast.LENGTH_SHORT).show(); return
+            }
         }
         if (card.faces.isEmpty()) {
             Toast.makeText(ctx, "No faces detected in this photo", Toast.LENGTH_SHORT).show(); return
@@ -708,8 +740,6 @@ class FacultyScanFragment : Fragment() {
     private fun statusLabel(s: String) = if (s == "present") "✓ Present (tap to mark absent)" else "✗ Absent (tap to mark present)"
     private fun statusColor(s: String) = if (s == "present") 0xFF4CAF50.toInt() else 0xFFF44336.toInt()
 
-    // ── Relabel dialog ────────────────────────────────────────────────────────
-
     private fun showRelabelDialog(face: ScanResult) {
         val ctx     = requireContext()
         val session = FacultySessionManager.currentSession ?: return
@@ -729,41 +759,73 @@ class FacultyScanFragment : Fragment() {
                         ids.add(s.get("id")?.asString ?: "")
                         names.add(s.get("name")?.asString ?: "")
                     }
+
+                    // Fallback: if server returned no students, use locally cached personList
+                    if (ids.isEmpty()) {
+                        val localPersons = DBManager.personList
+                        if (localPersons.isNotEmpty()) {
+                            for (p in localPersons) {
+                                val pid = p.id ?: p.localUid ?: continue
+                                if (pid.isBlank()) continue
+                                ids.add(pid)
+                                names.add(p.name ?: "Unknown")
+                            }
+                        }
+                    }
+
                     if (ids.isEmpty()) {
                         requireActivity().runOnUiThread {
-                            Toast.makeText(ctx, "No students found for this class", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(ctx, "No students found — try loading students from Home first", Toast.LENGTH_SHORT).show()
                         }
                         return
                     }
 
-                    requireActivity().runOnUiThread {
-                        val spinner = Spinner(ctx)
-                        spinner.adapter = ArrayAdapter(ctx, android.R.layout.simple_spinner_dropdown_item, names)
-                        val currentIdx = ids.indexOfFirst { it == face.personId }.coerceAtLeast(0)
-                        spinner.setSelection(currentIdx)
-
-                        AlertDialog.Builder(ctx)
-                            .setTitle("Relabel Face")
-                            .setMessage("Select the correct student:")
-                            .setView(spinner)
-                            .setPositiveButton("Save") { _, _ ->
-                                val pickedIdx  = spinner.selectedItemPosition
-                                val pickedId   = ids[pickedIdx]
-                                val pickedName = names[pickedIdx]
-                                relabelAndSave(face, pickedId, pickedName)
-                            }
-                            .setNegativeButton("Cancel", null)
-                            .show()
-                    }
+                    showRelabelSpinner(ctx, face, ids, names)
                 }
                 override fun onFailure(call: Call<JsonObject>, t: Throwable) {
                     if (!isAdded) return
                     loading.cancel()
-                    requireActivity().runOnUiThread {
-                        Toast.makeText(ctx, "Could not load students", Toast.LENGTH_SHORT).show()
+                    // Fallback: use locally cached personList when offline
+                    val ids   = mutableListOf<String>()
+                    val names = mutableListOf<String>()
+                    for (p in DBManager.personList) {
+                        val pid = p.id ?: p.localUid ?: continue
+                        if (pid.isBlank()) continue
+                        ids.add(pid)
+                        names.add(p.name ?: "Unknown")
                     }
+                    if (ids.isEmpty()) {
+                        requireActivity().runOnUiThread {
+                            Toast.makeText(ctx, "Could not load students (offline)", Toast.LENGTH_SHORT).show()
+                        }
+                        return
+                    }
+                    showRelabelSpinner(ctx, face, ids, names)
                 }
             })
+    }
+
+    private fun showRelabelSpinner(ctx: android.content.Context, face: ScanResult,
+                                   ids: List<String>, names: List<String>) {
+        requireActivity().runOnUiThread {
+            val spinner = Spinner(ctx)
+            spinner.adapter = ArrayAdapter(ctx, android.R.layout.simple_spinner_dropdown_item, names)
+            val currentIdx = ids.indexOfFirst { it == face.personId }.coerceAtLeast(0)
+            spinner.setSelection(currentIdx)
+
+            AlertDialog.Builder(ctx)
+                .setTitle("Relabel Face")
+                .setMessage("Select the correct student:")
+                .setView(spinner)
+                .setPositiveButton("Save") { _, _ ->
+                    val pickedIdx  = spinner.selectedItemPosition
+                    val pickedId   = ids[pickedIdx]
+                    val pickedName = names[pickedIdx]
+                    relabelAndSave(face, pickedId, pickedName)
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
     }
 
     private fun relabelAndSave(face: ScanResult, newPersonId: String, newPersonName: String) {
@@ -828,16 +890,50 @@ class FacultyScanFragment : Fragment() {
         if (session == null) { (activity as? FacultyActivity)?.navigateToHome(); return }
 
         val identified = allFaces.count { !it.personId.isNullOrBlank() }
-        AlertDialog.Builder(ctx)
-            .setTitle("End Session")
-            .setMessage("Mark attendance for $identified identified student(s) and end the session?")
-            .setPositiveButton("End & Mark") { _, _ -> markAndEnd() }
-            .setNegativeButton("Just End") { _, _ ->
-                FacultySessionManager.clearSession(ctx)
-                (activity as? FacultyActivity)?.navigateToHome()
+        val offline = !NetworkUtils.isOnline(ctx)
+        val savedOfflineCount = photoCards.count { it.status == PhotoStatus.SAVED_OFFLINE }
+
+        if (offline || savedOfflineCount > 0) {
+            // Offline mode — offer to save locally
+            val totalImages = photoCards.size
+            AlertDialog.Builder(ctx)
+                .setTitle("End Session (Offline)")
+                .setMessage("$totalImages image(s) saved locally.\nWhen you're back online, use Sync to upload and process them.")
+                .setPositiveButton("Save & End Session") { _, _ ->
+                    saveOfflineSession(session)
+                    FacultySessionManager.clearSession(ctx)
+                    clearScanState()
+                    (activity as? FacultyActivity)?.navigateToHome()
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        } else {
+            AlertDialog.Builder(ctx)
+                .setTitle("End Session")
+                .setMessage("Mark attendance for $identified identified student(s) and end the session?")
+                .setPositiveButton("End & Mark") { _, _ -> markAndEnd() }
+                .setNegativeButton("Just End") { _, _ ->
+                    FacultySessionManager.clearSession(ctx)
+                    clearScanState()
+                    (activity as? FacultyActivity)?.navigateToHome()
+                }
+                .setNeutralButton("Cancel", null)
+                .show()
+        }
+    }
+
+    private fun saveOfflineSession(session: FacultySessionManager.LectureSession) {
+        val db = DBManager(requireContext())
+        val sessionId = db.insertOfflineSession(
+            session.lectureId, session.classYear, session.division,
+            session.subject, session.teacher, session.date
+        )
+        for (card in photoCards) {
+            if (card.filePath.isNotBlank()) {
+                db.insertOfflineSessionImage(sessionId, card.filePath)
             }
-            .setNeutralButton("Cancel", null)
-            .show()
+        }
+        Toast.makeText(requireContext(), "Session saved offline (${photoCards.size} images)", Toast.LENGTH_SHORT).show()
     }
 
     private fun markAndEnd() {
@@ -880,6 +976,7 @@ class FacultyScanFragment : Fragment() {
                             Toast.makeText(ctx, "Saved locally — will sync later", Toast.LENGTH_SHORT).show()
                         }
                         FacultySessionManager.clearSession(ctx)
+                        clearScanState()
                         (activity as? FacultyActivity)?.navigateToHome()
                     }
                 }
@@ -888,6 +985,7 @@ class FacultyScanFragment : Fragment() {
                     requireActivity().runOnUiThread {
                         Toast.makeText(ctx, "Saved offline — will sync when connected", Toast.LENGTH_SHORT).show()
                         FacultySessionManager.clearSession(ctx)
+                        clearScanState()
                         (activity as? FacultyActivity)?.navigateToHome()
                     }
                 }
@@ -956,8 +1054,7 @@ class FacultyScanFragment : Fragment() {
         btnEndSession   = v.findViewById(R.id.btn_end_session)
         tvPhotosHeader  = v.findViewById(R.id.tv_photos_header)
         rvPhotoGrid     = v.findViewById(R.id.rv_photo_grid)
-        btnMarkAll      = v.findViewById(R.id.btn_mark_all)
-        btnMarkAll.setOnClickListener { markAllPresent() }
+        v.findViewById<Button>(R.id.btn_mark_all)?.visibility = View.GONE
     }
 
     @Deprecated("Deprecated in Java")
@@ -970,7 +1067,7 @@ class FacultyScanFragment : Fragment() {
 
 // ── Photo card data model ─────────────────────────────────────────────────────
 
-enum class PhotoStatus { PROCESSING, DONE, ERROR }
+enum class PhotoStatus { PROCESSING, DONE, ERROR, SAVED_OFFLINE }
 
 data class PhotoCard(
     val id: Long,
@@ -1004,6 +1101,10 @@ class PhotoCardAdapter(
 
         holder.overlayProc.visibility  = if (card.status == PhotoStatus.PROCESSING) View.VISIBLE else View.GONE
         holder.tvErrorBadge.visibility = if (card.status == PhotoStatus.ERROR) View.VISIBLE else View.GONE
+        if (card.status == PhotoStatus.SAVED_OFFLINE) {
+            holder.tvErrorBadge.visibility = View.VISIBLE
+            holder.tvErrorBadge.text = "⏳"
+        }
         if (card.status == PhotoStatus.DONE) {
             holder.tvFaceCount.visibility = View.VISIBLE
             holder.tvFaceCount.text = "${card.faces.size} face${if (card.faces.size == 1) "" else "s"}"

@@ -149,6 +149,9 @@ public interface GreetingService {
     @GET("api/bulk-attendance/faculty/classes")
     Call<com.google.gson.JsonObject> getFacultyClasses();
 
+    @GET("api/bulk-attendance/faculty/download-students")
+    Call<SyncResponse> downloadFacultyStudents();
+
     @GET("api/bulk-attendance/faculty/class-students")
     Call<com.google.gson.JsonObject> getClassStudents(
         @Query("class_year") String classYear,
@@ -157,6 +160,9 @@ public interface GreetingService {
 
     @POST("api/bulk-attendance/faculty/save-embedding")
     Call<com.google.gson.JsonObject> saveFaceEmbedding(@Body com.google.gson.JsonObject body);
+
+    @GET("api/bulk-attendance/lectures/{lecture_id}")
+    Call<com.google.gson.JsonObject> getLectureDetail(@Path("lecture_id") int lectureId);
 
 
     // Owner API

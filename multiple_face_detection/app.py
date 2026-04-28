@@ -554,10 +554,9 @@ class FaceEmbedder:
         if crop_rgb is None or crop_rgb.size == 0 or self._available is not True or self._embedder is None:
             return np.zeros((0,), dtype=np.float32)
         try:
-            # FacePluginEmbedder handles resizing internally
-            # We convert RGB to BGR as that's what the FacePlugin models usually expect
-            bgr = cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2BGR)
-            feature = self._embedder.embed(bgr)
+            # FacePluginEmbedder handles alignment, resizing, and normalization internally.
+            # We pass RGB as per standard project pipeline.
+            feature = self._embedder.embed(crop_rgb)
             return np.asarray(feature, dtype=np.float32).flatten()
         except Exception as e:
             print(f"[FACEPLUGIN] Embedding error: {e}", flush=True)

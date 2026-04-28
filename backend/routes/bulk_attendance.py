@@ -815,10 +815,170 @@ def faculty_class_students():
         (vendor_id, class_year, division),
     )
     rows = c.fetchall() or []
+
+    # Fallback: if person_embeddings had no results, query faces table
+    # and filter by custom_data JSON containing class_section info
+    if not rows and (class_year or division):
+        c.execute(
+            f"SELECT id, name, custom_data FROM faces WHERE vendor_id = {ph} ORDER BY name",
+            (vendor_id,),
+        )
+        all_faces = c.fetchall() or []
+        filtered = []
+        for fr in all_faces:
+            fid   = fr[0]
+            fname = fr[1] or ""
+            raw_cd = fr[2]
+            try:
+                cd = json.loads(raw_cd) if raw_cd else {}
+            except Exception:
+                cd = {}
+            student_class = str(cd.get("class_section") or cd.get("class") or "").strip().lower()
+            year_ok = (not class_year) or (class_year.lower() in student_class)
+            div_ok  = (not division)   or (division.lower()   in student_class)
+            if year_ok and div_ok:
+                filtered.append((fid, fname))
+        if filtered:
+            rows = filtered
+
     conn.close()
 
     students = [{"id": str(r[0]), "name": r[1] or ""} for r in rows]
     return jsonify({"students": students})
+
+
+@bulk_attendance_bp.route("/bulk-attendance/faculty/download-students", methods=["GET"])
+@require_auth()
+def faculty_download_students():
+    """Return full face data for all students across the faculty's assigned classes.
+
+    This is like sync/download but scoped to the faculty's classes.
+    Response: {faces: [{id, name, templates, face_image, image_url, phone, department, designation, shift, custom_data}]}
+    """
+    if g.user_role not in ("faculty", "vendor_admin", "super_admin"):
+        return jsonify({"error": "Forbidden"}), 403
+
+    vendor_id = g.vendor_id
+    username  = g.username
+
+    conn  = get_db_connection()
+    c     = conn.cursor()
+    is_pg = getattr(conn, "_is_pg", False)
+    ph    = "%s" if is_pg else "?"
+
+    # 1. Get the faculty's assigned classes (same logic as faculty_assigned_classes)
+    c.execute(
+        "SELECT class_year, division, mapped_subjects "
+        "FROM classes WHERE vendor_id = ? ORDER BY class_year, division",
+        (vendor_id,)
+    )
+    class_rows = c.fetchall() or []
+
+    assigned_classes = []  # list of (class_year, division)
+    for r in class_rows:
+        try:
+            ms = json.loads(r[2]) if r[2] else []
+        except Exception:
+            ms = []
+
+        if g.user_role == "faculty":
+            def _fm(mf):
+                a = (mf or "").lower().strip(); b = username.lower().strip()
+                return a == b or a.split("@")[0] == b.split("@")[0] or a.split("@")[0] == b or a == b.split("@")[0]
+            if not any(_fm(m.get("faculty", "")) for m in ms):
+                continue
+        assigned_classes.append((r[0] or "", r[1] or ""))
+
+    if not assigned_classes:
+        conn.close()
+        return jsonify({"faces": []})
+
+    # 2. Collect person_ids from person_embeddings for these classes
+    person_ids = set()
+    for cy, div in assigned_classes:
+        c.execute(
+            f"""SELECT DISTINCT pe.person_id
+                FROM person_embeddings pe
+                WHERE pe.vendor_id = {ph}
+                  AND LOWER(TRIM(pe.class_year)) = LOWER(TRIM({ph}))
+                  AND LOWER(TRIM(pe.division))   = LOWER(TRIM({ph}))""",
+            (vendor_id, cy, div),
+        )
+        for row in (c.fetchall() or []):
+            pid = row[0]
+            if pid:
+                person_ids.add(pid)
+
+    # Fallback: also search faces.custom_data for class_section matches
+    if not person_ids:
+        c.execute(
+            f"SELECT id, custom_data FROM faces WHERE vendor_id = {ph}",
+            (vendor_id,),
+        )
+        for fr in (c.fetchall() or []):
+            fid    = fr[0]
+            raw_cd = fr[1]
+            try:
+                cd = json.loads(raw_cd) if raw_cd else {}
+            except Exception:
+                cd = {}
+            student_class = str(cd.get("class_section") or cd.get("class") or "").strip().lower()
+            for cy, div in assigned_classes:
+                year_ok = (not cy) or (cy.lower() in student_class)
+                div_ok  = (not div) or (div.lower() in student_class)
+                if year_ok and div_ok:
+                    person_ids.add(fid)
+                    break
+
+    if not person_ids:
+        conn.close()
+        return jsonify({"faces": []})
+
+    # 3. Fetch full face data for these person_ids
+    id_list = list(person_ids)
+    # Batch in groups of 500
+    faces = []
+    batch_size = 500
+    for i in range(0, len(id_list), batch_size):
+        batch = id_list[i:i + batch_size]
+        placeholders = ", ".join([ph] * len(batch))
+        c.execute(
+            f"SELECT * FROM faces WHERE id IN ({placeholders}) AND vendor_id = {ph} ORDER BY name",
+            batch + [vendor_id],
+        )
+        rows = c.fetchall() or []
+        for row in rows:
+            r = dict(row) if hasattr(row, 'keys') else {}
+            if not r:
+                continue
+            face_item = {
+                "id":          r.get("id"),
+                "display_id":  r.get("display_id") or r.get("id"),
+                "name":        r.get("name"),
+                "templates":   r.get("templates"),
+                "face_image":  r.get("face_image"),
+                "phone":       r.get("phone", ""),
+                "department":  r.get("department", ""),
+                "designation": r.get("designation", ""),
+                "shift":       r.get("shift", ""),
+                "custom_data": json.loads(r["custom_data"]) if r.get("custom_data") else {},
+            }
+            try:
+                fi = face_item["face_image"]
+                if fi and isinstance(fi, str) and fi.startswith("s3://"):
+                    from routes.faces import presigned_url_for_key
+                    url = presigned_url_for_key(fi)
+                    if url:
+                        face_item["image_url"] = url
+                elif fi and isinstance(fi, str) and fi.startswith("http"):
+                    face_item["image_url"] = fi
+            except Exception:
+                pass
+            faces.append(face_item)
+
+    conn.close()
+    logger.info(f"Faculty {username}: download-students returning {len(faces)} faces across {len(assigned_classes)} classes")
+    return jsonify({"faces": faces})
 
 
 @bulk_attendance_bp.route("/bulk-attendance/faculty/save-embedding", methods=["POST"])

@@ -15,6 +15,7 @@ class FacultyActivity : AppCompatActivity() {
 
     // Cache fragments so scan state (photos, faces) persists across tab switches
     private val fragmentCache = mutableMapOf<Int, androidx.fragment.app.Fragment>()
+    private var activeFragment: androidx.fragment.app.Fragment? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -44,13 +45,22 @@ class FacultyActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         fragmentCache.clear()
+        activeFragment = null
         Log.i(TAG, "FacultyActivity destroyed")
     }
 
     private fun showFragment(fragment: androidx.fragment.app.Fragment) {
-        supportFragmentManager.beginTransaction()
-            .replace(R.id.faculty_fragment_container, fragment)
-            .commit()
+        val ft = supportFragmentManager.beginTransaction()
+        // Hide the currently active fragment
+        activeFragment?.let { ft.hide(it) }
+        // Add new fragment if not yet added, otherwise just show it
+        if (!fragment.isAdded) {
+            ft.add(R.id.faculty_fragment_container, fragment)
+        } else {
+            ft.show(fragment)
+        }
+        ft.commit()
+        activeFragment = fragment
     }
 
     fun navigateToHome() {
