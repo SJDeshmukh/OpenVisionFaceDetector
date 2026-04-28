@@ -408,10 +408,11 @@ def mark_lecture_attendance(lecture_id):
                     (pid, l_id, vendor_id)
                 )
                 if not c.fetchone():
+                    device_id = 'Faculty_App' if g.user_role == 'faculty' else 'Bulk_Image_API'
                     c.execute(
                         """INSERT INTO attendance (name, timestamp, status, activity, person_id, vendor_id, captured_image, is_late, device_id, class_year, division, branch, subject, lecture_id) 
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (name, now, 'CHECK_IN', 'Lecture', pid, vendor_id, image, 0, 'Bulk_Image_API', l_year, l_div, l_branch, l_subj, l_id)
+                        (name, now, 'CHECK_IN', 'Lecture', pid, vendor_id, image, 0, device_id, l_year, l_div, l_branch, l_subj, l_id)
                     )
             marked += 1
         except Exception as e:
@@ -757,10 +758,11 @@ def faculty_sync_attendance():
                     (person_id, lecture_id, vendor_id)
                 )
                 if not c.fetchone():
+                    img = rec.get("image", "")
                     c.execute(
                         f"""INSERT INTO attendance (name, timestamp, status, activity, person_id, vendor_id, captured_image, is_late, device_id, class_year, division, branch, subject, lecture_id) 
                            VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})""",
-                        (name, ts, 'CHECK_IN', 'Lecture', person_id, vendor_id, '', 0, 'Faculty_App', l_year, l_div, l_branch, l_subj, lecture_id)
+                        (name, ts, 'CHECK_IN', 'Lecture', person_id, vendor_id, img, 0, 'Faculty_App', l_year, l_div, l_branch, l_subj, lecture_id)
                     )
             synced += 1
         except Exception as e:

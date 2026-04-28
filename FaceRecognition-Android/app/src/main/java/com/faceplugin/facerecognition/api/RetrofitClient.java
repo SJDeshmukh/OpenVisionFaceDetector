@@ -40,51 +40,43 @@ public class RetrofitClient {
 
     public static GreetingService getService() {
         if (retrofit == null) {
+            // Try to recover token from SharedPreferences if null (e.g. process death)
+            if (authToken == null && MyGlobal.context != null) {
+                try {
+                    android.content.SharedPreferences prefs = MyGlobal.context.getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE);
+                    authToken = prefs.getString("token", null);
+                } catch (Exception ignored) {}
+            }
+
             OkHttpClient.Builder httpClient = new OkHttpClient.Builder()
                     .connectTimeout(30, TimeUnit.SECONDS)
                     .readTimeout(120, TimeUnit.SECONDS)   // face detection can take 15-30s
                     .writeTimeout(60, TimeUnit.SECONDS);  // large base64 image uploads
+
+            // Global Headers
             httpClient.addInterceptor(chain -> {
                 Request original = chain.request();
                 Request.Builder builder = original.newBuilder()
                         .header("User-Agent", "openvisionx-android")
                         .header("X-App-Brand", BuildConfig.IS_ATTENDX ? "AttendX" : "TapInX");
-                return chain.proceed(builder.build());
-            });
-
-            if (authToken != null && !authToken.isEmpty()) {
-                httpClient.addInterceptor(chain -> {
-                    Request original = chain.request();
-                    Request.Builder requestBuilder = original.newBuilder()
-                            .header("Authorization", "Bearer " + authToken);
-                    Request request = requestBuilder.build();
-                    okhttp3.Response response = chain.proceed(request);
-                    
-                    if (response.code() == 401 || response.code() == 403) {
-                         if (MyGlobal.context != null) {
-                             Intent intent = new Intent(MyGlobal.ACTION_AUTH_FAILURE);
-                             intent.setPackage(MyGlobal.context.getPackageName());
-                             MyGlobal.context.sendBroadcast(intent);
-                         }
-                    }
-                    return response;
-                });
-            } else {
-                 // Even without auth token, we might get 401/403 (e.g. login failed, but that's handled by Callback usually)
-                 // But for consistency, let's add the response check interceptor always?
-                 // No, usually unauth requests expect 401. Only add if we THINK we are auth'd.
-                 httpClient.addInterceptor(chain -> {
-                    okhttp3.Response response = chain.proceed(chain.request());
-                     if (response.code() == 403) { // 403 implies forbidden (subscription end), even if public endpoint?
-                         if (MyGlobal.context != null) {
-                             Intent intent = new Intent(MyGlobal.ACTION_AUTH_FAILURE);
-                             intent.setPackage(MyGlobal.context.getPackageName());
-                             MyGlobal.context.sendBroadcast(intent);
-                         }
+                
+                // Always add Authorization if token is available
+                if (authToken != null && !authToken.isEmpty()) {
+                    builder.header("Authorization", "Bearer " + authToken);
+                }
+                
+                okhttp3.Response response = chain.proceed(builder.build());
+                
+                // Track Auth Failures
+                if (response.code() == 401 || response.code() == 403) {
+                     if (MyGlobal.context != null) {
+                         Intent intent = new Intent(MyGlobal.ACTION_AUTH_FAILURE);
+                         intent.setPackage(MyGlobal.context.getPackageName());
+                         MyGlobal.context.sendBroadcast(intent);
                      }
-                    return response;
-                 });
-            }
+                }
+                return response;
+            });
 
             retrofit = new Retrofit.Builder()
                     .baseUrl(BASE_URL)

@@ -895,7 +895,7 @@ class FacultyScanFragment : Fragment() {
         val db = DBManager(ctx)
         val ts = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).format(Date())
         toMark.forEach { r ->
-            db.insertFacultyAttendance(session.lectureId, r.personId!!, r.personName, "", ts, r.status, r.confidence)
+            db.insertFacultyAttendance(session.lectureId, r.personId!!, r.personName, "", ts, r.status, r.confidence, r.faceBitmap)
         }
 
         val arr = com.google.gson.JsonArray()
@@ -905,6 +905,13 @@ class FacultyScanFragment : Fragment() {
                 addProperty("status",     r.status)
                 addProperty("timestamp",  ts)
                 addProperty("confidence", r.confidence / 100f)
+                
+                r.faceBitmap?.let { bmp ->
+                    val bos = ByteArrayOutputStream()
+                    bmp.compress(Bitmap.CompressFormat.JPEG, 60, bos)
+                    val b64 = "data:image/jpeg;base64," + Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP)
+                    addProperty("image", b64)
+                }
             })
         }
 

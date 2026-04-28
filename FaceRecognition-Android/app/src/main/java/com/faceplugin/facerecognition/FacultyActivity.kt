@@ -1,8 +1,13 @@
 package com.faceplugin.facerecognition
 
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.os.Bundle
 import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
+import com.faceplugin.facerecognition.api.RetrofitClient
 import com.google.android.material.bottomnavigation.BottomNavigationView
 
 class FacultyActivity : AppCompatActivity() {
@@ -16,6 +21,19 @@ class FacultyActivity : AppCompatActivity() {
     // Cache fragments so scan state (photos, faces) persists across tab switches
     private val fragmentCache = mutableMapOf<Int, androidx.fragment.app.Fragment>()
     private var activeFragment: androidx.fragment.app.Fragment? = null
+
+    private val authFailureReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (MyGlobal.ACTION_AUTH_FAILURE == intent.action) {
+                Log.w(TAG, "Auth failure detected, redirecting to Login")
+                RetrofitClient.setAuthToken(null)
+                val loginIntent = Intent(this@FacultyActivity, LoginActivity::class.java)
+                loginIntent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+                startActivity(loginIntent)
+                finish()
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -39,11 +57,14 @@ class FacultyActivity : AppCompatActivity() {
         if (savedInstanceState == null) {
             nav.selectedItemId = R.id.fnav_home
         }
-        Log.i(TAG, "FacultyActivity ready — face detection runs server-side")
+        
+        registerReceiver(authFailureReceiver, IntentFilter(MyGlobal.ACTION_AUTH_FAILURE))
+        Log.i(TAG, "FacultyActivity ready")
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        try { unregisterReceiver(authFailureReceiver) } catch (_: Exception) {}
         fragmentCache.clear()
         activeFragment = null
         Log.i(TAG, "FacultyActivity destroyed")

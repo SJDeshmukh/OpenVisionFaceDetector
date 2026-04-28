@@ -45,23 +45,12 @@ import java.util.concurrent.CopyOnWriteArrayList;
         db.execSQL(
                 "create table faculty_attendance_queue " +
                         "(id integer primary key autoincrement, lecture_id integer, person_id text, student_name text, " +
-                        "class_section text, timestamp text, status text default 'present', confidence real, synced integer default 0)"
+                        "class_section text, timestamp text, status text default 'present', confidence real, image blob, synced integer default 0)"
         );
         db.execSQL(
                 "create table faculty_pending_images " +
                         "(id integer primary key autoincrement, lecture_id integer, image_path text, timestamp text, " +
                         "status text default 'pending')"
-        );
-        db.execSQL(
-                "create table offline_sessions " +
-                        "(id integer primary key autoincrement, lecture_id integer, class_year text, division text, " +
-                        "subject text, teacher text, date text, status text default 'pending', created_at text)"
-        );
-        db.execSQL(
-                "create table offline_session_images " +
-                        "(id integer primary key autoincrement, session_id integer, image_path text, " +
-                        "status text default 'pending', created_at text, " +
-                        "FOREIGN KEY(session_id) REFERENCES offline_sessions(id) ON DELETE CASCADE)"
         );
     }
 
@@ -140,22 +129,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
                                 "status text default 'pending')"
                 );
             } catch (Exception ignored) {}
-        }
         if (oldVersion < 15) {
             try {
-                db.execSQL(
-                        "create table if not exists offline_sessions " +
-                                "(id integer primary key autoincrement, lecture_id integer, class_year text, division text, " +
-                                "subject text, teacher text, date text, status text default 'pending', created_at text)"
-                );
-            } catch (Exception ignored) {}
-            try {
-                db.execSQL(
-                        "create table if not exists offline_session_images " +
-                                "(id integer primary key autoincrement, session_id integer, image_path text, " +
-                                "status text default 'pending', created_at text, " +
-                                "FOREIGN KEY(session_id) REFERENCES offline_sessions(id) ON DELETE CASCADE)"
-                );
+                db.execSQL("ALTER TABLE faculty_attendance_queue ADD COLUMN image blob");
             } catch (Exception ignored) {}
         }
     }
@@ -199,103 +175,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
         return path;
     }
 
-    // ── Offline Sessions ──────────────────────────────────────────────────────
-
-    public long insertOfflineSession(int lectureId, String classYear, String division,
-                                      String subject, String teacher, String date) {
-        SQLiteDatabase db = this.getWritableDatabase();
-        ContentValues cv = new ContentValues();
-        cv.put("lecture_id", lectureId);
-        cv.put("class_year", classYear);
-        cv.put("division", division);
-        cv.put("subject", subject);
-        cv.put("teacher", teacher);
-        cv.put("date", date);
-        cv.put("status", "pending");
-        cv.put("created_at", new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss",
-                java.util.Locale.US).format(new java.util.Date()));
-        return db.insert("offline_sessions", null, cv);
-    }
-
-    public void insertOfflineSessionImage(long sessionId, String imagePath) {
-        SQLiteDatabase db = this.getWritableDatabase();
-        ContentValues cv = new ContentValues();
-        cv.put("session_id", sessionId);
-        cv.put("image_path", imagePath);
-        cv.put("status", "pending");
-        cv.put("created_at", new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss",
-                java.util.Locale.US).format(new java.util.Date()));
-        db.insert("offline_session_images", null, cv);
-    }
-
-    public static class OfflineSession {
-        public long id;
-        public int lectureId;
-        public String classYear, division, subject, teacher, date, status, createdAt;
-        public int imageCount;
-    }
-
-    public java.util.List<OfflineSession> getOfflineSessions() {
-        java.util.List<OfflineSession> list = new java.util.ArrayList<>();
-        SQLiteDatabase db = this.getReadableDatabase();
-        Cursor c = db.rawQuery(
-                "SELECT s.id, s.lecture_id, s.class_year, s.division, s.subject, s.teacher, s.date, s.status, s.created_at, " +
-                "(SELECT COUNT(*) FROM offline_session_images WHERE session_id = s.id) as img_count " +
-                "FROM offline_sessions s WHERE s.status = 'pending' ORDER BY s.created_at DESC", null);
-        while (c.moveToNext()) {
-            OfflineSession os = new OfflineSession();
-            os.id = c.getLong(0);
-            os.lectureId = c.getInt(1);
-            os.classYear = c.getString(2);
-            os.division = c.getString(3);
-            os.subject = c.getString(4);
-            os.teacher = c.getString(5);
-            os.date = c.getString(6);
-            os.status = c.getString(7);
-            os.createdAt = c.getString(8);
-            os.imageCount = c.getInt(9);
-            list.add(os);
-        }
-        c.close();
-        return list;
-    }
-
-    public java.util.List<String> getOfflineSessionImagePaths(long sessionId) {
-        java.util.List<String> paths = new java.util.ArrayList<>();
-        SQLiteDatabase db = this.getReadableDatabase();
-        Cursor c = db.rawQuery("SELECT image_path FROM offline_session_images WHERE session_id = ? ORDER BY id ASC",
-                new String[]{String.valueOf(sessionId)});
-        while (c.moveToNext()) {
-            paths.add(c.getString(0));
-        }
-        c.close();
-        return paths;
-    }
-
-    public int getOfflineSessionCount() {
-        SQLiteDatabase db = this.getReadableDatabase();
-        Cursor c = db.rawQuery("SELECT COUNT(*) FROM offline_sessions WHERE status = 'pending'", null);
-        int count = 0;
-        if (c.moveToFirst()) count = c.getInt(0);
-        c.close();
-        return count;
-    }
-
-    public void markOfflineSessionUploaded(long sessionId) {
-        SQLiteDatabase db = this.getWritableDatabase();
-        ContentValues cv = new ContentValues();
-        cv.put("status", "uploaded");
-        db.update("offline_sessions", cv, "id = ?", new String[]{String.valueOf(sessionId)});
-    }
-
-    public void deleteOfflineSession(long sessionId) {
-        SQLiteDatabase db = this.getWritableDatabase();
-        db.delete("offline_session_images", "session_id = ?", new String[]{String.valueOf(sessionId)});
-        db.delete("offline_sessions", "id = ?", new String[]{String.valueOf(sessionId)});
-    }
-
     public void insertFacultyAttendance(int lectureId, String personId, String studentName,
-                                        String classSection, String timestamp, String status, float confidence) {
+                                        String classSection, String timestamp, String status, float confidence, Bitmap image) {
         SQLiteDatabase db = this.getWritableDatabase();
         ContentValues cv  = new ContentValues();
         cv.put("lecture_id",   lectureId);
@@ -306,13 +187,20 @@ import java.util.concurrent.CopyOnWriteArrayList;
         cv.put("status",       status);
         cv.put("confidence",   confidence);
         cv.put("synced",       0);
+        
+        if (image != null) {
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            image.compress(Bitmap.CompressFormat.JPEG, 60, bos);
+            cv.put("image", bos.toByteArray());
+        }
+        
         db.insert("faculty_attendance_queue", null, cv);
     }
 
     public java.util.List<android.util.Pair<Integer, com.google.gson.JsonObject>> getUnsyncedFacultyAttendance() {
         java.util.List<android.util.Pair<Integer, com.google.gson.JsonObject>> list = new java.util.ArrayList<>();
         SQLiteDatabase db = this.getReadableDatabase();
-        Cursor c = db.rawQuery("SELECT id, lecture_id, person_id, student_name, timestamp, status, confidence FROM faculty_attendance_queue WHERE synced = 0", null);
+        Cursor c = db.rawQuery("SELECT id, lecture_id, person_id, student_name, timestamp, status, confidence, image FROM faculty_attendance_queue WHERE synced = 0", null);
         while (c.moveToNext()) {
             int rowId = c.getInt(0);
             com.google.gson.JsonObject rec = new com.google.gson.JsonObject();
@@ -322,6 +210,13 @@ import java.util.concurrent.CopyOnWriteArrayList;
             rec.addProperty("timestamp",   c.getString(4));
             rec.addProperty("status",      c.getString(5));
             rec.addProperty("confidence",  c.getFloat(6));
+            
+            byte[] imgBlob = c.getBlob(7);
+            if (imgBlob != null && imgBlob.length > 0) {
+                String b64 = "data:image/jpeg;base64," + android.util.Base64.encodeToString(imgBlob, android.util.Base64.NO_WRAP);
+                rec.addProperty("image", b64);
+            }
+
             list.add(new android.util.Pair<>(rowId, rec));
         }
         c.close();
