@@ -830,13 +830,13 @@ def faculty_class_students():
     ph     = "%s" if is_pg else "?"
 
     c.execute(
-        f"""SELECT DISTINCT pe.person_id, f.name
+        f"""SELECT DISTINCT pe.person_id, f.name, f.display_id
             FROM person_embeddings pe
             JOIN faces f ON f.id = pe.person_id
             WHERE pe.vendor_id = {ph}
               AND LOWER(TRIM(pe.class_year)) = LOWER(TRIM({ph}))
               AND LOWER(TRIM(pe.division))   = LOWER(TRIM({ph}))
-            ORDER BY f.name""",
+            ORDER BY f.display_id ASC""",
         (vendor_id, class_year, division),
     )
     rows = c.fetchall() or []
@@ -845,7 +845,7 @@ def faculty_class_students():
     # and filter by custom_data JSON containing class_section info
     if not rows and (class_year or division):
         c.execute(
-            f"SELECT id, name, custom_data FROM faces WHERE vendor_id = {ph} ORDER BY name",
+            f"SELECT id, name, custom_data, display_id FROM faces WHERE vendor_id = {ph} ORDER BY display_id ASC",
             (vendor_id,),
         )
         all_faces = c.fetchall() or []
@@ -866,13 +866,13 @@ def faculty_class_students():
             year_ok = (not class_year) or (class_year.lower() in s_year) or (class_year.lower() in s_class)
             div_ok  = (not division)   or (division.lower()   in s_div)  or (division.lower()   in s_class)
             if year_ok and div_ok:
-                filtered.append((fid, fname))
+                filtered.append((fid, fname, fr[3]))
         if filtered:
             rows = filtered
 
     conn.close()
 
-    students = [{"id": str(r[0]), "name": r[1] or ""} for r in rows]
+    students = [{"id": str(r[0]), "name": (f"#{r[2]} {r[1]}" if r[2] else r[1]) or ""} for r in rows]
     return jsonify({"students": students})
 
 
