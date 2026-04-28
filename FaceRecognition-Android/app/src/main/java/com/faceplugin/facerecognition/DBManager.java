@@ -129,6 +129,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
                                 "status text default 'pending')"
                 );
             } catch (Exception ignored) {}
+        }
         if (oldVersion < 15) {
             try {
                 db.execSQL("ALTER TABLE faculty_attendance_queue ADD COLUMN image blob");

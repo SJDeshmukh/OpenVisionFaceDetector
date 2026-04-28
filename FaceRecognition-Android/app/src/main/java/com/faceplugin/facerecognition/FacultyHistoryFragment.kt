@@ -568,7 +568,7 @@ class FacultyHistoryFragment : Fragment() {
         val db = DBManager(requireContext())
         val ts = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).format(Date())
         toMark.forEach { r ->
-            db.insertFacultyAttendance(lectureId, r.personId!!, r.personName, "", ts, r.status, r.confidence)
+            db.insertFacultyAttendance(lectureId, r.personId!!, r.personName, "", ts, r.status, r.confidence, r.faceBitmap)
         }
 
         val arr = com.google.gson.JsonArray()
