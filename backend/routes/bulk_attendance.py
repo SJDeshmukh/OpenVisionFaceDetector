@@ -709,14 +709,26 @@ def faculty_sync_attendance():
                 errors += 1
                 continue
 
-            # Verify lecture belongs to vendor
+            # Verify lecture belongs to vendor and get metadata
             c.execute(
-                f"SELECT id FROM lectures WHERE id = {ph} AND vendor_id = {ph}",
+                f"SELECT id, subject, class_year, division, branch FROM lectures WHERE id = {ph} AND vendor_id = {ph}",
                 (lecture_id, vendor_id),
             )
-            if not c.fetchone():
+            lecture = c.fetchone()
+            if not lecture:
                 errors += 1
                 continue
+
+            if hasattr(lecture, 'keys') and callable(lecture.keys):
+                l_subj = lecture.get('subject', '')
+                l_year = lecture.get('class_year', '')
+                l_div  = lecture.get('division', '')
+                l_branch = lecture.get('branch', '')
+            else:
+                l_subj = lecture[1] if len(lecture) > 1 else ''
+                l_year = lecture[2] if len(lecture) > 2 else ''
+                l_div  = lecture[3] if len(lecture) > 3 else ''
+                l_branch = lecture[4] if len(lecture) > 4 else ''
 
             if is_pg:
                 c.execute(
@@ -733,6 +745,23 @@ def faculty_sync_attendance():
                        VALUES (?, ?, ?, ?, ?)""",
                     (lecture_id, vendor_id, person_id, status, ts),
                 )
+
+            # Sync to core attendance logs if present
+            if status == 'present':
+                c.execute(f"SELECT name FROM faces WHERE id = {ph}", (person_id,))
+                fr = c.fetchone()
+                name = fr[0] if fr else "Unknown"
+                
+                c.execute(
+                    f"SELECT id FROM attendance WHERE person_id = {ph} AND lecture_id = {ph} AND vendor_id = {ph}",
+                    (person_id, lecture_id, vendor_id)
+                )
+                if not c.fetchone():
+                    c.execute(
+                        f"""INSERT INTO attendance (name, timestamp, status, activity, person_id, vendor_id, captured_image, is_late, device_id, class_year, division, branch, subject, lecture_id) 
+                           VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})""",
+                        (name, ts, 'CHECK_IN', 'Lecture', person_id, vendor_id, '', 0, 'Faculty_App', l_year, l_div, l_branch, l_subj, lecture_id)
+                    )
             synced += 1
         except Exception as e:
             logger.warning("faculty_sync record error: %s", e)
