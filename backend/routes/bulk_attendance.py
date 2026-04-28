@@ -866,10 +866,10 @@ def faculty_download_students():
     is_pg = getattr(conn, "_is_pg", False)
     ph    = "%s" if is_pg else "?"
 
-    # 1. Get the faculty's assigned classes (same logic as faculty_assigned_classes)
+    # 1. Get the faculty's assigned classes via mapped_subjects
     c.execute(
-        "SELECT class_year, division, mapped_subjects "
-        "FROM classes WHERE vendor_id = ? ORDER BY class_year, division",
+        f"SELECT class_year, division, mapped_subjects "
+        f"FROM classes WHERE vendor_id = {ph} ORDER BY class_year, division",
         (vendor_id,)
     )
     class_rows = c.fetchall() or []
@@ -889,64 +889,27 @@ def faculty_download_students():
                 continue
         assigned_classes.append((r[0] or "", r[1] or ""))
 
+    # 2. Fallback: check lectures table for classes this teacher has taught
     if not assigned_classes:
-        conn.close()
-        return jsonify({"faces": []})
-
-    # 2. Collect person_ids from person_embeddings for these classes
-    person_ids = set()
-    for cy, div in assigned_classes:
         c.execute(
-            f"""SELECT DISTINCT pe.person_id
-                FROM person_embeddings pe
-                WHERE pe.vendor_id = {ph}
-                  AND LOWER(TRIM(pe.class_year)) = LOWER(TRIM({ph}))
-                  AND LOWER(TRIM(pe.division))   = LOWER(TRIM({ph}))""",
-            (vendor_id, cy, div),
+            f"SELECT DISTINCT class_year, division FROM lectures "
+            f"WHERE teacher = {ph} AND vendor_id = {ph}",
+            (username, vendor_id),
         )
-        for row in (c.fetchall() or []):
-            pid = row[0]
-            if pid:
-                person_ids.add(pid)
+        for lr in (c.fetchall() or []):
+            cy = (lr[0] or "").strip()
+            dv = (lr[1] or "").strip()
+            if cy:
+                assigned_classes.append((cy, dv))
 
-    # Fallback: also search faces.custom_data for class_section matches
-    if not person_ids:
+    # 3. Final fallback: return ALL vendor faces if no class match at all
+    if not assigned_classes:
         c.execute(
-            f"SELECT id, custom_data FROM faces WHERE vendor_id = {ph}",
+            f"SELECT * FROM faces WHERE vendor_id = {ph} ORDER BY name",
             (vendor_id,),
         )
-        for fr in (c.fetchall() or []):
-            fid    = fr[0]
-            raw_cd = fr[1]
-            try:
-                cd = json.loads(raw_cd) if raw_cd else {}
-            except Exception:
-                cd = {}
-            student_class = str(cd.get("class_section") or cd.get("class") or "").strip().lower()
-            for cy, div in assigned_classes:
-                year_ok = (not cy) or (cy.lower() in student_class)
-                div_ok  = (not div) or (div.lower() in student_class)
-                if year_ok and div_ok:
-                    person_ids.add(fid)
-                    break
-
-    if not person_ids:
-        conn.close()
-        return jsonify({"faces": []})
-
-    # 3. Fetch full face data for these person_ids
-    id_list = list(person_ids)
-    # Batch in groups of 500
-    faces = []
-    batch_size = 500
-    for i in range(0, len(id_list), batch_size):
-        batch = id_list[i:i + batch_size]
-        placeholders = ", ".join([ph] * len(batch))
-        c.execute(
-            f"SELECT * FROM faces WHERE id IN ({placeholders}) AND vendor_id = {ph} ORDER BY name",
-            batch + [vendor_id],
-        )
         rows = c.fetchall() or []
+        faces = []
         for row in rows:
             r = dict(row) if hasattr(row, 'keys') else {}
             if not r:
@@ -954,6 +917,62 @@ def faculty_download_students():
             face_item = {
                 "id":          r.get("id"),
                 "display_id":  r.get("display_id") or r.get("id"),
+                "name":        r.get("name"),
+                "templates":   r.get("templates"),
+                "face_image":  r.get("face_image"),
+                "phone":       r.get("phone", ""),
+                "department":  r.get("department", ""),
+                "designation": r.get("designation", ""),
+                "shift":       r.get("shift", ""),
+                "custom_data": json.loads(r["custom_data"]) if r.get("custom_data") else {},
+            }
+            try:
+                fi = face_item["face_image"]
+                if fi and isinstance(fi, str) and fi.startswith("s3://"):
+                    from routes.faces import presigned_url_for_key
+                    url = presigned_url_for_key(fi)
+                    face_item["face_image"] = ""
+                    face_item["image_url"]  = url
+            except Exception:
+                pass
+            faces.append(face_item)
+        conn.close()
+        return jsonify({"faces": faces})
+
+    # 4. Fetch faces matching the assigned classes via custom_data JSON fields
+    #    Students are linked to classes through custom_data.class_year / custom_data.division
+    faces = []
+    seen_ids = set()
+    for cy, div in assigned_classes:
+        if is_pg:
+            # PostgreSQL: use JSON operators
+            sql = (
+                f"SELECT * FROM faces WHERE vendor_id = {ph}"
+                f" AND LOWER(TRIM(custom_data::json->>'class_year')) = LOWER(TRIM({ph}))"
+            )
+            params = [vendor_id, cy]
+            if div:
+                sql += f" AND LOWER(TRIM(custom_data::json->>'division')) = LOWER(TRIM({ph}))"
+                params.append(div)
+            sql += " ORDER BY name"
+            c.execute(sql, params)
+        else:
+            c.execute(
+                f"SELECT * FROM faces WHERE vendor_id = {ph} ORDER BY name",
+                (vendor_id,),
+            )
+        rows = c.fetchall() or []
+        for row in rows:
+            r = dict(row) if hasattr(row, 'keys') else {}
+            if not r:
+                continue
+            fid = r.get("id")
+            if fid in seen_ids:
+                continue
+            seen_ids.add(fid)
+            face_item = {
+                "id":          fid,
+                "display_id":  r.get("display_id") or fid,
                 "name":        r.get("name"),
                 "templates":   r.get("templates"),
                 "face_image":  r.get("face_image"),
