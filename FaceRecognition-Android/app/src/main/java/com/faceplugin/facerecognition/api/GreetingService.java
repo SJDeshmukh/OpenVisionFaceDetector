@@ -140,6 +140,12 @@ public interface GreetingService {
     @POST("api/bulk-attendance/faculty/sync")
     Call<com.google.gson.JsonObject> syncFacultyAttendance(@Body com.google.gson.JsonObject body);
 
+    @POST("api/bulk-attendance/faculty/scan")
+    Call<com.google.gson.JsonObject> scanFacultyImage(@Body com.google.gson.JsonObject body);
+
+    @GET("api/bulk-attendance/faculty/classes")
+    Call<com.google.gson.JsonObject> getFacultyClasses();
+
 
     // Owner API
     @GET("api/owner/advances")

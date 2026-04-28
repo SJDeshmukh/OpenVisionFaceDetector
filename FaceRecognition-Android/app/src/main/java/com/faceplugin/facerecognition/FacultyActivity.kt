@@ -1,12 +1,9 @@
 package com.faceplugin.facerecognition
 
-import android.content.Intent
 import android.os.Bundle
 import android.util.Log
-import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.bottomnavigation.BottomNavigationView
-import com.ocp.facesdk.FaceSDK
 
 class FacultyActivity : AppCompatActivity() {
 
@@ -36,24 +33,7 @@ class FacultyActivity : AppCompatActivity() {
         if (savedInstanceState == null) {
             nav.selectedItemId = R.id.fnav_home
         }
-    }
-
-    override fun onStart() {
-        super.onStart()
-        // Lazy init: load face engine only when faculty is active (not for parents)
-        if (!FaceSDKWrapper.isInitialized) {
-            Thread {
-                val ret = FaceSDKWrapper.ensureInitialized(applicationContext)
-                runOnUiThread {
-                    if (ret == FaceSDK.SDK_SUCCESS) {
-                        Log.i(TAG, "FaceSDK ready for faculty")
-                    } else {
-                        Log.w(TAG, "FaceSDK init returned $ret — face matching may be unavailable")
-                        Toast.makeText(this, "Face model warning: code $ret", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            }.start()
-        }
+        Log.i(TAG, "FacultyActivity ready — face detection runs server-side")
     }
 
     override fun onDestroy() {
@@ -67,7 +47,15 @@ class FacultyActivity : AppCompatActivity() {
             .commit()
     }
 
+    fun navigateToHome() {
+        nav.selectedItemId = R.id.fnav_home
+    }
+
     fun navigateToScan() {
         nav.selectedItemId = R.id.fnav_scan
+    }
+
+    fun navigateToHistory() {
+        nav.selectedItemId = R.id.fnav_history
     }
 }

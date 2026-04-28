@@ -1,24 +1,37 @@
 package com.faceplugin.facerecognition
 
 import android.Manifest
+import android.animation.AnimatorSet
+import android.animation.ObjectAnimator
 import android.annotation.SuppressLint
-import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.media.Image
-import android.net.Uri
+import android.graphics.ImageFormat
+import android.graphics.Rect
+import android.graphics.YuvImage
 import android.os.Bundle
+import android.util.Base64
 import android.util.Log
-import android.util.Size
+import android.view.GestureDetector
 import android.view.LayoutInflater
+import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.view.View
 import android.view.ViewGroup
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
+import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.SeekBar
+import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.annotation.OptIn
-import androidx.camera.core.Camera
+import androidx.appcompat.app.AlertDialog
+import androidx.camera.core.CameraControl
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
@@ -28,69 +41,57 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
-import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.faceplugin.facerecognition.api.RetrofitClient
 import com.google.android.material.floatingactionbutton.FloatingActionButton
-import com.ocp.facesdk.FaceBox
-import com.ocp.facesdk.FaceDetectionParam
+import com.google.gson.JsonObject
+import retrofit2.Call
+import retrofit2.Callback
+import retrofit2.Response
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
-/**
- * Faculty live camera scan fragment.
- *
- * Flow:
- *  1. Camera shows live preview with real-time face boxes.
- *  2. Tap Capture → freeze frame, enhance, detect + recognise all faces.
- *  3. Results list with per-face name/confidence and present/absent toggle.
- *  4. Tap "Mark Attendance" → saves to local DB + tries server sync.
- *  5. Retake resets to live preview.
- */
 class FacultyScanFragment : Fragment() {
 
     companion object {
         private const val TAG = "FacultyScan"
     }
 
-    // ── Camera state ──────────────────────────────────────────────────────────
+    // Camera
     private var cameraProvider: ProcessCameraProvider? = null
-    private var cameraExecutor: ExecutorService         = Executors.newSingleThreadExecutor()
-    private var latestBitmap: Bitmap?                  = null  // most recent camera frame
-    private var capturedBitmap: Bitmap?                = null  // frozen frame for processing
-    private var scanResults: MutableList<ScanResult>   = mutableListOf()
-    private var isCapturing = false
+    private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    @Volatile private var latestNv21: ByteArray? = null
+    @Volatile private var latestWidth = 0
+    @Volatile private var latestHeight = 0
+    private var useFrontCamera = false
+    private var cameraControl: CameraControl? = null
+    private var currentZoom = 0f
 
-    // ── Views ─────────────────────────────────────────────────────────────────
-    private lateinit var previewView:      PreviewView
-    private lateinit var faceView:         FaceView
-    private lateinit var fabCapture:       FloatingActionButton
-    private lateinit var layoutProcessing: LinearLayout
-    private lateinit var tvProcessing:     TextView
-    private lateinit var tvScanSession:    TextView
-    private lateinit var tvResultsHeader:  TextView
-    private lateinit var tvResultsCount:   TextView
-    private lateinit var tvNoResults:      TextView
-    private lateinit var rvResults:        RecyclerView
-    private lateinit var rowActions:       LinearLayout
-    private lateinit var btnRetake:        android.widget.Button
-    private lateinit var btnMark:          android.widget.Button
+    // Views
+    private lateinit var previewView: PreviewView
+    private lateinit var fabCapture: FloatingActionButton
+    private lateinit var fabFlip: FloatingActionButton
+    private lateinit var viewCaptureRing: View
+    private lateinit var seekbarZoom: SeekBar
+    private lateinit var tvScanSession: TextView
+    private lateinit var btnEndSession: Button
+    private lateinit var tvPhotosHeader: TextView
+    private lateinit var rvPhotoGrid: RecyclerView
 
-    private lateinit var adapter: ScanResultAdapter
+    // Data
+    private val photoCards = mutableListOf<PhotoCard>()
+    private lateinit var photoAdapter: PhotoCardAdapter
+    private val allFaces = mutableListOf<ScanResult>()
+    @Volatile private var isCapturing = false
 
-    // ── Data class for scan results ───────────────────────────────────────────
-    data class ScanResult(
-        val faceBox:    FaceBox,
-        val faceBitmap: Bitmap?,
-        val personId:   String?,
-        val personName: String,
-        val confidence: Float,
-        var status:     String = "present"
-    )
-
-    // ── Fragment lifecycle ────────────────────────────────────────────────────
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
@@ -99,22 +100,30 @@ class FacultyScanFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         bindViews(view)
-        adapter = ScanResultAdapter(scanResults) { result, newStatus ->
-            result.status = newStatus
-        }
-        rvResults.layoutManager = LinearLayoutManager(requireContext())
-        rvResults.adapter       = adapter
+
+        photoAdapter = PhotoCardAdapter(photoCards) { card -> showCardDetail(card) }
+        rvPhotoGrid.layoutManager = GridLayoutManager(requireContext(), 3)
+        rvPhotoGrid.adapter = photoAdapter
 
         updateSessionLabel()
+        setupZoom()
+        setupPinchZoom()
 
-        fabCapture.setOnClickListener { captureAndProcess() }
-        btnRetake.setOnClickListener  { resetToLivePreview() }
-        btnMark.setOnClickListener    { markAttendance() }
+        fabCapture.setOnClickListener { capturePhoto() }
+        fabFlip.setOnClickListener { flipCamera() }
+        btnEndSession.setOnClickListener { confirmEndSession() }
 
-        // Check if launched with a gallery image URI
         val uriStr = arguments?.getString("image_uri")
         if (uriStr != null) {
-            processGalleryImage(Uri.parse(uriStr))
+            // Opened from gallery picker — show session picker first, then import
+            if (FacultySessionManager.currentSession == null) {
+                showSessionPicker { importGalleryImage(android.net.Uri.parse(uriStr)) }
+            } else {
+                startCamera()
+                importGalleryImage(android.net.Uri.parse(uriStr))
+            }
+        } else if (FacultySessionManager.currentSession == null) {
+            showSessionPicker(null)
         } else {
             startCamera()
         }
@@ -124,314 +133,577 @@ class FacultyScanFragment : Fragment() {
         super.onDestroyView()
         cameraProvider?.unbindAll()
         cameraExecutor.shutdown()
-        capturedBitmap?.recycle()
-        capturedBitmap = null
+        photoCards.forEach { it.thumbnail?.recycle() }
+        photoCards.clear()
     }
 
-    // ── Camera setup ──────────────────────────────────────────────────────────
+    // ── Session picker ────────────────────────────────────────────────────────
 
-    private fun startCamera() {
-        if (ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.CAMERA)
-            != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.CAMERA), 1)
-            return
-        }
-        val future = ProcessCameraProvider.getInstance(requireContext())
-        future.addListener({
-            cameraProvider = future.get()
-            bindCamera()
-        }, ContextCompat.getMainExecutor(requireContext()))
-    }
+    private fun showSessionPicker(afterStart: (() -> Unit)? = null) {
+        val ctx = requireContext()
+        val loading = ProgressBar(ctx)
+        val dlg = AlertDialog.Builder(ctx)
+            .setTitle("Select Session")
+            .setView(loading)
+            .setCancelable(false)
+            .show()
 
-    @SuppressLint("RestrictedApi")
-    private fun bindCamera() {
-        val rotation = previewView.display?.rotation ?: 0
-        val target   = Utils.getOptimalResolution(requireContext())
-
-        val selector = CameraSelector.Builder()
-            .requireLensFacing(SettingsActivity.getCameraLens(requireContext()))
-            .build()
-
-        val preview = Preview.Builder()
-            .setTargetResolution(target)
-            .setTargetRotation(rotation)
-            .build()
-            .also { it.setSurfaceProvider(previewView.surfaceProvider) }
-
-        val analyzer = ImageAnalysis.Builder()
-            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            .setTargetResolution(target)
-            .setTargetRotation(rotation)
-            .build()
-            .also { it.setAnalyzer(cameraExecutor, FaceAnalyzer()) }
-
-        try {
-            cameraProvider?.unbindAll()
-            cameraProvider?.bindToLifecycle(viewLifecycleOwner, selector, preview, analyzer)
-        } catch (e: Exception) {
-            Log.e(TAG, "Camera bind failed", e)
-        }
-    }
-
-    inner class FaceAnalyzer : ImageAnalysis.Analyzer {
-        @OptIn(ExperimentalGetImage::class)
-        override fun analyze(proxy: ImageProxy) {
-            if (isCapturing) { proxy.close(); return }
-            try {
-                val img = proxy.image ?: return
-                val nv21 = Utils.yuv420ToNv21(img)
-                val rotDeg = proxy.imageInfo.rotationDegrees
-                val mode   = Utils.getCameraMode(rotDeg, SettingsActivity.getCameraLens(requireContext()))
-                val bmp    = FaceSDKWrapper.yuv2Bitmap(nv21, img.width, img.height, mode)
-                if (bmp != null) {
-                    latestBitmap?.recycle()
-                    latestBitmap = bmp
-
-                    if (FaceSDKWrapper.isInitialized) {
-                        val param = FaceDetectionParam()
-                        val boxes = FaceSDKWrapper.faceDetection(bmp, param)
-                        requireActivity().runOnUiThread {
-                            faceView.setFrameSize(Size(bmp.width, bmp.height))
-                            faceView.setFaceBoxes(boxes)
-                        }
-                    }
+        RetrofitClient.getService().getFacultyClasses().enqueue(object : Callback<JsonObject> {
+            override fun onResponse(call: Call<JsonObject>, resp: Response<JsonObject>) {
+                if (!isAdded) { dlg.dismiss(); return }
+                dlg.dismiss()
+                val arr = resp.body()?.getAsJsonArray("classes")
+                if (resp.isSuccessful && arr != null && arr.size() > 0) {
+                    buildSpinnerDialog(arr, afterStart)
+                } else {
+                    buildFallbackDialog(afterStart)
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "Frame error: ${e.message}")
-            } finally {
-                proxy.close()
             }
-        }
+            override fun onFailure(call: Call<JsonObject>, t: Throwable) {
+                if (!isAdded) { dlg.dismiss(); return }
+                dlg.dismiss()
+                buildFallbackDialog(afterStart)
+            }
+        })
     }
 
-    // ── Capture & process ─────────────────────────────────────────────────────
+    private data class ClassOpt(
+        val classYear: String,
+        val division: String,
+        val label: String,
+        val subjects: List<String>
+    )
 
-    private fun captureAndProcess() {
-        if (isCapturing) return
-        val bmp = latestBitmap ?: run {
-            Toast.makeText(context, "No frame available yet", Toast.LENGTH_SHORT).show()
-            return
+    private fun buildSpinnerDialog(arr: com.google.gson.JsonArray, afterStart: (() -> Unit)? = null) {
+        val ctx = requireContext()
+        val classes = mutableListOf<ClassOpt>()
+        for (el in arr) {
+            val o = el.asJsonObject
+            val subjects = mutableListOf<String>()
+            o.getAsJsonArray("subjects")?.forEach { s -> subjects.add(s.asString) }
+            classes.add(ClassOpt(
+                classYear = o.get("class_year")?.asString ?: "",
+                division  = o.get("division")?.asString ?: "",
+                label     = o.get("label")?.asString?.ifBlank {
+                    "${o.get("class_year")?.asString}-${o.get("division")?.asString}"
+                } ?: "",
+                subjects  = subjects
+            ))
         }
-        if (!FaceSDKWrapper.isInitialized) {
-            Toast.makeText(context, "Face model not ready yet, please wait…", Toast.LENGTH_SHORT).show()
-            return
-        }
-        isCapturing = true
-        capturedBitmap = bmp.copy(bmp.config, false)
-        showProcessing(true, "Detecting faces…")
 
-        Thread {
-            processImage(capturedBitmap!!)
-        }.start()
+        val layout = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(48, 24, 48, 8)
+        }
+
+        TextView(ctx).apply { text = "Class"; textSize = 13f; setTextColor(0xFF888888.toInt()) }
+            .also { layout.addView(it) }
+
+        val spinnerClass = Spinner(ctx)
+        ArrayAdapter(ctx, android.R.layout.simple_spinner_item, classes.map { it.label })
+            .also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item); spinnerClass.adapter = it }
+        layout.addView(spinnerClass)
+
+        TextView(ctx).apply {
+            text = "Subject"; textSize = 13f; setTextColor(0xFF888888.toInt()); setPadding(0, 20, 0, 0)
+        }.also { layout.addView(it) }
+
+        val spinnerSubject = Spinner(ctx)
+        var currentSubjects = classes.firstOrNull()?.subjects ?: emptyList()
+
+        fun rebuildSubs(subjects: List<String>) {
+            val items = if (subjects.isEmpty()) listOf("(none assigned)") else subjects
+            ArrayAdapter(ctx, android.R.layout.simple_spinner_item, items)
+                .also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item); spinnerSubject.adapter = it }
+        }
+        rebuildSubs(currentSubjects)
+        layout.addView(spinnerSubject)
+
+        spinnerClass.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                currentSubjects = classes[pos].subjects; rebuildSubs(currentSubjects)
+            }
+            override fun onNothingSelected(p: AdapterView<*>?) {}
+        }
+
+        AlertDialog.Builder(ctx)
+            .setTitle("New Session")
+            .setView(layout)
+            .setCancelable(false)
+            .setPositiveButton("Start") { _, _ ->
+                val sel = classes.getOrNull(spinnerClass.selectedItemPosition) ?: return@setPositiveButton
+                val subject = currentSubjects.getOrNull(spinnerSubject.selectedItemPosition) ?: ""
+                if (subject.isBlank()) {
+                    Toast.makeText(ctx, "No subject available for this class", Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+                createAndStart(subject, sel.classYear, sel.division, afterStart)
+            }
+            .setNegativeButton("Cancel") { _, _ ->
+                (activity as? FacultyActivity)?.navigateToHome()
+            }
+            .show()
     }
 
-    private fun processGalleryImage(uri: Uri) {
-        showProcessing(true, "Loading image…")
+    private fun buildFallbackDialog(afterStart: (() -> Unit)? = null) {
+        val ctx = requireContext()
+        val layout = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(48, 24, 48, 8) }
+        val etSubject = EditText(ctx).apply { hint = "Subject (e.g. Maths)" }
+        val etClass   = EditText(ctx).apply { hint = "Class year (e.g. FE)"; setPadding(0, 12, 0, 0) }
+        val etDiv     = EditText(ctx).apply { hint = "Division (e.g. A)"; setPadding(0, 12, 0, 0) }
+        layout.addView(etSubject); layout.addView(etClass); layout.addView(etDiv)
+
+        AlertDialog.Builder(ctx)
+            .setTitle("New Session")
+            .setView(layout)
+            .setCancelable(false)
+            .setPositiveButton("Start") { _, _ ->
+                val subject = etSubject.text.toString().trim()
+                if (subject.isBlank()) {
+                    Toast.makeText(ctx, "Subject is required", Toast.LENGTH_SHORT).show(); return@setPositiveButton
+                }
+                createAndStart(subject, etClass.text.toString().trim(), etDiv.text.toString().trim(), afterStart)
+            }
+            .setNegativeButton("Cancel") { _, _ ->
+                (activity as? FacultyActivity)?.navigateToHome()
+            }
+            .show()
+    }
+
+    private fun createAndStart(subject: String, classYear: String, division: String, afterStart: (() -> Unit)? = null) {
+        val ctx     = requireContext()
+        val today   = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+        val now     = SimpleDateFormat("HH:mm", Locale.US).format(Date())
+        val prefs   = ctx.getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE)
+        val teacher = prefs.getString("faculty_display_name", null)
+            ?: prefs.getString("username", "") ?: ""
+
+        val body = JsonObject().apply {
+            addProperty("subject",      subject)
+            addProperty("class_year",   classYear)
+            addProperty("division",     division)
+            addProperty("lecture_date", today)
+            addProperty("start_time",   now)
+            addProperty("teacher",      teacher)
+        }
+
+        RetrofitClient.getService().createFacultyLecture(body).enqueue(object : Callback<JsonObject> {
+            override fun onResponse(call: Call<JsonObject>, resp: Response<JsonObject>) {
+                if (!isAdded) return
+                val lectureId = if (resp.isSuccessful) resp.body()?.get("lecture_id")?.asInt ?: -1 else -1
+                val session = FacultySessionManager.LectureSession(
+                    lectureId = lectureId, subject = subject,
+                    classYear = classYear, division = division, date = today, teacher = teacher
+                )
+                FacultySessionManager.setSession(ctx, session)
+                requireActivity().runOnUiThread { updateSessionLabel(); startCamera(); afterStart?.invoke() }
+            }
+            override fun onFailure(call: Call<JsonObject>, t: Throwable) {
+                if (!isAdded) return
+                val session = FacultySessionManager.LectureSession(
+                    lectureId = -1, subject = subject, classYear = classYear,
+                    division = division, date = today, teacher = teacher
+                )
+                FacultySessionManager.setSession(ctx, session)
+                requireActivity().runOnUiThread {
+                    Toast.makeText(ctx, "Offline — session saved locally", Toast.LENGTH_SHORT).show()
+                    updateSessionLabel(); startCamera(); afterStart?.invoke()
+                }
+            }
+        })
+    }
+
+    private fun importGalleryImage(uri: android.net.Uri) {
+        val session = FacultySessionManager.currentSession ?: return
         Thread {
             try {
                 val stream = requireContext().contentResolver.openInputStream(uri)
                 val bmp    = BitmapFactory.decodeStream(stream)
                 stream?.close()
-                if (bmp == null) {
-                    requireActivity().runOnUiThread {
-                        showProcessing(false)
-                        Toast.makeText(context, "Failed to load image", Toast.LENGTH_SHORT).show()
-                    }
-                    return@Thread
+                if (bmp == null) return@Thread
+                val jpeg  = bitmapToJpeg(bmp)
+                val thumb = Bitmap.createScaledBitmap(bmp, 150, 150, true)
+                bmp.recycle()
+                val ts    = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
+                val file  = saveJpeg(jpeg, ts)
+                val db    = DBManager(requireContext())
+                val rowId = if (file != null) db.insertPendingImage(session.lectureId, file.absolutePath, ts) else -1L
+                val card  = PhotoCard(rowId, file?.absolutePath ?: "", thumb, PhotoStatus.PROCESSING)
+                requireActivity().runOnUiThread {
+                    photoCards.add(0, card)
+                    photoAdapter.notifyItemInserted(0)
+                    rvPhotoGrid.scrollToPosition(0)
+                    updatePhotosHeader()
                 }
-                capturedBitmap = bmp
-                processImage(bmp)
-            } catch (e: Exception) {
-                Log.e(TAG, "Gallery image error", e)
-                requireActivity().runOnUiThread { showProcessing(false) }
-            }
+                uploadCard(card, jpeg, rowId, db)
+            } catch (e: Exception) { Log.e(TAG, "Gallery import error", e) }
         }.start()
     }
 
-    private fun processImage(raw: Bitmap) {
-        requireActivity().runOnUiThread { showProcessing(true, "Enhancing image…") }
+    // ── Camera ────────────────────────────────────────────────────────────────
 
-        // Apply image enhancement (adaptive contrast + sharpening)
-        val enhanced = ImageEnhancer.enhance(raw)
-
-        requireActivity().runOnUiThread { showProcessing(true, "Detecting faces…") }
-
-        val param = FaceDetectionParam().also {
-            it.check_liveness = true
-            it.check_liveness_level = SettingsActivity.getLivenessLevel(requireContext())
+    private fun startCamera() {
+        if (ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.CAMERA)
+            != PackageManager.PERMISSION_GRANTED) {
+            @Suppress("DEPRECATION")
+            requestPermissions(arrayOf(Manifest.permission.CAMERA), 1)
+            return
         }
-        val boxes = FaceSDKWrapper.faceDetection(enhanced, param)
+        ProcessCameraProvider.getInstance(requireContext()).also { future ->
+            future.addListener({
+                cameraProvider = future.get(); bindCamera()
+            }, ContextCompat.getMainExecutor(requireContext()))
+        }
+    }
 
-        requireActivity().runOnUiThread { showProcessing(true, "Recognising ${boxes.size} face(s)…") }
+    @SuppressLint("RestrictedApi")
+    private fun bindCamera() {
+        val provider = cameraProvider ?: return
+        val rotation = previewView.display?.rotation ?: 0
+        val target   = Utils.getOptimalResolution(requireContext())
+        val selector = CameraSelector.Builder()
+            .requireLensFacing(if (useFrontCamera) CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK)
+            .build()
+        val preview = Preview.Builder()
+            .setTargetResolution(target).setTargetRotation(rotation).build()
+            .also { it.setSurfaceProvider(previewView.surfaceProvider) }
+        val analyzer = ImageAnalysis.Builder()
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .setTargetResolution(target).setTargetRotation(rotation).build()
+            .also { it.setAnalyzer(cameraExecutor, FrameGrabber()) }
+        try {
+            provider.unbindAll()
+            val cam = provider.bindToLifecycle(viewLifecycleOwner, selector, preview, analyzer)
+            cameraControl = cam.cameraControl
+            cameraControl?.setLinearZoom(currentZoom)
+        } catch (e: Exception) { Log.e(TAG, "Camera bind failed", e) }
+    }
 
-        val results = mutableListOf<ScanResult>()
-        val threshold = SettingsActivity.getIdentifyThreshold(requireContext())
+    private fun flipCamera() { useFrontCamera = !useFrontCamera; bindCamera() }
 
-        for (box in boxes) {
-            val template = FaceSDKWrapper.templateExtraction(enhanced, box) ?: continue
-            var bestPerson: Person? = null
-            var bestSim = 0f
+    private fun setupZoom() {
+        seekbarZoom.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
+                if (fromUser) { currentZoom = progress / 100f; cameraControl?.setLinearZoom(currentZoom) }
+            }
+            override fun onStartTrackingTouch(sb: SeekBar) {}
+            override fun onStopTrackingTouch(sb: SeekBar) {}
+        })
+    }
 
-            synchronized(DBManager.personList) {
-                for (person in DBManager.personList) {
-                    if (person.templates == null) continue
-                    val sim = FaceSDKWrapper.similarityCalculation(template, person.templates)
-                    if (sim > bestSim) { bestSim = sim; bestPerson = person }
+    @SuppressLint("ClickableViewAccessibility")
+    private fun setupPinchZoom() {
+        val detector = ScaleGestureDetector(requireContext(),
+            object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                override fun onScale(det: ScaleGestureDetector): Boolean {
+                    currentZoom = (currentZoom + (det.scaleFactor - 1f) * 0.5f).coerceIn(0f, 1f)
+                    cameraControl?.setLinearZoom(currentZoom)
+                    seekbarZoom.progress = (currentZoom * 100).toInt()
+                    return true
+                }
+            })
+        previewView.setOnTouchListener { v, ev -> detector.onTouchEvent(ev); v.performClick(); false }
+    }
+
+    inner class FrameGrabber : ImageAnalysis.Analyzer {
+        @OptIn(ExperimentalGetImage::class)
+        override fun analyze(proxy: ImageProxy) {
+            if (isCapturing) { proxy.close(); return }
+            try {
+                val img = proxy.image ?: return
+                latestNv21   = Utils.yuv420ToNv21(img)
+                latestWidth  = img.width
+                latestHeight = img.height
+            } catch (_: Exception) {
+            } finally { proxy.close() }
+        }
+    }
+
+    // ── Capture & upload ──────────────────────────────────────────────────────
+
+    private fun capturePhoto() {
+        if (isCapturing) return
+        val session = FacultySessionManager.currentSession
+        if (session == null) { showSessionPicker(); return }
+        val nv21 = latestNv21; val w = latestWidth; val h = latestHeight
+        if (nv21 == null || w == 0) {
+            Toast.makeText(context, "No frame — point camera at students", Toast.LENGTH_SHORT).show(); return
+        }
+
+        isCapturing = true
+        animateCaptureRing()
+
+        Thread {
+            val bmp = nv21ToBitmap(nv21, w, h) ?: run {
+                requireActivity().runOnUiThread { isCapturing = false }; return@Thread
+            }
+            val jpeg  = bitmapToJpeg(bmp)
+            val thumb = Bitmap.createScaledBitmap(bmp, 150, 150, true)
+            bmp.recycle()
+
+            val ts   = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
+            val file = saveJpeg(jpeg, ts)
+            val db   = DBManager(requireContext())
+            val rowId = if (file != null) db.insertPendingImage(session.lectureId, file.absolutePath, ts) else -1L
+
+            val card = PhotoCard(rowId, file?.absolutePath ?: "", thumb, PhotoStatus.PROCESSING)
+
+            requireActivity().runOnUiThread {
+                photoCards.add(0, card)
+                photoAdapter.notifyItemInserted(0)
+                rvPhotoGrid.scrollToPosition(0)
+                updatePhotosHeader()
+                isCapturing = false
+            }
+
+            uploadCard(card, jpeg, rowId, db)
+        }.start()
+    }
+
+    private fun uploadCard(card: PhotoCard, jpeg: ByteArray, rowId: Long, db: DBManager) {
+        val session = FacultySessionManager.currentSession ?: return
+        val b64  = Base64.encodeToString(jpeg, Base64.NO_WRAP)
+        val body = JsonObject().apply {
+            addProperty("image",      "data:image/jpeg;base64,$b64")
+            addProperty("lecture_id", session.lectureId)
+        }
+
+        RetrofitClient.getService().scanFacultyImage(body).enqueue(object : Callback<JsonObject> {
+            override fun onResponse(call: Call<JsonObject>, resp: Response<JsonObject>) {
+                if (!isAdded) return
+                if (resp.isSuccessful) {
+                    if (rowId >= 0) db.updatePendingImageStatus(rowId, "uploaded")
+                    val facesArr = resp.body()?.getAsJsonArray("faces") ?: com.google.gson.JsonArray()
+                    val newFaces = mutableListOf<ScanResult>()
+                    for (el in facesArr) {
+                        val face       = el.asJsonObject
+                        val personId   = face.get("person_id")?.takeIf { !it.isJsonNull }?.asString
+                        val name       = face.get("name")?.asString ?: "Unknown"
+                        val confidence = face.get("confidence")?.asFloat ?: 0f
+                        val thumbB64   = face.get("face_thumb")?.asString ?: ""
+                        val faceThumb  = decodeThumb(thumbB64)
+                        newFaces.add(ScanResult(faceThumb, personId, name, confidence,
+                            if (personId != null) "present" else "unknown"))
+                        mergeIntoAllFaces(personId, name, confidence, faceThumb)
+                    }
+                    requireActivity().runOnUiThread {
+                        card.faces.addAll(newFaces)
+                        card.status = PhotoStatus.DONE
+                        updateCard(card)
+                    }
+                } else {
+                    requireActivity().runOnUiThread { card.status = PhotoStatus.ERROR; updateCard(card) }
                 }
             }
-
-            val faceCrop = try { Utils.cropFace(enhanced, box) } catch (_: Exception) { null }
-
-            val result = if (bestPerson != null && bestSim >= threshold) {
-                ScanResult(
-                    faceBox    = box,
-                    faceBitmap = faceCrop,
-                    personId   = bestPerson!!.id,
-                    personName = bestPerson!!.name ?: "Unknown",
-                    confidence = bestSim,
-                    status     = "present"
-                )
-            } else {
-                ScanResult(
-                    faceBox    = box,
-                    faceBitmap = faceCrop,
-                    personId   = null,
-                    personName = "Unknown (${(bestSim * 100).toInt()}%)",
-                    confidence = bestSim,
-                    status     = "present"
-                )
+            override fun onFailure(call: Call<JsonObject>, t: Throwable) {
+                if (!isAdded) return
+                requireActivity().runOnUiThread { card.status = PhotoStatus.ERROR; updateCard(card) }
             }
-            results.add(result)
-        }
-
-        requireActivity().runOnUiThread {
-            showProcessing(false)
-            showResults(results, enhanced)
-            isCapturing = false
-        }
+        })
     }
 
-    // ── Results display ───────────────────────────────────────────────────────
-
-    private fun showResults(results: List<ScanResult>, bitmap: Bitmap) {
-        scanResults.clear()
-        scanResults.addAll(results)
-        adapter.notifyDataSetChanged()
-
-        val count = results.size
-        tvResultsCount.text = "$count face${if (count == 1) "" else "s"}"
-
-        // Show face boxes on the preview as a still
-        faceView.setFrameSize(Size(bitmap.width, bitmap.height))
-        faceView.setFaceBoxes(results.map { it.faceBox })
-
-        tvNoResults.visibility    = if (count == 0) View.VISIBLE else View.GONE
-        rvResults.visibility      = if (count > 0) View.VISIBLE else View.GONE
-        rowActions.visibility     = View.VISIBLE
-        fabCapture.visibility     = View.GONE
+    private fun updateCard(card: PhotoCard) {
+        val idx = photoCards.indexOf(card)
+        if (idx >= 0) photoAdapter.notifyItemChanged(idx)
     }
 
-    private fun resetToLivePreview() {
-        scanResults.clear()
-        adapter.notifyDataSetChanged()
-        capturedBitmap?.recycle(); capturedBitmap = null
-        isCapturing         = false
-
-        tvResultsCount.text = "0 faces"
-        tvNoResults.visibility = View.VISIBLE
-        rvResults.visibility   = View.GONE
-        rowActions.visibility  = View.GONE
-        fabCapture.visibility  = View.VISIBLE
-
-        faceView.setFaceBoxes(null)
-
-        if (arguments?.getString("image_uri") == null) {
-            bindCamera()
-        }
-    }
-
-    // ── Mark attendance ───────────────────────────────────────────────────────
-
-    private fun markAttendance() {
-        val session = FacultySessionManager.currentSession
-        if (session == null) {
-            Toast.makeText(context, "No session selected — please start a session first", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        val toMark = scanResults.filter { !it.personId.isNullOrBlank() }
-        if (toMark.isEmpty()) {
-            Toast.makeText(context, "No recognised students to mark", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        val db    = DBManager(requireContext())
-        val ts    = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).format(Date())
-
-        toMark.forEach { result ->
-            db.insertFacultyAttendance(
-                session.lectureId,
-                result.personId!!,
-                result.personName,
-                "",
-                ts,
-                result.status,
-                result.confidence
-            )
-        }
-
-        Toast.makeText(context, "Marked ${toMark.size} students — syncing…", Toast.LENGTH_SHORT).show()
-
-        // Attempt immediate server sync
-        val online = try { NetworkUtils.isOnline(requireContext()) } catch (_: Exception) { false }
-        if (online && session.lectureId > 0) {
-            syncDirectToServer(session.lectureId, toMark, ts)
+    @Synchronized
+    private fun mergeIntoAllFaces(personId: String?, name: String, confidence: Float, thumb: Bitmap?) {
+        if (personId == null) return
+        val idx = allFaces.indexOfFirst { it.personId == personId }
+        if (idx >= 0) {
+            if (confidence > allFaces[idx].confidence)
+                allFaces[idx] = allFaces[idx].copy(faceBitmap = thumb ?: allFaces[idx].faceBitmap, confidence = confidence)
         } else {
-            Toast.makeText(context, "Saved offline — will sync when connected", Toast.LENGTH_SHORT).show()
-            resetToLivePreview()
+            allFaces.add(ScanResult(thumb, personId, name, confidence, "present"))
         }
     }
 
-    private fun syncDirectToServer(lectureId: Int, results: List<ScanResult>, ts: String) {
-        val arr = com.google.gson.JsonArray()
-        results.forEach { r ->
-            com.google.gson.JsonObject().also { o ->
-                o.addProperty("person_id", r.personId)
-                o.addProperty("status",    r.status)
-            }.let { arr.add(it) }
+    // ── Capture animation ─────────────────────────────────────────────────────
+
+    private fun animateCaptureRing() {
+        viewCaptureRing.visibility = View.VISIBLE
+        viewCaptureRing.alpha  = 1f
+        viewCaptureRing.scaleX = 1f
+        viewCaptureRing.scaleY = 1f
+        AnimatorSet().apply {
+            playTogether(
+                ObjectAnimator.ofFloat(viewCaptureRing, "scaleX", 1f, 2.8f),
+                ObjectAnimator.ofFloat(viewCaptureRing, "scaleY", 1f, 2.8f),
+                ObjectAnimator.ofFloat(viewCaptureRing, "alpha",  1f, 0f)
+            )
+            duration = 480
+            start()
         }
-        val body = com.google.gson.JsonObject().apply {
-            add("attendance", arr)
+    }
+
+    // ── Card detail ───────────────────────────────────────────────────────────
+
+    private fun showCardDetail(card: PhotoCard) {
+        val ctx = requireContext()
+        when (card.status) {
+            PhotoStatus.PROCESSING -> {
+                Toast.makeText(ctx, "Still processing…", Toast.LENGTH_SHORT).show(); return
+            }
+            PhotoStatus.ERROR -> {
+                AlertDialog.Builder(ctx)
+                    .setTitle("Upload failed")
+                    .setMessage("Server could not process this photo. Retry?")
+                    .setPositiveButton("Retry") { _, _ ->
+                        card.status = PhotoStatus.PROCESSING
+                        updateCard(card)
+                        Thread {
+                            val file = File(card.filePath)
+                            if (file.exists()) {
+                                val jpeg = file.readBytes()
+                                uploadCard(card, jpeg, card.id, DBManager(ctx))
+                            }
+                        }.start()
+                    }
+                    .setNegativeButton("Dismiss", null).show()
+                return
+            }
+            PhotoStatus.DONE -> { /* fall through */ }
+        }
+        if (card.faces.isEmpty()) {
+            Toast.makeText(ctx, "No faces detected in this photo", Toast.LENGTH_SHORT).show(); return
         }
 
-        com.faceplugin.facerecognition.api.RetrofitClient.getService()
-            .markFacultyLectureAttendance(lectureId, body)
-            .enqueue(object : retrofit2.Callback<com.google.gson.JsonObject> {
-                override fun onResponse(
-                    call: retrofit2.Call<com.google.gson.JsonObject>,
-                    resp: retrofit2.Response<com.google.gson.JsonObject>
-                ) {
-                    if (resp.isSuccessful) {
-                        // Mark rows as synced in local DB
-                        val db = DBManager(requireContext())
-                        for (pair in db.unsyncedFacultyAttendance) {
-                            db.markFacultyAttendanceSynced(pair.first)
+        val scroll = android.widget.ScrollView(ctx)
+        val inner  = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 16, 24, 16) }
+        scroll.addView(inner)
+
+        for (face in card.faces) {
+            val row = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity     = android.view.Gravity.CENTER_VERTICAL
+                setPadding(0, 10, 0, 10)
+            }
+            val thumbPx = (64 * resources.displayMetrics.density).toInt()
+            val iv = android.widget.ImageView(ctx).apply {
+                layoutParams = LinearLayout.LayoutParams(thumbPx, thumbPx)
+                scaleType    = android.widget.ImageView.ScaleType.CENTER_CROP
+                if (face.faceBitmap != null) setImageBitmap(face.faceBitmap)
+                else setImageResource(R.drawable.openvision_logo)
+            }
+            row.addView(iv)
+
+            val col = LinearLayout(ctx).apply {
+                orientation  = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                setPadding(16, 0, 0, 0)
+            }
+            val tvName = TextView(ctx).apply {
+                text = face.personName; textSize = 14f
+                setTextColor(if (face.personId != null) 0xFFFFFFFF.toInt() else 0xFFFF5555.toInt())
+            }
+            val tvConf = TextView(ctx).apply {
+                text = "${face.confidence.toInt()}% confidence"; textSize = 11f
+                setTextColor(0x99FFFFFF.toInt())
+            }
+            val tvToggle = TextView(ctx).apply {
+                text = statusLabel(face.status); textSize = 13f
+                setTextColor(statusColor(face.status))
+                setPadding(0, 6, 0, 0)
+                setOnClickListener {
+                    face.status = if (face.status == "present") "absent" else "present"
+                    text = statusLabel(face.status)
+                    setTextColor(statusColor(face.status))
+                    allFaces.indexOfFirst { it.personId == face.personId }
+                        .takeIf { it >= 0 }
+                        ?.let { i -> allFaces[i] = allFaces[i].copy(status = face.status) }
+                }
+            }
+            col.addView(tvName); col.addView(tvConf); col.addView(tvToggle)
+            row.addView(col)
+            inner.addView(row)
+
+            // Divider
+            View(ctx).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 1).also { it.setMargins(0, 4, 0, 4) }
+                setBackgroundColor(0x22FFFFFF)
+            }.also { inner.addView(it) }
+        }
+
+        AlertDialog.Builder(ctx)
+            .setTitle("Detected Faces (${card.faces.size})")
+            .setView(scroll)
+            .setPositiveButton("Done", null)
+            .show()
+    }
+
+    private fun statusLabel(s: String) = if (s == "present") "✓ Present (tap to mark absent)" else "✗ Absent (tap to mark present)"
+    private fun statusColor(s: String) = if (s == "present") 0xFF4CAF50.toInt() else 0xFFF44336.toInt()
+
+    // ── End session ───────────────────────────────────────────────────────────
+
+    private fun confirmEndSession() {
+        val ctx     = requireContext()
+        val session = FacultySessionManager.currentSession
+        if (session == null) { (activity as? FacultyActivity)?.navigateToHome(); return }
+
+        val identified = allFaces.count { !it.personId.isNullOrBlank() }
+        AlertDialog.Builder(ctx)
+            .setTitle("End Session")
+            .setMessage("Mark attendance for $identified identified student(s) and end the session?")
+            .setPositiveButton("End & Mark") { _, _ -> markAndEnd() }
+            .setNegativeButton("Just End") { _, _ ->
+                FacultySessionManager.clearSession(ctx)
+                (activity as? FacultyActivity)?.navigateToHome()
+            }
+            .setNeutralButton("Cancel", null)
+            .show()
+    }
+
+    private fun markAndEnd() {
+        val ctx     = requireContext()
+        val session = FacultySessionManager.currentSession ?: return
+        val toMark  = allFaces.filter { !it.personId.isNullOrBlank() }
+
+        if (toMark.isEmpty()) {
+            FacultySessionManager.clearSession(ctx)
+            (activity as? FacultyActivity)?.navigateToHome()
+            return
+        }
+
+        val db = DBManager(ctx)
+        val ts = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).format(Date())
+        toMark.forEach { r ->
+            db.insertFacultyAttendance(session.lectureId, r.personId!!, r.personName, "", ts, r.status, r.confidence)
+        }
+
+        val arr = com.google.gson.JsonArray()
+        toMark.forEach { r ->
+            arr.add(JsonObject().apply {
+                addProperty("person_id",  r.personId)
+                addProperty("status",     r.status)
+                addProperty("timestamp",  ts)
+                addProperty("confidence", r.confidence / 100f)
+            })
+        }
+
+        RetrofitClient.getService().markFacultyLectureAttendance(session.lectureId,
+            JsonObject().apply { add("attendance", arr) })
+            .enqueue(object : Callback<JsonObject> {
+                override fun onResponse(call: Call<JsonObject>, resp: Response<JsonObject>) {
+                    if (!isAdded) return
+                    requireActivity().runOnUiThread {
+                        if (resp.isSuccessful) {
+                            for (p in db.unsyncedFacultyAttendance) db.markFacultyAttendanceSynced(p.first)
+                            Toast.makeText(ctx, "Attendance marked for ${toMark.size} student(s)!", Toast.LENGTH_LONG).show()
+                        } else {
+                            Toast.makeText(ctx, "Saved locally — will sync later", Toast.LENGTH_SHORT).show()
                         }
-                        requireActivity().runOnUiThread {
-                            Toast.makeText(context, "Attendance synced!", Toast.LENGTH_SHORT).show()
-                            resetToLivePreview()
-                        }
-                    } else {
-                        requireActivity().runOnUiThread {
-                            Toast.makeText(context, "Saved offline (server error ${resp.code()})", Toast.LENGTH_SHORT).show()
-                            resetToLivePreview()
-                        }
+                        FacultySessionManager.clearSession(ctx)
+                        (activity as? FacultyActivity)?.navigateToHome()
                     }
                 }
-                override fun onFailure(call: retrofit2.Call<com.google.gson.JsonObject>, t: Throwable) {
+                override fun onFailure(call: Call<JsonObject>, t: Throwable) {
+                    if (!isAdded) return
                     requireActivity().runOnUiThread {
-                        Toast.makeText(context, "Saved offline — no network", Toast.LENGTH_SHORT).show()
-                        resetToLivePreview()
+                        Toast.makeText(ctx, "Saved offline — will sync when connected", Toast.LENGTH_SHORT).show()
+                        FacultySessionManager.clearSession(ctx)
+                        (activity as? FacultyActivity)?.navigateToHome()
                     }
                 }
             })
@@ -439,52 +711,135 @@ class FacultyScanFragment : Fragment() {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private fun showProcessing(show: Boolean, label: String = "") {
-        layoutProcessing.visibility = if (show) View.VISIBLE else View.GONE
-        if (label.isNotBlank()) tvProcessing.text = label
+    private fun updateSessionLabel() {
+        tvScanSession.text = FacultySessionManager.currentSession?.displayLabel ?: "No session"
     }
 
-    private fun updateSessionLabel() {
-        val session = FacultySessionManager.currentSession
-        tvScanSession.text = session?.displayLabel ?: "No session — tap Home to create one"
+    private fun updatePhotosHeader() {
+        tvPhotosHeader.text = if (photoCards.isEmpty())
+            "No photos yet — tap the camera to capture"
+        else
+            "${photoCards.size} photo${if (photoCards.size == 1) "" else "s"} captured"
     }
+
+    private fun nv21ToBitmap(nv21: ByteArray, width: Int, height: Int): Bitmap? = try {
+        val yuv = YuvImage(nv21, ImageFormat.NV21, width, height, null)
+        val out = ByteArrayOutputStream()
+        yuv.compressToJpeg(Rect(0, 0, width, height), 90, out)
+        val bytes = out.toByteArray()
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+    } catch (_: Exception) { null }
+
+    private fun bitmapToJpeg(bmp: Bitmap, quality: Int = 85): ByteArray {
+        val out = ByteArrayOutputStream()
+        bmp.compress(Bitmap.CompressFormat.JPEG, quality, out)
+        return out.toByteArray()
+    }
+
+    private fun saveJpeg(jpeg: ByteArray, ts: String): File? = try {
+        val dir  = File(requireContext().filesDir, "faculty_pending").also { it.mkdirs() }
+        val file = File(dir, "scan_$ts.jpg")
+        FileOutputStream(file).use { it.write(jpeg) }
+        file
+    } catch (e: Exception) { Log.e(TAG, "Save JPEG failed", e); null }
+
+    private fun decodeThumb(b64: String): Bitmap? = try {
+        if (b64.isBlank()) null
+        else {
+            val payload = if (',' in b64) b64.substringAfter(',') else b64
+            val bytes   = Base64.decode(payload, Base64.DEFAULT)
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        }
+    } catch (_: Exception) { null }
 
     private fun bindViews(v: View) {
-        previewView      = v.findViewById(R.id.faculty_preview)
-        faceView         = v.findViewById(R.id.faculty_face_view)
-        fabCapture       = v.findViewById(R.id.fab_capture)
-        layoutProcessing = v.findViewById(R.id.layout_processing)
-        tvProcessing     = v.findViewById(R.id.tv_processing_label)
-        tvScanSession    = v.findViewById(R.id.tv_scan_session)
-        tvResultsHeader  = v.findViewById(R.id.tv_results_header)
-        tvResultsCount   = v.findViewById(R.id.tv_results_count)
-        tvNoResults      = v.findViewById(R.id.tv_no_results)
-        rvResults        = v.findViewById(R.id.rv_scan_results)
-        rowActions       = v.findViewById(R.id.row_action_buttons)
-        btnRetake        = v.findViewById(R.id.btn_retake)
-        btnMark          = v.findViewById(R.id.btn_mark_attendance)
+        previewView     = v.findViewById(R.id.faculty_preview)
+        fabCapture      = v.findViewById(R.id.fab_capture)
+        fabFlip         = v.findViewById(R.id.fab_flip_camera)
+        viewCaptureRing = v.findViewById(R.id.view_capture_ring)
+        seekbarZoom     = v.findViewById(R.id.seekbar_zoom)
+        tvScanSession   = v.findViewById(R.id.tv_scan_session)
+        btnEndSession   = v.findViewById(R.id.btn_end_session)
+        tvPhotosHeader  = v.findViewById(R.id.tv_photos_header)
+        rvPhotoGrid     = v.findViewById(R.id.rv_photo_grid)
     }
 
+    @Deprecated("Deprecated in Java")
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        @Suppress("DEPRECATION")
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == 1 && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
-            startCamera()
-        }
+        if (requestCode == 1 && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) startCamera()
     }
 }
 
-// ── RecyclerView Adapter ──────────────────────────────────────────────────────
+// ── Photo card data model ─────────────────────────────────────────────────────
+
+enum class PhotoStatus { PROCESSING, DONE, ERROR }
+
+data class PhotoCard(
+    val id: Long,
+    val filePath: String,
+    var thumbnail: Bitmap?,
+    var status: PhotoStatus,
+    val faces: MutableList<ScanResult> = mutableListOf()
+)
+
+// ── Photo card adapter (3-column grid) ───────────────────────────────────────
+
+class PhotoCardAdapter(
+    private val items: MutableList<PhotoCard>,
+    private val onClick: (PhotoCard) -> Unit
+) : RecyclerView.Adapter<PhotoCardAdapter.VH>() {
+
+    inner class VH(view: View) : RecyclerView.ViewHolder(view) {
+        val ivThumb:       android.widget.ImageView = view.findViewById(R.id.iv_photo_thumb)
+        val overlayProc:   View                     = view.findViewById(R.id.overlay_processing)
+        val tvFaceCount:   TextView                 = view.findViewById(R.id.tv_face_count)
+        val tvErrorBadge:  TextView                 = view.findViewById(R.id.tv_error_badge)
+    }
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH =
+        VH(LayoutInflater.from(parent.context).inflate(R.layout.item_photo_card, parent, false))
+
+    override fun onBindViewHolder(holder: VH, pos: Int) {
+        val card = items[pos]
+        if (card.thumbnail != null) holder.ivThumb.setImageBitmap(card.thumbnail)
+        else holder.ivThumb.setImageResource(R.drawable.openvision_logo)
+
+        holder.overlayProc.visibility  = if (card.status == PhotoStatus.PROCESSING) View.VISIBLE else View.GONE
+        holder.tvErrorBadge.visibility = if (card.status == PhotoStatus.ERROR) View.VISIBLE else View.GONE
+        if (card.status == PhotoStatus.DONE) {
+            holder.tvFaceCount.visibility = View.VISIBLE
+            holder.tvFaceCount.text = "${card.faces.size} face${if (card.faces.size == 1) "" else "s"}"
+        } else {
+            holder.tvFaceCount.visibility = View.GONE
+        }
+        holder.itemView.setOnClickListener { onClick(card) }
+    }
+
+    override fun getItemCount() = items.size
+}
+
+// ── ScanResult + ScanResultAdapter (used by FacultyHistoryFragment) ───────────
+
+data class ScanResult(
+    val faceBitmap: Bitmap?,
+    val personId:   String?,
+    val personName: String,
+    val confidence: Float,
+    var status:     String = "present"
+)
 
 class ScanResultAdapter(
-    private val items: List<FacultyScanFragment.ScanResult>,
-    private val onStatusChanged: (FacultyScanFragment.ScanResult, String) -> Unit
+    private val items: MutableList<ScanResult>,
+    private val onStatusChanged: (ScanResult, String) -> Unit
 ) : RecyclerView.Adapter<ScanResultAdapter.VH>() {
 
     inner class VH(view: View) : RecyclerView.ViewHolder(view) {
-        val ivFace:      android.widget.ImageView = view.findViewById(R.id.iv_face_thumb)
-        val tvName:      TextView                 = view.findViewById(R.id.tv_person_name)
-        val tvConf:      TextView                 = view.findViewById(R.id.tv_confidence)
-        val tvStatus:    TextView                 = view.findViewById(R.id.tv_status_badge)
+        val ivFace:   android.widget.ImageView = view.findViewById(R.id.iv_face_thumb)
+        val tvName:   TextView                 = view.findViewById(R.id.tv_person_name)
+        val tvConf:   TextView                 = view.findViewById(R.id.tv_confidence)
+        val tvStatus: TextView                 = view.findViewById(R.id.tv_status_badge)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH =
@@ -493,28 +848,19 @@ class ScanResultAdapter(
     override fun onBindViewHolder(holder: VH, pos: Int) {
         val item = items[pos]
         holder.tvName.text  = item.personName
-        holder.tvConf.text  = "${(item.confidence * 100).toInt()}% match"
+        holder.tvConf.text  = "${item.confidence.toInt()}% match"
         holder.tvStatus.text = if (item.status == "present") "Present" else "Absent"
-        holder.tvStatus.setTextColor(
-            if (item.status == "present") 0xFF4CAF50.toInt() else 0xFFF44336.toInt()
-        )
-        if (item.personId == null) {
-            holder.tvName.setTextColor(0xFFFF5555.toInt())
-        } else {
-            holder.tvName.setTextColor(0xFFFFFFFF.toInt())
-        }
-        if (item.faceBitmap != null) {
-            holder.ivFace.setImageBitmap(item.faceBitmap)
-        } else {
-            holder.ivFace.setImageResource(R.drawable.openvision_logo)
-        }
-        // Tap to toggle present/absent
+        holder.tvStatus.setTextColor(if (item.status == "present") 0xFF4CAF50.toInt() else 0xFFF44336.toInt())
+        holder.tvName.setTextColor(if (item.personId == null) 0xFFFF5555.toInt() else 0xFFFFFFFF.toInt())
+        if (item.faceBitmap != null) holder.ivFace.setImageBitmap(item.faceBitmap)
+        else holder.ivFace.setImageResource(R.drawable.openvision_logo)
         holder.itemView.setOnClickListener {
             val newStatus = if (item.status == "present") "absent" else "present"
+            item.status = newStatus
             onStatusChanged(item, newStatus)
             notifyItemChanged(pos)
         }
     }
 
-    override fun getItemCount(): Int = items.size
+    override fun getItemCount() = items.size
 }

@@ -23,6 +23,23 @@ from db_factory import set_row_factory
 from concurrent.futures import ThreadPoolExecutor
 from services.face_service import _extract_structural_vector
 
+def _faculty_matches(mapped_faculty: str, username: str) -> bool:
+    """True if mapped_faculty matches username, handling email vs local-part differences.
+
+    mapped_subjects may store 'talekar@kbtcoe.org' while g.username is 'talekar', or vice-versa.
+    """
+    a = (mapped_faculty or "").lower().strip()
+    b = (username or "").lower().strip()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    # strip domain from whichever side has one
+    a_local = a.split("@")[0]
+    b_local = b.split("@")[0]
+    return a_local == b_local or a_local == b or a == b_local
+
+
 def _get_redis():
     try:
         from app import redis_client as _rc
@@ -316,7 +333,7 @@ def get_persons():
             for cl in all_classes:
                 try:
                     ms = json.loads(cl[3]) if cl[3] else []
-                    if any(m.get('faculty') == g.username for m in ms):
+                    if any(_faculty_matches(m.get('faculty', ''), g.username) for m in ms):
                         assigned_classes.append((cl[0], cl[1], cl[2])) # (year, div, branch)
                 except (json.JSONDecodeError, ValueError): pass
             

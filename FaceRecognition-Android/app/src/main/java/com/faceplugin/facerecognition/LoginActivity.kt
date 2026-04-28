@@ -43,11 +43,33 @@ class LoginActivity : AppCompatActivity() {
         val tvServerUrl = findViewById<TextView>(R.id.tv_server_url)
         val tvBusiness = findViewById<TextView>(R.id.tv_business_name)
         val btnParentLogin = findViewById<TextView>(R.id.btn_parent_login)
+        val btnFacultyLogin = findViewById<TextView>(R.id.btn_faculty_login)
 
         val etStudentId = findViewById<EditText>(R.id.et_student_id)
         val etMobileNumber = findViewById<EditText>(R.id.et_mobile_number)
         var isParentLogin = false
-        
+
+        fun switchToStaffLogin() {
+            isParentLogin = false
+            etUsername.visibility = View.VISIBLE
+            etPassword.visibility = View.VISIBLE
+            btnRegister.visibility = View.GONE
+            etStudentId.visibility = View.GONE
+            etMobileNumber.visibility = View.GONE
+            btnLogin.text = "Faculty / Staff Sign In"
+            btnFacultyLogin.text = "← Student / Parent Login"
+        }
+
+        fun switchToParentLogin() {
+            isParentLogin = true
+            etUsername.visibility = View.GONE
+            etPassword.visibility = View.GONE
+            etStudentId.visibility = View.VISIBLE
+            etMobileNumber.visibility = View.VISIBLE
+            btnLogin.text = "Sign in to AttendX"
+            btnFacultyLogin.text = "Faculty Login"
+        }
+
         btnParentLogin.setOnClickListener {
             if (!isParentLogin) {
                 isParentLogin = true
@@ -70,16 +92,21 @@ class LoginActivity : AppCompatActivity() {
             }
         }
 
+        btnFacultyLogin.setOnClickListener {
+            if (isParentLogin) switchToStaffLogin() else switchToParentLogin()
+        }
+
         // AttendX Customization
         if (BuildConfig.IS_ATTENDX) {
-            // Default to Parent Login
+            // Default to parent/student login; faculty can tap "Faculty Login" to switch
             isParentLogin = true
             etUsername.visibility = View.GONE
             etPassword.visibility = View.GONE
             btnRegister.visibility = View.GONE
             etStudentId.visibility = View.VISIBLE
             etMobileNumber.visibility = View.VISIBLE
-            btnParentLogin.visibility = View.GONE // Hide toggle
+            btnParentLogin.visibility = View.GONE
+            btnFacultyLogin.visibility = View.VISIBLE
             btnLogin.text = "Sign in to AttendX"
         }
 
@@ -105,14 +132,16 @@ class LoginActivity : AppCompatActivity() {
             }
             if (!code.isNullOrBlank()) {
                 tvBusiness.text = "Business: $label"
-                btnParentLogin.visibility = if (allowParentLogin) View.VISIBLE else View.GONE
+                if (!BuildConfig.IS_ATTENDX) {
+                    btnParentLogin.visibility = if (allowParentLogin) View.VISIBLE else View.GONE
+                }
             } else {
                 tvBusiness.text = "Business: -"
-                btnParentLogin.visibility = View.GONE
+                if (!BuildConfig.IS_ATTENDX) btnParentLogin.visibility = View.GONE
             }
         } catch (_: Exception) {
             tvBusiness.text = "Business: -"
-            btnParentLogin.visibility = View.GONE
+            if (!BuildConfig.IS_ATTENDX) btnParentLogin.visibility = View.GONE
         }
         
         tvServerUrl.text = "Server: " + RetrofitClient.getBaseUrl()

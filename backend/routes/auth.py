@@ -377,12 +377,20 @@ def login():
                 attendx_verticals = {'bulk_attendance_attendx', 'attendx'}
                 tapinx_verticals  = {'school', 'hostel', 'daily_wages', 'tapinx', 'wages', 'factory', 'enterprise'}
                 v_lower = vendor_vertical.lower()
-                if app_brand == 'attendx' and v_lower not in attendx_verticals:
-                    conn.close()
-                    return jsonify({"error": "This business is not registered on AttendX"}), 403
-                if app_brand == 'tapinx' and v_lower in attendx_verticals:
-                    conn.close()
-                    return jsonify({"error": "This business is not registered on TapInX"}), 403
+                # Faculty using the AttendX mobile app are exempt from the brand check —
+                # they can belong to any vendor vertical and still use AttendX to mark attendance.
+                faculty_attendx_mobile = (
+                    user.get('role') == 'faculty' and
+                    platform == 'mobile' and
+                    app_brand == 'attendx'
+                )
+                if not faculty_attendx_mobile:
+                    if app_brand == 'attendx' and v_lower not in attendx_verticals:
+                        conn.close()
+                        return jsonify({"error": "This business is not registered on AttendX"}), 403
+                    if app_brand == 'tapinx' and v_lower in attendx_verticals:
+                        conn.close()
+                        return jsonify({"error": "This business is not registered on TapInX"}), 403
 
             try:
                 c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (user['vendor_id'],))
@@ -408,10 +416,9 @@ def login():
                     else:
                         c.execute("DELETE FROM active_sessions WHERE platform = 'web' AND last_active < datetime('now','-1 day')")
                     c.execute("DELETE FROM active_sessions WHERE username = ? AND platform = 'web' AND (device_id IS NULL OR device_id = '')", (username,))
-                    # Faculty: one active session at a time — kick out any existing
-                    # web session the moment they log in from a new device/browser.
+                    # Faculty: single-session across ALL platforms — new login invalidates everything
                     if user.get('role') == 'faculty':
-                        c.execute("DELETE FROM active_sessions WHERE username = ? AND platform = 'web'", (username,))
+                        c.execute("DELETE FROM active_sessions WHERE username = ?", (username,))
                     conn.commit()
                 except Exception:
                     pass
@@ -422,6 +429,12 @@ def login():
                     if app_type != 'attendx':
                         conn.close()
                         return jsonify({"error": "Faculty accounts can only log in via the AttendX app."}), 403
+                    # Single-session: new login kicks all existing sessions on any platform
+                    try:
+                        c.execute("DELETE FROM active_sessions WHERE username = ?", (username,))
+                        conn.commit()
+                    except Exception:
+                        pass
 
                 # Owner mobile access requires the wages feature
                 if user['role'] == 'owner':

@@ -4,6 +4,7 @@ import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import retrofit2.Retrofit;
 import retrofit2.converter.gson.GsonConverterFactory;
+import java.util.concurrent.TimeUnit;
 
 import android.content.Intent;
 import com.faceplugin.facerecognition.MyGlobal;
@@ -39,7 +40,10 @@ public class RetrofitClient {
 
     public static GreetingService getService() {
         if (retrofit == null) {
-            OkHttpClient.Builder httpClient = new OkHttpClient.Builder();
+            OkHttpClient.Builder httpClient = new OkHttpClient.Builder()
+                    .connectTimeout(30, TimeUnit.SECONDS)
+                    .readTimeout(120, TimeUnit.SECONDS)   // face detection can take 15-30s
+                    .writeTimeout(60, TimeUnit.SECONDS);  // large base64 image uploads
             httpClient.addInterceptor(chain -> {
                 Request original = chain.request();
                 Request.Builder builder = original.newBuilder()

@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="100dp"
+    android:layout_margin="3dp"
+    android:background="@drawable/bg_card_dark">
+
+    <ImageView
+        android:id="@+id/iv_photo_thumb"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scaleType="centerCrop"
+        android:background="#1A1A2E"/>
+
+    <!-- Processing spinner overlay -->
+    <LinearLayout
+        android:id="@+id/overlay_processing"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:background="#AA000000"
+        android:visibility="gone">
+        <ProgressBar
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:indeterminate="true"/>
+    </LinearLayout>
+
+    <!-- Face count badge (shown on success) -->
+    <TextView
+        android:id="@+id/tv_face_count"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|start"
+        android:layout_margin="5dp"
+        android:paddingHorizontal="6dp"
+        android:paddingVertical="2dp"
+        android:textSize="10sp"
+        android:textColor="#FFFFFFFF"
+        android:background="#BB4CAF50"
+        android:visibility="gone"/>
+
+    <!-- Error badge -->
+    <TextView
+        android:id="@+id/tv_error_badge"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|start"
+        android:layout_margin="5dp"
+        android:paddingHorizontal="6dp"
+        android:paddingVertical="2dp"
+        android:text="Retry"
+        android:textSize="10sp"
+        android:textColor="#FFFFFFFF"
+        android:background="#BBF44336"
+        android:visibility="gone"/>
+
+</FrameLayout>

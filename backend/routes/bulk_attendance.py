@@ -544,26 +544,68 @@ def get_parent_lecture_attendance():
 
 # ── Faculty Mobile Sync ───────────────────────────────────────────────────────
 
-@bulk_attendance_bp.route("/bulk-attendance/faculty/sync", methods=["POST"])
-@require_auth
-def faculty_sync_attendance():
-    """Accept queued attendance records from AttendX faculty mobile app.
+@bulk_attendance_bp.route("/bulk-attendance/faculty/classes", methods=["GET"])
+@require_auth()
+def faculty_assigned_classes():
+    """Return classes (+ subjects) assigned to the logged-in faculty.
 
-    Payload:
-        {
-          "records": [
-            {"lecture_id": 1, "person_id": "abc", "status": "present",
-             "timestamp": "2025-01-01T10:00:00", "confidence": 0.92}
-          ]
-        }
+    For vendor_admin / super_admin returns all classes.
+    For faculty returns only classes where their username appears in mapped_subjects.
+    Response: {classes: [{id, class_year, division, branch, label, subjects: [str]}]}
     """
-    data_jwt = verify_token(request)
-    if not data_jwt:
-        return jsonify({"error": "Unauthorized"}), 401
-    if data_jwt.get("role") not in ("faculty", "vendor_admin", "super_admin"):
+    if g.user_role not in ("faculty", "vendor_admin", "super_admin"):
         return jsonify({"error": "Forbidden"}), 403
 
-    vendor_id = data_jwt.get("vendor_id")
+    vendor_id = g.vendor_id
+    username  = g.username
+
+    conn = get_db_connection()
+    c    = conn.cursor()
+    c.execute(
+        "SELECT id, class_year, division, branch, label, mapped_subjects "
+        "FROM classes WHERE vendor_id = ? ORDER BY class_year, division",
+        (vendor_id,)
+    )
+    rows = c.fetchall() or []
+    conn.close()
+
+    result = []
+    for r in rows:
+        try:
+            ms = json.loads(r[5]) if r[5] else []
+        except Exception:
+            ms = []
+
+        if g.user_role == "faculty":
+            def _fm(mf):
+                a = (mf or "").lower().strip(); b = username.lower().strip()
+                return a == b or a.split("@")[0] == b.split("@")[0] or a.split("@")[0] == b or a == b.split("@")[0]
+            if not any(_fm(m.get("faculty", "")) for m in ms):
+                continue
+            subjects = [m["subject"] for m in ms if m.get("subject") and _fm(m.get("faculty", ""))]
+        else:
+            subjects = list({m["subject"] for m in ms if m.get("subject")})
+
+        result.append({
+            "id":         r[0],
+            "class_year": r[1] or "",
+            "division":   r[2] or "",
+            "branch":     r[3] or "",
+            "label":      r[4] or f"{r[1]}-{r[2]}",
+            "subjects":   subjects,
+        })
+
+    return jsonify({"classes": result})
+
+
+@bulk_attendance_bp.route("/bulk-attendance/faculty/sync", methods=["POST"])
+@require_auth()
+def faculty_sync_attendance():
+    """Accept queued attendance records from AttendX faculty mobile app."""
+    if g.user_role not in ("faculty", "vendor_admin", "super_admin"):
+        return jsonify({"error": "Forbidden"}), 403
+
+    vendor_id = g.vendor_id
     payload   = request.get_json(silent=True) or {}
     records   = payload.get("records", [])
     if not records:
@@ -620,3 +662,70 @@ def faculty_sync_attendance():
     conn.commit()
     conn.close()
     return jsonify({"synced": synced, "errors": errors})
+
+
+@bulk_attendance_bp.route("/bulk-attendance/faculty/scan", methods=["POST"])
+@require_auth()
+def faculty_scan_image():
+    """Faculty submits a photo; server runs fast-mode face detection and returns matches.
+
+    POST  {image: base64_str, lecture_id: int (optional)}
+    Returns {faces: [{person_id, name, confidence, matched, face_thumb}], count}
+    """
+    import base64 as _b64
+
+    if g.user_role not in ("faculty", "vendor_admin", "super_admin"):
+        return jsonify({"error": "Faculty access required"}), 403
+
+    vendor_id = g.vendor_id
+    data      = request.get_json(silent=True) or {}
+    img_b64   = data.get("image")
+
+    if not img_b64:
+        if "image" in request.files:
+            img_b64 = "data:image/jpeg;base64," + _b64.b64encode(
+                request.files["image"].read()
+            ).decode()
+        else:
+            return jsonify({"error": "image required"}), 400
+
+    try:
+        _, encoded = img_b64.split(",", 1) if "," in img_b64 else ("", img_b64)
+        raw = _b64.b64decode(encoded)
+    except Exception:
+        return jsonify({"error": "invalid image encoding"}), 400
+
+    params = {"fast": True, "crop_mode": "Portrait", "det_max_side": 1280}
+
+    try:
+        from services.face_service import _detect_faces_from_bytes
+        faces_raw, _ = _detect_faces_from_bytes(raw, params, vendor_id)
+    except Exception as exc:
+        logger.warning("faculty_scan_image detection error: %s", exc)
+        faces_raw = []  # return empty result instead of crashing
+
+    results = []
+    for face in faces_raw:
+        suggestions = face.get("suggestions") or []
+        if suggestions:
+            best       = suggestions[0]
+            person_id  = best.get("person_id")
+            name       = best.get("name") or "Unknown"
+            confidence = round(float(best.get("similarity", 0.0)) * 100, 1)
+            matched    = True
+        else:
+            person_id  = None
+            name       = "Unknown"
+            confidence = 0.0
+            matched    = False
+
+        face_thumb = (face.get("thumbs") or {}).get("face") or ""
+        results.append({
+            "person_id":  str(person_id) if person_id is not None else None,
+            "name":       name,
+            "confidence": confidence,
+            "matched":    matched,
+            "face_thumb": face_thumb,
+        })
+
+    return jsonify({"faces": results, "count": len(results), "lecture_id": data.get("lecture_id")})

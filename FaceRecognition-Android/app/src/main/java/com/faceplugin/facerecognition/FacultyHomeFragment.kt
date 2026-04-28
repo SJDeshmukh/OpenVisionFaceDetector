@@ -5,7 +5,6 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -14,14 +13,6 @@ import androidx.work.Constraints
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequest
 import androidx.work.WorkManager
-import com.faceplugin.facerecognition.api.RetrofitClient
-import com.google.gson.JsonObject
-import retrofit2.Call
-import retrofit2.Callback
-import retrofit2.Response
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 class FacultyHomeFragment : Fragment() {
 
@@ -55,21 +46,13 @@ class FacultyHomeFragment : Fragment() {
 
         updateSessionDisplay()
         updateStats()
+        autoSyncStudentsIfNeeded()
 
-        view.findViewById<LinearLayout>(R.id.btn_new_session).setOnClickListener { showNewSessionDialog() }
         view.findViewById<LinearLayout>(R.id.btn_scan).setOnClickListener {
-            val session = FacultySessionManager.currentSession
-            if (session == null) {
-                Toast.makeText(context, "Please start a session first", Toast.LENGTH_SHORT).show()
-                showNewSessionDialog()
-            } else {
-                (activity as? FacultyActivity)?.navigateToScan()
-            }
+            (activity as? FacultyActivity)?.navigateToScan()
         }
         view.findViewById<LinearLayout>(R.id.btn_upload).setOnClickListener { pickImageFromGallery() }
         view.findViewById<LinearLayout>(R.id.btn_load_students).setOnClickListener { loadStudents() }
-        view.findViewById<LinearLayout>(R.id.btn_sync).setOnClickListener { syncNow() }
-        view.findViewById<LinearLayout>(R.id.btn_end_session).setOnClickListener { endSession() }
         view.findViewById<android.widget.Button>(R.id.btn_sync_now).setOnClickListener { syncNow() }
     }
 
@@ -88,7 +71,7 @@ class FacultyHomeFragment : Fragment() {
             tvSessionDetail.text = "Date: ${session.date} · Teacher: ${session.teacher.ifBlank { "You" }}"
         } else {
             tvSessionLabel.text  = "No session selected"
-            tvSessionDetail.text = "Tap 'New Session' to begin"
+            tvSessionDetail.text = "Tap Scan to start a session"
         }
     }
 
@@ -98,7 +81,7 @@ class FacultyHomeFragment : Fragment() {
         val studentCount = DBManager.personList.size
         tvStudentCount.text = "Students loaded: $studentCount"
 
-        tvModelStatus.text = if (FaceSDKWrapper.isInitialized) "Model: Ready ✓" else "Model: Loading…"
+        tvModelStatus.text = if (BuildConfig.IS_ATTENDX) "Detection: Server-side ✓" else if (FaceSDKWrapper.isInitialized) "Model: Ready ✓" else "Model: Loading…"
 
         val unsyncedCount = db.unsyncedFacultyCount
         if (unsyncedCount > 0) {
@@ -109,145 +92,29 @@ class FacultyHomeFragment : Fragment() {
         }
     }
 
-    // ── Session dialog ────────────────────────────────────────────────────────
+    // ── Actions ───────────────────────────────────────────────────────────────
 
-    private fun showNewSessionDialog() {
-        val ctx = requireContext()
-
-        // Try to load existing lectures from server first
-        val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
-        RetrofitClient.getService().getFacultyLectures("", "", today).enqueue(object : Callback<JsonObject> {
-            override fun onResponse(call: Call<JsonObject>, resp: Response<JsonObject>) {
-                if (resp.isSuccessful) {
-                    val lecturesArr = resp.body()?.getAsJsonArray("lectures")
-                    val lectures = mutableListOf<FacultySessionManager.LectureSession>()
-                    lecturesArr?.forEach { el ->
-                        try {
-                            val o = el.asJsonObject
-                            lectures.add(FacultySessionManager.LectureSession(
-                                lectureId = o.get("id").asInt,
-                                subject   = o.get("subject")?.asString ?: "",
-                                classYear = o.get("class_year")?.asString ?: "",
-                                division  = o.get("division")?.asString ?: "",
-                                date      = o.get("lecture_date")?.asString ?: today,
-                                teacher   = o.get("teacher")?.asString ?: ""
-                            ))
-                        } catch (_: Exception) {}
-                    }
-                    showSessionPickerOrCreate(lectures)
-                } else {
-                    showCreateSessionDialog()
+    private fun autoSyncStudentsIfNeeded() {
+        val prefs     = requireContext().getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE)
+        val lastSync  = prefs.getLong("faculty_student_last_sync", 0L)
+        val oneHourMs = 60 * 60 * 1000L
+        if (System.currentTimeMillis() - lastSync < oneHourMs) return
+        val constraints = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
+        val req = OneTimeWorkRequest.Builder(FaceDownloadWorker::class.java)
+            .setConstraints(constraints).build()
+        WorkManager.getInstance(requireContext())
+            .enqueueUniqueWork("faculty-face-download-auto",
+                androidx.work.ExistingWorkPolicy.KEEP, req)
+        WorkManager.getInstance(requireContext())
+            .getWorkInfoByIdLiveData(req.id)
+            .observe(viewLifecycleOwner) { info ->
+                if (info?.state?.isFinished == true) {
+                    DBManager(requireContext()).loadPerson()
+                    prefs.edit().putLong("faculty_student_last_sync", System.currentTimeMillis()).apply()
+                    updateStats()
                 }
             }
-            override fun onFailure(call: Call<JsonObject>, t: Throwable) {
-                showCreateSessionDialog()
-            }
-        })
     }
-
-    private fun showSessionPickerOrCreate(existing: List<FacultySessionManager.LectureSession>) {
-        val ctx = requireContext()
-        val options = existing.map { "${it.displayLabel} (${it.date})" }.toMutableList()
-        options.add("+ Create New Session")
-
-        AlertDialog.Builder(ctx)
-            .setTitle("Select or Create Session")
-            .setItems(options.toTypedArray()) { _, idx ->
-                if (idx < existing.size) {
-                    FacultySessionManager.setSession(ctx, existing[idx])
-                    updateSessionDisplay()
-                    Toast.makeText(ctx, "Session: ${existing[idx].displayLabel}", Toast.LENGTH_SHORT).show()
-                } else {
-                    showCreateSessionDialog()
-                }
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
-
-    private fun showCreateSessionDialog() {
-        val ctx  = requireContext()
-        val form = LayoutInflater.from(ctx).inflate(R.layout.dialog_new_session, null, false)
-        AlertDialog.Builder(ctx)
-            .setTitle("New Session")
-            .setView(form)
-            .setPositiveButton("Create") { _, _ ->
-                val subject   = form.findViewById<EditText>(R.id.et_subject).text.toString().trim()
-                val classYear = form.findViewById<EditText>(R.id.et_class_year).text.toString().trim()
-                val division  = form.findViewById<EditText>(R.id.et_division).text.toString().trim()
-                if (subject.isBlank()) {
-                    Toast.makeText(ctx, "Subject is required", Toast.LENGTH_SHORT).show()
-                    return@setPositiveButton
-                }
-                createLecture(subject, classYear, division)
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
-
-    private fun createLecture(subject: String, classYear: String, division: String) {
-        val ctx   = requireContext()
-        val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
-        val now   = SimpleDateFormat("HH:mm", Locale.US).format(Date())
-        val prefs = ctx.getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE)
-        val teacher = prefs.getString("faculty_display_name", null)
-            ?: prefs.getString("username", "") ?: ""
-
-        val body = JsonObject().apply {
-            addProperty("subject",      subject)
-            addProperty("class_year",   classYear)
-            addProperty("division",     division)
-            addProperty("lecture_date", today)
-            addProperty("start_time",   now)
-            addProperty("teacher",      teacher)
-        }
-
-        RetrofitClient.getService().createFacultyLecture(body).enqueue(object : Callback<JsonObject> {
-            override fun onResponse(call: Call<JsonObject>, resp: Response<JsonObject>) {
-                if (resp.isSuccessful) {
-                    val lectureId = resp.body()?.get("lecture_id")?.asInt ?: -1
-                    if (lectureId > 0) {
-                        val session = FacultySessionManager.LectureSession(
-                            lectureId = lectureId,
-                            subject   = subject,
-                            classYear = classYear,
-                            division  = division,
-                            date      = today,
-                            teacher   = teacher
-                        )
-                        FacultySessionManager.setSession(ctx, session)
-                        updateSessionDisplay()
-                        Toast.makeText(ctx, "Session created: $subject", Toast.LENGTH_SHORT).show()
-                    }
-                } else {
-                    Toast.makeText(ctx, "Failed to create session (offline?)", Toast.LENGTH_SHORT).show()
-                    // Create a local-only session with id=-1 for offline tracking
-                    val session = FacultySessionManager.LectureSession(
-                        lectureId = -1,
-                        subject   = subject,
-                        classYear = classYear,
-                        division  = division,
-                        date      = today,
-                        teacher   = teacher
-                    )
-                    FacultySessionManager.setSession(ctx, session)
-                    updateSessionDisplay()
-                }
-            }
-            override fun onFailure(call: Call<JsonObject>, t: Throwable) {
-                Toast.makeText(ctx, "Network error — session saved offline", Toast.LENGTH_SHORT).show()
-                val session = FacultySessionManager.LectureSession(
-                    lectureId = -1, subject = subject, classYear = classYear,
-                    division = division, date = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date()),
-                    teacher = ""
-                )
-                FacultySessionManager.setSession(ctx, session)
-                updateSessionDisplay()
-            }
-        })
-    }
-
-    // ── Other actions ─────────────────────────────────────────────────────────
 
     private fun loadStudents() {
         Toast.makeText(context, "Syncing student list…", Toast.LENGTH_SHORT).show()
@@ -274,31 +141,10 @@ class FacultyHomeFragment : Fragment() {
         FacultySessionManager.syncPendingAttendance(requireContext()) { synced, errors ->
             activity?.runOnUiThread {
                 updateStats()
-                if (errors == 0) {
-                    Toast.makeText(context, "Synced $synced records", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(context, "Synced: $synced, Errors: $errors", Toast.LENGTH_SHORT).show()
-                }
+                val msg = if (errors == 0) "Synced $synced records" else "Synced: $synced, Errors: $errors"
+                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
             }
         }
-    }
-
-    private fun endSession() {
-        val ctx = requireContext()
-        AlertDialog.Builder(ctx)
-            .setTitle("End Session")
-            .setMessage("Mark session as complete and sync attendance?")
-            .setPositiveButton("End & Sync") { _, _ ->
-                syncNow()
-                FacultySessionManager.clearSession(ctx)
-                updateSessionDisplay()
-            }
-            .setNegativeButton("Just End") { _, _ ->
-                FacultySessionManager.clearSession(ctx)
-                updateSessionDisplay()
-            }
-            .setNeutralButton("Cancel", null)
-            .show()
     }
 
     private fun pickImageFromGallery() {

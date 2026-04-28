@@ -19,7 +19,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
      public static CopyOnWriteArrayList<Person> personList = new CopyOnWriteArrayList<Person>();
 
     public DBManager(Context context) {
-        super(context, "mydb" , null, 13);
+        super(context, "mydb" , null, 14);
     }
 
     @Override
@@ -46,6 +46,11 @@ import java.util.concurrent.CopyOnWriteArrayList;
                 "create table faculty_attendance_queue " +
                         "(id integer primary key autoincrement, lecture_id integer, person_id text, student_name text, " +
                         "class_section text, timestamp text, status text default 'present', confidence real, synced integer default 0)"
+        );
+        db.execSQL(
+                "create table faculty_pending_images " +
+                        "(id integer primary key autoincrement, lecture_id integer, image_path text, timestamp text, " +
+                        "status text default 'pending')"
         );
     }
 
@@ -116,6 +121,54 @@ import java.util.concurrent.CopyOnWriteArrayList;
                 );
             } catch (Exception ignored) {}
         }
+        if (oldVersion < 14) {
+            try {
+                db.execSQL(
+                        "create table if not exists faculty_pending_images " +
+                                "(id integer primary key autoincrement, lecture_id integer, image_path text, timestamp text, " +
+                                "status text default 'pending')"
+                );
+            } catch (Exception ignored) {}
+        }
+    }
+
+    public long insertPendingImage(int lectureId, String imagePath, String timestamp) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues cv  = new ContentValues();
+        cv.put("lecture_id",  lectureId);
+        cv.put("image_path",  imagePath);
+        cv.put("timestamp",   timestamp);
+        cv.put("status",      "pending");
+        return db.insert("faculty_pending_images", null, cv);
+    }
+
+    public void updatePendingImageStatus(long id, String status) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues cv  = new ContentValues();
+        cv.put("status", status);
+        db.update("faculty_pending_images", cv, "id = ?", new String[]{String.valueOf(id)});
+    }
+
+    public java.util.List<long[]> getPendingImages() {
+        java.util.List<long[]> list = new java.util.ArrayList<>();
+        SQLiteDatabase db = this.getReadableDatabase();
+        Cursor c = db.rawQuery(
+                "SELECT id, lecture_id FROM faculty_pending_images WHERE status = 'pending' ORDER BY id ASC", null);
+        while (c.moveToNext()) {
+            list.add(new long[]{c.getLong(0), c.getLong(1)});
+        }
+        c.close();
+        return list;
+    }
+
+    public String getPendingImagePath(long id) {
+        SQLiteDatabase db = this.getReadableDatabase();
+        Cursor c = db.rawQuery("SELECT image_path FROM faculty_pending_images WHERE id = ?",
+                new String[]{String.valueOf(id)});
+        String path = null;
+        if (c.moveToFirst()) path = c.getString(0);
+        c.close();
+        return path;
     }
 
     public void insertFacultyAttendance(int lectureId, String personId, String studentName,

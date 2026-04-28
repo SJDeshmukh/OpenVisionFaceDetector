@@ -44,23 +44,18 @@ public class SplashActivity extends AppCompatActivity {
         MyGlobal.context = getApplicationContext();
         tvStatus = findViewById(R.id.tvStatus);
 
-        // Initialize FaceSDK (idempotent — fast no-op if already initialized by Application)
-        int ret = FaceSDKWrapper.INSTANCE.ensureInitialized(getApplicationContext());
-
-        if (ret != FaceSDK.SDK_SUCCESS) {
-            String msg = "SDK Init Failed";
-            if (ret == FaceSDK.SDK_LICENSE_KEY_ERROR) {
-                msg = "Invalid license!";
-            } else if (ret == FaceSDK.SDK_LICENSE_APPID_ERROR) {
-                msg = "Invalid error!";
-            } else if (ret == FaceSDK.SDK_LICENSE_EXPIRED) {
-                msg = "License expired!";
-            } else if (ret == FaceSDK.SDK_NO_ACTIVATED) {
-                msg = "No activated!";
-            } else if (ret == FaceSDK.SDK_INIT_ERROR) {
-                msg = "Init error!";
+        // FaceSDK only needed for TapInX kiosk mode; AttendX uses server-side detection
+        if (!BuildConfig.IS_ATTENDX) {
+            int ret = FaceSDKWrapper.INSTANCE.ensureInitialized(getApplicationContext());
+            if (ret != FaceSDK.SDK_SUCCESS) {
+                String msg = "SDK Init Failed";
+                if (ret == FaceSDK.SDK_LICENSE_KEY_ERROR)    msg = "Invalid license!";
+                else if (ret == FaceSDK.SDK_LICENSE_APPID_ERROR) msg = "Invalid error!";
+                else if (ret == FaceSDK.SDK_LICENSE_EXPIRED) msg = "License expired!";
+                else if (ret == FaceSDK.SDK_NO_ACTIVATED)    msg = "No activated!";
+                else if (ret == FaceSDK.SDK_INIT_ERROR)      msg = "Init error!";
+                android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_LONG).show();
             }
-            android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_LONG).show();
         }
 
         // Start Connection Process
@@ -187,7 +182,10 @@ public class SplashActivity extends AppCompatActivity {
                 } else {
                     intent = new Intent(SplashActivity.this, ParentFaceRegistrationActivity.class);
                 }
+            } else if ("faculty".equals(role)) {
+                intent = new Intent(SplashActivity.this, FacultyActivity.class);
             } else {
+                // owner / vendor_admin / user → kiosk screen
                 intent = new Intent(SplashActivity.this, MainActivity.class);
             }
         } else {
