@@ -300,16 +300,23 @@ class FacultyHistoryFragment : Fragment() {
                 }
 
                 val attendanceArr = body.getAsJsonArray("attendance") ?: com.google.gson.JsonArray()
-                val presentCnt = body.get("present_count")?.asInt ?: 0
-                val absentCnt  = body.get("absent_count")?.asInt ?: 0
-
                 if (attendanceArr.size() == 0) {
                     AlertDialog.Builder(ctx)
                         .setTitle("$subject")
-                        .setMessage("No attendance records yet for this lecture.\n\nPresent: $presentCnt · Absent: $absentCnt")
+                        .setMessage("No attendance records yet for this lecture.")
                         .setPositiveButton("OK", null)
                         .show()
                     return
+                }
+
+                // Local state for toggling
+                val currentAttendance = mutableMapOf<Int, String>() // person_id -> status
+                val studentNames      = mutableMapOf<Int, String>() // person_id -> name
+                for (el in attendanceArr) {
+                    val s = el.asJsonObject
+                    val pid = s.get("person_id")?.asInt ?: continue
+                    currentAttendance[pid] = s.get("status")?.asString ?: "absent"
+                    studentNames[pid] = s.get("name")?.asString ?: "Unknown"
                 }
 
                 // Build drill-down dialog
@@ -319,48 +326,44 @@ class FacultyHistoryFragment : Fragment() {
                 }
                 scroll.addView(inner)
 
-                // Stats header
-                TextView(ctx).apply {
-                    text = "Present: $presentCnt  ·  Absent: $absentCnt  ·  Total: ${attendanceArr.size()}"
-                    textSize = 13f
-                    setTextColor(0xCCFFFFFF.toInt())
-                    setPadding(0, 0, 0, 16)
-                }.also { inner.addView(it) }
-
-                // Group by status
-                val present = mutableListOf<JsonObject>()
-                val absent  = mutableListOf<JsonObject>()
-                for (el in attendanceArr) {
-                    val student = el.asJsonObject
-                    val status  = student.get("status")?.asString ?: "absent"
-                    if (status == "present") present.add(student) else absent.add(student)
+                val studentListContainer = LinearLayout(ctx).apply {
+                    orientation = LinearLayout.VERTICAL
                 }
 
-                // Present section
-                if (present.isNotEmpty()) {
-                    TextView(ctx).apply {
-                        text = "✓ PRESENT (${present.size})"
-                        textSize = 13f
-                        setTextColor(0xFF4CAF50.toInt())
-                        typeface = android.graphics.Typeface.DEFAULT_BOLD
-                        setPadding(0, 8, 0, 8)
-                    }.also { inner.addView(it) }
+                fun refreshStudentList() {
+                    studentListContainer.removeAllViews()
+                    val pList = currentAttendance.filter { it.value == "present" }.keys.sortedBy { studentNames[it] }
+                    val aList = currentAttendance.filter { it.value == "absent" }.keys.sortedBy { studentNames[it] }
 
-                    for (s in present) addStudentRow(inner, s, true)
+                    if (pList.isNotEmpty()) {
+                        TextView(ctx).apply {
+                            text = "✓ PRESENT (${pList.size})"
+                            textSize = 13f; setTextColor(0xFF4CAF50.toInt()); typeface = android.graphics.Typeface.DEFAULT_BOLD
+                            setPadding(0, 8, 0, 8)
+                        }.also { studentListContainer.addView(it) }
+                        for (pid in pList) {
+                            addStudentRow(studentListContainer, studentNames[pid] ?: "Unknown", true) {
+                                currentAttendance[pid] = "absent"; refreshStudentList()
+                            }
+                        }
+                    }
+
+                    if (aList.isNotEmpty()) {
+                        TextView(ctx).apply {
+                            text = "✗ ABSENT (${aList.size})"
+                            textSize = 13f; setTextColor(0xFFF44336.toInt()); typeface = android.graphics.Typeface.DEFAULT_BOLD
+                            setPadding(0, 16, 0, 8)
+                        }.also { studentListContainer.addView(it) }
+                        for (pid in aList) {
+                            addStudentRow(studentListContainer, studentNames[pid] ?: "Unknown", false) {
+                                currentAttendance[pid] = "present"; refreshStudentList()
+                            }
+                        }
+                    }
                 }
 
-                // Absent section
-                if (absent.isNotEmpty()) {
-                    TextView(ctx).apply {
-                        text = "✗ ABSENT (${absent.size})"
-                        textSize = 13f
-                        setTextColor(0xFFF44336.toInt())
-                        typeface = android.graphics.Typeface.DEFAULT_BOLD
-                        setPadding(0, 16, 0, 8)
-                    }.also { inner.addView(it) }
-
-                    for (s in absent) addStudentRow(inner, s, false)
-                }
+                refreshStudentList()
+                inner.addView(studentListContainer)
 
                 val titleLabel = buildString {
                     append(subject)
@@ -368,11 +371,46 @@ class FacultyHistoryFragment : Fragment() {
                     if (division.isNotBlank())  append("-$division")
                 }
 
-                AlertDialog.Builder(ctx)
+                val dialog = AlertDialog.Builder(ctx)
                     .setTitle(titleLabel)
                     .setView(scroll)
+                    .setNeutralButton("Update Attendance", null) // Will handle manually
                     .setPositiveButton("Done", null)
                     .show()
+
+                // Special handling for Update button to prevent dialog close
+                dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                    val batch = com.google.gson.JsonArray()
+                    currentAttendance.forEach { (pid, stat) ->
+                        batch.add(JsonObject().apply {
+                            addProperty("person_id", pid)
+                            addProperty("status",    stat)
+                        })
+                    }
+                    val updateBody = JsonObject().apply { add("entries", batch) }
+                    
+                    it.isEnabled = false
+                    Toast.makeText(ctx, "Updating…", Toast.LENGTH_SHORT).show()
+                    
+                    RetrofitClient.getService().markFacultyLectureAttendance(lectureId, updateBody)
+                        .enqueue(object : Callback<JsonObject> {
+                            override fun onResponse(c: Call<JsonObject>, r: Response<JsonObject>) {
+                                if (!isAdded) return
+                                dialog.getButton(AlertDialog.BUTTON_NEUTRAL).isEnabled = true
+                                if (r.isSuccessful) {
+                                    Toast.makeText(ctx, "Updated successfully!", Toast.LENGTH_SHORT).show()
+                                    loadSessions() // Refresh main list
+                                } else {
+                                    Toast.makeText(ctx, "Failed to update (Server error)", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                            override fun onFailure(c: Call<JsonObject>, t: Throwable) {
+                                if (!isAdded) return
+                                dialog.getButton(AlertDialog.BUTTON_NEUTRAL).isEnabled = true
+                                Toast.makeText(ctx, "Network error", Toast.LENGTH_SHORT).show()
+                            }
+                        })
+                }
             }
 
             override fun onFailure(call: Call<JsonObject>, t: Throwable) {
@@ -383,66 +421,59 @@ class FacultyHistoryFragment : Fragment() {
         })
     }
 
-    private fun addStudentRow(parent: LinearLayout, student: JsonObject, isPresent: Boolean) {
+    private fun addStudentRow(parent: LinearLayout, name: String, isPresent: Boolean, onToggle: () -> Unit) {
         val ctx = requireContext()
-        val name     = student.get("name")?.asString ?: "Unknown"
-        val markedAt = student.get("marked_at")?.asString ?: ""
-
         val row = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity     = android.view.Gravity.CENTER_VERTICAL
-            setPadding(12, 10, 12, 10)
+            setPadding(12, 16, 12, 16)
+            isClickable = true
+            isFocusable = true
+            background  = ContextCompat.getDrawable(ctx, android.R.attr.selectableItemBackground)
+            setOnClickListener { onToggle() }
         }
 
-        // Avatar circle with first letter
-        val avatarSize = (40 * resources.displayMetrics.density).toInt()
+        // Avatar circle
+        val avatarSize = (36 * resources.displayMetrics.density).toInt()
         val tvAvatar = TextView(ctx).apply {
             layoutParams = LinearLayout.LayoutParams(avatarSize, avatarSize)
             gravity = android.view.Gravity.CENTER
             text = if (name.isNotBlank()) name.first().uppercase() else "?"
-            textSize = 16f
+            textSize = 14f
             setTextColor(android.graphics.Color.WHITE)
             val bgColor = if (isPresent) 0xFF388E3C.toInt() else 0xFFD32F2F.toInt()
-            val gd = android.graphics.drawable.GradientDrawable().apply {
+            background = android.graphics.drawable.GradientDrawable().apply {
                 shape = android.graphics.drawable.GradientDrawable.OVAL
                 setColor(bgColor)
             }
-            background = gd
         }
         row.addView(tvAvatar)
 
-        // Name + timestamp
-        val col = LinearLayout(ctx).apply {
-            orientation  = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-            setPadding(16, 0, 0, 0)
-        }
+        // Name
         TextView(ctx).apply {
-            text = name; textSize = 14f
+            text = name; textSize = 15f
             setTextColor(0xFFFFFFFF.toInt())
-        }.also { col.addView(it) }
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            setPadding(24, 0, 0, 0)
+        }.also { row.addView(it) }
 
-        if (markedAt.isNotBlank()) {
-            TextView(ctx).apply {
-                text = markedAt; textSize = 11f
-                setTextColor(0x88FFFFFF.toInt())
-            }.also { col.addView(it) }
-        }
-        row.addView(col)
-
-        // Status badge
+        // Status checkbox/switch (simplified with a text label for now, but clickable row toggles it)
         TextView(ctx).apply {
             text = if (isPresent) "Present" else "Absent"
             textSize = 12f
             setTextColor(if (isPresent) 0xFF4CAF50.toInt() else 0xFFF44336.toInt())
+            setPadding(12, 4, 12, 4)
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setStroke(2, if (isPresent) 0xFF4CAF50.toInt() else 0xFFF44336.toInt())
+                cornerRadius = 8f
+            }
         }.also { row.addView(it) }
 
         parent.addView(row)
 
         // Divider
         View(ctx).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 1).also { it.setMargins(0, 2, 0, 2) }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1)
             setBackgroundColor(0x22FFFFFF)
         }.also { parent.addView(it) }
     }

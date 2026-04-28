@@ -394,7 +394,7 @@ def mark_lecture_attendance(lecture_id):
                     (vendor_id, l_id, pid, status, now)
                 )
             
-            # Sync to core attendance logs if present
+            # Sync to core attendance logs
             if status == 'present':
                 image = entry.get('image', '')
                 c.execute("SELECT name FROM faces WHERE id = ?", (pid,))
@@ -413,6 +413,12 @@ def mark_lecture_attendance(lecture_id):
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (name, now, 'CHECK_IN', 'Lecture', pid, vendor_id, image, 0, device_id, l_year, l_div, l_branch, l_subj, l_id)
                     )
+            elif status == 'absent':
+                # Remove from global attendance logs if it was previously marked present for this lecture
+                c.execute(
+                    "DELETE FROM attendance WHERE person_id = ? AND lecture_id = ? AND vendor_id = ?",
+                    (pid, l_id, vendor_id)
+                )
             marked += 1
         except Exception as e:
             logger.error("Error marking lecture attendance for person %s: %s\n%s", 
