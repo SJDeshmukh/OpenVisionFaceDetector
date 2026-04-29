@@ -1041,58 +1041,80 @@ def download_faces():
     if vendor_id:
         if g.user_role == 'faculty':
             # 1. Identify which classes this faculty is assigned to
-            # First, from classes table (direct mapping)
             c.execute("SELECT class_year, division, branch, mapped_subjects FROM classes WHERE vendor_id = ?", (vendor_id,))
-            all_classes = c.fetchall() or []
-            assigned_set = set() # Use set to avoid duplicates (year, div, branch)
+            all_classes_rows = c.fetchall() or []
+            assigned_set = set()
             
-            for cl in all_classes:
+            for cl in all_classes_rows:
                 try:
                     ms = json.loads(cl[3]) if cl[3] else []
                     if any(_faculty_matches(m.get('faculty', ''), g.username) for m in ms):
-                        assigned_set.add((str(cl[0] or ''), str(cl[1] or ''), str(cl[2] or '')))
+                        assigned_set.add((str(cl[0] or '').strip().lower(), 
+                                         str(cl[1] or '').strip().lower(), 
+                                         str(cl[2] or '').strip().lower()))
                 except (json.JSONDecodeError, ValueError): pass
             
-            # Second, from lectures table (history/indirect mapping)
-            # Find classes where this faculty has taught a lecture
-            is_pg = getattr(conn, "_is_pg", False)
-            ph = "%s" if is_pg else "?"
-            c.execute(f"SELECT DISTINCT class_year, division, branch FROM lectures WHERE vendor_id = {ph} AND teacher = {ph}", (vendor_id, g.username))
+            # Also check lectures taught by this faculty
+            c.execute("SELECT DISTINCT class_year, division, branch FROM lectures WHERE vendor_id = ? AND teacher = ?", (vendor_id, g.username))
             lecture_classes = c.fetchall() or []
             for lc in lecture_classes:
-                assigned_set.add((str(lc[0] or ''), str(lc[1] or ''), str(lc[2] or '')))
+                assigned_set.add((str(lc[0] or '').strip().lower(), 
+                                 str(lc[1] or '').strip().lower(), 
+                                 str(lc[2] or '').strip().lower()))
             
             assigned_classes = list(assigned_set)
             
             if not assigned_classes:
                 conn.close()
-                return jsonify({"faces": []}) # No assigned classes = no students visible
+                return jsonify({"faces": []})
             
-            # 2. Build query to filter by these classes
+            # 2. Fetch ALL students for the vendor and filter in Python for maximum robustness
             query += " WHERE f.vendor_id = ?"
             params.append(vendor_id)
+            c.execute(query, params)
+            rows = c.fetchall()
+            conn.close()
             
-            # Build a filter that matches ANY of the assigned classes
-            ph = "%s" if is_pg else "?"
-            class_filters = []
-            for y, d, b in assigned_classes:
-                if is_pg:
-                    f = f"( (f.custom_data::jsonb->>'class_year' = {ph} OR f.custom_data::jsonb->>'Year' = {ph}) AND (f.custom_data::jsonb->>'division' = {ph} OR f.custom_data::jsonb->>'Division' = {ph}) AND (f.custom_data::jsonb->>'branch' = {ph} OR f.custom_data::jsonb->>'Branch' = {ph}) )"
-                    class_filters.append(f)
-                    params.extend([str(y), str(y), str(d), str(d), str(b), str(b)])
-                else:
-                    f = "( (f.custom_data LIKE ? OR f.custom_data LIKE ?) AND (f.custom_data LIKE ? OR f.custom_data LIKE ?) AND (f.custom_data LIKE ? OR f.custom_data LIKE ?) )"
-                    class_filters.append(f)
-                    params.extend([f'%\"class_year\":\"{y}\"%', f'%\"Year\":\"{y}\"%', f'%\"division\":\"{d}\"%', f'%\"Division\":\"{d}\"%', f'%\"branch\":\"{b}\"%', f'%\"Branch\":\"{b}\"%'])
+            filtered_rows = []
+            for row in rows:
+                r = dict(row)
+                try:
+                    cd = json.loads(r.get("custom_data") or "{}")
+                except: cd = {}
+                
+                # Use the same robust matching logic as bulk_attendance
+                s_year  = str(cd.get('class_year') or cd.get('year') or cd.get('Year') or '').strip().lower()
+                s_div   = str(cd.get('division') or cd.get('Division') or '').strip().lower()
+                s_branch = str(cd.get('branch') or cd.get('Branch') or '').strip().lower()
+                s_class = str(cd.get('class_section') or cd.get('class') or '').strip().lower()
+                
+                match_found = False
+                for ly, ld, lb in assigned_classes:
+                    year_ok = (not ly) or (ly in s_year) or (ly in s_class)
+                    div_ok  = (not ld) or (ld == s_div)  or (ld in s_class)
+                    # Branch is often optional
+                    branch_ok = (not lb) or (lb == s_branch) or (lb in s_class)
+                    
+                    if year_ok and div_ok and branch_ok:
+                        match_found = True
+                        break
+                
+                if match_found:
+                    filtered_rows.append(row)
             
-            if class_filters:
-                query += " AND (" + " OR ".join(class_filters) + ")"
+            rows = filtered_rows
         else:
             query += " WHERE f.vendor_id = ?"
             params.append(vendor_id)
-        
-    # Default sorting by Display ID
-    query += " ORDER BY f.display_id ASC"
+            query += " ORDER BY f.display_id ASC"
+            c.execute(query, params)
+            rows = c.fetchall()
+            conn.close()
+    else:
+        query += " ORDER BY f.display_id ASC"
+        c.execute(query, params)
+        rows = c.fetchall()
+        conn.close()
     
     # Optional pagination
     try:

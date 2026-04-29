@@ -57,30 +57,31 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
                 if (id.isBlank()) continue
                 val templatesB64 = faceData.templates
                 val faceB64 = faceData.faceImage
-                if (templatesB64.isNullOrBlank() || faceB64.isNullOrBlank()) continue
-
-                val templates = Base64.decode(templatesB64, Base64.NO_WRAP)
-                val faceImageBytes = Base64.decode(faceB64, Base64.NO_WRAP)
+                val templates = if (templatesB64.isNullOrBlank()) null else Base64.decode(templatesB64, Base64.NO_WRAP)
+                val faceImageBytes = if (faceB64.isNullOrBlank()) null else Base64.decode(faceB64, Base64.NO_WRAP)
                 
-                // Use BitmapFactory.Options for memory-efficient decoding
-                val options = BitmapFactory.Options()
-                options.inJustDecodeBounds = true
-                BitmapFactory.decodeByteArray(faceImageBytes, 0, faceImageBytes.size, options)
-                
-                // Scale down if image is too large (max 400px)
-                val maxDim = 400
-                var inSampleSize = 1
-                if (options.outHeight > maxDim || options.outWidth > maxDim) {
-                    val halfHeight = options.outHeight / 2
-                    val halfWidth = options.outWidth / 2
-                    while (halfHeight / inSampleSize >= maxDim && halfWidth / inSampleSize >= maxDim) {
-                        inSampleSize *= 2
+                var faceBitmap: android.graphics.Bitmap? = null
+                if (faceImageBytes != null) {
+                    // Use BitmapFactory.Options for memory-efficient decoding
+                    val options = BitmapFactory.Options()
+                    options.inJustDecodeBounds = true
+                    BitmapFactory.decodeByteArray(faceImageBytes, 0, faceImageBytes.size, options)
+                    
+                    // Scale down if image is too large (max 400px)
+                    val maxDim = 400
+                    var inSampleSize = 1
+                    if (options.outHeight > maxDim || options.outWidth > maxDim) {
+                        val halfHeight = options.outHeight / 2
+                        val halfWidth = options.outWidth / 2
+                        while (halfHeight / inSampleSize >= maxDim && halfWidth / inSampleSize >= maxDim) {
+                            inSampleSize *= 2
+                        }
                     }
+                    
+                    options.inJustDecodeBounds = false
+                    options.inSampleSize = inSampleSize
+                    faceBitmap = BitmapFactory.decodeByteArray(faceImageBytes, 0, faceImageBytes.size, options)
                 }
-                
-                options.inJustDecodeBounds = false
-                options.inSampleSize = inSampleSize
-                val faceBitmap = BitmapFactory.decodeByteArray(faceImageBytes, 0, faceImageBytes.size, options) ?: continue
 
                 val phone = faceData.phone ?: ""
                 val dept = faceData.department ?: ""

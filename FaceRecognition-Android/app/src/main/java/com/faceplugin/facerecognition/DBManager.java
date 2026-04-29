@@ -304,15 +304,14 @@ import java.util.concurrent.CopyOnWriteArrayList;
             }
         }
 
-        if (face == null || face.isRecycled()) {
-            return;
+        byte[] faceJpg = null;
+        if (face != null && !face.isRecycled()) {
+            // Use JPEG instead of PNG for 70-80% smaller database and memory footprint
+            ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+            face.compress(Bitmap.CompressFormat.JPEG, 80, byteArrayOutputStream);
+            faceJpg = byteArrayOutputStream.toByteArray();
+            try { byteArrayOutputStream.close(); } catch (Exception ignored) {}
         }
-
-        // Use JPEG instead of PNG for 70-80% smaller database and memory footprint
-        ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
-        face.compress(Bitmap.CompressFormat.JPEG, 80, byteArrayOutputStream);
-        byte[] faceJpg = byteArrayOutputStream.toByteArray();
-        try { byteArrayOutputStream.close(); } catch (Exception ignored) {}
 
         String effectiveLocalUid = ensureLocalUid(existingLocalUid != null ? existingLocalUid : localUid);
 
