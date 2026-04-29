@@ -174,7 +174,7 @@ def bulk_registration_upload():
                 if req_division: custom_dict['division'] = req_division
                 if req_branch: custom_dict['branch'] = req_branch
 
-                custom_data_str = json.dumps(custom_dict)
+                custom_data_str = json.dumps(custom_dict, separators=(',', ':'))
 
                 # Get next display_id
                 c.execute("SELECT COALESCE(MAX(display_id), 0) + 1 FROM faces WHERE vendor_id = ?", (vendor_id,))
@@ -224,7 +224,7 @@ def bulk_registration_upload():
             new_sync_fields.append(field_config)
 
         # Update strictly
-        fields_json = json.dumps(new_sync_fields)
+        fields_json = json.dumps(new_sync_fields, separators=(',', ':'))
         c.execute("""
             INSERT INTO bulk_attendance_config (vendor_id, fields)
             VALUES (?, ?)
@@ -254,7 +254,7 @@ def bulk_registration_upload():
                     "is_id": f.get('is_id', False)
                 })
         
-        c.execute("UPDATE vendors SET registration_config = ? WHERE id = ?", (json.dumps(new_reg_config), vendor_id))
+        c.execute("UPDATE vendors SET registration_config = ? WHERE id = ?", (json.dumps(new_reg_config, separators=(',', ':')), vendor_id))
 
         conn.commit()
         log_audit('bulk_registration', details={"success_count": success_count, "skipped_count": skipped_count, "filename": filename}, target_vendor_id=vendor_id)

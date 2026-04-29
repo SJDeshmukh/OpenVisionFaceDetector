@@ -170,8 +170,11 @@ def registration_batch_commit(valid_data: RegistrationBatchCommitSchema):
             person_id = None
             if student_number:
                 # This is a bit slow in SQLite for large DBs but fine for now
-                pattern = f'%"student_number":"{student_number}"%'
-                c.execute("SELECT id FROM faces WHERE vendor_id = ? AND custom_data LIKE ?", (vendor_id, pattern))
+                # This handles both spaced and compact JSON formats
+                pattern_compact = f'%"student_number":"{student_number}"%'
+                pattern_spaced = f'%"student_number": "{student_number}"%'
+                c.execute("SELECT id FROM faces WHERE vendor_id = ? AND (custom_data LIKE ? OR custom_data LIKE ?)", 
+                          (vendor_id, pattern_compact, pattern_spaced))
                 r = c.fetchone()
                 if r:
                     person_id = r[0]
@@ -181,7 +184,7 @@ def registration_batch_commit(valid_data: RegistrationBatchCommitSchema):
                 c.execute("""
                     INSERT INTO faces (name, face_image, phone, vendor_id, custom_data) 
                     VALUES (?, ?, ?, ?, ?)
-                """, (name, uri, phone, vendor_id, json.dumps(custom_data)))
+                """, (name, uri, phone, vendor_id, json.dumps(custom_data, separators=(',', ':'))))
                 # Extract the last insert ID correctly for both SQLite and PG
                 if hasattr(c, 'lastrowid') and c.lastrowid:
                     person_id = c.lastrowid
@@ -191,7 +194,7 @@ def registration_batch_commit(valid_data: RegistrationBatchCommitSchema):
             else:
                 # Update existing person image
                 c.execute("UPDATE faces SET face_image = ?, name = ?, phone = ?, custom_data = ? WHERE id = ? AND vendor_id = ?",
-                          (uri, name, phone, json.dumps(custom_data), person_id, vendor_id))
+                          (uri, name, phone, json.dumps(custom_data, separators=(',', ':')), person_id, vendor_id))
 
             # Process Embedding
             # uri is the face thumbnail — already a detected+refined crop from the pipeline.

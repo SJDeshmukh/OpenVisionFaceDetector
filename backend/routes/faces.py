@@ -42,18 +42,10 @@ def _get_faculty_identifiers(c, username):
         f_row = c.fetchone()
         
     if not f_row:
-        # Search in custom_data (this is slower, but good for fallback)
-        # We limit to 1000 faces just to avoid huge scans if it's a massive db
-        c.execute("SELECT name, phone, custom_data, id FROM faces LIMIT 2000")
-        all_f = c.fetchall()
-        for f in all_f:
-            try:
-                cd_str = f[2] if not hasattr(f, 'keys') else f['custom_data']
-                cd = json.loads(cd_str) if isinstance(cd_str, str) else (cd_str or {})
-                if any(str(v).lower().strip() == username.lower().strip() for v in cd.values()):
-                    f_row = f
-                    break
-            except: continue
+        # Search in custom_data (SQL LIKE is faster than Python loop for large sets)
+        search_pattern = f'%"{username}"%'
+        c.execute("SELECT name, phone, custom_data, id FROM faces WHERE custom_data LIKE ? LIMIT 1", (search_pattern,))
+        f_row = c.fetchone()
 
     if f_row:
         # Extract name, phone, email
@@ -418,11 +410,19 @@ def get_persons():
             c.execute("SELECT class_year, division, branch, mapped_subjects FROM classes WHERE vendor_id = ?", (vendor_id,))
             all_classes = c.fetchall() or []
             assigned_classes = []
+            
+            # Fetch all known identifiers for this faculty (name, email, username)
+            faculty_ids = _get_faculty_identifiers(c, g.username)
+            
             for cl in all_classes:
                 try:
-                    ms = json.loads(cl[3]) if cl[3] else []
-                    if any(_faculty_matches(m.get('faculty', ''), g.username) for m in ms):
-                        assigned_classes.append((cl[0], cl[1], cl[2])) # (year, div, branch)
+                    ms_raw = cl[3] if not hasattr(cl, 'keys') else cl['mapped_subjects']
+                    ms = json.loads(ms_raw) if ms_raw else []
+                    if any(_faculty_matches(m.get('faculty', ''), faculty_ids) for m in ms):
+                        y = cl[0] if not hasattr(cl, 'keys') else cl['class_year']
+                        d = cl[1] if not hasattr(cl, 'keys') else cl['division']
+                        b = cl[2] if not hasattr(cl, 'keys') else cl['branch']
+                        assigned_classes.append((y, d, b)) # (year, div, branch)
                 except (json.JSONDecodeError, ValueError): pass
             
             if not assigned_classes:
@@ -438,13 +438,18 @@ def get_persons():
             class_filters = []
             for y, d, b in assigned_classes:
                 if is_pg:
-                    f = "( (custom_data::jsonb->>'class_year' = ? OR custom_data::jsonb->>'Year' = ?) AND (custom_data::jsonb->>'division' = ? OR custom_data::jsonb->>'Division' = ?) AND (custom_data::jsonb->>'branch' = ? OR custom_data::jsonb->>'Branch' = ?) )"
+                    # Use LOWER(TRIM(...)) for robustness against casing/whitespace in bulk-uploaded data
+                    f = "( (LOWER(TRIM(custom_data::jsonb->>'class_year')) = LOWER(TRIM(?)) OR LOWER(TRIM(custom_data::jsonb->>'Year')) = LOWER(TRIM(?))) AND (LOWER(TRIM(custom_data::jsonb->>'division')) = LOWER(TRIM(?)) OR LOWER(TRIM(custom_data::jsonb->>'Division')) = LOWER(TRIM(?))) AND (LOWER(TRIM(custom_data::jsonb->>'branch')) = LOWER(TRIM(?)) OR LOWER(TRIM(custom_data::jsonb->>'Branch')) = LOWER(TRIM(?))) )"
                     class_filters.append(f)
-                    params.extend([str(y), str(y), str(d), str(d), str(b), str(b)])
+                    params.extend([str(y).lower().strip(), str(y).lower().strip(), str(d).lower().strip(), str(d).lower().strip(), str(b).lower().strip(), str(b).lower().strip()])
                 else:
-                    f = "( (custom_data LIKE ? OR custom_data LIKE ?) AND (custom_data LIKE ? OR custom_data LIKE ?) AND (custom_data LIKE ? OR custom_data LIKE ?) )"
+                    f = "( (custom_data LIKE ? OR custom_data LIKE ? OR custom_data LIKE ? OR custom_data LIKE ?) AND (custom_data LIKE ? OR custom_data LIKE ? OR custom_data LIKE ? OR custom_data LIKE ?) AND (custom_data LIKE ? OR custom_data LIKE ? OR custom_data LIKE ? OR custom_data LIKE ?) )"
                     class_filters.append(f)
-                    params.extend([f'%\"class_year\":\"{y}\"%', f'%\"Year\":\"{y}\"%', f'%\"division\":\"{d}\"%', f'%\"Division\":\"{d}\"%', f'%\"branch\":\"{b}\"%', f'%\"Branch\":\"{b}\"%'])
+                    params.extend([
+                        f'%\"class_year\":\"{y}\"%', f'%\"class_year\": \"{y}\"%', f'%\"Year\":\"{y}\"%', f'%\"Year\": \"{y}\"%',
+                        f'%\"division\":\"{d}\"%', f'%\"division\": \"{d}\"%', f'%\"Division\":\"{d}\"%', f'%\"Division\": \"{d}\"%',
+                        f'%\"branch\":\"{b}\"%', f'%\"branch\": \"{b}\"%', f'%\"Branch\":\"{b}\"%', f'%\"Branch\": \"{b}\"%'
+                    ])
             
             if class_filters:
                 query += " AND (" + " OR ".join(class_filters) + ")"
@@ -462,24 +467,34 @@ def get_persons():
             query += " AND (LOWER(TRIM(custom_data::jsonb->>'class_year')) = LOWER(TRIM(?)) OR LOWER(TRIM(custom_data::jsonb->>'Year')) = LOWER(TRIM(?)) OR LOWER(TRIM(custom_data::jsonb->>'year')) = LOWER(TRIM(?)))"
             params.extend([str(class_year), str(class_year), str(class_year)])
         else:
-            query += " AND (LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ?)"
-            params += [f'%\"class_year\":\"{class_year.lower()}\"%', f'%\"year\":\"{class_year.lower()}\"%', f'%\"Year\":\"{class_year.lower()}\"%']
+            query += " AND (LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ?)"
+            params += [
+                f'%\"class_year\":\"{class_year.lower()}\"%', f'%\"class_year\": \"{class_year.lower()}\"%',
+                f'%\"year\":\"{class_year.lower()}\"%', f'%\"year\": \"{class_year.lower()}\"%',
+                f'%\"Year\":\"{class_year.lower()}\"%', f'%\"Year\": \"{class_year.lower()}\"%'
+            ]
             
     if division:
         if is_pg:
             query += " AND (LOWER(TRIM(custom_data::jsonb->>'division')) = LOWER(TRIM(?)) OR LOWER(TRIM(custom_data::jsonb->>'Division')) = LOWER(TRIM(?)))"
             params += [str(division), str(division)]
         else:
-            query += " AND (LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ?)"
-            params += [f'%\"division\":\"{division.lower()}\"%', f'%\"Division\":\"{division.lower()}\"%']
+            query += " AND (LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ?)"
+            params += [
+                f'%\"division\":\"{division.lower()}\"%', f'%\"division\": \"{division.lower()}\"%',
+                f'%\"Division\":\"{division.lower()}\"%', f'%\"Division\": \"{division.lower()}\"%'
+            ]
             
     if branch:
         if is_pg:
             query += " AND (LOWER(TRIM(custom_data::jsonb->>'branch')) = LOWER(TRIM(?)) OR LOWER(TRIM(custom_data::jsonb->>'Branch')) = LOWER(TRIM(?)))"
             params += [str(branch), str(branch)]
         else:
-            query += " AND (LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ?)"
-            params += [f'%\"branch\":\"{branch.lower()}\"%', f'%\"Branch\":\"{branch.lower()}\"%']
+            query += " AND (LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ?)"
+            params += [
+                f'%\"branch\":\"{branch.lower()}\"%', f'%\"branch\": \"{branch.lower()}\"%',
+                f'%\"Branch\":\"{branch.lower()}\"%', f'%\"Branch\": \"{branch.lower()}\"%'
+            ]
             
     # Default sorting to ensure stability (Display ID based)
     query += " ORDER BY display_id ASC"
@@ -561,7 +576,7 @@ def upload_face():
     if division: custom_dict['division'] = division
     if branch: custom_dict['branch'] = branch
     
-    custom_data = json.dumps(custom_dict) if custom_dict else None
+    custom_data = json.dumps(custom_dict, separators=(',', ':')) if custom_dict else None
     
     # --- AUTOMATED EXTRACTION FOR NEW UPLOADS ---
     # We always re-extract embeddings from the face_image if provided to ensure
@@ -651,14 +666,6 @@ def upload_face():
                         for rtpl in rows_all:
                             try:
                                 et = rtpl[0] if not isinstance(rtpl, dict) else rtpl.get("templates")
-                                /* 
-               In server-side detection mode (AttendX), templates might be null 
-               but we still want to show the student in the list.
-            */
-            // if (templates == null) {
-            //     res.moveToNext();
-            //     continue;
-            // }
                                 if not et:
                                     continue
                                 if et.startswith('['):
@@ -758,7 +765,7 @@ def upload_face():
                     old = json.loads(existing["custom_data"])
                     for k, v in custom_dict.items():
                         old[k] = v
-                    custom_data = json.dumps(old)
+                    custom_data = json.dumps(old, separators=(',', ':'))
                 except Exception:
                     custom_data = existing["custom_data"]
             fields = []
@@ -1192,15 +1199,6 @@ def download_faces():
         resp_faces.append(face_item)
 
     return jsonify({"faces": resp_faces})
-                if url:
-                    face_item["image_url"] = url
-            elif face_item["face_image"] and isinstance(face_item["face_image"], str) and face_item["face_image"].startswith("http"):
-                face_item["image_url"] = face_item["face_image"]
-        except Exception:
-            pass
-        faces.append(face_item)
-    
-    return jsonify({"faces": faces})
 
 
 @faces_bp.route("/sync/delete/<name>", methods=["DELETE"])

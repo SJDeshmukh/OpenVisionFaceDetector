@@ -45,17 +45,10 @@ def _get_faculty_identifiers(c, username):
         f_row = c.fetchone()
         
     if not f_row:
-        # Search in custom_data (fallback)
-        c.execute("SELECT name, phone, custom_data, id FROM faces LIMIT 2000")
-        all_f = c.fetchall()
-        for f in all_f:
-            try:
-                cd_str = f[2] if not hasattr(f, 'keys') else f['custom_data']
-                cd = json.loads(cd_str) if isinstance(cd_str, str) else (cd_str or {})
-                if any(str(v).lower().strip() == username.lower().strip() for v in cd.values()):
-                    f_row = f
-                    break
-            except: continue
+        # Search in custom_data (SQL LIKE is faster than Python loop)
+        search_pattern = f'%"{username}"%'
+        c.execute("SELECT name, phone, custom_data, id FROM faces WHERE custom_data LIKE ? LIMIT 1", (search_pattern,))
+        f_row = c.fetchone()
 
     if f_row:
         # Extract name, phone, email
