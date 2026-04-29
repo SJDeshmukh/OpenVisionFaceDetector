@@ -139,9 +139,12 @@ class FacultyScanFragment : Fragment() {
         if (hidden) {
             cameraProvider?.unbindAll()
         } else {
-            // Resume camera when fragment becomes visible again
+            // Resume camera or show picker when fragment becomes visible again
+            val ctx = context ?: return
             if (FacultySessionManager.currentSession != null) {
                 startCamera()
+            } else {
+                showSessionPicker(null)
             }
         }
     }
@@ -368,16 +371,22 @@ class FacultyScanFragment : Fragment() {
     // ── Camera ────────────────────────────────────────────────────────────────
 
     private fun startCamera() {
-        if (ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.CAMERA)
+        val ctx = context ?: return
+        if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA)
             != PackageManager.PERMISSION_GRANTED) {
             @Suppress("DEPRECATION")
             requestPermissions(arrayOf(Manifest.permission.CAMERA), 1)
             return
         }
-        ProcessCameraProvider.getInstance(requireContext()).also { future ->
+        ProcessCameraProvider.getInstance(ctx).also { future ->
             future.addListener({
-                cameraProvider = future.get(); bindCamera()
-            }, ContextCompat.getMainExecutor(requireContext()))
+                try {
+                    cameraProvider = future.get()
+                    bindCamera()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error getting camera provider", e)
+                }
+            }, ContextCompat.getMainExecutor(ctx))
         }
     }
 

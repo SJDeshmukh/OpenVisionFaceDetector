@@ -312,11 +312,20 @@ class FacultyHistoryFragment : Fragment() {
                 // Local state for toggling
                 val currentAttendance = mutableMapOf<Int, String>() // person_id -> status
                 val studentNames      = mutableMapOf<Int, String>() // person_id -> name
-                for (el in attendanceArr) {
-                    val s = el.asJsonObject
-                    val pid = s.get("person_id")?.asInt ?: continue
-                    currentAttendance[pid] = s.get("status")?.asString ?: "absent"
-                    studentNames[pid] = s.get("name")?.asString ?: "Unknown"
+                
+                try {
+                    for (el in attendanceArr) {
+                        val s = el.asJsonObject
+                        val pidEl = s.get("person_id")
+                        if (pidEl == null || pidEl.isJsonNull) continue
+                        val pid = pidEl.asInt
+                        currentAttendance[pid] = s.get("status")?.asString ?: "absent"
+                        studentNames[pid] = s.get("name")?.asString ?: "Unknown"
+                    }
+                } catch (e: Exception) {
+                    Log.e("FacultyHistory", "Error parsing attendance data", e)
+                    Toast.makeText(ctx, "Error loading student data", Toast.LENGTH_SHORT).show()
+                    return
                 }
 
                 // Build drill-down dialog
@@ -422,7 +431,7 @@ class FacultyHistoryFragment : Fragment() {
     }
 
     private fun addStudentRow(parent: LinearLayout, name: String, isPresent: Boolean, onToggle: () -> Unit) {
-        val ctx = requireContext()
+        val ctx = parent.context
         val row = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity     = android.view.Gravity.CENTER_VERTICAL
