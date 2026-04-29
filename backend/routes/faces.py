@@ -23,21 +23,66 @@ from db_factory import set_row_factory
 from concurrent.futures import ThreadPoolExecutor
 from services.face_service import _extract_structural_vector
 
-def _faculty_matches(mapped_faculty: str, username: str) -> bool:
-    """True if mapped_faculty matches username, handling email vs local-part differences.
+def _get_faculty_identifiers(c, username):
+    """Fetch all possible strings that identify this faculty member (username, name, email)."""
+    ids = {str(username or "").lower().strip()}
+    if not username: return list(ids)
+    
+    # Try multiple ways to find the faculty's profile in the faces table
+    f_row = None
+    
+    # 1. Direct link via person_id in system_users
+    c.execute("SELECT f.name, f.phone, f.custom_data, f.id FROM faces f JOIN system_users su ON su.person_id = f.id WHERE su.username = ?", (username,))
+    f_row = c.fetchone()
+    
+    # 2. If no direct link, search for any face where name or phone or custom_data matches username
+    if not f_row:
+        # Search name/phone directly first
+        c.execute("SELECT name, phone, custom_data, id FROM faces WHERE (LOWER(name) = ? OR phone = ?)", (username.lower(), username))
+        f_row = c.fetchone()
+        
+    if not f_row:
+        # Search in custom_data (this is slower, but good for fallback)
+        # We limit to 1000 faces just to avoid huge scans if it's a massive db
+        c.execute("SELECT name, phone, custom_data, id FROM faces LIMIT 2000")
+        all_f = c.fetchall()
+        for f in all_f:
+            try:
+                cd_str = f[2] if not hasattr(f, 'keys') else f['custom_data']
+                cd = json.loads(cd_str) if isinstance(cd_str, str) else (cd_str or {})
+                if any(str(v).lower().strip() == username.lower().strip() for v in cd.values()):
+                    f_row = f
+                    break
+            except: continue
 
-    mapped_subjects may store 'talekar@kbtcoe.org' while g.username is 'talekar', or vice-versa.
-    """
+    if f_row:
+        # Extract name, phone, email
+        name = f_row[0] if not hasattr(f_row, 'keys') else f_row['name']
+        phone = f_row[1] if not hasattr(f_row, 'keys') else f_row['phone']
+        cd_raw = f_row[2] if not hasattr(f_row, 'keys') else f_row['custom_data']
+        
+        if name: ids.add(str(name).lower().strip())
+        if phone: ids.add(str(phone).lower().strip())
+        try:
+            cd = json.loads(cd_raw) if isinstance(cd_raw, str) else (cd_raw or {})
+            email = cd.get('email') or cd.get('Email') or cd.get('username')
+            if email: ids.add(str(email).lower().strip())
+        except: pass
+        
+    return [i for i in ids if i]
+
+def _faculty_matches(mapped_faculty: str, user_ids: list) -> bool:
+    """True if mapped_faculty matches any of the current user's identifiers."""
     a = (mapped_faculty or "").lower().strip()
-    b = (username or "").lower().strip()
-    if not a or not b:
-        return False
-    if a == b:
-        return True
-    # strip domain from whichever side has one
+    if not a or not user_ids: return False
+    
     a_local = a.split("@")[0]
-    b_local = b.split("@")[0]
-    return a_local == b_local or a_local == b or a == b_local
+    for b in user_ids:
+        if a == b: return True
+        b_local = b.split("@")[0]
+        if a_local == b_local or a_local == b or a == b_local:
+            return True
+    return False
 
 
 def _get_redis():
@@ -606,6 +651,14 @@ def upload_face():
                         for rtpl in rows_all:
                             try:
                                 et = rtpl[0] if not isinstance(rtpl, dict) else rtpl.get("templates")
+                                /* 
+               In server-side detection mode (AttendX), templates might be null 
+               but we still want to show the student in the list.
+            */
+            // if (templates == null) {
+            //     res.moveToNext();
+            //     continue;
+            // }
                                 if not et:
                                     continue
                                 if et.startswith('['):
@@ -687,6 +740,8 @@ def upload_face():
             row = c.fetchone()
             if not row:
                 return jsonify({"error": "Person not found"}), 404
+            
+
             existing = {
                 "name": row[0],
                 "templates": row[1],
@@ -1020,24 +1075,22 @@ def upload_face():
 @track_metrics("sync_download")
 @rate_limit(limit=120, window=60)
 def download_faces():
-    from app import get_db_connection, socketio, is_testing
-    from services.auth_service import extract_token, verify_token
+    from app import get_db_connection
     vendor_id, error = authenticate_vendor_access()
     if error: return error
 
     conn = get_db_connection()
     set_row_factory(conn)
     c = conn.cursor()
-    is_pg = getattr(conn, "_is_pg", False)
     
     query = """
         SELECT f.*, su.role as system_role
         FROM faces f
         LEFT JOIN system_users su ON f.id = su.person_id
     """
-    from typing import Any, List
-    params: List[Any] = []
+    params = []
     
+    rows = []
     if vendor_id:
         if g.user_role == 'faculty':
             # 1. Identify which classes this faculty is assigned to
@@ -1045,95 +1098,78 @@ def download_faces():
             all_classes_rows = c.fetchall() or []
             assigned_set = set()
             
+            # Fetch all known identifiers for this faculty (name, email, username)
+            faculty_ids = _get_faculty_identifiers(c, g.username)
+            
             for cl in all_classes_rows:
                 try:
-                    ms = json.loads(cl[3]) if cl[3] else []
-                    if any(_faculty_matches(m.get('faculty', ''), g.username) for m in ms):
-                        assigned_set.add((str(cl[0] or '').strip().lower(), 
-                                         str(cl[1] or '').strip().lower(), 
-                                         str(cl[2] or '').strip().lower()))
-                except (json.JSONDecodeError, ValueError): pass
+                    # In Postgres DictRow or SQLite Row, index access works
+                    ms_raw = cl[3] if not hasattr(cl, 'keys') else cl['mapped_subjects']
+                    ms = json.loads(ms_raw) if ms_raw else []
+                    if any(_faculty_matches(m.get('faculty', ''), faculty_ids) for m in ms):
+                        y = cl[0] if not hasattr(cl, 'keys') else cl['class_year']
+                        d = cl[1] if not hasattr(cl, 'keys') else cl['division']
+                        b = cl[2] if not hasattr(cl, 'keys') else cl['branch']
+                        assigned_set.add((str(y or '').strip().lower(), 
+                                         str(d or '').strip().lower(), 
+                                         str(b or '').strip().lower()))
+                except: pass
             
-            # Also check lectures taught by this faculty
+            # Also check lectures
             c.execute("SELECT DISTINCT class_year, division, branch FROM lectures WHERE vendor_id = ? AND teacher = ?", (vendor_id, g.username))
-            lecture_classes = c.fetchall() or []
-            for lc in lecture_classes:
-                assigned_set.add((str(lc[0] or '').strip().lower(), 
-                                 str(lc[1] or '').strip().lower(), 
-                                 str(lc[2] or '').strip().lower()))
+            for lc in c.fetchall():
+                y = lc[0] if not hasattr(lc, 'keys') else lc['class_year']
+                d = lc[1] if not hasattr(lc, 'keys') else lc['division']
+                b = lc[2] if not hasattr(lc, 'keys') else lc['branch']
+                assigned_set.add((str(y or '').strip().lower(), 
+                                 str(d or '').strip().lower(), 
+                                 str(b or '').strip().lower()))
             
             assigned_classes = list(assigned_set)
-            
             if not assigned_classes:
                 conn.close()
                 return jsonify({"faces": []})
             
-            # 2. Fetch ALL students for the vendor and filter in Python for maximum robustness
-            query += " WHERE f.vendor_id = ?"
-            params.append(vendor_id)
-            c.execute(query, params)
-            rows = c.fetchall()
-            conn.close()
-            
-            filtered_rows = []
-            for row in rows:
-                r = dict(row)
+            # 2. Fetch all faces for vendor and filter
+            c.execute(query + " WHERE f.vendor_id = ?", (vendor_id,))
+            all_vendor_faces = c.fetchall()
+            for f in all_vendor_faces:
+                r = dict(f)
                 try:
                     cd = json.loads(r.get("custom_data") or "{}")
                 except: cd = {}
                 
-                # Use the same robust matching logic as bulk_attendance
                 s_year  = str(cd.get('class_year') or cd.get('year') or cd.get('Year') or '').strip().lower()
                 s_div   = str(cd.get('division') or cd.get('Division') or '').strip().lower()
                 s_branch = str(cd.get('branch') or cd.get('Branch') or '').strip().lower()
                 s_class = str(cd.get('class_section') or cd.get('class') or '').strip().lower()
                 
-                match_found = False
+                match = False
                 for ly, ld, lb in assigned_classes:
                     year_ok = (not ly) or (ly in s_year) or (ly in s_class)
                     div_ok  = (not ld) or (ld == s_div)  or (ld in s_class)
-                    # Branch is often optional
                     branch_ok = (not lb) or (lb == s_branch) or (lb in s_class)
-                    
                     if year_ok and div_ok and branch_ok:
-                        match_found = True
+                        match = True
                         break
-                
-                if match_found:
-                    filtered_rows.append(row)
-            
-            rows = filtered_rows
+                if match:
+                    rows.append(f)
         else:
-            query += " WHERE f.vendor_id = ?"
-            params.append(vendor_id)
-            query += " ORDER BY f.display_id ASC"
-            c.execute(query, params)
+            # For admin/owner, fetch all for vendor
+            c.execute(query + " WHERE f.vendor_id = ? ORDER BY f.display_id ASC", (vendor_id,))
             rows = c.fetchall()
-            conn.close()
     else:
-        query += " ORDER BY f.display_id ASC"
-        c.execute(query, params)
+        # No vendor_id (SuperAdmin), fetch all
+        c.execute(query + " ORDER BY f.display_id ASC", [])
         rows = c.fetchall()
-        conn.close()
     
-    # Optional pagination
-    try:
-        limit = int(request.args.get('limit', 500))
-        offset = int(request.args.get('offset', 0))
-        if limit > 0:
-            query += " LIMIT ? OFFSET ?"
-            params += [limit, offset]
-    except (ValueError, TypeError):
-        pass
-    c.execute(query, params)
-    rows = c.fetchall()
     conn.close()
-
-    faces = []
+    
+    resp_faces = []
     for row in rows:
         r = dict(row)
         face_item = {
-            "id": r.get("id"),
+            "id": str(r.get("id")),
             "display_id": r.get("display_id") or r.get("id"),
             "name": r.get("name"),
             "templates": r.get("templates"),
@@ -1145,9 +1181,17 @@ def download_faces():
             "role": r.get("system_role"),
             "custom_data": json.loads(r["custom_data"]) if r.get("custom_data") else {}
         }
+        
         try:
             if face_item["face_image"] and isinstance(face_item["face_image"], str) and face_item["face_image"].startswith("s3://"):
-                url = presigned_url_for_key(face_item["face_image"])
+                face_item["face_image"] = presigned_url_for_key(face_item["face_image"])
+            elif face_item["face_image"] and isinstance(face_item["face_image"], str) and face_item["face_image"].startswith("http"):
+                face_item["image_url"] = face_item["face_image"]
+        except: pass
+        
+        resp_faces.append(face_item)
+
+    return jsonify({"faces": resp_faces})
                 if url:
                     face_item["image_url"] = url
             elif face_item["face_image"] and isinstance(face_item["face_image"], str) and face_item["face_image"].startswith("http"):

@@ -617,10 +617,33 @@ def login():
             conn.commit()
             conn.close()
 
-        # For faculty on mobile, include their display name
+        # For faculty on mobile, include their display name (Name or Email instead of ID)
         faculty_display_name = None
         if user.get("role") == "faculty":
-            faculty_display_name = user.get("person_id") or user.get("username")
+            p_id = user.get("person_id")
+            if p_id:
+                try:
+                    conn_f = get_db_connection()
+                    cf = conn_f.cursor()
+                    cf.execute("SELECT name, custom_data FROM faces WHERE id = ?", (p_id,))
+                    f_prof = cf.fetchone()
+                    if f_prof:
+                        f_name = f_prof[0] if not hasattr(f_prof, 'keys') else f_prof['name']
+                        f_cd = f_prof[1] if not hasattr(f_prof, 'keys') else f_prof['custom_data']
+                        f_email = None
+                        if f_cd:
+                            try:
+                                cd = json.loads(f_cd) if isinstance(f_cd, str) else f_cd
+                                f_email = cd.get('email') or cd.get('Email') or cd.get('username')
+                            except: pass
+                        # Priority: Email > Name > Username
+                        faculty_display_name = f_email or f_name or user.get("username")
+                    conn_f.close()
+                except Exception as e:
+                    logger.error(f"Error fetching faculty profile: {e}")
+            
+            if not faculty_display_name:
+                faculty_display_name = user.get("username")
 
         resp = make_response(jsonify({
             "status": "success",

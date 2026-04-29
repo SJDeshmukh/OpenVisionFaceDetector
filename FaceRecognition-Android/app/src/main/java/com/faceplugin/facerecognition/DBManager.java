@@ -559,10 +559,14 @@ import java.util.concurrent.CopyOnWriteArrayList;
             byte[] templates = null;
             try { templates = res.getBlob(res.getColumnIndexOrThrow("templates")); } catch (Exception ignored) {}
             
-            if (templates == null) {
-                res.moveToNext();
-                continue;
-            }
+            /* 
+               In server-side detection mode (AttendX), templates might be null 
+               but we still want to show the student in the list.
+            */
+            // if (templates == null) {
+            //     res.moveToNext();
+            //     continue;
+            // }
             
             String localUid = "";
             int localUidIdx = res.getColumnIndex("local_uid");

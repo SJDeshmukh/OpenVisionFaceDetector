@@ -26,6 +26,65 @@ _SCAN_JOBS: dict = {}
 _SCAN_JOBS_LOCK = _threading.Lock()
 
 
+def _get_faculty_identifiers(c, username):
+    """Fetch all possible strings that identify this faculty member (username, name, email)."""
+    ids = {str(username or "").lower().strip()}
+    if not username: return list(ids)
+    
+    # Try multiple ways to find the faculty's profile in the faces table
+    f_row = None
+    
+    # 1. Direct link via person_id in system_users
+    c.execute("SELECT f.name, f.phone, f.custom_data, f.id FROM faces f JOIN system_users su ON su.person_id = f.id WHERE su.username = ?", (username,))
+    f_row = c.fetchone()
+    
+    # 2. If no direct link, search for any face where name or phone or custom_data matches username
+    if not f_row:
+        # Search name/phone directly first
+        c.execute("SELECT name, phone, custom_data, id FROM faces WHERE (LOWER(name) = ? OR phone = ?)", (username.lower(), username))
+        f_row = c.fetchone()
+        
+    if not f_row:
+        # Search in custom_data (fallback)
+        c.execute("SELECT name, phone, custom_data, id FROM faces LIMIT 2000")
+        all_f = c.fetchall()
+        for f in all_f:
+            try:
+                cd_str = f[2] if not hasattr(f, 'keys') else f['custom_data']
+                cd = json.loads(cd_str) if isinstance(cd_str, str) else (cd_str or {})
+                if any(str(v).lower().strip() == username.lower().strip() for v in cd.values()):
+                    f_row = f
+                    break
+            except: continue
+
+    if f_row:
+        # Extract name, phone, email
+        name = f_row[0] if not hasattr(f_row, 'keys') else f_row['name']
+        phone = f_row[1] if not hasattr(f_row, 'keys') else f_row['phone']
+        cd_raw = f_row[2] if not hasattr(f_row, 'keys') else f_row['custom_data']
+        
+        if name: ids.add(str(name).lower().strip())
+        if phone: ids.add(str(phone).lower().strip())
+        try:
+            cd = json.loads(cd_raw) if isinstance(cd_raw, str) else (cd_raw or {})
+            email = cd.get('email') or cd.get('Email') or cd.get('username')
+            if email: ids.add(str(email).lower().strip())
+        except: pass
+        
+    return [i for i in ids if i]
+
+def _faculty_matches(mapped_faculty: str, user_ids: list) -> bool:
+    """True if mapped_faculty matches any of the current user's identifiers."""
+    a = (mapped_faculty or "").lower().strip()
+    if not a or not user_ids: return False
+    a_local = a.split("@")[0]
+    for b in user_ids:
+        if a == b: return True
+        b_local = b.split("@")[0]
+        if a_local == b_local or a_local == b or a == b_local:
+            return True
+    return False
+
 def _cleanup_scan_jobs():
     now = _time.time()
     with _SCAN_JOBS_LOCK:
@@ -716,6 +775,9 @@ def faculty_assigned_classes():
     rows = c.fetchall() or []
     conn.close()
 
+    # Fetch all known identifiers for this faculty (name, email, username)
+    faculty_ids = _get_faculty_identifiers(c, username)
+    
     result = []
     for r in rows:
         try:
@@ -724,12 +786,9 @@ def faculty_assigned_classes():
             ms = []
 
         if g.user_role == "faculty":
-            def _fm(mf):
-                a = (mf or "").lower().strip(); b = username.lower().strip()
-                return a == b or a.split("@")[0] == b.split("@")[0] or a.split("@")[0] == b or a == b.split("@")[0]
-            if not any(_fm(m.get("faculty", "")) for m in ms):
+            if not any(_faculty_matches(m.get("faculty", ""), faculty_ids) for m in ms):
                 continue
-            subjects = [m["subject"] for m in ms if m.get("subject") and _fm(m.get("faculty", ""))]
+            subjects = [m["subject"] for m in ms if m.get("subject") and _faculty_matches(m.get("faculty", ""), faculty_ids)]
         else:
             subjects = list({m["subject"] for m in ms if m.get("subject")})
 
