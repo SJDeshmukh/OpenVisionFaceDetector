@@ -26,6 +26,25 @@
         <item name="android:fontFamily">sans-serif</item>
     </style>
 
+    <!-- ── Light theme variant ──────────────────────── -->
+    <style name="Theme.FaceAttribute.Light" parent="Theme.Material3.Light.NoActionBar">
+        <item name="colorPrimary">@color/primary_brand</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="colorPrimaryContainer">#EDE7FF</item>
+        <item name="colorOnPrimaryContainer">@color/primary_brand_dark</item>
+        <item name="colorSecondary">@color/accent_cyan</item>
+        <item name="colorOnSecondary">#FFFFFF</item>
+        <item name="colorSecondaryContainer">#D0F8FF</item>
+        <item name="colorOnSecondaryContainer">#003744</item>
+        <item name="android:colorBackground">#F5F6FA</item>
+        <item name="colorOnBackground">#1A1A2E</item>
+        <item name="colorSurface">#FFFFFF</item>
+        <item name="colorOnSurface">#1A1A2E</item>
+        <item name="android:statusBarColor">#F5F6FA</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:fontFamily">sans-serif</item>
+    </style>
+
     <!-- ── Typography Scale ──────────────────────────── -->
     <style name="Typography">
         <item name="android:textColor">@color/text_primary</item>

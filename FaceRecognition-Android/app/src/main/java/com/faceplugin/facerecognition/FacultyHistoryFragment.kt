@@ -111,7 +111,14 @@ class FacultyHistoryFragment : Fragment() {
             )
             visibility = View.GONE
         }
-        resultsAdapter = ScanResultAdapter(scanResults) { _, _ -> }
+        resultsAdapter = ScanResultAdapter(scanResults) { _, _ -> }.apply {
+            setRelabelCallback { face -> showRelabelDialog(face) }
+            setSaveEmbeddingCallback { face -> 
+                if (face.personId != null) {
+                    relabelAndSave(face, face.personId!!, face.personName)
+                }
+            }
+        }
         rvResults.layoutManager = LinearLayoutManager(requireContext())
         rvResults.adapter       = resultsAdapter
         root.addView(rvResults)
@@ -310,15 +317,16 @@ class FacultyHistoryFragment : Fragment() {
                 }
 
                 // Local state for toggling
-                val currentAttendance = mutableMapOf<Int, String>() // person_id -> status
-                val studentNames      = mutableMapOf<Int, String>() // person_id -> name
-                
+                val currentAttendance = mutableMapOf<String, String>() // person_id -> status
+                val studentNames      = mutableMapOf<String, String>() // person_id -> name
+
                 try {
                     for (el in attendanceArr) {
                         val s = el.asJsonObject
                         val pidEl = s.get("person_id")
                         if (pidEl == null || pidEl.isJsonNull) continue
-                        val pid = pidEl.asInt
+                        // person_id may arrive as a JSON number or string — normalise to String
+                        val pid = pidEl.asString
                         currentAttendance[pid] = s.get("status")?.asString ?: "absent"
                         studentNames[pid] = s.get("name")?.asString ?: "Unknown"
                     }
@@ -328,51 +336,38 @@ class FacultyHistoryFragment : Fragment() {
                     return
                 }
 
-                // Build drill-down dialog
-                val scroll = android.widget.ScrollView(ctx)
-                val inner  = LinearLayout(ctx).apply {
-                    orientation = LinearLayout.VERTICAL; setPadding(24, 16, 24, 16)
-                }
-                scroll.addView(inner)
-
-                val studentListContainer = LinearLayout(ctx).apply {
+                // Build drill-down dialog with RecyclerView for performance
+                val rvContainer = LinearLayout(ctx).apply {
                     orientation = LinearLayout.VERTICAL
+                    setPadding(0, 16, 0, 16)
                 }
-
-                fun refreshStudentList() {
-                    studentListContainer.removeAllViews()
+                
+                val tvStats = TextView(ctx).apply {
+                    textSize = 14f
+                    setPadding(48, 16, 48, 16)
+                    setTextColor(0xFFFFFFFF.toInt())
+                }
+                rvContainer.addView(tvStats)
+                
+                val rvAttendance = androidx.recyclerview.widget.RecyclerView(ctx).apply {
+                    layoutManager = androidx.recyclerview.widget.LinearLayoutManager(ctx)
+                }
+                
+                fun getSortedList(): List<String> {
                     val pList = currentAttendance.filter { it.value == "present" }.keys.sortedBy { studentNames[it] }
                     val aList = currentAttendance.filter { it.value == "absent" }.keys.sortedBy { studentNames[it] }
-
-                    if (pList.isNotEmpty()) {
-                        TextView(ctx).apply {
-                            text = "✓ PRESENT (${pList.size})"
-                            textSize = 13f; setTextColor(0xFF4CAF50.toInt()); typeface = android.graphics.Typeface.DEFAULT_BOLD
-                            setPadding(0, 8, 0, 8)
-                        }.also { studentListContainer.addView(it) }
-                        for (pid in pList) {
-                            addStudentRow(studentListContainer, studentNames[pid] ?: "Unknown", true) {
-                                currentAttendance[pid] = "absent"; refreshStudentList()
-                            }
-                        }
-                    }
-
-                    if (aList.isNotEmpty()) {
-                        TextView(ctx).apply {
-                            text = "✗ ABSENT (${aList.size})"
-                            textSize = 13f; setTextColor(0xFFF44336.toInt()); typeface = android.graphics.Typeface.DEFAULT_BOLD
-                            setPadding(0, 16, 0, 8)
-                        }.also { studentListContainer.addView(it) }
-                        for (pid in aList) {
-                            addStudentRow(studentListContainer, studentNames[pid] ?: "Unknown", false) {
-                                currentAttendance[pid] = "present"; refreshStudentList()
-                            }
-                        }
-                    }
+                    tvStats.text = "Present: ${pList.size}   |   Absent: ${aList.size}"
+                    return pList + aList
                 }
 
-                refreshStudentList()
-                inner.addView(studentListContainer)
+                var studentList = getSortedList()
+                val adapter = AttendanceRowAdapter(studentList, currentAttendance, studentNames) { pid ->
+                    currentAttendance[pid] = if (currentAttendance[pid] == "present") "absent" else "present"
+                    studentList = getSortedList()
+                    (rvAttendance.adapter as AttendanceRowAdapter).updateData(studentList)
+                }
+                rvAttendance.adapter = adapter
+                rvContainer.addView(rvAttendance)
 
                 val titleLabel = buildString {
                     append(subject)
@@ -382,7 +377,7 @@ class FacultyHistoryFragment : Fragment() {
 
                 val dialog = AlertDialog.Builder(ctx)
                     .setTitle(titleLabel)
-                    .setView(scroll)
+                    .setView(rvContainer)
                     .setNeutralButton("Update Attendance", null) // Will handle manually
                     .setPositiveButton("Done", null)
                     .show()
@@ -430,61 +425,90 @@ class FacultyHistoryFragment : Fragment() {
         })
     }
 
-    private fun addStudentRow(parent: LinearLayout, name: String, isPresent: Boolean, onToggle: () -> Unit) {
-        val ctx = parent.context
-        val row = LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity     = android.view.Gravity.CENTER_VERTICAL
-            setPadding(12, 16, 12, 16)
-            isClickable = true
-            isFocusable = true
-            background  = ContextCompat.getDrawable(ctx, android.R.attr.selectableItemBackground)
-            setOnClickListener { onToggle() }
+    inner class AttendanceRowAdapter(
+        private var items: List<String>,
+        private val currentAttendance: MutableMap<String, String>,
+        private val studentNames: Map<String, String>,
+        private val onToggle: (String) -> Unit
+    ) : androidx.recyclerview.widget.RecyclerView.Adapter<AttendanceRowAdapter.VH>() {
+
+        fun updateData(newItems: List<String>) {
+            items = newItems
+            notifyDataSetChanged()
+        }
+        
+        inner class VH(view: View) : androidx.recyclerview.widget.RecyclerView.ViewHolder(view) {
+            val tvAvatar = view.findViewById<TextView>(android.R.id.text1)
+            val tvName = view.findViewById<TextView>(android.R.id.text2)
+            val tvStatus = view.findViewById<TextView>(android.R.id.summary)
         }
 
-        // Avatar circle
-        val avatarSize = (36 * resources.displayMetrics.density).toInt()
-        val tvAvatar = TextView(ctx).apply {
-            layoutParams = LinearLayout.LayoutParams(avatarSize, avatarSize)
-            gravity = android.view.Gravity.CENTER
-            text = if (name.isNotBlank()) name.first().uppercase() else "?"
-            textSize = 14f
-            setTextColor(android.graphics.Color.WHITE)
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
+            val ctx = parent.context
+            val row = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = android.view.Gravity.CENTER_VERTICAL
+                setPadding(12, 16, 12, 16)
+                isClickable = true
+                isFocusable = true
+                val tv = android.util.TypedValue()
+                ctx.theme.resolveAttribute(android.R.attr.selectableItemBackground, tv, true)
+                if (tv.resourceId != 0) background = ContextCompat.getDrawable(ctx, tv.resourceId)
+            }
+            
+            val avatarSize = (36 * ctx.resources.displayMetrics.density).toInt()
+            val tvAvatar = TextView(ctx).apply {
+                id = android.R.id.text1
+                layoutParams = LinearLayout.LayoutParams(avatarSize, avatarSize)
+                gravity = android.view.Gravity.CENTER
+                textSize = 14f
+                setTextColor(android.graphics.Color.WHITE)
+            }
+            row.addView(tvAvatar)
+            
+            val tvName = TextView(ctx).apply {
+                id = android.R.id.text2
+                textSize = 15f
+                setTextColor(0xFFFFFFFF.toInt())
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                setPadding(24, 0, 0, 0)
+            }
+            row.addView(tvName)
+            
+            val tvStatus = TextView(ctx).apply {
+                id = android.R.id.summary
+                textSize = 12f
+                setPadding(12, 4, 12, 4)
+            }
+            row.addView(tvStatus)
+            
+            return VH(row)
+        }
+
+        override fun onBindViewHolder(holder: VH, position: Int) {
+            val pid = items[position]
+            val name = studentNames[pid] ?: "Unknown"
+            val isPresent = currentAttendance[pid] == "present"
+            
+            holder.tvAvatar.text = if (name.isNotBlank()) name.first().uppercase() else "?"
             val bgColor = if (isPresent) 0xFF388E3C.toInt() else 0xFFD32F2F.toInt()
-            background = android.graphics.drawable.GradientDrawable().apply {
+            holder.tvAvatar.background = android.graphics.drawable.GradientDrawable().apply {
                 shape = android.graphics.drawable.GradientDrawable.OVAL
                 setColor(bgColor)
             }
-        }
-        row.addView(tvAvatar)
-
-        // Name
-        TextView(ctx).apply {
-            text = name; textSize = 15f
-            setTextColor(0xFFFFFFFF.toInt())
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-            setPadding(24, 0, 0, 0)
-        }.also { row.addView(it) }
-
-        // Status checkbox/switch (simplified with a text label for now, but clickable row toggles it)
-        TextView(ctx).apply {
-            text = if (isPresent) "Present" else "Absent"
-            textSize = 12f
-            setTextColor(if (isPresent) 0xFF4CAF50.toInt() else 0xFFF44336.toInt())
-            setPadding(12, 4, 12, 4)
-            background = android.graphics.drawable.GradientDrawable().apply {
+            
+            holder.tvName.text = name
+            holder.tvStatus.text = if (isPresent) "Present" else "Absent"
+            holder.tvStatus.setTextColor(if (isPresent) 0xFF4CAF50.toInt() else 0xFFF44336.toInt())
+            holder.tvStatus.background = android.graphics.drawable.GradientDrawable().apply {
                 setStroke(2, if (isPresent) 0xFF4CAF50.toInt() else 0xFFF44336.toInt())
                 cornerRadius = 8f
             }
-        }.also { row.addView(it) }
+            
+            holder.itemView.setOnClickListener { onToggle(pid) }
+        }
 
-        parent.addView(row)
-
-        // Divider
-        View(ctx).apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1)
-            setBackgroundColor(0x22FFFFFF)
-        }.also { parent.addView(it) }
+        override fun getItemCount() = items.size
     }
 
     // ── Upload flow ───────────────────────────────────────────────────────────
@@ -658,6 +682,84 @@ class FacultyHistoryFragment : Fragment() {
                     }
                 }
             })
+    }
+
+    // ── Relabel and Save Embedding ────────────────────────────────────────────
+
+    private fun showRelabelDialog(face: ScanResult) {
+        val ctx = requireContext()
+
+        // Use in-memory cached person list (loaded when students were synced)
+        val ids   = mutableListOf<String>()
+        val names = mutableListOf<String>()
+        for (p in DBManager.personList) {
+            val pid = p.id ?: p.localUid ?: continue
+            if (pid.isBlank()) continue
+            ids.add(pid)
+            names.add(p.name ?: "Unknown")
+        }
+
+        if (ids.isEmpty()) {
+            Toast.makeText(ctx, "No students cached — load students from Home tab first", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        val spinner = android.widget.Spinner(ctx).apply {
+            setPadding(0, 24, 0, 24)
+        }
+        spinner.adapter = android.widget.ArrayAdapter(ctx, android.R.layout.simple_spinner_dropdown_item, names.toTypedArray())
+        val currentIdx = ids.indexOfFirst { it == face.personId }.coerceAtLeast(0)
+        spinner.setSelection(currentIdx)
+
+        AlertDialog.Builder(ctx)
+            .setTitle("Relabel Face")
+            .setMessage("Select the correct student:")
+            .setView(spinner)
+            .setPositiveButton("Save") { _, _ ->
+                val pickedIdx  = spinner.selectedItemPosition
+                val pickedId   = ids[pickedIdx]
+                val pickedName = names[pickedIdx]
+                relabelAndSave(face, pickedId, pickedName)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun relabelAndSave(face: ScanResult, newPersonId: String, newPersonName: String) {
+        val ctx = requireContext()
+        
+        // Update local state
+        face.personId   = newPersonId
+        face.personName = newPersonName
+        resultsAdapter.notifyDataSetChanged()
+
+        if (face.embVec.isBlank()) {
+            Toast.makeText(ctx, "Relabeled (no embedding to save)", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val body = JsonObject().apply {
+            addProperty("person_id", newPersonId)
+            addProperty("emb_vec",   face.embVec)
+        }
+        
+        RetrofitClient.getService().saveFaceEmbedding(body).enqueue(object : Callback<JsonObject> {
+            override fun onResponse(call: Call<JsonObject>, resp: Response<JsonObject>) {
+                if (!isAdded) return
+                requireActivity().runOnUiThread {
+                    if (resp.isSuccessful)
+                        Toast.makeText(ctx, "Relabeled & embedding saved", Toast.LENGTH_SHORT).show()
+                    else
+                        Toast.makeText(ctx, "Relabeled locally (sync failed)", Toast.LENGTH_SHORT).show()
+                }
+            }
+            override fun onFailure(call: Call<JsonObject>, t: Throwable) {
+                if (!isAdded) return
+                requireActivity().runOnUiThread {
+                    Toast.makeText(ctx, "Relabeled locally (offline)", Toast.LENGTH_SHORT).show()
+                }
+            }
+        })
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

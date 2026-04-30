@@ -98,6 +98,12 @@
     <color name="purple_accent">@color/primary_brand_light</color>
     <color name="chip_bg">#1A7C3AFF</color>
 
+    <!-- Light-mode surface/text overrides (used when night mode is OFF) -->
+    <color name="surface_card">#FFFFFF</color>
+    <color name="icon_tint">#1A1A2E</color>
+    <color name="divider_color">#22000000</color>
+    <color name="theme_toggle_bg">#E8E8F0</color>
+
     <!-- Android Material names -->
     <color name="colorPrimary">@color/primary_brand</color>
     <color name="colorPrimaryVariant">@color/primary_brand_dark</color>

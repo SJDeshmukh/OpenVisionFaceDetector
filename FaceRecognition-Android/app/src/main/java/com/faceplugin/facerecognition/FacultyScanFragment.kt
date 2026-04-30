@@ -86,7 +86,6 @@ class FacultyScanFragment : Fragment() {
     private lateinit var btnEndSession: Button
     private lateinit var tvPhotosHeader: TextView
     private lateinit var rvPhotoGrid: RecyclerView
-    private lateinit var btnMarkAll: Button
 
     // Data
     private val photoCards = mutableListOf<PhotoCard>()
@@ -111,7 +110,6 @@ class FacultyScanFragment : Fragment() {
 
         updateSessionLabel()
         updatePhotosHeader()
-        refreshMarkAllVisibility()
         setupZoom()
         setupPinchZoom()
 
@@ -463,14 +461,24 @@ class FacultyScanFragment : Fragment() {
         if (isCapturing) return
         val session = FacultySessionManager.currentSession
         if (session == null) { showSessionPicker(); return }
-        val nv21 = latestNv21; val w = latestWidth; val h = latestHeight
-        if (nv21 == null || w == 0) {
-            Toast.makeText(context, "No frame — point camera at students", Toast.LENGTH_SHORT).show(); return
-        }
 
         isCapturing = true
         animateCaptureRing()
 
+        // Wait 700 ms so the camera can stabilise after button press before grabbing the frame
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (!isAdded) { isCapturing = false; return@postDelayed }
+            val nv21 = latestNv21; val w = latestWidth; val h = latestHeight
+            if (nv21 == null || w == 0) {
+                Toast.makeText(context, "No frame — point camera at students", Toast.LENGTH_SHORT).show()
+                isCapturing = false
+                return@postDelayed
+            }
+            doCaptureFromFrame(nv21, w, h, session)
+        }, 700L)
+    }
+
+    private fun doCaptureFromFrame(nv21: ByteArray, w: Int, h: Int, session: FacultySessionManager.LectureSession) {
         Thread {
             val bmp = nv21ToBitmap(nv21, w, h) ?: run {
                 requireActivity().runOnUiThread { isCapturing = false }; return@Thread
@@ -574,7 +582,6 @@ class FacultyScanFragment : Fragment() {
             card.faces.addAll(newFaces)
             card.status = PhotoStatus.DONE
             updateCard(card)
-            refreshMarkAllVisibility()
         }
     }
 
@@ -596,11 +603,6 @@ class FacultyScanFragment : Fragment() {
         } else {
             allFaces.add(ScanResult(thumb, personId, name, confidence, "present", embVec))
         }
-    }
-
-    private fun refreshMarkAllVisibility() {
-        val hasIdentified = allFaces.any { !it.personId.isNullOrBlank() }
-        btnMarkAll.visibility = if (hasIdentified) View.VISIBLE else View.GONE
     }
 
     // ── Capture animation ─────────────────────────────────────────────────────
@@ -659,55 +661,90 @@ class FacultyScanFragment : Fragment() {
 
         for (face in card.faces) {
             val row = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(0, 10, 0, 10)
+            }
+
+            val topRow = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity     = android.view.Gravity.CENTER_VERTICAL
-                setPadding(0, 10, 0, 10)
-                isClickable  = true
-                isFocusable  = true
             }
-            val thumbPx = (64 * resources.displayMetrics.density).toInt()
+
+            val thumbPx = (56 * resources.displayMetrics.density).toInt()
             val iv = android.widget.ImageView(ctx).apply {
                 layoutParams = LinearLayout.LayoutParams(thumbPx, thumbPx)
                 scaleType    = android.widget.ImageView.ScaleType.CENTER_CROP
                 if (face.faceBitmap != null) setImageBitmap(face.faceBitmap)
                 else setImageResource(R.drawable.openvision_logo)
             }
-            row.addView(iv)
+            topRow.addView(iv)
 
             val col = LinearLayout(ctx).apply {
                 orientation  = LinearLayout.VERTICAL
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                 setPadding(16, 0, 0, 0)
             }
-            val tvName = TextView(ctx).apply {
+            col.addView(TextView(ctx).apply {
                 text = face.personName; textSize = 14f
                 setTextColor(if (face.personId != null) 0xFFFFFFFF.toInt() else 0xFFFF5555.toInt())
-            }
-            val tvConf = TextView(ctx).apply {
+            })
+            col.addView(TextView(ctx).apply {
                 text = "${face.confidence.toInt()}% confidence"; textSize = 11f
                 setTextColor(0x99FFFFFF.toInt())
+            })
+            topRow.addView(col)
+            row.addView(topRow)
+
+            // Action buttons row
+            val btnRow = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity     = android.view.Gravity.CENTER_VERTICAL
+                setPadding(0, 8, 0, 0)
             }
-            val tvToggle = TextView(ctx).apply {
-                text = statusLabel(face.status); textSize = 13f
-                setTextColor(statusColor(face.status))
-                setPadding(0, 6, 0, 0)
-                setOnClickListener {
-                    face.status = if (face.status == "present") "absent" else "present"
-                    text = statusLabel(face.status)
-                    setTextColor(statusColor(face.status))
-                    allFaces.indexOfFirst { it.personId == face.personId }
-                        .takeIf { it >= 0 }
-                        ?.let { i -> allFaces[i] = allFaces[i].copy(status = face.status) }
+
+            fun makeBtn(label: String, bgColor: Int, action: () -> Unit): Button {
+                return Button(ctx).apply {
+                    text = label
+                    textSize = 11f
+                    setTextColor(0xFFFFFFFF.toInt())
+                    backgroundTintList = android.content.res.ColorStateList.valueOf(bgColor)
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                    ).also { it.setMargins(0, 0, 8, 0) }
+                    setPadding(24, 8, 24, 8)
+                    setOnClickListener { action() }
                 }
             }
-            val tvRelabel = TextView(ctx).apply {
-                text = "✏ Relabel"; textSize = 11f
-                setTextColor(0xFF80D8FF.toInt())
-                setPadding(0, 4, 0, 0)
-                setOnClickListener { showRelabelDialog(face) }
+
+            var btnPresent: Button? = null
+            var btnAbsent:  Button? = null
+
+            fun refreshBtnColors() {
+                val isPresent = face.status == "present"
+                btnPresent?.backgroundTintList = android.content.res.ColorStateList.valueOf(
+                    if (isPresent) 0xFF388E3C.toInt() else 0x44388E3C.toInt())
+                btnAbsent?.backgroundTintList  = android.content.res.ColorStateList.valueOf(
+                    if (!isPresent) 0xFFD32F2F.toInt() else 0x44D32F2F.toInt())
             }
-            col.addView(tvName); col.addView(tvConf); col.addView(tvToggle); col.addView(tvRelabel)
-            row.addView(col)
+
+            btnPresent = makeBtn("Present", if (face.status == "present") 0xFF388E3C.toInt() else 0x44388E3C.toInt()) {
+                face.status = "present"
+                allFaces.indexOfFirst { it.personId == face.personId }.takeIf { it >= 0 }
+                    ?.let { i -> allFaces[i] = allFaces[i].copy(status = "present") }
+                refreshBtnColors()
+            }
+            btnAbsent = makeBtn("Absent", if (face.status == "absent") 0xFFD32F2F.toInt() else 0x44D32F2F.toInt()) {
+                face.status = "absent"
+                allFaces.indexOfFirst { it.personId == face.personId }.takeIf { it >= 0 }
+                    ?.let { i -> allFaces[i] = allFaces[i].copy(status = "absent") }
+                refreshBtnColors()
+            }
+            val btnRelabel = makeBtn("Relabel", 0xFF1565C0.toInt()) { showRelabelDialog(face) }
+
+            btnRow.addView(btnPresent)
+            btnRow.addView(btnAbsent)
+            btnRow.addView(btnRelabel)
+            row.addView(btnRow)
             inner.addView(row)
 
             // Divider
@@ -725,9 +762,6 @@ class FacultyScanFragment : Fragment() {
             .show()
     }
 
-    private fun statusLabel(s: String) = if (s == "present") "✓ Present (tap to mark absent)" else "✗ Absent (tap to mark present)"
-    private fun statusColor(s: String) = if (s == "present") 0xFF4CAF50.toInt() else 0xFFF44336.toInt()
-
     private fun showRelabelDialog(face: ScanResult) {
         val ctx     = requireContext()
         val session = FacultySessionManager.currentSession ?: return
@@ -739,41 +773,32 @@ class FacultyScanFragment : Fragment() {
                 override fun onResponse(call: Call<JsonObject>, resp: Response<JsonObject>) {
                     if (!isAdded) return
                     loading.cancel()
-                    val arr      = resp.body()?.getAsJsonArray("students") ?: com.google.gson.JsonArray()
-                    val ids      = mutableListOf<String>()
-                    val names    = mutableListOf<String>()
+                    val arr   = resp.body()?.getAsJsonArray("students") ?: com.google.gson.JsonArray()
+                    val ids   = mutableListOf<String>()
+                    val names = mutableListOf<String>()
                     for (el in arr) {
-                        val s = el.asJsonObject
-                        ids.add(s.get("id")?.asString ?: "")
-                        names.add(s.get("name")?.asString ?: "")
+                        val s   = el.asJsonObject
+                        val sid = s.get("id")?.asString ?: ""
+                        if (sid.isNotBlank()) { ids.add(sid); names.add(s.get("name")?.asString ?: "") }
                     }
-
-                    // Fallback: if server returned no students, use locally cached personList
-                    if (ids.isEmpty()) {
-                        val localPersons = DBManager.personList
-                        if (localPersons.isNotEmpty()) {
-                            for (p in localPersons) {
-                                val pid = p.id ?: p.localUid ?: continue
-                                if (pid.isBlank()) continue
-                                ids.add(pid)
-                                names.add(p.name ?: "Unknown")
-                            }
-                        }
+                    // Merge in locally cached students not already present (API may return only those with photos)
+                    for (p in DBManager.personList) {
+                        val pid = p.id ?: p.localUid ?: continue
+                        if (pid.isBlank() || ids.contains(pid)) continue
+                        ids.add(pid)
+                        names.add(p.name ?: "Unknown")
                     }
-
                     if (ids.isEmpty()) {
                         requireActivity().runOnUiThread {
                             Toast.makeText(ctx, "No students found — try loading students from Home first", Toast.LENGTH_SHORT).show()
                         }
                         return
                     }
-
                     showRelabelSpinner(ctx, face, ids, names)
                 }
                 override fun onFailure(call: Call<JsonObject>, t: Throwable) {
                     if (!isAdded) return
                     loading.cancel()
-                    // Fallback: use locally cached personList when offline
                     val ids   = mutableListOf<String>()
                     val names = mutableListOf<String>()
                     for (p in DBManager.personList) {
@@ -796,9 +821,14 @@ class FacultyScanFragment : Fragment() {
     private fun showRelabelSpinner(ctx: android.content.Context, face: ScanResult,
                                    ids: List<String>, names: List<String>) {
         requireActivity().runOnUiThread {
+            // Sort alphabetically by name while keeping id/name in sync
+            val sorted = ids.zip(names).sortedBy { it.second }
+            val sortedIds   = sorted.map { it.first }
+            val sortedNames = sorted.map { it.second }
+
             val spinner = Spinner(ctx)
-            spinner.adapter = ArrayAdapter(ctx, android.R.layout.simple_spinner_dropdown_item, names)
-            val currentIdx = ids.indexOfFirst { it == face.personId }.coerceAtLeast(0)
+            spinner.adapter = ArrayAdapter(ctx, android.R.layout.simple_spinner_dropdown_item, sortedNames)
+            val currentIdx = sortedIds.indexOfFirst { it == face.personId }.coerceAtLeast(0)
             spinner.setSelection(currentIdx)
 
             AlertDialog.Builder(ctx)
@@ -807,8 +837,8 @@ class FacultyScanFragment : Fragment() {
                 .setView(spinner)
                 .setPositiveButton("Save") { _, _ ->
                     val pickedIdx  = spinner.selectedItemPosition
-                    val pickedId   = ids[pickedIdx]
-                    val pickedName = names[pickedIdx]
+                    val pickedId   = sortedIds[pickedIdx]
+                    val pickedName = sortedNames[pickedIdx]
                     relabelAndSave(face, pickedId, pickedName)
                 }
                 .setNegativeButton("Cancel", null)
@@ -861,30 +891,22 @@ class FacultyScanFragment : Fragment() {
         })
     }
 
-    // ── Mark All Present ──────────────────────────────────────────────────────
-
-    private fun markAllPresent() {
-        allFaces.forEach { it.status = "present" }
-        // Sync into photo card faces too
-        photoCards.forEach { card -> card.faces.forEach { f -> f.status = "present" } }
-        Toast.makeText(requireContext(), "Marked all ${allFaces.size} student(s) present", Toast.LENGTH_SHORT).show()
-    }
-
     // ── End session ───────────────────────────────────────────────────────────
 
     private fun confirmEndSession() {
         val ctx     = requireContext()
         val session = FacultySessionManager.currentSession
-        if (session == null) { (activity as? FacultyActivity)?.navigateToHome(); return }
+        if (session == null) { clearScanState(); showSessionPicker(null); return }
 
         val identified = allFaces.count { !it.personId.isNullOrBlank() }
         AlertDialog.Builder(ctx)
             .setTitle("End Session")
             .setMessage("Mark attendance for $identified identified student(s) and end the session?")
             .setPositiveButton("End & Mark") { _, _ -> markAndEnd() }
-            .setNegativeButton("Just End") { _, _ ->
+            .setNegativeButton("Discard") { _, _ ->
                 FacultySessionManager.clearSession(ctx)
-                (activity as? FacultyActivity)?.navigateToHome()
+                clearScanState()
+                showSessionPicker(null)
             }
             .setNeutralButton("Cancel", null)
             .show()
@@ -895,16 +917,17 @@ class FacultyScanFragment : Fragment() {
         val session = FacultySessionManager.currentSession ?: return
         val toMark  = allFaces.filter { !it.personId.isNullOrBlank() }
 
-        if (toMark.isEmpty()) {
-            FacultySessionManager.clearSession(ctx)
-            (activity as? FacultyActivity)?.navigateToHome()
-            return
-        }
-
         val db = DBManager(ctx)
         val ts = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).format(Date())
         toMark.forEach { r ->
             db.insertFacultyAttendance(session.lectureId, r.personId!!, r.personName, "", ts, r.status, r.confidence, r.faceBitmap)
+        }
+
+        if (toMark.isEmpty()) {
+            FacultySessionManager.clearSession(ctx)
+            clearScanState()
+            showSessionPicker(null)
+            return
         }
 
         val arr = com.google.gson.JsonArray()
@@ -914,7 +937,6 @@ class FacultyScanFragment : Fragment() {
                 addProperty("status",     r.status)
                 addProperty("timestamp",  ts)
                 addProperty("confidence", r.confidence / 100f)
-                
                 r.faceBitmap?.let { bmp ->
                     val bos = ByteArrayOutputStream()
                     bmp.compress(Bitmap.CompressFormat.JPEG, 60, bos)
@@ -932,12 +954,13 @@ class FacultyScanFragment : Fragment() {
                     requireActivity().runOnUiThread {
                         if (resp.isSuccessful) {
                             for (p in db.unsyncedFacultyAttendance) db.markFacultyAttendanceSynced(p.first)
-                            Toast.makeText(ctx, "Attendance marked for ${toMark.size} student(s)!", Toast.LENGTH_LONG).show()
+                            Toast.makeText(ctx, "✓ Attendance marked for ${toMark.size} student(s)", Toast.LENGTH_LONG).show()
                         } else {
                             Toast.makeText(ctx, "Saved locally — will sync later", Toast.LENGTH_SHORT).show()
                         }
                         FacultySessionManager.clearSession(ctx)
-                        (activity as? FacultyActivity)?.navigateToHome()
+                        clearScanState()
+                        showSessionPicker(null)
                     }
                 }
                 override fun onFailure(call: Call<JsonObject>, t: Throwable) {
@@ -945,7 +968,8 @@ class FacultyScanFragment : Fragment() {
                     requireActivity().runOnUiThread {
                         Toast.makeText(ctx, "Saved offline — will sync when connected", Toast.LENGTH_SHORT).show()
                         FacultySessionManager.clearSession(ctx)
-                        (activity as? FacultyActivity)?.navigateToHome()
+                        clearScanState()
+                        showSessionPicker(null)
                     }
                 }
             })
@@ -958,7 +982,6 @@ class FacultyScanFragment : Fragment() {
         photoCards.clear()
         allFaces.clear()
         photoAdapter.notifyDataSetChanged()
-        refreshMarkAllVisibility()
         updatePhotosHeader()
     }
 
@@ -1013,8 +1036,6 @@ class FacultyScanFragment : Fragment() {
         btnEndSession   = v.findViewById(R.id.btn_end_session)
         tvPhotosHeader  = v.findViewById(R.id.tv_photos_header)
         rvPhotoGrid     = v.findViewById(R.id.rv_photo_grid)
-        btnMarkAll      = v.findViewById(R.id.btn_mark_all)
-        btnMarkAll.setOnClickListener { markAllPresent() }
     }
 
     @Deprecated("Deprecated in Java")
@@ -1087,13 +1108,21 @@ data class ScanResult(
 class ScanResultAdapter(
     private val items: MutableList<ScanResult>,
     private val onStatusChanged: (ScanResult, String) -> Unit
-) : RecyclerView.Adapter<ScanResultAdapter.VH>() {
+    ) : RecyclerView.Adapter<ScanResultAdapter.VH>() {
+
+    private var onRelabel: ((ScanResult) -> Unit)? = null
+    private var onSaveEmbedding: ((ScanResult) -> Unit)? = null
+
+    fun setRelabelCallback(cb: (ScanResult) -> Unit) { onRelabel = cb }
+    fun setSaveEmbeddingCallback(cb: (ScanResult) -> Unit) { onSaveEmbedding = cb }
 
     inner class VH(view: View) : RecyclerView.ViewHolder(view) {
         val ivFace:   android.widget.ImageView = view.findViewById(R.id.iv_face_thumb)
         val tvName:   TextView                 = view.findViewById(R.id.tv_person_name)
         val tvConf:   TextView                 = view.findViewById(R.id.tv_confidence)
         val tvStatus: TextView                 = view.findViewById(R.id.tv_status_badge)
+        val tvRelabel: TextView                = view.findViewById(R.id.tv_relabel)
+        val tvSaveFace: TextView               = view.findViewById(R.id.tv_save_face)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH =
@@ -1101,19 +1130,28 @@ class ScanResultAdapter(
 
     override fun onBindViewHolder(holder: VH, pos: Int) {
         val item = items[pos]
-        holder.tvName.text  = item.personName
-        holder.tvConf.text  = "${item.confidence.toInt()}% match"
+        holder.tvName.text = item.personName
+        holder.tvConf.text = "${item.confidence.toInt()}% match"
         holder.tvStatus.text = if (item.status == "present") "Present" else "Absent"
         holder.tvStatus.setTextColor(if (item.status == "present") 0xFF4CAF50.toInt() else 0xFFF44336.toInt())
         holder.tvName.setTextColor(if (item.personId == null) 0xFFFF5555.toInt() else 0xFFFFFFFF.toInt())
-        if (item.faceBitmap != null) holder.ivFace.setImageBitmap(item.faceBitmap)
-        else holder.ivFace.setImageResource(R.drawable.openvision_logo)
+        if (item.faceBitmap != null) holder.ivFace.setImageBitmap(item.faceBitmap) else holder.ivFace.setImageResource(R.drawable.openvision_logo)
+        // Relabel button always visible
+        holder.tvRelabel.setOnClickListener { onRelabel?.invoke(item) }
+        // Save face button visible only if embedding exists
+        if (item.embVec.isNotBlank()) {
+            holder.tvSaveFace.visibility = View.VISIBLE
+            holder.tvSaveFace.setOnClickListener { onSaveEmbedding?.invoke(item) }
+        } else {
+            holder.tvSaveFace.visibility = View.GONE
+        }
         holder.itemView.setOnClickListener {
             val newStatus = if (item.status == "present") "absent" else "present"
             item.status = newStatus
             onStatusChanged(item, newStatus)
             notifyItemChanged(pos)
         }
+
     }
 
     override fun getItemCount() = items.size

@@ -510,27 +510,42 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             }
         } catch (Exception ignored) {}
 
+        // Optimistic UI: predict and show result immediately without waiting for the API
+        final String optimisticStatus = dbManager.predictNextAttendanceStatus(finalPersonId, localUid, name);
+        if (getActivity() != null) {
+            getActivity().runOnUiThread(() -> {
+                playAttendanceSound(optimisticStatus);
+                showStatusOverlay(optimisticStatus);
+                showAttendanceToast(name, optimisticStatus);
+                if (statusText != null) statusText.setText(name + " " + optimisticStatus);
+            });
+        }
+
         service.sendPersonEvent(request).enqueue(new Callback<GreetingResponse>() {
             @Override
             public void onResponse(Call<GreetingResponse> call, Response<GreetingResponse> response) {
                 if (response.isSuccessful() && response.body() != null) {
                     GreetingResponse greeting = response.body();
                     if (greeting.isSpeak()) {
-                        showAttendanceToast(name, greeting.getStatus());
-
-                        // Play Sound based on Status (Check-In vs Check-Out)
                         String status = greeting.getStatus();
                         if (status != null) {
-                             playAttendanceSound(status);
-                             showStatusOverlay(status);
-                             try {
-                                 if (isAttendance) {
-                                     dbManager.upsertAttendanceState(finalPersonId, localUid, name, status, timestamp);
-                                 }
-                             } catch (Exception ignored) {}
-                        } else {
-                            
-                        } 
+                            try {
+                                if (isAttendance) {
+                                    dbManager.upsertAttendanceState(finalPersonId, localUid, name, status, timestamp);
+                                }
+                            } catch (Exception ignored) {}
+                            // Correct UI only if server disagrees with our prediction
+                            if (!status.equalsIgnoreCase(optimisticStatus)) {
+                                if (getActivity() != null) {
+                                    getActivity().runOnUiThread(() -> {
+                                        playAttendanceSound(status);
+                                        showStatusOverlay(status);
+                                        showAttendanceToast(name, status);
+                                        if (statusText != null) statusText.setText(name + " " + status);
+                                    });
+                                }
+                            }
+                        }
                     }
                 } else {
                     // Handle API Errors (e.g., 403 Suspended)
@@ -568,26 +583,12 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             @Override
             public void onFailure(Call<GreetingResponse> call, Throwable t) {
                 Log.e(TAG, "API Error", t);
-                
-                // Offline Fallback
-                if (getActivity() != null) {
-                    getActivity().runOnUiThread(() -> {
-                        if (isAttendance) {
-                            String predicted = dbManager.predictNextAttendanceStatus(finalPersonId, localUid, name);
-                            dbManager.insertAttendanceQueue(finalPersonId, localUid, name, timestamp, predicted, bitmap, false);
-                            playAttendanceSound(predicted);
-                            showStatusOverlay(predicted);
-                            showAttendanceToast(name, predicted);
-                            if (statusText != null) statusText.setText(name + " " + predicted);
-                            try {
-                                SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
-                            } catch (Exception e) {
-                                e.printStackTrace();
-                            }
-                        } else {
-                            Toast.makeText(getContext(), "Offline: API Error", Toast.LENGTH_SHORT).show();
-                        }
-                    });
+                // UI already updated optimistically; just queue for retry
+                if (isAttendance) {
+                    try {
+                        dbManager.insertAttendanceQueue(finalPersonId, localUid, name, timestamp, optimisticStatus, bitmap, false);
+                        SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
+                    } catch (Exception ignored) {}
                 }
             }
         });
@@ -1150,12 +1151,19 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                         if (lastTs == null || lastTs.isEmpty()) {
                             allowByCooldown = true;
                         } else {
-                            SimpleDateFormat sdf2 = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US);
-                            String nowStr = sdf2.format(new Date());
-                            long lastMs = sdf2.parse(lastTs).getTime();
-                            long nowMs = sdf2.parse(nowStr).getTime();
-                            long deltaSec = (nowMs - lastMs) / 1000;
-                            allowByCooldown = (deltaSec >= cooldown || deltaSec < 0);
+                            long lastMs = -1;
+                            for (String fmt : new String[]{"yyyy-MM-dd'T'HH:mm:ss.SSS", "yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd HH:mm:ss"}) {
+                                try {
+                                    lastMs = new SimpleDateFormat(fmt, Locale.US).parse(lastTs).getTime();
+                                    break;
+                                } catch (Exception ignored2) {}
+                            }
+                            if (lastMs >= 0) {
+                                long deltaSec = (System.currentTimeMillis() - lastMs) / 1000;
+                                allowByCooldown = (deltaSec >= cooldown || deltaSec < 0);
+                            } else {
+                                allowByCooldown = true; // can't parse → don't block
+                            }
                         }
                     } catch (Exception ignored) {}
 

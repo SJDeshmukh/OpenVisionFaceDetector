@@ -318,11 +318,17 @@ const Wages = () => {
         alert("Wages saved successfully!");
         fetchPayroll();
       } else {
-        alert("Failed to save wages");
+        let errMsg = "Failed to save wages";
+        try {
+          const errData = await res.json();
+          if (errData.error) errMsg = errData.error;
+        } catch (_) {}
+        console.error("Save wages error:", errMsg);
+        alert(errMsg);
       }
     } catch (error) {
       console.error("Error saving wages:", error);
-      alert("Error saving wages");
+      alert("Error saving wages: " + error.message);
     } finally {
       setSaveLoading(false);
     }

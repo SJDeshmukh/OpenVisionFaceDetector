@@ -29,6 +29,7 @@ const COLORS = ['#22c55e', '#f59e0b', '#ef4444'];
 
 const Reports = () => {
   const { user } = useAuth();
+  const personLabel = (user?.vertical && ['school', 'hostel'].includes(String(user.vertical).toLowerCase())) ? 'Student' : 'Employee';
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [analytics, setAnalytics] = useState({
@@ -235,18 +236,18 @@ const Reports = () => {
         <>
           {/* Summary Cards */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {/* Total Users — bifurcated into Students + Faculty */}
+            {/* Total Users */}
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
               <p className="text-sm text-slate-500 mb-2">Total Registered</p>
               <p className="text-2xl font-bold text-slate-800">{analytics.summary.total_users}</p>
               <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-semibold">
                 <span className="flex items-center gap-1.5 text-blue-600">
                   <span className="w-2 h-2 rounded-full bg-blue-500 inline-block" />
-                  {analytics.summary.total_students ?? analytics.summary.total_users} Students
+                  {analytics.summary.total_students ?? analytics.summary.total_users} {personLabel}s
                 </span>
                 <span className="flex items-center gap-1.5 text-indigo-600">
                   <span className="w-2 h-2 rounded-full bg-indigo-500 inline-block" />
-                  {analytics.summary.total_faculty ?? 0} Faculty
+                  {analytics.summary.total_faculty ?? 0} Admin
                 </span>
               </div>
             </div>

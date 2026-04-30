@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark mode overrides — these are the original deep-space palette -->
+    <color name="bg_main">#07071A</color>
+    <color name="bg_surface">#0D0C2A</color>
+    <color name="bg_elevated">#131230</color>
+    <color name="bg_overlay">#1A1940</color>
+    <color name="text_primary">#FFFFFF</color>
+    <color name="text_secondary">#C4C4E0</color>
+    <color name="text_tertiary">#8080B0</color>
+    <color name="text_muted">#8080B0</color>
+    <color name="text_dim">#505080</color>
+    <color name="glass_bg">#0FFFFFFF</color>
+    <color name="surface_card">#0D0C2A</color>
+    <color name="icon_tint">#FFFFFF</color>
+    <color name="divider_color">#22FFFFFF</color>
+    <color name="theme_toggle_bg">#1A1940</color>
+</resources>

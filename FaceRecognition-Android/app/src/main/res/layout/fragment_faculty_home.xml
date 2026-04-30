@@ -53,18 +53,21 @@
             </LinearLayout>
 
             <androidx.cardview.widget.CardView
+                android:id="@+id/btn_theme_toggle"
                 android:layout_width="48dp"
                 android:layout_height="48dp"
+                android:clickable="true"
+                android:focusable="true"
                 app:cardCornerRadius="24dp"
                 app:cardElevation="4dp"
-                app:cardBackgroundColor="@color/indigo_mid">
+                app:cardBackgroundColor="@color/theme_toggle_bg">
                 <TextView
+                    android:id="@+id/tv_theme_icon"
                     android:layout_width="match_parent"
                     android:layout_height="match_parent"
                     android:gravity="center"
-                    android:text="✦"
-                    android:textSize="22sp"
-                    android:textColor="@color/neon_cyan"/>
+                    android:text="🌙"
+                    android:textSize="22sp"/>
             </androidx.cardview.widget.CardView>
         </LinearLayout>
 
@@ -214,7 +217,7 @@
                 <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
                     android:text="👥" android:textSize="28sp" android:gravity="center"/>
                 <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-                    android:text="Load Students" android:textSize="13sp"
+                    android:text="View Students" android:textSize="13sp"
                     android:textColor="@android:color/white" android:layout_marginTop="4dp"
                     android:gravity="center"/>
             </LinearLayout>

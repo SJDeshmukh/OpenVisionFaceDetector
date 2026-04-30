@@ -1790,6 +1790,10 @@ def update_wages():
         conn.commit()
         return jsonify({"success": True})
     except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()

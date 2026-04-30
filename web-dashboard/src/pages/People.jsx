@@ -541,7 +541,7 @@ const People = () => {
   // Dynamically identify the Name header from the registration config
   const nameHeaderObj = registrationColumns.find(c => c.is_name) || 
                         registrationColumns.find(c => ['name', 'student name', 'full name'].includes(c.label?.toLowerCase()));
-  const nameHeader = nameHeaderObj?.label || 'Student';
+  const nameHeader = nameHeaderObj?.label || personLabel;
 
   const tableColumns = useMemo(() => {
     return (registrationColumns || []).filter((col) => {
@@ -1055,7 +1055,7 @@ const People = () => {
               {/* Student ID / Roll Number */}
               <div className="space-y-2">
                 <label className="text-sm font-medium text-slate-700">
-                  Student Roll No / ID
+                  {personLabel} Roll No / ID
                   <span className="text-xs text-slate-400 ml-2">(Optional - Auto-assigned if empty)</span>
                 </label>
                 <input
@@ -1122,7 +1122,7 @@ const People = () => {
                 })}
                 
                 {/* Simplified Class Selection */}
-                {vendorClasses.length > 0 && (
+                {isBulkAttendanceEnabled && vendorClasses.length > 0 && (
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-slate-700">
                       Select Class

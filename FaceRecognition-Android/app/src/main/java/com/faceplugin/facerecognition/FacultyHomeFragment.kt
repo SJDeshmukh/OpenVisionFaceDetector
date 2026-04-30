@@ -57,8 +57,18 @@ class FacultyHomeFragment : Fragment() {
             (activity as? FacultyActivity)?.navigateToScan()
         }
         view.findViewById<LinearLayout>(R.id.btn_upload).setOnClickListener { pickImageFromGallery() }
-        view.findViewById<LinearLayout>(R.id.btn_load_students).setOnClickListener { loadStudents() }
+        view.findViewById<LinearLayout>(R.id.btn_load_students).setOnClickListener { viewStudentsWithClassPicker() }
         view.findViewById<android.widget.Button>(R.id.btn_sync_now).setOnClickListener { syncNow() }
+
+        // Theme toggle in header
+        view.findViewById<androidx.cardview.widget.CardView>(R.id.btn_theme_toggle)?.setOnClickListener {
+            val prefs = requireContext().getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE)
+            val isLight = prefs.getBoolean("theme_light", false)
+            prefs.edit().putBoolean("theme_light", !isLight).apply()
+            requireActivity().recreate()
+        }
+        val prefs2 = requireContext().getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE)
+        view.findViewById<TextView>(R.id.tv_theme_icon)?.text = if (prefs2.getBoolean("theme_light", false)) "☀" else "🌙"
     }
 
     override fun onResume() {
@@ -108,10 +118,10 @@ class FacultyHomeFragment : Fragment() {
     // ── Actions ───────────────────────────────────────────────────────────────
 
     private fun autoSyncStudentsIfNeeded() {
-        val prefs     = requireContext().getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE)
-        val lastSync  = prefs.getLong("faculty_student_last_sync", 0L)
-        val oneHourMs = 60 * 60 * 1000L
-        if (System.currentTimeMillis() - lastSync < oneHourMs) return
+        val prefs      = requireContext().getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE)
+        val lastSync   = prefs.getLong("faculty_student_last_sync", 0L)
+        val fifteenMin = 15 * 60 * 1000L
+        if (System.currentTimeMillis() - lastSync < fifteenMin) return
         val constraints = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
         val req = OneTimeWorkRequest.Builder(FaceDownloadWorker::class.java)
             .setConstraints(constraints).build()
@@ -129,42 +139,138 @@ class FacultyHomeFragment : Fragment() {
             }
     }
 
-    private fun loadStudents() {
-        Toast.makeText(context, "Syncing student list…", Toast.LENGTH_SHORT).show()
-        val constraints = Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED).build()
-        val req = OneTimeWorkRequest.Builder(FaceDownloadWorker::class.java)
-            .setConstraints(constraints).build()
-        WorkManager.getInstance(requireContext())
-            .enqueueUniqueWork("faculty-face-download",
-                androidx.work.ExistingWorkPolicy.REPLACE, req)
-        WorkManager.getInstance(requireContext())
-            .getWorkInfoByIdLiveData(req.id)
-            .observe(viewLifecycleOwner) { info ->
-                if (info?.state?.isFinished == true) {
-                    DBManager(requireContext()).loadPerson()
-                    updateStats()
-                    showStudentListDialog()
+    private fun viewStudentsWithClassPicker() {
+        val ctx = requireContext()
+        // Sync in background quietly so list is fresh
+        val constraints = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
+        val req = OneTimeWorkRequest.Builder(FaceDownloadWorker::class.java).setConstraints(constraints).build()
+        WorkManager.getInstance(ctx).enqueueUniqueWork("faculty-face-download", androidx.work.ExistingWorkPolicy.KEEP, req)
+
+        // Fetch class list from server, then let user pick
+        val loadingDlg = android.app.AlertDialog.Builder(ctx)
+            .setTitle("Loading classes…")
+            .setMessage("Please wait")
+            .setCancelable(false)
+            .show()
+
+        com.faceplugin.facerecognition.api.RetrofitClient.getService().getFacultyClasses()
+            .enqueue(object : retrofit2.Callback<com.google.gson.JsonObject> {
+                override fun onResponse(call: retrofit2.Call<com.google.gson.JsonObject>, resp: retrofit2.Response<com.google.gson.JsonObject>) {
+                    if (!isAdded) { loadingDlg.dismiss(); return }
+                    loadingDlg.dismiss()
+                    val arr = resp.body()?.getAsJsonArray("classes")
+                    if (arr == null || arr.size() == 0) {
+                        // Fall back to showing all loaded students
+                        showStudentListDialog(null, null)
+                        return
+                    }
+                    val classLabels = mutableListOf<String>()
+                    val classYears  = mutableListOf<String>()
+                    val divisions   = mutableListOf<String>()
+                    for (el in arr) {
+                        val o = el.asJsonObject
+                        val yr  = o.get("class_year")?.asString ?: ""
+                        val div = o.get("division")?.asString ?: ""
+                        val lbl = o.get("label")?.asString?.ifBlank { "$yr-$div" } ?: "$yr-$div"
+                        classLabels.add(lbl)
+                        classYears.add(yr)
+                        divisions.add(div)
+                    }
+                    requireActivity().runOnUiThread {
+                        val items = classLabels.toTypedArray()
+                        android.app.AlertDialog.Builder(ctx)
+                            .setTitle("Select Class")
+                            .setItems(items) { _, which ->
+                                showStudentListDialog(classYears[which], divisions[which])
+                            }
+                            .setNegativeButton("All Students") { _, _ -> showStudentListDialog(null, null) }
+                            .show()
+                    }
                 }
-            }
+                override fun onFailure(call: retrofit2.Call<com.google.gson.JsonObject>, t: Throwable) {
+                    if (!isAdded) { loadingDlg.dismiss(); return }
+                    loadingDlg.dismiss()
+                    showStudentListDialog(null, null)
+                }
+            })
     }
 
-    private fun showStudentListDialog() {
+    private fun showStudentListDialog(filterClassYear: String?, filterDivision: String?) {
         val ctx = requireContext()
-        val persons = DBManager.personList.toList()
-        if (persons.isEmpty()) {
-            Toast.makeText(ctx, "No students loaded", Toast.LENGTH_SHORT).show()
-            return
-        }
 
+        // If API filter specified, fetch from server for accuracy; otherwise use cached list
+        if (filterClassYear != null) {
+            val loadingDlg = android.app.AlertDialog.Builder(ctx)
+                .setTitle("Loading students…").setMessage("Please wait").setCancelable(false).show()
+
+            com.faceplugin.facerecognition.api.RetrofitClient.getService()
+                .getClassStudents(filterClassYear, filterDivision ?: "")
+                .enqueue(object : retrofit2.Callback<com.google.gson.JsonObject> {
+                    override fun onResponse(call: retrofit2.Call<com.google.gson.JsonObject>, resp: retrofit2.Response<com.google.gson.JsonObject>) {
+                        if (!isAdded) { loadingDlg.dismiss(); return }
+                        loadingDlg.dismiss()
+                        val arr = resp.body()?.getAsJsonArray("students") ?: com.google.gson.JsonArray()
+                        val persons = mutableListOf<Person>()
+                        // Merge API results with local cache
+                        val apiIds = mutableSetOf<String>()
+                        for (el in arr) {
+                            val s = el.asJsonObject
+                            val id   = s.get("id")?.asString ?: continue
+                            val name = s.get("name")?.asString ?: "Unknown"
+                            apiIds.add(id)
+                            val local = DBManager.personList.firstOrNull { it.id == id || it.localUid == id }
+                            persons.add(local ?: Person(id, name, null, "", "", "", ""))
+                        }
+                        // Add any local students not in API response
+                        for (p in DBManager.personList) {
+                            val pid = p.id ?: p.localUid ?: continue
+                            if (!apiIds.contains(pid)) {
+                                val yr  = getPersonClassYear(p)
+                                val div = getPersonDivision(p)
+                                if (yr == filterClassYear && div == filterDivision) persons.add(p)
+                            }
+                        }
+                        persons.sortBy { it.name }
+                        requireActivity().runOnUiThread {
+                            renderStudentDialog(ctx, persons, "$filterClassYear-${filterDivision ?: ""}")
+                        }
+                    }
+                    override fun onFailure(call: retrofit2.Call<com.google.gson.JsonObject>, t: Throwable) {
+                        if (!isAdded) { loadingDlg.dismiss(); return }
+                        loadingDlg.dismiss()
+                        val persons = DBManager.personList.filter {
+                            getPersonClassYear(it) == filterClassYear
+                        }.sortedBy { it.name }
+                        requireActivity().runOnUiThread {
+                            renderStudentDialog(ctx, persons, "$filterClassYear-${filterDivision ?: ""}")
+                        }
+                    }
+                })
+        } else {
+            val persons = DBManager.personList.sortedBy { it.name }
+            if (persons.isEmpty()) { Toast.makeText(ctx, "No students loaded yet", Toast.LENGTH_SHORT).show(); return }
+            renderStudentDialog(ctx, persons, "All Students")
+        }
+    }
+
+    private fun getPersonClassYear(p: Person): String = try {
+        org.json.JSONObject(p.customData ?: "{}").optString("class_year") ?: ""
+    } catch (_: Exception) { "" }
+
+    private fun getPersonDivision(p: Person): String = try {
+        val obj = org.json.JSONObject(p.customData ?: "{}")
+        obj.optString("division").ifBlank { obj.optString("Division") }
+    } catch (_: Exception) { "" }
+
+    private fun renderStudentDialog(ctx: android.content.Context, persons: List<Person>, title: String) {
+        if (persons.isEmpty()) { Toast.makeText(ctx, "No students found", Toast.LENGTH_SHORT).show(); return }
         val rv = RecyclerView(ctx).apply {
             layoutManager = LinearLayoutManager(ctx)
             adapter = StudentListAdapter(persons, DBManager(ctx))
             setPadding(0, 16, 0, 16)
         }
-
         AlertDialog.Builder(ctx)
-            .setTitle("Students (${persons.size})")
+            .setTitle("$title (${persons.size})")
             .setView(rv)
             .setPositiveButton("Done", null)
             .show()
@@ -217,62 +323,51 @@ class FacultyHomeFragment : Fragment() {
     // ── Student List Adapter ──────────────────────────────────────────────────
 
     private class StudentListAdapter(
-        private val persons: List<Person>,
+        private val items: List<Person>,
         private val db: DBManager
     ) : RecyclerView.Adapter<StudentListAdapter.VH>() {
 
         class VH(view: View) : RecyclerView.ViewHolder(view) {
-            val ivPhoto:     ImageView = view.findViewById(R.id.iv_student_photo)
-            val tvInitial:   TextView  = view.findViewById(R.id.tv_student_initial)
-            val tvName:      TextView  = view.findViewById(R.id.tv_student_name)
-            val tvSubtitle:  TextView  = view.findViewById(R.id.tv_student_subtitle)
+            val ivPhoto:    ImageView = view.findViewById(R.id.iv_student_photo)
+            val tvInitial:  TextView  = view.findViewById(R.id.tv_student_initial)
+            val tvName:     TextView  = view.findViewById(R.id.tv_student_name)
+            val tvSubtitle: TextView  = view.findViewById(R.id.tv_student_subtitle)
         }
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH =
             VH(LayoutInflater.from(parent.context).inflate(R.layout.item_student_card, parent, false))
 
         override fun onBindViewHolder(holder: VH, pos: Int) {
-            val p = persons[pos]
+            val p = items[pos]
             holder.tvName.text = p.name ?: "Unknown"
 
-            // Subtitle: Roll Number · Class · Dept
             val subtitle = buildString {
                 try {
                     val obj = org.json.JSONObject(p.customData ?: "{}")
-                    val roll = obj.optString("student_id") ?: obj.optString("roll_number") ?: obj.optString("id_number")
-                    if (!roll.isNullOrBlank()) {
-                        append("Roll: $roll")
-                    }
-                    
-                    val yr = obj.optString("class_year") ?: obj.optString("year")
-                    val div = obj.optString("division") ?: obj.optString("Division")
-                    if (!yr.isNullOrBlank() || !div.isNullOrBlank()) {
+                    val roll = obj.optString("student_id").ifBlank { obj.optString("roll_number").ifBlank { obj.optString("id_number") } }
+                    if (roll.isNotBlank()) append("Roll: $roll")
+                    val yr  = obj.optString("class_year").ifBlank { obj.optString("year") }
+                    val div = obj.optString("division").ifBlank { obj.optString("Division") }
+                    if (yr.isNotBlank() || div.isNotBlank()) {
                         if (isNotEmpty()) append(" · ")
-                        append("${yr ?: ""} ${div ?: ""}".trim())
+                        append("${yr} ${div}".trim())
                     }
                 } catch (_: Exception) {}
-
                 if (!p.department.isNullOrBlank()) {
                     if (isNotEmpty()) append(" · ")
                     append(p.department)
                 }
             }
-            if (subtitle.isNotBlank()) {
-                holder.tvSubtitle.text = subtitle
-                holder.tvSubtitle.visibility = View.VISIBLE
-            } else {
-                holder.tvSubtitle.visibility = View.GONE
-            }
+            holder.tvSubtitle.text = subtitle
+            holder.tvSubtitle.visibility = if (subtitle.isNotBlank()) View.VISIBLE else View.GONE
 
-            // Try to load face photo from DB
             val faceBitmap: Bitmap? = try {
                 if (!p.localUid.isNullOrBlank()) db.getPersonFace(p.localUid) else null
             } catch (_: Exception) { null }
 
             if (faceBitmap != null) {
                 holder.ivPhoto.setImageBitmap(faceBitmap)
-                holder.ivPhoto.visibility = View.VISIBLE
-                // Make it circular via clip
+                holder.ivPhoto.visibility   = View.VISIBLE
                 holder.ivPhoto.clipToOutline = true
                 holder.ivPhoto.outlineProvider = object : android.view.ViewOutlineProvider() {
                     override fun getOutline(view: View, outline: android.graphics.Outline) {
@@ -281,19 +376,17 @@ class FacultyHomeFragment : Fragment() {
                 }
                 holder.tvInitial.visibility = View.GONE
             } else {
-                holder.ivPhoto.visibility = View.GONE
+                holder.ivPhoto.visibility   = View.GONE
                 holder.tvInitial.visibility = View.VISIBLE
-                val initial = if (!p.name.isNullOrBlank()) p.name.first().uppercase() else "?"
-                holder.tvInitial.text = initial
+                holder.tvInitial.text = if (!p.name.isNullOrBlank()) p.name.first().uppercase() else "?"
                 val colorIdx = (p.name?.hashCode()?.and(0x7FFFFFFF) ?: 0) % AVATAR_COLORS.size
-                val gd = GradientDrawable().apply {
+                holder.tvInitial.background = GradientDrawable().apply {
                     shape = GradientDrawable.OVAL
                     setColor(AVATAR_COLORS[colorIdx])
                 }
-                holder.tvInitial.background = gd
             }
         }
 
-        override fun getItemCount() = persons.size
+        override fun getItemCount() = items.size
     }
 }

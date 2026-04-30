@@ -37,6 +37,10 @@ class FacultyActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        val prefs = getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE)
+        if (prefs.getBoolean("theme_light", false)) {
+            setTheme(R.style.Theme_FaceAttribute_Light)
+        }
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_faculty)
 

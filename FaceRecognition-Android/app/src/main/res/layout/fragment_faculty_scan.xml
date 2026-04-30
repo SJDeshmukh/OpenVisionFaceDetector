@@ -156,16 +156,6 @@
                 android:textColor="#66FFFFFF"
                 android:gravity="start"/>
 
-            <Button
-                android:id="@+id/btn_mark_all"
-                android:layout_width="wrap_content"
-                android:layout_height="30dp"
-                android:text="Mark All Present"
-                android:textSize="10sp"
-                android:textColor="#FF121212"
-                android:backgroundTint="#FF4CAF50"
-                android:paddingHorizontal="10dp"
-                android:visibility="gone"/>
 
         </LinearLayout>
 

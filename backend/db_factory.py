@@ -582,6 +582,7 @@ def _init_pg_schema_on_conn(conn):
         ("faces", "esi_enabled", "INTEGER DEFAULT 0"),
         ("faces", "gratuity_enabled", "INTEGER DEFAULT 0"),
         ("faces", "professional_tax", "REAL DEFAULT 0"),
+        ("faces", "joining_date", "DATE"),
         ("advances", "amount_cash", "REAL DEFAULT 0"),
         ("advances", "amount_online", "REAL DEFAULT 0"),
         ("advances", "approved_by", "TEXT"),
@@ -678,7 +679,7 @@ def init_sqlite_schema(conn):
     queries = [
         "CREATE TABLE IF NOT EXISTS vendors (id INTEGER PRIMARY KEY AUTOINCREMENT, company_name TEXT NOT NULL, email TEXT, phone TEXT, address TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, status TEXT DEFAULT 'active', registration_config TEXT, contact_person TEXT, web_login_enabled INTEGER DEFAULT 1, frontend_bundle_id TEXT, backend_service_id TEXT, vertical TEXT, attendance_type TEXT DEFAULT 'total_time', retention_days INTEGER DEFAULT 90, num_rectors INTEGER DEFAULT 0, num_hods INTEGER DEFAULT 0, departments TEXT)",
         "CREATE TABLE IF NOT EXISTS companies (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, name TEXT, working_hours REAL, shifts TEXT, draft_timetable TEXT, live_timetable TEXT, last_modified_by TEXT, last_modified_at DATETIME, published_by TEXT, published_at DATETIME)",
-        "CREATE TABLE IF NOT EXISTS faces (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, templates TEXT, face_image TEXT, department TEXT, designation TEXT, phone TEXT, shift TEXT, daily_wage REAL DEFAULT 0, basic_salary REAL DEFAULT 0, hra REAL DEFAULT 0, conveyance REAL DEFAULT 0, special_allowance REAL DEFAULT 0, pf_enabled INTEGER DEFAULT 0, esi_enabled INTEGER DEFAULT 0, gratuity_enabled INTEGER DEFAULT 0, professional_tax REAL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount REAL DEFAULT 0, vendor_id INTEGER, custom_data TEXT, display_id INTEGER)",
+        "CREATE TABLE IF NOT EXISTS faces (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, templates TEXT, face_image TEXT, department TEXT, designation TEXT, phone TEXT, shift TEXT, daily_wage REAL DEFAULT 0, basic_salary REAL DEFAULT 0, hra REAL DEFAULT 0, conveyance REAL DEFAULT 0, special_allowance REAL DEFAULT 0, pf_enabled INTEGER DEFAULT 0, esi_enabled INTEGER DEFAULT 0, gratuity_enabled INTEGER DEFAULT 0, professional_tax REAL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount REAL DEFAULT 0, vendor_id INTEGER, custom_data TEXT, display_id INTEGER, joining_date DATE)",
         "CREATE TABLE IF NOT EXISTS advances (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, person_id INTEGER, amount REAL, amount_cash REAL DEFAULT 0, amount_online REAL DEFAULT 0, date DATE, status TEXT DEFAULT 'pending', approved_by TEXT, approved_at DATETIME, rejection_reason TEXT, deduction_month TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS attendance (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, timestamp DATETIME, status TEXT, captured_image TEXT, activity TEXT, is_late INTEGER DEFAULT 0, device_id TEXT, vendor_id INTEGER, person_id INTEGER, attendance_date DATE, class_year TEXT, division TEXT, branch TEXT, subject TEXT, lecture_id INTEGER)",
         "CREATE TABLE IF NOT EXISTS system_users (username TEXT PRIMARY KEY, password TEXT, password_plain TEXT, role TEXT, vendor_id INTEGER, person_id INTEGER, has_set_password INTEGER DEFAULT 0)",
@@ -769,7 +770,7 @@ def init_sqlite_schema(conn):
         except Exception:
             pass
             
-    for col in ["basic_salary REAL DEFAULT 0", "hra REAL DEFAULT 0", "conveyance REAL DEFAULT 0", "special_allowance REAL DEFAULT 0", "pf_enabled INTEGER DEFAULT 0", "esi_enabled INTEGER DEFAULT 0", "gratuity_enabled INTEGER DEFAULT 0", "professional_tax REAL DEFAULT 0"]:
+    for col in ["basic_salary REAL DEFAULT 0", "hra REAL DEFAULT 0", "conveyance REAL DEFAULT 0", "special_allowance REAL DEFAULT 0", "pf_enabled INTEGER DEFAULT 0", "esi_enabled INTEGER DEFAULT 0", "gratuity_enabled INTEGER DEFAULT 0", "professional_tax REAL DEFAULT 0", "joining_date DATE"]:
         try:
             cur.execute(f"ALTER TABLE faces ADD COLUMN {col}")
         except Exception:

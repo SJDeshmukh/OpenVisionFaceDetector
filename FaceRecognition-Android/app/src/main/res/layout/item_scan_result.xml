@@ -51,12 +51,12 @@
             android:layout_marginTop="2dp"/>
     </LinearLayout>
 
-    <!-- Status toggle -->
+    <!-- Status toggle and actions -->
     <LinearLayout
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:gravity="center">
+        android:gravity="end">
         <TextView
             android:id="@+id/tv_status_badge"
             android:layout_width="wrap_content"
@@ -67,6 +67,41 @@
             android:background="@drawable/bg_checkin_card"
             android:paddingHorizontal="8dp"
             android:paddingVertical="3dp"/>
+            
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="4dp">
+            
+            <TextView
+                android:id="@+id/tv_relabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="✏ Relabel"
+                android:textSize="10sp"
+                android:textColor="#80D8FF"
+                android:paddingHorizontal="4dp"
+                android:paddingVertical="2dp"
+                android:background="?attr/selectableItemBackground"
+                android:clickable="true"
+                android:focusable="true"/>
+                
+            <TextView
+                android:id="@+id/tv_save_face"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="💾 Save"
+                android:textSize="10sp"
+                android:textColor="#B388FF"
+                android:layout_marginStart="4dp"
+                android:paddingHorizontal="4dp"
+                android:paddingVertical="2dp"
+                android:background="?attr/selectableItemBackground"
+                android:clickable="true"
+                android:focusable="true"
+                android:visibility="gone"/>
+        </LinearLayout>
     </LinearLayout>
 
 </LinearLayout>
