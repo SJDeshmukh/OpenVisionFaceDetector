@@ -222,24 +222,32 @@ def class_batch_commit(valid_data: ClassBatchCommitSchema):
                 rname = c.fetchone()
                 person_name_cache[pid_key] = (rname['name'] if isinstance(rname, sqlite3.Row) else (rname[0] if rname else '')) if rname else ''
             assigned_name = person_name_cache.get(pid_key, '')
+            
+            # Capture the original AI guess (or None if it was Unknown)
+            original_pid = face.get('person_id')
+            is_relabel_or_new = (original_pid is None) or (str(original_pid) != str(person_id))
+
             face['assigned_person_id'], face['assigned_name'] = int(person_id), assigned_name
             c.execute("UPDATE class_batch_items SET faces_json = ? WHERE id = ? AND batch_id = ?", (json.dumps(faces), item_id, bid))
-            struct_vec_b64, landmarks_3d = face.get('struct_vec') or '', face.get('landmarks_3d') or []
-            struct_blob = None
-            if struct_vec_b64:
-                try:
-                    s_bytes = base64.b64decode(struct_vec_b64); s_emb = np.frombuffer(s_bytes, dtype=np.float32).copy()
-                    if s_emb.size > 0: struct_blob = s_emb.astype(np.float32).tobytes()
-                except Exception: pass
-            lmks_json = json.dumps(landmarks_3d) if landmarks_3d else None
-            c.execute("INSERT INTO person_embeddings (vendor_id, person_id, class_year, division, branch, vec, dim, struct_vec, landmarks_3d) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (vendor_id, int(person_id), str(class_year), str(division), str(branch), vec_blob, dim, struct_blob, lmks_json))
             
-            # Update the main student profile image with this "labeling" crop if they don't have one,
-            # or to ensure the People Management UI shows the image used for this session.
-            if uri:
-                c.execute("UPDATE faces SET face_image = ? WHERE id = ? AND vendor_id = ?", (uri, pid_key, vendor_id))
+            # TARGETED SAVING: Only save embedding if it was an explicit relabel or new registration
+            if is_relabel_or_new:
+                struct_vec_b64, landmarks_3d = face.get('struct_vec') or '', face.get('landmarks_3d') or []
+                struct_blob = None
+                if struct_vec_b64:
+                    try:
+                        s_bytes = base64.b64decode(struct_vec_b64); s_emb = np.frombuffer(s_bytes, dtype=np.float32).copy()
+                        if s_emb.size > 0: struct_blob = s_emb.astype(np.float32).tobytes()
+                    except Exception: pass
+                lmks_json = json.dumps(landmarks_3d) if landmarks_3d else None
+                c.execute("INSERT INTO person_embeddings (vendor_id, person_id, class_year, division, branch, vec, dim, struct_vec, landmarks_3d) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (vendor_id, int(person_id), str(class_year), str(division), str(branch), vec_blob, dim, struct_blob, lmks_json))
+                
+                # Update the main student profile image with this "labeling" crop if they don't have one,
+                # or to ensure the People Management UI shows the image used for this session.
+                if uri:
+                    c.execute("UPDATE faces SET face_image = ? WHERE id = ? AND vendor_id = ?", (uri, pid_key, vendor_id))
 
-            saved += 1
+                saved += 1
         except Exception: continue
     conn.commit()
     try:
