@@ -7,8 +7,10 @@ import retrofit2.converter.gson.GsonConverterFactory;
 import java.util.concurrent.TimeUnit;
 
 import android.content.Intent;
+import android.util.Base64;
 import com.faceplugin.facerecognition.MyGlobal;
 import com.faceplugin.facerecognition.BuildConfig;
+import org.json.JSONObject;
 
 public class RetrofitClient {
     private static String BASE_URL = BuildConfig.BASE_URL;
@@ -67,11 +69,25 @@ public class RetrofitClient {
                 
                 okhttp3.Response response = chain.proceed(builder.build());
                 
-                // Track Auth Failures
+                // Track Auth Failures (401=Unauthorized, 403=Forbidden/Limit Reached/Suspended)
                 if (response.code() == 401 || response.code() == 403) {
                      if (MyGlobal.context != null) {
+                         String errorMessage = null;
+                         try {
+                             // Peaking into the response body without consuming it
+                             okhttp3.ResponseBody body = response.peekBody(2048); 
+                             String bodyStr = body.string();
+                             JSONObject json = new JSONObject(bodyStr);
+                             if (json.has("error")) {
+                                 errorMessage = json.getString("error");
+                             }
+                         } catch (Exception ignored) {}
+
                          Intent intent = new Intent(MyGlobal.ACTION_AUTH_FAILURE);
                          intent.setPackage(MyGlobal.context.getPackageName());
+                         if (errorMessage != null && !errorMessage.isEmpty()) {
+                             intent.putExtra("message", errorMessage);
+                         }
                          MyGlobal.context.sendBroadcast(intent);
                      }
                 }

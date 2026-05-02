@@ -138,7 +138,12 @@ def reindex_vendor_faces(conn, vendor_id):
     import json
     c = conn.cursor()
     
-    # 1. Get all faculty person_ids to distinguish them
+    # 1. Get vendor vertical and faculty person_ids
+    c.execute("SELECT vertical FROM vendors WHERE id = ?", (vendor_id,))
+    vrow = c.fetchone()
+    vertical = (vrow[0] if isinstance(vrow, (list, tuple)) else vrow.get('vertical')) if vrow else ''
+    is_grouped_mode = (vertical == 'bulk_attendance_attendx')
+
     c.execute("SELECT person_id FROM system_users WHERE vendor_id = ? AND role = 'faculty'", (vendor_id,))
     faculty_person_ids = {r[0] for r in c.fetchall() if r[0]}
     
@@ -160,29 +165,51 @@ def reindex_vendor_faces(conn, vendor_id):
         if fid in faculty_person_ids:
             group_key = "faculty"
         else:
+            # Extract a sort key for stability (Student ID, Roll Number, or Name)
+            sort_val = ""
             try:
-                # Handle both string and dict/json types for custom_data
+                if not is_grouped_mode:
+                    group_key = "all_students"
+                else:
+                    if isinstance(raw_cd, str):
+                        cd = json.loads(raw_cd) if raw_cd else {}
+                    else:
+                        cd = raw_cd or {}
+                    
+                    # Extract year, division/section, and branch/course/department for grouping
+                    year = str(cd.get('class_year') or cd.get('year') or cd.get('Year') or cd.get('class') or '').strip().lower()
+                    div  = str(cd.get('division')  or cd.get('Division')  or cd.get('section') or cd.get('Section') or '').strip().lower()
+                    branch = str(cd.get('branch')  or cd.get('Branch') or cd.get('department') or cd.get('Department') or cd.get('course') or '').strip().lower()
+                    
+                    if year or div or branch:
+                        group_key = f"grp:{year}:{div}:{branch}"
+                    else:
+                        group_key = "unassigned"
+                
+                # Find a stable sort key inside the group (prefer Student ID/Roll Number)
                 if isinstance(raw_cd, str):
                     cd = json.loads(raw_cd) if raw_cd else {}
                 else:
                     cd = raw_cd or {}
-                    
-                year = str(cd.get('class_year') or cd.get('year') or '').strip().lower()
-                div  = str(cd.get('division')  or cd.get('Division') or '').strip().lower()
-                if year or div:
-                    group_key = f"class:{year}:{div}"
-                else:
-                    group_key = "unassigned"
+                
+                sort_val = str(cd.get('student_id') or cd.get('roll_number') or cd.get('roll_no') or cd.get('id_number') or cd.get('student_number') or '').strip()
+                # If it's numeric, pad it for correct string sorting
+                if sort_val.isdigit():
+                    sort_val = sort_val.zfill(10)
             except:
                 group_key = "unassigned"
         
         if group_key not in groups:
             groups[group_key] = []
-        groups[group_key].append(fid)
+        # Store tuple of (sort_key, fid)
+        groups[group_key].append((sort_val, fid))
 
     # 3. Re-index each group starting from 1
-    for group_key, fids in groups.items():
-        for idx, fid in enumerate(fids):
+    for group_key, items in groups.items():
+        # Sort by the extracted key, then by fid
+        sorted_items = sorted(items)
+        for idx, item in enumerate(sorted_items):
+            fid = item[1]
             if is_pg:
                 c.execute("UPDATE faces SET display_id = %s WHERE id = %s", (idx + 1, fid))
             else:
@@ -635,21 +662,48 @@ def upload_face():
             cc.execute("SELECT vertical FROM vendors WHERE id = ?", (vendor_id,))
             r = cc.fetchone()
             vertical = r[0] if r else None
+        # Identify Student Number
         student_number = None
         try:
             student_number = str(custom_dict.get('student_number') or custom_dict.get('student_id') or custom_dict.get('id_number') or '').strip()
         except Exception:
             student_number = None
-        if vertical == 'school' and student_number:
-            if person_id:
-                cc.execute("SELECT id, custom_data FROM faces WHERE vendor_id = ? AND id != ?", (vendor_id, person_id))
-            else:
-                cc.execute("SELECT id, custom_data FROM faces WHERE vendor_id = ?", (vendor_id,))
+
+        # 0. Automatic Finding/Merging Fallback
+        # If person_id is NOT provided (e.g. registration from generic screen), 
+        # try to find a person with matching identifiers to "add up" instead of creating a new row.
+        if not person_id and vendor_id:
+            # A) Try match by Student ID / Number in custom_data
+            if student_number:
+                if getattr(conn_check, "_is_pg", False):
+                    # Postgres JSONB search
+                    cc.execute("SELECT id FROM faces WHERE vendor_id = %s AND custom_data::jsonb ->> 'student_id' = %s OR custom_data::jsonb ->> 'id_number' = %s OR custom_data::jsonb ->> 'student_number' = %s LIMIT 1", (vendor_id, student_number, student_number, student_number))
+                else:
+                    # SQLite JSON search (using LIKE as fallback or json_extract if available)
+                    cc.execute("SELECT id FROM faces WHERE vendor_id = ? AND (custom_data LIKE ? OR custom_data LIKE ? OR custom_data LIKE ?) LIMIT 1", 
+                               (vendor_id, f'%"student_id":"{student_number}"%', f'%"id_number":"{student_number}"%', f'%"student_number":"{student_number}"%'))
+                row_id = cc.fetchone()
+                if row_id:
+                    person_id = str(row_id[0] if not isinstance(row_id, dict) else row_id.get("id"))
+                    logger.info(f"[UPLOAD] Auto-matched student {student_number} to existing ID {person_id}")
+
+            # B) Try match by exact Name (only if still no person_id)
+            if not person_id and name:
+                cc.execute("SELECT id FROM faces WHERE vendor_id = ? AND name = ? LIMIT 2", (vendor_id, name))
+                matched_names = cc.fetchall()
+                if len(matched_names) == 1:
+                    row_id = matched_names[0]
+                    person_id = str(row_id[0] if not isinstance(row_id, dict) else row_id.get("id"))
+                    logger.info(f"[UPLOAD] Auto-matched name '{name}' to existing ID {person_id}")
+
+        if vertical == 'school' and student_number and not person_id:
+            # Only block if we STILL haven't found a person to update
+            cc.execute("SELECT id, custom_data FROM faces WHERE vendor_id = ?", (vendor_id,))
             rows = cc.fetchall()
             for r in rows:
                 try:
                     cd = json.loads(r[1]) if r[1] else {}
-                    sn = str(cd.get('student_id') or cd.get('id_number') or '').strip()
+                    sn = str(cd.get('student_id') or cd.get('id_number') or cd.get('student_number') or '').strip()
                     if sn and sn == student_number:
                         conn_check.close()
                         return jsonify({"error": "Duplicate student_number for this vendor"}), 409
@@ -697,6 +751,7 @@ def upload_face():
     if vendor_id:
         allowed, reason = check_vendor_status(vendor_id)
         if not allowed:
+            logger.warning(f"[UPLOAD] Access Denied for Vendor {vendor_id} during registration: {reason}")
             return jsonify({"error": f"Access Denied: {reason}"}), 403
 
     conn = get_db_connection()
@@ -764,7 +819,9 @@ def upload_face():
                 try:
                     old = json.loads(existing["custom_data"])
                     for k, v in custom_dict.items():
-                        old[k] = v
+                        # Only overwrite if the new value is non-empty
+                        if v is not None and str(v).strip() != "":
+                            old[k] = v
                     custom_data = json.dumps(old, separators=(',', ':'))
                 except Exception:
                     custom_data = existing["custom_data"]
@@ -1061,12 +1118,12 @@ def upload_face():
         except Exception:
             pass
 
-        # Invalidate vendor-specific caches and global stats
+        # Final real-time updates and reindexing
         if vendor_id:
+            reindex_vendor_faces(conn, vendor_id)
             cache_delete_vendor_prefix(vendor_id)
+        
         cache_delete("admin_stats")
-
-        # Real-time update for Vendor Dashboard (People List) and SuperAdmin (Limits)
         socketio.emit('persons_updated', {'vendor_id': vendor_id}, room=f"vendor_{vendor_id}")
         socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
 

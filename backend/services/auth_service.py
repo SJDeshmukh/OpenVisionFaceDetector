@@ -271,45 +271,75 @@ def check_vendor_status(vendor_id):
     c = conn.cursor()
     
     # Check Vendor Status
-    c.execute("SELECT status FROM vendors WHERE id = ?", (vendor_id,))
+    c.execute("SELECT name, status FROM vendors WHERE id = ?", (vendor_id,))
     vendor = c.fetchone()
     if not vendor:
+        logger.error(f"[VERIFY] Vendor ID {vendor_id} not found in database.")
         conn.close()
         return False, "Vendor not found"
         
-    if vendor['status'] != 'active':
+    vname = vendor['name'] if isinstance(vendor, dict) else vendor[0]
+    vstatus = vendor['status'] if isinstance(vendor, dict) else vendor[1]
+    
+    if vstatus != 'active':
+        logger.warning(f"[VERIFY] Access Denied for {vname} (ID: {vendor_id}). Status is '{vstatus}'.")
         conn.close()
         return False, "Account Suspended"
         
-    # Check Subscription Expiry
-    c.execute("SELECT end_date, grace_period_days FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
-    sub = c.fetchone()
+    # Find any active or trialing subscription that is currently valid (taking grace period into account)
+    c.execute("SELECT status, end_date, grace_period_days FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+    subs = c.fetchall()
     
     # Check Overdue Invoices
-    today = date.today().isoformat()
+    today_obj = date.today()
+    today_str = today_obj.isoformat()
     c.execute("""
         SELECT COUNT(*) FROM invoices 
         WHERE vendor_id = ? 
         AND (status = 'overdue' OR (status = 'generated' AND due_date < ?))
-    """, (vendor_id, today))
+    """, (vendor_id, today_str))
     overdue_count = c.fetchone()[0]
     
     conn.close()
     
     if overdue_count > 0:
+        logger.warning(f"[VERIFY] Access Denied for {vname} (ID: {vendor_id}). Found {overdue_count} overdue invoices.")
         return False, "Unpaid Invoices"
     
-    if sub and sub['end_date']:
-        try:
-            # Robust parsing (handle both PG datetime objects and SQLite strings)
-            end_date = parse_db_date(sub['end_date'])
-            if end_date:
-                grace = sub['grace_period_days'] or 0
-                limit_date = end_date + timedelta(days=grace)
-                
-                if date.today() > limit_date:
-                    return False, "Subscription Expired"
-        except Exception as e:
-            return False, f"Date Parsing Error: {e}"
-            
+    valid_sub_found = False
+    reasons = []
+    
+    if not subs:
+        return False, "No Subscription Found"
+
+    for sub in subs:
+        s_status = sub['status'] if isinstance(sub, dict) else sub[0]
+        s_end_raw = sub['end_date'] if isinstance(sub, dict) else sub[1]
+        s_grace = (sub['grace_period_days'] if isinstance(sub, dict) else sub[2]) or 0
+        
+        if s_status in ['active', 'trialing']:
+            try:
+                s_end = parse_db_date(s_end_raw)
+                if s_end:
+                    limit_date = s_end + timedelta(days=s_grace)
+                    if today_obj <= limit_date:
+                        valid_sub_found = True
+                        break
+                    else:
+                        reasons.append(f"Plan expired on {limit_date}")
+                else:
+                    # If no end date, treat as perpetual active
+                    valid_sub_found = True
+                    break
+            except Exception as e:
+                logger.error(f"Error parsing date {s_end_raw}: {e}")
+                continue
+        else:
+            reasons.append(f"Plan status: {s_status}")
+
+    if not valid_sub_found:
+        msg = reasons[0] if reasons else "Subscription Expired"
+        logger.warning(f"[VERIFY] Access Denied for {vname} (ID: {vendor_id}). {msg}")
+        return False, "Subscription Expired"
+
     return True, "Active"

@@ -24,11 +24,62 @@ import retrofit2.Call;
 import retrofit2.Callback;
 import retrofit2.Response;
 
+import android.app.Activity;
+import android.content.Intent;
+import android.graphics.Bitmap;
+import android.net.Uri;
+import android.util.Base64;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
+import com.ocp.facesdk.FaceBox;
+import com.faceplugin.facerecognition.api.UploadFaceResponse;
+import com.google.gson.JsonObject;
+import java.io.ByteArrayOutputStream;
+import java.util.List;
+
 public class UsersFragment extends Fragment {
 
     private RecyclerView recyclerView;
     private UserAdapter adapter;
     private DBManager dbManager;
+    private ActivityResultLauncher<Intent> cameraLauncher;
+    private Person pendingPersonForRegistration;
+
+    @Override
+    public void onCreate(@Nullable Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        cameraLauncher = registerForActivityResult(
+                new ActivityResultContracts.StartActivityForResult(),
+                result -> {
+                    if (result.getResultCode() == Activity.RESULT_OK && result.getData() != null) {
+                        String imageUriString = result.getData().getStringExtra("image_uri");
+                        if (imageUriString != null) {
+                            Uri imageUri = Uri.parse(imageUriString);
+                            new Thread(() -> {
+                                try {
+                                    Bitmap bitmap = Utils.getCorrectlyOrientedImage(requireContext(), imageUri);
+                                    if (bitmap != null) {
+                                        if (getActivity() != null) getActivity().runOnUiThread(() -> processCameraResult(bitmap));
+                                    } else {
+                                        if (getActivity() != null) getActivity().runOnUiThread(() -> Toast.makeText(getContext(), "Failed to load image", Toast.LENGTH_SHORT).show());
+                                    }
+                                } catch (Exception e) {
+                                    e.printStackTrace();
+                                }
+                            }).start();
+                        } else {
+                            Bundle extras = result.getData().getExtras();
+                            if (extras != null) {
+                                Bitmap imageBitmap = (Bitmap) extras.get("data");
+                                if (imageBitmap != null) {
+                                    processCameraResult(imageBitmap);
+                                }
+                            }
+                        }
+                    }
+                }
+        );
+    }
 
     @Nullable
     @Override
@@ -47,6 +98,13 @@ public class UsersFragment extends Fragment {
                  @Override
                  public void onDeleteUser(Person person, int position) {
                      showDeleteConfirmationDialog(person, position);
+                 }
+             });
+             adapter.setOnUserClickListener((person, position) -> {
+                 if (person.templates == null || person.templates.length == 0) {
+                     showRegisterFaceDialog(person);
+                 } else {
+                     Toast.makeText(getContext(), "Face already registered for " + person.name, Toast.LENGTH_SHORT).show();
                  }
              });
              recyclerView.setAdapter(adapter);
@@ -160,5 +218,127 @@ public class UsersFragment extends Fragment {
             }
         } catch (Exception ignored) {}
         if (adapter != null) adapter.notifyDataSetChanged();
+    }
+
+    private void showRegisterFaceDialog(Person person) {
+        new AlertDialog.Builder(getContext())
+                .setTitle("Register Face")
+                .setMessage("No face registered for " + person.name + ". Would you like to register their face now?")
+                .setPositiveButton("Register", (dialog, which) -> {
+                    pendingPersonForRegistration = person;
+                    Intent intent = new Intent(requireContext(), CaptureActivity.class);
+                    intent.putExtra("is_capture_only", true);
+                    cameraLauncher.launch(intent);
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void processCameraResult(Bitmap bitmap) {
+        if (pendingPersonForRegistration == null) return;
+        List<FaceBox> faceBoxes = FaceSDKWrapper.INSTANCE.faceDetection(bitmap, null);
+
+        if (faceBoxes == null || faceBoxes.isEmpty()) {
+            Toast.makeText(getContext(), getString(R.string.no_face_detected), Toast.LENGTH_SHORT).show();
+            return;
+        } else if (faceBoxes.size() > 1) {
+            Toast.makeText(getContext(), getString(R.string.multiple_face_detected), Toast.LENGTH_SHORT).show();
+            return;
+        }
+        
+        FaceBox faceBox = faceBoxes.get(0);
+        Bitmap faceImage = Utils.cropFace(bitmap, faceBox);
+        byte[] templates = FaceSDKWrapper.INSTANCE.templateExtraction(bitmap, faceBox);
+        
+        if (templates == null) {
+            Toast.makeText(getContext(), "Failed to extract face template", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        // Duplication check
+        float maxSimilarity = 0f;
+        for (Person p : DBManager.personList) {
+            if (p.localUid != null && p.localUid.equals(pendingPersonForRegistration.localUid)) continue;
+            if (p.id != null && pendingPersonForRegistration.id != null && p.id.equals(pendingPersonForRegistration.id)) continue;
+            try {
+                if (p.templates != null && p.templates.length > 0) {
+                    float s = FaceSDKWrapper.INSTANCE.similarityCalculation(templates, p.templates);
+                    if (s > maxSimilarity) maxSimilarity = s;
+                }
+            } catch (Exception ignored) {}
+        }
+
+        if (maxSimilarity > SettingsActivity.getIdentifyThreshold(requireContext())) {
+            Toast.makeText(getContext(), "This face is already registered to someone else.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        dbManager.updatePersonFaceByLocalUid(pendingPersonForRegistration.localUid, faceImage, templates);
+        adapter.notifyDataSetChanged();
+
+        if (NetworkUtils.INSTANCE.isOnline(requireContext().getApplicationContext()) &&
+            "true".equalsIgnoreCase(requireContext().getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE).getString("cloud_sync", "true"))) {
+            syncFaceToBackend(pendingPersonForRegistration, templates, faceImage);
+        } else {
+            Toast.makeText(getContext(), "Registered face locally (Offline)", Toast.LENGTH_SHORT).show();
+        }
+        
+        pendingPersonForRegistration = null;
+    }
+
+    private void syncFaceToBackend(Person person, byte[] templates, Bitmap faceImage) {
+        String templatesBase64 = Base64.encodeToString(templates, Base64.NO_WRAP);
+        ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+        faceImage.compress(Bitmap.CompressFormat.JPEG, 100, byteArrayOutputStream);
+        String faceImageBase64 = Base64.encodeToString(byteArrayOutputStream.toByteArray(), Base64.NO_WRAP);
+
+        JsonObject json = new JsonObject();
+        if (person.id != null && !person.id.isEmpty()) {
+            json.addProperty("person_id", person.id);
+        }
+        
+        // Add vendor_id as a fallback for authentication
+        if (getContext() != null) {
+            int vendorId = getContext().getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE).getInt("vendor_id", -1);
+            if (vendorId != -1) {
+                json.addProperty("vendor_id", vendorId);
+            }
+        }
+
+        json.addProperty("name", person.name);
+        json.addProperty("templates", templatesBase64);
+        json.addProperty("face_image", faceImageBase64);
+        json.addProperty("phone", person.phone != null ? person.phone : "");
+        json.addProperty("department", person.department != null ? person.department : "");
+        json.addProperty("designation", person.designation != null ? person.designation : "");
+        json.addProperty("shift", person.shift != null ? person.shift : "");
+
+        RetrofitClient.getService().uploadFace(json).enqueue(new Callback<UploadFaceResponse>() {
+            @Override
+            public void onResponse(Call<UploadFaceResponse> call, Response<UploadFaceResponse> response) {
+                if (response.isSuccessful()) {
+                    if (getContext() != null) Toast.makeText(getContext(), "Face Synced to Cloud", Toast.LENGTH_SHORT).show();
+                    String newId = null;
+                    try {
+                        UploadFaceResponse body = response.body();
+                        if (body != null && body.getPersonId() != null) {
+                            newId = String.valueOf(body.getPersonId());
+                        }
+                    } catch (Exception ignored) {}
+                    if (newId != null && !newId.isEmpty()) {
+                         dbManager.updatePersonAfterSyncByLocalUid(person.localUid, newId);
+                    } else {
+                         dbManager.updatePersonStatusByLocalUid(person.localUid, true);
+                    }
+                } else {
+                    if (getContext() != null) Toast.makeText(getContext(), "Sync Failed: " + response.code(), Toast.LENGTH_SHORT).show();
+                }
+            }
+            @Override
+            public void onFailure(Call<UploadFaceResponse> call, Throwable t) {
+                t.printStackTrace();
+                if (getContext() != null) Toast.makeText(getContext(), "Network error during sync", Toast.LENGTH_SHORT).show();
+            }
+        });
     }
 }

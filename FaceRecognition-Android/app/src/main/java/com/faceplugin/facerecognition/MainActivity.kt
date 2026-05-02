@@ -46,7 +46,8 @@ class MainActivity : AppCompatActivity() {
     private val authFailureReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (MyGlobal.ACTION_AUTH_FAILURE == intent.action) {
-                performLogout("Session expired. Please login again.")
+                val message = intent.getStringExtra("message") ?: "Session expired. Please login again."
+                performLogout(message)
             }
         }
     }
@@ -562,11 +563,9 @@ class MainActivity : AppCompatActivity() {
 
                                             val templatesB64 = faceData.templates
                                             val faceB64 = faceData.faceImage
-                                            if (templatesB64.isNullOrEmpty() || faceB64.isNullOrEmpty()) return@forEach
-
-                                            val templates = Base64.decode(templatesB64, Base64.NO_WRAP)
-                                            val faceImageBytes = Base64.decode(faceB64, Base64.NO_WRAP)
-                                            val faceBitmap = BitmapFactory.decodeByteArray(faceImageBytes, 0, faceImageBytes.size) ?: return@forEach
+                                            val templates = if (templatesB64.isNullOrEmpty()) null else try { Base64.decode(templatesB64, Base64.NO_WRAP) } catch (e: Exception) { null }
+                                            val faceImageBytes = if (faceB64.isNullOrEmpty()) null else try { Base64.decode(faceB64, Base64.NO_WRAP) } catch (e: Exception) { null }
+                                            val faceBitmap = if (faceImageBytes != null) try { BitmapFactory.decodeByteArray(faceImageBytes, 0, faceImageBytes.size) } catch (e: Exception) { null } else null
 
                                             val currentPerson = existingPerson
                                             if (currentPerson == null) {
