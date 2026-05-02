@@ -247,16 +247,6 @@ def class_batch_commit(valid_data: ClassBatchCommitSchema):
         keys_to_delete = [k for k in _VENDOR_EMB_CACHE.keys() if str(k).startswith(prefix)]
         for k in keys_to_delete: del _VENDOR_EMB_CACHE[k]
     except Exception: pass
-    conn.close()
-
-    # Trigger background metric-learning retrain so relabeled embeddings
-    # reinforce the person clusters and improve future matching accuracy.
-    if saved > 0:
-        try:
-            from metric_learning import schedule_retrain
-            schedule_retrain(int(vendor_id), delay=2.0)
-        except Exception: pass
-
     return jsonify({"ok": True, "saved": saved})
 
 @attendance_class_bp.route("/class-batch/status", methods=["GET"])

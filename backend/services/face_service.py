@@ -472,23 +472,6 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
             except Exception:
                 pass
 
-        # ── Metric projection (triplet-trained linear W) ─────────────────────
-        # Load the per-vendor projection matrix trained by metric_learning.py.
-        # Pre-build per-person centroids in projected space so inference is a
-        # single matrix–vector multiply + argmax rather than per-embedding scan.
-        # Skipped in LOW_RAM_MODE to conserve memory on small instances.
-        if items and not LOW_RAM_MODE:
-            try:
-                from metric_learning import load_projection, build_proj_centroids
-                _W = load_projection(int(vendor_id))
-                if _W is not None:
-                    _proj_c = build_proj_centroids(_W, items)
-                    if _proj_c:
-                        _VENDOR_EMB_CACHE[key]['proj_W']         = _W
-                        _VENDOR_EMB_CACHE[key]['proj_centroids'] = _proj_c
-            except Exception:
-                pass  # metric projection is optional — fall back to raw cosine
-
         return _VENDOR_EMB_CACHE[key]
     except Exception as e:
         import traceback
@@ -630,22 +613,6 @@ def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3, struct_vec=
                 if pid not in best or entry['similarity'] > best[pid]['similarity']:
                     best[pid] = entry
             return sorted(best.values(), key=lambda x: x['similarity'], reverse=True)[:topk]
-
-        # ── Metric projection path ───────────────────────────────────────────
-        # When a triplet-trained W exists for this vendor, use projected centroid
-        # matching instead of FAISS/linear scan.  Same-person embeddings cluster
-        # tightly and different-person embeddings push apart in the projected
-        # space, giving cleaner similarity scores especially for far/blurry faces.
-        _proj_W  = cache.get('proj_W')
-        _proj_c  = cache.get('proj_centroids')
-        if _proj_W is not None and _proj_c:
-            try:
-                return _suggest_via_projection(
-                    v, _proj_W, _proj_c, cache, topk,
-                    struct_vec, class_year, division, branch,
-                )
-            except Exception:
-                pass   # fall through to FAISS / linear scan on any error
 
         candidates = []
         if cache.get('faiss_index') is not None and USE_FAISS:
