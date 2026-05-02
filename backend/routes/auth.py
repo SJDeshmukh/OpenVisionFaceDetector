@@ -182,14 +182,20 @@ def login():
             user = c.fetchone()
         except Exception:
             pass
+    def normalize_phone(p):
+        if not p: return ""
+        p = str(p).strip().replace("+91", "").replace(" ", "").replace("-", "")
+        if p.startswith("0") and len(p) > 10: p = p[1:]
+        return p
+
     # Handle Student Login Auto-Creation
     if not user and username:
         try:
             is_pg = getattr(conn, "_is_pg", False)
             if is_pg:
-                c.execute("SELECT id, name, phone, vendor_id, custom_data FROM faces WHERE custom_data::jsonb->>'student_id' = %s OR custom_data::jsonb->>'id_number' = %s", (username, username))
+                c.execute("SELECT id, name, phone, vendor_id, custom_data FROM faces WHERE custom_data::jsonb->>'student_id' = %s OR custom_data::jsonb->>'id_number' = %s OR custom_data::jsonb->>'student_number' = %s OR custom_data::jsonb->>'student number' = %s", (username, username, username, username))
             else:
-                c.execute("SELECT id, name, phone, vendor_id, custom_data FROM faces WHERE json_extract(custom_data, '$.student_id') = ? OR json_extract(custom_data, '$.id_number') = ?", (username, username))
+                c.execute("SELECT id, name, phone, vendor_id, custom_data FROM faces WHERE json_extract(custom_data, '$.student_id') = ? OR json_extract(custom_data, '$.id_number') = ? OR json_extract(custom_data, '$.student_number') = ? OR json_extract(custom_data, '$.\"student number\"') = ?", (username, username, username, username))
             
             face = c.fetchone()
             if face:
@@ -205,7 +211,7 @@ def login():
                         student_phone = custom.get('student_phone') or custom.get('phone') or custom.get('contact_phone')
                     except (json.JSONDecodeError, ValueError): pass
 
-                if student_phone and str(password) == str(student_phone):
+                if student_phone and (str(password) == str(student_phone) or normalize_phone(password) == normalize_phone(student_phone)):
                     # SECURE HASHING: Hash the password being stored
                     if is_pg:
                         c.execute(
@@ -271,13 +277,6 @@ def login():
             except Exception as e:
                 logger.error(f"Error restoring student plain password: {e}")
 
-        # Normalize comparison: remove leading 0 or +91 if necessary
-        def normalize_phone(p):
-            if not p: return ""
-            p = str(p).strip().replace("+91", "").replace(" ", "").replace("-", "")
-            if p.startswith("0") and len(p) > 10: p = p[1:]
-            return p
-        
         normalized_input = normalize_phone(password)
         normalized_stored = normalize_phone(stored_plain)
         
