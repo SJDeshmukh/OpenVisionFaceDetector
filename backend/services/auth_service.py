@@ -272,8 +272,8 @@ def check_vendor_status(vendor_id):
         conn.close()
         
         if overdue_count > 0:
-            logger.warning(f"[VERIFY] Access Denied for {vname} (ID: {vendor_id}). Found {overdue_count} overdue invoices.")
-            return False, "Unpaid Invoices"
+            logger.warning(f"[VERIFY] Vendor {vname} (ID: {vendor_id}) has {overdue_count} overdue invoices. Access permitted due to active subscription logic.")
+            # We log the warning but don't block access if they have a valid subscription row below
             
         valid_sub_found = False
         reasons = []
