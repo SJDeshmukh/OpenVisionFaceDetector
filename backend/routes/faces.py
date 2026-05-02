@@ -139,12 +139,15 @@ def reindex_vendor_faces(conn, vendor_id):
     c = conn.cursor()
     
     # 1. Get vendor vertical and faculty person_ids
-    c.execute("SELECT vertical FROM vendors WHERE id = ?", (vendor_id,))
+    is_pg = getattr(conn, "_is_pg", False)
+    placeholder = "%s" if is_pg else "?"
+    
+    c.execute(f"SELECT vertical FROM vendors WHERE id = {placeholder}", (vendor_id,))
     vrow = c.fetchone()
     vertical = (vrow[0] if isinstance(vrow, (list, tuple)) else vrow.get('vertical')) if vrow else ''
     is_grouped_mode = (vertical == 'bulk_attendance_attendx')
 
-    c.execute("SELECT person_id FROM system_users WHERE vendor_id = ? AND role = 'faculty'", (vendor_id,))
+    c.execute(f"SELECT person_id FROM system_users WHERE vendor_id = {placeholder} AND role = 'faculty'", (vendor_id,))
     faculty_person_ids = {r[0] for r in c.fetchall() if r[0]}
     
     # 2. Get all faces for this vendor

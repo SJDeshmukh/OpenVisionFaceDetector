@@ -2,9 +2,12 @@ import os
 import uuid
 import sqlite3
 import logging
+import json
 from itsdangerous import URLSafeTimedSerializer
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import date, datetime, timedelta
+from functools import wraps
+from flask import request, jsonify, g
 from utils import parse_db_date
 from db_factory import get_db_connection
 
@@ -83,14 +86,6 @@ def verify_password(raw_password, stored_password):
 def verify_token(token):
     """
     Verify a signed token with platform-aware expiry.
-
-    - Tokens that carry platform='web' (or legacy tokens without the field
-      that were issued via the web login) are accepted for at most 24 hours.
-    - Tokens for mobile/parent/kiosk platforms are accepted for up to 10 years;
-      their actual session lifetime is controlled by the active_sessions table.
-    - Old tokens without a 'platform' field are treated as persistent (mobile-
-      style) for backward-compatibility — they existed before this change and
-      the mobile app would otherwise get logged out mid-flight.
     """
     try:
         # Always load with the long TTL first to read the payload.
@@ -116,11 +111,6 @@ def extract_token(auth_header):
     if len(parts) >= 2 and parts[0].lower() in ("bearer", "token"):
         return parts[1]
     return None
-
-from flask import request, jsonify
-from datetime import datetime, date, timedelta
-from functools import wraps
-from flask import request, jsonify, g
 
 def require_auth(roles=None):
     """
@@ -148,12 +138,6 @@ def authenticate_vendor_access():
     """
     Authenticate a request and verify subscription status.
     Returns (vendor_id, None) on success or (None, error_response) on failure.
-
-    Token lifetime policy:
-    - Web tokens:    expire after 24 h (enforced by verify_token).
-    - Mobile tokens: long-lived but must have a live row in active_sessions.
-                     If the row is missing (explicit logout or admin force-logout)
-                     the request is rejected even if the signature is still valid.
     """
     try:
         auth_header = request.headers.get('Authorization')
@@ -162,11 +146,9 @@ def authenticate_vendor_access():
         token_platform = None
         token = extract_token(auth_header)
 
-        # Treat JS "undefined"/"null" strings (sent when frontend user.token is missing) as no token
         if token in ('undefined', 'null', ''):
             token = None
 
-        # Accept tokens from Authorization header OR httpOnly cookie (web sessions)
         if not token:
             token = request.cookies.get('token')
 
@@ -177,16 +159,7 @@ def authenticate_vendor_access():
                 role = user_data.get('role')
                 token_platform = user_data.get('platform')
             else:
-                logger.warning("Token verification failed for request to %s", request.path)
                 return None, (jsonify({"error": "Invalid or Expired Token", "code": "UNAUTHORIZED"}), 401)
-
-        if not username and request.args.get('token'):
-            token = request.args.get('token')
-            user_data = verify_token(token)
-            if user_data:
-                username = user_data.get('username')
-                role = user_data.get('role')
-                token_platform = user_data.get('platform')
 
         if not username:
             if request.path.startswith("/api/sync/upload"):
@@ -204,8 +177,6 @@ def authenticate_vendor_access():
             c.execute("SELECT vendor_id, 'parent' as role FROM parent_users WHERE username = ?", (username,))
             user_row = c.fetchone()
 
-        # Mobile/kiosk tokens: validate against active_sessions so that logout
-        # and admin force-logout take effect immediately.
         if token and token_platform in _PERSISTENT_PLATFORMS:
             try:
                 c.execute("SELECT 1 FROM active_sessions WHERE token = ? LIMIT 1", (token,))
@@ -213,12 +184,8 @@ def authenticate_vendor_access():
                     conn.close()
                     return None, (jsonify({"error": "Session expired. Please log in again.", "code": "UNAUTHORIZED"}), 401)
             except Exception:
-                pass  # If active_sessions is unavailable, fall through to other checks
+                pass
 
-        # Faculty web tokens are also validated against active_sessions.
-        # When a faculty logs in on a new device/browser the old session row is
-        # deleted immediately, so any in-flight request with the old token is
-        # rejected right away rather than waiting for the 24 h JWT expiry.
         if token and role == 'faculty':
             try:
                 c.execute("SELECT 1 FROM active_sessions WHERE token = ? LIMIT 1", (token,))
@@ -233,11 +200,10 @@ def authenticate_vendor_access():
         if not user_row:
             return None, (jsonify({"error": "User Not Found", "code": "USER_NOT_FOUND"}), 401)
 
-        vendor_id = user_row['vendor_id']
-        g.user_role = role or user_row['role']
+        vendor_id = user_row['vendor_id'] if hasattr(user_row, 'keys') else user_row[0]
+        g.user_role = role or (user_row['role'] if hasattr(user_row, 'keys') else user_row[1])
         g.username = username
 
-        # Super-admin impersonation
         if g.user_role == 'super_admin':
             impersonate_id = request.headers.get('X-Vendor-ID') or request.args.get('vendor_id')
             if impersonate_id:
@@ -266,80 +232,88 @@ def check_vendor_status(vendor_id):
         return True, "SuperAdmin"
 
     conn = get_db_connection()
-    if not getattr(conn, "_is_pg", False):
+    is_pg = getattr(conn, "_is_pg", False)
+    placeholder = "%s" if is_pg else "?"
+    if not is_pg:
         conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
-    # Check Vendor Status
-    c.execute("SELECT name, status FROM vendors WHERE id = ?", (vendor_id,))
-    vendor = c.fetchone()
-    if not vendor:
-        logger.error(f"[VERIFY] Vendor ID {vendor_id} not found in database.")
-        conn.close()
-        return False, "Vendor not found"
+    try:
+        # 1. Check Vendor Status
+        c.execute(f"SELECT name, status FROM vendors WHERE id = {placeholder}", (vendor_id,))
+        vendor = c.fetchone()
+        if not vendor:
+            logger.error(f"[VERIFY] Vendor ID {vendor_id} not found in database.")
+            conn.close()
+            return False, "Vendor not found"
+            
+        vname = vendor['name'] if hasattr(vendor, 'keys') else vendor[0]
+        vstatus = vendor['status'] if hasattr(vendor, 'keys') else vendor[1]
         
-    vname = vendor['name'] if isinstance(vendor, dict) else vendor[0]
-    vstatus = vendor['status'] if isinstance(vendor, dict) else vendor[1]
-    
-    if vstatus != 'active':
-        logger.warning(f"[VERIFY] Access Denied for {vname} (ID: {vendor_id}). Status is '{vstatus}'.")
-        conn.close()
-        return False, "Account Suspended"
+        if vstatus != 'active':
+            logger.warning(f"[VERIFY] Access Denied for {vname} (ID: {vendor_id}). Status is '{vstatus}'.")
+            conn.close()
+            return False, "Account Suspended"
+            
+        # Find any active or trialing subscription that is currently valid (taking grace period into account)
+        c.execute(f"SELECT status, end_date, grace_period_days FROM subscriptions WHERE vendor_id = {placeholder}", (vendor_id,))
+        subs = c.fetchall()
         
-    # Find any active or trialing subscription that is currently valid (taking grace period into account)
-    c.execute("SELECT status, end_date, grace_period_days FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
-    subs = c.fetchall()
-    
-    # Check Overdue Invoices
-    today_obj = date.today()
-    today_str = today_obj.isoformat()
-    c.execute("""
-        SELECT COUNT(*) FROM invoices 
-        WHERE vendor_id = ? 
-        AND (status = 'overdue' OR (status = 'generated' AND due_date < ?))
-    """, (vendor_id, today_str))
-    overdue_count = c.fetchone()[0]
-    
-    conn.close()
-    
-    if overdue_count > 0:
-        logger.warning(f"[VERIFY] Access Denied for {vname} (ID: {vendor_id}). Found {overdue_count} overdue invoices.")
-        return False, "Unpaid Invoices"
-    
-    valid_sub_found = False
-    reasons = []
-    
-    if not subs:
-        return False, "No Subscription Found"
+        # Check Overdue Invoices
+        today_obj = date.today()
+        today_str = today_obj.isoformat()
+        c.execute(f"""
+            SELECT COUNT(*) FROM invoices 
+            WHERE vendor_id = {placeholder} 
+            AND (status = 'overdue' OR (status = 'generated' AND due_date < {placeholder}))
+        """, (vendor_id, today_str))
+        overdue_count_row = c.fetchone()
+        overdue_count = overdue_count_row[0] if overdue_count_row else 0
+        conn.close()
+        
+        if overdue_count > 0:
+            logger.warning(f"[VERIFY] Access Denied for {vname} (ID: {vendor_id}). Found {overdue_count} overdue invoices.")
+            return False, "Unpaid Invoices"
+            
+        valid_sub_found = False
+        reasons = []
+        
+        if not subs:
+            return False, "No Subscription Found"
 
-    for sub in subs:
-        s_status = sub['status'] if isinstance(sub, dict) else sub[0]
-        s_end_raw = sub['end_date'] if isinstance(sub, dict) else sub[1]
-        s_grace = (sub['grace_period_days'] if isinstance(sub, dict) else sub[2]) or 0
-        
-        if s_status in ['active', 'trialing']:
-            try:
-                s_end = parse_db_date(s_end_raw)
-                if s_end:
-                    limit_date = s_end + timedelta(days=s_grace)
-                    if today_obj <= limit_date:
+        for sub in subs:
+            s_status = sub['status'] if hasattr(sub, 'keys') else sub[0]
+            s_end_raw = sub['end_date'] if hasattr(sub, 'keys') else sub[1]
+            s_grace = (sub['grace_period_days'] if hasattr(sub, 'keys') else sub[2]) or 0
+            
+            if s_status in ['active', 'trialing']:
+                try:
+                    s_end = parse_db_date(s_end_raw)
+                    if s_end:
+                        limit_date = s_end + timedelta(days=s_grace)
+                        if today_obj <= limit_date:
+                            valid_sub_found = True
+                            break
+                        else:
+                            reasons.append(f"Plan expired on {limit_date}")
+                    else:
+                        # If no end date, treat as perpetual active
                         valid_sub_found = True
                         break
-                    else:
-                        reasons.append(f"Plan expired on {limit_date}")
-                else:
-                    # If no end date, treat as perpetual active
-                    valid_sub_found = True
-                    break
-            except Exception as e:
-                logger.error(f"Error parsing date {s_end_raw}: {e}")
-                continue
-        else:
-            reasons.append(f"Plan status: {s_status}")
+                except Exception as e:
+                    logger.error(f"Error parsing date {s_end_raw}: {e}")
+                    continue
+            else:
+                reasons.append(f"Plan status: {s_status}")
 
-    if not valid_sub_found:
-        msg = reasons[0] if reasons else "Subscription Expired"
-        logger.warning(f"[VERIFY] Access Denied for {vname} (ID: {vendor_id}). {msg}")
-        return False, "Subscription Expired"
+        if not valid_sub_found:
+            msg = reasons[0] if reasons else "Subscription Expired"
+            logger.warning(f"[VERIFY] Access Denied for {vname} (ID: {vendor_id}). {msg}")
+            return False, "Subscription Expired"
 
-    return True, "Active"
+        return True, "Active"
+    except Exception as e:
+        logger.error(f"Unexpected error in check_vendor_status: {e}")
+        try: conn.close()
+        except: pass
+        return False, f"Internal Error: {str(e)}"
