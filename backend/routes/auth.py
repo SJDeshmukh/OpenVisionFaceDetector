@@ -930,9 +930,11 @@ def parent_login():
                 try:
                     c_data_raw = _row_get(st_row, 3, 'custom_data')
                     if not c_data_raw: return False
-                    sn = _extract_student_number_from_custom_data(c_data_raw, fallback_search_text=c_data_raw)
+                    sn = extract_student_number_from_custom_data(c_data_raw, search_term=student_id)
                     return sn.lower() == str(student_id).strip().lower()
-                except Exception:
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).error(f"Error checking student match: {e}")
                     return False
 
             potential_students = [s for s in potential_students if _check_student_match(s)]
