@@ -240,14 +240,14 @@ def check_vendor_status(vendor_id):
     
     try:
         # 1. Check Vendor Status
-        c.execute(f"SELECT name, status FROM vendors WHERE id = {placeholder}", (vendor_id,))
+        c.execute(f"SELECT company_name, status FROM vendors WHERE id = {placeholder}", (vendor_id,))
         vendor = c.fetchone()
         if not vendor:
             logger.error(f"[VERIFY] Vendor ID {vendor_id} not found in database.")
             conn.close()
             return False, "Vendor not found"
             
-        vname = vendor['name'] if hasattr(vendor, 'keys') else vendor[0]
+        vname = vendor['company_name'] if hasattr(vendor, 'keys') else vendor[0]
         vstatus = vendor['status'] if hasattr(vendor, 'keys') else vendor[1]
         
         if vstatus != 'active':

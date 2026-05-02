@@ -4,9 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "TUNNEL_PROVIDER=ngrok node scripts/dev.mjs",
-    "dev:tm": "TUNNEL_PROVIDER=ngrok node scripts/dev.mjs",
-    "dev:cf": "TUNNEL_PROVIDER=cf node scripts/dev.mjs",
+    "dev": "cross-env TUNNEL_PROVIDER=ngrok node scripts/dev.mjs",
+    "dev:tm": "cross-env TUNNEL_PROVIDER=ngrok node scripts/dev.mjs",
+    "dev:cf": "cross-env TUNNEL_PROVIDER=cf node scripts/dev.mjs",
     "dev:vite": "vite",
     "build": "vite build",
     "lint": "eslint .",
@@ -15,6 +15,7 @@
   "dependencies": {
     "axios": "^1.13.2",
     "clsx": "^2.1.1",
+    "cross-env": "^10.1.0",
     "date-fns": "^4.1.0",
     "framer-motion": "^12.29.0",
     "lucide-react": "^0.563.0",

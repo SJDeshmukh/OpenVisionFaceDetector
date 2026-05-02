@@ -14,18 +14,31 @@ public class UserAdapter extends RecyclerView.Adapter<UserAdapter.UserViewHolder
     private List<Person> userList;
     private OnUserDeleteListener deleteListener;
     private DBManager dbManager;
+    private android.util.LruCache<String, android.graphics.Bitmap> faceCache;
 
     public interface OnUserDeleteListener {
         void onDeleteUser(Person person, int position);
     }
 
+    public interface OnUserClickListener {
+        void onClickUser(Person person, int position);
+    }
+
+    private OnUserClickListener clickListener;
+
     public void setOnUserDeleteListener(OnUserDeleteListener listener) {
         this.deleteListener = listener;
+    }
+
+    public void setOnUserClickListener(OnUserClickListener listener) {
+        this.clickListener = listener;
     }
 
     public UserAdapter(List<Person> userList, DBManager dbManager) {
         this.userList = userList;
         this.dbManager = dbManager;
+        // Optimization: 4MB cache for user face thumbnails (enough for ~80-100 thumbnails)
+        this.faceCache = new android.util.LruCache<>(4 * 1024 * 1024); 
     }
 
     @NonNull
@@ -40,13 +53,14 @@ public class UserAdapter extends RecyclerView.Adapter<UserAdapter.UserViewHolder
         Person person = userList.get(position);
         holder.tvName.setText(person.name);
         
-        if (person.face != null) {
-            holder.imgFace.setImageBitmap(person.face);
+        android.graphics.Bitmap cachedFace = faceCache.get(person.localUid != null ? person.localUid : "null");
+        if (cachedFace != null) {
+            holder.imgFace.setImageBitmap(cachedFace);
         } else if (dbManager != null && person.localUid != null) {
-            // Lazy load from DB if not in memory
+            // Lazy load from DB if not in cache
             android.graphics.Bitmap face = dbManager.getPersonFace(person.localUid);
             if (face != null) {
-                person.face = face; // Cache in memory once loaded
+                faceCache.put(person.localUid, face);
                 holder.imgFace.setImageBitmap(face);
             } else {
                 holder.imgFace.setImageResource(R.drawable.openvision_logo);
@@ -67,6 +81,12 @@ public class UserAdapter extends RecyclerView.Adapter<UserAdapter.UserViewHolder
              details = "ID: " + (position + 1);
         }
         holder.tvDetails.setText(details);
+
+        holder.itemView.setOnClickListener(v -> {
+            if (clickListener != null) {
+                clickListener.onClickUser(person, holder.getAdapterPosition());
+            }
+        });
 
         holder.itemView.setOnLongClickListener(v -> {
             if (deleteListener != null) {

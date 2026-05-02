@@ -46,16 +46,12 @@ public class PersonAdapter extends ArrayAdapter<Person> {
         });
 
         tvName.setText(person.name);
-        if (person.face != null) {
-            faceView.setImageBitmap(person.face);
+        // Step 4: Lazy load image from SQLite (the "backend sql" on-device) only when view is bound
+        Bitmap loaded = dbManager.getPersonFace(person.localUid);
+        if (loaded != null) {
+            faceView.setImageBitmap(loaded);
         } else {
-            Bitmap loaded = dbManager.getPersonFace(person.localUid);
-            if (loaded != null) {
-                person.face = loaded; // Cache in object for this adapter session
-                faceView.setImageBitmap(loaded);
-            } else {
-                faceView.setImageResource(android.R.drawable.ic_menu_gallery);
-            }
+            faceView.setImageResource(android.R.drawable.ic_menu_gallery);
         }
         // Return the completed view to render on screen
         return convertView;

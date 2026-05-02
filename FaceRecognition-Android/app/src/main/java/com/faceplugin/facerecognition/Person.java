@@ -13,7 +13,8 @@ public class Person {
     public String designation;
     public String shift;
     public String customData;
-    public Bitmap face;
+    // Optimization: Bitmaps are loaded lazily and should be cached via LRU in the UI layer, 
+    // not kept in the long-lived personList to avoid OOM for 10k+ users.
     public boolean synced = true;
 
     public Person() {
@@ -26,11 +27,11 @@ public class Person {
         this.name = name;
         this.templates = templates;
         this.phone = phone;
-        this.department = department;
-        this.designation = designation;
-        this.shift = shift;
+        // String interning saves massive RAM when thousands of users share the same metadata
+        this.department = (department != null) ? department.intern() : null;
+        this.designation = (designation != null) ? designation.intern() : null;
+        this.shift = (shift != null) ? shift.intern() : null;
         this.customData = customData;
-        this.face = face;
     }
 
     public Person(String localUid, String id, String name, byte[] templates, String phone, String department, String designation, String shift, String customData) {

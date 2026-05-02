@@ -33,13 +33,14 @@ class FaceSyncWorker(appContext: Context, params: WorkerParameters) : Worker(app
 
         for (p in unsynced) {
             try {
-                if (p.localUid.isNullOrBlank() || p.templates == null || p.face == null) continue
+                // MEMORY OPTIMIZATION: Fetch face from DB only when needed for sync
+                val faceImage = db.getPersonFace(p.localUid) ?: continue
+                
                 val json = JsonObject()
                 json.addProperty("name", p.name ?: "")
                 json.addProperty("templates", Base64.encodeToString(p.templates, Base64.NO_WRAP))
-                
-                // Resize bitmap to a smaller version (max 400px) before syncing to save RAM
-                val original = p.face as Bitmap
+
+                val original = faceImage
                 val maxDim = 400
                 val scaled = if (original.width > maxDim || original.height > maxDim) {
                     val ratio = original.width.toFloat() / original.height.toFloat()
