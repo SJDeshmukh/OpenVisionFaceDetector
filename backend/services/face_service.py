@@ -174,11 +174,16 @@ def _apply_contrastive_refinement(sims: list, penalty_scale: float = 0.2) -> lis
 
         gap = s1 - s2
 
-        # AMBIGUITY DETECTION: flag when top-2 scores are too close (gap < 8%)
+        # AMBIGUITY DETECTION: flag when top-2 scores are too close (gap < 5%)
         # or when the winner itself is below the reliable-match zone (< 0.78).
-        if (s1 > 0.65 and gap < 0.08) or (s1 < 0.78 and gap < 0.05):
+        is_ambiguous = (s1 > 0.65 and gap < 0.05) or (s1 < 0.78 and gap < 0.04)
+        if is_ambiguous:
             top1['is_ambiguous'] = True
             top2['is_ambiguous'] = True
+            # Suppress ambiguous suggestions when top-1 is below reliable zone
+            # — returning a wrong label is worse than returning nothing
+            if s1 < 0.72:
+                return []
 
         # Accentuate the winner, penalize the runner-up if they are too close
         overlap = max(0.0, 1.0 - gap)
@@ -454,6 +459,19 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
                 max_items = 200
             _VENDOR_EMB_CACHE[key]['items'] = _VENDOR_EMB_CACHE[key]['items'][:max_items]
 
+        # ── Always build raw-space per-person centroids ─────────────────────
+        # Enables deterministic centroid-based matching even without the
+        # triplet-trained projection W.  Each person is represented by 1
+        # centroid (mean of their L2-normalized embeddings, re-normalized).
+        if items:
+            try:
+                from embedding_cluster import build_person_centroids
+                _raw_centroids = build_person_centroids(items)
+                if _raw_centroids:
+                    _VENDOR_EMB_CACHE[key]['raw_centroids'] = _raw_centroids
+            except Exception:
+                pass
+
         # ── Metric projection (triplet-trained linear W) ─────────────────────
         # Load the per-vendor projection matrix trained by metric_learning.py.
         # Pre-build per-person centroids in projected space so inference is a
@@ -471,7 +489,6 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
             except Exception:
                 pass  # metric projection is optional — fall back to raw cosine
 
-        return _VENDOR_EMB_CACHE[key]
         return _VENDOR_EMB_CACHE[key]
     except Exception as e:
         import traceback
@@ -657,8 +674,21 @@ def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3, struct_vec=
             except Exception: pass
         
         if not candidates:
-            # Linear scan fallback
-            candidates = [(it, (float(np.dot(it['vec'], v)) + 1.0) / 2.0) for it in cache['items']]
+            # ── Centroid-based fallback (replaces per-embedding linear scan) ──
+            # Use raw-space centroids for deterministic matching: same probe
+            # always matches the same centroid, eliminating score jitter.
+            _raw_c = cache.get('raw_centroids')
+            if _raw_c:
+                from embedding_cluster import match_against_centroids as _match_c
+                _c_results = _match_c(v, _raw_c, topk=topk * 3)
+                for cr in _c_results:
+                    # Find a representative item for scope/struct data
+                    item = next((x for x in cache['items'] if x['person_id'] == cr['person_id']), None)
+                    if item:
+                        candidates.append((item, cr['similarity']))
+            if not candidates:
+                # Ultimate fallback: per-embedding linear scan (legacy path)
+                candidates = [(it, (float(np.dot(it['vec'], v)) + 1.0) / 2.0) for it in cache['items']]
 
         raw = []
         for item, arcface_sim in candidates:

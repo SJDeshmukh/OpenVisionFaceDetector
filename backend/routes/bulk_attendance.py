@@ -1093,4 +1093,11 @@ def faculty_save_embedding():
     conn.close()
     cache_delete_vendor_prefix(vendor_id)
 
+    # Trigger background metric-learning retrain so the corrected embedding
+    # reinforces the person cluster and improves future matching accuracy.
+    try:
+        from metric_learning import schedule_retrain
+        schedule_retrain(int(vendor_id), delay=2.0)
+    except Exception: pass
+
     return jsonify({"success": True})
