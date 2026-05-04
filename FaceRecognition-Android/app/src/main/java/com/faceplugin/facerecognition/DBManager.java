@@ -258,48 +258,51 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
         String existingLocalUid = null;
         boolean exists = false;
-        if (id != null && !id.isEmpty()) {
-            for (int i = 0; i < personList.size(); i++) {
-                Person p = personList.get(i);
-                if (p.id != null && p.id.equals(id)) {
-                    exists = true;
-                    existingLocalUid = p.localUid;
-                    personList.remove(i);
-                    break;
-                }
-            }
-            if (!exists && templates != null) {
+        
+        synchronized (personList) {
+            if (id != null && !id.isEmpty()) {
                 for (int i = 0; i < personList.size(); i++) {
                     Person p = personList.get(i);
-                    if (p.templates != null && Arrays.equals(p.templates, templates)) {
+                    if (p.id != null && p.id.equals(id)) {
                         exists = true;
                         existingLocalUid = p.localUid;
                         personList.remove(i);
                         break;
                     }
                 }
-            }
-        } else if (localUid != null && !localUid.isEmpty()) {
-            for (int i = 0; i < personList.size(); i++) {
-                Person p = personList.get(i);
-                if (p.localUid != null && p.localUid.equals(localUid)) {
-                    exists = true;
-                    existingLocalUid = p.localUid;
-                    personList.remove(i);
-                    break;
-                }
-            }
-        } else if (templates != null) {
-            for (int i = 0; i < personList.size(); i++) {
-                Person p = personList.get(i);
-                if (p.templates != null && Arrays.equals(p.templates, templates)) {
-                    exists = true;
-                    existingLocalUid = p.localUid;
-                    if ((p.id != null && !p.id.isEmpty()) && (id == null || id.isEmpty())) {
-                        id = p.id;
+                if (!exists && templates != null) {
+                    for (int i = 0; i < personList.size(); i++) {
+                        Person p = personList.get(i);
+                        if (p.templates != null && Arrays.equals(p.templates, templates)) {
+                            exists = true;
+                            existingLocalUid = p.localUid;
+                            personList.remove(i);
+                            break;
+                        }
                     }
-                    personList.remove(i);
-                    break;
+                }
+            } else if (localUid != null && !localUid.isEmpty()) {
+                for (int i = 0; i < personList.size(); i++) {
+                    Person p = personList.get(i);
+                    if (p.localUid != null && p.localUid.equals(localUid)) {
+                        exists = true;
+                        existingLocalUid = p.localUid;
+                        personList.remove(i);
+                        break;
+                    }
+                }
+            } else if (templates != null) {
+                for (int i = 0; i < personList.size(); i++) {
+                    Person p = personList.get(i);
+                    if (p.templates != null && Arrays.equals(p.templates, templates)) {
+                        exists = true;
+                        existingLocalUid = p.localUid;
+                        if ((p.id != null && !p.id.isEmpty()) && (id == null || id.isEmpty())) {
+                            id = p.id;
+                        }
+                        personList.remove(i);
+                        break;
+                    }
                 }
             }
         }

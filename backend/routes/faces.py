@@ -165,11 +165,11 @@ def reindex_vendor_faces(conn, vendor_id):
         fid = row[0]
         raw_cd = row[1]
         
+        sort_val = ""
         if fid in faculty_person_ids:
             group_key = "faculty"
         else:
             # Extract a sort key for stability (Student ID, Roll Number, or Name)
-            sort_val = ""
             try:
                 if not is_grouped_mode:
                     group_key = "all_students"
@@ -1288,6 +1288,21 @@ def delete_face(name):
 
         # Track affected vendors and their deleted display_ids for re-indexing
         affected_vendors = {} # vendor_id -> list of deleted_display_ids
+
+        def _safe_execute(_sql, _args=()):
+            is_pg = getattr(conn, "_is_pg", False)
+            try:
+                if is_pg:
+                    c.execute("SAVEPOINT sp_safe_exec")
+                c.execute(_sql, _args)
+                if is_pg:
+                    c.execute("RELEASE SAVEPOINT sp_safe_exec")
+            except Exception as _e:
+                import logging
+                logging.getLogger(__name__).warning(f"Safe execute skipped: {_sql!r} -> {_e}")
+                if is_pg:
+                    c.execute("ROLLBACK TO SAVEPOINT sp_safe_exec")
+
         for r in face_rows:
             v_id = r[1]
             d_id = r[2]
@@ -1295,15 +1310,18 @@ def delete_face(name):
             if v_id not in affected_vendors: affected_vendors[v_id] = []
             affected_vendors[v_id].append(d_id)
             # CRITICAL: Clean up embeddings for this person
-            c.execute("DELETE FROM person_embeddings WHERE person_id = ?", (p_id,))
+            _safe_execute("DELETE FROM person_embeddings WHERE person_id = ?", (p_id,))
             # If this face is a faculty member, unassign from classes
             try:
+                if getattr(conn, "_is_pg", False): c.execute("SAVEPOINT sp_fac")
                 c.execute("SELECT username FROM system_users WHERE person_id = ? AND role = 'faculty'", (p_id,))
                 fac_rows = c.fetchall() or []
+                if getattr(conn, "_is_pg", False): c.execute("RELEASE SAVEPOINT sp_fac")
                 fac_usernames = [row[0] for row in fac_rows if row[0]]
                 if fac_usernames and v_id:
                     _unassign_faculty_from_classes(c, conn, v_id, fac_usernames)
             except Exception:
+                if getattr(conn, "_is_pg", False): c.execute("ROLLBACK TO SAVEPOINT sp_fac")
                 pass
 
         if vendor_id:
@@ -1354,50 +1372,41 @@ def delete_face(name):
                     pass
             for vid, ids in by_vendor.items():
                 placeholders = ",".join(["?"] * len(ids))
-                c.execute(
+                _safe_execute(
                     f"DELETE FROM attendance WHERE vendor_id = ? AND (name = ? OR person_id IN ({placeholders}))",
                     [vid, name, *ids],
                 )
-                c.execute(
+                _safe_execute(
                     f"DELETE FROM student_parents WHERE vendor_id = ? AND person_id IN ({placeholders})",
                     [vid, *ids],
                 )
-                c.execute(
+                _safe_execute(
                     f"UPDATE parent_users SET selected_person_id = NULL WHERE vendor_id = ? AND selected_person_id IN ({placeholders})",
                     [vid, *ids],
                 )
-                c.execute(
+                _safe_execute(
                     f"DELETE FROM parent_users WHERE vendor_id = ? AND selected_person_id IN ({placeholders}) AND NOT EXISTS (SELECT 1 FROM student_parents WHERE parent_id = parent_users.id)",
                     [vid, *ids],
                 )
                 # Delete leave requests and lecture attendance for the deleted person(s)
-                try:
-                    c.execute(
-                        f"DELETE FROM leave_requests WHERE vendor_id = ? AND student_id IN ({placeholders})",
-                        [vid, *ids],
-                    )
-                except Exception:
-                    pass
-                try:
-                    c.execute(
-                        f"DELETE FROM lecture_attendance WHERE vendor_id = ? AND person_id IN ({placeholders})",
-                        [vid, *ids],
-                    )
-                except Exception:
-                    pass
+                _safe_execute(
+                    f"DELETE FROM leave_requests WHERE vendor_id = ? AND student_id IN ({placeholders})",
+                    [vid, *ids],
+                )
+                _safe_execute(
+                    f"DELETE FROM lecture_attendance WHERE vendor_id = ? AND person_id IN ({placeholders})",
+                    [vid, *ids],
+                )
                 # Delete all embeddings for the deleted person(s)
-                c.execute(
+                _safe_execute(
                     f"DELETE FROM person_embeddings WHERE vendor_id = ? AND person_id IN ({placeholders})",
                     [vid, *ids],
                 )
                 # Delete system_users (student logins) for the deleted person(s)
-                try:
-                    c.execute(
-                        f"DELETE FROM system_users WHERE person_id IN ({placeholders})",
-                        ids,
-                    )
-                except Exception:
-                    pass
+                _safe_execute(
+                    f"DELETE FROM system_users WHERE person_id IN ({placeholders})",
+                    ids,
+                )
                 # Invalidate embedding cache for this vendor
                 for k in list(_VENDOR_EMB_CACHE.keys()):
                     if isinstance(k, (int, str)) and str(k).startswith(str(vid)):
@@ -1405,25 +1414,25 @@ def delete_face(name):
                     elif isinstance(k, tuple) and len(k) > 0 and k[0] == vid:
                         del _VENDOR_EMB_CACHE[k]
                 for sn in sorted(student_numbers_by_vendor.get(int(vid), set())):
-                    c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (vid, sn))
-                    c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND student_number = ? AND NOT EXISTS (SELECT 1 FROM student_parents WHERE parent_id = parent_users.id)", (vid, sn))
+                    _safe_execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (vid, sn))
+                    _safe_execute("DELETE FROM parent_users WHERE vendor_id = ? AND student_number = ? AND NOT EXISTS (SELECT 1 FROM student_parents WHERE parent_id = parent_users.id)", (vid, sn))
                 for ph in sorted(phones_by_vendor.get(int(vid), set())):
                     try:
+                        if getattr(conn, "_is_pg", False): c.execute("SAVEPOINT sp_ph_del")
                         c.execute("SELECT id, student_number FROM parent_users WHERE vendor_id = ? AND contact_phone = ?", (vid, ph))
                         rows_pu = c.fetchall() or []
+                        if getattr(conn, "_is_pg", False): c.execute("RELEASE SAVEPOINT sp_ph_del")
                         parent_ids = [row[0] for row in rows_pu if row and row[0] is not None]
                         if parent_ids:
                             ph_placeholders = ",".join(["?"] * len(parent_ids))
-                            c.execute(f"DELETE FROM student_parents WHERE vendor_id = ? AND parent_id IN ({ph_placeholders})", [vid, *parent_ids])
+                            _safe_execute(f"DELETE FROM student_parents WHERE vendor_id = ? AND parent_id IN ({ph_placeholders})", [vid, *parent_ids])
                         for pu_row in rows_pu:
-                            try:
-                                sn_val = pu_row[1]
-                                if sn_val:
-                                    c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (vid, str(sn_val).strip()))
-                            except Exception:
-                                pass
-                        c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND contact_phone = ? AND NOT EXISTS (SELECT 1 FROM student_parents WHERE parent_id = parent_users.id)", (vid, ph))
+                            sn_val = pu_row[1]
+                            if sn_val:
+                                _safe_execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (vid, str(sn_val).strip()))
+                        _safe_execute("DELETE FROM parent_users WHERE vendor_id = ? AND contact_phone = ? AND NOT EXISTS (SELECT 1 FROM student_parents WHERE parent_id = parent_users.id)", (vid, ph))
                     except Exception:
+                        if getattr(conn, "_is_pg", False): c.execute("ROLLBACK TO SAVEPOINT sp_ph_del")
                         pass
         except Exception:
             pass
@@ -1502,21 +1511,34 @@ def delete_face_by_id(person_id):
         deleted_display_id = del_row[0] if del_row else None
         target_vendor_id = del_row[1] if del_row else None
 
-        # 1. Cleanup related records FIRST to avoid FK violations in PostgreSQL.
-        #    Each statement is individually guarded so one missing table never
-        #    skips the critical system_users delete that causes the FK violation.
         import logging
         logger = logging.getLogger(__name__)
         logger.info(f"Cleaning up associated records for person_id={person_id}")
 
+        def _safe_execute(_sql, _args=()):
+            is_pg = getattr(conn, "_is_pg", False)
+            try:
+                if is_pg:
+                    c.execute("SAVEPOINT sp_safe_exec")
+                c.execute(_sql, _args)
+                if is_pg:
+                    c.execute("RELEASE SAVEPOINT sp_safe_exec")
+            except Exception as _e:
+                logger.warning(f"Safe execute skipped: {_sql!r} -> {_e}")
+                if is_pg:
+                    c.execute("ROLLBACK TO SAVEPOINT sp_safe_exec")
+
         # If this person is a faculty member, unassign them from classes before deletion
         try:
+            if getattr(conn, "_is_pg", False): c.execute("SAVEPOINT sp_fac")
             c.execute("SELECT username FROM system_users WHERE person_id = ? AND role = 'faculty'", (person_id,))
             fac_rows = c.fetchall() or []
+            if getattr(conn, "_is_pg", False): c.execute("RELEASE SAVEPOINT sp_fac")
             fac_usernames = [r[0] for r in fac_rows if r[0]]
             if fac_usernames and target_vendor_id:
                 _unassign_faculty_from_classes(c, conn, target_vendor_id, fac_usernames)
         except Exception as _e:
+            if getattr(conn, "_is_pg", False): c.execute("ROLLBACK TO SAVEPOINT sp_fac")
             logger.warning(f"Faculty class unassign skipped for person_id={person_id}: {_e}")
 
         for _sql, _args in [
@@ -1529,19 +1551,13 @@ def delete_face_by_id(person_id):
             # system_users MUST be deleted before faces due to FK constraint
             ("DELETE FROM system_users WHERE person_id = ?",                        (person_id,)),
         ]:
-            try:
-                c.execute(_sql, _args)
-            except Exception as _e:
-                logger.warning(f"Cleanup step skipped (person_id={person_id}): {_sql!r} → {_e}")
+            _safe_execute(_sql, _args)
 
         if sn:
             for _sql, _args in [
                 ("DELETE FROM system_users WHERE username = ?", (sn,)),
             ]:
-                try:
-                    c.execute(_sql, _args)
-                except Exception as _e:
-                    logger.warning(f"Cleanup (sn) skipped: {_sql!r} → {_e}")
+                _safe_execute(_sql, _args)
 
         # Clear embedding cache for this vendor
         try:
@@ -1559,28 +1575,25 @@ def delete_face_by_id(person_id):
                 ("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (target_vendor_id, sn)),
                 ("DELETE FROM parent_users WHERE vendor_id = ? AND student_number = ? AND NOT EXISTS (SELECT 1 FROM student_parents WHERE parent_id = parent_users.id)",  (target_vendor_id, sn)),
             ]:
-                try:
-                    c.execute(_sql, _args)
-                except Exception as _e:
-                    logger.warning(f"Parent cleanup skipped: {_sql!r} → {_e}")
+                _safe_execute(_sql, _args)
 
         if phone:
             try:
+                if getattr(conn, "_is_pg", False): c.execute("SAVEPOINT sp_ph")
                 c.execute("SELECT id, student_number FROM parent_users WHERE vendor_id = ? AND contact_phone = ?", (target_vendor_id, str(phone).strip()))
                 rows_pu = c.fetchall() or []
+                if getattr(conn, "_is_pg", False): c.execute("RELEASE SAVEPOINT sp_ph")
                 parent_ids = [row[0] for row in rows_pu if row and row[0] is not None]
                 if parent_ids:
                     ph_placeholders = ",".join(["?"] * len(parent_ids))
-                    c.execute(f"DELETE FROM student_parents WHERE vendor_id = ? AND parent_id IN ({ph_placeholders})", [target_vendor_id, *parent_ids])
+                    _safe_execute(f"DELETE FROM student_parents WHERE vendor_id = ? AND parent_id IN ({ph_placeholders})", [target_vendor_id, *parent_ids])
                 for pu_row in rows_pu:
-                    try:
-                        sn_val = pu_row[1]
-                        if sn_val:
-                            c.execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (target_vendor_id, str(sn_val).strip()))
-                    except Exception:
-                        pass
-                c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND contact_phone = ? AND NOT EXISTS (SELECT 1 FROM student_parents WHERE parent_id = parent_users.id)", (target_vendor_id, str(phone).strip()))
+                    sn_val = pu_row[1]
+                    if sn_val:
+                        _safe_execute("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (target_vendor_id, str(sn_val).strip()))
+                _safe_execute("DELETE FROM parent_users WHERE vendor_id = ? AND contact_phone = ? AND NOT EXISTS (SELECT 1 FROM student_parents WHERE parent_id = parent_users.id)", (target_vendor_id, str(phone).strip()))
             except Exception as e:
+                if getattr(conn, "_is_pg", False): c.execute("ROLLBACK TO SAVEPOINT sp_ph")
                 logger.warning(f"Phone-based parent cleanup skipped for person_id={person_id}: {e}")
 
         # 2. Finally delete the face record
