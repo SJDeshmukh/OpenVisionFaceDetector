@@ -13,12 +13,12 @@ import com.faceplugin.facerecognition.BuildConfig;
 import org.json.JSONObject;
 
 public class RetrofitClient {
-    private static String BASE_URL = BuildConfig.BASE_URL;
+    private static volatile String BASE_URL = BuildConfig.BASE_URL;
     
-    private static Retrofit retrofit = null;
-    private static String authToken = null;
+    private static volatile Retrofit retrofit = null;
+    private static volatile String authToken = null;
 
-    public static void setBaseUrl(String url) {
+    public static synchronized void setBaseUrl(String url) {
         if (url != null && !url.isEmpty()) {
             if (!url.endsWith("/")) {
                 url += "/";
@@ -28,19 +28,18 @@ public class RetrofitClient {
         }
     }
 
-    public static void setAuthToken(String token) {
+    public static synchronized void setAuthToken(String token) {
         authToken = token;
-        retrofit = null; // Reset to rebuild with new token
     }
 
-    public static String getBaseUrl() {
+    public static synchronized String getBaseUrl() {
         if (BASE_URL == null || BASE_URL.isEmpty()) {
             BASE_URL = BuildConfig.BASE_URL;
         }
         return BASE_URL;
     }
 
-    public static GreetingService getService() {
+    public static synchronized GreetingService getService() {
         if (retrofit == null) {
             // Try to recover token from SharedPreferences if null (e.g. process death)
             if (authToken == null && MyGlobal.context != null) {
@@ -69,8 +68,9 @@ public class RetrofitClient {
                 
                 okhttp3.Response response = chain.proceed(builder.build());
                 
-                // Track Auth Failures (401=Unauthorized, 403=Forbidden/Limit Reached/Suspended)
-                if (response.code() == 401 || response.code() == 403) {
+                // A 403 is a valid authorization/feature response and must not log the
+                // user out. Only an actual authentication failure invalidates a session.
+                if (response.code() == 401) {
                      if (MyGlobal.context != null) {
                          String errorMessage = null;
                          try {

@@ -30,6 +30,24 @@ import ActivityDashboard from '../components/ActivityDashboard';
 import { useAuth } from '../context/AuthContext';
 import { useSocket } from '../context/SocketContext';
 
+const KpiCard = ({ title, value, subtext, icon: Icon, color }) => (
+  <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-between h-32 relative overflow-hidden group hover:shadow-md transition-shadow">
+    <div className="flex justify-between items-start z-10">
+      <div>
+        <p className="text-sm font-medium text-slate-500 mb-1">{title}</p>
+        <h3 className="text-3xl font-bold text-slate-800">{value}</h3>
+      </div>
+      <div className={`p-3 rounded-lg ${color}`}>
+        <Icon size={22} className="text-white" />
+      </div>
+    </div>
+    <div className="flex items-center mt-2 z-10">
+      <span className="text-xs text-slate-400">{subtext}</span>
+    </div>
+    <Icon size={100} className="absolute -right-4 -bottom-4 text-slate-50 opacity-10 group-hover:scale-110 transition-transform" />
+  </div>
+);
+
 const Dashboard = () => {
   const { user, logout } = useAuth();
   const { socket, joinVendor } = useSocket();
@@ -168,24 +186,6 @@ const Dashboard = () => {
         .catch(err => console.error("Error fetching subscription:", err));
     }
   }, [activeTab]);
-
-  const KpiCard = ({ title, value, subtext, icon: Icon, color }) => (
-    <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-between h-32 relative overflow-hidden group hover:shadow-md transition-shadow">
-      <div className="flex justify-between items-start z-10">
-        <div>
-          <p className="text-sm font-medium text-slate-500 mb-1">{title}</p>
-          <h3 className="text-3xl font-bold text-slate-800">{value}</h3>
-        </div>
-        <div className={`p-3 rounded-lg ${color}`}>
-          <Icon size={22} className="text-white" />
-        </div>
-      </div>
-      <div className="flex items-center mt-2 z-10">
-        <span className="text-xs text-slate-400">{subtext}</span>
-      </div>
-      <Icon size={100} className="absolute -right-4 -bottom-4 text-slate-50 opacity-10 group-hover:scale-110 transition-transform" />
-    </div>
-  );
 
   return (
     <div className="space-y-8">

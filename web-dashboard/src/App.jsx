@@ -44,6 +44,14 @@ const ProtectedRoute = ({ allowedRoles }) => {
   return <Outlet />;
 };
 
+const FaceResetRoute = () => {
+  const { user } = useAuth();
+  const vertical = String(user?.vertical || '').trim().toLowerCase();
+  const supported = !['daily_wages', 'wages', 'factory', 'enterprise'].includes(vertical) &&
+    user?.features?.includes('parent_login');
+  return supported ? <FaceResetRequests /> : <Navigate to="/dashboard" replace />;
+};
+
 function App() {
   return (
     <AuthProvider>
@@ -83,7 +91,7 @@ function App() {
                 <Route path="/classes" element={<Classes />} />
                 <Route path="/faces" element={<Faces />} />
                 <Route path="/leave-management" element={<LeaveManagement />} />
-                <Route path="/face-reset-requests" element={<FaceResetRequests />} />
+                <Route path="/face-reset-requests" element={<FaceResetRoute />} />
               </Route>
 
               {/* Shared/User Routes */}

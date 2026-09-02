@@ -51,4 +51,4 @@ export const FEATURE_TO_SIDEBAR_MAP = {
 };
 
 // Items that are ALWAYS visible regardless of features (Base System)
-export const ALWAYS_VISIBLE_ITEMS = ['Dashboard', 'People', 'Settings', 'Attendance', 'Face Reset Requests'];
+export const ALWAYS_VISIBLE_ITEMS = ['Dashboard', 'People', 'Settings', 'Attendance'];

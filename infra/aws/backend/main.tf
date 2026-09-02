@@ -3,7 +3,7 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = ">= 5.0"
+      version = ">= 5.0, < 6.0"
     }
   }
 }
@@ -25,6 +25,15 @@ variable "function_name" {
 variable "package_path" {
   type    = string
   default = "../../backend/.dist/lambda.zip"
+}
+
+variable "allowed_origins" {
+  type        = list(string)
+  description = "Exact HTTPS origins allowed to call the API"
+  validation {
+    condition     = length(var.allowed_origins) > 0 && alltrue([for origin in var.allowed_origins : startswith(origin, "https://")])
+    error_message = "At least one HTTPS origin must be configured."
+  }
 }
 
 data "aws_iam_policy_document" "assume_lambda" {
@@ -72,7 +81,7 @@ resource "aws_apigatewayv2_api" "http_api" {
   cors_configuration {
     allow_headers = ["Authorization", "Content-Type", "X-Vendor-ID", "x-vendor-id"]
     allow_methods = ["*"]
-    allow_origins = ["*"]
+    allow_origins = var.allowed_origins
     allow_credentials = true
   }
 }

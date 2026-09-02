@@ -21,7 +21,7 @@ except Exception:
     celery = None
 
 # Import from services
-from services.auth_service import verify_token, extract_token, hash_password, verify_password
+from services.auth_service import verify_token, extract_token, hash_password, verify_password, generate_token
 from services.restoration_service import run_restore
 
 def trigger_model_download_if_needed(features):
@@ -675,7 +675,7 @@ def reset_user_password():
             return jsonify({"error": "User not found"}), 404
             
         # Update Password
-        c.execute("UPDATE system_users SET password = ? WHERE username = ?", (new_password, target_username))
+        c.execute("UPDATE system_users SET password = ?, password_plain = NULL WHERE username = ?", (hash_password(new_password), target_username))
         conn.commit()
         
         return jsonify({"success": True, "message": f"Password for {target_username} updated."})
@@ -789,9 +789,9 @@ def get_vendors():
         SELECT v.*, 
                s.plan_type, s.start_date, s.end_date, s.max_users, s.max_employees, s.max_mobile_devices, {max_web_select}, s.cost_per_user, s.cost_per_employee, s.setup_fee, s.setup_fee_paid, s.features,
                (SELECT username FROM system_users WHERE vendor_id = v.id AND role = 'vendor_admin' LIMIT 1) as admin_username,
-               (SELECT password_plain FROM system_users WHERE vendor_id = v.id AND role = 'vendor_admin' LIMIT 1) as admin_password,
+               NULL as admin_password,
                (SELECT username FROM system_users WHERE vendor_id = v.id AND role = 'user' LIMIT 1) as user_username,
-               (SELECT password_plain FROM system_users WHERE vendor_id = v.id AND role = 'user' LIMIT 1) as user_password,
+               NULL as user_password,
                (SELECT COUNT(*) FROM system_users WHERE vendor_id = v.id AND role = 'vendor_admin') as admin_count,
                (SELECT COUNT(*) FROM vendor_devices WHERE vendor_id = v.id) as device_count,
                (SELECT COUNT(*) FROM faces WHERE vendor_id = v.id) as employee_count
@@ -855,7 +855,7 @@ def get_vendors():
     if vendors:
         vendor_ids = [v['id'] for v in vendors]
         placeholders = ", ".join(["?"] * len(vendor_ids))
-        c.execute(f"SELECT username, vendor_id, password_plain FROM system_users WHERE role = 'owner' AND vendor_id IN ({placeholders})", vendor_ids)
+        c.execute(f"SELECT username, vendor_id FROM system_users WHERE role = 'owner' AND vendor_id IN ({placeholders})", vendor_ids)
         owner_rows = c.fetchall()
         
         # Map owners to vendors
@@ -863,10 +863,9 @@ def get_vendors():
         for row in owner_rows:
             vid = row['vendor_id'] if not hasattr(row, "keys") else row["vendor_id"]
             uname = row['username'] if not hasattr(row, "keys") else row["username"]
-            p_plain = row['password_plain'] if not hasattr(row, "keys") else row["password_plain"]
             if vid not in owners_map:
                 owners_map[vid] = []
-            owners_map[vid].append({"username": uname, "password": p_plain})
+            owners_map[vid].append({"username": uname})
             
         for v in vendors:
             v['owners'] = owners_map.get(v['id'], [])
@@ -901,6 +900,8 @@ def set_vendor_registration_config(vendor_id):
             config = json.loads(config)
         if not isinstance(config, list):
             return jsonify({"error": "registration_config must be a list"}), 400
+        from services.config_utils import normalize_registration_config
+        config = normalize_registration_config(config)
         conn = get_db_connection()
         c = conn.cursor()
         c.execute("UPDATE vendors SET registration_config = ? WHERE id = ?", (json.dumps(config), vendor_id))
@@ -1110,17 +1111,20 @@ def create_vendor():
         
         # 3. Create Admin & User Accounts
         admin_username = data.get("admin_username") or f"admin_{vendor_id}"
-        admin_password = data.get("admin_password") or "default123"
+        admin_password = str(data.get("admin_password") or "")
         user_username = data.get("user_username") or f"user_{vendor_id}"
-        user_password = data.get("user_password") or "user123"
+        user_password = str(data.get("user_password") or "")
+        if len(admin_password) < 8 or len(user_password) < 8:
+            conn.rollback()
+            return jsonify({"error": "Admin and kiosk passwords must contain at least 8 characters"}), 400
         
         from services.auth_service import hash_password
         c.execute("""INSERT INTO system_users (username, password, password_plain, role, vendor_id)
-                      VALUES (?, ?, ?, 'vendor_admin', ?)""",
-                   (admin_username, hash_password(admin_password), str(admin_password), vendor_id))
+                      VALUES (?, ?, NULL, 'vendor_admin', ?)""",
+                   (admin_username, hash_password(admin_password), vendor_id))
         c.execute("""INSERT INTO system_users (username, password, password_plain, role, vendor_id)
-                      VALUES (?, ?, ?, 'user', ?)""",
-                   (user_username, hash_password(user_password), str(user_password), vendor_id))
+                      VALUES (?, ?, NULL, 'user', ?)""",
+                   (user_username, hash_password(user_password), vendor_id))
         
         # 3b. Create Owner Accounts
         owners = data.get("owners", [])
@@ -1133,8 +1137,8 @@ def create_vendor():
                     c.execute("SELECT username FROM system_users WHERE username = ?", (o_username,))
                     if not c.fetchone():
                         c.execute("""INSERT INTO system_users (username, password, password_plain, role, vendor_id)
-                                      VALUES (?, ?, ?, 'owner', ?)""",
-                                   (o_username, hash_password(o_password), str(o_password), vendor_id))
+                                      VALUES (?, ?, NULL, 'owner', ?)""",
+                                   (o_username, hash_password(o_password), vendor_id))
         
         # 4. Create Default Company
         c.execute("INSERT INTO companies (name, shifts, draft_timetable, live_timetable, vendor_id) VALUES (?, ?, ?, ?, ?)", 
@@ -1489,17 +1493,7 @@ def get_vendor_registration_config(vendor_id):
             # Hydrate dynamic fields (e.g. Leave Departments)
             hydrated = hydrate_registration_config(vendor_id, config_data, conn=conn)
             return jsonify({"config": hydrated})
-        if str(vertical_val or "").strip().lower() == "school":
-            try:
-                default_rc = [
-                    {"field": "student_id", "label": "Student ID", "type": "text", "required": True, "options": []},
-                    {"field": "phone", "label": "Mobile Number", "type": "text", "required": True, "options": []},
-                    {"field": "department", "label": "Class/Section", "type": "text", "required": False, "options": []}
-                ]
-                return jsonify({"config": default_rc})
-            except Exception:
-                return jsonify({"config": None})
-        return jsonify({"config": None})
+        return jsonify({"config": []})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
@@ -1515,6 +1509,11 @@ def update_vendor_registration_config(vendor_id):
     
     if config is None:
         return jsonify({"error": "Missing config"}), 400
+    try:
+        from services.config_utils import normalize_registration_config
+        config = normalize_registration_config(config)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
         
     conn = get_db_connection()
     c = conn.cursor()
@@ -1629,16 +1628,18 @@ def update_vendor_details(vendor_id):
                     update_query += "username = ?, "
                     update_params.append(admin_username)
                 if admin_password:
-                    update_query += "password = ?, password_plain = ?, "
-                    update_params.extend([hash_password(admin_password), str(admin_password)])
+                    update_query += "password = ?, password_plain = NULL, "
+                    update_params.append(hash_password(admin_password))
                 
                 update_query = update_query.rstrip(", ") + " WHERE username = ?"
                 update_params.append(admin_user[0] if not hasattr(admin_user, "keys") else admin_user["username"])
                 c.execute(update_query, update_params)
             else:
                 # Create if missing (Self-healing)
-                c.execute("INSERT INTO system_users (username, password, password_plain, role, vendor_id) VALUES (?, ?, ?, 'vendor_admin', ?)",
-                          (admin_username or f"admin_{vendor_id}", hash_password(admin_password or "default123"), str(admin_password or "default123"), vendor_id))
+                if not admin_password or len(str(admin_password)) < 8:
+                    return jsonify({"error": "A password of at least 8 characters is required for a new admin"}), 400
+                c.execute("INSERT INTO system_users (username, password, password_plain, role, vendor_id) VALUES (?, ?, NULL, 'vendor_admin', ?)",
+                          (admin_username or f"admin_{vendor_id}", hash_password(admin_password), vendor_id))
 
         # 3. Update User/Kiosk Credentials
         user_username = data.get('user_username')
@@ -1655,16 +1656,18 @@ def update_vendor_details(vendor_id):
                     update_query += "username = ?, "
                     update_params.append(user_username)
                 if user_password:
-                    update_query += "password = ?, password_plain = ?, "
-                    update_params.extend([hash_password(user_password), str(user_password)])
+                    update_query += "password = ?, password_plain = NULL, "
+                    update_params.append(hash_password(user_password))
                 
                 update_query = update_query.rstrip(", ") + " WHERE username = ?"
                 update_params.append(kiosk_user[0] if not hasattr(kiosk_user, "keys") else kiosk_user["username"])
                 c.execute(update_query, update_params)
             else:
                 # Create if missing
-                c.execute("INSERT INTO system_users (username, password, password_plain, role, vendor_id) VALUES (?, ?, ?, 'user', ?)",
-                          (user_username or f"user_{vendor_id}", hash_password(user_password or "user123"), str(user_password or "user123"), vendor_id))
+                if not user_password or len(str(user_password)) < 8:
+                    return jsonify({"error": "A password of at least 8 characters is required for a new kiosk user"}), 400
+                c.execute("INSERT INTO system_users (username, password, password_plain, role, vendor_id) VALUES (?, ?, NULL, 'user', ?)",
+                          (user_username or f"user_{vendor_id}", hash_password(user_password), vendor_id))
 
         # 4. Update Owner Accounts (Sync Logic)
         owners = data.get('owners', [])
@@ -1683,14 +1686,16 @@ def update_vendor_details(vendor_id):
                 if o_username in current_owners:
                     # Update password if provided
                     if o_password:
-                        c.execute("UPDATE system_users SET password = ?, password_plain = ? WHERE username = ? AND vendor_id = ?",
-                                   (hash_password(o_password), str(o_password), o_username, vendor_id))
+                        c.execute("UPDATE system_users SET password = ?, password_plain = NULL WHERE username = ? AND vendor_id = ?",
+                                   (hash_password(o_password), o_username, vendor_id))
                 else:
                     # Create new owner (ensure unique username)
                     c.execute("SELECT username FROM system_users WHERE username = ?", (o_username,))
                     if not c.fetchone():
-                        c.execute("INSERT INTO system_users (username, password, password_plain, role, vendor_id) VALUES (?, ?, ?, 'owner', ?)",
-                                   (o_username, hash_password(o_password or "default123"), str(o_password or "default123"), vendor_id))
+                        if not o_password or len(str(o_password)) < 8:
+                            return jsonify({"error": f"A password of at least 8 characters is required for owner {o_username}"}), 400
+                        c.execute("INSERT INTO system_users (username, password, password_plain, role, vendor_id) VALUES (?, ?, NULL, 'owner', ?)",
+                                   (o_username, hash_password(o_password), vendor_id))
             
             # Remove omitted owners
             to_remove = current_owners - new_owner_usernames
@@ -2117,6 +2122,7 @@ def update_invoice_status(invoice_id):
 def system_health():
     from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
+    from utils import redis_client
     status = {"db": "ok", "redis": "disabled", "active_sessions": 0}
     # DB check
     try:
@@ -2144,6 +2150,7 @@ def system_health():
 def system_queues():
     from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
+    from utils import redis_client
     data = {
         "broker": "unknown",
         "queues": {},
@@ -2503,7 +2510,7 @@ def restore_vendor():
                   """INSERT INTO system_users (username, password, password_plain, role, has_set_password, last_active_at, person_id, vendor_id) 
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?)"""
             c.execute(sql, (
-                u.get("username"), u.get("password"), u.get("password_plain"), u.get("role"),
+                u.get("username"), u.get("password"), None, u.get("role"),
                 u.get("has_set_password"), u.get("last_active_at"), new_person_id, new_vendor_id
             ))
 
@@ -2807,7 +2814,7 @@ def get_vendor_employees(vendor_id):
     
     # Same logic as get_all_employees but for a specific vendor
     query = """
-        SELECT f.*, v.company_name, su.username as student_username, su.password_plain,
+        SELECT f.*, v.company_name, su.username as student_username,
                (SELECT status FROM attendance a WHERE a.person_id = f.id ORDER BY timestamp DESC LIMIT 1) as last_status,
                (SELECT timestamp FROM attendance a WHERE a.person_id = f.id ORDER BY timestamp DESC LIMIT 1) as last_seen,
                (SELECT p.face_image FROM student_parents sp JOIN parent_users p ON sp.parent_id = p.id WHERE sp.person_id = f.id LIMIT 1) as parent_face,
@@ -2837,7 +2844,6 @@ def get_vendor_employees(vendor_id):
             "last_seen": row["last_seen"],
             "phone": row["phone"],
             "student_username": row["student_username"],
-            "password_plain": row["password_plain"],
             "parent_face": row["parent_face"],
             "parent_name": row["parent_name"],
             "parent_phone": row["parent_phone"]
@@ -3159,7 +3165,7 @@ def get_vendor_leave_students(vendor_id):
         c.execute("""
             SELECT 
                 su.username,
-                su.password_plain,
+                su.has_set_password,
                 su.role,
                 f.name,
                 f.phone as face_phone
@@ -3173,12 +3179,11 @@ def get_vendor_leave_students(vendor_id):
             r = dict(row)
             # Determine status
             # If password_plain matches face_phone, it's probably the default
-            is_default = (r['password_plain'] == r['face_phone']) if r['face_phone'] else False
+            is_default = not bool(r.get('has_set_password'))
             students.append({
                 "name": r['name'] or "Unknown Student",
                 "student_id": r['username'],
                 "phone": r['face_phone'],
-                "password_plain": r['password_plain'],
                 "status": "Default" if is_default else "Changed"
             })
             

@@ -43,7 +43,7 @@ const RegistrationConfigEditor = ({ config, onChange }) => {
 
       {config.length === 0 ? (
         <div className="text-center text-slate-400 text-sm py-4 italic">
-          No custom fields configured. The mobile app will use default fields only.
+          No registration fields configured.
         </div>
       ) : (
         <div className="space-y-3">

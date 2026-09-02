@@ -168,26 +168,21 @@ def get_bulk_attendance_config():
     row = c.fetchone()
     conn.close()
 
-    default_fields = [
-        {"name": "name",           "label": "Full Name",      "type": "text", "required": True,  "default": True},
-        {"name": "student_id",     "label": "Student ID",     "type": "text", "required": True,  "default": True},
-        {"name": "mobile_number",  "label": "Mobile Number",  "type": "text", "required": True,  "default": True},
-    ]
-    custom_fields = []
+    configured_fields = []
     if row:
         try:
             raw = row[0] if isinstance(row, (list, tuple)) else row['fields']
-            custom_fields = json.loads(raw) if raw else []
+            configured_fields = json.loads(raw) if raw else []
         except Exception:
-            custom_fields = []
+            configured_fields = []
 
-    return jsonify({"fields": default_fields + custom_fields, "custom_fields": custom_fields})
+    return jsonify({"fields": configured_fields, "custom_fields": configured_fields})
 
 
 @bulk_attendance_bp.route("/bulk-attendance/config", methods=["PUT"])
 @require_auth()
 def save_bulk_attendance_config():
-    if g.user_role not in ('super_admin', 'admin'):
+    if g.user_role != 'super_admin':
         return jsonify({"error": "Forbidden"}), 403
 
     vendor_id = g.vendor_id
@@ -202,8 +197,12 @@ def save_bulk_attendance_config():
     data = request.json or {}
     raw_fields = data.get('custom_fields', [])
 
-    # Sanitise and deduplicate
-    seen = {'student_id', 'mobile_number'}
+    if not vendor_id:
+        return jsonify({"error": "Vendor is required"}), 400
+
+    # Sanitise and deduplicate. Nothing is implicitly retained: this list is the
+    # authoritative Superadmin schema for the selected business.
+    seen = set()
     valid = []
     for f in raw_fields:
         name = str(f.get('name', '')).strip().replace(' ', '_').lower()
@@ -223,10 +222,32 @@ def save_bulk_attendance_config():
 
     conn = get_db_connection()
     c = conn.cursor()
+    c.execute("SELECT id FROM vendors WHERE id = ?", (vendor_id,))
+    if not c.fetchone():
+        conn.close()
+        return jsonify({"error": "Vendor not found"}), 404
     _upsert_config(c, vendor_id, json.dumps(valid), datetime.utcnow().isoformat())
+    registration_config = []
+    for field in valid:
+        identity = field['name'].lower()
+        registration_config.append({
+            "field": field['name'],
+            "label": field['label'],
+            "type": field.get('type') or 'text',
+            "required": field.get('required', False),
+            "enabled": True,
+            "options": field.get('options', []),
+            "is_name": identity in {'name', 'full_name', 'student_name', 'employee_name'},
+            "is_phone": identity in {'phone', 'mobile', 'mobile_number', 'phone_number', 'contact_number'},
+            "is_id": identity in {'student_id', 'student_number', 'employee_id', 'roll_number'},
+        })
+    c.execute(
+        "UPDATE vendors SET registration_config = ? WHERE id = ?",
+        (json.dumps(registration_config, separators=(',', ':')), vendor_id),
+    )
     conn.commit()
     conn.close()
-    return jsonify({"status": "saved", "custom_fields": valid})
+    return jsonify({"status": "saved", "custom_fields": valid, "fields": valid})
 
 
 # ── Lecture CRUD ───────────────────────────────────────────────────────────────

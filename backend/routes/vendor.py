@@ -7,6 +7,7 @@ import base64
 import os
 import io
 import time
+import re
 from datetime import datetime, date, timedelta
 from services.auth_service import authenticate_vendor_access, extract_token, verify_token
 from utils import parse_db_date, cache_get, cache_set
@@ -26,12 +27,10 @@ def admin_required(f):
     from functools import wraps
     @wraps(f)
     def decorated(*args, **kwargs):
-        auth_header = request.headers.get('Authorization')
-        if not auth_header:
-            return jsonify({"error": "Missing Authorization Header"}), 401
-        token = extract_token(auth_header)
-        data = verify_token(token)
-        if not data or data.get('role') not in ['super_admin', 'vendor_admin']:
+        _vendor_id, error = authenticate_vendor_access()
+        if error:
+            return error
+        if g.user_role not in ['super_admin', 'vendor_admin', 'admin', 'owner']:
             return jsonify({"error": "Admin access required"}), 403
         return f(*args, **kwargs)
     return decorated
@@ -572,10 +571,10 @@ def list_classes():
             conn.close()
             return jsonify({"classes": items})
 
-        if vendor_id:
-            c.execute("SELECT id, class_year, division, branch, label, mapped_subjects FROM classes WHERE vendor_id = ? ORDER BY created_at DESC", (vendor_id,))
-        else:
-            c.execute("SELECT id, class_year, division, branch, label, mapped_subjects FROM classes ORDER BY created_at DESC")
+        if not vendor_id:
+            conn.close()
+            return jsonify({"error": "Vendor Context Required"}), 400
+        c.execute("SELECT id, class_year, division, branch, label, mapped_subjects FROM classes WHERE vendor_id = ? ORDER BY created_at DESC", (vendor_id,))
         rows = c.fetchall() or []
         conn.close()
         items = []
@@ -605,6 +604,8 @@ def create_class():
     vendor_id, error = authenticate_vendor_access()
     if error:
         return error
+    if g.user_role not in {'super_admin', 'vendor_admin', 'admin', 'owner'}:
+        return jsonify({"error": "Access Denied"}), 403
     data = request.get_json(silent=True) or {}
     try:
         conn = get_db_connection()
@@ -633,6 +634,8 @@ def update_class(cid: int):
     vendor_id, error = authenticate_vendor_access()
     if error:
         return error
+    if g.user_role not in {'super_admin', 'vendor_admin', 'admin', 'owner'}:
+        return jsonify({"error": "Access Denied"}), 403
     data = request.get_json(silent=True) or {}
     try:
         conn = get_db_connection()
@@ -672,6 +675,8 @@ def delete_class(cid: int):
     vendor_id, error = authenticate_vendor_access()
     if error:
         return error
+    if g.user_role not in {'super_admin', 'vendor_admin', 'admin', 'owner'}:
+        return jsonify({"error": "Access Denied"}), 403
     try:
         conn = get_db_connection()
         c = conn.cursor()
@@ -719,6 +724,10 @@ def update_global_late_config():
     from services.auth_service import extract_token, verify_token
     vendor_id, error = authenticate_vendor_access()
     if error: return error
+    if not vendor_id:
+        return jsonify({"error": "Vendor Context Required"}), 400
+    if g.user_role not in {'vendor_admin', 'admin', 'owner'}:
+        return jsonify({"error": "Access Denied"}), 403
     
     # Only allow Admin (implicit via authenticate_vendor_access usually, but good to check role if needed)
     # Assuming authenticate_vendor_access checks for valid token.
@@ -738,31 +747,31 @@ def update_global_late_config():
     try:
         if allowance is not None:
             c.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)", 
-                      ('global_late_allowance', str(allowance)))
+                      (f'global_late_allowance_vendor_{vendor_id}', str(allowance)))
             
         if deduction is not None:
             c.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)", 
-                      ('global_late_deduction', str(deduction)))
+                      (f'global_late_deduction_vendor_{vendor_id}', str(deduction)))
 
         if pf_pct is not None:
             c.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)", 
-                      ('global_pf_percentage', str(pf_pct)))
+                      (f'global_pf_percentage_vendor_{vendor_id}', str(pf_pct)))
 
         if esi_pct is not None:
             c.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)", 
-                      ('global_esi_percentage', str(esi_pct)))
+                      (f'global_esi_percentage_vendor_{vendor_id}', str(esi_pct)))
 
         if grat_pct is not None:
             c.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)", 
-                      ('global_gratuity_percentage', str(grat_pct)))
+                      (f'global_gratuity_percentage_vendor_{vendor_id}', str(grat_pct)))
 
         if grat_years is not None:
             c.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)", 
-                      ('global_gratuity_threshold_years', str(grat_years)))
+                      (f'global_gratuity_threshold_years_vendor_{vendor_id}', str(grat_years)))
 
         if timezone_offset is not None:
             c.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)", 
-                      ('global_timezone_offset', str(timezone_offset)))
+                      (f'global_timezone_offset_vendor_{vendor_id}', str(timezone_offset)))
 
         conn.commit()
         conn.close()
@@ -780,7 +789,7 @@ def get_vendor_owners():
         conn = get_db_connection()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
-        c.execute("SELECT username, password_plain as password FROM system_users WHERE vendor_id = ? AND role = 'owner'", (vendor_id,))
+        c.execute("SELECT username FROM system_users WHERE vendor_id = ? AND role = 'owner'", (vendor_id,))
         owners = [dict(row) for row in c.fetchall()]
         conn.close()
         return jsonify({"owners": owners})
@@ -815,16 +824,18 @@ def sync_vendor_owners():
             
             if o_username in current_owners:
                 if o_password:
-                    c.execute("UPDATE system_users SET password = ?, password_plain = ? WHERE username = ? AND vendor_id = ?",
-                               (hash_password(o_password), str(o_password), o_username, vendor_id))
+                    c.execute("UPDATE system_users SET password = ?, password_plain = NULL WHERE username = ? AND vendor_id = ?",
+                               (hash_password(o_password), o_username, vendor_id))
             else:
                 # Check for global uniqueness across all users
                 c.execute("SELECT username FROM system_users WHERE username = ?", (o_username,))
                 if c.fetchone():
                     continue # Skip or handle conflict
                 
-                c.execute("INSERT INTO system_users (username, password, password_plain, role, vendor_id) VALUES (?, ?, ?, 'owner', ?)",
-                           (o_username, hash_password(o_password or "default123"), str(o_password or "default123"), vendor_id))
+                if not o_password or len(str(o_password)) < 8:
+                    continue
+                c.execute("INSERT INTO system_users (username, password, password_plain, role, vendor_id) VALUES (?, ?, NULL, 'owner', ?)",
+                           (o_username, hash_password(o_password), vendor_id))
         
         # Remove omitted owners
         to_remove = current_owners - new_owner_usernames
@@ -844,14 +855,9 @@ def get_settings():
     from app import get_db_connection, socketio, is_testing
     from services.auth_service import extract_token, verify_token
     allowed_keys = {'threshold', 'cooldown', 'work_start_time', 'late_threshold', 'late_grace_period', 'auto_checkout', 'voice_greeting', 'admin_alerts'}
-    auth_header = request.headers.get('Authorization')
-    token_data = None
-    if auth_header:
-        try:
-            token = auth_header.split(" ")[1]
-            token_data = verify_token(token)
-        except Exception:
-            token_data = None
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -860,37 +866,10 @@ def get_settings():
     conn.close()
     
     all_settings = {row['key']: row['value'] for row in rows}
-    public_settings = {k: v for k, v in all_settings.items() if k in allowed_keys}
-    if not token_data:
-        return jsonify(public_settings)
-
-    username = token_data.get('username')
-    role = token_data.get('role')
-    if role == 'super_admin':
-        return jsonify(public_settings)
-    if role != 'vendor_admin':
-        return jsonify(public_settings)
-
-    vendor_id = None
-    try:
-        conn_u = get_db_connection()
-        conn_u.row_factory = sqlite3.Row
-        cu = conn_u.cursor()
-        cu.execute("SELECT vendor_id FROM system_users WHERE username = ?", (username,))
-        ur = cu.fetchone()
-        vendor_id = ur['vendor_id'] if ur else None
-        conn_u.close()
-    except Exception:
-        try:
-            conn_u.close()
-        except Exception:
-            pass
-        vendor_id = None
-
     if not vendor_id:
-        return jsonify(public_settings)
+        return jsonify({k: all_settings[k] for k in allowed_keys if k in all_settings})
 
-    effective = dict(public_settings)
+    effective = {}
     for k in allowed_keys:
         vkey = f"{k}_vendor_{vendor_id}"
         if vkey in all_settings and all_settings[vkey] is not None and str(all_settings[vkey]).strip() != "":
@@ -902,41 +881,28 @@ def get_settings():
 def update_settings():
     from app import get_db_connection, socketio, is_testing
     from services.auth_service import extract_token, verify_token
-    auth_header = request.headers.get('Authorization')
-    if not auth_header:
-        return jsonify({"error": "Missing Authorization Header"}), 401
-    try:
-        token = auth_header.split(" ")[1]
-        token_data = verify_token(token)
-    except Exception:
-        token_data = None
-    if not token_data:
-        return jsonify({"error": "Invalid or Expired Token"}), 401
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
 
     allowed_keys = {'threshold', 'cooldown', 'work_start_time', 'late_threshold', 'late_grace_period', 'auto_checkout', 'voice_greeting', 'admin_alerts'}
     data = request.json or {}
-    role = token_data.get('role')
-    username = token_data.get('username')
-    vendor_id = None
-    if role == 'vendor_admin':
-        try:
-            conn_u = get_db_connection()
-            conn_u.row_factory = sqlite3.Row
-            cu = conn_u.cursor()
-            cu.execute("SELECT vendor_id FROM system_users WHERE username = ?", (username,))
-            ur = cu.fetchone()
-            vendor_id = ur['vendor_id'] if ur else None
-            conn_u.close()
-        except Exception:
-            try:
-                conn_u.close()
-            except Exception:
-                pass
-            vendor_id = None
-        if not vendor_id:
-            return jsonify({"error": "Vendor Context Required"}), 400
-    elif role != 'super_admin':
+    role = g.user_role
+    if role not in {'super_admin', 'vendor_admin', 'admin', 'owner'}:
         return jsonify({"error": "Access Denied"}), 403
+    if role != 'super_admin' and not vendor_id:
+        return jsonify({"error": "Vendor Context Required"}), 400
+
+    try:
+        if 'threshold' in data and not 0.4 <= float(data['threshold']) <= 0.95:
+            raise ValueError("threshold must be between 0.40 and 0.95")
+        if 'cooldown' in data and not 5 <= int(data['cooldown']) <= 3600:
+            raise ValueError("cooldown must be between 5 and 3600 seconds")
+        for time_key in ('work_start_time', 'late_threshold'):
+            if time_key in data and not re.fullmatch(r'([01]\d|2[0-3]):[0-5]\d', str(data[time_key])):
+                raise ValueError(f"{time_key} must use HH:MM format")
+    except (TypeError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 400
 
     conn = get_db_connection()
     c = conn.cursor()
@@ -945,10 +911,13 @@ def update_settings():
             if key not in allowed_keys:
                 continue
             store_key = key
-            if role == 'vendor_admin' and vendor_id:
+            if vendor_id:
                 store_key = f"{key}_vendor_{vendor_id}"
             # Ensure value is string
-            val_str = str(value) if value is not None else ""
+            if isinstance(value, bool):
+                val_str = 'true' if value else 'false'
+            else:
+                val_str = str(value) if value is not None else ""
             c.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)", (store_key, val_str))
         conn.commit()
         return jsonify({"status": "success", "message": "Settings updated"})
@@ -986,6 +955,7 @@ def get_users():
 
 
 @vendor_bp.route("/users", methods=["POST"])
+@admin_required
 def create_user():
     from app import get_db_connection, socketio, is_testing
     from services.auth_service import extract_token, verify_token
@@ -994,6 +964,7 @@ def create_user():
 
 
 @vendor_bp.route("/users/<username>", methods=["PUT"])
+@admin_required
 def update_user(username):
     from app import get_db_connection, socketio, is_testing
     from services.auth_service import extract_token, verify_token
@@ -1016,8 +987,9 @@ def update_user(username):
         updates = []
         
         if password:
-            updates.append("password = ?")
-            params.append(password)
+            from services.auth_service import hash_password
+            updates.extend(["password = ?", "password_plain = NULL"])
+            params.append(hash_password(password))
         if role:
             updates.append("role = ?")
             params.append(role)
@@ -1044,6 +1016,7 @@ def update_user(username):
 
 
 @vendor_bp.route("/users/<username>", methods=["DELETE"])
+@admin_required
 def delete_user(username):
     from app import get_db_connection, socketio, is_testing
     from services.auth_service import extract_token, verify_token

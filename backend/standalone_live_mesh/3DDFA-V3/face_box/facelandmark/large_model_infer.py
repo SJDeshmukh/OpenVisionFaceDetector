@@ -10,8 +10,12 @@ import time
 import os
 INPUT_SIZE = 224
 ENLARGE_RATIO = 1.35
-# from util.util_ import spread_flow, viz_flow
-# from util.image_liquify import image_warp_grid1
+try:
+    from util.util_ import spread_flow
+    from util.image_liquify import image_warp_grid1
+except ImportError:
+    spread_flow = None
+    image_warp_grid1 = None
 
 
 def resize_on_long_side(img, long_side=800):
@@ -372,6 +376,8 @@ class LargeModelInfer:
         # print('box_center:{}'.format(box_center))
         t1 =time.time()
 
+        if spread_flow is None or image_warp_grid1 is None:
+            raise RuntimeError("Optional face-warp utilities are not installed")
         sf = spread_flow(100, flow_box_length * degree)
         sf = cv2.resize(sf, (flow_box_length, flow_box_length))
         # print('|' * 50, 'time spread_flow: {}'.format(time.time() - t1))

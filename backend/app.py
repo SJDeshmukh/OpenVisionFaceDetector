@@ -148,7 +148,9 @@ from middleware.handlers import setup_middleware, track_metrics, rate_limit
 from db_factory import init_db_sqlalchemy
 app = Flask(__name__) 
 init_db_sqlalchemy(app)
-app.secret_key = os.environ.get('SECRET_KEY', 'super_secret_key_change_this_in_prod')
+app.secret_key = os.environ.get('SECRET_KEY')
+if not app.secret_key:
+    raise RuntimeError('SECRET_KEY is required')
 serializer = URLSafeTimedSerializer(app.secret_key)
 Compress(app)
 
@@ -190,7 +192,10 @@ setup_middleware(app)
 # Initialize SocketIO
 socketio = SocketIO(
     app,
-    cors_allowed_origins="*",
+    cors_allowed_origins=[origin.strip() for origin in os.environ.get(
+        "SOCKET_ALLOWED_ORIGINS",
+        os.environ.get("FRONTEND_URL", "http://localhost:5173,http://127.0.0.1:5173")
+    ).split(",") if origin.strip()],
     async_mode='threading',
     ping_timeout=60,
     ping_interval=25,
@@ -270,6 +275,12 @@ try:
     bootstrap_db()
 except Exception as e:
     print(f"Database bootstrap failed: {e}", flush=True)
+
+# Backward-compatible test/maintenance entry points. Schema initialization is
+# centralized in database.bootstrap; old scripts still import these names.
+init_db = bootstrap_db
+def migrate_faces_pk():
+    return None
 
 # Ghost code and redundant functions removed.
 # Database and Auth logic moved to modular files.

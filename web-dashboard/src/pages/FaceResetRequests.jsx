@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import { Shield, CheckCircle, XCircle, Clock, Search, RefreshCw, Trash2 } from 'lucide-react';
 import { API_URL } from '../config';
 import axios from 'axios';
@@ -9,13 +9,10 @@ const FaceResetRequests = () => {
     const [searchTerm, setSearchTerm] = useState('');
     const [processingId, setProcessingId] = useState(null);
 
-    const fetchRequests = async () => {
+    const fetchRequests = useCallback(async () => {
         setLoading(true);
         try {
-            const token = localStorage.getItem('token');
-            const response = await axios.get(`${API_URL}/admin/face-reset-requests`, {
-                headers: { Authorization: `Bearer ${token}` }
-            });
+            const response = await axios.get(`${API_URL}/admin/face-reset-requests`);
             if (response.data.status === 'success') {
                 setRequests(response.data.requests);
             }
@@ -24,23 +21,20 @@ const FaceResetRequests = () => {
         } finally {
             setLoading(false);
         }
-    };
+    }, []);
 
     useEffect(() => {
         fetchRequests();
-    }, []);
+    }, [fetchRequests]);
 
     const handleAction = async (requestId, action) => {
         if (!window.confirm(`Are you sure you want to ${action} this request?`)) return;
 
         setProcessingId(requestId);
         try {
-            const token = localStorage.getItem('token');
             const response = await axios.post(`${API_URL}/admin/handle-face-reset`, {
                 request_id: requestId,
                 action: action
-            }, {
-                headers: { Authorization: `Bearer ${token}` }
             });
 
             if (response.data.status === 'success') {

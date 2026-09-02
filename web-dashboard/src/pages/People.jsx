@@ -40,6 +40,29 @@ const Toast = ({ message, type, onClose }) => (
   </motion.div>
 );
 
+const emptyPersonForm = (fields = []) => {
+  const values = {
+    id: null,
+    name: '',
+    phone: '',
+    photo: null,
+    photoPreview: null,
+    templates: '',
+    class_id: '',
+  };
+  fields.forEach((field) => {
+    const key = field?.key || field?.field;
+    if (key) values[key] = field?.type === 'multiselect' ? [] : '';
+  });
+  return values;
+};
+
+const normalizedFieldKey = (field) => String(field?.key || field?.field || '').trim();
+const normalizedFieldIdentity = (field) => normalizedFieldKey(field).toLowerCase().replace(/[\s-]+/g, '_');
+const isNameField = (field) => field?.is_name || ['name', 'full_name', 'student_name', 'employee_name'].includes(normalizedFieldIdentity(field));
+const isPhoneField = (field) => field?.is_phone || ['phone', 'mobile', 'mobile_number', 'phone_number', 'contact_number'].includes(normalizedFieldIdentity(field));
+const isClassField = (field) => ['class', 'class_id', 'class_section'].includes(normalizedFieldIdentity(field));
+
 const People = () => {
   const { user } = useAuth();
   const personLabel = (user?.vertical && ['school', 'hostel'].includes(String(user.vertical).toLowerCase())) ? 'Student' : 'Employee';
@@ -49,19 +72,7 @@ const People = () => {
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
-  const [formData, setFormData] = useState({
-    id: null,
-    name: '',
-    phone: '',
-    department: '',
-    designation: '',
-    shift: '',
-    photo: null,
-    photoPreview: null,
-    templates: '',
-    class_id: '',
-    display_id: ''
-  });
+  const [formData, setFormData] = useState(() => emptyPersonForm());
   const [submitting, setSubmitting] = useState(false);
   const [vendorConfig, setVendorConfig] = useState([]);
   const [vendorDepartments, setVendorDepartments] = useState([]);
@@ -96,7 +107,7 @@ const People = () => {
   // Add Faculty (single) State
   const [isAddFacultyModalOpen, setIsAddFacultyModalOpen] = useState(false);
   const [addFacultyFormData, setAddFacultyFormData] = useState({
-    name: '', email: '', phone: '', designation: '', password: '1234'
+    name: '', email: '', phone: '', designation: '', password: ''
   });
 
   // Toast State
@@ -181,7 +192,11 @@ const People = () => {
 
   const fetchShifts = async () => {
     try {
-      const companyId = user?.company_id || 1;
+      const companyId = user?.company_id;
+      if (!companyId) {
+        setShifts([]);
+        return;
+      }
       const response = await axios.get(`${API_URL}/companies/${companyId}`);
       if (response.data && response.data.shifts) {
         setShifts(response.data.shifts);
@@ -258,19 +273,7 @@ const People = () => {
 
   const openAddModal = () => {
     setIsEditing(false);
-    setFormData({
-      id: null,
-      name: '',
-      phone: '',
-      department: '',
-      designation: '',
-      shift: '',
-      photo: null,
-      photoPreview: null,
-      templates: '',
-      class_id: '',
-      display_id: ''
-    });
+    setFormData(emptyPersonForm(registrationColumns));
     setIsModalOpen(true);
   };
 
@@ -338,7 +341,7 @@ const People = () => {
     const isFacultyTab = activeTab === 'faculty';
     const confirmMsg = isFacultyTab 
       ? "This will delete ALL faculty login accounts. Students and attendance records will NOT be affected. Are you sure?"
-      : "CRITICAL: This will delete ALL registered students, their facial data, and reset the registration configuration. This action cannot be undone. Are you sure?";
+      : "CRITICAL: This will delete ALL registered students and their facial data. The Superadmin field configuration will be preserved. This action cannot be undone. Are you sure?";
 
     if (window.confirm(confirmMsg)) {
       try {
@@ -352,7 +355,7 @@ const People = () => {
           } else {
             setUsers([]);
             setSelectedClassForView(null);
-            fetchConfig(); // Refresh registration config (it resets on clear all)
+            fetchConfig();
           }
         } else {
           addToast(resp.data?.error || "Failed to clear all", 'error');
@@ -404,7 +407,7 @@ const People = () => {
       if (res.data?.success) {
         addToast('Faculty added successfully', 'success');
         setIsAddFacultyModalOpen(false);
-        setAddFacultyFormData({ name: '', email: '', phone: '', designation: '', password: '1234' });
+        setAddFacultyFormData({ name: '', email: '', phone: '', designation: '', password: '' });
         fetchFacultyLogins();
       } else {
         addToast(res.data?.error || 'Failed to add faculty', 'error');
@@ -429,15 +432,18 @@ const People = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!nameHeaderObj) {
+      alert(`A name field must be configured by the Superadmin before adding a ${personLabel.toLowerCase()}.`);
+      return;
+    }
     if (!formData.name) return;
 
     setSubmitting(true);
     try {
-      const activeColumns = getColumns();
-      const missingRequired = (activeColumns || []).filter(f => f.required).some(f => {
+      const missingRequired = (registrationColumns || []).filter(f => f.required).some(f => {
         const key = f.key || f.field;
-        // Basic fields (name/phone) are validated separately or are always present
-        if (['name', 'phone', 'full_name', 'mobile_number'].includes(key)) return false;
+        if (isNameField(f)) return !String(formData.name || '').trim();
+        if (isPhoneField(f)) return !String(formData.phone || '').trim();
         return !formData[key] || String(formData[key]).trim() === '';
       });
       if (missingRequired) {
@@ -480,17 +486,7 @@ const People = () => {
       const response = await axios.post(`${API_URL}/sync/upload`, payload);
       if (response.data.status === 'success') {
         setIsModalOpen(false);
-        setFormData({
-          id: null,
-          name: '',
-          phone: '',
-          department: '',
-          designation: '',
-          shift: '',
-          photo: null,
-          photoPreview: null,
-          templates: ''
-        });
+        setFormData(emptyPersonForm(registrationColumns));
         fetchUsers();
       }
     } catch (error) {
@@ -503,12 +499,16 @@ const People = () => {
   };
 
   // Determine columns based on Vendor Config (SuperAdmin defined)
-  const getColumns = () => {
+  const registrationColumns = useMemo(() => {
     let baseColumns = [];
     
     // 1. Prioritize Vendor Registration Config (Mobile Registration Fields)
     if (vendorConfig && Array.isArray(vendorConfig) && vendorConfig.length > 0) {
-        baseColumns = [...vendorConfig];
+        baseColumns = vendorConfig.filter(field => field && field.enabled !== false).map(field => ({
+          ...field,
+          field: field.field || field.key,
+          type: field.type || 'text',
+        }));
     } else if (user?.features?.includes('bulk_image_attendance')) {
       // Fallback logic
       (bulkAttendanceFields || []).forEach(f => {
@@ -525,29 +525,21 @@ const People = () => {
           options: f.options 
         });
       });
-    } else {
-      baseColumns = [
-        { field: 'phone', label: 'Mobile Number' },
-        { field: 'department', label: 'Department' },
-        { field: 'shift', label: 'Shift' },
-        { field: 'designation', label: 'Designation' }
-      ];
     }
 
     return baseColumns;
-  };
-  const registrationColumns = getColumns();
+  }, [vendorConfig, bulkAttendanceFields, user?.features]);
 
   // Dynamically identify the Name header from the registration config
-  const nameHeaderObj = registrationColumns.find(c => c.is_name) || 
-                        registrationColumns.find(c => ['name', 'student name', 'full name'].includes(c.label?.toLowerCase()));
+  const nameHeaderObj = registrationColumns.find(isNameField);
   const nameHeader = nameHeaderObj?.label || personLabel;
+  const phoneField = registrationColumns.find(isPhoneField);
+  const classField = registrationColumns.find(isClassField);
 
   const tableColumns = useMemo(() => {
     return (registrationColumns || []).filter((col) => {
       // Skip the Name column because it's already rendered in the first 'Student' column
-      if (col.is_name) return false;
-      if (['name', 'student name', 'full name'].includes(col.label?.toLowerCase())) return false;
+      if (isNameField(col)) return false;
       
       return true;
     });
@@ -1034,7 +1026,7 @@ const People = () => {
                 <p className="text-sm text-slate-500">Click to upload a clear face photo</p>
               </div>
 
-              <div className="space-y-2">
+              {nameHeaderObj && <div className="space-y-2">
                 <label className="text-sm font-medium text-slate-700">
                   {nameHeader}
                   <span className="text-red-500 ml-1">*</span>
@@ -1045,88 +1037,89 @@ const People = () => {
                     type="text"
                     value={formData.name || ''}
                     onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                    placeholder="e.g. John Doe"
+                    placeholder={`Enter ${nameHeader}`}
                     className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
                     required
                   />
                 </div>
-              </div>
+              </div>}
 
-              {/* Student ID / Roll Number */}
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-700">
-                  {personLabel} Roll No / ID
-                  <span className="text-xs text-slate-400 ml-2">(Optional - Auto-assigned if empty)</span>
-                </label>
-                <input
-                  type="number"
-                  value={formData.display_id || ''}
-                  onChange={(e) => setFormData({ ...formData, display_id: e.target.value })}
-                  placeholder="e.g. 1"
-                  className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                />
-              </div>
+              {registrationColumns.length === 0 && (
+                <p className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                  No registration fields are configured for this business. Ask the Superadmin to configure the Faces form or upload an Excel file to synchronize its columns.
+                </p>
+              )}
 
               {/* Phone Field */}
-              <div className="space-y-2">
+              {phoneField && <div className="space-y-2">
                 <label className="text-sm font-medium text-slate-700">
-                  {registrationColumns.find(c => c.is_phone)?.label || 'Phone'}
-                  <span className="text-red-500 ml-1">*</span>
+                  {phoneField.label || 'Phone'}
+                  {phoneField.required && <span className="text-red-500 ml-1">*</span>}
                 </label>
                 <input
                   type="text"
                   value={formData.phone || ''}
                   onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                  placeholder="e.g. +1234567890"
+                  placeholder={`Enter ${phoneField.label || 'Phone'}`}
                   className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                  required
+                  required={phoneField.required}
                 />
-              </div>
+              </div>}
 
               {/* Dynamic Fields Rendering */}
               <div className="space-y-4">
                 {registrationColumns.map((col, idx) => {
                   const fieldKey = col.key || col.field;
-                  const label = col.label || '';
-                  
                   // Skip core fields to prevent duplication
-                  if (col.is_name || col.is_phone || col.is_id) return null;
+                  if (isNameField(col) || isPhoneField(col) || (classField && isClassField(col))) return null;
 
-                  // Fallback case-insensitive check + Simplification for branch/subject/sections
-                  const skipList = [
-                    'name', 'phone', 'full_name', 'mobile_number', 'mobile number', 'full name', 
-                    'student_id', 'student id', 'branch', 'subject', 'department', 
-                    'branch / subject', 'section'
-                  ];
-                  
-                  if (skipList.includes(String(fieldKey).toLowerCase()) || skipList.includes(label.toLowerCase())) {
-                    return null;
-                  }
+                  const inputType = col.type || 'text';
+                  const options = Array.isArray(col.options) ? col.options : [];
 
                   return (
-                    <div key={idx} className="space-y-2">
+                    <div key={fieldKey || idx} className="space-y-2">
                       <label className="text-sm font-medium text-slate-700">
                         {col.label}
                         {col.required && <span className="text-red-500 ml-1">*</span>}
                       </label>
-                      <input
-                        type={col.type || 'text'}
-                        value={formData[fieldKey] || ''}
-                        onChange={(e) => setFormData({ ...formData, [fieldKey]: e.target.value })}
-                        placeholder={`Enter ${col.label}`}
-                        className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                        required={col.required}
-                      />
+                      {['select', 'dropdown', 'multiselect'].includes(inputType) ? (
+                        <select
+                          multiple={inputType === 'multiselect'}
+                          value={inputType === 'multiselect'
+                            ? (Array.isArray(formData[fieldKey]) ? formData[fieldKey] : [])
+                            : (formData[fieldKey] || '')}
+                          onChange={(e) => setFormData({
+                            ...formData,
+                            [fieldKey]: inputType === 'multiselect'
+                              ? Array.from(e.target.selectedOptions, option => option.value)
+                              : e.target.value
+                          })}
+                          className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                          required={col.required}
+                        >
+                          {inputType !== 'multiselect' && <option value="">-- Select {col.label} --</option>}
+                          {options.map(option => <option key={String(option)} value={option}>{option}</option>)}
+                        </select>
+                      ) : (
+                        <input
+                          type={inputType}
+                          value={formData[fieldKey] || ''}
+                          onChange={(e) => setFormData({ ...formData, [fieldKey]: e.target.value })}
+                          placeholder={`Enter ${col.label}`}
+                          className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                          required={col.required}
+                        />
+                      )}
                     </div>
                   );
                 })}
                 
                 {/* Simplified Class Selection */}
-                {isBulkAttendanceEnabled && vendorClasses.length > 0 && (
+                {classField && vendorClasses.length > 0 && (
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-slate-700">
-                      Select Class
-                      <span className="text-red-500 ml-1">*</span>
+                      {classField.label || 'Select Class'}
+                      {classField.required && <span className="text-red-500 ml-1">*</span>}
                     </label>
                     <div className="relative">
                       <select
@@ -1135,9 +1128,12 @@ const People = () => {
                           const cid = e.target.value;
                           const sel = vendorClasses.find(c => String(c.id) === String(cid));
                           if (sel) {
+                            const classKey = normalizedFieldKey(classField);
+                            const classDisplayValue = sel.label || [sel.class_year, sel.branch, sel.division].filter(Boolean).join(' ');
                             setFormData(prev => ({ 
                               ...prev, 
                               class_id: cid,
+                              [classKey]: classDisplayValue,
                               class_year: sel.class_year,
                               division: sel.division,
                               branch: sel.branch,
@@ -1145,11 +1141,12 @@ const People = () => {
                               Department: sel.branch // Compatibility
                             }));
                           } else {
-                            setFormData(prev => ({ ...prev, class_id: '' }));
+                            const classKey = normalizedFieldKey(classField);
+                            setFormData(prev => ({ ...prev, class_id: '', [classKey]: '' }));
                           }
                         }}
                         className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                        required
+                        required={classField.required}
                       >
                         <option value="">-- Choose Class --</option>
                         {vendorClasses.map(c => (

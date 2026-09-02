@@ -3,7 +3,7 @@ import json
 import base64
 import numpy as np
 from datetime import datetime, timedelta
-from services.auth_service import authenticate_vendor_access, hash_password, verify_token
+from services.auth_service import authenticate_vendor_access, hash_password, verify_token, require_auth
 from services.face_service import _normalize_vec, _decode_data_uri_to_rgb
 from utils import get_db_connection, require_feature
 
@@ -670,13 +670,13 @@ def generate_student_logins():
             phone = row.get('phone') or ""
             if is_pg:
                 c.execute(
-                    "INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (%s, %s, %s, 'user', %s, %s)",
-                    (student_number, hash_password(phone), phone, vendor_id, row.get('id'))
+                    "INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (%s, %s, NULL, 'user', %s, %s)",
+                    (student_number, hash_password(phone), vendor_id, row.get('id'))
                 )
             else:
                 c.execute(
-                    "INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (?, ?, ?, 'user', ?, ?)",
-                    (student_number, hash_password(phone), phone, vendor_id, row.get('id'))
+                    "INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (?, ?, NULL, 'user', ?, ?)",
+                    (student_number, hash_password(phone), vendor_id, row.get('id'))
                 )
             created_count += 1
             
@@ -873,10 +873,9 @@ def student_change_password():
     conn = get_db_connection()
     c = conn.cursor()
     try:
-        # Update the password (hashed), store plain text for SuperAdmin visibility, and set flag
         c.execute(
-            "UPDATE system_users SET password = ?, password_plain = ?, has_set_password = 1 WHERE username = ?",
-            (hash_password(new_password), new_password, user_data['username'])
+            "UPDATE system_users SET password = ?, password_plain = NULL, has_set_password = 1 WHERE username = ?",
+            (hash_password(new_password), user_data['username'])
         )
         conn.commit()
         return jsonify({"status": "success", "message": "Password updated successfully"})
@@ -884,6 +883,7 @@ def student_change_password():
         conn.close()
 
 @leave_bp.route('/admin/vendors/<int:vendor_id>/student-logins', methods=['GET'])
+@require_auth(roles=['super_admin'])
 def get_vendor_student_logins(vendor_id):
     # This is for SuperAdmin to see student passwords
     conn = get_db_connection()
@@ -893,7 +893,7 @@ def get_vendor_student_logins(vendor_id):
         if is_pg:
             # PostgreSQL uses ->> operator for JSONB
             c.execute("""
-                SELECT u.username, u.password_plain, u.last_active_at, f.name, u.has_set_password
+                SELECT u.username, u.last_active_at, f.name, u.has_set_password
                 FROM system_users u
                 LEFT JOIN faces f ON (
                     LOWER(TRIM(f.custom_data::jsonb->>'student_id')) = LOWER(TRIM(u.username)) OR
@@ -904,7 +904,7 @@ def get_vendor_student_logins(vendor_id):
         else:
             # SQLite uses json_extract
             c.execute("""
-                SELECT u.username, u.password_plain, u.last_active_at, f.name, u.has_set_password
+                SELECT u.username, u.last_active_at, f.name, u.has_set_password
                 FROM system_users u
                 LEFT JOIN faces f ON (
                     LOWER(TRIM(json_extract(f.custom_data, '$.student_id'))) = LOWER(TRIM(u.username)) OR
@@ -919,7 +919,6 @@ def get_vendor_student_logins(vendor_id):
             r = get_row_dict(row)
             logins.append({
                 "username": r.get('username'),
-                "password_plain": r.get('password_plain'),
                 "last_login": r.get('last_active_at'),
                 "full_name": r.get('name') or "Unknown Student",
                 "status": "CHANGED" if r.get('has_set_password') == 1 else "DEFAULT"
@@ -932,13 +931,14 @@ def get_vendor_student_logins(vendor_id):
         conn.close()
 
 @leave_bp.route('/admin/vendors/<int:vendor_id>/faculty-logins', methods=['GET'])
+@require_auth(roles=['super_admin'])
 def get_vendor_faculty_logins(vendor_id):
     """SuperAdmin endpoint to view faculty credentials for a vendor."""
     conn = get_db_connection()
     c = conn.cursor()
     try:
         c.execute("""
-            SELECT username, password_plain, last_active_at, has_set_password
+            SELECT username, last_active_at, has_set_password
             FROM system_users
             WHERE vendor_id = ? AND role = 'faculty'
             ORDER BY username ASC
@@ -949,7 +949,6 @@ def get_vendor_faculty_logins(vendor_id):
             r = get_row_dict(row)
             logins.append({
                 "username": r.get('username'),
-                "password_plain": r.get('password_plain'),
                 "last_login": r.get('last_active_at'),
                 "status": "CHANGED" if r.get('has_set_password') == 1 else "DEFAULT"
             })
@@ -961,6 +960,7 @@ def get_vendor_faculty_logins(vendor_id):
 
 
 @leave_bp.route('/admin/vendors/<int:vendor_id>/parents', methods=['GET'])
+@require_auth(roles=['super_admin'])
 def get_vendor_parents(vendor_id):
     # This is for SuperAdmin to see registered parents
     conn = get_db_connection()

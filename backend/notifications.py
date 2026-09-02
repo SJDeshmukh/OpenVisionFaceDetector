@@ -233,7 +233,7 @@ def notify_parent_async(person_id, vendor_id, title: str, body: str, data: dict 
                 for pid in set(parent_ids):
                     socketio.emit("new_notification", payload, room=f"parent_{pid}")
                 for sn in set(student_numbers):
-                    socketio.emit("new_notification", payload, room=f"student_{sn}")
+                    socketio.emit("new_notification", payload, room=f"student_{vendor_id}_{sn}")
                 logger.info("Socket notification emitted to %d parents", len(parent_ids))
             except Exception as se:
                 logger.debug("Socket emission skipped/failed: %s", se)

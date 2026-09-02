@@ -3,10 +3,11 @@ import re
 import uuid
 import csv
 import io
+import secrets
 import pandas as pd
 from flask import Blueprint, request, jsonify, g
 from utils import get_db_connection, log_audit, vendor_has_feature
-from services.auth_service import require_auth
+from services.auth_service import require_auth, hash_password
 from openpyxl import load_workbook
 
 bulk_registration_bp = Blueprint('bulk_registration_bp', __name__)
@@ -19,9 +20,11 @@ def _fuzzy_match(header, targets):
     return False
 
 @bulk_registration_bp.route("/bulk-registration/upload", methods=["POST"])
-@require_auth()
+@require_auth(roles=['super_admin', 'vendor_admin', 'owner'])
 def bulk_registration_upload():
     vendor_id = g.vendor_id
+    if not vendor_id:
+        return jsonify({"error": "Select a business before uploading"}), 400
     if 'file' not in request.files:
         return jsonify({"error": "No file provided"}), 400
     
@@ -51,11 +54,15 @@ def bulk_registration_upload():
 
         # Optional Class Scope from request (Class-Specific Upload)
         req_class_id = request.form.get('class_id')
-        req_class_year = request.form.get('class_year')
-        req_division = request.form.get('division')
-        req_branch = request.form.get('branch')
+        req_class_year = None
+        req_division = None
+        req_branch = None
 
         headers = list(data[0].keys())
+        excel_class_id_key = next(
+            (h for h in headers if str(h).strip().lower().replace(' ', '_') == 'class_id'),
+            None,
+        )
 
         # Mapping Logic - Expanded for better auto-identification
         name_targets = ["name", "full name", "student name", "employee name", "person name", "first name"]
@@ -93,11 +100,24 @@ def bulk_registration_upload():
         conn = get_db_connection()
         c = conn.cursor()
 
+        # Treat class metadata from the browser as untrusted. Resolve the class
+        # exclusively inside the authenticated vendor before any preview/import
+        # data is processed.
+        if req_class_id:
+            c.execute(
+                "SELECT class_year, division, branch FROM classes WHERE id = ? AND vendor_id = ?",
+                (req_class_id, vendor_id),
+            )
+            class_row = c.fetchone()
+            if not class_row:
+                return jsonify({"error": "The selected class does not belong to this business"}), 400
+            req_class_year, req_division, req_branch = class_row[0], class_row[1], class_row[2]
+
         # Determine the correct custom_data key for student ID based on vendor vertical.
         # AttendX uses 'student_number'; TapInX / school / hostel use 'student_id'.
         c.execute("SELECT vertical FROM vendors WHERE id = ?", (vendor_id,))
         _vrow = c.fetchone()
-        _vendor_vertical = (_vrow[0] if isinstance(_vrow, (list, tuple)) else (_vrow.get('vertical') or '')) if _vrow else ''
+        _vendor_vertical = ((_vrow['vertical'] or '') if hasattr(_vrow, 'keys') else (_vrow[0] or '')) if _vrow else ''
         student_id_custom_key = 'student_number' if _vendor_vertical == 'bulk_attendance_attendx' else 'student_id'
 
         # Get features for automated login creation ("Inking")
@@ -120,15 +140,30 @@ def bulk_registration_upload():
             existing_fields = []
         else:
             existing_fields = json.loads(bulk_row[0] or '[]') if bulk_row else []
-        existing_keys = {f.get('name') for f in existing_fields}
-        new_fields = list(existing_fields)
-
         for row_idx, row in enumerate(data):
             try:
                 name = str(row.get(name_key) or "").strip()
                 if not name:
                     skipped_count += 1
                     continue
+
+                row_class_id = req_class_id
+                row_class_year = req_class_year
+                row_division = req_division
+                row_branch = req_branch
+                if not row_class_id and excel_class_id_key:
+                    row_class_id = str(row.get(excel_class_id_key) or '').strip()
+                    if row_class_id:
+                        c.execute(
+                            "SELECT class_year, division, branch FROM classes WHERE id = ? AND vendor_id = ?",
+                            (row_class_id, vendor_id),
+                        )
+                        row_class = c.fetchone()
+                        if not row_class:
+                            errors.append(f"Row {row_idx + 2}: class_id does not belong to this business")
+                            skipped_count += 1
+                            continue
+                        row_class_year, row_division, row_branch = row_class[0], row_class[1], row_class[2]
 
                 phone = str(row.get(phone_key) or "").strip()
 
@@ -138,10 +173,10 @@ def bulk_registration_upload():
                         "SELECT id FROM faces WHERE vendor_id = ? AND LOWER(name) = LOWER(?) AND phone = ?",
                         (vendor_id, name, phone)
                     )
-                elif req_class_id:
+                elif row_class_id:
                     c.execute(
                         "SELECT id FROM faces WHERE vendor_id = ? AND LOWER(name) = LOWER(?) AND json_extract(custom_data, '$.class_id') = ?",
-                        (vendor_id, name, req_class_id)
+                        (vendor_id, name, row_class_id)
                     )
                 else:
                     c.execute(
@@ -169,10 +204,10 @@ def bulk_registration_upload():
                         custom_dict[student_id_custom_key] = id_val
 
                 # Inject Class Scope if provided via Class Cards flow
-                if req_class_id: custom_dict['class_id'] = req_class_id
-                if req_class_year: custom_dict['class_year'] = req_class_year
-                if req_division: custom_dict['division'] = req_division
-                if req_branch: custom_dict['branch'] = req_branch
+                if row_class_id: custom_dict['class_id'] = str(row_class_id)
+                if row_class_year: custom_dict['class_year'] = row_class_year
+                if row_division: custom_dict['division'] = row_division
+                if row_branch: custom_dict['branch'] = row_branch
 
                 custom_data_str = json.dumps(custom_dict, separators=(',', ':'))
 
@@ -194,8 +229,8 @@ def bulk_registration_upload():
                     if not c.fetchone():
                         c.execute("""
                             INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id)
-                            VALUES (?, ?, ?, 'user', ?, ?)
-                        """, (student_id_val, phone, phone, vendor_id, person_id))
+                            VALUES (?, ?, NULL, 'user', ?, ?)
+                        """, (student_id_val, hash_password(phone), vendor_id, person_id))
 
                 success_count += 1
             except Exception as e:
@@ -206,19 +241,27 @@ def bulk_registration_upload():
         new_sync_fields = []
         
         for h in headers:
-            if h in [name_key, phone_key, id_key]:
-                continue # Skip core fields in custom config to avoid UI redundancy
-            
             field_name = str(h).strip()
-            # Preserve existing metadata if the label matches (case-insensitive)
-            existing_f = next((f for f in existing_fields if f.get('label', '').lower() == field_name.lower()), None)
-            
-            field_config = existing_f if existing_f else {
-                "name": field_name,
+            if not field_name:
+                continue
+            canonical_name = (
+                'name' if h == name_key else
+                'phone' if h == phone_key else
+                student_id_custom_key if h == id_key else
+                field_name
+            )
+            existing_f = next((f for f in existing_fields if str(f.get('label') or '').strip().lower() == field_name.lower() or str(f.get('name') or '').strip().lower() == canonical_name.lower()), None)
+
+            field_config = {
+                **(existing_f or {}),
+                "name": canonical_name,
                 "label": field_name, # Use EXACT label from Excel
-                "type": "text",
-                "required": False,
-                "default": False
+                "type": (existing_f or {}).get("type") or "text",
+                "required": bool((existing_f or {}).get("required", h == name_key)),
+                "default": False,
+                "is_name": h == name_key,
+                "is_phone": h == phone_key,
+                "is_id": h == id_key,
             }
                 
             new_sync_fields.append(field_config)
@@ -239,16 +282,25 @@ def bulk_registration_upload():
         new_reg_config = []
         for f in new_sync_fields:
             # Preserve existing manual tweaks if available
-            existing_reg = next((reg for reg in old_reg_config if reg.get('field') == f['name']), None)
+            existing_reg = next((reg for reg in old_reg_config if str(reg.get('field') or '').strip().lower() == str(f['name']).strip().lower() or str(reg.get('label') or '').strip().lower() == str(f['label']).strip().lower()), None)
             if existing_reg:
-                new_reg_config.append(existing_reg)
+                new_reg_config.append({
+                    **existing_reg,
+                    "field": f['name'],
+                    "label": f['label'],
+                    "type": existing_reg.get('type') or 'text',
+                    "enabled": True,
+                    "is_name": f.get('is_name', False),
+                    "is_phone": f.get('is_phone', False),
+                    "is_id": f.get('is_id', False),
+                })
             else:
                 new_reg_config.append({
                     "field": f['name'],
                     "label": f['label'],
                     "type": "text",
                     "enabled": True,
-                    "required": False,
+                    "required": bool(f.get('required', False)),
                     "is_name": f.get('is_name', False),
                     "is_phone": f.get('is_phone', False),
                     "is_id": f.get('is_id', False)
@@ -279,7 +331,7 @@ def bulk_registration_upload():
 EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')
 
 @bulk_registration_bp.route("/bulk-registration/faculty", methods=["POST"])
-@require_auth()
+@require_auth(roles=['super_admin', 'vendor_admin', 'owner'])
 def create_faculty_single():
     """Create a single faculty login account."""
     from services.auth_service import hash_password
@@ -290,7 +342,9 @@ def create_faculty_single():
     name = str(data.get('name') or '').strip()
     phone = str(data.get('phone') or '').strip()
     designation = str(data.get('designation') or '').strip() or 'Faculty'
-    password = str(data.get('password') or '1234').strip() or '1234'
+    password = str(data.get('password') or '').strip()
+    if len(password) < 8:
+        return jsonify({"error": "Password must contain at least 8 characters"}), 400
 
     if not email or not EMAIL_RE.match(email):
         return jsonify({"error": "A valid email address is required"}), 400
@@ -312,8 +366,8 @@ def create_faculty_single():
         hashed = hash_password(password)
         c.execute("""
             INSERT INTO system_users (username, password, password_plain, role, vendor_id, has_set_password, person_id)
-            VALUES (?, ?, ?, 'faculty', ?, 0, ?)
-        """, (email, hashed, password, vendor_id, person_id))
+            VALUES (?, ?, NULL, 'faculty', ?, 0, ?)
+        """, (email, hashed, vendor_id, person_id))
         conn.commit()
 
         log_audit('faculty_created_single', details={"email": email}, target_vendor_id=vendor_id)
@@ -325,7 +379,7 @@ def create_faculty_single():
 
 
 @bulk_registration_bp.route("/bulk-registration/upload-faculty", methods=["POST"])
-@require_auth()
+@require_auth(roles=['super_admin', 'vendor_admin', 'owner'])
 def bulk_registration_upload_faculty():
     """Extract faculty logins and metadata (Name, Phone, Designation) from Excel/CSV."""
     from services.auth_service import hash_password
@@ -399,9 +453,9 @@ def bulk_registration_upload_faculty():
 
         conn = get_db_connection()
         c = conn.cursor()
-        hashed_default = hash_password("1234")
         created = 0
         skipped = 0
+        temporary_credentials = []
 
         for item in emails_to_process:
             email = item['email']
@@ -424,10 +478,12 @@ def bulk_registration_upload_faculty():
             person_id = c.lastrowid
 
             # Create SystemUser
+            temporary_password = secrets.token_urlsafe(12)
             c.execute("""
                 INSERT INTO system_users (username, password, password_plain, role, vendor_id, has_set_password, person_id)
-                VALUES (?, ?, ?, 'faculty', ?, 0, ?)
-            """, (email, hashed_default, "1234", vendor_id, person_id))
+                VALUES (?, ?, NULL, 'faculty', ?, 0, ?)
+            """, (email, hash_password(temporary_password), vendor_id, person_id))
+            temporary_credentials.append({"email": email, "temporary_password": temporary_password})
             created += 1
 
         conn.commit()
@@ -439,7 +495,8 @@ def bulk_registration_upload_faculty():
             "success": True,
             "message": f"Created {created} faculty login(s). {skipped} already existed.",
             "created": created,
-            "skipped": skipped
+            "skipped": skipped,
+            "temporary_credentials": temporary_credentials
         })
 
     except Exception as e:
@@ -447,7 +504,7 @@ def bulk_registration_upload_faculty():
 
 
 @bulk_registration_bp.route("/bulk-registration/faculty-logins", methods=["GET"])
-@require_auth()
+@require_auth(roles=['super_admin', 'vendor_admin', 'owner'])
 def list_faculty_logins():
     """Vendor-scoped endpoint to list all faculty accounts with metadata."""
     vendor_id = g.vendor_id
@@ -456,7 +513,7 @@ def list_faculty_logins():
     try:
         # Join with faces to get Name, Phone, Designation
         c.execute("""
-            SELECT u.username, u.password_plain, u.last_active_at, u.has_set_password,
+            SELECT u.username, u.last_active_at, u.has_set_password,
                    f.name, f.phone, f.designation
             FROM system_users u
             LEFT JOIN faces f ON u.person_id = f.id
@@ -470,12 +527,11 @@ def list_faculty_logins():
                 r = dict(row)
             except Exception:
                 r = {
-                    "username": row[0], "password_plain": row[1], "last_active_at": row[2], 
-                    "has_set_password": row[3], "name": row[4], "phone": row[5], "designation": row[6]
+                    "username": row[0], "last_active_at": row[1],
+                    "has_set_password": row[2], "name": row[3], "phone": row[4], "designation": row[5]
                 }
             logins.append({
                 "email": r.get("username"),
-                "password_plain": r.get("password_plain"),
                 "last_login": r.get("last_active_at"),
                 "status": "CHANGED" if r.get("has_set_password") == 1 else "DEFAULT",
                 "name": r.get("name") or "",
@@ -528,7 +584,7 @@ def delete_faculty_login(username):
 
 
 @bulk_registration_bp.route("/bulk-registration/faculty/<username>", methods=["PUT"])
-@require_auth()
+@require_auth(roles=['super_admin', 'vendor_admin', 'owner'])
 def update_faculty_login(username):
     """Update metadata and password for a specific faculty login."""
     from services.auth_service import hash_password
@@ -556,9 +612,9 @@ def update_faculty_login(username):
             hashed_pw = hash_password(new_password)
             c.execute("""
                 UPDATE system_users 
-                SET password = ?, password_plain = ?, has_set_password = 1
+                SET password = ?, password_plain = NULL, has_set_password = 1
                 WHERE username = ? AND vendor_id = ?
-            """, (hashed_pw, new_password, username, vendor_id))
+            """, (hashed_pw, username, vendor_id))
         
         if new_email and new_email != username:
             # Check if new username is taken

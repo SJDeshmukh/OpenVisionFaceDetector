@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import axios from 'axios';
-import { Search, Trash2, UserCheck } from 'lucide-react';
+import { Search, Trash2 } from 'lucide-react';
 import { API_URL } from '../config';
 import { useSocket } from '../context/SocketContext';
 import { useAuth } from '../context/AuthContext';
@@ -11,9 +11,18 @@ const Users = () => {
   const [users, setUsers] = useState([]);
   const [search, setSearch] = useState('');
 
+  const fetchData = useCallback(async () => {
+    try {
+      const res = await axios.get(`${API_URL}/sync/download`);
+      setUsers(res.data.faces || []);
+    } catch (error) {
+      console.error("Error fetching users:", error);
+    }
+  }, []);
+
   useEffect(() => {
     fetchData();
-  }, []);
+  }, [fetchData]);
 
   useEffect(() => {
     if (!user || !socket) return;
@@ -26,19 +35,20 @@ const Users = () => {
     return () => {
       socket.off('persons_updated', handlePersonsUpdated);
     };
-  }, [user, socket]);
+  }, [fetchData, user, socket]);
 
-  const fetchData = async () => {
+  const deleteUser = async (person) => {
+    if (!person.id || !window.confirm(`Delete ${person.name || 'this user'}?`)) return;
     try {
-      const res = await axios.get(`${API_URL}/sync/download`);
-      setUsers(res.data.faces);
+      await axios.delete(`${API_URL}/sync/delete/id/${person.id}`);
+      setUsers((current) => current.filter((entry) => String(entry.id) !== String(person.id)));
     } catch (error) {
-      console.error("Error fetching users:", error);
+      console.error("Error deleting user:", error);
     }
   };
 
   const filteredUsers = users.filter(user => 
-    user.name.toLowerCase().includes(search.toLowerCase())
+    (user.name || '').toLowerCase().includes(search.toLowerCase())
   );
 
   return (
@@ -65,8 +75,8 @@ const Users = () => {
         </header>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-          {filteredUsers.map((user, idx) => (
-            <div key={idx} className="group bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-6 hover:bg-white/10 transition-all duration-300 relative overflow-hidden">
+          {filteredUsers.map((user) => (
+            <div key={user.id || user.local_uid || user.name} className="group bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-6 hover:bg-white/10 transition-all duration-300 relative overflow-hidden">
               <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-500 to-purple-500 opacity-0 group-hover:opacity-100 transition-opacity"></div>
               
               <div className="flex justify-center mb-6 relative">
@@ -84,13 +94,10 @@ const Users = () => {
 
               <div className="text-center">
                 <h3 className="text-lg font-semibold text-white mb-1">{user.name}</h3>
-                <p className="text-sm text-gray-400 mb-4">ID: {Math.random().toString(36).substr(2, 6).toUpperCase()}</p>
+                <p className="text-sm text-gray-400 mb-4">ID: {user.display_id || user.id || '—'}</p>
                 
                 <div className="flex justify-center space-x-2">
-                  <button className="p-2 rounded-lg bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white transition-colors">
-                    <UserCheck size={18} />
-                  </button>
-                  <button className="p-2 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 transition-colors">
+                  <button onClick={() => deleteUser(user)} aria-label={`Delete ${user.name || 'user'}`} className="p-2 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 transition-colors">
                     <Trash2 size={18} />
                   </button>
                 </div>

@@ -16,10 +16,13 @@ env/
 backend/.env
 .env
 *.env.local
+*.env.bak
+*.bak
 
 # Node
 node_modules/
 dist/
+web-dashboard/whatsapp_sessions/
 
 # Android
 *.apk
@@ -39,6 +42,11 @@ dump.rdb
 
 # Per-vendor metric learning projections (generated at runtime)
 backend/metric_models/
+backend/faces.db*
+backend/logs/
+backend/uploads/
+multiple_face_detection/backend/*.json
+multiple_face_detection/backend/*.sqlite*
 
 # Specific models to include
 !backend/standalone_live_mesh/3DDFA-V3/assets/net_recon.pth

@@ -1,5 +1,7 @@
 import os
 import sqlite3
+import importlib
+import sys
 import unittest
 from datetime import datetime
 
@@ -7,23 +9,31 @@ TEST_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'parent_clean
 if os.path.exists(TEST_DB):
     os.remove(TEST_DB)
 os.environ['DB_PATH'] = TEST_DB
-from app import app, init_db, migrate_faces_pk, serializer
+os.environ['SECRET_KEY'] = 'test-only-secret-key'
 
 class TestParentCleanup(unittest.TestCase):
     def setUp(self):
-        init_db()
-        migrate_faces_pk()
-        self.client = app.test_client()
+        os.environ['DB_PATH'] = TEST_DB
+        os.environ.pop('DATABASE_URL', None)
+        for module_name in list(sys.modules):
+            if module_name in {'app', 'db_factory', 'utils', 'socket_handlers', 'background_tasks'} or module_name.startswith(('routes.', 'services.auth_service', 'database.')):
+                sys.modules.pop(module_name, None)
+        app_module = importlib.import_module('app')
+        app_module.init_db()
+        self.client = app_module.app.test_client()
+        from services.auth_service import generate_token
         self.super_headers = {
-            "Authorization": f"Bearer {serializer.dumps({'username':'superadmin','role':'super_admin'})}",
+            "Authorization": f"Bearer {generate_token('superadmin', 'super_admin', None)}",
             "X-Vendor-ID": "1",
         }
         conn = sqlite3.connect(TEST_DB)
         c = conn.cursor()
-        c.execute("CREATE TABLE IF NOT EXISTS vendors (id INTEGER PRIMARY KEY AUTOINCREMENT, company_name TEXT, status TEXT DEFAULT 'active', web_login_enabled INTEGER DEFAULT 1, frontend_bundle_id TEXT, backend_service_id TEXT, registration_config TEXT, vertical TEXT, config TEXT)")
+        c.execute("CREATE TABLE IF NOT EXISTS vendors (id INTEGER PRIMARY KEY AUTOINCREMENT, company_name TEXT, status TEXT DEFAULT 'active', web_login_enabled INTEGER DEFAULT 1, frontend_bundle_id TEXT, backend_service_id TEXT, registration_config TEXT, vertical TEXT)")
         c.execute("CREATE TABLE IF NOT EXISTS subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, features TEXT DEFAULT '[]')")
-        c.execute("INSERT INTO vendors (id, company_name, status, web_login_enabled, frontend_bundle_id, backend_service_id, vertical, config) VALUES (?, ?, 'active', 1, 'attendance_payroll_ui', 'default_api', 'school', '{}')", (1, "Demo School"))
+        c.execute("CREATE TABLE IF NOT EXISTS system_users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password TEXT, role TEXT, vendor_id INTEGER)")
+        c.execute("INSERT INTO vendors (id, company_name, status, web_login_enabled, frontend_bundle_id, backend_service_id, vertical) VALUES (?, ?, 'active', 1, 'attendance_payroll_ui', 'default_api', 'school')", (1, "Demo School"))
         c.execute("INSERT INTO subscriptions (vendor_id, features) VALUES (?, ?)", (1, '["mobile_app","reports","payroll","shifts"]'))
+        c.execute("INSERT INTO system_users (username, password, role, vendor_id) VALUES (?, ?, ?, NULL)", ("superadmin", "unused", "super_admin"))
         conn.commit()
         conn.close()
 
@@ -32,7 +42,7 @@ class TestParentCleanup(unittest.TestCase):
             os.remove(TEST_DB)
 
     def _create_student(self, name="sudhanshu deshmukh", student_number="111", phone="9370449595"):
-        res = self.client.post('/api/sync/upload', json={
+        res = self.client.post('/api/sync/upload', headers=self.super_headers, json={
             "vendor_id": 1,
             "name": name,
             "phone": phone,

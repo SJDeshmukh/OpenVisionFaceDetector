@@ -1,5 +1,5 @@
 import os
-from flask import Blueprint, request, jsonify, make_response
+from flask import Blueprint, request, jsonify, make_response, g
 from datetime import datetime, date, timedelta
 from services.auth_service import authenticate_vendor_access, verify_password, generate_token, check_vendor_status, verify_token, hash_password, generate_token_with_claims, extract_token
 from middleware.handlers import rate_limit
@@ -24,7 +24,7 @@ def get_current_user():
     if error: return error
     
     auth_header = request.headers.get('Authorization')
-    token = extract_token(auth_header)
+    token = extract_token(auth_header) or request.cookies.get('token')
     data = verify_token(token)
     if not data:
         return jsonify({"error": "Invalid token"}), 401
@@ -54,6 +54,7 @@ def get_current_user():
     vendor_config = []
     vendor_vertical = None
     web_login_enabled = 1
+    company_id = None
     
     if vendor_id:
         c.execute("SELECT web_login_enabled, frontend_bundle_id, backend_service_id, registration_config, vertical FROM vendors WHERE id = ?", (vendor_id,))
@@ -74,6 +75,9 @@ def get_current_user():
                 features = json.loads(s_row[0])
             except (json.JSONDecodeError, ValueError):
                 features = []
+        c.execute("SELECT id FROM companies WHERE vendor_id = ? LIMIT 1", (vendor_id,))
+        company_row = c.fetchone()
+        company_id = company_row[0] if company_row else None
                 
     conn.close()
     
@@ -81,6 +85,7 @@ def get_current_user():
         "username": username,
         "role": user_dict['role'],
         "vendor_id": vendor_id,
+        "company_id": company_id,
         "person_id": user_dict.get('person_id'),
         "frontend_bundle_id": frontend_bundle_id,
         "backend_service_id": backend_service_id,
@@ -199,7 +204,7 @@ def login():
             
             face = c.fetchone()
             if face:
-                face_row = face if hasattr(face, 'keys') else dict(zip(['id', 'name', 'phone', 'vendor_id', 'custom_data'], face))
+                face_row = dict(face) if hasattr(face, 'keys') else dict(zip(['id', 'name', 'phone', 'vendor_id', 'custom_data'], face))
                 student_phone = face_row.get('phone')
                 
                 # FALLBACK: If phone column is empty, check custom_data for student_phone or phone
@@ -215,13 +220,13 @@ def login():
                     # SECURE HASHING: Hash the password being stored
                     if is_pg:
                         c.execute(
-                            "INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (%s, %s, %s, 'user', %s, %s)",
-                            (username, hash_password(password), password, face_row['vendor_id'], face_row['id'])
+                            "INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (%s, %s, NULL, 'user', %s, %s)",
+                            (username, hash_password(password), face_row['vendor_id'], face_row['id'])
                         )
                     else:
                         c.execute(
-                            "INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (?, ?, ?, 'user', ?, ?)",
-                            (username, hash_password(password), password, face_row['vendor_id'], face_row['id'])
+                            "INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (?, ?, NULL, 'user', ?, ?)",
+                            (username, hash_password(password), face_row['vendor_id'], face_row['id'])
                         )
                     conn.commit()
                     c.execute("SELECT * FROM system_users WHERE username = ?", (username,))
@@ -269,10 +274,7 @@ def login():
                     frow = cf.fetchone()
                     if frow:
                         stored_plain = frow[0]
-                        # Update the user record so we don't do this every time
-                        cf.execute("UPDATE system_users SET password_plain = ? WHERE username = ?", (stored_plain, username))
-                        conn_f.commit()
-                        logger.info(f"Restored missing password_plain for student {username}")
+                        logger.debug("Resolved legacy student default credential from face record")
                     conn_f.close()
             except Exception as e:
                 logger.error(f"Error restoring student plain password: {e}")
@@ -314,24 +316,10 @@ def login():
                 return jsonify({"error": "Invalid custom password"}), 401
         
         # 3. Fallback for non-modal cases (e.g. first login with mobile number)
-        elif password == stored_pw or (stored_plain and password == stored_plain):
-            pass_condition = True
         else:
             pass_condition = verify_password(password, stored_pw)
         
     if pass_condition:
-        try:
-            if user.get("password") == password:
-                # Password was plain text, migrate to hash
-                conn_u = get_db_connection()
-                cu = conn_u.cursor()
-                cu.execute("UPDATE system_users SET password = ?, password_plain = NULL WHERE username = ?", 
-                           (hash_password(password), username))
-                conn_u.commit()
-                conn_u.close()
-        except Exception as e:
-            logger.error(f"Migration error: {e}")
-            
         # Force password change for students and faculty on first login
         is_faculty = user.get('role') == 'faculty'
         if (is_student or is_faculty) and not has_set_password:
@@ -685,11 +673,7 @@ def register_user():
     from app import get_db_connection, socketio, is_testing, ALL_FEATURES
     caller_vendor_id, error = authenticate_vendor_access()
     if error: return error
-    auth_header = request.headers.get('Authorization')
-    token = auth_header.split(" ")[1]
-    
-    user_data = verify_token(token)
-    if user_data['role'] not in ['super_admin', 'vendor_admin', 'owner']:
+    if g.user_role not in ['super_admin', 'vendor_admin', 'admin', 'owner']:
         return jsonify({"error": "Access Denied: Admin or Owner privileges required"}), 403
     data = request.json
     username = data.get("username")
@@ -705,7 +689,7 @@ def register_user():
     try:
         c.execute(
             "INSERT INTO system_users (username, password, password_plain, role, vendor_id) VALUES (?, ?, ?, ?, ?)",
-            (username, hash_password(password), password, role, target_vendor_id),
+            (username, hash_password(password), None, role, target_vendor_id),
         )
         conn.commit()
         return jsonify({"status": "success", "message": "User created"})
@@ -994,16 +978,16 @@ def parent_login():
             c.execute("SELECT vertical, frontend_bundle_id FROM vendors WHERE id = ?", (actual_vendor_id,))
             vrow = c.fetchone()
             if vrow:
-                if isinstance(vrow, (list, tuple)):
+                if hasattr(vrow, 'keys'):
+                    vendor_vertical = vrow['vertical']
+                    frontend_bundle_id = vrow['frontend_bundle_id']
+                else:
                     vendor_vertical = vrow[0]
                     frontend_bundle_id = vrow[1] if len(vrow) > 1 else None
-                else:
-                    vendor_vertical = vrow.get('vertical')
-                    frontend_bundle_id = vrow.get('frontend_bundle_id')
             c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (actual_vendor_id,))
             srow = c.fetchone()
             if srow:
-                raw = srow[0] if isinstance(srow, (list, tuple)) else srow.get('features')
+                raw = srow['features'] if hasattr(srow, 'keys') else srow[0]
                 feats = json.loads(raw) if isinstance(raw, str) else (list(raw) if raw else [])
                 has_bulk_attendance = 'bulk_image_attendance' in feats
             if frontend_bundle_id == 'attendx_bulk_ui':
@@ -1432,6 +1416,7 @@ def logout():
         return jsonify({"error": str(e)}), 500
 @auth_bp.route("/student/verify-password", methods=["POST"])
 def verify_student_password():
+    from app import get_db_connection
     data = request.json
     username = data.get("username")
     password = data.get("password")
@@ -1541,8 +1526,8 @@ def reset_student_password_to_default():
         # 3. Reset password back to the mobile number
         hashed_pw = hash_password(phone)
         c.execute(
-            "UPDATE system_users SET password = ?, password_plain = ?, has_set_password = 0 WHERE username = ?", 
-            (hashed_pw, phone, username)
+            "UPDATE system_users SET password = ?, password_plain = NULL, has_set_password = 0 WHERE username = ?",
+            (hashed_pw, username)
         )
         conn.commit()
         

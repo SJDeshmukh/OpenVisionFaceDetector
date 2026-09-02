@@ -4,8 +4,7 @@ import android.content.Context;
 import android.graphics.Bitmap;
 import android.util.Log;
 
-import com.faceplugin.facesdk.FaceBox;
-import com.faceplugin.facesdk.FaceSDK;
+import com.ocp.facesdk.FaceBox;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -22,7 +21,7 @@ public class FaceRecognitionProcessor {
         List<FaceResult> results = new ArrayList<>();
         try {
             // FaceSDK detection
-            List<FaceBox> faceBoxes = FaceSDK.faceDetection(bitmap, null);
+            List<FaceBox> faceBoxes = FaceSDKWrapper.INSTANCE.faceDetection(bitmap, null);
             
             if (faceBoxes != null) {
                 for (FaceBox box : faceBoxes) {
@@ -53,18 +52,9 @@ public class FaceRecognitionProcessor {
 
         try {
             // Reconstruct FaceBox from FaceResult
-            FaceBox box = new FaceBox();
-            box.x1 = faceResult.x1;
-            box.y1 = faceResult.y1;
-            box.x2 = faceResult.x2;
-            box.y2 = faceResult.y2;
-            box.liveness = faceResult.liveness;
-            box.yaw = faceResult.yaw;
-            box.pitch = faceResult.pitch;
-            box.roll = faceResult.roll;
-
-            // Extract template
-            return FaceSDK.templateExtraction(bitmap, box);
+            List<FaceBox> boxes = FaceSDKWrapper.INSTANCE.faceDetection(bitmap, null);
+            if (boxes.isEmpty()) return null;
+            return FaceSDKWrapper.INSTANCE.templateExtraction(bitmap, boxes.get(0));
         } catch (Exception e) {
             e.printStackTrace();
             return null;
@@ -74,7 +64,7 @@ public class FaceRecognitionProcessor {
     public float compare(byte[] emb1, byte[] emb2) {
         if (emb1 == null || emb2 == null) return 0f;
         try {
-            return FaceSDK.similarityCalculation(emb1, emb2);
+            return FaceSDKWrapper.INSTANCE.similarityCalculation(emb1, emb2);
         } catch (Exception e) {
             e.printStackTrace();
             return 0f;

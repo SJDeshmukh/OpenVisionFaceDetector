@@ -907,8 +907,7 @@ const BulkImageAttendance = () => {
             {batchItems.map(item => (
               <div key={item.id} className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
                 <div className="relative bg-slate-100 h-64 sm:h-80 flex-shrink-0 flex items-center justify-center overflow-hidden">
-                  {true ? (
-                    <img
+                  <img
                       src={item.image ? (item.image.startsWith('data:') ? item.image : `data:image/jpeg;base64,${item.image}`) : `${API_URL}/class-batch/item-image/${item.id}?type=${item.status === 'done' ? 'annotated' : 'raw'}&token=${user?.token}&t=${Date.now()}`}
                       alt={`frame-seq-${item.seq}`}
                       className={`w-full h-full object-contain p-2 ${item.status !== 'done' ? 'opacity-70 blur-[1px]' : ''}`}
@@ -918,8 +917,7 @@ const BulkImageAttendance = () => {
                           e.target.src = `${API_URL}/class-batch/item-image/${item.id}?type=raw&token=${user?.token}&t=${Date.now()}`;
                         }
                       }}
-                    />
-                  ) : null}
+                  />
                   <div className={`absolute top-2 right-2 px-2 py-1 text-xs font-bold rounded-lg shadow-sm backdrop-blur border 
                     ${item.status === 'done' ? 'bg-emerald-500/90 text-white border-emerald-600' :
                       item.status === 'processing' ? 'bg-amber-500/90 text-white border-amber-600' :

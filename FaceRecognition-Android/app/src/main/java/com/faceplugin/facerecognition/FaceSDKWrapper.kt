@@ -19,6 +19,10 @@ object FaceSDKWrapper {
     var isInitialized: Boolean = false
         private set
 
+    @Volatile
+    var lastInitializationResult: Int = FaceSDK.SDK_NO_ACTIVATED
+        private set
+
     private val LICENSE = "Fqk7LKLbzfSCBor1Oidf0+aPu7OsAJgjxU5m6EQMP3WQ4JZ0Rt44C8T7auT27jjx9iwYmG/8l3TB\n" +
             "9MBZuaQKCKMiBvwu+JGfbyrQPrs0vyunAZplg0qUm3MUjz/ko1oJNDzh90jOvsdy8C+SGFWgLULQ\n" +
             "rA6K0dipo5B0v8uPXHkGliNVRuxdKg86iaGHpVzE9V+oqecdXqiuJyRloIqC+vWEYObQkJAocnwR\n" +
@@ -32,10 +36,18 @@ object FaceSDKWrapper {
     @Synchronized
     fun ensureInitialized(context: Context): Int {
         if (isInitialized) return FaceSDK.SDK_SUCCESS
+        val appContext = context.applicationContext
+        if (!hasRequiredModels(appContext.assets)) {
+            Log.e(TAG, "FaceSDK model assets are missing from the APK")
+            lastInitializationResult = FaceSDK.SDK_INIT_ERROR
+            return lastInitializationResult
+        }
+
         var ret = setActivation(LICENSE)
         if (ret == FaceSDK.SDK_SUCCESS) {
-            ret = init(context.assets)
+            ret = init(appContext.assets)
         }
+        lastInitializationResult = ret
         if (ret == FaceSDK.SDK_SUCCESS) {
             isInitialized = true
             Log.i(TAG, "FaceSDK initialized successfully")
@@ -45,11 +57,21 @@ object FaceSDKWrapper {
         return ret
     }
 
+    private fun hasRequiredModels(assets: AssetManager): Boolean {
+        return try {
+            val names = assets.list("data")?.toSet().orEmpty()
+            names.containsAll(setOf("detection.bin", "detection.param", "landmark.bin", "mfn.bin"))
+        } catch (t: Throwable) {
+            Log.e(TAG, "Unable to inspect FaceSDK model assets", t)
+            false
+        }
+    }
+
     fun setActivation(license: String): Int {
         return try {
             FaceSDK.setActivation(license)
-        } catch (e: Exception) {
-            Log.e(TAG, "Exception during setActivation", e)
+        } catch (e: Throwable) {
+            Log.e(TAG, "Unable to activate FaceSDK", e)
             FaceSDK.SDK_INIT_ERROR
         }
     }
@@ -57,8 +79,8 @@ object FaceSDKWrapper {
     fun init(assets: AssetManager): Int {
         return try {
             FaceSDK.init(assets)
-        } catch (e: Exception) {
-            Log.e(TAG, "Exception during init", e)
+        } catch (e: Throwable) {
+            Log.e(TAG, "Unable to load FaceSDK models/native libraries", e)
             FaceSDK.SDK_INIT_ERROR
         }
     }
@@ -76,7 +98,7 @@ object FaceSDKWrapper {
         return try {
             val result = FaceSDK.faceDetection(bitmap, param)
             result ?: emptyList()
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "Exception during faceDetection", e)
             emptyList()
         }
@@ -94,7 +116,7 @@ object FaceSDKWrapper {
         
         return try {
             FaceSDK.templateExtraction(bitmap, faceBox)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "Exception during templateExtraction", e)
             null
         }
@@ -116,7 +138,7 @@ object FaceSDKWrapper {
 
         return try {
             FaceSDK.similarityCalculation(templates1, templates2)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "Exception during similarityCalculation", e)
             0.0f
         }
@@ -126,7 +148,7 @@ object FaceSDKWrapper {
         if (yuv == null) return null
         return try {
             FaceSDK.yuv2Bitmap(yuv, width, height, mode)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "Exception during yuv2Bitmap", e)
             null
         }

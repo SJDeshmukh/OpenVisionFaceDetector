@@ -30,7 +30,6 @@ import androidx.core.content.ContextCompat;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.ocp.facesdk.FaceBox;
 import com.ocp.facesdk.FaceDetectionParam;
-import com.ocp.facesdk.FaceSDK;
 
 import java.nio.ByteBuffer;
 import java.util.List;
@@ -98,6 +97,7 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
     private ImageAnalysis imageAnalyzer  = null;
     private Camera camera         = null;
     private CameraSelector        cameraSelector = null;
+    private int activeLensFacing = CameraSelector.LENS_FACING_FRONT;
     private ProcessCameraProvider cameraProvider = null;
 
     private FaceView faceView;
@@ -135,6 +135,10 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
                 Map<String, List<String>> headers = new HashMap<>();
                 headers.put("ngrok-skip-browser-warning", Collections.singletonList("1"));
                 headers.put("User-Agent", Collections.singletonList("openvisionx-android"));
+                String socketToken = sharedPref.getString("token", null);
+                if (socketToken != null && !socketToken.isEmpty()) {
+                    headers.put("Authorization", Collections.singletonList("Bearer " + socketToken));
+                }
                 options.extraHeaders = headers;
                 if (serverUrl.endsWith("/")) serverUrl = serverUrl.substring(0, serverUrl.length() - 1);
                 
@@ -164,6 +168,12 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
         streamExecutorService = Executors.newFixedThreadPool(1); // Single thread for streaming
 
         tts = new TextToSpeech(this, this);
+
+        int sdkResult = FaceSDKWrapper.INSTANCE.ensureInitialized(getApplicationContext());
+        if (sdkResult != com.ocp.facesdk.FaceSDK.SDK_SUCCESS) {
+            Toast.makeText(this, "Face detection unavailable (SDK error " + sdkResult + ")", Toast.LENGTH_LONG).show();
+            return;
+        }
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
                 == PackageManager.PERMISSION_DENIED) {
@@ -236,6 +246,7 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
 
     private void setUpCamera()
     {
+        if (isFinishing() || !FaceSDKWrapper.INSTANCE.isInitialized()) return;
         ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(CameraActivity.this);
         cameraProviderFuture.addListener(() -> {
 
@@ -243,7 +254,11 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
             try {
                 cameraProvider = cameraProviderFuture.get();
             } catch (ExecutionException e) {
+                Log.e(TAG, "Unable to obtain CameraX provider", e);
+                return;
             } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
             }
 
             // Build and bind the camera use cases
@@ -257,7 +272,22 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
     {
         int rotation = viewFinder.getDisplay().getRotation();
 
-        cameraSelector = new CameraSelector.Builder().requireLensFacing(SettingsActivity.getCameraLens(this)).build();
+        int requestedLens = SettingsActivity.getCameraLens(this);
+        activeLensFacing = requestedLens;
+        cameraSelector = new CameraSelector.Builder().requireLensFacing(requestedLens).build();
+        try {
+            if (!cameraProvider.hasCamera(cameraSelector)) {
+                int fallbackLens = requestedLens == CameraSelector.LENS_FACING_FRONT
+                        ? CameraSelector.LENS_FACING_BACK : CameraSelector.LENS_FACING_FRONT;
+                CameraSelector fallback = new CameraSelector.Builder().requireLensFacing(fallbackLens).build();
+                if (cameraProvider.hasCamera(fallback)) {
+                    cameraSelector = fallback;
+                    activeLensFacing = fallbackLens;
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Unable to query camera availability", e);
+        }
 
         preview = new Preview.Builder()
                 .setTargetResolution(new Size(PREVIEW_WIDTH, PREVIEW_HEIGHT))
@@ -282,6 +312,7 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
 
             preview.setSurfaceProvider(viewFinder.getSurfaceProvider());
         } catch (Exception exc) {
+            Log.e(TAG, "Unable to bind camera use cases", exc);
         }
     }
 
@@ -430,7 +461,9 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
     @OptIn(markerClass = ExperimentalGetImage.class)
     private void analyzeImage(ImageProxy imageProxy)
     {
-        if(recognized == true) {
+        if (recognized) {
+            // CameraX requires every delivered frame to be closed. Leaving this
+            // frame open stalls the analyzer queue after a successful match.
             imageProxy.close();
             return;
         }
@@ -440,20 +473,17 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
         {
             Image image = imageProxy.getImage();
             if (image == null) {
-                imageProxy.close();
                 return;
             }
 
             byte[] nv21 = Utils.yuv420ToNv21(image);
 
             int rotationDegrees = imageProxy.getImageInfo().getRotationDegrees();
-            int lensFacing = SettingsActivity.getCameraLens(context);
-            int cameraMode = Utils.getCameraMode(rotationDegrees, lensFacing);
-            bitmap = FaceSDK.yuv2Bitmap(nv21, image.getWidth(), image.getHeight(), cameraMode);
+            int cameraMode = Utils.getCameraMode(rotationDegrees, activeLensFacing);
+            bitmap = FaceSDKWrapper.INSTANCE.yuv2Bitmap(nv21, image.getWidth(), image.getHeight(), cameraMode);
 
 
             if (bitmap == null) {
-                imageProxy.close();
                 return;
             }
 
@@ -468,7 +498,7 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
             FaceDetectionParam faceDetectionParam = new FaceDetectionParam();
             faceDetectionParam.check_liveness = true;
             faceDetectionParam.check_liveness_level = SettingsActivity.getLivenessLevel(this);
-            List<FaceBox> faceBoxes = FaceSDK.faceDetection(bitmap, faceDetectionParam);
+            List<FaceBox> faceBoxes = FaceSDKWrapper.INSTANCE.faceDetection(bitmap, faceDetectionParam);
 
             final Bitmap finalBitmap = bitmap;
             runOnUiThread(new Runnable() {
@@ -482,7 +512,8 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
             if(faceBoxes.size() > 0) {
                 FaceBox faceBox = faceBoxes.get(0);
                 if(faceBox.liveness > SettingsActivity.getLivenessThreshold(context)) {
-                    byte[] templates = FaceSDK.templateExtraction(bitmap, faceBox);
+                    byte[] templates = FaceSDKWrapper.INSTANCE.templateExtraction(bitmap, faceBox);
+                    if (templates == null || templates.length == 0) return;
 
                     float maxSimiarlity = 0;
                     Person maximiarlityPerson = null;
@@ -492,7 +523,7 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
                     if (currentPersonList != null) {
                         for(Person person : currentPersonList) {
                             if (person == null || person.templates == null) continue;
-                            float similarity = FaceSDK.similarityCalculation(templates, person.templates);
+                            float similarity = FaceSDKWrapper.INSTANCE.similarityCalculation(templates, person.templates);
                             if(similarity > maxSimiarlity) {
                                 maxSimiarlity = similarity;
                                 maximiarlityPerson = person;

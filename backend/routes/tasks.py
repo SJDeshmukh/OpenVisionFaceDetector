@@ -1,9 +1,11 @@
 from flask import Blueprint, jsonify
 from celery_app import celery
+from services.auth_service import require_auth
 
 tasks_bp = Blueprint('tasks_bp', __name__)
 
 @tasks_bp.route('/tasks/<task_id>', methods=['GET'])
+@require_auth()
 def get_status(task_id):
     if not celery:
         return jsonify({"state": "ERROR", "status": "Celery not initialized"}), 500

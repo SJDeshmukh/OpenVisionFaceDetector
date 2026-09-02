@@ -27,6 +27,7 @@ import android.content.Context
 import android.content.IntentFilter
 import android.os.Build
 import androidx.core.content.ContextCompat
+import androidx.preference.PreferenceManager
 import android.media.AudioManager
 import io.socket.client.IO
 import io.socket.client.Socket
@@ -427,6 +428,19 @@ class MainActivity : AppCompatActivity() {
                                 val match = Regex("""\d+""").find(s)
                                 val sec = match?.value?.toIntOrNull() ?: 30
                                 prefs.edit().putInt("cooldown_seconds", sec).apply()
+                            }
+                            if (body.has("threshold") && !body.get("threshold").isJsonNull) {
+                                val threshold = body.get("threshold").asString.toFloatOrNull()?.coerceIn(0.4f, 0.95f)
+                                if (threshold != null) {
+                                    PreferenceManager.getDefaultSharedPreferences(this@MainActivity)
+                                        .edit().putString("identify_threshold", threshold.toString()).apply()
+                                }
+                            }
+                            if (body.has("voice_greeting") && !body.get("voice_greeting").isJsonNull) {
+                                prefs.edit().putBoolean(
+                                    "voice_greeting_enabled",
+                                    body.get("voice_greeting").asString.equals("true", ignoreCase = true)
+                                ).apply()
                             }
                         }
                     } catch (_: Exception) {

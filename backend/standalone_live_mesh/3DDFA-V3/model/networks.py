@@ -12,8 +12,14 @@ try:
 except ImportError:
     from torch.utils.model_zoo import load_url as load_state_dict_from_url
 from typing import Type, Any, Callable, Union, List, Optional
-# from .arcface_torch.backbones import get_model
-# from kornia.geometry import warp_affine
+try:
+    from .arcface_torch.backbones import get_model
+except ImportError:
+    get_model = None
+try:
+    from kornia.geometry import warp_affine
+except ImportError:
+    warp_affine = None
 
 """Some code borrowed from https://github.com/sicxu/Deep3DFaceRecon_pytorch
 """
@@ -24,6 +30,8 @@ from .mb_v3_networks import recon_mobilenetv3_large
 def resize_n_crop(image, M, dsize=112):
     # image: (b, c, h, w)
     # M   :  (b, 2, 3)
+    if warp_affine is None:
+        raise RuntimeError("kornia is required for recognition alignment")
     return warp_affine(image, M, dsize=(dsize, dsize))
 
 def filter_state_dict(state_dict, remove_name='fc'):
@@ -110,6 +118,8 @@ class ReconNetWrapper(nn.Module):
 class RecogNetWrapper(nn.Module):
     def __init__(self, net_recog, pretrained_path=None, input_size=112):
         super(RecogNetWrapper, self).__init__()
+        if get_model is None:
+            raise RuntimeError("ArcFace recognition backbones are not installed")
         net = get_model(name=net_recog, fp16=False)
         if pretrained_path:
             state_dict = torch.load(pretrained_path, map_location='cpu')

@@ -19,11 +19,20 @@ const Faces = () => {
   const [classes, setClasses] = useState([]);
   const [selectedClass, setSelectedClass] = useState({ class_year: '', division: '', branch: '' });
   
-  const [batchId, setBatchId] = useState(() => localStorage.getItem('registration_batch_id') || '');
+  const [batchId, setBatchId] = useState('');
   const [batchItems, setBatchItems] = useState([]);
   const [registrationMode, setRegistrationMode] = useState(false);
   const [assignments, setAssignments] = useState({}); // itemId:faceIndex -> { name, student_number, ... }
   const [uploading, setUploading] = useState(false);
+
+  const batchStorageKey = user?.vendor_id ? `registration_batch_id_${user.vendor_id}` : null;
+
+  useEffect(() => {
+    setBatchId(batchStorageKey ? (localStorage.getItem(batchStorageKey) || '') : '');
+    setBatchItems([]);
+    setAssignments({});
+    setRegistrationMode(false);
+  }, [batchStorageKey]);
 
   useEffect(() => {
     const load = async () => {
@@ -75,7 +84,7 @@ const Faces = () => {
   useEffect(() => {
     let interval;
     const poll = async () => {
-      if (batchId && user?.token) {
+      if (batchId && user?.vendor_id) {
         try {
           const res = await axios.get(`${API_URL}/registration-batch/status?batch_id=${batchId}`, {
             headers: { Authorization: `Bearer ${user?.token}` }
@@ -83,7 +92,7 @@ const Faces = () => {
           setBatchItems(res.data?.items || []);
         } catch (e) {
           if (e.response?.status === 404) {
-            localStorage.removeItem('registration_batch_id');
+            if (batchStorageKey) localStorage.removeItem(batchStorageKey);
             setBatchId('');
           }
         }
@@ -95,7 +104,7 @@ const Faces = () => {
       interval = setInterval(poll, 3000);
     }
     return () => clearInterval(interval);
-  }, [batchId, user?.token]);
+  }, [batchId, batchStorageKey, user?.vendor_id]);
 
   const dynamicKeys = useMemo(() => {
     const keys = new Set();
@@ -162,7 +171,7 @@ const Faces = () => {
         });
         currentBatchId = startRes.data.batch_id;
         setBatchId(currentBatchId);
-        localStorage.setItem('registration_batch_id', currentBatchId);
+        if (batchStorageKey) localStorage.setItem(batchStorageKey, currentBatchId);
       }
 
       const fd = new FormData();
@@ -225,14 +234,14 @@ const Faces = () => {
         });
       } catch (_) {}
     }
-    localStorage.removeItem('registration_batch_id');
+    if (batchStorageKey) localStorage.removeItem(batchStorageKey);
     setBatchId('');
     setBatchItems([]);
     setRegistrationMode(false);
     setAssignments({});
   };
 
-  const useSuggestion = (assignmentKey, sug) => {
+  const applySuggestion = (assignmentKey, sug) => {
     setAssignments(prev => ({
       ...prev,
       [assignmentKey]: {
@@ -452,7 +461,7 @@ const Faces = () => {
                                       />
                                       {(!currentAssign.name) && (
                                         <button 
-                                          onClick={() => useSuggestion(assignmentKey, topSug)}
+                                          onClick={() => applySuggestion(assignmentKey, topSug)}
                                           className="absolute inset-0 bg-emerald-600/80 text-white flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity rounded-lg"
                                         >
                                           <Check size={24} />
@@ -542,7 +551,7 @@ const Faces = () => {
                                   {f.suggestions.slice(1).map((s, si) => (
                                     <button 
                                       key={si}
-                                      onClick={() => useSuggestion(assignmentKey, s)}
+                                      onClick={() => applySuggestion(assignmentKey, s)}
                                       className="flex items-center gap-2 p-1.5 bg-white border border-slate-200 rounded-lg hover:border-indigo-300 transition-all group"
                                     >
                                       <img src={s.face_image} alt="alt" className="w-6 h-6 rounded object-cover" />

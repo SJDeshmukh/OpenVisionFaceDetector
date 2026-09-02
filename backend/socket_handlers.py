@@ -14,97 +14,139 @@ from services.auth_service import verify_token
 latest_frames = {}
 client_counts = {}
 device_status = {}
+socket_identities = {}
+MAX_STREAM_FRAME_CHARS = 8_000_000
+
+def _socket_token(auth=None, data=None):
+    if isinstance(auth, dict) and auth.get('token'):
+        return str(auth['token'])
+    if isinstance(data, dict) and data.get('token'):
+        return str(data['token'])
+    header = request.headers.get('Authorization', '')
+    parts = header.strip().split()
+    if len(parts) == 2 and parts[0].lower() in ('bearer', 'token'):
+        return parts[1]
+    return request.args.get('token') or request.cookies.get('token')
+
+def _resolve_socket_identity(auth=None, data=None):
+    token = _socket_token(auth, data)
+    payload = verify_token(token) if token else None
+    if not payload or not payload.get('username'):
+        return None
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT vendor_id, role FROM system_users WHERE username = ?", (payload['username'],))
+        row = c.fetchone()
+        parent_id = None
+        if not row and payload.get('role') == 'parent':
+            c.execute("SELECT vendor_id, id FROM parent_users WHERE username = ?", (payload['username'],))
+            parent = c.fetchone()
+            if parent:
+                row = (parent[0], 'parent')
+                parent_id = parent[1]
+        if not row:
+            return None
+        vendor_id = row['vendor_id'] if hasattr(row, 'keys') else row[0]
+        role = row['role'] if hasattr(row, 'keys') else row[1]
+        if payload.get('platform') in ('mobile', 'kiosk') or role == 'faculty':
+            c.execute("SELECT 1 FROM active_sessions WHERE token = ? LIMIT 1", (token,))
+            if not c.fetchone():
+                return None
+        return {'username': payload['username'], 'role': role, 'vendor_id': vendor_id, 'parent_id': parent_id}
+    except Exception:
+        return None
+    finally:
+        conn.close()
+
+def _socket_identity(data=None):
+    identity = socket_identities.get(request.sid)
+    if identity is None:
+        identity = _resolve_socket_identity(data=data)
+        if identity:
+            socket_identities[request.sid] = identity
+    return identity
 
 def register_socket_handlers(socketio):
+    @socketio.on('connect')
+    def handle_connect(auth=None):
+        identity = _resolve_socket_identity(auth=auth)
+        if identity is None:
+            return False
+        socket_identities[request.sid] = identity
+        return True
+
+    @socketio.on('disconnect')
+    def handle_disconnect(reason=None):
+        socket_identities.pop(request.sid, None)
+
     @socketio.on('join_super_admin')
     def handle_join_super_admin():
-        try:
-            join_room('super_admin')
-            return {'status': 'joined', 'room': 'super_admin'}
-        except Exception as e:
-            return {'error': str(e)}, 500
+        identity = _socket_identity()
+        if not identity or identity['role'] != 'super_admin':
+            return {'error': 'forbidden'}, 403
+        join_room('super_admin')
+        return {'status': 'joined', 'room': 'super_admin'}
 
     @socketio.on('join_vendor')
     def handle_join_vendor(data=None):
-        try:
-            vendor_id = None
-            if data and isinstance(data, dict):
-                vendor_id = data.get('vendor_id')
-            if not vendor_id:
-                auth_header = request.headers.get('Authorization')
-                if auth_header:
-                    try:
-                        token = auth_header.split(" ")[1]
-                        user_data = verify_token(token)
-                        if user_data:
-                            conn = get_db_connection()
-                            c = conn.cursor()
-                            c.execute("SELECT vendor_id FROM system_users WHERE username = ?", (user_data['username'],))
-                            row = c.fetchone()
-                            conn.close()
-                            vendor_id = row[0] if row else None
-                    except Exception:
-                        pass
-            if not vendor_id:
-                return {'error': 'vendor_id required'}, 400
-            join_room(f"vendor_{vendor_id}")
-            return {'status': 'joined', 'room': f'vendor_{vendor_id}'}
-        except Exception as e:
-            return {'error': str(e)}, 500
+        identity = _socket_identity(data)
+        if not identity:
+            return {'error': 'unauthorized'}, 401
+        requested = (data or {}).get('vendor_id')
+        vendor_id = requested if identity['role'] == 'super_admin' and requested else identity['vendor_id']
+        if vendor_id is None:
+            return {'error': 'vendor_id required'}, 400
+        if identity['role'] != 'super_admin' and requested is not None and str(requested) != str(vendor_id):
+            return {'error': 'forbidden'}, 403
+        join_room(f"vendor_{vendor_id}")
+        return {'status': 'joined', 'room': f'vendor_{vendor_id}'}
 
     @socketio.on('join_stream')
     def handle_join_stream(data=None):
-        try:
-            vendor_id = None
-            if data and isinstance(data, dict):
-                vendor_id = data.get('vendor_id')
-            if vendor_id is None:
-                return {'error': 'vendor_id required'}, 400
-            try:
-                vendor_id = int(vendor_id)
-            except Exception:
-                return {'error': 'invalid vendor_id'}, 400
-            join_room(f"stream_{vendor_id}")
-            return {'status': 'joined', 'room': f"stream_{vendor_id}"}
-        except Exception as e:
-            return {'error': str(e)}, 500
+        identity = _socket_identity(data)
+        if not identity:
+            return {'error': 'unauthorized'}, 401
+        requested = (data or {}).get('vendor_id')
+        vendor_id = requested if identity['role'] == 'super_admin' and requested else identity['vendor_id']
+        if vendor_id is None or (identity['role'] != 'super_admin' and requested is not None and str(requested) != str(vendor_id)):
+            return {'error': 'forbidden'}, 403
+        join_room(f"stream_{vendor_id}")
+        return {'status': 'joined', 'room': f"stream_{vendor_id}"}
 
     @socketio.on('leave_stream')
     def handle_leave_stream(data=None):
-        try:
-            vendor_id = None
-            if data and isinstance(data, dict):
-                vendor_id = data.get('vendor_id')
-            if vendor_id is None:
-                return {'error': 'vendor_id required'}, 400
-            try:
-                vendor_id = int(vendor_id)
-            except Exception:
-                return {'error': 'invalid vendor_id'}, 400
-            leave_room(f"stream_{vendor_id}")
-            return {'status': 'left', 'room': f"stream_{vendor_id}"}
-        except Exception as e:
-            return {'error': str(e)}, 500
+        identity = _socket_identity(data)
+        if not identity:
+            return {'error': 'unauthorized'}, 401
+        requested = (data or {}).get('vendor_id')
+        vendor_id = requested if identity['role'] == 'super_admin' and requested else identity['vendor_id']
+        if vendor_id is None or (identity['role'] != 'super_admin' and requested is not None and str(requested) != str(vendor_id)):
+            return {'error': 'forbidden'}, 403
+        leave_room(f"stream_{vendor_id}")
+        return {'status': 'left', 'room': f"stream_{vendor_id}"}
 
     @socketio.on('stream_frame')
     def handle_stream_frame(data=None):
         try:
+            identity = _socket_identity(data)
+            if not identity:
+                return {'error': 'unauthorized'}, 401
             if not data or not isinstance(data, dict):
                 return {'error': 'invalid payload'}, 400
             image_data = data.get('image')
-            if not image_data:
+            if not isinstance(image_data, str) or not image_data:
                 return {'error': 'image required'}, 400
+            if len(image_data) > MAX_STREAM_FRAME_CHARS:
+                return {'error': 'image payload too large'}, 413
 
-            vendor_id = data.get('vendor_id')
+            requested_vendor_id = data.get('vendor_id')
+            vendor_id = requested_vendor_id if identity['role'] == 'super_admin' and requested_vendor_id else identity['vendor_id']
+            if vendor_id is None or (identity['role'] != 'super_admin' and requested_vendor_id is not None and str(requested_vendor_id) != str(vendor_id)):
+                return {'error': 'forbidden'}, 403
             device_id = data.get('device_id') or 'default'
             device_name = data.get('device_name') or f"Device {device_id}"
-
-            try:
-                vendor_id = int(vendor_id) if vendor_id is not None else 1
-            except Exception:
-                vendor_id = 1
-            if vendor_id <= 0:
-                vendor_id = 1
+            vendor_id = int(vendor_id)
 
             if vendor_id not in latest_frames:
                 latest_frames[vendor_id] = {}
@@ -126,80 +168,71 @@ def register_socket_handlers(socketio):
             socketio.emit('frame_update', payload, room=f"vendor_{vendor_id}")
             socketio.emit('frame_update', payload, room='super_admin')
             return {'status': 'ok'}
-        except Exception as e:
-            return {'error': str(e)}, 500
+        except Exception:
+            return {'error': 'unable to process frame'}, 500
 
     @socketio.on('webrtc_signal')
     def handle_webrtc_signal(data=None):
-        try:
-            if not data or not isinstance(data, dict):
-                return {'error': 'invalid payload'}, 400
-            target_room = data.get('target_room')
-            if not target_room:
-                 return {'error': 'target_room required'}, 400
-            socketio.emit('webrtc_signal', data, room=target_room)
-            return {'status': 'ok'}
-        except Exception as e:
-            return {'error': str(e)}, 500
+        identity = _socket_identity(data)
+        if not identity or not isinstance(data, dict):
+            return {'error': 'unauthorized'}, 401
+        target_room = str(data.get('target_room') or '')
+        allowed = {'super_admin'} if identity['role'] != 'super_admin' else set()
+        if identity['vendor_id'] is not None:
+            allowed.update({f"vendor_{identity['vendor_id']}", f"stream_{identity['vendor_id']}"})
+        if identity['role'] != 'super_admin' and target_room not in allowed:
+            return {'error': 'forbidden'}, 403
+        if identity['role'] == 'super_admin' and not (target_room == 'super_admin' or target_room.startswith(('vendor_', 'stream_'))):
+            return {'error': 'forbidden'}, 403
+        socketio.emit('webrtc_signal', data, room=target_room)
+        return {'status': 'ok'}
 
     @socketio.on('join_parent')
     def handle_join_parent(data=None):
-        try:
-            parent_id = None
-            if data and isinstance(data, dict):
-                parent_id = data.get('parent_id')
-            if not parent_id:
-                auth_header = request.headers.get('Authorization')
-                if auth_header:
-                    try:
-                        token = auth_header.split(" ")[1]
-                        user_data = verify_token(token)
-                        if user_data and user_data.get('role') == 'parent':
-                            conn = get_db_connection()
-                            c = conn.cursor()
-                            c.execute("SELECT id FROM parent_users WHERE username = ?", (user_data['username'],))
-                            row = c.fetchone()
-                            conn.close()
-                            parent_id = row[0] if row else None
-                    except Exception:
-                        pass
-            if not parent_id:
-                return {'error': 'parent_id required'}, 400
-            join_room(f"parent_{parent_id}")
-            return {'status': 'joined', 'room': f'parent_{parent_id}'}
-        except Exception as e:
-            return {'error': str(e)}, 500
+        identity = _socket_identity(data)
+        if not identity or identity['role'] != 'parent' or not identity.get('parent_id'):
+            return {'error': 'forbidden'}, 403
+        parent_id = identity['parent_id']
+        join_room(f"parent_{parent_id}")
+        return {'status': 'joined', 'room': f'parent_{parent_id}'}
 
     @socketio.on('join_student_number')
     def handle_join_student_number(data=None):
         try:
+            identity = _socket_identity(data)
+            if not identity or identity.get('vendor_id') is None:
+                return {'error': 'unauthorized'}, 401
             student_number = None
             if data and isinstance(data, dict):
                 student_number = str(data.get('student_number') or '').strip()
             if not student_number:
                 return {'error': 'student_number required'}, 400
-            join_room(f"student_{student_number}")
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("SELECT custom_data FROM faces WHERE vendor_id = ? AND custom_data IS NOT NULL", (identity['vendor_id'],))
+            found = False
+            for row in c.fetchall():
+                try:
+                    raw = row['custom_data'] if hasattr(row, 'keys') else row[0]
+                    custom = json.loads(raw or '{}')
+                    candidate = str(custom.get('student_number') or custom.get('roll_number') or custom.get('admission_number') or custom.get('student_id') or '').strip()
+                    if candidate == student_number:
+                        found = True
+                        break
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+            conn.close()
+            if not found:
+                return {'error': 'student not found'}, 404
+            join_room(f"student_{identity['vendor_id']}_{student_number}")
             try:
                 fcm_token = None
-                vendor_id = None
+                vendor_id = identity['vendor_id']
                 if data and isinstance(data, dict):
                     fcm_token = str(data.get('fcm_token') or '').strip()
-                    vendor_id = data.get('vendor_id')
                 if fcm_token:
                     conn = get_db_connection()
                     c = conn.cursor()
-                    if not vendor_id:
-                        c.execute("SELECT vendor_id, custom_data FROM faces WHERE custom_data IS NOT NULL")
-                        rows = c.fetchall()
-                        for r in rows:
-                            try:
-                                cd = json.loads(r[1])
-                                sn = str(cd.get('student_number') or cd.get('roll_number') or cd.get('admission_number') or '').strip()
-                                if sn == student_number:
-                                    vendor_id = r[0]
-                                    break
-                            except Exception:
-                                pass
                     c.execute("""CREATE TABLE IF NOT EXISTS parent_tokens
                                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                                   vendor_id INTEGER,
@@ -215,9 +248,9 @@ def register_socket_handlers(socketio):
                     conn.close()
             except Exception:
                 pass
-            return {'status': 'joined', 'room': f'student_{student_number}'}
-        except Exception as e:
-            return {'error': str(e)}, 500
+            return {'status': 'joined', 'room': f'student_{identity["vendor_id"]}_{student_number}'}
+        except Exception:
+            return {'error': 'unable to join student channel'}, 500
 
 def start_socket_background_tasks(socketio):
     """Background tasks for Socket.IO that need the socketio instance."""

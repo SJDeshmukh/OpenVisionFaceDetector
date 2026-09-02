@@ -11,7 +11,7 @@ export const SocketProvider = ({ children }) => {
   const [toastMsg, setToastMsg] = useState(null);
 
   useEffect(() => {
-    if (!user || !user.token) {
+    if (!user) {
       if (socket) {
         socket.disconnect();
         setSocket(null);
@@ -24,7 +24,7 @@ export const SocketProvider = ({ children }) => {
       path: '/socket.io/',
       withCredentials: true,
       reconnectionAttempts: 5,
-      query: {}
+      auth: {}
     });
     setSocket(s);
 

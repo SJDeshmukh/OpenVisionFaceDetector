@@ -96,6 +96,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     private ImageAnalysis imageAnalyzer = null;
     private Camera camera = null;
     private CameraSelector cameraSelector = null;
+    private int activeLensFacing = CameraSelector.LENS_FACING_FRONT;
     private ProcessCameraProvider cameraProvider = null;
 
     private FaceView faceView;
@@ -166,6 +167,10 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 options.reconnection = true;
                 Map<String, List<String>> headers = new HashMap<>();
                 headers.put("User-Agent", Collections.singletonList("openvisionx-android"));
+                String socketToken = sharedPref.getString("token", null);
+                if (socketToken != null && !socketToken.isEmpty()) {
+                    headers.put("Authorization", Collections.singletonList("Bearer " + socketToken));
+                }
                 options.extraHeaders = headers;
                 if (serverUrl.endsWith("/")) serverUrl = serverUrl.substring(0, serverUrl.length() - 1);
                 mSocket = IO.socket(serverUrl, options);
@@ -217,21 +222,16 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         streamExecutorService = Executors.newSingleThreadExecutor();
         tts = new TextToSpeech(requireContext(), this);
 
-        if (ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.CAMERA)
-                == PackageManager.PERMISSION_DENIED) {
-            requestPermissions(new String[]{Manifest.permission.CAMERA}, 1);
-        } else {
-            viewFinder.post(this::setUpCamera);
-        }
-
         highPerformanceMode = SettingsActivity.isHighPerformanceMode(requireContext());
         if (faceView != null) {
             faceView.setMeshEnabled(false);
         }
 
         // Ensure FaceSDK is initialised — retry here in case Application.onCreate failed
-        if (!FaceSDKWrapper.INSTANCE.isInitialized()) {
+        boolean sdkReady = FaceSDKWrapper.INSTANCE.isInitialized();
+        if (!sdkReady) {
             int sdkRet = FaceSDKWrapper.INSTANCE.ensureInitialized(requireContext().getApplicationContext());
+            sdkReady = sdkRet == com.ocp.facesdk.FaceSDK.SDK_SUCCESS;
             if (sdkRet != com.ocp.facesdk.FaceSDK.SDK_SUCCESS) {
                 String errMsg = getSdkErrorMessage(sdkRet);
                 Log.e(TAG, "FaceSDK init failed in fragment: " + sdkRet + " — " + errMsg);
@@ -239,6 +239,15 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                     statusText.setText("⚠ Face detection unavailable\n" + errMsg);
                     statusText.setTextColor(android.graphics.Color.parseColor("#FF5555"));
                 }
+            }
+        }
+
+        if (sdkReady) {
+            if (ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.CAMERA)
+                    != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{Manifest.permission.CAMERA}, 1);
+            } else {
+                viewFinder.post(this::setUpCamera);
             }
         }
 
@@ -393,13 +402,17 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     }
 
     private void setUpCamera() {
+        if (!isAdded() || viewFinder == null || !FaceSDKWrapper.INSTANCE.isInitialized()) return;
         ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(requireContext());
         cameraProviderFuture.addListener(() -> {
             try {
                 cameraProvider = cameraProviderFuture.get();
                 bindCameraUseCases();
-            } catch (ExecutionException | InterruptedException e) {
-                e.printStackTrace();
+            } catch (ExecutionException e) {
+                Log.e(TAG, "Unable to obtain CameraX provider", e);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                Log.e(TAG, "Interrupted while obtaining CameraX provider", e);
             }
         }, ContextCompat.getMainExecutor(requireContext()));
     }
@@ -409,7 +422,22 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         int rotation = viewFinder.getDisplay().getRotation();
         Size targetSize = Utils.getOptimalResolution(requireContext());
 
-        cameraSelector = new CameraSelector.Builder().requireLensFacing(SettingsActivity.getCameraLens(requireContext())).build();
+        int requestedLens = SettingsActivity.getCameraLens(requireContext());
+        activeLensFacing = requestedLens;
+        cameraSelector = new CameraSelector.Builder().requireLensFacing(requestedLens).build();
+        try {
+            if (!cameraProvider.hasCamera(cameraSelector)) {
+                int fallbackLens = requestedLens == CameraSelector.LENS_FACING_FRONT
+                        ? CameraSelector.LENS_FACING_BACK : CameraSelector.LENS_FACING_FRONT;
+                CameraSelector fallback = new CameraSelector.Builder().requireLensFacing(fallbackLens).build();
+                if (cameraProvider.hasCamera(fallback)) {
+                    cameraSelector = fallback;
+                    activeLensFacing = fallbackLens;
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Unable to query camera availability; using configured lens", e);
+        }
 
         preview = new Preview.Builder()
                 .setTargetResolution(targetSize)
@@ -432,7 +460,8 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
 
             preview.setSurfaceProvider(viewFinder.getSurfaceProvider());
         } catch (Exception exc) {
-            exc.printStackTrace();
+            Log.e(TAG, "Unable to bind camera use cases", exc);
+            if (statusText != null) statusText.setText("Camera unavailable — close other camera apps and retry");
         }
     }
 
@@ -472,6 +501,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                     String predicted = dbManager.predictNextAttendanceStatus(resolvedBackendId, localUid, name);
                     dbManager.insertAttendanceQueue(resolvedBackendId, localUid, name, timestamp, predicted, bitmap, false);
                     playAttendanceSound(predicted);
+                    speakAttendanceGreeting(name, predicted);
                     showStatusOverlay(predicted);
                     showAttendanceToast(name, predicted);
                     if (getActivity() != null) {
@@ -524,6 +554,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         if (getActivity() != null) {
             getActivity().runOnUiThread(() -> {
                 playAttendanceSound(optimisticStatus);
+                speakAttendanceGreeting(name, optimisticStatus);
                 showStatusOverlay(optimisticStatus);
                 showAttendanceToast(name, optimisticStatus);
                 if (statusText != null) statusText.setText(name + " " + optimisticStatus);
@@ -624,6 +655,17 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 e.printStackTrace();
             }
         }).start();
+    }
+
+    private void speakAttendanceGreeting(String name, String status) {
+        try {
+            android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
+            if (!prefs.getBoolean("voice_greeting_enabled", true) || tts == null) return;
+            String greeting = "CHECK_OUT".equalsIgnoreCase(status)
+                    ? "Goodbye " + name
+                    : "Welcome " + name;
+            tts.speak(greeting, TextToSpeech.QUEUE_FLUSH, null, "attendance_greeting");
+        } catch (Exception ignored) {}
     }
 
     private void showStatusOverlay(String status) {
@@ -895,7 +937,6 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         try {
             android.media.Image inputMediaImage = imageProxy.getImage();
             if (inputMediaImage == null) {
-                imageProxy.close();
                 return;
             }
 
@@ -903,8 +944,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             byte[] nv21 = Utils.yuv420ToNv21(inputMediaImage);
 
             int rotationDegrees = imageProxy.getImageInfo().getRotationDegrees();
-            int lensFacing = SettingsActivity.getCameraLens(requireContext());
-            int cameraMode = Utils.getCameraMode(rotationDegrees, lensFacing);
+            int cameraMode = Utils.getCameraMode(rotationDegrees, activeLensFacing);
 
             // Diagnostic logging for Redmi/OEM troubleshooting
             if (frameCounter % 60 == 0) {
@@ -915,7 +955,6 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             processedFrameBitmap = FaceSDKWrapper.INSTANCE.yuv2Bitmap(nv21, inputMediaImage.getWidth(), inputMediaImage.getHeight(), cameraMode);
 
             if (processedFrameBitmap == null) {
-                imageProxy.close();
                 return;
             }
 
@@ -931,7 +970,6 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
 
             // Grace period check (e.g. 3 seconds after resume)
             if (currentTime - resumeTime < 3000) {
-                 imageProxy.close();
                  return;
             }
 
@@ -980,7 +1018,6 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             // --- Performance Optimization: Frame Skipping ---
             frameCounter++;
             if (highPerformanceMode && frameCounter % 3 != 0 && faceBoxes.size() > 0) {
-                imageProxy.close();
                 return;
             }
             // ------------------------------------------------
@@ -1038,21 +1075,19 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                         float maxSimilarityForBox = 0f;
                         Person bestForBox = null;
                         if (templates != null) {
-                            // Step 1 Optimization: Use parallel stream for O(N) linear scan on multicore CPUs
-                            // This provides a 4x-8x speedup on typical mobile devices for large databases.
-                            final byte[] finalTemplates = templates;
-                            Person match = DBManager.personList.parallelStream()
-                                    .map(p -> new android.util.Pair<>(p, FaceSDKWrapper.INSTANCE.similarityCalculation(finalTemplates, p.templates)))
-                                    .filter(p -> p.second > finalIdentifyThreshold)
-                                    .max(java.util.Comparator.comparing(p -> p.second))
-                                    .map(p -> p.first)
-                                    .orElse(null);
-
-                            if (match != null) {
-                                // We found a valid match above threshold
-                                bestForBox = match;
-                                // Recalculate similarity for the best match (or we could have stored it in the Pair)
-                                maxSimilarityForBox = FaceSDKWrapper.INSTANCE.similarityCalculation(finalTemplates, match.templates);
+                            // Keep calls into the native SDK on the analyzer thread. Some vendor builds
+                            // are not re-entrant and parallelStream caused intermittent native failures.
+                            Person[] people;
+                            synchronized (DBManager.personList) {
+                                people = DBManager.personList.toArray(new Person[0]);
+                            }
+                            for (Person person : people) {
+                                if (person == null || person.templates == null || person.templates.length == 0) continue;
+                                float similarity = FaceSDKWrapper.INSTANCE.similarityCalculation(templates, person.templates);
+                                if (similarity > maxSimilarityForBox) {
+                                    maxSimilarityForBox = similarity;
+                                    bestForBox = person;
+                                }
                             }
                         }
 
@@ -1175,6 +1210,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                             String predicted = dbManager.predictNextAttendanceStatus(personId, localUid, bestPerson.name);
                             dbManager.insertAttendanceQueue(personId, localUid, bestPerson.name, timestamp, predicted, finalProcessed, false);
                             playAttendanceSound(predicted);
+                            speakAttendanceGreeting(bestPerson.name, predicted);
                             showStatusOverlay(predicted);
                             if (getActivity() != null) {
                                 String finalPredicted = predicted;

@@ -9,10 +9,28 @@ from services.auth_service import authenticate_vendor_access, verify_token, extr
 logger = logging.getLogger(__name__)
 parent_reset_bp = Blueprint('parent_reset_bp', __name__)
 
+_FACE_RESET_DISABLED_VERTICALS = {'daily_wages', 'wages', 'factory', 'enterprise'}
+
+def _ensure_face_reset_supported(cursor, vendor_id):
+    cursor.execute("SELECT vertical FROM vendors WHERE id = ?", (vendor_id,))
+    row = cursor.fetchone()
+    vertical = str(row[0] if row else '').strip().lower()
+    if vertical in _FACE_RESET_DISABLED_VERTICALS:
+        return jsonify({"error": "Face reset is not available for this business type"}), 404
+    cursor.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+    row = cursor.fetchone()
+    try:
+        features = json.loads(row[0] or '[]') if row else []
+    except (TypeError, ValueError, json.JSONDecodeError):
+        features = []
+    if 'parent_login' not in features:
+        return jsonify({"error": "Face reset is not enabled for this business"}), 404
+    return None
+
 @parent_reset_bp.route("/parents/face-reset-request", methods=["POST"])
 def request_face_reset():
     auth_header = request.headers.get('Authorization')
-    token = extract_token(auth_header)
+    token = extract_token(auth_header) or request.cookies.get('token')
     data = verify_token(token)
     
     if not data or data.get('role') != 'parent':
@@ -26,6 +44,9 @@ def request_face_reset():
     conn = get_db_connection()
     c = conn.cursor()
     try:
+        unsupported = _ensure_face_reset_supported(c, vendor_id)
+        if unsupported:
+            return unsupported
         # Find parent_id
         c.execute("SELECT id FROM parent_users WHERE vendor_id = ? AND student_number = ?", (vendor_id, student_number))
         row = c.fetchone()
@@ -61,6 +82,9 @@ def list_face_reset_requests():
         if not getattr(conn, "_is_pg", False):
             conn.row_factory = sqlite3.Row
         c = conn.cursor()
+        unsupported = _ensure_face_reset_supported(c, vendor_id)
+        if unsupported:
+            return unsupported
         
         query = """
             SELECT fr.*, pu.username as parent_username, pu.student_number 
@@ -98,6 +122,9 @@ def handle_face_reset():
     conn = get_db_connection()
     c = conn.cursor()
     try:
+        unsupported = _ensure_face_reset_supported(c, vendor_id)
+        if unsupported:
+            return unsupported
         # Get request details
         c.execute("SELECT parent_id FROM face_reset_requests WHERE id = ? AND vendor_id = ?", (request_id, vendor_id))
         row = c.fetchone()

@@ -14,8 +14,8 @@ pydantic
 sqlalchemy
 
 # Data processing
-numpy<2.0.0
-opencv-python-headless
+numpy>=1.26,<2.0.0
+opencv-python-headless>=4.8,<4.12
 pandas
 openpyxl
 

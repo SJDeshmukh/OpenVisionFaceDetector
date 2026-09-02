@@ -144,7 +144,7 @@ def reindex_vendor_faces(conn, vendor_id):
     
     c.execute(f"SELECT vertical FROM vendors WHERE id = {placeholder}", (vendor_id,))
     vrow = c.fetchone()
-    vertical = (vrow[0] if isinstance(vrow, (list, tuple)) else vrow.get('vertical')) if vrow else ''
+    vertical = (vrow['vertical'] if hasattr(vrow, 'keys') else vrow[0]) if vrow else ''
     is_grouped_mode = (vertical == 'bulk_attendance_attendx')
 
     c.execute(f"SELECT person_id FROM system_users WHERE vendor_id = {placeholder} AND role = 'faculty'", (vendor_id,))
@@ -251,8 +251,11 @@ def detect_faces_basic():
         return error
     try:
         file = None
+        data = {}
+        img_b64 = None
         if 'image' in request.files:
             file = request.files['image'].read()
+            img_b64 = base64.b64encode(file).decode('ascii')
         else:
             data = request.get_json(silent=True) or {}
             img_b64 = data.get('image')
@@ -264,6 +267,16 @@ def detect_faces_basic():
             return jsonify({"error": "image required"}), 400
         
         img_hash = hashlib.sha256(file).hexdigest()
+        cache_key = f"detect:basic:v1:{vendor_id}:{img_hash}"
+        cache_ttl = int(os.environ.get("DETECT_CACHE_TTL", "300"))
+        redis = _get_redis()
+        if redis:
+            try:
+                cached = redis.get(cache_key)
+                if cached:
+                    return jsonify(json.loads(cached))
+            except Exception:
+                logger.debug("Face detection cache lookup failed", exc_info=True)
         bgr = decode_image_to_bgr(file)
         if bgr is None:
             return jsonify({"error": "invalid image"}), 400
@@ -278,7 +291,6 @@ def detect_faces_basic():
             return jsonify({"error": f"Celery inference timeout or failure: {str(e)}"}), 500
 
         resp = {"faces": faces, "count": len(faces), "annotated_image": annotated_b64}
-        redis = _get_redis()
         if redis:
             try:
                 redis.setex(cache_key, cache_ttl, json.dumps(resp))
@@ -594,7 +606,7 @@ def upload_face():
     # Extract Custom Data (Dynamic Fields)
     standard_fields = {
         'person_id', 'name', 'templates', 'templates_list', 'face_image', 'phone', 
-        'department', 'designation', 'shift', 'vendor_id', 
+        'department', 'designation', 'shift', 'vendor_id', 'display_id', 'custom_data',
         'landmarks_3d', 'landmarks_3d_list', 'struct_vec', 'struct_vec_list'
         # 'class_year', 'division', 'branch' are intentional kept out here to be part of custom_dict
         # because the faces table lacks these columns and they must be in custom_data for UI.
@@ -652,6 +664,29 @@ def upload_face():
     if not name:
         return jsonify({"error": "Missing name"}), 400
 
+    submitted_class_id = custom_dict.get('class_id')
+    if submitted_class_id:
+        class_conn = get_db_connection()
+        try:
+            class_cursor = class_conn.cursor()
+            class_cursor.execute(
+                "SELECT class_year, division, branch FROM classes WHERE id = ? AND vendor_id = ?",
+                (submitted_class_id, vendor_id),
+            )
+            class_row = class_cursor.fetchone()
+            if not class_row:
+                return jsonify({"error": "The selected class does not belong to this business"}), 400
+            class_year, division, branch = class_row[0], class_row[1], class_row[2]
+            custom_dict.update({
+                'class_id': str(submitted_class_id),
+                'class_year': class_year or '',
+                'division': division or '',
+                'branch': branch or '',
+            })
+            custom_data = json.dumps(custom_dict, separators=(',', ':'))
+        finally:
+            class_conn.close()
+
     try:
         c = get_db_connection().cursor()
     except Exception:
@@ -680,7 +715,7 @@ def upload_face():
             if student_number:
                 if getattr(conn_check, "_is_pg", False):
                     # Postgres JSONB search
-                    cc.execute("SELECT id FROM faces WHERE vendor_id = %s AND custom_data::jsonb ->> 'student_id' = %s OR custom_data::jsonb ->> 'id_number' = %s OR custom_data::jsonb ->> 'student_number' = %s LIMIT 1", (vendor_id, student_number, student_number, student_number))
+                    cc.execute("SELECT id FROM faces WHERE vendor_id = %s AND (custom_data::jsonb ->> 'student_id' = %s OR custom_data::jsonb ->> 'id_number' = %s OR custom_data::jsonb ->> 'student_number' = %s) LIMIT 1", (vendor_id, student_number, student_number, student_number))
                 else:
                     # SQLite JSON search (using LIKE as fallback or json_extract if available)
                     cc.execute("SELECT id FROM faces WHERE vendor_id = ? AND (custom_data LIKE ? OR custom_data LIKE ? OR custom_data LIKE ?) LIMIT 1", 
@@ -995,12 +1030,14 @@ def upload_face():
                                 
                                 # If the password was still the old phone number, update it to the new one
                                 if old_plain == str(existing.get("phone") or "").strip():
-                                    c.execute("UPDATE system_users SET password = ?, password_plain = ? WHERE person_id = ?", 
-                                              (new_phone, new_phone, person_id))
+                                    from services.auth_service import hash_password
+                                    c.execute("UPDATE system_users SET password = ?, password_plain = NULL WHERE person_id = ?",
+                                              (hash_password(new_phone), person_id))
                             else:
                                 # Proactively create it if it didn't exist
-                                c.execute("INSERT OR IGNORE INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (?, ?, ?, 'user', ?, ?)",
-                                          (new_sid, new_phone, new_phone, existing.get("vendor_id"), person_id))
+                                from services.auth_service import hash_password
+                                c.execute("INSERT OR IGNORE INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (?, ?, NULL, 'user', ?, ?)",
+                                          (new_sid, hash_password(new_phone), existing.get("vendor_id"), person_id))
             except Exception:
                 pass
         else:
@@ -1038,8 +1075,8 @@ def upload_face():
                             # Create system user
                             # Using phone as initial password
                             c.execute(
-                                "INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (?, ?, ?, 'user', ?, ?)",
-                                (student_id, student_phone, student_phone, vendor_id, new_id)
+                                "INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (?, ?, NULL, 'user', ?, ?)",
+                                (student_id, hash_password(student_phone), vendor_id, new_id)
                             )
                             # We don't need to commit here if the outer transaction commits
             except Exception as e:
@@ -1606,13 +1643,6 @@ def delete_face_by_id(person_id):
         # 3. Re-index remaining faces for this vendor
         if deleted_faces > 0 and target_vendor_id is not None:
             reindex_vendor_faces(conn, target_vendor_id)
-            
-            # Reset registration config if 0 users remain as per user request
-            c.execute("SELECT COUNT(*) FROM faces WHERE vendor_id = ?", (target_vendor_id,))
-            if c.fetchone()[0] == 0:
-                c.execute("UPDATE bulk_attendance_config SET fields = '[]' WHERE vendor_id = ?", (target_vendor_id,))
-                c.execute("UPDATE vendors SET registration_config = '[]' WHERE id = ?", (target_vendor_id,))
-                logger.info(f"Zero students remain for vendor {target_vendor_id}. Registration config cleared.")
 
         conn.commit()
         
@@ -1698,10 +1728,7 @@ def delete_all_faces():
                 )
             """, (vendor_id, vendor_id))
             
-            # 3. Reset registration configuration as requested
-            c.execute("UPDATE bulk_attendance_config SET fields = '[]' WHERE vendor_id = ?", (vendor_id,))
-            c.execute("UPDATE vendors SET registration_config = '[]' WHERE id = ?", (vendor_id,))
-            message = "All students and configurations cleared."
+            message = "All student data cleared. Registration configuration preserved."
         
         conn.commit()
         

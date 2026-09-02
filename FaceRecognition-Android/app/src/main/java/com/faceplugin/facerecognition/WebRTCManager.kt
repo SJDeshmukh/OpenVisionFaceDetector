@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.*
 import android.util.Log
 import io.socket.client.Socket
+import io.socket.emitter.Emitter
 import org.json.JSONObject
 import org.webrtc.*
 import org.webrtc.PeerConnection.IceServer
@@ -23,6 +24,19 @@ class WebRTCManager(
     private var videoSource: VideoSource? = null
     private var videoTrack: VideoTrack? = null
     private var surfaceTextureHelper: SurfaceTextureHelper? = null
+    private val eglBase: EglBase = EglBase.create()
+    private val signalListener = Emitter.Listener { args ->
+        val data = args.firstOrNull() as? JSONObject ?: return@Listener
+        val type = data.optString("type")
+        val signal = data.optJSONObject("signal")
+        val fromRoom = data.optString("from_room")
+        Log.d(TAG, "Received signal: $type from $fromRoom")
+        when (type) {
+            "offer" -> handleOffer(signal, fromRoom)
+            "answer" -> handleAnswer(signal)
+            "candidate" -> handleCandidate(signal)
+        }
+    }
     
     private val iceServers = listOf(
         IceServer.builder("stun:stun.l.google.com:19302").createIceServer()
@@ -40,9 +54,9 @@ class WebRTCManager(
 
         val factoryOptions = PeerConnectionFactory.Options()
         val encoderFactory = DefaultVideoEncoderFactory(
-            EglBase.create().eglBaseContext, true, true
+            eglBase.eglBaseContext, true, true
         )
-        val decoderFactory = DefaultVideoDecoderFactory(EglBase.create().eglBaseContext)
+        val decoderFactory = DefaultVideoDecoderFactory(eglBase.eglBaseContext)
 
         peerConnectionFactory = PeerConnectionFactory.builder()
             .setOptions(factoryOptions)
@@ -57,23 +71,13 @@ class WebRTCManager(
     }
 
     private fun setupSocketListeners() {
-        socket.on("webrtc_signal") { args ->
-            val data = args[0] as JSONObject
-            val type = data.getString("type")
-            val signal = data.optJSONObject("signal")
-            val fromRoom = data.optString("from_room")
-
-            Log.d(TAG, "Received signal: $type from $fromRoom")
-
-            when (type) {
-                "offer" -> handleOffer(signal, fromRoom)
-                "answer" -> handleAnswer(signal)
-                "candidate" -> handleCandidate(signal)
-            }
-        }
+        socket.on("webrtc_signal", signalListener)
     }
 
     private fun createPeerConnection(targetRoom: String) {
+        peerConnection?.close()
+        peerConnection?.dispose()
+        peerConnection = null
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers)
         peerConnection = peerConnectionFactory?.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
             override fun onIceCandidate(candidate: IceCandidate) {
@@ -229,9 +233,19 @@ class WebRTCManager(
     }
     
     fun dispose() {
+        socket.off("webrtc_signal", signalListener)
+        peerConnection?.close()
         peerConnection?.dispose()
-        peerConnectionFactory?.dispose()
+        peerConnection = null
+        videoTrack?.dispose()
+        videoTrack = null
         videoSource?.dispose()
+        videoSource = null
+        surfaceTextureHelper?.dispose()
+        surfaceTextureHelper = null
+        peerConnectionFactory?.dispose()
+        peerConnectionFactory = null
+        eglBase.release()
         yBuffer = null
         uBuffer = null
         vBuffer = null

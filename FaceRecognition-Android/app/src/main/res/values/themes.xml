@@ -183,7 +183,9 @@
         <item name="android:textSize">11sp</item>
         <item name="android:fontFamily">sans-serif-bold</item>
         <item name="android:textColor">@color/text_primary</item>
-        <item name="android:paddingHorizontal">10dp</item>
-        <item name="android:paddingVertical">4dp</item>
+        <item name="android:paddingLeft">10dp</item>
+        <item name="android:paddingRight">10dp</item>
+        <item name="android:paddingTop">4dp</item>
+        <item name="android:paddingBottom">4dp</item>
     </style>
 </resources>

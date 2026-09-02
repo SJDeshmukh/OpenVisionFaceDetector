@@ -109,15 +109,20 @@ export const Sidebar = ({ isOpen, onClose }) => {
 
   if (user?.role !== 'super_admin' && user?.role !== 'faculty') {
     const bundleId = user?.frontend_bundle_id || 'default_attendance';
+    const vertical = String(user?.vertical || '').trim().toLowerCase();
+    const faceResetSupported = !['daily_wages', 'wages', 'factory', 'enterprise'].includes(vertical) &&
+      user?.features?.includes('parent_login');
     if (user?.features && Array.isArray(user.features)) {
       const allowedNames = new Set(ALWAYS_VISIBLE_ITEMS);
       user.features.forEach(fk => { const sn = FEATURE_TO_SIDEBAR_MAP[fk]; if (sn) allowedNames.add(sn); });
+      if (faceResetSupported) allowedNames.add('Face Reset Requests');
       if (bundleId === 'class_attendance_ui' || user.features.includes('classes')) allowedNames.add('Faces');
       navItems = navItems.filter(item => allowedNames.has(item.name));
     } else {
       const allowed = FRONTEND_BUNDLES[bundleId] || FRONTEND_BUNDLES['default_attendance'];
       if (allowed !== 'ALL') navItems = navItems.filter(item => allowed.includes(item.name));
     }
+    if (!faceResetSupported) navItems = navItems.filter(item => item.name !== 'Face Reset Requests');
   }
 
   return (

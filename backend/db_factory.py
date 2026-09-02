@@ -629,15 +629,6 @@ def _init_pg_schema_on_conn(conn):
               AND f.vendor_id = system_users.vendor_id
         """, "Link student logins (PG)")
         
-        # Restore password_plain
-        run_migration("""
-            UPDATE system_users 
-            SET password_plain = f.phone
-            FROM faces f
-            WHERE system_users.role = 'user' 
-              AND system_users.person_id = f.id
-              AND (system_users.password_plain IS NULL OR system_users.password_plain = '')
-        """, "Restore student password_plain (PG)")
     else:
         # Link student logins (SQLite)
         run_migration("""
@@ -655,20 +646,12 @@ def _init_pg_schema_on_conn(conn):
             WHERE role = 'user' AND person_id IS NULL
         """, "Link student logins (SQLite)")
         
-        # Restore password_plain (SQLite)
-        run_migration("""
-            UPDATE system_users 
-            SET password_plain = (SELECT phone FROM faces f WHERE f.id = system_users.person_id)
-            WHERE role = 'user' 
-              AND person_id IS NOT NULL 
-              AND (password_plain IS NULL OR password_plain = '')
-        """, "Restore student password_plain (SQLite)")
-
-    # 3. Initialize has_set_password
+    # 3. Preserve the legacy default/custom marker, then scrub recoverable passwords.
     run_migration("""
         UPDATE system_users SET has_set_password = 1 
         WHERE role = 'user' AND password != password_plain AND password_plain IS NOT NULL
     """, "Initialize has_set_password")
+    run_migration("UPDATE system_users SET password_plain = NULL WHERE password_plain IS NOT NULL", "Remove legacy plaintext passwords")
 
     conn.commit()
     cur.close()

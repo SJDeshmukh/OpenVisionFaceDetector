@@ -3,6 +3,29 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+def normalize_registration_config(config):
+    """Return a deterministic registration schema with text as the default type."""
+    if not isinstance(config, list):
+        raise ValueError("registration configuration must be a list")
+    normalized = []
+    seen = set()
+    for raw in config:
+        if not isinstance(raw, dict):
+            continue
+        field = str(raw.get('field') or raw.get('key') or '').strip()
+        if not field or field.lower() in seen:
+            continue
+        seen.add(field.lower())
+        item = dict(raw)
+        item['field'] = field
+        item.pop('key', None)
+        item['label'] = str(raw.get('label') or field).strip() or field
+        item['type'] = str(raw.get('type') or 'text').strip().lower() or 'text'
+        item['required'] = bool(raw.get('required', False))
+        item['enabled'] = raw.get('enabled', True) is not False
+        normalized.append(item)
+    return normalized
+
 def hydrate_registration_config(vendor_id, config, conn=None):
     """
     Hydrates registration configuration with dynamic data sources.
@@ -11,60 +34,14 @@ def hydrate_registration_config(vendor_id, config, conn=None):
     if not isinstance(config, list):
         return config
 
-    # Ensure a dynamic department field exists if leave management is enabled
+    # The stored list is authoritative. Feature flags must not silently inject
+    # fields that the Superadmin did not configure.
     updated_config = list(config)
     from db_factory import get_db_connection
     conn_internal = None
     if conn is None:
         conn_internal = get_db_connection()
         conn = conn_internal
-
-    try:
-        # Check features
-        is_pg = getattr(conn, "_is_pg", False)
-        c = conn.cursor()
-        if is_pg:
-            c.execute("SELECT features FROM subscriptions WHERE vendor_id = %s", (vendor_id,))
-        else:
-            c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
-        
-        sub_row = c.fetchone()
-        features = []
-        if sub_row:
-            try:
-                features = json.loads(sub_row[0] or '[]')
-            except:
-                pass
-        
-        has_leave = 'leave_management' in features
-        
-        if has_leave:
-            # Check if any field already uses the department/branch keys or is dynamic
-            has_relevant_field = False
-            for f in updated_config:
-                if not isinstance(f, dict): continue
-                key = (f.get('field') or f.get('key') or "").lower()
-                source = f.get('options_source')
-                if key in ['department', 'branch'] or source == 'leave_departments':
-                    has_relevant_field = True
-                    break
-            
-            if not has_relevant_field:
-                # Automagically add the field
-                updated_config.append({
-                    "field": "department",
-                    "label": "Branch / Subject",
-                    "type": "select",
-                    "options_source": "leave_departments",
-                    "required": True,
-                    "enabled": True
-                })
-                logger.info(f"Automatically added Department field for vendor {vendor_id} (Leave Management active)")
-    except Exception as e:
-        logger.error(f"Error checking features for auto-config: {e}")
-    finally:
-        if conn_internal:
-            conn_internal.close()
 
     hydrated_config = []
     cached_depts = None
@@ -75,10 +52,11 @@ def hydrate_registration_config(vendor_id, config, conn=None):
             continue
             
         new_field = dict(field)
+        new_field['type'] = str(new_field.get('type') or 'text').strip().lower() or 'text'
         source = new_field.get('options_source')
-        field_key = (new_field.get('field') or new_field.get('key') or "").lower()
-        
-        # 1. Dynamic Dropdown (Leave Departments Source)
+        # Dynamic options are populated only when the Superadmin explicitly
+        # configured a source. Field names alone must never pull in unrelated
+        # business data or alter a static list.
         if source == 'leave_departments':
             if cached_depts is None:
                 cached_depts = _fetch_vendor_departments(vendor_id, conn)
@@ -86,31 +64,11 @@ def hydrate_registration_config(vendor_id, config, conn=None):
             # Map departments to options
             new_field['options'] = list(cached_depts) if cached_depts else []
             logger.debug(f"Hydrated field {new_field.get('field')} with {len(new_field['options'])} departments for vendor {vendor_id}")
-            
-        # 2. Smart Sync for Static Dropdowns (Key based matching)
-        elif field_key in ['department', 'branch'] and new_field.get('type') in ['select', 'multiselect', 'dropdown']:
-            if cached_depts is None:
-                cached_depts = _fetch_vendor_departments(vendor_id, conn)
-            
-            if cached_depts:
-                existing_options = new_field.get('options', [])
-                if not isinstance(existing_options, list):
-                    existing_options = []
-                
-                # Case-insensitive comparison for duplicates
-                existing_lower = {str(opt).strip().lower() for opt in existing_options}
-                added_any = False
-                for dept in cached_depts:
-                    if str(dept).strip().lower() not in existing_lower:
-                        existing_options.append(dept)
-                        added_any = True
-                
-                if added_any:
-                    new_field['options'] = existing_options
-                    logger.info(f"Smart Sync: Appended {len(cached_depts)} depts to '{field_key}' for vendor {vendor_id}")
 
         hydrated_config.append(new_field)
     
+    if conn_internal:
+        conn_internal.close()
     return hydrated_config
 
 def _fetch_vendor_departments(vendor_id, conn=None):

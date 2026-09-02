@@ -34,32 +34,17 @@ class OpenVisionApplication : Application() {
 
     override fun onLowMemory() {
         super.onLowMemory()
-        Log.w("OpenVision", "Low Memory Warning! Clearing cache and person list...")
-        clearAppCache()
-        
-        // Clear static memory-intensive list to prevent OOM
-        try {
-            synchronized(DBManager.personList) {
-                DBManager.personList.clear()
-            }
-            System.gc() // Suggest GC
-        } catch (e: Exception) {}
+        // The recognition gallery is live application state, not a disposable cache.
+        // Android will terminate the process if more memory is required; clearing this
+        // list in a live process makes every enrolled person appear as "Unknown".
+        Log.w("OpenVision", "Low memory warning received; preserving recognition gallery")
     }
 
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
         Log.i("OpenVision", "onTrimMemory level: $level")
-        if (level >= TRIM_MEMORY_MODERATE) {
-            clearAppCache()
-            
-            // Clear static list to free up significant RAM
-            try {
-                synchronized(DBManager.personList) {
-                    DBManager.personList.clear()
-                }
-                System.gc()
-            } catch (e: Exception) {}
-        }
+        // Do not recursively remove app cache files or clear DBManager.personList here.
+        // Camera/SDK resources are released by their lifecycle owners.
     }
 
     private fun clearAppCache() {

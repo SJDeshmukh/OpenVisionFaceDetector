@@ -20,43 +20,49 @@ import androidx.camera.core.CameraSelector;
 public class Utils {
 
     public static byte[] yuv420ToNv21(Image image) {
+        if (image == null || image.getPlanes().length < 3) {
+            throw new IllegalArgumentException("Expected a three-plane YUV_420_888 image");
+        }
         int width = image.getWidth();
         int height = image.getHeight();
         byte[] nv21 = new byte[width * height * 3 / 2];
 
         Image.Plane[] planes = image.getPlanes();
-        ByteBuffer yBuffer = planes[0].getBuffer();
+        ByteBuffer yBuffer = planes[0].getBuffer().duplicate();
         int yRowStride = planes[0].getRowStride();
+        int yPixelStride = planes[0].getPixelStride();
 
         // Copy Y plane row-by-row to remove padding (crucial for various Android devices like Redmi/Vivo)
         int pos = 0;
-        if (yRowStride == width) {
+        if (yRowStride == width && yPixelStride == 1 && yBuffer.remaining() >= width * height) {
             yBuffer.get(nv21, 0, width * height);
             pos = width * height;
         } else {
             for (int row = 0; row < height; row++) {
-                yBuffer.position(row * yRowStride);
-                yBuffer.get(nv21, pos, width);
-                pos += width;
+                int rowStart = row * yRowStride;
+                for (int col = 0; col < width; col++) {
+                    int index = rowStart + col * yPixelStride;
+                    nv21[pos++] = index < yBuffer.limit() ? yBuffer.get(index) : 0;
+                }
             }
         }
 
         // Interleave V and U (NV21: YYYY... VUVU...)
         // V plane is usually at planes[2], U is at planes[1] in YUV_420_888
-        ByteBuffer uBuffer = planes[1].getBuffer();
-        ByteBuffer vBuffer = planes[2].getBuffer();
-        int uvRowStride = planes[1].getRowStride();
-        int uvPixelStride = planes[1].getPixelStride();
+        ByteBuffer uBuffer = planes[1].getBuffer().duplicate();
+        ByteBuffer vBuffer = planes[2].getBuffer().duplicate();
+        int uRowStride = planes[1].getRowStride();
+        int vRowStride = planes[2].getRowStride();
+        int uPixelStride = planes[1].getPixelStride();
+        int vPixelStride = planes[2].getPixelStride();
 
         // Standard UV sampling is 2x2 for YUV420
         for (int row = 0; row < height / 2; row++) {
             for (int col = 0; col < width / 2; col++) {
-                int vuIdx = row * uvRowStride + col * uvPixelStride;
-                // Double check buffer limits to prevent crashes on edge-case hardware
-                if (vuIdx < vBuffer.capacity() && vuIdx < uBuffer.capacity()) {
-                    nv21[pos++] = vBuffer.get(vuIdx);
-                    nv21[pos++] = uBuffer.get(vuIdx);
-                }
+                int vIndex = row * vRowStride + col * vPixelStride;
+                int uIndex = row * uRowStride + col * uPixelStride;
+                nv21[pos++] = vIndex < vBuffer.limit() ? vBuffer.get(vIndex) : (byte) 128;
+                nv21[pos++] = uIndex < uBuffer.limit() ? uBuffer.get(uIndex) : (byte) 128;
             }
         }
 

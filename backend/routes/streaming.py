@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify, send_file
+from flask import Blueprint, request, jsonify, send_file, g
 import logging
 import sqlite3
 import base64
@@ -31,44 +31,34 @@ def track_metrics(endpoint_name):
 streaming_bp = Blueprint('streaming_bp', __name__)
 
 @streaming_bp.route("/stream/upload", methods=["POST"])
+@vendor_required
 def upload_stream_frame():
     from app import get_db_connection, socketio, is_testing
     from utils import ALL_FEATURES
     from app import latest_frames
-    from services.auth_service import extract_token, verify_token
     try:
-        # 1. Identify Vendor from Auth Token
-        vendor_id = 1 # Default to Vendor 1 (Legacy/Unauth)
-        
-        auth_header = request.headers.get('Authorization')
-        if auth_header:
-            try:
-                token = auth_header.split(" ")[1]
-                user_data = verify_token(token)
-                if user_data:
-                    conn_auth = get_db_connection()
-                    c_auth = conn_auth.cursor()
-                    c_auth.execute("SELECT vendor_id FROM system_users WHERE username = ?", (user_data['username'],))
-                    u_row = c_auth.fetchone()
-                    conn_auth.close()
-                    if u_row and u_row[0]:
-                        vendor_id = u_row[0]
-            except Exception:
-                logger.debug("Auth token lookup failed in stream upload", exc_info=True)
-
-        data = request.json
+        data = request.get_json(silent=True) or {}
+        vendor_id = request.vendor_id
         image_data = data.get("image") # Base64 string
         device_id = data.get("device_id", "default")
-        
-        # 2. Check for explicit vendor_id in body (Override)
-        if data.get("vendor_id"):
+
+        requested_vendor_id = data.get("vendor_id")
+        if g.user_role == "super_admin":
             try:
-                vendor_id = int(data.get("vendor_id"))
+                vendor_id = int(requested_vendor_id)
             except (ValueError, TypeError):
-                pass
+                return jsonify({"error": "A valid vendor_id is required"}), 400
+        elif requested_vendor_id is not None:
+            try:
+                if int(requested_vendor_id) != int(vendor_id):
+                    return jsonify({"error": "Cross-vendor stream upload is forbidden"}), 403
+            except (ValueError, TypeError):
+                return jsonify({"error": "Invalid vendor_id"}), 400
         
         if not image_data:
             return jsonify({"error": "No image data"}), 400
+        if not isinstance(image_data, str) or len(image_data) > 8_000_000:
+            return jsonify({"error": "Image payload is too large"}), 413
             
         if vendor_id not in latest_frames:
             latest_frames[vendor_id] = {}
@@ -93,7 +83,7 @@ def upload_stream_frame():
         return jsonify({"status": "success"})
     except Exception as e:
         logger.warning("Stream upload error", exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Unable to upload stream frame"}), 500
 
 
 @streaming_bp.route("/stream/view", methods=["GET"])
@@ -176,6 +166,5 @@ def list_active_devices():
                     })
                     
     return jsonify({"devices": active_list})
-
 
 

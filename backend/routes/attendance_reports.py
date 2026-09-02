@@ -279,8 +279,9 @@ def get_analytics(valid_data: PayrollReportRequest):
     
     user_records = defaultdict(list)
     for row in rows:
-        pid = row.get('person_id')
-        if pid: user_records[pid].append(dict(row))
+        record = dict(row) if hasattr(row, 'keys') else dict(zip([d[0] for d in c.description], row))
+        pid = record.get('person_id')
+        if pid: user_records[pid].append(record)
         
     # Analysis
     daily_stats = defaultdict(lambda: {"present": 0, "late": 0, "undertime": 0, "overtime": 0})
@@ -515,9 +516,13 @@ def get_payroll_report(valid_data: PayrollReportRequest):
     ]
     try:
         # DB Factory handles the ? placeholder correctly for both PG and SQLite
-        placeholders = ', '.join(['?'] * len(settings_keys))
-        c.execute(f"SELECT key, value FROM system_settings WHERE key IN ({placeholders})", settings_keys)
-        stored_settings = {row['key']: row['value'] for row in c.fetchall()}
+        vendor_setting_keys = [f"{key}_vendor_{vendor_id}" for key in settings_keys]
+        placeholders = ', '.join(['?'] * len(vendor_setting_keys))
+        c.execute(f"SELECT key, value FROM system_settings WHERE key IN ({placeholders})", vendor_setting_keys)
+        stored_settings = {
+            row['key'].removesuffix(f"_vendor_{vendor_id}"): row['value']
+            for row in c.fetchall()
+        }
     except Exception:
         logger.warning("Failed to load system settings", exc_info=True)
         stored_settings = {}
@@ -769,8 +774,10 @@ def export_payroll_daily():
                     continue
             persons[rd['id']] = rd
 
-        c.execute("SELECT key, value FROM system_settings WHERE key IN ('global_late_allowance', 'global_late_deduction')")
-        s_map = {r['key']: r['value'] for r in c.fetchall()}
+        setting_suffix = f'_vendor_{vendor_id}'
+        c.execute("SELECT key, value FROM system_settings WHERE key IN (?, ?)",
+                  (f'global_late_allowance{setting_suffix}', f'global_late_deduction{setting_suffix}'))
+        s_map = {r['key'].removesuffix(setting_suffix): r['value'] for r in c.fetchall()}
         global_allowance = int(s_map.get('global_late_allowance', 7))
         global_deduction = float(s_map.get('global_late_deduction', 0.0))
 
@@ -867,8 +874,10 @@ def export_payroll_excel():
         c.execute(f"SELECT id, name, daily_wage, display_id{extra_select} FROM faces WHERE vendor_id = ?", (vendor_id,))
         persons = {r['id']: dict(r) for r in c.fetchall()}
 
-        c.execute("SELECT key, value FROM system_settings WHERE key IN ('global_late_allowance', 'global_late_deduction')")
-        s_map = {r['key']: r['value'] for r in c.fetchall()}
+        setting_suffix = f'_vendor_{vendor_id}'
+        c.execute("SELECT key, value FROM system_settings WHERE key IN (?, ?)",
+                  (f'global_late_allowance{setting_suffix}', f'global_late_deduction{setting_suffix}'))
+        s_map = {r['key'].removesuffix(setting_suffix): r['value'] for r in c.fetchall()}
         global_allowance = int(s_map.get('global_late_allowance', 7))
         global_deduction = float(s_map.get('global_late_deduction', 0.0))
 
@@ -955,4 +964,3 @@ def import_payroll_adjustments():
         return jsonify({"success": True, "updated": updated})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-

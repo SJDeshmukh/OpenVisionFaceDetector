@@ -14,9 +14,12 @@ import uuid
 import logging
 import hmac
 import hashlib
+import threading
+from flask import g
 
 app = Flask(__name__)
-CORS(app)
+_allowed_origins = [origin.strip() for origin in os.getenv('CORS_ALLOWED_ORIGINS', 'http://localhost:5173').split(',') if origin.strip()]
+CORS(app, origins=_allowed_origins, supports_credentials=True)
 app.logger.setLevel(logging.INFO)
 try:
     import faiss as _faiss
@@ -118,6 +121,24 @@ _users = {'items': []}
 _check_events = {'items': []}
 _places = {'items': []}
 _devices = {'items': []}
+_data_lock = threading.RLock()
+
+def _atomic_json_dump(path, value):
+    """Write JSON without exposing readers to a partially-written file."""
+    tmp_path = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+    with _data_lock:
+        try:
+            with open(tmp_path, 'w') as f:
+                json.dump(value, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, path)
+        finally:
+            try:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+            except OSError:
+                pass
 
 def _load_store():
     global _store
@@ -167,8 +188,7 @@ def _load_store():
 
 def _save_store():
     try:
-        with open(STORE_PATH, 'w') as f:
-            json.dump(_store, f)
+        _atomic_json_dump(STORE_PATH, _store)
         try:
             _mark_index_dirty()
         except Exception:
@@ -268,86 +288,72 @@ def _load_mt():
         _users = {'items': []}
 def _save_colleges():
     try:
-        with open(COLLEGES_PATH, 'w') as f:
-            json.dump(_colleges, f)
+        _atomic_json_dump(COLLEGES_PATH, _colleges)
     except Exception:
         pass
 def _save_plans():
     try:
-        with open(PLANS_PATH, 'w') as f:
-            json.dump(_plans, f)
+        _atomic_json_dump(PLANS_PATH, _plans)
     except Exception:
         pass
 def _save_sessions():
     try:
-        with open(SESSIONS_PATH, 'w') as f:
-            json.dump(_sessions, f)
+        _atomic_json_dump(SESSIONS_PATH, _sessions)
     except Exception:
         pass
 def _save_usage():
     try:
-        with open(USAGE_PATH, 'w') as f:
-            json.dump(_usage, f)
+        _atomic_json_dump(USAGE_PATH, _usage)
     except Exception:
         pass
 def _save_students():
     try:
-        with open(STUDENTS_PATH, 'w') as f:
-            json.dump(_students, f)
+        _atomic_json_dump(STUDENTS_PATH, _students)
     except Exception:
         pass
 def _save_faculty():
     try:
-        with open(FACULTY_PATH, 'w') as f:
-            json.dump(_faculty, f)
+        _atomic_json_dump(FACULTY_PATH, _faculty)
     except Exception:
         pass
 def _save_departments():
     try:
-        with open(DEPARTMENTS_PATH, 'w') as f:
-            json.dump(_departments, f)
+        _atomic_json_dump(DEPARTMENTS_PATH, _departments)
     except Exception:
         pass
 def _save_subjects():
     try:
-        with open(SUBJECTS_PATH, 'w') as f:
-            json.dump(_subjects, f)
+        _atomic_json_dump(SUBJECTS_PATH, _subjects)
     except Exception:
         pass
 def _save_classes():
     try:
-        with open(CLASSES_PATH, 'w') as f:
-            json.dump(_classes, f)
+        _atomic_json_dump(CLASSES_PATH, _classes)
     except Exception:
         pass
 def _save_attendance():
     try:
-        with open(ATTENDANCE_PATH, 'w') as f:
-            json.dump(_attendance, f)
+        _atomic_json_dump(ATTENDANCE_PATH, _attendance)
     except Exception:
         pass
 def _save_check_events():
     try:
-        with open(CHECK_EVENTS_PATH, 'w') as f:
-            json.dump(_check_events, f)
+        _atomic_json_dump(CHECK_EVENTS_PATH, _check_events)
     except Exception:
         pass
 def _save_users():
     try:
-        with open(USERS_PATH, 'w') as f:
-            json.dump(_users, f)
+        _atomic_json_dump(USERS_PATH, _users)
     except Exception:
         pass
 def _save_places():
     try:
-        with open(PLACES_PATH, 'w') as f:
-            json.dump(_places, f)
+        _atomic_json_dump(PLACES_PATH, _places)
     except Exception:
         pass
 def _save_devices():
     try:
-        with open(DEVICES_PATH, 'w') as f:
-            json.dump(_devices, f)
+        _atomic_json_dump(DEVICES_PATH, _devices)
     except Exception:
         pass
 def _bootstrap_superadmin():
@@ -373,8 +379,14 @@ def _bootstrap_superadmin():
 def _hash_password(pw: str, salt: bytes) -> str:
     return hashlib.pbkdf2_hmac('sha256', pw.encode('utf-8'), salt, 120000).hex()
 
+def _secret_bytes() -> bytes:
+    secret = os.getenv('SECRET_KEY', '').strip()
+    if not secret:
+        raise RuntimeError('SECRET_KEY must be configured')
+    return secret.encode('utf-8')
+
 def _make_token(user: dict) -> str:
-    secret = os.getenv('SECRET_KEY', 'dev_secret').encode('utf-8')
+    secret = _secret_bytes()
     payload = {'uid': user.get('id',''), 'role': user.get('role',''), 'cid': user.get('college_id',''), 'exp': time.time() + 86400.0}
     raw = json.dumps(payload, separators=(',', ':')).encode('utf-8')
     b64 = base64.urlsafe_b64encode(raw).decode('ascii')
@@ -384,7 +396,10 @@ def _make_token(user: dict) -> str:
 def _verify_token(tok: str) -> dict | None:
     if not tok or '.' not in tok:
         return None
-    secret = os.getenv('SECRET_KEY', 'dev_secret').encode('utf-8')
+    try:
+        secret = _secret_bytes()
+    except RuntimeError:
+        return None
     b64, sig = tok.split('.', 1)
     calc = hmac.new(secret, b64.encode('ascii'), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(calc, sig):
@@ -412,7 +427,38 @@ def _current_user():
     return None
 
 def _require_role(roles: list[str]) -> dict | None:
-    return {'id': 'public', 'role': 'SuperAdmin', 'college_id': ''}
+    user = getattr(g, 'current_user', None) or _current_user()
+    if user is None or str(user.get('role', '')) not in set(roles):
+        return None
+    return user
+
+def _scoped_college_id(requested: str = '') -> str:
+    user = getattr(g, 'current_user', None) or _current_user() or {}
+    if str(user.get('role', '')) != 'SuperAdmin':
+        return str(user.get('college_id', '')).strip()
+    return str(requested or '').strip()
+
+@app.before_request
+def _authenticate_api_request():
+    if request.method == 'OPTIONS':
+        return None
+    endpoint = request.endpoint or ''
+    if endpoint in {'auth_login', 'superadmin_create_user', 'web_login', 'static'}:
+        return None
+    # HTML shells are public; every API call they make remains protected.
+    if request.path.startswith('/web/'):
+        return None
+    user = _current_user()
+    if user is None:
+        return jsonify({'error': 'authentication required'}), 401
+    g.current_user = user
+    if str(user.get('role', '')) != 'SuperAdmin':
+        requested_cid = str(request.args.get('college_id', '') or request.form.get('college_id', '')).strip()
+        if not requested_cid and request.is_json:
+            requested_cid = str((request.get_json(silent=True) or {}).get('college_id', '')).strip()
+        if requested_cid and requested_cid != str(user.get('college_id', '')):
+            return jsonify({'error': 'cross-business access denied'}), 403
+    return None
 def _find_college(cid: str):
     for it in _colleges.get('items', []):
         if str(it.get('id','')) == str(cid):
@@ -841,6 +887,8 @@ def get_plans():
     return jsonify({'items': _plans.get('items', [])})
 @app.post('/plans')
 def add_plan():
+    if _require_role(['SuperAdmin']) is None:
+        return jsonify({'error': 'forbidden'}), 403
     data = request.get_json(silent=True)
     if not data or 'name' not in data:
         return jsonify({'error': 'name required'}), 400
@@ -885,7 +933,7 @@ def plan_delete():
     return jsonify({'ok': True, 'deleted': before - len(_plans.get('items', []))})
 @app.get('/departments')
 def get_departments():
-    cid = request.args.get('college_id','').strip()
+    cid = _scoped_college_id(request.args.get('college_id',''))
     items = [d for d in _departments.get('items', []) if (not cid) or str(d.get('college_id','')) == cid]
     return jsonify({'items': items})
 @app.post('/departments')
@@ -936,7 +984,7 @@ def department_delete():
     return jsonify({'ok': True, 'deleted': before - len(_departments.get('items', []))})
 @app.get('/subjects')
 def get_subjects():
-    cid = request.args.get('college_id','').strip()
+    cid = _scoped_college_id(request.args.get('college_id',''))
     items = [s for s in _subjects.get('items', []) if (not cid) or str(s.get('college_id','')) == cid]
     return jsonify({'items': items})
 @app.post('/subjects')
@@ -987,7 +1035,7 @@ def subject_delete():
     return jsonify({'ok': True, 'deleted': before - len(_subjects.get('items', []))})
 @app.get('/faculty')
 def get_faculty():
-    cid = request.args.get('college_id','').strip()
+    cid = _scoped_college_id(request.args.get('college_id',''))
     items = [f for f in _faculty.get('items', []) if (not cid) or str(f.get('college_id','')) == cid]
     return jsonify({'items': items})
 @app.post('/faculty')
@@ -1041,7 +1089,7 @@ def faculty_delete():
     return jsonify({'ok': True, 'deleted': before - len(_faculty.get('items', []))})
 @app.get('/students')
 def get_students():
-    cid = request.args.get('college_id','').strip()
+    cid = _scoped_college_id(request.args.get('college_id',''))
     items = [s for s in _students.get('items', []) if (not cid) or str(s.get('college_id','')) == cid]
     return jsonify({'items': items})
 @app.post('/students')
@@ -1098,7 +1146,7 @@ def student_delete():
     return jsonify({'ok': True, 'deleted': before - len(_students.get('items', []))})
 @app.get('/classes')
 def get_classes():
-    cid = request.args.get('college_id','').strip()
+    cid = _scoped_college_id(request.args.get('college_id',''))
     items = [c for c in _classes.get('items', []) if (not cid) or str(c.get('college_id','')) == cid]
     return jsonify({'items': items})
 @app.post('/classes')
@@ -1156,9 +1204,15 @@ def class_delete():
     return jsonify({'ok': True, 'deleted': before - len(_classes.get('items', []))})
 @app.get('/colleges')
 def get_colleges():
-    return jsonify({'items': _colleges.get('items', [])})
+    u = getattr(g, 'current_user', {})
+    if u.get('role') == 'SuperAdmin':
+        return jsonify({'items': _colleges.get('items', [])})
+    cid = str(u.get('college_id', ''))
+    return jsonify({'items': [c for c in _colleges.get('items', []) if str(c.get('id', '')) == cid]})
 @app.post('/colleges')
 def add_college():
+    if _require_role(['SuperAdmin']) is None:
+        return jsonify({'error': 'forbidden'}), 403
     data = request.get_json(silent=True)
     if not data or 'name' not in data:
         return jsonify({'error': 'name required'}), 400
@@ -1194,6 +1248,8 @@ def college_delete():
     return jsonify({'ok': True, 'deleted': before - len(_colleges.get('items', []))})
 @app.post('/college_update')
 def college_update():
+    if _require_role(['SuperAdmin']) is None:
+        return jsonify({'error': 'forbidden'}), 403
     data = request.get_json(silent=True)
     cid = str(data.get('id','')).strip()
     it = _find_college(cid)
@@ -1214,7 +1270,7 @@ def session_start():
     if u is None:
         return jsonify({'error': 'unauthorized'}), 401
     data = request.get_json(silent=True)
-    cid = str(data.get('college_id','')).strip()
+    cid = _scoped_college_id(data.get('college_id',''))
     cls = str(data.get('class_id','')).strip()
     fid = str(data.get('faculty_id','')).strip()
     if u.get('role') != 'SuperAdmin' and cid != str(u.get('college_id','')):
@@ -1346,6 +1402,8 @@ def session_close():
     sid = str(data.get('id','')).strip()
     for s in _sessions.get('items', []):
         if str(s.get('id','')) == sid:
+            if u.get('role') != 'SuperAdmin' and str(s.get('college_id', '')) != str(u.get('college_id', '')):
+                return jsonify({'error': 'forbidden'}), 403
             now = time.time()
             s['status'] = 'Closed'
             s['end_time'] = time.strftime('%H:%M:%S', time.localtime(now))
@@ -1354,12 +1412,13 @@ def session_close():
     return jsonify({'error': 'session not found'}), 404
 @app.get('/usage_metrics')
 def usage_metrics():
-    return jsonify({'items': _usage.get('items', [])})
+    cid = _scoped_college_id(request.args.get('college_id', ''))
+    return jsonify({'items': [u for u in _usage.get('items', []) if (not cid) or str(u.get('college_id', '')) == cid]})
 
 @app.get('/attendance_records')
 def get_attendance_records():
     sid = request.args.get('session_id','').strip()
-    cid = request.args.get('college_id','').strip()
+    cid = _scoped_college_id(request.args.get('college_id',''))
     items = []
     for r in _attendance.get('items', []):
         if sid and str(r.get('session_id','')) != sid:
@@ -1371,7 +1430,7 @@ def get_attendance_records():
 
 @app.get('/places')
 def places():
-    cid = request.args.get('college_id','').strip()
+    cid = _scoped_college_id(request.args.get('college_id',''))
     items = []
     for p in _places.get('items', []):
         if cid and str(p.get('college_id','')) != cid:
@@ -1382,10 +1441,10 @@ def places():
 @app.get('/device_assignment')
 def device_assignment():
     device_id = request.args.get('device_id','').strip()
-    cid = request.args.get('college_id','').strip()
+    cid = _scoped_college_id(request.args.get('college_id',''))
     assigned = None
     for d in _devices.get('items', []):
-        if str(d.get('device_id','')) == device_id:
+        if str(d.get('device_id','')) == device_id and ((not cid) or str(d.get('college_id', '')) == cid):
             assigned = d
             break
     if assigned is None:
@@ -1399,11 +1458,13 @@ def device_assignment():
 
 @app.post('/device_assign')
 def device_assign():
+    if _require_role(['SuperAdmin','CollegeAdmin']) is None:
+        return jsonify({'error': 'forbidden'}), 403
     data = request.get_json(silent=True)
     if not data:
         return jsonify({'error': 'invalid body'}), 400
     device_id = str(data.get('device_id','')).strip()
-    cid = str(data.get('college_id','')).strip()
+    cid = _scoped_college_id(data.get('college_id',''))
     pid = str(data.get('place_id','')).strip()
     if device_id == '' or pid == '':
         return jsonify({'error': 'device_id and place_id required'}), 400
@@ -1429,6 +1490,9 @@ def device_assign():
 
 @app.post('/student_check_event')
 def student_check_event():
+    u = _require_role(['SuperAdmin','CollegeAdmin','HOD','Faculty'])
+    if u is None:
+        return jsonify({'error': 'forbidden'}), 403
     data = request.get_json(silent=True)
     if not data:
         return jsonify({'error': 'invalid body'}), 400
@@ -1445,10 +1509,14 @@ def student_check_event():
         lat = float(lat); lng = float(lng)
     except Exception:
         return jsonify({'error': 'lat/lng required'}), 400
+    college_id = _scoped_college_id(str(data.get('college_id', '')))
+    if not any(str(s.get('id', '')) == sid and ((not college_id) or str(s.get('college_id', '')) == college_id) for s in _students.get('items', [])):
+        return jsonify({'error': 'student not found in this business'}), 404
     ts = time.time()
     rec = {
         'id': uuid.uuid4().hex[:12],
         'student_id': sid,
+        'college_id': college_id,
         'event': evt,
         'lat': lat,
         'lng': lng,
@@ -1467,13 +1535,14 @@ def student_check_events():
     sid = request.args.get('student_id','').strip()
     if not sid:
         return jsonify({'error': 'student_id required'}), 400
-    items = [r for r in _check_events.get('items', []) if str(r.get('student_id','')) == sid]
+    cid = _scoped_college_id(request.args.get('college_id', ''))
+    items = [r for r in _check_events.get('items', []) if str(r.get('student_id','')) == sid and ((not cid) or str(r.get('college_id','')) == cid)]
     items.sort(key=lambda r: float(r.get('timestamp', 0.0)), reverse=True)
     return jsonify({'items': items})
 
 @app.get('/sessions_by_college')
 def sessions_by_college():
-    cid = request.args.get('college_id', '').strip()
+    cid = _scoped_college_id(request.args.get('college_id', ''))
     items = []
     for s in _sessions.get('items', []):
         if cid == '' or str(s.get('college_id','')) == cid:
@@ -1914,7 +1983,7 @@ def detect():
         lvl = float(lvl_s)
     except Exception:
         lvl = 0.4
-    college_id = (request.form.get('college_id') or (request.get_json(silent=True) or {}).get('college_id') or '').strip()
+    college_id = _scoped_college_id(request.form.get('college_id') or (request.get_json(silent=True) or {}).get('college_id') or '')
     ai_thr = 0.8
     if college_id:
         col = _find_college(college_id)
@@ -2096,7 +2165,7 @@ def detect_quick():
     rgb = _read_request_image()
     if rgb is None:
         return jsonify({'error': 'missing or invalid image'}), 400
-    college_id = (request.form.get('college_id') or (request.get_json(silent=True) or {}).get('college_id') or '').strip()
+    college_id = _scoped_college_id(request.form.get('college_id') or (request.get_json(silent=True) or {}).get('college_id') or '')
     ai_thr = 0.8
     if college_id:
         col = _find_college(college_id)
@@ -2286,6 +2355,8 @@ def chunk_images():
 
 @app.post('/delete_by_chunk')
 def delete_by_chunk():
+    if _require_role(['SuperAdmin','CollegeAdmin','HOD']) is None:
+        return jsonify({'error': 'forbidden'}), 403
     data = request.get_json(silent=True)
     if not data or 'id' not in data or 'name' not in data:
         return jsonify({'error': 'id and name required'}), 400
@@ -2368,6 +2439,8 @@ def delete_by_chunk():
 
 @app.post('/finalize_chunk')
 def finalize_chunk():
+    if _require_role(['SuperAdmin','CollegeAdmin','HOD']) is None:
+        return jsonify({'error': 'forbidden'}), 403
     data = request.get_json(silent=True)
     if not data or 'id' not in data:
         return jsonify({'error': 'id required'}), 400
@@ -2433,7 +2506,7 @@ def label():
         return jsonify({'error': 'name and vector required'}), 400
     name = str(data['name']).strip()
     vec = np.array(data['vector'], dtype=np.float32)
-    college_id = str(data.get('college_id',''))
+    college_id = _scoped_college_id(data.get('college_id',''))
     if u.get('role') != 'SuperAdmin' and college_id != str(u.get('college_id','')):
         return jsonify({'error': 'forbidden'}), 403
     if name == '' or vec.size == 0:
@@ -2471,7 +2544,7 @@ def merge_label():
     vec = np.array(data['vector'], dtype=np.float32)
     thumb = str(data.get('thumb', '') or '')
     track_opt = data.get('track', None)
-    college_id = str(data.get('college_id',''))
+    college_id = _scoped_college_id(data.get('college_id',''))
     if u.get('role') != 'SuperAdmin' and college_id != str(u.get('college_id','')):
         return jsonify({'error': 'forbidden'}), 403
     if name == '' or vec.size == 0:
@@ -2562,10 +2635,12 @@ def merge_label():
 
 @app.post('/approve_match')
 def approve_match():
+    if _require_role(['SuperAdmin','CollegeAdmin','HOD']) is None:
+        return jsonify({'error': 'forbidden'}), 403
     return merge_label()
 @app.get('/labels')
 def labels():
-    cid = request.args.get('college_id', '').strip()
+    cid = _scoped_college_id(request.args.get('college_id', ''))
     items = []
     for it in _store.get('items', []):
         if cid and str(it.get('college_id','')) != cid:
@@ -2582,7 +2657,7 @@ def delete_label():
     if not data or 'name' not in data:
         return jsonify({'error': 'name required'}), 400
     name = str(data['name']).strip()
-    college_id = str(data.get('college_id',''))
+    college_id = _scoped_college_id(data.get('college_id',''))
     # purge from chunks in memory
     try:
         mem = list(_chunks)
@@ -2638,7 +2713,7 @@ def rename_label():
         return jsonify({'error': 'invalid new name'}), 400
     vec_opt = np.array(data.get('vector', []), dtype=np.float32)
     thumb = str(data.get('thumb', '') or '')
-    college_id = str(data.get('college_id',''))
+    college_id = _scoped_college_id(data.get('college_id',''))
     if u.get('role') != 'SuperAdmin' and college_id != str(u.get('college_id','')):
         return jsonify({'error': 'forbidden'}), 403
     count = 0
@@ -2899,6 +2974,8 @@ def label_aug():
 
 @app.post('/set_thumb')
 def set_thumb():
+    if _require_role(['SuperAdmin','CollegeAdmin','HOD']) is None:
+        return jsonify({'error': 'forbidden'}), 403
     data = request.get_json(silent=True)
     if not data or 'name' not in data or 'thumb' not in data:
         return jsonify({'error': 'name and thumb required'}), 400
@@ -2930,7 +3007,7 @@ def set_thumb():
 @app.get('/vectors')
 def list_vectors():
     name = request.args.get('name', '').strip()
-    cid = request.args.get('college_id', '').strip()
+    cid = _scoped_college_id(request.args.get('college_id', ''))
     out = []
     for it in _store.get('items', []):
         if str(it.get('name','')).strip() == name and ((not cid) or str(it.get('college_id','')) == cid):
@@ -2954,7 +3031,7 @@ def delete_vector():
     if not data or 'name' not in data or 'id' not in data:
         return jsonify({'error': 'name and id required'}), 400
     name = str(data['name']).strip()
-    college_id = str(data.get('college_id',''))
+    college_id = _scoped_college_id(data.get('college_id',''))
     vid = str(data['id']).strip()
     if u.get('role') != 'SuperAdmin' and college_id != str(u.get('college_id','')):
         return jsonify({'error': 'forbidden'}), 403
@@ -2995,7 +3072,7 @@ def move_vector():
     src = str(data['from']).strip()
     dst = str(data['to']).strip()
     vid = str(data['id']).strip()
-    college_id = str(data.get('college_id',''))
+    college_id = _scoped_college_id(data.get('college_id',''))
     if u.get('role') != 'SuperAdmin' and college_id != str(u.get('college_id','')):
         return jsonify({'error': 'forbidden'}), 403
     src_it = None
@@ -3033,6 +3110,8 @@ def move_vector():
     return jsonify({'ok': True})
 @app.post('/override_track')
 def override_track():
+    if _require_role(['SuperAdmin','CollegeAdmin','HOD']) is None:
+        return jsonify({'error': 'forbidden'}), 403
     data = request.get_json(silent=True)
     if not data or 'track' not in data or 'name' not in data:
         return jsonify({'error': 'track and name required'}), 400
@@ -3112,6 +3191,8 @@ def override_track():
 
 @app.post('/train_classifier')
 def train_classifier_endpoint():
+    if _require_role(['SuperAdmin','CollegeAdmin']) is None:
+        return jsonify({'error': 'forbidden'}), 403
     ok = _train_classifier(max_epochs=20)
     return jsonify({'ok': bool(ok), 'classes': len(_clf_meta.get('names', [])), 'dim': int(_clf_meta.get('dim', 0))})
 

@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 # Mobile/parent/kiosk tokens use a long TTL but are invalidated by deleting
 # their row from active_sessions (logout or superadmin force-logout).
 WEB_TOKEN_TTL = 86400          # 24 hours
-PERSISTENT_TOKEN_TTL = 315360000  # ~10 years
+PERSISTENT_TOKEN_TTL = 2592000  # 30 days; persistent sessions are also DB-revocable
 
 # Platforms that are validated against active_sessions instead of expiry time
 _PERSISTENT_PLATFORMS = ('mobile', 'kiosk')
@@ -29,7 +29,9 @@ _serializer = None
 def get_serializer():
     global _serializer
     if _serializer is None:
-        key = os.environ.get('SECRET_KEY', 'super_secret_key_change_this_in_prod')
+        key = os.environ.get('SECRET_KEY')
+        if not key:
+            raise RuntimeError('SECRET_KEY must be configured')
         _serializer = URLSafeTimedSerializer(key)
     return _serializer
 
@@ -51,10 +53,9 @@ def generate_token_with_claims(username, role, extra_claims, platform='parent'):
     return get_serializer().dumps(payload)
 
 def hash_password(raw_password):
-    try:
-        return generate_password_hash(str(raw_password))
-    except Exception:
-        return str(raw_password)
+    if raw_password is None or str(raw_password) == '':
+        raise ValueError('Password must not be empty')
+    return generate_password_hash(str(raw_password))
 
 def is_testing():
     try:
@@ -68,19 +69,11 @@ def verify_password(raw_password, stored_password):
         return False
     raw_password = str(raw_password)
     stored_password = str(stored_password)
-    if raw_password == stored_password:
-        return True
     try:
         if check_password_hash(stored_password, raw_password):
             return True
     except Exception:
         pass
-    if is_testing():
-        try:
-            if len(stored_password) > 60:
-                return True
-        except Exception:
-            pass
     return False
 
 def verify_token(token):
@@ -162,9 +155,6 @@ def authenticate_vendor_access():
                 return None, (jsonify({"error": "Invalid or Expired Token", "code": "UNAUTHORIZED"}), 401)
 
         if not username:
-            if request.path.startswith("/api/sync/upload"):
-                vid = (request.get_json(silent=True) or {}).get("vendor_id")
-                if vid: return int(vid), None
             return None, (jsonify({"error": "Authentication Required", "code": "UNAUTHORIZED"}), 401)
 
         conn = get_db_connection()
@@ -184,7 +174,9 @@ def authenticate_vendor_access():
                     conn.close()
                     return None, (jsonify({"error": "Session expired. Please log in again.", "code": "UNAUTHORIZED"}), 401)
             except Exception:
-                pass
+                logger.exception('Unable to validate persistent session')
+                conn.close()
+                return None, (jsonify({"error": "Session validation unavailable", "code": "AUTH_SERVICE_UNAVAILABLE"}), 503)
 
         if token and role == 'faculty':
             try:
@@ -193,7 +185,9 @@ def authenticate_vendor_access():
                     conn.close()
                     return None, (jsonify({"error": "Session expired. Please log in again.", "code": "UNAUTHORIZED"}), 401)
             except Exception:
-                pass
+                logger.exception('Unable to validate faculty session')
+                conn.close()
+                return None, (jsonify({"error": "Session validation unavailable", "code": "AUTH_SERVICE_UNAVAILABLE"}), 503)
 
         conn.close()
 

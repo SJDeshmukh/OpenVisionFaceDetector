@@ -36,7 +36,6 @@ import androidx.core.content.ContextCompat;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.ocp.facesdk.FaceBox;
 import com.ocp.facesdk.FaceDetectionParam;
-import com.ocp.facesdk.FaceSDK;
 
 import java.nio.ByteBuffer;
 import java.util.List;
@@ -65,6 +64,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
     private ImageAnalysis imageAnalyzer  = null;
     private Camera camera         = null;
     private CameraSelector        cameraSelector = null;
+    private int activeLensFacing = CameraSelector.LENS_FACING_FRONT;
     private ProcessCameraProvider cameraProvider = null;
 
     private CaptureView captureView;
@@ -114,6 +114,10 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
                 options.reconnection = true;
                 java.util.Map<String, java.util.List<String>> headers = new java.util.HashMap<>();
                 headers.put("User-Agent", java.util.Collections.singletonList("openvisionx-android"));
+                String socketToken = sharedPref.getString("token", null);
+                if (socketToken != null && !socketToken.isEmpty()) {
+                    headers.put("Authorization", java.util.Collections.singletonList("Bearer " + socketToken));
+                }
                 options.extraHeaders = headers;
                 if (serverUrl.endsWith("/")) serverUrl = serverUrl.substring(0, serverUrl.length() - 1);
                 mSocket = io.socket.client.IO.socket(serverUrl, options);
@@ -141,6 +145,12 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
         if (isCaptureOnly) {
              TextView tv = (TextView) btnEnroll.getChildAt(0);
              tv.setText("USE PHOTO");
+        }
+
+        int sdkResult = FaceSDKWrapper.INSTANCE.ensureInitialized(getApplicationContext());
+        if (sdkResult != com.ocp.facesdk.FaceSDK.SDK_SUCCESS) {
+            Toast.makeText(this, "Face detection unavailable (SDK error " + sdkResult + ")", Toast.LENGTH_LONG).show();
+            return;
         }
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
@@ -229,6 +239,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
 
     private void setUpCamera()
     {
+        if (isFinishing() || !FaceSDKWrapper.INSTANCE.isInitialized()) return;
         ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(CaptureActivity.this);
         cameraProviderFuture.addListener(() -> {
 
@@ -236,7 +247,11 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
             try {
                 cameraProvider = cameraProviderFuture.get();
             } catch (ExecutionException e) {
+                Log.e(TAG, "Unable to obtain CameraX provider", e);
+                return;
             } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
             }
 
             // Build and bind the camera use cases
@@ -255,8 +270,22 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
         if (forceFrontCamera) {
             defaultLens = CameraSelector.LENS_FACING_FRONT;
         }
+        activeLensFacing = defaultLens;
 
         cameraSelector = new CameraSelector.Builder().requireLensFacing(defaultLens).build();
+        try {
+            if (!cameraProvider.hasCamera(cameraSelector)) {
+                int fallbackLens = defaultLens == CameraSelector.LENS_FACING_FRONT
+                        ? CameraSelector.LENS_FACING_BACK : CameraSelector.LENS_FACING_FRONT;
+                CameraSelector fallback = new CameraSelector.Builder().requireLensFacing(fallbackLens).build();
+                if (cameraProvider.hasCamera(fallback)) {
+                    cameraSelector = fallback;
+                    activeLensFacing = fallbackLens;
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Unable to query camera availability", e);
+        }
 
         preview = new Preview.Builder()
                 .setTargetResolution(targetSize)
@@ -335,6 +364,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
     private void analyzeImage(ImageProxy imageProxy)
     {
         if(captureView.viewMode == CaptureView.VIEW_MODE.NO_FACE_PREPARE) {
+            // Always release skipped frames or CameraX stops delivering images.
             imageProxy.close();
             return;
         }
@@ -342,17 +372,14 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
         try
         {
             Image image = imageProxy.getImage();
+            if (image == null) return;
 
             Image.Plane[] planes = image.getPlanes();
             // Hardened conversion handles padding (fixes Redmi/OEM detection failures during enrollment)
             byte[] nv21 = Utils.yuv420ToNv21(image);
 
             int rotationDegrees = imageProxy.getImageInfo().getRotationDegrees();
-            int lensFacing = SettingsActivity.getCameraLens(this);
-            if (forceFrontCamera) {
-                lensFacing = CameraSelector.LENS_FACING_FRONT;
-            }
-            int cameraMode = Utils.getCameraMode(rotationDegrees, lensFacing);
+            int cameraMode = Utils.getCameraMode(rotationDegrees, activeLensFacing);
 
             // Limited diagnostic logging to prevent log flooding
             if (System.currentTimeMillis() % 1000 < 50) { 
@@ -363,7 +390,6 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
             Bitmap bitmap = FaceSDKWrapper.INSTANCE.yuv2Bitmap(nv21, image.getWidth(), image.getHeight(), cameraMode);
 
             if (bitmap == null) {
-                imageProxy.close();
                 return;
             }
 

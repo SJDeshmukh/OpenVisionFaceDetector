@@ -26,9 +26,8 @@ const Settings = () => {
   const [cooldown, setCooldown] = useState(30);
   const [workStartTime, setWorkStartTime] = useState("09:00");
   const [lateThreshold, setLateThreshold] = useState("09:30");
-  const [autoCheckout, setAutoCheckout] = useState(false);
   const [voiceGreeting, setVoiceGreeting] = useState(true);
-  const [adminAlerts, setAdminAlerts] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   // User Management State
   const [systemUsers, setSystemUsers] = useState([]);
@@ -42,7 +41,7 @@ const Settings = () => {
 
   useEffect(() => {
     fetchSettings();
-    if (user?.role === 'vendor_admin') {
+    if (['vendor_admin', 'admin'].includes(user?.role)) {
       fetchSystemUsers();
       fetchSubscription();
     }
@@ -68,13 +67,11 @@ const Settings = () => {
       const res = await axios.get(`${API_URL}/settings`, user?.token ? { headers: { Authorization: `Bearer ${user?.token}` } } : undefined);
       const s = res.data;
       if (s) {
-        if (s.threshold) setThreshold(parseFloat(s.threshold));
-        if (s.cooldown) setCooldown(parseInt(s.cooldown));
-        if (s.work_start_time) setWorkStartTime(s.work_start_time);
-        if (s.late_threshold) setLateThreshold(s.late_threshold);
-        if (s.auto_checkout) setAutoCheckout(s.auto_checkout === 'true');
-        if (s.voice_greeting) setVoiceGreeting(s.voice_greeting === 'true');
-        if (s.admin_alerts) setAdminAlerts(s.admin_alerts === 'true');
+        if (s.threshold !== undefined) setThreshold(parseFloat(s.threshold));
+        if (s.cooldown !== undefined) setCooldown(parseInt(s.cooldown, 10));
+        if (s.work_start_time !== undefined) setWorkStartTime(s.work_start_time);
+        if (s.late_threshold !== undefined) setLateThreshold(s.late_threshold);
+        if (s.voice_greeting !== undefined) setVoiceGreeting(String(s.voice_greeting).toLowerCase() === 'true');
       }
     } catch (error) {
       console.error("Error fetching settings:", error);
@@ -82,15 +79,14 @@ const Settings = () => {
   };
 
   const handleSaveSettings = async () => {
+    setSaving(true);
     try {
       const payload = {
         threshold,
         cooldown,
         work_start_time: workStartTime,
         late_threshold: lateThreshold,
-        auto_checkout: autoCheckout,
         voice_greeting: voiceGreeting,
-        admin_alerts: adminAlerts
       };
       await axios.post(`${API_URL}/settings`, payload, {
         headers: { Authorization: `Bearer ${user?.token}` }
@@ -99,6 +95,8 @@ const Settings = () => {
     } catch (error) {
       console.error("Error saving settings:", error);
       alert(error.response?.data?.error || "Failed to save settings");
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -181,18 +179,19 @@ const Settings = () => {
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8">
         <div>
           <h1 className="text-2xl font-bold text-slate-800">System Configuration</h1>
-          <p className="text-slate-500">Manage global settings for the attendance system.</p>
+          <p className="text-slate-500">Manage attendance settings for this business.</p>
         </div>
-        <button
+        {['vendor_admin', 'admin', 'owner'].includes(user?.role) && <button
           onClick={handleSaveSettings}
+          disabled={saving}
           className="flex items-center space-x-2 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium transition-colors shadow-sm"
         >
           <Save size={18} />
-          <span>Save Changes</span>
-        </button>
+          <span>{saving ? 'Saving...' : 'Save Changes'}</span>
+        </button>}
       </div>
 
-      {user?.role === 'vendor_admin' && subscription && (
+      {['vendor_admin', 'admin'].includes(user?.role) && subscription && (
         <Section title="Subscription & Billing" icon={CreditCard}>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="bg-blue-50 p-4 rounded-lg border border-blue-100">
@@ -274,7 +273,7 @@ const Settings = () => {
         </Section>
       )}
 
-      {user?.role === 'admin' && (
+      {['vendor_admin', 'admin'].includes(user?.role) && (
         <Section
           title="System Access"
           icon={UsersIcon}
@@ -376,6 +375,32 @@ const Settings = () => {
         </div>
       </Section>
 
+      <Section title="Attendance Rules" icon={Lock}>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+          <div>
+            <label htmlFor="work-start-time" className="block text-sm font-semibold text-slate-700 mb-2">Work Start Time</label>
+            <input
+              id="work-start-time"
+              type="time"
+              value={workStartTime}
+              onChange={(e) => setWorkStartTime(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg"
+            />
+          </div>
+          <div>
+            <label htmlFor="late-threshold" className="block text-sm font-semibold text-slate-700 mb-2">Late After</label>
+            <input
+              id="late-threshold"
+              type="time"
+              value={lateThreshold}
+              onChange={(e) => setLateThreshold(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg"
+            />
+          </div>
+        </div>
+        <p className="text-xs text-slate-500">A check-in after the configured late time is marked late for this business only.</p>
+      </Section>
+
 
 
       <Section title="Notifications & Interface" icon={Bell}>
@@ -395,23 +420,6 @@ const Settings = () => {
                 className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer checked:right-0 checked:border-green-400"
               />
               <label htmlFor="toggle" className="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer checked:bg-green-400"></label>
-            </div>
-          </div>
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-slate-800">Admin Alerts</p>
-              <p className="text-xs text-slate-500">Email admin on unknown face detection</p>
-            </div>
-            <div className="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
-              <input
-                type="checkbox"
-                name="toggle2"
-                id="toggle2"
-                checked={adminAlerts}
-                onChange={(e) => setAdminAlerts(e.target.checked)}
-                className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer checked:right-0 checked:border-green-400"
-              />
-              <label htmlFor="toggle2" className="toggle-label block overflow-hidden h-6 rounded-full bg-gray-300 cursor-pointer checked:bg-green-400"></label>
             </div>
           </div>
         </div>
@@ -448,7 +456,8 @@ const Settings = () => {
                   {editingUser ? 'New Password (leave blank to keep)' : 'Password'}
                 </label>
                 <input
-                  type="text"
+                  type="password"
+                  minLength={8}
                   value={userForm.password}
                   onChange={(e) => setUserForm({ ...userForm, password: e.target.value })}
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20"

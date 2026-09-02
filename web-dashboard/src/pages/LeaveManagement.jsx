@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 
 const LeaveManagement = () => {
-  const { user, staffSession, loginAsStaff, logout } = useAuth();
+  const { user, staffSession, loginAsStaff, logout, logoutStaff } = useAuth();
   const [activeTab, setActiveTab] = useState('pending');
   const [requests, setRequests] = useState([]);
   const [trackingData, setTrackingData] = useState([]);
@@ -686,7 +686,7 @@ const LeaveManagement = () => {
               {staffSession && (
                 <button
                   type="button"
-                  onClick={() => { setStaffSession(null); setShowPinModal(false); }}
+                  onClick={() => { logoutStaff(); setShowPinModal(false); }}
                   className="w-full text-red-600 text-sm font-medium py-2 hover:bg-red-50 rounded-lg transition-colors"
                 >
                   Logout Staff Session

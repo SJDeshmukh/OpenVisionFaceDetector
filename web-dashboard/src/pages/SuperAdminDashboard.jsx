@@ -3467,34 +3467,14 @@ const SuperAdminDashboard = () => {
             </div>
 
             <div className="flex-1 overflow-y-auto p-6 space-y-6">
-              {/* Default fields (read-only) */}
+              {/* Configured fields */}
               <div>
-                <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wide mb-3">Default Fields (always present)</h3>
-                <div className="space-y-2">
-                  {[
-                    {label:'Full Name', name:'name'},
-                    {label:'Student ID', name:'student_id'}, 
-                    {label:'Mobile Number', name:'mobile_number'}
-                  ].map(f => (
-                    <div key={f.name} className="flex items-center justify-between p-3 bg-slate-50 border border-slate-200 rounded-xl">
-                      <div>
-                        <span className="font-medium text-slate-700">{f.label}</span>
-                        <span className="ml-2 text-xs text-slate-400 font-mono">{f.name}</span>
-                      </div>
-                      <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-semibold">Required</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Custom fields */}
-              <div>
-                <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wide mb-3">Custom Fields</h3>
+                <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wide mb-3">Configured Fields</h3>
                 {loadingBulkConfig ? (
                   <div className="text-center py-8 text-slate-400">Loading…</div>
                 ) : bulkAttendanceCustomFields.length === 0 ? (
                   <div className="text-center py-8 border-2 border-dashed border-slate-100 rounded-2xl text-slate-400 text-sm">
-                    No custom fields yet. Add one below.
+                    No fields configured yet. Add one below or upload an Excel file for this business.
                   </div>
                 ) : (
                   <div className="space-y-2">
@@ -3526,7 +3506,7 @@ const SuperAdminDashboard = () => {
               {/* Add new field */}
               <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
                 <div className="flex justify-between items-center">
-                  <h3 className="text-sm font-bold text-slate-600">{isEditingBulkField ? 'Edit Custom Field' : 'Add Custom Field'}</h3>
+                  <h3 className="text-sm font-bold text-slate-600">{isEditingBulkField ? 'Edit Field' : 'Add Field'}</h3>
                   {isEditingBulkField && (
                     <button onClick={handleCancelEdit} className="text-xs text-blue-600 hover:underline">Cancel Edit</button>
                   )}

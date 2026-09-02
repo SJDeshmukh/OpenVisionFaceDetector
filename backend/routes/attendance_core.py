@@ -207,13 +207,14 @@ def get_attendance_summary(valid_data: AttendanceFilterSchema):
     return jsonify(result)
 
 @attendance_core_bp.route("/person-event", methods=["POST"])
+@require_auth()
 @validate_request(PersonEventSchema)
 def person_event(valid_data: PersonEventSchema):
     from app import socketio
     detected, recognized = valid_data.detected, valid_data.recognized
     name, person_id = valid_data.name, valid_data.person_id
     
-    kiosk_vendor_id, person_vendor_id = None, None
+    kiosk_vendor_id, person_vendor_id = g.vendor_id, None
     auth_header = request.headers.get('Authorization')
     if auth_header:
         try:
@@ -331,7 +332,8 @@ def person_event(valid_data: PersonEventSchema):
     if last_record:
         try:
             lts = parse_db_datetime(last_record['timestamp'])
-            c.execute("SELECT value FROM system_settings WHERE key='cooldown'")
+            cooldown_key = f"cooldown_vendor_{vendor_id_to_check}" if vendor_id_to_check else "cooldown"
+            c.execute("SELECT value FROM system_settings WHERE key=?", (cooldown_key,))
             sv = c.fetchone(); cd_sec = int(sv[0]) if sv else 30
             if 0 <= (datetime.now() - lts).total_seconds() < cd_sec:
                 conn.close(); return jsonify({"speak": False})
@@ -339,6 +341,21 @@ def person_event(valid_data: PersonEventSchema):
             logger.debug("Cooldown check failed", exc_info=True)
 
     is_late = 0
+    if new_status == 'CHECK_IN' and vendor_id_to_check:
+        try:
+            setting_suffix = f'_vendor_{vendor_id_to_check}'
+            c.execute(
+                "SELECT key, value FROM system_settings WHERE key IN (?, ?)",
+                (f'late_threshold{setting_suffix}', f'work_start_time{setting_suffix}'),
+            )
+            time_settings = {
+                row[0].removesuffix(setting_suffix): row[1] for row in c.fetchall()
+            }
+            late_after = time_settings.get('late_threshold') or time_settings.get('work_start_time')
+            if late_after and current_time_obj.strftime('%H:%M') > str(late_after)[:5]:
+                is_late = 1
+        except Exception:
+            logger.debug("Late threshold evaluation failed", exc_info=True)
     # Full late logic here...
 
     try:
@@ -388,7 +405,14 @@ def get_attendance(valid_data: AttendanceFilterSchema):
         SELECT a.*, f.department, f.designation, f.shift, f.phone, f.custom_data AS face_custom_data,
                vd.device_name
         FROM attendance a
-        LEFT JOIN faces f ON a.person_id = f.id
+        LEFT JOIN faces f ON f.vendor_id = a.vendor_id
+          AND f.id = COALESCE(
+              a.person_id,
+              (SELECT MIN(fallback.id)
+                 FROM faces fallback
+                WHERE fallback.vendor_id = a.vendor_id
+                  AND fallback.name = a.name)
+          )
         LEFT JOIN vendor_devices vd ON a.device_id = vd.device_id AND a.vendor_id = vd.vendor_id
         WHERE a.vendor_id = ?
     """
@@ -397,10 +421,13 @@ def get_attendance(valid_data: AttendanceFilterSchema):
     if e_date: query += " AND date(a.timestamp) <= ?"; params.append(e_date)
     if name: query += " AND a.name LIKE ?"; params.append(f"%{name}%")
     query += " ORDER BY a.timestamp DESC LIMIT 500"
-    c.execute(query, params); rows = c.fetchall(); conn.close()
+    c.execute(query, params)
+    columns = [description[0] for description in c.description]
+    rows = c.fetchall(); conn.close()
 
     attendance = []
-    for r in rows:
+    for row in rows:
+        r = dict(row) if hasattr(row, "keys") else dict(zip(columns, row))
         attendance.append({
             "id": r["id"], "name": r["name"], "timestamp": str(r["timestamp"]),
             "status": r["status"], "activity": r["activity"], "is_late": r.get("is_late", 0),
@@ -418,11 +445,12 @@ def get_attendance(valid_data: AttendanceFilterSchema):
     return jsonify(result)
 
 @attendance_core_bp.route("/public/attendance-by-student", methods=["GET"])
+@require_auth()
 @validate_request(PublicAttendanceRequest)
 def public_attendance_by_student(valid_data: PublicAttendanceRequest):
     student_number = valid_data.student_number
     conn = get_db_connection(); c = conn.cursor()
-    c.execute("SELECT id, vendor_id, custom_data FROM faces WHERE custom_data IS NOT NULL")
+    c.execute("SELECT id, vendor_id, custom_data FROM faces WHERE vendor_id = ? AND custom_data IS NOT NULL", (g.vendor_id,))
     pid, vid = None, None
     for r in c.fetchall():
         try:
@@ -431,17 +459,23 @@ def public_attendance_by_student(valid_data: PublicAttendanceRequest):
                 pid, vid = r[0], r[1]; break
         except (json.JSONDecodeError, ValueError): pass
     if not pid: conn.close(); return jsonify({"attendance": []})
-    limit = int(request.args.get('limit', 50))
+    try:
+        limit = max(1, min(int(request.args.get('limit', 50)), 200))
+    except (TypeError, ValueError):
+        limit = 50
     c.execute("SELECT name, timestamp, status, activity FROM attendance WHERE person_id = ? ORDER BY timestamp DESC LIMIT ?", (pid, limit))
-    rows = [dict(zip(['name','timestamp','status','activity'], x)) for x in c.fetchall()]
+    rows = []
+    for row in c.fetchall():
+        rows.append(dict(row) if hasattr(row, "keys") else dict(zip(['name','timestamp','status','activity'], row)))
     conn.close(); return jsonify({"attendance": rows, "student_number": student_number})
 
 @attendance_core_bp.route("/public/register-token", methods=["POST"])
+@require_auth()
 def public_register_token():
     data = request.json or {}
     sn, token = str(data.get("student_number") or "").strip(), str(data.get("token") or "").strip()
     if not sn or not token: return jsonify({"error": "student_number and token required"}), 400
     conn = get_db_connection(); c = conn.cursor()
     c.execute("CREATE TABLE IF NOT EXISTS parent_tokens (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, student_number TEXT, token TEXT UNIQUE, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
-    c.execute("INSERT OR IGNORE INTO parent_tokens (student_number, token) VALUES (?, ?)", (sn, token))
+    c.execute("INSERT OR IGNORE INTO parent_tokens (vendor_id, student_number, token) VALUES (?, ?, ?)", (g.vendor_id, sn, token))
     conn.commit(); conn.close(); return jsonify({"status": "success"})

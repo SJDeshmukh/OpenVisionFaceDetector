@@ -37,7 +37,11 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
             return Result.success()
         }
 
-        val faces = resp.body()?.faces ?: emptyList()
+        val body = resp.body() ?: return Result.retry()
+        val faces = body.faces
+        // Treat an unexpected empty response as non-authoritative. A transient backend
+        // serialization/database failure must never erase the entire offline gallery.
+        if (faces.isEmpty() && hasLocalFaces()) return Result.retry()
         val signature = facesSignature(faces)
         val lastSig = prefs.getString("last_faces_signature", null)
         if (lastSig != null && lastSig == signature) {
@@ -47,9 +51,8 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
             } catch (_: Exception) {}
             return Result.success()
         }
-        prefs.edit().putString("last_faces_signature", signature).apply()
-
         val db = DBManager(applicationContext)
+        var hadFailure = false
         // Insert/update faces
         for (faceData in faces) {
             try {
@@ -92,28 +95,51 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
 
                 db.insertPerson(id, name, faceBitmap, templates, phone, dept, desig, shift, customDataStr, true)
             } catch (_: Exception) {
+                hadFailure = true
             }
         }
+
+        if (hadFailure) return Result.retry()
 
         // Reconcile: delete any local person not present on server
         try {
             reconcileLocalWithServer(faces)
         } catch (_: Exception) {}
 
+        prefs.edit().putString("last_faces_signature", signature).apply()
+
         return Result.success()
     }
 
     private fun facesSignature(faces: List<SyncRequest>): String {
-        val sb = StringBuilder()
-        sb.append(faces.size).append('|')
-        for (i in 0 until kotlin.math.min(faces.size, 100)) {
-            val f = faces[i]
-            sb.append(f.id ?: "").append(':').append(f.name ?: "").append('|')
+        val digest = MessageDigest.getInstance("SHA-256")
+        fun add(value: String?) {
+            digest.update((value ?: "").toByteArray(Charsets.UTF_8))
+            digest.update(0)
         }
-        val bytes = MessageDigest.getInstance("SHA-256").digest(sb.toString().toByteArray(Charsets.UTF_8))
+        add(faces.size.toString())
+        for (face in faces.sortedBy { it.id ?: "" }) {
+            add(face.id)
+            add(face.name)
+            add(face.templates)
+            add(face.faceImage)
+            add(face.phone)
+            add(face.department)
+            add(face.designation)
+            add(face.shift)
+            add(face.customData?.toString())
+        }
+        val bytes = digest.digest()
         val out = StringBuilder(bytes.size * 2)
         for (b in bytes) out.append(String.format("%02x", b))
         return out.toString()
+    }
+
+    private fun hasLocalFaces(): Boolean {
+        val db = DBManager(applicationContext).readableDatabase
+        db.rawQuery("SELECT 1 FROM person LIMIT 1", null).use { cursor ->
+            return cursor.moveToFirst()
+        }
     }
 
     companion object {
