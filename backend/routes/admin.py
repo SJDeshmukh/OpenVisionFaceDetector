@@ -21,7 +21,14 @@ except Exception:
     celery = None
 
 # Import from services
-from services.auth_service import verify_token, extract_token, hash_password, verify_password, generate_token
+from services.auth_service import (
+    authenticate_vendor_access,
+    verify_token,
+    extract_token,
+    hash_password,
+    verify_password,
+    generate_token,
+)
 from services.restoration_service import run_restore
 
 def trigger_model_download_if_needed(features):
@@ -43,12 +50,10 @@ def super_admin_required(f):
     from functools import wraps
     @wraps(f)
     def decorated(*args, **kwargs):
-        auth_header = request.headers.get('Authorization')
-        if not auth_header:
-            return jsonify({"error": "Missing Authorization Header"}), 401
-        token = extract_token(auth_header)
-        data = verify_token(token)
-        if not data or data.get('role') != 'super_admin':
+        _, error = authenticate_vendor_access()
+        if error:
+            return error
+        if g.user_role != 'super_admin':
             return jsonify({"error": "Super Admin access required"}), 403
         return f(*args, **kwargs)
     return decorated
@@ -57,12 +62,10 @@ def admin_required(f):
     from functools import wraps
     @wraps(f)
     def decorated(*args, **kwargs):
-        auth_header = request.headers.get('Authorization')
-        if not auth_header:
-            return jsonify({"error": "Missing Authorization Header"}), 401
-        token = extract_token(auth_header)
-        data = verify_token(token)
-        if not data or data.get('role') not in ['super_admin', 'vendor_admin']:
+        _, error = authenticate_vendor_access()
+        if error:
+            return error
+        if g.user_role not in ['super_admin', 'vendor_admin']:
             return jsonify({"error": "Admin access required"}), 403
         return f(*args, **kwargs)
     return decorated
@@ -82,12 +85,10 @@ def super_admin_role_required(f):
     from functools import wraps
     @wraps(f)
     def decorated(*args, **kwargs):
-        auth_header = request.headers.get('Authorization')
-        if not auth_header:
-            return jsonify({"error": "Missing Authorization Header"}), 401
-        token = extract_token(auth_header)
-        data = verify_token(token)
-        if not data or data.get('role') != 'super_admin':
+        _, error = authenticate_vendor_access()
+        if error:
+            return error
+        if g.user_role != 'super_admin':
             return jsonify({"error": "Super Admin access required"}), 403
         return f(*args, **kwargs)
     return decorated
@@ -96,12 +97,10 @@ def admin_role_required(f):
     from functools import wraps
     @wraps(f)
     def decorated(*args, **kwargs):
-        auth_header = request.headers.get('Authorization')
-        if not auth_header:
-            return jsonify({"error": "Missing Authorization Header"}), 401
-        token = extract_token(auth_header)
-        data = verify_token(token)
-        if not data or data.get('role') not in ['super_admin', 'vendor_admin']:
+        _, error = authenticate_vendor_access()
+        if error:
+            return error
+        if g.user_role not in ['super_admin', 'vendor_admin']:
             return jsonify({"error": "Admin access required"}), 403
         return f(*args, **kwargs)
     return decorated

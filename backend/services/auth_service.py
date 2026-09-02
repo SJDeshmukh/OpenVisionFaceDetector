@@ -99,10 +99,13 @@ def extract_token(auth_header):
     if not auth_header:
         return None
     parts = str(auth_header).strip().split()
+    token = None
     if len(parts) == 1:
-        return parts[0]
-    if len(parts) >= 2 and parts[0].lower() in ("bearer", "token"):
-        return parts[1]
+        token = parts[0]
+    elif len(parts) >= 2 and parts[0].lower() in ("bearer", "token"):
+        token = parts[1]
+    if token and token.lower() not in ("undefined", "null"):
+        return token
     return None
 
 def require_auth(roles=None):
