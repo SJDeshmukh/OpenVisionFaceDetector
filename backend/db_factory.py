@@ -224,6 +224,16 @@ class PostgresCursorWrapper:
 
     def fetchall(self):
         return self.cursor.fetchall()
+
+    @property
+    def description(self):
+        """Expose standard DB-API column metadata from psycopg2.
+
+        Shared SQLite/PostgreSQL query code uses cursor.description when it
+        needs to map tuple rows. Hiding this attribute caused PostgreSQL-only
+        500 responses from /api/attendance after records were inserted.
+        """
+        return self.cursor.description
         
     def close(self):
         self.cursor.close()
