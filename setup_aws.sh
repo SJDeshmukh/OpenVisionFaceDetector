@@ -1,417 +1,480 @@
 #!/usr/bin/env bash
-# ==============================================================================
-# OpenVision Master Setup Script (v5.3 - Stop Command + Reliable Port Handling)
-# ==============================================================================
+# OpenVision AWS installer
 #
 # Usage:
-#   bash setup_aws.sh          — interactive full setup
-#   bash setup_aws.sh stop     — gracefully stop all services and free all ports
+#   bash setup_aws.sh          Interactive deployment (choose Docker or bare metal)
+#   bash setup_aws.sh check    Read-only source/configuration checks
+#   bash setup_aws.sh stop     Stop OpenVision application services only
 #
-# ==============================================================================
-set -e
+# Bare-metal environment overrides:
+#   DEPLOY_DOMAIN=tapinx.in    Public DNS name (default: tapinx.in)
+#   ENABLE_SSL=auto|yes|no     Provision Let's Encrypt when DNS resolves here
+#   MIGRATE_SQLITE=0|1         Import a legacy SQLite database (default: 0)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# STOP COMMAND — graceful shutdown of every OpenVision service and port
-# ──────────────────────────────────────────────────────────────────────────────
-if [[ "${1:-}" == "stop" ]]; then
-    echo "=============================================================================="
-    echo "OpenVision — Stopping All Services"
-    echo "=============================================================================="
+set -Eeuo pipefail
 
-    echo "  [1/4] Stopping systemd services..."
-    sudo systemctl stop openvision-backend openvision-celery 2>/dev/null && echo "  openvision-backend + celery stopped." || echo "  (services were not running)"
-    sudo systemctl stop nginx              2>/dev/null && echo "  nginx stopped."          || true
-    sudo systemctl stop redis-server       2>/dev/null && echo "  redis stopped."          || true
-    sudo systemctl stop postgresql         2>/dev/null && echo "  postgresql stopped."     || true
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
-    echo "  [2/4] Killing any lingering process by name..."
-    sudo pkill -TERM -f gunicorn  2>/dev/null && sleep 2 || true
-    sudo pkill -9    -f gunicorn  2>/dev/null || true
-    sudo pkill -TERM -f celery    2>/dev/null && sleep 2 || true
-    sudo pkill -9    -f celery    2>/dev/null || true
-    sudo pkill -9    -f "python3 app.py" 2>/dev/null || true
+ACTION="${1:-setup}"
+DEPLOY_DOMAIN="${DEPLOY_DOMAIN:-tapinx.in}"
+ENABLE_SSL="${ENABLE_SSL:-auto}"
+MIGRATE_SQLITE="${MIGRATE_SQLITE:-0}"
+ENV_FILE="$SCRIPT_DIR/backend/.env"
+RUN_USER="$(id -un)"
+RUN_GROUP="$(id -gn)"
 
-    echo "  [3/4] Releasing all ports..."
-    for port in 80 443 5001 5432 6379 5173; do
-        if sudo fuser ${port}/tcp &>/dev/null 2>&1; then
-            sudo fuser -k -9 ${port}/tcp 2>/dev/null || true
-            echo "  Port $port released."
-        else
-            echo "  Port $port already free."
-        fi
-    done
-    sleep 1
+[[ "$DEPLOY_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] || {
+    printf 'ERROR: DEPLOY_DOMAIN contains invalid characters.\n' >&2
+    exit 1
+}
+[[ "$ENABLE_SSL" =~ ^(auto|yes|no)$ ]] || {
+    printf 'ERROR: ENABLE_SSL must be auto, yes, or no.\n' >&2
+    exit 1
+}
+[[ "$MIGRATE_SQLITE" =~ ^[01]$ ]] || {
+    printf 'ERROR: MIGRATE_SQLITE must be 0 or 1.\n' >&2
+    exit 1
+}
 
-    echo "  [4/4] Stopping Docker containers (if any)..."
-    if command -v docker &>/dev/null; then
-        RUNNING=$(sudo docker ps -q 2>/dev/null)
-        if [ -n "$RUNNING" ]; then
-            echo "$RUNNING" | xargs sudo docker stop
-            echo "  Docker containers stopped."
-        else
-            echo "  No Docker containers running."
-        fi
-    fi
+log() {
+    printf '\n==> %s\n' "$1"
+}
 
-    echo "=============================================================================="
-    echo "All OpenVision services stopped. Ports 80, 443, 5001, 5432, 6379 are free."
-    echo "To restart:  sudo systemctl start openvision-backend openvision-celery nginx"
-    echo "To redeploy: bash setup_aws.sh"
-    echo "=============================================================================="
-    exit 0
-fi
+die() {
+    printf '\nERROR: %s\n' "$1" >&2
+    exit 1
+}
 
-echo "=============================================================================="
-echo "Deployment Mode Selection"
-echo "=============================================================================="
-read -p "Do you want to use Docker for deployment? (y/n): " USE_DOCKER
-echo ""
+on_error() {
+    local exit_code=$?
+    printf '\nDeployment failed at line %s (exit %s).\n' "${BASH_LINENO[0]}" "$exit_code" >&2
+    printf 'Inspect services with: sudo systemctl status openvision-backend openvision-celery --no-pager\n' >&2
+    exit "$exit_code"
+}
+trap on_error ERR
 
-if [[ "$USE_DOCKER" =~ ^[Yy]$ ]]; then
-    echo "==> Selected Mode: CONTAINERIZED (Docker)"
-else
-    echo "==> Selected Mode: BARE-METAL (Systemd)"
-fi
-echo "=============================================================================="
-
-# Set WORKING_DIR once at the top so every step can reference it
-WORKING_DIR=$(pwd)
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Helper: wait until a TCP port is confirmed free (up to $2 seconds)
-# ──────────────────────────────────────────────────────────────────────────────
-wait_port_free() {
-    local port=$1
-    local timeout=${2:-15}
-    local elapsed=0
-    while sudo ss -tlnp "sport = :${port}" 2>/dev/null | grep -q ":${port}"; do
-        if [ $elapsed -ge $timeout ]; then
-            echo "  WARNING: port $port still in use after ${timeout}s — forcing kill"
-            sudo fuser -k -9 ${port}/tcp 2>/dev/null || true
-            sleep 1
-            return
-        fi
-        sleep 1
-        elapsed=$((elapsed + 1))
+require_source_tree() {
+    local required=(
+        "backend/app.py"
+        "backend/requirements.txt"
+        "backend/celery_app.py"
+        "web-dashboard/package.json"
+        "web-dashboard/package-lock.json"
+        "nginx_face_detection.conf"
+    )
+    local path
+    for path in "${required[@]}"; do
+        [ -f "$SCRIPT_DIR/$path" ] || die "Missing required project file: $path"
     done
 }
 
-echo "==> [0/8] NUCLEAR CLEANUP: Stopping and Killing All Services..."
+env_get() {
+    local key="$1"
+    [ -f "$ENV_FILE" ] || return 0
+    sed -n "s/^${key}=//p" "$ENV_FILE" | tail -n 1
+}
 
-# 1. Stop systemd services gracefully (covers old and new service name variants)
-echo "Stopping systemd services..."
-sudo systemctl stop openvision-backend openvision-celery face-backend 2>/dev/null || true
-sudo systemctl stop nginx redis-server postgresql 2>/dev/null || true
-sleep 2
-
-# 2. Stop any Docker containers
-if command -v docker &> /dev/null; then
-    echo "Stopping Docker containers..."
-    sudo docker ps -q | xargs -r sudo docker stop 2>/dev/null || true
-fi
-
-# 3. Deep-kill by process name (catches processes outside systemd)
-echo "Killing lingering Gunicorn, Celery, and Python workers..."
-sudo pkill -9 -f gunicorn 2>/dev/null || true
-sudo pkill -9 -f celery   2>/dev/null || true
-sudo pkill -9 -f "python3 app.py" 2>/dev/null || true
-sudo pkill -9 -f "python app.py"  2>/dev/null || true
-sleep 2
-
-# 4. Force-release each port and then VERIFY it is actually free
-echo "Releasing and verifying ports..."
-for port in 80 443 5001 5432 6379 5173; do
-    echo "  Releasing port $port..."
-    sudo fuser -k -9 ${port}/tcp 2>/dev/null || true
-    wait_port_free $port 10
-    echo "  Port $port confirmed free."
-done
-
-# 5. Flush stale Celery queues from Redis
-echo "Flushing stale Redis queues..."
-sudo systemctl start redis-server 2>/dev/null || true
-sleep 1
-redis-cli flushdb 2>/dev/null || true
-sudo journalctl --vacuum-time=1s 2>/dev/null || true
-
-echo "Environment is now CLEAN. Ready for setup."
-
-# ──────────────────────────────────────────────────────────────────────────────
-echo "==> [1/8] Configuring 4GB Swap File for RAM Stability..."
-if [ ! -f /swapfile ] && [ ! -L /swapfile ]; then
-    sudo fallocate -l 4G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=4096
-    sudo chmod 600 /swapfile
-    sudo mkswap /swapfile
-    sudo swapon /swapfile
-    if ! grep -q "/swapfile" /etc/fstab; then
-        echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+env_set() {
+    local key="$1"
+    local value="$2"
+    touch "$ENV_FILE"
+    if grep -q "^${key}=" "$ENV_FILE"; then
+        sed -i "s#^${key}=.*#${key}=${value}#" "$ENV_FILE"
+    else
+        printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
     fi
-else
-    echo "Swap already exists, skipping creation."
+}
+
+wait_for_url() {
+    local url="$1"
+    local attempts="${2:-30}"
+    local i
+    for ((i = 1; i <= attempts; i++)); do
+        if curl --fail --silent --show-error --max-time 5 "$url" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 2
+    done
+    return 1
+}
+
+stop_application_services() {
+    sudo systemctl stop openvision-backend openvision-celery face-backend 2>/dev/null || true
+}
+
+if [ "$ACTION" = "check" ]; then
+    require_source_tree
+    bash -n "$SCRIPT_DIR/setup_aws.sh"
+    printf 'Source tree: OK\n'
+    printf 'Bash syntax: OK\n'
+    if command -v docker >/dev/null 2>&1; then
+        if [ -f "$SCRIPT_DIR/.env" ]; then
+            docker compose config --quiet
+            printf 'Docker Compose configuration: OK\n'
+        else
+            printf 'Docker Compose configuration: skipped (root .env not created yet)\n'
+        fi
+    fi
+    printf 'Bare-metal deployment will target domain: %s\n' "$DEPLOY_DOMAIN"
+    exit 0
 fi
-sudo sysctl -w vm.swappiness=30 2>/dev/null || true
-sudo sysctl -w vm.vfs_cache_pressure=50 2>/dev/null || true
-grep -q 'vm.swappiness'       /etc/sysctl.conf || echo 'vm.swappiness=30'       | sudo tee -a /etc/sysctl.conf
-grep -q 'vm.vfs_cache_pressure' /etc/sysctl.conf || echo 'vm.vfs_cache_pressure=50' | sudo tee -a /etc/sysctl.conf
 
-# ──────────────────────────────────────────────────────────────────────────────
+if [ "$ACTION" = "stop" ]; then
+    log "Stopping OpenVision application services"
+    stop_application_services
+    if command -v docker >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/docker-compose.yml" ]; then
+        sudo docker compose stop api worker 2>/dev/null || true
+    fi
+    printf 'OpenVision API and worker services are stopped. PostgreSQL, Redis, Nginx, and unrelated containers were left running.\n'
+    exit 0
+fi
+
+[ "$ACTION" = "setup" ] || die "Unknown command '$ACTION'. Use setup, check, or stop."
+require_source_tree
+[ "$EUID" -ne 0 ] || die "Run this script as the normal deployment user, not with sudo. It requests sudo only where needed."
+
+printf '%s\n' "=============================================================================="
+printf '%s\n' "OpenVision AWS Deployment"
+printf '%s\n' "=============================================================================="
+read -r -p "Do you want to use Docker for deployment? (y/n): " USE_DOCKER
+
 if [[ "$USE_DOCKER" =~ ^[Yy]$ ]]; then
+    log "Preparing isolated Docker deployment"
+    command -v openssl >/dev/null 2>&1 || die "openssl is required"
 
-    echo "==> [2/6] Installing Docker and Docker Compose..."
-    if ! command -v docker &> /dev/null; then
+    if ! command -v docker >/dev/null 2>&1; then
         sudo apt-get update
         sudo apt-get install -y ca-certificates curl gnupg lsb-release
-        sudo mkdir -p /etc/apt/keyrings
-        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+        sudo install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
+        printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu %s stable\n' \
+            "$(dpkg --print-architecture)" "$(lsb_release -cs)" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
         sudo apt-get update
         sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
     fi
 
-    sudo usermod -aG docker $USER || true
+    ROOT_ENV="$SCRIPT_DIR/.env"
+    touch "$ROOT_ENV"
+    chmod 600 "$ROOT_ENV"
+    grep -q '^DB_PASSWORD=' "$ROOT_ENV" || printf 'DB_PASSWORD=%s\n' "$(openssl rand -hex 24)" >> "$ROOT_ENV"
+    grep -q '^REDIS_PASSWORD=' "$ROOT_ENV" || printf 'REDIS_PASSWORD=%s\n' "$(openssl rand -hex 24)" >> "$ROOT_ENV"
+    grep -q '^SECRET_KEY=' "$ROOT_ENV" || printf 'SECRET_KEY=%s\n' "$(openssl rand -hex 32)" >> "$ROOT_ENV"
 
-    if ! command -v docker-compose &> /dev/null; then
-        sudo ln -s /usr/libexec/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose || true
-    fi
+    sudo docker compose config --quiet
+    sudo docker compose up -d --build --remove-orphans --scale worker=1
+    wait_for_url "http://127.0.0.1:5001/api/health" 45 || die "Docker API did not become healthy"
+    printf '\nDocker API deployment completed successfully at http://%s:5001\n' "$(hostname -I | awk '{print $1}')"
+    exit 0
+fi
 
-    sudo docker ps -q --filter "publish=5001" | xargs sudo docker stop 2>/dev/null || true
-    sudo docker compose down --remove-orphans 2>/dev/null || true
-    sudo docker system prune -f --volumes || true
-    sleep 2
+log "Selected safe bare-metal deployment"
+sudo -v
 
-    echo "==> [3/6] Initializing Docker Environment (.env)..."
-    if [ ! -f "backend/.env" ]; then
-        PUBLIC_IP=$(curl -s https://api.ipify.org || echo "localhost")
-        cat <<EOF > backend/.env
-SECRET_KEY=$(openssl rand -base64 32)
-DATABASE_URL=postgresql://postgres:postgres@db:5432/face_detection
-REDIS_URL=redis://redis:6379/0
-CELERY_BROKER_URL=redis://redis:6379/0
-BACKEND_URL=http://$PUBLIC_IP:5001
-FRONTEND_URL=http://$PUBLIC_IP
-LOW_RAM_MODE=0
-EOF
-    else
-        sed -i "s|localhost:5432|db:5432|g" backend/.env
-        sed -i "s|127.0.0.1:6379|redis:6379|g" backend/.env
-    fi
+log "Stopping only existing OpenVision application services"
+stop_application_services
+if sudo lsof -nP -iTCP:5001 -sTCP:LISTEN >/dev/null 2>&1; then
+    sudo lsof -nP -iTCP:5001 -sTCP:LISTEN || true
+    die "Port 5001 is occupied by a process outside the OpenVision systemd services"
+fi
 
-    echo "==> [4/6] Building and Starting Containers..."
-    sudo docker compose build api worker
-    sudo docker compose up -d --scale worker=1
+log "Installing operating-system dependencies"
+sudo apt-get update
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    python3-pip python3-venv python3-dev \
+    postgresql postgresql-contrib libpq-dev \
+    redis-server redis-tools \
+    nginx curl ca-certificates openssl \
+    libgl1 libglib2.0-0 libgomp1 libheif-dev \
+    psmisc lsof build-essential rsync \
+    certbot python3-certbot-nginx
 
-    echo "CONTAINERIZED DEPLOYMENT COMPLETE!"
+NODE_MAJOR=0
+if command -v node >/dev/null 2>&1; then
+    NODE_MAJOR="$(node --version | sed -E 's/^v([0-9]+).*/\1/')"
+fi
+if [ "$NODE_MAJOR" -lt 24 ]; then
+    log "Installing Node.js 24 LTS"
+    curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
+    sudo apt-get install -y nodejs
+fi
+node --version
+npm --version
 
+log "Configuring swap without replacing existing swap data"
+if [ ! -e /swapfile ]; then
+    sudo fallocate -l 4G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=4096 status=progress
+    sudo chmod 600 /swapfile
+    sudo mkswap /swapfile
+fi
+if ! sudo swapon --show=NAME --noheadings | grep -Fxq /swapfile; then
+    sudo swapon /swapfile
+fi
+grep -qE '^/swapfile[[:space:]]' /etc/fstab || printf '/swapfile none swap sw 0 0\n' | sudo tee -a /etc/fstab >/dev/null
+
+log "Starting PostgreSQL and Redis"
+sudo systemctl enable --now postgresql redis-server
+
+mkdir -p "$SCRIPT_DIR/backend"
+touch "$ENV_FILE"
+chmod 600 "$ENV_FILE"
+
+DB_PASSWORD="$(env_get DB_PASSWORD)"
+[ -n "$DB_PASSWORD" ] || DB_PASSWORD="$(openssl rand -hex 24)"
+if [[ ! "$DB_PASSWORD" =~ ^[A-Za-z0-9]+$ ]]; then
+    printf 'Existing DB_PASSWORD contains URL/SQL-sensitive characters; rotating the dedicated application-role password.\n'
+    DB_PASSWORD="$(openssl rand -hex 24)"
+fi
+SECRET_KEY="$(env_get SECRET_KEY)"
+[ -n "$SECRET_KEY" ] || SECRET_KEY="$(openssl rand -hex 32)"
+
+log "Creating the dedicated PostgreSQL application role and database"
+if sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='openvision_app'" | grep -q 1; then
+    sudo -u postgres psql -v ON_ERROR_STOP=1 -c "ALTER ROLE openvision_app WITH LOGIN PASSWORD '${DB_PASSWORD}'" >/dev/null
 else
-    # ──────────────────────────────────────────────────────────────────────────
-    # BARE-METAL SETUP (Systemd Mode)
-    # ──────────────────────────────────────────────────────────────────────────
+    sudo -u postgres psql -v ON_ERROR_STOP=1 -c "CREATE ROLE openvision_app WITH LOGIN PASSWORD '${DB_PASSWORD}'" >/dev/null
+fi
+if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='face_detection'" | grep -q 1; then
+    sudo -u postgres createdb --owner=openvision_app face_detection
+fi
+sudo -u postgres psql -v ON_ERROR_STOP=1 -c "ALTER DATABASE face_detection OWNER TO openvision_app" >/dev/null
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d face_detection <<'SQL' >/dev/null
+ALTER SCHEMA public OWNER TO openvision_app;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO openvision_app;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO openvision_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO openvision_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO openvision_app;
+SQL
 
-    echo "==> [2/8] Fixing Permissions and Installing System Dependencies..."
-    sudo chown -R $USER:$USER "$WORKING_DIR" 2>/dev/null || true
+REDIS_PASSWORD="$(env_get REDIS_PASSWORD)"
+if redis-cli ping 2>/dev/null | grep -q PONG; then
+    REDIS_URL="redis://127.0.0.1:6379/0"
+elif [ -n "$REDIS_PASSWORD" ] && redis-cli -a "$REDIS_PASSWORD" ping 2>/dev/null | grep -q PONG; then
+    REDIS_PASSWORD_ENCODED="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$REDIS_PASSWORD")"
+    REDIS_URL="redis://:${REDIS_PASSWORD_ENCODED}@127.0.0.1:6379/0"
+else
+    die "Redis is running but could not be authenticated; check /etc/redis/redis.conf and backend/.env"
+fi
 
-    sudo apt-get update -y
-    sudo apt-get install -y \
-        python3-pip python3-venv \
-        postgresql postgresql-contrib \
-        redis-server \
-        nginx \
-        libgl1 libglib2.0-0 \
-        libheif-dev \
-        psmisc lsof curl \
-        build-essential \
-        certbot python3-certbot-nginx
+TOTAL_RAM_MB="$(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo)"
+LOW_RAM_MODE=1
+[ "$TOTAL_RAM_MB" -ge 3072 ] && LOW_RAM_MODE=0
+PUBLIC_IP="$(curl -fsS --max-time 10 https://api.ipify.org || hostname -I | awk '{print $1}')"
 
-    if ! command -v node &> /dev/null; then
-        echo "Installing Node.js 20.x..."
-        curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-        sudo apt-get install -y nodejs
-    else
-        echo "Node.js already installed: $(node --version)"
+env_set SECRET_KEY "$SECRET_KEY"
+env_set DB_PASSWORD "$DB_PASSWORD"
+env_set DATABASE_URL "postgresql://openvision_app:${DB_PASSWORD}@127.0.0.1:5432/face_detection"
+env_set DB_TYPE "postgres"
+env_set REDIS_URL "$REDIS_URL"
+env_set CELERY_BROKER_URL "$REDIS_URL"
+env_set BACKEND_URL "http://${DEPLOY_DOMAIN}"
+env_set FRONTEND_URL "http://${DEPLOY_DOMAIN}"
+env_set LOW_RAM_MODE "$LOW_RAM_MODE"
+chmod 600 "$ENV_FILE"
+
+log "Creating the Python environment and installing project requirements"
+if [ ! -d "$SCRIPT_DIR/backend/.venv" ]; then
+    python3 -m venv "$SCRIPT_DIR/backend/.venv"
+fi
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/backend/.venv/bin/activate"
+python -m pip install --upgrade pip wheel setuptools
+python -m pip install -r "$SCRIPT_DIR/backend/requirements.txt"
+
+log "Downloading and validating AI model resources"
+python "$SCRIPT_DIR/backend/download_models.py"
+MODEL_FILES=(
+    "$SCRIPT_DIR/multiple_face_detection/models/realesrgan/RealESRGAN_x4plus.pth"
+    "$SCRIPT_DIR/multiple_face_detection/models/realesrgan/RealESRGAN_x2plus.pth"
+    "$SCRIPT_DIR/multiple_face_detection/models/gfpgan/GFPGANv1.4.pth"
+    "$SCRIPT_DIR/backend/standalone_live_mesh/3DDFA-V3/assets/face_model.npy"
+    "$SCRIPT_DIR/backend/standalone_live_mesh/3DDFA-V3/assets/net_recon.pth"
+)
+for model_file in "${MODEL_FILES[@]}"; do
+    [ -s "$model_file" ] || die "Required model was not downloaded: $model_file"
+done
+
+log "Initializing and validating the PostgreSQL schema"
+(
+    cd "$SCRIPT_DIR/backend"
+    export PYTHONPATH="$SCRIPT_DIR/backend:$SCRIPT_DIR"
+    python -c "from db_factory import init_schemas; init_schemas()"
+    if [ "$MIGRATE_SQLITE" = "1" ]; then
+        python -c "import sys; from migrate_to_postgres import run_safe_migration; sys.exit(0 if run_safe_migration() else 1)"
     fi
+)
+PGPASSWORD="$DB_PASSWORD" psql -h 127.0.0.1 -U openvision_app -d face_detection -tAc \
+    "SELECT CASE WHEN to_regclass('public.vendors') IS NOT NULL THEN 1 ELSE 0 END" | grep -q 1 \
+    || die "PostgreSQL schema validation failed: vendors table is missing"
 
-    echo "==> [3/8] Configuring Database..."
-    sudo systemctl start postgresql
-    sudo systemctl enable postgresql
-    sudo -u postgres psql -c "CREATE DATABASE face_detection;" 2>/dev/null || true
-    sudo -u postgres psql -c "ALTER USER postgres WITH PASSWORD 'postgres';" || true
-    sudo systemctl restart postgresql redis-server
+log "Building the web dashboard"
+(
+    cd "$SCRIPT_DIR/web-dashboard"
+    npm ci --legacy-peer-deps
+    NODE_OPTIONS="--max-old-space-size=1536" npm run build
+    [ -f dist/index.html ] || die "Dashboard build did not create dist/index.html"
+)
 
-    echo "==> [4/8] Setting up Python Virtual Environment..."
-    if [ ! -d "backend/.venv" ]; then
-        python3 -m venv backend/.venv
-    fi
-    source backend/.venv/bin/activate
-    pip install --upgrade pip
+log "Deploying dashboard assets"
+sudo install -d -o www-data -g www-data -m 0755 /var/www/face_detection
+sudo rsync -a --delete "$SCRIPT_DIR/web-dashboard/dist/" /var/www/face_detection/
+sudo chown -R www-data:www-data /var/www/face_detection
 
-    echo "Installing Python dependencies..."
-    pip install -r backend/requirements.txt
+log "Installing Nginx configuration for ${DEPLOY_DOMAIN}"
+sudo tee /etc/nginx/sites-available/face_detection >/dev/null <<NGINX
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${DEPLOY_DOMAIN} www.${DEPLOY_DOMAIN};
+    client_max_body_size 50M;
 
-    echo "==> [5/8] Managing Environment (.env)..."
-    if [ ! -f "backend/.env" ]; then
-        PUBLIC_IP=$(curl -s https://api.ipify.org || echo "localhost")
-        TOTAL_RAM=$(free -g | awk '/^Mem:/{print $2}')
-        LRM=1
-        if [ "$TOTAL_RAM" -ge 3 ]; then
-            echo "RAM detected: ${TOTAL_RAM}GB — disabling LOW_RAM_MODE"
-            LRM=0
-        fi
-        cat <<EOF > backend/.env
-SECRET_KEY=$(openssl rand -base64 32)
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/face_detection
-REDIS_URL=redis://localhost:6379/0
-CELERY_BROKER_URL=redis://localhost:6379/0
-BACKEND_URL=http://$PUBLIC_IP:5001
-FRONTEND_URL=http://$PUBLIC_IP
-LOW_RAM_MODE=$LRM
-EOF
-    else
-        # Read LRM from existing .env for use in systemd units below
-        LRM=$(grep -oP '(?<=LOW_RAM_MODE=)\d' backend/.env 2>/dev/null || echo "1")
-    fi
+    root /var/www/face_detection;
+    index index.html;
 
-    echo "==> [6/8] Pre-downloading AI Models..."
-    mkdir -p multiple_face_detection/models/realesrgan
-    mkdir -p multiple_face_detection/models/gfpgan
-    mkdir -p backend/standalone_live_mesh/3DDFA-V3/assets
-
-    echo "Running unified model downloader (skips if already present)..."
-    python3 backend/download_models.py || echo "Warning: Some model downloads failed — check above for details."
-
-    echo "==> [7/8] Building Frontend & Configuring Nginx..."
-
-    # ── Schema migration (uses WORKING_DIR which is now correctly set) ─────────
-    echo "Initializing database schema..."
-    cd "$WORKING_DIR/backend"
-    source .venv/bin/activate
-    export PYTHONPATH="$WORKING_DIR/backend:$WORKING_DIR"
-    export DATABASE_URL="postgresql://postgres:postgres@localhost:5432/face_detection"
-    export DB_TYPE="postgres"
-    python3 migrate_to_postgres.py || echo "Warning: migrate_to_postgres.py encountered issues."
-    cd "$WORKING_DIR"
-
-    echo "Building web-dashboard for production..."
-    cd "$WORKING_DIR/web-dashboard"
-    npm install --legacy-peer-deps
-    npm install react-is --legacy-peer-deps
-    NODE_OPTIONS="--max-old-space-size=1024" npm run build || {
-        echo "ERROR: Frontend build failed."
-        exit 1
+    location / {
+        try_files \$uri \$uri/ /index.html;
     }
-    if [ ! -d "dist" ]; then
-        echo "ERROR: 'dist' folder was not created. Build failed."
-        exit 1
-    fi
 
-    echo "Deploying frontend assets to /var/www/face_detection..."
-    sudo mkdir -p /var/www/face_detection
-    sudo rm -rf /var/www/face_detection/*
-    sudo cp -r dist/* /var/www/face_detection/
-    sudo chown -R www-data:www-data /var/www/face_detection
-    sudo chmod -R 755 /var/www/face_detection
-    cd "$WORKING_DIR"
+    location /api/ {
+        proxy_pass http://127.0.0.1:5001;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
 
-    echo "Deploying Nginx configuration..."
-    sudo cp nginx_face_detection.conf /etc/nginx/sites-available/face_detection
-    sudo ln -sf /etc/nginx/sites-available/face_detection /etc/nginx/sites-enabled/
-    sudo rm -f /etc/nginx/sites-enabled/default
-    sudo nginx -t && sudo systemctl restart nginx
+    location /socket.io/ {
+        proxy_pass http://127.0.0.1:5001/socket.io/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 600s;
+    }
+}
+NGINX
+sudo ln -sfn /etc/nginx/sites-available/face_detection /etc/nginx/sites-enabled/face_detection
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl enable --now nginx
+sudo systemctl reload nginx
 
-    echo "==> [8/9] Provisioning SSL Certificate (Let's Encrypt)..."
-    # --no-redirect = certbot selection 1 (keep HTTP alongside HTTPS, no forced redirect)
-    # --non-interactive + --agree-tos + --register-unsafely-without-email = fully unattended
-    sudo certbot --nginx \
-        -d tapinx.in \
-        -d www.tapinx.in \
-        --non-interactive \
-        --agree-tos \
-        --register-unsafely-without-email \
-        --no-redirect \
-        2>&1 || echo "Warning: Certbot failed — check DNS resolution for tapinx.in and re-run 'sudo certbot --nginx -d tapinx.in -d www.tapinx.in' manually."
-
-    # Enable auto-renewal (certbot installs a systemd timer; this is a belt-and-suspenders cron)
-    (crontab -l 2>/dev/null | grep -v certbot; echo "0 3 * * * sudo certbot renew --quiet --nginx") | crontab -
-    echo "SSL auto-renewal cron registered (runs daily at 03:00)."
-
-    # Allow HTTPS through firewall
-    sudo ufw allow 443/tcp || true
-
-    echo "==> [9/9] Configuring Systemd Services (Auto-Restart)..."
-    GUNICORN_PATH="$WORKING_DIR/backend/.venv/bin/gunicorn"
-    CELERY_PATH="$WORKING_DIR/backend/.venv/bin/celery"
-
-    # Backend Service
-    # KillMode=mixed + TimeoutStopSec: systemd kills the master with SIGTERM,
-    # then sends SIGKILL to any remaining workers after 15s so the port is
-    # always released before the next start attempt.
-    sudo tee /etc/systemd/system/openvision-backend.service > /dev/null <<UNIT
+log "Installing application-scoped systemd services"
+sudo tee /etc/systemd/system/openvision-backend.service >/dev/null <<UNIT
 [Unit]
-Description=Gunicorn instance to serve OpenVision Face Detection
-After=network.target postgresql.service redis.service
+Description=OpenVision API
+After=network-online.target postgresql.service redis-server.service
+Wants=network-online.target
 
 [Service]
-User=$USER
-Group=www-data
-WorkingDirectory=$WORKING_DIR/backend
-Environment="PATH=$WORKING_DIR/backend/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-Environment="PYTHONPATH=$WORKING_DIR/backend:$WORKING_DIR"
-Environment="LOW_RAM_MODE=$LRM"
-EnvironmentFile=$WORKING_DIR/backend/.env
-ExecStartPre=/bin/bash -c '/usr/bin/fuser -k -9 5001/tcp 2>/dev/null || true; /bin/sleep 1'
-ExecStart=$GUNICORN_PATH --worker-class gthread -w 1 --threads 4 -b 0.0.0.0:5001 app:app --timeout 600
-ExecStop=/bin/kill -s TERM \$MAINPID
+Type=simple
+User=${RUN_USER}
+Group=${RUN_GROUP}
+WorkingDirectory=${SCRIPT_DIR}/backend
+Environment="PATH=${SCRIPT_DIR}/backend/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONPATH=${SCRIPT_DIR}/backend:${SCRIPT_DIR}"
+EnvironmentFile=${ENV_FILE}
+ExecStart=${SCRIPT_DIR}/backend/.venv/bin/gunicorn --worker-class gthread --workers 1 --threads 4 --bind 127.0.0.1:5001 app:app --timeout 600
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
 KillMode=mixed
-TimeoutStopSec=15
-Restart=always
-RestartSec=8
+NoNewPrivileges=true
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
 UNIT
 
-    # Celery Worker Service
-    sudo bash -c "cat <<EOF > /etc/systemd/system/openvision-celery.service
+sudo tee /etc/systemd/system/openvision-celery.service >/dev/null <<UNIT
 [Unit]
-Description=Celery worker for OpenVision Face Detection
-After=network.target postgresql.service redis.service
+Description=OpenVision Celery Worker
+After=network-online.target postgresql.service redis-server.service
+Wants=network-online.target
 
 [Service]
-User=$USER
-Group=www-data
-WorkingDirectory=$WORKING_DIR/backend
-Environment=\"PATH=$WORKING_DIR/backend/.venv/bin\"
-Environment=\"PYTHONPATH=$WORKING_DIR/backend:$WORKING_DIR\"
-Environment=\"LOW_RAM_MODE=$LRM\"
-Environment=\"OMP_NUM_THREADS=1\"
-Environment=\"MKL_NUM_THREADS=1\"
-Environment=\"OPENBLAS_NUM_THREADS=1\"
-Environment=\"FORCE_3D_ENGINE=1\"
-EnvironmentFile=$WORKING_DIR/backend/.env
-ExecStart=$CELERY_PATH -A celery_app worker --loglevel=info --concurrency=1 --pool=threads --max-tasks-per-child=500 --prefetch-multiplier=1 -n worker1@%h
+Type=simple
+User=${RUN_USER}
+Group=${RUN_GROUP}
+WorkingDirectory=${SCRIPT_DIR}/backend
+Environment="PATH=${SCRIPT_DIR}/backend/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONPATH=${SCRIPT_DIR}/backend:${SCRIPT_DIR}"
+Environment="OMP_NUM_THREADS=1"
+Environment="MKL_NUM_THREADS=1"
+Environment="OPENBLAS_NUM_THREADS=1"
+Environment="FORCE_3D_ENGINE=1"
+EnvironmentFile=${ENV_FILE}
+ExecStart=${SCRIPT_DIR}/backend/.venv/bin/celery -A celery_app worker --loglevel=info --concurrency=1 --pool=threads --max-tasks-per-child=500 --prefetch-multiplier=1 -n worker1@%H
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
 KillMode=mixed
-TimeoutStopSec=20
-Restart=always
-RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
-EOF"
+UNIT
 
-    sudo systemctl daemon-reload
-    sudo systemctl enable openvision-backend openvision-celery
+sudo systemctl daemon-reload
+sudo systemctl enable openvision-backend openvision-celery
+sudo systemctl restart openvision-backend openvision-celery
+sudo systemctl is-active --quiet openvision-backend
+sudo systemctl is-active --quiet openvision-celery
 
-    # Services were already stopped and ports released above — use 'start', not 'restart'
-    sudo systemctl start openvision-backend openvision-celery
+log "Running deployment health checks"
+wait_for_url "http://127.0.0.1:5001/api/health" 45 || {
+    sudo journalctl -u openvision-backend -n 100 --no-pager || true
+    die "OpenVision API did not become healthy"
+}
+curl --fail --silent --show-error -H "Host: ${DEPLOY_DOMAIN}" http://127.0.0.1/api/health >/dev/null \
+    || die "Nginx could not proxy the API health endpoint"
 
-    # Firewall — allow HTTP (80), HTTPS (443), and direct API access (5001)
-    sudo ufw allow 80/tcp   || true
-    sudo ufw allow 443/tcp  || true
-    sudo ufw allow 5001/tcp || true
-
-    echo "=============================================================================="
-    echo "PRODUCTION BARE-METAL SETUP COMPLETE!"
-    echo "=============================================================================="
-    echo "- Dashboard: https://tapinx.in"
-    echo "- API:       https://tapinx.in/api"
-    echo "=============================================================================="
+if command -v ufw >/dev/null 2>&1; then
+    sudo ufw allow 'Nginx Full' >/dev/null || true
 fi
+
+SSL_ENABLED=0
+if [ "$ENABLE_SSL" != "no" ]; then
+    DOMAIN_IP="$(getent ahostsv4 "$DEPLOY_DOMAIN" 2>/dev/null | awk 'NR==1{print $1}' || true)"
+    if [ "$ENABLE_SSL" = "yes" ] || { [ "$ENABLE_SSL" = "auto" ] && [ -n "$DOMAIN_IP" ] && [ "$DOMAIN_IP" = "$PUBLIC_IP" ]; }; then
+        log "Provisioning Let's Encrypt for ${DEPLOY_DOMAIN}"
+        CERTBOT_DOMAINS=(-d "$DEPLOY_DOMAIN")
+        WWW_IP="$(getent ahostsv4 "www.${DEPLOY_DOMAIN}" 2>/dev/null | awk 'NR==1{print $1}' || true)"
+        [ -n "$WWW_IP" ] && [ "$WWW_IP" = "$PUBLIC_IP" ] && CERTBOT_DOMAINS+=(-d "www.${DEPLOY_DOMAIN}")
+        if sudo certbot --nginx "${CERTBOT_DOMAINS[@]}" --non-interactive --agree-tos \
+            --register-unsafely-without-email --redirect; then
+            SSL_ENABLED=1
+            env_set BACKEND_URL "https://${DEPLOY_DOMAIN}"
+            env_set FRONTEND_URL "https://${DEPLOY_DOMAIN}"
+            sudo systemctl restart openvision-backend openvision-celery
+            wait_for_url "https://${DEPLOY_DOMAIN}/api/health" 20 \
+                || die "HTTPS certificate was installed, but the public health endpoint is unavailable"
+        else
+            printf 'WARNING: SSL provisioning failed; HTTP deployment remains available. Check DNS and rerun Certbot.\n' >&2
+        fi
+    else
+        printf 'SSL skipped: %s resolves to %s, but this server public IP is %s.\n' \
+            "$DEPLOY_DOMAIN" "${DOMAIN_IP:-nothing}" "$PUBLIC_IP"
+    fi
+fi
+
+printf '\n%s\n' "=============================================================================="
+printf '%s\n' "OPENVISION BARE-METAL DEPLOYMENT COMPLETED"
+printf '%s\n' "=============================================================================="
+if [ "$SSL_ENABLED" -eq 1 ]; then
+    printf 'Dashboard: https://%s\n' "$DEPLOY_DOMAIN"
+    printf 'API:       https://%s/api\n' "$DEPLOY_DOMAIN"
+else
+    printf 'Dashboard: http://%s\n' "$DEPLOY_DOMAIN"
+    printf 'API:       http://%s/api\n' "$DEPLOY_DOMAIN"
+fi
+printf 'Local health: http://127.0.0.1:5001/api/health\n'
+printf 'Services:     sudo systemctl status openvision-backend openvision-celery nginx\n'
+printf 'Application logs: sudo journalctl -u openvision-backend -f\n'
