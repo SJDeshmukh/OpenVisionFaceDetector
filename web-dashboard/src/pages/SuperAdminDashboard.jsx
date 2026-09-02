@@ -1421,20 +1421,20 @@ const SuperAdminDashboard = () => {
   if (loading) return <div className="p-8">Loading...</div>;
 
   return (
-    <div className="p-6 bg-slate-50 min-h-screen">
-      <div className="flex justify-between items-center mb-4">
+    <div className="p-3 sm:p-6 bg-slate-50 min-h-screen min-w-0">
+      <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center mb-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-800">Super Admin Dashboard</h1>
           <p className="text-slate-500">Manage Vendors & Subscriptions</p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex flex-col sm:flex-row gap-3">
           <button
             onClick={() => setPasswordModal({ show: true, username: user.username })}
             className="bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 px-4 py-2 rounded-lg flex items-center gap-2"
           >
             <Lock size={18} /> Change My Password
           </button>
-          <div className="flex gap-2">
+          <div className="flex flex-col sm:flex-row gap-2">
             <label className="bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 px-4 py-2 rounded-lg flex items-center gap-2 cursor-pointer shadow-sm transition-all active:scale-95">
               <UploadCloud size={18} /> Import Portable Vendor
               <input type="file" className="hidden" accept=".gz,.json" onChange={handlePortableImport} />
@@ -1470,7 +1470,7 @@ const SuperAdminDashboard = () => {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-6 mb-6 border-b border-slate-200">
+      <div className="flex gap-6 mb-6 border-b border-slate-200 overflow-x-auto whitespace-nowrap touch-pan-x">
         <button
           className={`pb-3 px-2 font-medium transition-colors ${activeTab === 'overview' ? 'border-b-2 border-indigo-600 text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
           onClick={() => setActiveTab('overview')}
@@ -1560,7 +1560,7 @@ const SuperAdminDashboard = () => {
             </div>
           </div>
 
-          <div className="bg-white rounded-xl shadow-sm overflow-hidden border border-slate-200">
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200 min-w-0">
             <div className="p-3 border-b border-slate-100 flex flex-wrap gap-2 items-center">
               <span className="text-sm text-slate-600">Selected: {selectedVendorIds.length}</span>
               <button onClick={handleBulkSuspend} className="text-xs bg-red-50 text-red-600 px-2 py-1 rounded">Suspend</button>
@@ -1569,7 +1569,14 @@ const SuperAdminDashboard = () => {
               <button onClick={() => handleBulkToggleFeature('report_payroll', false)} className="text-xs bg-slate-50 text-slate-600 px-2 py-1 rounded">Disable Payroll</button>
               <button onClick={() => handleBulkUpdateWebSessions(1)} className="text-xs bg-indigo-50 text-indigo-600 px-2 py-1 rounded">Set Web Sessions = 1</button>
             </div>
-            <table className="w-full text-left">
+            <div
+              className="w-full max-w-full overflow-x-auto overscroll-x-contain touch-pan-x"
+              style={{ WebkitOverflowScrolling: 'touch' }}
+              role="region"
+              aria-label="Vendor attendance and overview table"
+              tabIndex={0}
+            >
+            <table className="min-w-[1100px] w-full text-left">
               <thead className="bg-slate-50 border-b border-slate-200">
                 <tr>
                   <th className="p-4 font-semibold text-slate-600">
@@ -1770,6 +1777,7 @@ const SuperAdminDashboard = () => {
                   )))}
               </tbody>
             </table>
+            </div>
           </div>
         </>
       )}
