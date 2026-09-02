@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify, send_file
+from flask import Blueprint, request, jsonify, send_file, g
 import logging
 logger = logging.getLogger(__name__)
 import sqlite3
