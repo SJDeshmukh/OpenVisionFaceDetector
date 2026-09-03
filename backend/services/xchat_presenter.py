@@ -150,6 +150,22 @@ def build_presentation(question, tool_results):
                     ], rows, "individual-payroll.csv",
                 ))
 
+        elif name == "get_person_advances":
+            presentation["metrics"].extend([
+                {"label": "Total advances", "value": result.get("total_advance", 0), "format": "currency", "currency": result.get("currency", "INR")},
+                {"label": "Advance records", "value": result.get("advance_count", 0), "format": "number"},
+            ])
+            presentation["tables"].append(_table(
+                "person-advances", "Individual advance history",
+                [
+                    {"key": "name", "label": "Employee"}, {"key": "date", "label": "Date", "format": "date"},
+                    {"key": "amount", "label": "Total", "format": "currency", "currency": result.get("currency", "INR")},
+                    {"key": "amount_cash", "label": "Cash", "format": "currency", "currency": result.get("currency", "INR")},
+                    {"key": "amount_online", "label": "Online", "format": "currency", "currency": result.get("currency", "INR")},
+                    {"key": "deduction_month", "label": "Deduction month"}, {"key": "status", "label": "Status"},
+                ], result.get("records") or [], "individual-advances.csv",
+            ))
+
         elif name == "compare_payroll_periods":
             current, previous = result.get("current") or {}, result.get("previous") or {}
             currency = result.get("currency", "INR")

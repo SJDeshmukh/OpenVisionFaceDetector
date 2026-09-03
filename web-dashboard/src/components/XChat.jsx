@@ -5,6 +5,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { API_URL } from '../config';
 import { useAuth } from '../context/AuthContext';
 import XChatPresentation, { FormattedText } from './XChatPresentation';
+import BrandLogo from './BrandLogo';
 
 const allowedRoles = new Set(['vendor_admin', 'admin', 'owner']);
 
@@ -239,7 +240,7 @@ const XChat = () => {
           className="fixed inset-0 z-50 flex flex-col overflow-hidden border-slate-700 bg-slate-950 text-slate-100 shadow-2xl sm:inset-auto sm:bottom-5 sm:right-5 sm:h-[min(680px,calc(100vh-40px))] sm:w-[410px] sm:rounded-2xl sm:border">
           <header className="flex h-16 shrink-0 items-center gap-3 border-b border-slate-800 bg-slate-900/95 px-4">
             {historyOpen && <button type="button" onClick={() => setHistoryOpen(false)} aria-label="Back to chat"><ChevronLeft size={20} /></button>}
-            <span className="grid h-9 w-9 place-items-center rounded-xl bg-cyan-500/15 text-cyan-300"><Bot size={21} /></span>
+            <span className="grid h-9 w-9 place-items-center rounded-xl bg-cyan-500/15"><BrandLogo className="h-7 w-7" /></span>
             <div className="min-w-0 flex-1"><h2 className="text-sm font-semibold">XChat</h2><p className="truncate text-[11px] text-slate-400">Assistant for your enabled features</p></div>
             <button type="button" onClick={() => setHistoryOpen(!historyOpen)} className="rounded-lg p-2 hover:bg-slate-800" aria-label="Chat history"><History size={19} /></button>
             <button type="button" onClick={newChat} className="rounded-lg p-2 hover:bg-slate-800" aria-label="New chat"><Plus size={19} /></button>

@@ -1,6 +1,7 @@
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
+import BrandLogo from '../components/BrandLogo';
 
 const Home = () => {
   const navigate = useNavigate();
@@ -16,7 +17,7 @@ const Home = () => {
         <div className="flex justify-center mb-8">
           <div className="relative">
             <div className="absolute inset-0 bg-blue-500 blur-2xl opacity-20 rounded-full"></div>
-            <img src="/tapinx-logo.svg" alt="TapInX" className="w-32 h-32 relative z-10 object-contain" />
+            <BrandLogo className="relative z-10 h-32 w-32" />
           </div>
         </div>
 

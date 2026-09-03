@@ -32,6 +32,7 @@ def xchat_db(tmp_path, monkeypatch):
         CREATE TABLE companies (vendor_id INTEGER, live_timetable TEXT, working_hours REAL);
         CREATE TABLE faces (id INTEGER PRIMARY KEY, vendor_id INTEGER, name TEXT, department TEXT, designation TEXT, daily_wage REAL, face_image TEXT, display_id INTEGER, shift TEXT);
         CREATE TABLE attendance (id INTEGER PRIMARY KEY, vendor_id INTEGER, person_id INTEGER, name TEXT, timestamp TEXT, status TEXT, activity TEXT, is_late INTEGER, captured_image TEXT);
+        CREATE TABLE advances (id INTEGER PRIMARY KEY, vendor_id INTEGER, person_id INTEGER, amount REAL, amount_cash REAL, amount_online REAL, date TEXT, deduction_month TEXT, status TEXT);
         CREATE TABLE xchat_conversations (id TEXT PRIMARY KEY, vendor_id INTEGER, username TEXT, title TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE xchat_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT, vendor_id INTEGER, username TEXT, role TEXT, content TEXT, tool_name TEXT, message_metadata TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE audit_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, actor_username TEXT, actor_role TEXT, target_vendor_id INTEGER, action TEXT, details TEXT, ip TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);
@@ -53,6 +54,10 @@ def xchat_db(tmp_path, monkeypatch):
         (4, 1, 12, "Aaron", "2026-08-02 06:00:00", "CHECK_OUT", "Work", 0, None),
         (5, 2, 21, "Bob", "2026-08-01 09:00:00", "CHECK_IN", "Work", 0, "bob-capture"),
         (6, 2, 21, "Bob", "2026-08-01 21:00:00", "CHECK_OUT", "Work", 0, None),
+    ])
+    conn.executemany("INSERT INTO advances VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", [
+        (1, 1, 11, 300, 100, 200, "2026-08-01", "2026-08", "pending"),
+        (2, 2, 21, 9000, 9000, 0, "2026-08-01", "2026-08", "approved"),
     ])
     conn.commit()
     conn.close()
@@ -78,7 +83,7 @@ def xchat_db(tmp_path, monkeypatch):
 
 
 def test_tool_schemas_never_expose_tenant_identity():
-    assert len(xchat_tools.TOOL_SCHEMAS) == 15
+    assert len(xchat_tools.TOOL_SCHEMAS) == 16
     for tool in xchat_tools.TOOL_SCHEMAS:
         properties = tool["function"]["parameters"]["properties"]
         assert "vendor_id" not in properties
@@ -116,6 +121,14 @@ def test_individual_payroll_lookup_is_name_searchable_and_vendor_scoped(xchat_db
     assert result["total_payable_hours"] == 8
     assert result["estimated_wages"] == 800
     assert xchat_tools.get_person_payroll(1, "Bob", "2026-08-01", "2026-08-01")["matched_people"] == 0
+
+
+def test_individual_advance_lookup_is_name_searchable_and_vendor_scoped(xchat_db):
+    result = xchat_tools.get_person_advances(1, "ali")
+    assert result["advance_count"] == 1
+    assert result["total_advance"] == 300
+    assert result["records"][0]["amount_cash"] == 100
+    assert xchat_tools.get_person_advances(1, "Bob")["advance_count"] == 0
 
 
 def test_model_cannot_override_injected_vendor(xchat_db, monkeypatch):

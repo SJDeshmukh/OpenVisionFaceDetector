@@ -280,6 +280,42 @@ def get_person_payroll(vendor_id, name, start_date=None, end_date=None):
     }
 
 
+def get_person_advances(vendor_id, name, deduction_month=None, limit=20):
+    """Return advance payments for a named person without confusing them with wages."""
+    search_name = str(name or "").strip()
+    if not search_name:
+        raise ValueError("A person's name is required")
+    conn = _db()
+    c = conn.cursor()
+    try:
+        query = """
+            SELECT a.id, f.name, f.display_id, a.amount, a.amount_cash, a.amount_online,
+                   a.date, a.deduction_month, a.status
+            FROM advances a JOIN faces f ON f.id = a.person_id AND f.vendor_id = a.vendor_id
+            WHERE a.vendor_id = ? AND LOWER(f.name) LIKE LOWER(?)
+        """
+        params = [vendor_id, f"%{search_name}%"]
+        if deduction_month:
+            query += " AND a.deduction_month = ?"
+            params.append(str(deduction_month))
+        query += " ORDER BY CASE WHEN LOWER(f.name) = LOWER(?) THEN 0 ELSE 1 END, a.date DESC, a.id DESC"
+        params.append(search_name)
+        c.execute(query, params)
+        rows = [_dict(row) for row in (c.fetchall() or [])]
+    finally:
+        conn.close()
+    records = rows[:_limit(limit)]
+    by_status = defaultdict(float)
+    for row in rows:
+        by_status[str(row.get("status") or "unknown")] += float(row.get("amount") or 0)
+    return {
+        "query": search_name, "deduction_month": deduction_month or "All",
+        "advance_count": len(rows), "total_advance": round(sum(float(row.get("amount") or 0) for row in rows), 2),
+        "totals_by_status": {key: round(value, 2) for key, value in sorted(by_status.items())},
+        "records": records, "truncated": len(rows) > len(records), "currency": "INR", "source_path": "/wages",
+    }
+
+
 def compare_payroll_periods(vendor_id, current_start, current_end, previous_start, previous_end, department=None):
     current = get_payroll_summary(vendor_id, current_start, current_end, department)
     previous = get_payroll_summary(vendor_id, previous_start, previous_end, department)
@@ -633,6 +669,7 @@ TOOL_REGISTRY = {
     "get_absent_people": get_absent_people,
     "get_payroll_summary": get_payroll_summary,
     "get_person_payroll": get_person_payroll,
+    "get_person_advances": get_person_advances,
     "compare_payroll_periods": compare_payroll_periods,
     "get_employee_hours_ranking": get_employee_hours_ranking,
     "get_incomplete_attendance": get_incomplete_attendance,
@@ -656,6 +693,7 @@ TOOL_SCHEMAS = [
     {"type": "function", "function": {"name": "get_absent_people", "description": "List the registered people who have no attendance event on a date. Use this for questions asking who is absent or missing today/on a specific day. The date is optional and defaults to today.", "parameters": {"type": "object", "properties": {"attendance_date": {"type": "string", "description": "Date in YYYY-MM-DD format; omit for today"}, "department": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}}}},
     {"type": "function", "function": {"name": "get_payroll_summary", "description": "Calculate total payable hours and estimated wages for a period.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "department": {"type": "string"}}, "required": ["start_date", "end_date"]}}},
     {"type": "function", "function": {"name": "get_person_payroll", "description": "Look up estimated wages and payable hours for a named individual. Use this whenever a user asks about one person's wage, salary, payroll, or hours. Dates are optional and default to the current month through today.", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "Full or partial person name"}, **_date_properties("start_date", "end_date")}, "required": ["name"]}}},
+    {"type": "function", "function": {"name": "get_person_advances", "description": "List advance payments taken by a named person and total them. Use this for questions about an individual's advances; do not use the payroll estimate tool. Optionally filter by deduction month.", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "Full or partial person name"}, "deduction_month": {"type": "string", "description": "Optional month in YYYY-MM format"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}, "required": ["name"]}}},
     {"type": "function", "function": {"name": "compare_payroll_periods", "description": "Compare estimated wages between two date periods.", "parameters": {"type": "object", "properties": {**_date_properties("current_start", "current_end", "previous_start", "previous_end"), "department": {"type": "string"}}, "required": ["current_start", "current_end", "previous_start", "previous_end"]}}},
     {"type": "function", "function": {"name": "get_employee_hours_ranking", "description": "Rank employees by payable hours in a period.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "department": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}, "order": {"type": "string", "enum": ["highest", "lowest"]}}, "required": ["start_date", "end_date"]}}},
     {"type": "function", "function": {"name": "get_incomplete_attendance", "description": "Find attendance days ending with a check-in but no later check-out.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "department": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}, "required": ["start_date", "end_date"]}}},
@@ -676,6 +714,7 @@ TOOL_FEATURES = {
     "get_incomplete_attendance": {"reports", "report_detailed", "live_attendance", "enable_attendance", "checkin_checkout"},
     "get_payroll_summary": {"payroll", "report_payroll", "payable_hours"},
     "get_person_payroll": {"payroll", "report_payroll", "payable_hours"},
+    "get_person_advances": {"payroll", "report_payroll", "payable_hours"},
     "compare_payroll_periods": {"payroll", "report_payroll", "payable_hours"},
     "get_employee_hours_ranking": {"payroll", "report_payroll", "payable_hours"},
     "get_device_status": {"cameras", "mobile_app", "geofencing", "live_attendance"},

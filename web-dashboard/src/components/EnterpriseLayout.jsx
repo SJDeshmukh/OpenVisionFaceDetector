@@ -9,6 +9,7 @@ import {
   Menu, X, FileCheck, Zap, ChevronRight, Moon, Sun
 } from 'lucide-react';
 import { Image as ImageIcon } from 'lucide-react';
+import BrandLogo from './BrandLogo';
 
 const adminNavItems = [
   { name: 'Dashboard',            path: '/dashboard',            icon: LayoutDashboard },
@@ -165,7 +166,7 @@ export const Sidebar = ({ isOpen, onClose }) => {
                 boxShadow: '0 0 18px rgba(124,58,255,0.65), 0 0 36px rgba(124,58,255,0.2)',
               }}
             >
-              <img src="/tapinx-logo.svg" alt="TapInX" className="w-7 h-7 object-contain" style={{ filter: 'brightness(10)' }} />
+              <BrandLogo className="h-7 w-7" />
             </div>
             <div>
               <p className="text-[15px] font-bold text-white leading-tight tracking-tight">TapInX</p>
@@ -307,6 +308,11 @@ export const Topbar = ({ onToggleSidebar }) => {
         >
           <Menu size={20} />
         </button>
+
+        <div className="flex items-center gap-2 lg:hidden">
+          <BrandLogo className="h-8 w-8" />
+          <span className="text-sm font-bold text-white">TapInX</span>
+        </div>
 
         <div className="relative flex-1 hidden sm:block">
           <Search

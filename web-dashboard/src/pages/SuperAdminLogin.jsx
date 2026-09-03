@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { Shield, Lock } from 'lucide-react';
+import { Lock } from 'lucide-react';
+import BrandLogo from '../components/BrandLogo';
 
 const SuperAdminLogin = () => {
   const [username, setUsername] = useState('');
@@ -31,7 +32,7 @@ const SuperAdminLogin = () => {
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden border-t-4 border-indigo-600">
         <div className="p-8 text-center bg-indigo-900">
           <div className="w-20 h-20 bg-white/10 rounded-full flex items-center justify-center mx-auto mb-4 backdrop-blur-sm p-3">
-            <Shield className="w-10 h-10 text-white" />
+            <BrandLogo className="h-12 w-12" />
           </div>
           <h1 className="text-2xl font-bold text-white">Super Admin Portal</h1>
           <p className="text-indigo-200 mt-2 text-sm">System Management Access Only</p>

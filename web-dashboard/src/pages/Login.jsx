@@ -5,6 +5,7 @@ import axios from 'axios';
 import { Lock, User, Eye, EyeOff, Zap } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { API_URL } from '../config';
+import BrandLogo from '../components/BrandLogo';
 
 const cardVariants = {
   hidden:  { opacity: 0, y: 28, scale: 0.96 },
@@ -226,12 +227,7 @@ const Login = () => {
                 boxShadow: '0 0 28px rgba(124,58,255,0.7), 0 0 56px rgba(124,58,255,0.25)',
               }}
             >
-              <img
-                src="/tapinx-logo.svg"
-                alt="TapInX"
-                className="w-10 h-10 object-contain"
-                style={{ filter: 'brightness(10) saturate(0)' }}
-              />
+              <BrandLogo className="h-11 w-11" />
             </div>
           </div>
 
