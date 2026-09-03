@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="TapInX symbol">
+  <defs>
+    <linearGradient id="g" x1="8%" y1="4%" x2="92%" y2="96%">
+      <stop offset="0%" stop-color="#FF70BC"/>
+      <stop offset="48%" stop-color="#B66CFF"/>
+      <stop offset="100%" stop-color="#22DDF2"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <g filter="url(#glow)" stroke="url(#g)" stroke-width="18" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M61 52h134M61 52v91M195 204H61M195 204v-91"/>
+  </g>
+  <g filter="url(#glow)" fill="url(#g)">
+    <rect x="116" y="83" width="24" height="92" rx="6"/>
+    <rect x="88" y="83" width="80" height="23" rx="6"/>
+  </g>
+</svg>
