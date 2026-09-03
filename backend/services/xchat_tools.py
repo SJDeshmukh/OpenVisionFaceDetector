@@ -128,6 +128,24 @@ def get_attendance_summary(vendor_id, start_date, end_date, department=None):
     rows = [row for row in rows if row["person_id"] in person_ids]
     present_person_days = {(row["person_id"], str(row["attendance_day"])) for row in rows}
     late_person_days = {(row["person_id"], str(row["attendance_day"])) for row in rows if row.get("is_late")}
+    day_events = defaultdict(int)
+    day_people = defaultdict(set)
+    day_late_people = defaultdict(set)
+    for row in rows:
+        day = str(row.get("attendance_day"))
+        day_events[day] += 1
+        day_people[day].add(row["person_id"])
+        if row.get("is_late"):
+            day_late_people[day].add(row["person_id"])
+    daily = {}
+    current = start
+    while current <= end:
+        daily[current.isoformat()] = {"date": current.isoformat(), "present_employees": 0, "late_employees": 0, "attendance_events": 0}
+        current += timedelta(days=1)
+    for attendance_day in daily:
+        daily[attendance_day]["present_employees"] = len(day_people[attendance_day])
+        daily[attendance_day]["late_employees"] = len(day_late_people[attendance_day])
+        daily[attendance_day]["attendance_events"] = day_events[attendance_day]
     possible = len(person_ids) * ((end - start).days + 1)
     return {
         "period": {"start": start.isoformat(), "end": end.isoformat()},
@@ -135,6 +153,7 @@ def get_attendance_summary(vendor_id, start_date, end_date, department=None):
         "employees": len(person_ids), "attendance_events": len(rows),
         "present_person_days": len(present_person_days), "late_person_days": len(late_person_days),
         "attendance_rate_percent": round(len(present_person_days) * 100 / possible, 1) if possible else 0,
+        "daily_breakdown": list(daily.values()),
         "note": "Attendance rate uses all calendar days in the requested range.",
         "source_path": "/reports",
     }
@@ -150,6 +169,8 @@ def get_payroll_summary(vendor_id, start_date, end_date, department=None):
         "employees_with_hours": len(active),
         "total_payable_hours": round(sum(item["hours"] for item in metrics), 2),
         "estimated_wages": round(sum(item["estimated_wages"] for item in metrics), 2),
+        "employee_breakdown": metrics[:MAX_RESULT_ROWS],
+        "truncated": len(metrics) > MAX_RESULT_ROWS,
         "currency": "INR",
         "note": "Estimated wages use recorded payable hours and employee daily-wage rates; statutory and manual adjustments are not included.",
         "source_path": "/wages",

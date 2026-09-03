@@ -13,6 +13,7 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from services import xchat_service, xchat_tools
+from services.xchat_presenter import build_presentation
 
 
 def _connection(path):
@@ -192,3 +193,37 @@ def test_page_context_is_allow_listed():
     assert xchat_service._sanitize_context({"page": "/reports", "filters": {"department": "Ops", "vendor_id": "2"}}) == {
         "page": "/reports", "filters": {"department": "Ops"},
     }
+
+
+def test_presenter_builds_indexed_table_and_requested_chart():
+    result = {
+        "period": {"start": "2026-08-01", "end": "2026-08-02"},
+        "employees": 2, "present_person_days": 3, "late_person_days": 1, "attendance_rate_percent": 75,
+        "daily_breakdown": [
+            {"date": "2026-08-01", "present_employees": 2, "late_employees": 1, "attendance_events": 4},
+            {"date": "2026-08-02", "present_employees": 1, "late_employees": 0, "attendance_events": 2},
+        ],
+    }
+    presentation = build_presentation("Show an attendance line chart and list", [{"name": "get_attendance_summary", "result": result}])
+    assert presentation["charts"][0]["type"] == "line"
+    assert presentation["charts"][0]["data"][0]["index"] == 1
+    assert presentation["tables"][0]["rows"][1]["index"] == 2
+
+
+def test_presenter_builds_multi_period_payroll_trend():
+    results = [
+        {"name": "get_payroll_summary", "result": {"period": {"start": "2026-07-01", "end": "2026-07-31"}, "estimated_wages": 100, "total_payable_hours": 10}},
+        {"name": "get_payroll_summary", "result": {"period": {"start": "2026-08-01", "end": "2026-08-31"}, "estimated_wages": 150, "total_payable_hours": 14}},
+    ]
+    presentation = build_presentation("Give me a monthly payroll trend chart", results)
+    chart = next(chart for chart in presentation["charts"] if chart["id"] == "payroll-multi-period-trend")
+    assert chart["type"] == "line"
+    assert [row["estimated_wages"] for row in chart["data"]] == [100, 150]
+
+
+def test_structured_presentation_is_persisted_in_history(xchat_db):
+    conversation_id = xchat_service.create_conversation(1, "alpha-admin")
+    presentation = {"tables": [{"id": "safe", "columns": [], "rows": []}]}
+    xchat_service.save_exchange(conversation_id, 1, "alpha-admin", "List attendance", "Here it is.", {"presentation": presentation})
+    messages = xchat_service.get_messages(conversation_id, 1, "alpha-admin")
+    assert messages[-1]["metadata"]["presentation"] == presentation

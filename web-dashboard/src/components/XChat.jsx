@@ -4,6 +4,7 @@ import { Bot, ChevronLeft, Clock3, History, Loader2, MessageCircle, Plus, Send, 
 import { useLocation, useNavigate } from 'react-router-dom';
 import { API_URL } from '../config';
 import { useAuth } from '../context/AuthContext';
+import XChatPresentation, { FormattedText } from './XChatPresentation';
 
 const allowedRoles = new Set(['vendor_admin', 'admin', 'owner']);
 
@@ -134,7 +135,7 @@ const XChat = () => {
       setConversationId(data.conversation_id);
       setMessages((current) => [...current, {
         id: `assistant-${Date.now()}`, role: 'assistant', content: data.answer,
-        metadata: { tools_used: data.tools_used || [], sources: data.sources || [] },
+        metadata: { tools_used: data.tools_used || [], sources: data.sources || [], presentation: data.presentation || {} },
       }]);
       loadConversations();
     } catch (requestError) {
@@ -193,8 +194,9 @@ const XChat = () => {
                 <div className="space-y-4">
                   {messages.map((message) => (
                     <div key={message.id} className={message.role === 'user' ? 'flex justify-end' : 'flex justify-start'}>
-                      <div className={`max-w-[88%] whitespace-pre-wrap rounded-2xl px-3.5 py-3 text-sm leading-6 ${message.role === 'user' ? 'rounded-br-md bg-blue-600 text-white' : 'rounded-bl-md border border-slate-800 bg-slate-900 text-slate-200'}`}>
-                        {message.content}
+                      <div className={`${message.role === 'user' ? 'max-w-[88%] rounded-br-md bg-blue-600 text-white' : 'w-full rounded-bl-md border border-slate-800 bg-slate-900 text-slate-200'} rounded-2xl px-3.5 py-3 text-sm leading-6`}>
+                        {message.role === 'assistant' ? <FormattedText>{message.content}</FormattedText> : <div className="whitespace-pre-wrap break-words">{message.content}</div>}
+                        {message.role === 'assistant' && <XChatPresentation presentation={message.metadata?.presentation} />}
                         {message.role === 'assistant' && message.metadata?.sources?.length > 0 && (
                           <div className="mt-2 flex flex-wrap gap-1.5 border-t border-slate-800 pt-2">
                             {message.metadata.sources.map((source) => <button key={source} type="button" onClick={() => { setOpen(false); navigate(source); }} className="rounded-full bg-cyan-950/60 px-2 py-0.5 text-[10px] text-cyan-300 hover:bg-cyan-900">View source</button>)}
