@@ -141,7 +141,7 @@ const Dashboard = () => {
     fetchData();
     const fetchActiveDevices = async () => {
       try {
-        const res = await axios.get(`${API_URL}/stream/active-devices`);
+        const res = await axios.get(`${API_URL}/vendor/device-health`);
         setActiveDevices(res.data.devices || []);
       } catch (e) {
         console.error("Error fetching active devices:", e);
@@ -162,9 +162,9 @@ const Dashboard = () => {
         setActiveDevices(prev => {
           const exists = prev.find(d => d.device_id === data.device_id);
           if (exists) {
-            return prev.map(d => d.device_id === data.device_id ? { ...d, last_seen: data.last_active_at, battery_level: data.battery_level } : d);
+            return prev.map(d => d.device_id === data.device_id ? { ...d, last_seen: data.last_active_at, battery_level: data.battery_level, online: true } : d);
           } else {
-            return [...prev, { device_id: data.device_id, last_seen: data.last_active_at, battery_level: data.battery_level, device_name: `Device ${data.device_id}` }];
+            return [...prev, { device_id: data.device_id, last_seen: data.last_active_at, battery_level: data.battery_level, online: true, device_name: data.device_name || `Device ${data.device_id}` }];
           }
         });
       }
@@ -315,15 +315,15 @@ const Dashboard = () => {
               <div className="space-y-4">
                 {activeDevices.length === 0 ? (
                   <div className="text-center py-8 text-slate-400">
-                    No active mobile devices found.
+                    No registered mobile devices found.
                   </div>
                 ) : activeDevices.map(cam => {
-                  const online = isOnline(cam.last_seen);
+                  const online = cam.online ?? isOnline(cam.last_seen);
                   return (
                     <div key={cam.device_id} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg border border-slate-100">
                       <div>
                         <p className="font-bold text-slate-800 text-sm">{cam.device_name || `Device ${cam.device_id}`}</p>
-                        <p className="text-xs text-slate-500">{online ? 'Online' : 'Last active ' + new Date(cam.last_seen).toLocaleTimeString()}</p>
+                        <p className="text-xs text-slate-500">{online ? 'Online' : cam.last_seen ? `Last active ${new Date(cam.last_seen).toLocaleString()}` : 'Never active'}</p>
                       </div>
                       <div className="flex flex-col items-end gap-1">
                         <div className={`w-2 h-2 rounded-full ${online ? 'bg-green-500 animate-pulse' : 'bg-slate-300'}`}></div>

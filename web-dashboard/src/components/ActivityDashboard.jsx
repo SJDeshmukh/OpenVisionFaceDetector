@@ -1,5 +1,11 @@
 import React from 'react';
 
+const imageSource = (value) => {
+  if (!value) return '';
+  if (value.startsWith('data:') || value.startsWith('http://') || value.startsWith('https://')) return value;
+  return `data:image/jpeg;base64,${value}`;
+};
+
 const ActivityDashboard = ({ activities = [] }) => {
   return (
     <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
@@ -14,12 +20,17 @@ const ActivityDashboard = ({ activities = [] }) => {
         {activities.map((activity, idx) => (
           <div key={idx} className="p-4 hover:bg-slate-50 transition-colors flex items-center justify-between">
             <div className="flex items-center space-x-4">
-              <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 font-bold">
-                {activity.name ? activity.name.charAt(0) : '?'}
+              <div className="relative w-10 h-10 shrink-0 overflow-hidden rounded-full bg-slate-100 flex items-center justify-center text-slate-500 font-bold">
+                <span>{activity.name ? activity.name.charAt(0) : '?'}</span>
+                {activity.captured_image && (
+                  <img src={imageSource(activity.captured_image)} alt={`${activity.name || 'Person'} attendance capture`}
+                    onError={event => { event.currentTarget.style.display = 'none'; }}
+                    className="absolute inset-0 h-full w-full object-cover" />
+                )}
               </div>
               <div>
                 <p className="text-sm font-semibold text-slate-800">{activity.name || 'Unknown'}</p>
-                <p className="text-xs text-slate-500">Camera 01 • Main Entrance</p>
+                <p className="text-xs text-slate-500">{activity.device_name || 'Unknown device'}{activity.department ? ` • ${activity.department}` : ''}</p>
               </div>
             </div>
             <div className="text-right">

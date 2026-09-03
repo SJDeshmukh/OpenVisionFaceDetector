@@ -3,7 +3,7 @@
 import os
 import smtplib
 from email.message import EmailMessage
-from email.utils import formataddr, make_msgid
+from email.utils import formataddr, formatdate, make_msgid
 
 
 class EmailConfigurationError(RuntimeError):
@@ -31,6 +31,7 @@ def send_email(subject, text_body, recipient, attachments=None):
     message["Subject"] = subject
     message["From"] = formataddr((sender_name, sender))
     message["To"] = recipient
+    message["Date"] = formatdate(localtime=False)
     message["Message-ID"] = make_msgid(domain=sender.split("@")[-1] if "@" in sender else None)
     message.set_content(text_body)
 
@@ -46,5 +47,7 @@ def send_email(subject, text_body, recipient, attachments=None):
         server.starttls()
         server.ehlo()
         server.login(username, password)
-        server.send_message(message)
+        refused = server.send_message(message)
+        if refused:
+            raise smtplib.SMTPRecipientsRefused(refused)
     return message["Message-ID"]

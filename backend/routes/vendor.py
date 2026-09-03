@@ -10,7 +10,7 @@ import time
 import re
 from datetime import datetime, date, timedelta
 from services.auth_service import authenticate_vendor_access, extract_token, verify_token
-from utils import parse_db_date, cache_get, cache_set
+from utils import parse_db_date, parse_db_datetime, cache_get, cache_set
 
 # Mock Auth Decorators
 def vendor_required(f):
@@ -142,6 +142,48 @@ def mobile_device_info():
         except Exception:
             pass
         return jsonify({"error": str(e)}), 500
+
+
+@vendor_bp.route("/vendor/device-health", methods=["GET"])
+@vendor_required
+def vendor_device_health():
+    """Return persistent device health for the authenticated vendor.
+
+    Unlike the live-stream endpoint, registered mobile devices remain visible
+    after their latest video frame expires or the API process restarts.
+    """
+    from app import get_db_connection
+
+    vendor_id = request.vendor_id
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute("""
+            SELECT device_id, device_name, registered_at, last_login_at,
+                   last_active_at, battery_level
+            FROM vendor_devices
+            WHERE vendor_id = ?
+            ORDER BY last_active_at DESC, registered_at DESC
+        """, (vendor_id,))
+        devices = []
+        for raw in c.fetchall() or []:
+            row = dict(raw) if hasattr(raw, "keys") else dict(zip(
+                ("device_id", "device_name", "registered_at", "last_login_at", "last_active_at", "battery_level"), raw
+            ))
+            last_active = parse_db_datetime(row.get("last_active_at") or row.get("last_login_at"))
+            comparison_now = datetime.now(last_active.tzinfo) if last_active and last_active.tzinfo else datetime.now()
+            age_seconds = (comparison_now - last_active).total_seconds() if last_active else None
+            devices.append({
+                "device_id": row.get("device_id"),
+                "device_name": row.get("device_name") or f"Device {row.get('device_id')}",
+                "registered_at": str(row.get("registered_at") or ""),
+                "last_seen": last_active.isoformat() if last_active else None,
+                "battery_level": row.get("battery_level"),
+                "online": bool(age_seconds is not None and 0 <= age_seconds < 300),
+            })
+        return jsonify({"devices": devices})
+    finally:
+        conn.close()
 
 
 @vendor_bp.route("/mobile/assign-slot", methods=["POST"])

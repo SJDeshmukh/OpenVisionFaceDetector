@@ -26,7 +26,7 @@ const toggleListValue = (items, value) => items.includes(value)
   ? items.filter(item => item !== value)
   : [...items, value];
 
-const ReportScheduleEditor = ({ schedule, setSchedule, vendorEmail, smtpConfigured, canTest, testing, onTest, nightShiftEnabled, deliveries = [] }) => {
+const ReportScheduleEditor = ({ schedule, setSchedule, vendorEmail, smtpConfigured, canTest, testing, onTest, onRefresh, nightShiftEnabled, deliveries = [] }) => {
   const selected = (key, value) => (schedule[key] || []).includes(value);
   const updateList = (key, value) => setSchedule(prev => ({ ...prev, [key]: toggleListValue(prev[key] || [], value) }));
   const cutoffLabel = nightShiftEnabled ? 'Night-shift operational cutoff' : 'Operational day cutoff';
@@ -115,11 +115,19 @@ const ReportScheduleEditor = ({ schedule, setSchedule, vendorEmail, smtpConfigur
         </div>
         {deliveries.length > 0 && (
           <div className="rounded-xl border border-slate-200 bg-white p-4">
-            <div className="mb-3 text-sm font-semibold text-slate-700">Recent deliveries</div>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div className="text-sm font-semibold text-slate-700">Recent deliveries</div>
+              <button type="button" onClick={onRefresh} className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-indigo-600 hover:bg-indigo-50"><RefreshCw size={13} /> Refresh</button>
+            </div>
             <div className="space-y-2">{deliveries.slice(0, 4).map(item => (
-              <div key={item.id} className="flex flex-col gap-1 rounded-lg bg-slate-50 px-3 py-2 text-xs sm:flex-row sm:items-center sm:justify-between">
-                <span className="text-slate-600">{String(item.frequency || '').startsWith('test-') ? 'Test report' : `${item.frequency} · ${item.period_start} to ${item.period_end}`}</span>
-                <span className={`w-fit rounded-full px-2 py-0.5 font-semibold ${item.status === 'sent' ? 'bg-emerald-100 text-emerald-700' : item.status === 'failed' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'}`}>{item.status}</span>
+              <div key={item.id} className="rounded-lg bg-slate-50 px-3 py-2 text-xs">
+                <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                  <span className="text-slate-600">{String(item.frequency || '').startsWith('test-') ? 'Test report' : `${item.frequency} · ${item.period_start} to ${item.period_end}`}</span>
+                  <span className={`w-fit rounded-full px-2 py-0.5 font-semibold ${item.status === 'sent' ? 'bg-emerald-100 text-emerald-700' : item.status === 'failed' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'}`}>{item.status}</span>
+                </div>
+                <div className="mt-1 break-all text-[11px] text-slate-500">To: {item.recipient_email || 'Unknown recipient'}</div>
+                {item.sent_at && <div className="mt-0.5 text-[11px] text-slate-400">SMTP accepted: {new Date(item.sent_at).toLocaleString()}</div>}
+                {item.error && <div className="mt-1 break-words rounded-md bg-rose-50 px-2 py-1 text-[11px] text-rose-700">{item.error}</div>}
               </div>
             ))}</div>
           </div>
@@ -224,15 +232,31 @@ const SuperAdminDashboard = () => {
   const [reportDeliveries, setReportDeliveries] = useState([]);
 
   const fetchReportDeliveries = async (vendorId) => {
-    if (!vendorId) return setReportDeliveries([]);
+    if (!vendorId) {
+      setReportDeliveries([]);
+      return [];
+    }
     try {
       const response = await axios.get(`${API_URL}/admin/vendors/${vendorId}/automated-report-deliveries`, {
         params: { limit: 10 }, headers: { Authorization: `Bearer ${user?.token}` }
       });
-      setReportDeliveries(response.data.deliveries || []);
+      const deliveries = response.data.deliveries || [];
+      setReportDeliveries(deliveries);
+      return deliveries;
     } catch (_) {
       setReportDeliveries([]);
+      return [];
     }
+  };
+
+  const waitForReportDelivery = async (vendorId, deliveryId) => {
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      await new Promise(resolve => window.setTimeout(resolve, 2000));
+      const deliveries = await fetchReportDeliveries(vendorId);
+      const delivery = deliveries.find(item => String(item.id) === String(deliveryId));
+      if (delivery && ['sent', 'failed', 'skipped'].includes(delivery.status)) return delivery;
+    }
+    return null;
   };
 
   const fetchReportSchedule = async (vendorId, fallbackEmail = '') => {
@@ -266,11 +290,17 @@ const SuperAdminDashboard = () => {
     setTestingReportEmail(true);
     try {
       await saveReportSchedule(editingVendor.id);
-      await axios.post(`${API_URL}/admin/vendors/${editingVendor.id}/automated-report-test`, {
+      const response = await axios.post(`${API_URL}/admin/vendors/${editingVendor.id}/automated-report-test`, {
         recipient_email: reportSchedule.recipient_email || newVendor.email
       }, { headers: { Authorization: `Bearer ${user?.token}` } });
-      await fetchReportDeliveries(editingVendor.id);
-      alert('Test report queued. Delivery status will be available in the report delivery history.');
+      const delivery = await waitForReportDelivery(editingVendor.id, response.data.delivery_id);
+      if (delivery?.status === 'sent') {
+        alert(`Gmail SMTP accepted the test report for ${delivery.recipient_email}. Check Inbox, Spam, Promotions, and All Mail.`);
+      } else if (delivery) {
+        alert(`Test report ${delivery.status}: ${delivery.error || 'No additional error was returned.'}`);
+      } else {
+        alert('The test report is still processing after 60 seconds. Check Recent deliveries or the Celery worker logs.');
+      }
     } catch (error) {
       alert('Unable to queue test report: ' + (error.response?.data?.error || error.message));
     } finally {
@@ -3511,6 +3541,7 @@ const SuperAdminDashboard = () => {
                     canTest={!!editingVendor}
                     testing={testingReportEmail}
                     onTest={handleTestReportEmail}
+                    onRefresh={() => fetchReportDeliveries(editingVendor?.id)}
                     nightShiftEnabled={(newVendor.features || []).includes('night_shift_logic')}
                     deliveries={reportDeliveries}
                   />
