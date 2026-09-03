@@ -1942,6 +1942,23 @@ def get_person_advances(person_id):
     try:
         c.execute("SELECT id, amount, amount_cash, amount_online, date, deduction_month, status, created_at FROM advances WHERE person_id = ? AND vendor_id = ? ORDER BY date DESC", (person_id, vendor_id))
         advances = [dict(row) for row in c.fetchall()]
+        revisions_by_advance = {}
+        if advances:
+            advance_ids = [advance["id"] for advance in advances]
+            placeholders = ",".join("?" for _ in advance_ids)
+            c.execute(f"""
+                SELECT id, advance_id, old_amount, new_amount, old_amount_cash, new_amount_cash,
+                       old_amount_online, new_amount_online, old_date, new_date,
+                       old_deduction_month, new_deduction_month, edited_by, edited_at
+                FROM advance_revisions
+                WHERE vendor_id = ? AND person_id = ? AND advance_id IN ({placeholders})
+                ORDER BY edited_at DESC, id DESC
+            """, [vendor_id, person_id, *advance_ids])
+            for row in c.fetchall() or []:
+                revision = dict(row)
+                revisions_by_advance.setdefault(revision["advance_id"], []).append(revision)
+        for advance in advances:
+            advance["edit_history"] = revisions_by_advance.get(advance["id"], [])
         return jsonify({"success": True, "advances": advances})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1969,6 +1986,15 @@ def update_advance_record(record_id):
     conn = get_db_connection()
     c = conn.cursor()
     try:
+        c.execute("""
+            SELECT id, person_id, amount, amount_cash, amount_online, date, deduction_month
+            FROM advances WHERE id = ? AND vendor_id = ?
+        """, (record_id, vendor_id))
+        current_row = c.fetchone()
+        if not current_row:
+            return jsonify({"error": "Advance record not found"}), 404
+        current = dict(current_row)
+
         query_parts = []
         params = []
         
@@ -1990,11 +2016,41 @@ def update_advance_record(record_id):
             
         params.append(record_id)
         params.append(vendor_id)
-        
+
+        updated = {
+            "amount": amount if amount is not None else current.get("amount"),
+            "amount_cash": amount_cash if amount_cash is not None else current.get("amount_cash"),
+            "amount_online": amount_online if amount_online is not None else current.get("amount_online"),
+            "date": date_str if date_str else current.get("date"),
+            "deduction_month": deduction_month if deduction_month else current.get("deduction_month"),
+        }
+        numeric_fields = ("amount", "amount_cash", "amount_online")
+        changed = any(float(current.get(field) or 0) != float(updated.get(field) or 0) for field in numeric_fields)
+        changed = changed or any(
+            str(current.get(field) or "") != str(updated.get(field) or "")
+            for field in ("date", "deduction_month")
+        )
+        if not changed:
+            return jsonify({"success": True, "changed": False})
+
+        c.execute("""
+            INSERT INTO advance_revisions (
+                advance_id, vendor_id, person_id,
+                old_amount, new_amount, old_amount_cash, new_amount_cash,
+                old_amount_online, new_amount_online, old_date, new_date,
+                old_deduction_month, new_deduction_month, edited_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            record_id, vendor_id, current["person_id"],
+            current.get("amount"), updated["amount"], current.get("amount_cash"), updated["amount_cash"],
+            current.get("amount_online"), updated["amount_online"], current.get("date"), updated["date"],
+            current.get("deduction_month"), updated["deduction_month"], g.username,
+        ))
         c.execute(f"UPDATE advances SET {', '.join(query_parts)} WHERE id = ? AND vendor_id = ?", params)
         conn.commit()
-        return jsonify({"success": True})
+        return jsonify({"success": True, "changed": True})
     except Exception as e:
+        conn.rollback()
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()

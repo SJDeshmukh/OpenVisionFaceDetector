@@ -1013,6 +1013,27 @@ const Wages = () => {
                                 {parseFloat(h.amount_cash || 0) > 0 && <span className="text-[9px] bg-emerald-100 text-emerald-700 px-1 rounded font-bold">C: ₹{h.amount_cash}</span>}
                                 {parseFloat(h.amount_online || 0) > 0 && <span className="text-[9px] bg-blue-100 text-blue-700 px-1 rounded font-bold">O: ₹{h.amount_online}</span>}
                               </div>
+                              {h.edit_history?.length > 0 && (
+                                <details className="mt-2 text-[10px] text-slate-500">
+                                  <summary className="cursor-pointer font-semibold text-amber-700">
+                                    Edited {h.edit_history.length} time{h.edit_history.length === 1 ? '' : 's'}
+                                  </summary>
+                                  <div className="mt-1 space-y-1 border-l-2 border-amber-200 pl-2">
+                                    {h.edit_history.map((edit) => (
+                                      <div key={edit.id}>
+                                        <div className="font-medium text-slate-600">
+                                          ₹{Number(edit.old_amount || 0).toFixed(2)} → ₹{Number(edit.new_amount || 0).toFixed(2)}
+                                        </div>
+                                        <div>
+                                          Cash ₹{Number(edit.old_amount_cash || 0).toFixed(2)} → ₹{Number(edit.new_amount_cash || 0).toFixed(2)} · Online ₹{Number(edit.old_amount_online || 0).toFixed(2)} → ₹{Number(edit.new_amount_online || 0).toFixed(2)}
+                                        </div>
+                                        {(edit.old_deduction_month !== edit.new_deduction_month) && <div>Month {edit.old_deduction_month || '—'} → {edit.new_deduction_month || '—'}</div>}
+                                        <div>{edit.edited_by || 'Unknown user'} · {new Date(edit.edited_at).toLocaleString()}</div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </details>
+                              )}
                             </td>
                             <td className="py-2 px-3 text-slate-500">{h.deduction_month}</td>
                             <td className="py-2 px-3 text-right space-x-2">
