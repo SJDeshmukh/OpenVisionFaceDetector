@@ -332,16 +332,37 @@
 
 /* Branded XChat launcher */
 .xchat-launcher {
+  width: 60px;
   background: linear-gradient(115deg, rgba(15, 23, 42, 0.97), rgba(30, 27, 75, 0.97));
   border: 1px solid rgba(122, 125, 255, 0.45);
   box-shadow: 0 14px 40px rgba(2, 6, 23, 0.55), 0 0 26px rgba(122, 125, 255, 0.28);
-  transition: transform 220ms ease, border-color 220ms ease, box-shadow 220ms ease;
+  transition: width 320ms cubic-bezier(0.22, 1, 0.36, 1), transform 220ms ease, border-color 220ms ease, box-shadow 220ms ease;
 }
 
-.xchat-launcher:hover {
+.xchat-launcher:hover,
+.xchat-launcher:focus-visible {
+  width: 168px;
   transform: translateY(-2px) scale(1.02);
   border-color: rgba(6, 214, 255, 0.72);
   box-shadow: 0 18px 48px rgba(2, 6, 23, 0.65), 0 0 34px rgba(124, 58, 255, 0.4);
+}
+
+.xchat-launcher-label {
+  width: 0;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateX(-6px);
+  transition: width 300ms cubic-bezier(0.22, 1, 0.36, 1), opacity 180ms ease 60ms, transform 300ms ease;
+}
+
+.xchat-launcher:hover .xchat-launcher-label,
+.xchat-launcher:focus-visible .xchat-launcher-label {
+  width: 92px;
+  margin-left: 10px;
+  opacity: 1;
+  transform: translateX(0);
 }
 
 .xchat-orb {
@@ -366,8 +387,6 @@
   animation: xchatScan 2.6s ease-in-out infinite;
 }
 
-.xchat-orb-sparkle { animation: xchatSparkle 2.4s ease-in-out infinite; }
-
 @keyframes xchatOrbit { to { transform: rotate(360deg); } }
 @keyframes xchatBreathe {
   0%, 100% { box-shadow: 0 0 14px rgba(6, 214, 255, 0.25); }
@@ -379,13 +398,8 @@
   72% { opacity: 1; }
   82%, 100% { transform: translateY(17px); opacity: 0; }
 }
-@keyframes xchatSparkle {
-  0%, 60%, 100% { opacity: 0.35; transform: scale(0.7) rotate(0deg); }
-  75% { opacity: 1; transform: scale(1.15) rotate(18deg); }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .xchat-orb, .xchat-orb-ring, .xchat-orb-scan, .xchat-orb-sparkle { animation: none; }
+  .xchat-orb, .xchat-orb-ring, .xchat-orb-scan { animation: none; }
   .xchat-launcher { transition: none; }
 }
 
