@@ -30,8 +30,8 @@ def xchat_db(tmp_path, monkeypatch):
         CREATE TABLE vendors (id INTEGER PRIMARY KEY, company_name TEXT, status TEXT);
         CREATE TABLE subscriptions (vendor_id INTEGER, features TEXT);
         CREATE TABLE companies (vendor_id INTEGER, live_timetable TEXT, working_hours REAL);
-        CREATE TABLE faces (id INTEGER PRIMARY KEY, vendor_id INTEGER, name TEXT, department TEXT, designation TEXT, daily_wage REAL);
-        CREATE TABLE attendance (id INTEGER PRIMARY KEY, vendor_id INTEGER, person_id INTEGER, name TEXT, timestamp TEXT, status TEXT, activity TEXT, is_late INTEGER);
+        CREATE TABLE faces (id INTEGER PRIMARY KEY, vendor_id INTEGER, name TEXT, department TEXT, designation TEXT, daily_wage REAL, face_image TEXT, display_id INTEGER, shift TEXT);
+        CREATE TABLE attendance (id INTEGER PRIMARY KEY, vendor_id INTEGER, person_id INTEGER, name TEXT, timestamp TEXT, status TEXT, activity TEXT, is_late INTEGER, captured_image TEXT);
         CREATE TABLE xchat_conversations (id TEXT PRIMARY KEY, vendor_id INTEGER, username TEXT, title TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE xchat_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT, vendor_id INTEGER, username TEXT, role TEXT, content TEXT, tool_name TEXT, message_metadata TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE audit_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, actor_username TEXT, actor_role TEXT, target_vendor_id INTEGER, action TEXT, details TEXT, ip TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);
@@ -41,18 +41,18 @@ def xchat_db(tmp_path, monkeypatch):
         (1, json.dumps(["xchat_ai", "payroll"])), (2, json.dumps(["xchat_ai", "payroll"])),
     ])
     conn.executemany("INSERT INTO companies VALUES (?, '[]', 8)", [(1,), (2,)])
-    conn.executemany("INSERT INTO faces VALUES (?, ?, ?, ?, ?, ?)", [
-        (11, 1, "Alice", "Ops", "Worker", 800),
-        (12, 1, "Aaron", "Sales", "Worker", 400),
-        (21, 2, "Bob", "Ops", "Worker", 5000),
+    conn.executemany("INSERT INTO faces VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", [
+        (11, 1, "Alice", "Ops", "Worker", 800, "alice-photo", 101, "Day"),
+        (12, 1, "Aaron", "Sales", "Worker", 400, None, 102, "Night"),
+        (21, 2, "Bob", "Ops", "Worker", 5000, "bob-photo", 201, "Day"),
     ])
-    conn.executemany("INSERT INTO attendance VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [
-        (1, 1, 11, "Alice", "2026-08-01 09:00:00", "CHECK_IN", "Work", 0),
-        (2, 1, 11, "Alice", "2026-08-01 17:00:00", "CHECK_OUT", "Work", 0),
-        (3, 1, 12, "Aaron", "2026-08-01 22:00:00", "CHECK_IN", "Work", 1),
-        (4, 1, 12, "Aaron", "2026-08-02 06:00:00", "CHECK_OUT", "Work", 0),
-        (5, 2, 21, "Bob", "2026-08-01 09:00:00", "CHECK_IN", "Work", 0),
-        (6, 2, 21, "Bob", "2026-08-01 21:00:00", "CHECK_OUT", "Work", 0),
+    conn.executemany("INSERT INTO attendance VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", [
+        (1, 1, 11, "Alice", "2026-08-01 09:00:00", "CHECK_IN", "Work", 0, "alice-capture"),
+        (2, 1, 11, "Alice", "2026-08-01 17:00:00", "CHECK_OUT", "Work", 0, None),
+        (3, 1, 12, "Aaron", "2026-08-01 22:00:00", "CHECK_IN", "Work", 1, None),
+        (4, 1, 12, "Aaron", "2026-08-02 06:00:00", "CHECK_OUT", "Work", 0, None),
+        (5, 2, 21, "Bob", "2026-08-01 09:00:00", "CHECK_IN", "Work", 0, "bob-capture"),
+        (6, 2, 21, "Bob", "2026-08-01 21:00:00", "CHECK_OUT", "Work", 0, None),
     ])
     conn.commit()
     conn.close()
@@ -78,7 +78,7 @@ def xchat_db(tmp_path, monkeypatch):
 
 
 def test_tool_schemas_never_expose_tenant_identity():
-    assert len(xchat_tools.TOOL_SCHEMAS) == 12
+    assert len(xchat_tools.TOOL_SCHEMAS) == 13
     for tool in xchat_tools.TOOL_SCHEMAS:
         properties = tool["function"]["parameters"]["properties"]
         assert "vendor_id" not in properties
@@ -91,6 +91,14 @@ def test_attendance_tool_is_strictly_vendor_scoped(xchat_db):
     assert alpha["present_person_days"] == 2
     assert beta["employees"] == 1
     assert beta["present_person_days"] == 1
+
+
+def test_person_image_lookup_is_name_searchable_and_vendor_scoped(xchat_db):
+    result = xchat_tools.get_person_images(1, "ali")
+    assert result["matched_people"] == 1
+    assert result["image_count"] == 2
+    assert {item["image"] for item in result["images"]} == {"alice-photo", "alice-capture"}
+    assert xchat_tools.get_person_images(1, "Bob")["matched_people"] == 0
 
 
 def test_model_cannot_override_injected_vendor(xchat_db, monkeypatch):
@@ -128,7 +136,7 @@ def test_only_enabled_feature_tools_are_exposed():
         item["function"]["name"]
         for item in xchat_tools.available_tool_schemas(["xchat_ai", "leave_management"])
     }
-    assert leave_tools == {"get_people_summary", "get_leave_summary"}
+    assert leave_tools == {"get_people_summary", "get_person_images", "get_leave_summary"}
 
 
 def test_orchestrator_sends_only_entitled_tools_to_mistral():
@@ -144,7 +152,7 @@ def test_orchestrator_sends_only_entitled_tools_to_mistral():
         "What can I ask about leave?", [], 1, ["xchat_ai", "leave_management"], provider=CaptureProvider(),
     )
     assert result["answer"] == "Leave management is enabled."
-    assert captured["tools"] == {"get_people_summary", "get_leave_summary"}
+    assert captured["tools"] == {"get_people_summary", "get_person_images", "get_leave_summary"}
     assert "leave_management" in captured["prompt"]
     assert "- payroll:" not in captured["prompt"]
 

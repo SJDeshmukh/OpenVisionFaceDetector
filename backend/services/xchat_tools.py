@@ -71,6 +71,18 @@ def _limit(value):
         return 10
 
 
+def _display_image(value):
+    if not value or not isinstance(value, str):
+        return value
+    if value.startswith("s3://"):
+        try:
+            from storage import presigned_url_for_key
+            return presigned_url_for_key(value)
+        except Exception:
+            return None
+    return value
+
+
 def _company_settings(c, vendor_id):
     c.execute("SELECT live_timetable, working_hours FROM companies WHERE vendor_id = ? LIMIT 1", (vendor_id,))
     row = c.fetchone()
@@ -321,6 +333,64 @@ def get_people_summary(vendor_id, department=None, limit=20):
     }
 
 
+def get_person_images(vendor_id, name, limit=20):
+    """Return registered and attendance images for people matching a name."""
+    search_name = str(name or "").strip()
+    if not search_name:
+        raise ValueError("A person's name is required")
+    row_limit = _limit(limit)
+    conn = _db()
+    c = conn.cursor()
+    try:
+        c.execute(
+            """SELECT id, name, display_id, department, designation, face_image
+               FROM faces
+               WHERE vendor_id = ? AND LOWER(name) LIKE LOWER(?)
+               ORDER BY CASE WHEN LOWER(name) = LOWER(?) THEN 0 ELSE 1 END, name
+               LIMIT ?""",
+            (vendor_id, f"%{search_name}%", search_name, row_limit),
+        )
+        people = [_dict(row) for row in (c.fetchall() or [])]
+        person_ids = [person["id"] for person in people]
+        captures = []
+        if person_ids:
+            placeholders = ",".join("?" for _ in person_ids)
+            c.execute(
+                f"""SELECT a.person_id, a.captured_image, a.timestamp, a.status, a.activity
+                    FROM attendance a
+                    WHERE a.vendor_id = ? AND a.person_id IN ({placeholders})
+                      AND a.captured_image IS NOT NULL AND a.captured_image <> ''
+                    ORDER BY a.timestamp DESC LIMIT ?""",
+                [vendor_id, *person_ids, row_limit],
+            )
+            captures = [_dict(row) for row in (c.fetchall() or [])]
+    finally:
+        conn.close()
+
+    by_id = {person["id"]: person for person in people}
+    images = []
+    for person in people:
+        if person.get("face_image"):
+            images.append({
+                "name": person.get("name"), "display_id": person.get("display_id") or person.get("id"),
+                "department": person.get("department"), "designation": person.get("designation"),
+                "kind": "Registered photo", "image": _display_image(person.get("face_image")),
+            })
+    for capture in captures:
+        person = by_id.get(capture.get("person_id"), {})
+        images.append({
+            "name": person.get("name"), "display_id": person.get("display_id") or person.get("id"),
+            "department": person.get("department"), "designation": person.get("designation"),
+            "kind": "Attendance capture", "image": _display_image(capture.get("captured_image")),
+            "timestamp": str(capture.get("timestamp") or ""), "status": capture.get("status"),
+            "activity": capture.get("activity"),
+        })
+    return {
+        "query": search_name, "matched_people": len(people), "image_count": len(images),
+        "images": images[:row_limit], "truncated": len(images) > row_limit, "source_path": "/people",
+    }
+
+
 def get_device_status(vendor_id, limit=20):
     conn = _db()
     c = conn.cursor()
@@ -503,6 +573,7 @@ TOOL_REGISTRY = {
     "get_employee_hours_ranking": get_employee_hours_ranking,
     "get_incomplete_attendance": get_incomplete_attendance,
     "get_people_summary": get_people_summary,
+    "get_person_images": get_person_images,
     "get_device_status": get_device_status,
     "get_shift_configuration": get_shift_configuration,
     "get_leave_summary": get_leave_summary,
@@ -523,6 +594,7 @@ TOOL_SCHEMAS = [
     {"type": "function", "function": {"name": "get_employee_hours_ranking", "description": "Rank employees by payable hours in a period.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "department": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}, "order": {"type": "string", "enum": ["highest", "lowest"]}}, "required": ["start_date", "end_date"]}}},
     {"type": "function", "function": {"name": "get_incomplete_attendance", "description": "Find attendance days ending with a check-in but no later check-out.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "department": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}, "required": ["start_date", "end_date"]}}},
     {"type": "function", "function": {"name": "get_people_summary", "description": "Count or list registered people by department, designation, or shift.", "parameters": {"type": "object", "properties": {"department": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}}}},
+    {"type": "function", "function": {"name": "get_person_images", "description": "Find a named person's registered photo and recent attendance capture images. Use this for requests to find, show, or view photos/images of an individual.", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "Full or partial person name"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}, "required": ["name"]}}},
     {"type": "function", "function": {"name": "get_device_status", "description": "List registered cameras/mobile devices and summarize activity, battery, and geofence configuration.", "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 25}}}}},
     {"type": "function", "function": {"name": "get_shift_configuration", "description": "Read the published work timetable, working hours, payable activities, and overnight shifts.", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "get_leave_summary", "description": "Summarize or list leave requests for an overlapping date period.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "status": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}, "required": ["start_date", "end_date"]}}},

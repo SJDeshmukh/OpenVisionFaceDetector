@@ -55,7 +55,7 @@ def _chart(chart_id, chart_type, title, index_label, series, rows, filename):
 
 def build_presentation(question, tool_results):
     """Return a bounded declarative UI contract; never include raw database rows."""
-    presentation = {"metrics": [], "tables": [], "charts": []}
+    presentation = {"metrics": [], "tables": [], "charts": [], "images": []}
     wants_chart = _wants_chart(question)
     wants_list = _wants_list(question)
     requested_chart_type = _chart_type(question)
@@ -199,6 +199,13 @@ def build_presentation(question, tool_results):
                     [{"key": "count", "label": "People", "color": "#22d3ee"}],
                     [{"label": label, "count": value} for label, value in breakdown.items()], "people-by-department.png",
                 ))
+
+        elif name == "get_person_images":
+            presentation["metrics"].extend([
+                {"label": "Matching people", "value": result.get("matched_people", 0), "format": "number"},
+                {"label": "Images found", "value": result.get("image_count", 0), "format": "number"},
+            ])
+            presentation["images"].extend(result.get("images") or [])
 
         elif name == "get_device_status":
             presentation["metrics"].extend([

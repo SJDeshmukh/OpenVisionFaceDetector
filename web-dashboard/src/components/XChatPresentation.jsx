@@ -85,6 +85,32 @@ const Metrics = ({ metrics }) => {
   );
 };
 
+const imageSource = (value) => {
+  if (!value) return '';
+  if (value.startsWith('data:') || value.startsWith('http://') || value.startsWith('https://')) return value;
+  return `data:image/jpeg;base64,${value}`;
+};
+
+const ImageGallery = ({ images }) => {
+  if (!images?.length) return null;
+  return (
+    <section className="mt-3 rounded-xl border border-slate-700/70 bg-slate-950/55 p-3">
+      <h4 className="mb-2 text-xs font-semibold text-slate-200">Person images</h4>
+      <div className="grid grid-cols-2 gap-2">
+        {images.map((item, index) => (
+          <figure key={`${item.display_id}-${item.kind}-${item.timestamp || index}`} className="overflow-hidden rounded-lg border border-slate-800 bg-slate-900">
+            <img src={imageSource(item.image)} alt={`${item.name || 'Person'} ${item.kind || 'image'}`} className="aspect-square w-full object-cover" loading="lazy" />
+            <figcaption className="p-2 text-[10px] text-slate-400">
+              <p className="truncate font-medium text-slate-200">{item.name || 'Unknown person'}</p>
+              <p className="truncate">{item.kind}{item.timestamp ? ` · ${formatValue(item.timestamp, { format: 'datetime' })}` : ''}</p>
+            </figcaption>
+          </figure>
+        ))}
+      </div>
+    </section>
+  );
+};
+
 const DataTable = ({ table }) => (
   <section className="mt-3 overflow-hidden rounded-xl border border-slate-700/70 bg-slate-950/55">
     <div className="flex items-center justify-between gap-2 border-b border-slate-800 px-3 py-2.5">
@@ -191,6 +217,7 @@ const XChatPresentation = ({ presentation }) => {
   return (
     <div>
       <Metrics metrics={presentation.metrics} />
+      <ImageGallery images={presentation.images} />
       {presentation.charts?.map((chart) => <ChartCard key={chart.id} chart={chart} />)}
       {presentation.tables?.map((table) => <DataTable key={table.id} table={table} />)}
     </div>
