@@ -79,6 +79,7 @@ const XChat = () => {
   const [error, setError] = useState('');
   const [retryJob, setRetryJob] = useState(null);
   const [lastFailedPrompt, setLastFailedPrompt] = useState('');
+  const [deletingConversationId, setDeletingConversationId] = useState(null);
   const bottomRef = useRef(null);
   const sendRef = useRef(null);
 
@@ -154,12 +155,18 @@ const XChat = () => {
 
   const removeConversation = async (event, id) => {
     event.stopPropagation();
+    const conversation = conversations.find((item) => item.id === id);
+    if (!window.confirm(`Delete "${conversation?.title || 'this conversation'}"? This cannot be undone.`)) return;
+    setDeletingConversationId(id);
+    setError('');
     try {
       await axios.delete(`${API_URL}/xchat/conversations/${id}`);
       if (conversationId === id) newChat();
       await loadConversations();
     } catch (requestError) {
       setError(requestError.response?.data?.error || 'Could not delete this conversation.');
+    } finally {
+      setDeletingConversationId(null);
     }
   };
 
@@ -244,14 +251,19 @@ const XChat = () => {
               <p className="px-2 pb-2 text-xs font-medium uppercase tracking-wider text-slate-500">Recent conversations</p>
               {!conversations.length && <p className="p-5 text-center text-sm text-slate-500">No conversations yet.</p>}
               {conversations.map((conversation) => (
-                <button key={conversation.id} type="button" onClick={() => openConversation(conversation)}
-                  className="group mb-1 flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left hover:bg-slate-900">
-                  <Clock3 size={16} className="shrink-0 text-slate-500" />
-                  <span className="min-w-0 flex-1 truncate text-sm">{conversation.title}</span>
-                  <span role="button" tabIndex={0} onClick={(event) => removeConversation(event, conversation.id)}
-                    onKeyDown={(event) => event.key === 'Enter' && removeConversation(event, conversation.id)}
-                    className="rounded p-1 text-slate-600 opacity-0 hover:text-red-400 group-hover:opacity-100" aria-label="Delete conversation"><Trash2 size={15} /></span>
-                </button>
+                <div key={conversation.id} className="group mb-1 flex w-full items-center rounded-xl hover:bg-slate-900">
+                  <button type="button" onClick={() => openConversation(conversation)}
+                    className="flex min-w-0 flex-1 items-center gap-3 px-3 py-3 text-left">
+                    <Clock3 size={16} className="shrink-0 text-slate-500" />
+                    <span className="min-w-0 flex-1 truncate text-sm">{conversation.title}</span>
+                  </button>
+                  <button type="button" onClick={(event) => removeConversation(event, conversation.id)}
+                    disabled={deletingConversationId === conversation.id}
+                    className="mr-2 grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-400 hover:bg-red-950/60 hover:text-red-400 disabled:cursor-wait disabled:opacity-50"
+                    aria-label={`Delete ${conversation.title || 'conversation'}`} title="Delete conversation">
+                    {deletingConversationId === conversation.id ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
+                  </button>
+                </div>
               ))}
             </div>
           ) : (
