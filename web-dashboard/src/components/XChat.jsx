@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
-import { Bot, ChevronLeft, Clock3, History, Loader2, MessageCircle, Plus, RotateCcw, Send, TimerReset, Trash2, X } from 'lucide-react';
+import { Bot, ChevronLeft, Clock3, History, Loader2, Plus, RotateCcw, Send, Sparkles, TimerReset, Trash2, X } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { API_URL } from '../config';
 import { useAuth } from '../context/AuthContext';
@@ -231,8 +231,18 @@ const XChat = () => {
     <>
       {!open && (
         <button type="button" onClick={() => setOpen(true)} aria-label="Open XChat assistant"
-          className="fixed bottom-5 right-5 z-40 flex h-14 items-center gap-2 rounded-full bg-gradient-to-r from-cyan-500 to-blue-600 px-4 text-white shadow-2xl shadow-cyan-950/50 transition hover:scale-105 focus:outline-none focus:ring-2 focus:ring-cyan-300">
-          <MessageCircle size={23} /><span className="hidden text-sm font-semibold sm:inline">Ask XChat</span>
+          className="xchat-launcher group fixed bottom-5 right-5 z-40 flex items-center gap-2.5 rounded-full py-1.5 pl-1.5 pr-4 text-white focus:outline-none focus:ring-2 focus:ring-cyan-300 focus:ring-offset-2 focus:ring-offset-slate-950">
+          <span className="xchat-orb relative grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-full" aria-hidden="true">
+            <span className="xchat-orb-ring absolute inset-0 rounded-full" />
+            <span className="xchat-orb-core absolute inset-[3px] rounded-full" />
+            <span className="xchat-orb-scan absolute inset-x-2 top-1/2 h-px" />
+            <BrandLogo className="relative z-10 h-8 w-8 transition-transform duration-300 group-hover:scale-110" alt="" />
+            <Sparkles className="xchat-orb-sparkle absolute right-1 top-1 z-20 text-cyan-200" size={11} />
+          </span>
+          <span className="hidden text-left sm:block">
+            <span className="block text-sm font-semibold leading-tight">Ask XChat</span>
+            <span className="block text-[9px] font-medium uppercase tracking-[0.16em] text-cyan-200/70">AI assistant</span>
+          </span>
         </button>
       )}
       {open && (

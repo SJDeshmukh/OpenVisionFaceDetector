@@ -330,6 +330,65 @@
 .animate-success-pop{ animation: successPop 0.4s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
 .animate-error-shake{ animation: errorShake 0.4s ease forwards; }
 
+/* Branded XChat launcher */
+.xchat-launcher {
+  background: linear-gradient(115deg, rgba(15, 23, 42, 0.97), rgba(30, 27, 75, 0.97));
+  border: 1px solid rgba(122, 125, 255, 0.45);
+  box-shadow: 0 14px 40px rgba(2, 6, 23, 0.55), 0 0 26px rgba(122, 125, 255, 0.28);
+  transition: transform 220ms ease, border-color 220ms ease, box-shadow 220ms ease;
+}
+
+.xchat-launcher:hover {
+  transform: translateY(-2px) scale(1.02);
+  border-color: rgba(6, 214, 255, 0.72);
+  box-shadow: 0 18px 48px rgba(2, 6, 23, 0.65), 0 0 34px rgba(124, 58, 255, 0.4);
+}
+
+.xchat-orb {
+  background: #070b20;
+  box-shadow: 0 0 18px rgba(6, 214, 255, 0.34);
+  animation: xchatBreathe 2.8s ease-in-out infinite;
+}
+
+.xchat-orb-ring {
+  background: conic-gradient(from 20deg, #06d6ff, #7c3aff, #ff5ca8, transparent 72%, #06d6ff);
+  animation: xchatOrbit 4.5s linear infinite;
+}
+
+.xchat-orb-core {
+  background: radial-gradient(circle at 35% 28%, #171d4a 0%, #080b22 66%, #030617 100%);
+}
+
+.xchat-orb-scan {
+  z-index: 15;
+  background: linear-gradient(90deg, transparent, rgba(103, 232, 249, 0.95), transparent);
+  box-shadow: 0 0 8px rgba(34, 211, 238, 0.9);
+  animation: xchatScan 2.6s ease-in-out infinite;
+}
+
+.xchat-orb-sparkle { animation: xchatSparkle 2.4s ease-in-out infinite; }
+
+@keyframes xchatOrbit { to { transform: rotate(360deg); } }
+@keyframes xchatBreathe {
+  0%, 100% { box-shadow: 0 0 14px rgba(6, 214, 255, 0.25); }
+  50% { box-shadow: 0 0 26px rgba(124, 58, 255, 0.55); }
+}
+@keyframes xchatScan {
+  0%, 18% { transform: translateY(-17px); opacity: 0; }
+  28% { opacity: 1; }
+  72% { opacity: 1; }
+  82%, 100% { transform: translateY(17px); opacity: 0; }
+}
+@keyframes xchatSparkle {
+  0%, 60%, 100% { opacity: 0.35; transform: scale(0.7) rotate(0deg); }
+  75% { opacity: 1; transform: scale(1.15) rotate(18deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xchat-orb, .xchat-orb-ring, .xchat-orb-scan, .xchat-orb-sparkle { animation: none; }
+  .xchat-launcher { transition: none; }
+}
+
 /* Nav active glow line */
 .nav-glow-line {
   position: absolute;
