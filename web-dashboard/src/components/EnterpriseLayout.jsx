@@ -156,15 +156,15 @@ export const Sidebar = ({ isOpen, onClose }) => {
         {/* Logo */}
         <div
           className="h-16 flex items-center justify-between px-5 flex-shrink-0"
-          style={{ borderBottom: '1px solid rgba(124,58,255,0.1)' }}
+          style={{ borderBottom: '1px solid var(--border-top)' }}
         >
           <div className="flex items-center gap-3">
             <div
               className="w-9 h-9 rounded-xl flex items-center justify-center overflow-hidden flex-shrink-0"
               style={{
-                background: 'rgba(7, 11, 32, 0.96)',
-                border: '1px solid rgba(182,108,255,0.42)',
-                boxShadow: '0 0 18px rgba(124,58,255,0.65), 0 0 36px rgba(124,58,255,0.2)',
+                background: '#0A0A0A',
+                border: '1px solid rgba(255,255,255,0.14)',
+                boxShadow: '0 0 18px rgba(255,255,255,0.08)',
               }}
             >
               <BrandLogo className="h-8 w-8" />
@@ -179,9 +179,9 @@ export const Sidebar = ({ isOpen, onClose }) => {
           <button
             onClick={onClose}
             className="lg:hidden p-1.5 rounded-lg transition-colors"
-            style={{ color: '#8080B0' }}
+            style={{ color: 'var(--text-muted)' }}
             onMouseEnter={e => e.currentTarget.style.color = '#fff'}
-            onMouseLeave={e => e.currentTarget.style.color = '#8080B0'}
+            onMouseLeave={e => e.currentTarget.style.color = 'var(--text-muted)'}
           >
             <X size={18} />
           </button>
@@ -201,12 +201,12 @@ export const Sidebar = ({ isOpen, onClose }) => {
                     className="relative flex items-center gap-3 px-3 py-2.5 rounded-xl overflow-hidden transition-all duration-200 group cursor-pointer"
                     style={{
                       background: isActive
-                        ? 'linear-gradient(90deg, rgba(124,58,255,0.22) 0%, rgba(124,58,255,0.06) 100%)'
+                ? 'var(--bg-nav-active)'
                         : 'transparent',
-                      color: isActive ? '#fff' : '#8080B0',
+                      color: isActive ? '#fff' : 'var(--text-muted)',
                     }}
-                    onMouseEnter={e => { if (!isActive) { e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; e.currentTarget.style.color = '#C4C4E0'; } }}
-                    onMouseLeave={e => { if (!isActive) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = '#8080B0'; } }}
+                    onMouseEnter={e => { if (!isActive) { e.currentTarget.style.background = 'var(--bg-nav-hover)'; e.currentTarget.style.color = 'var(--text-nav-hover)'; } }}
+                    onMouseLeave={e => { if (!isActive) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; } }}
                   >
                     {/* Active left accent */}
                     {isActive && <span className="nav-glow-line" />}
@@ -215,15 +215,15 @@ export const Sidebar = ({ isOpen, onClose }) => {
                       size={17}
                       className="relative z-10 flex-shrink-0 transition-all duration-200"
                       style={{
-                        color: isActive ? '#9B6AFF' : 'inherit',
-                        filter: isActive ? 'drop-shadow(0 0 6px rgba(124,58,255,0.9))' : 'none',
+                        color: isActive ? '#FFFFFF' : 'inherit',
+                        filter: 'none',
                       }}
                     />
                     <span className="relative z-10 text-[13px] font-medium leading-none truncate flex-1">
                       {item.name}
                     </span>
                     {isActive && (
-                      <ChevronRight size={13} className="relative z-10 flex-shrink-0" style={{ color: 'rgba(124,58,255,0.6)' }} />
+                      <ChevronRight size={13} className="relative z-10 flex-shrink-0" style={{ color: '#FFFFFF' }} />
                     )}
                   </div>
                 )}
@@ -233,11 +233,11 @@ export const Sidebar = ({ isOpen, onClose }) => {
         </nav>
 
         {/* User + Logout */}
-        <div className="flex-shrink-0 p-3" style={{ borderTop: '1px solid rgba(124,58,255,0.1)' }}>
+        <div className="flex-shrink-0 p-3" style={{ borderTop: '1px solid var(--border-top)' }}>
           {user && (
             <div
               className="flex items-center gap-3 px-3 py-2.5 rounded-xl mb-1"
-              style={{ background: 'rgba(124,58,255,0.06)' }}
+              style={{ background: 'var(--user-chip-bg)' }}
             >
               <div
                 className="w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0"
@@ -249,7 +249,7 @@ export const Sidebar = ({ isOpen, onClose }) => {
                 <p className="text-[12px] font-semibold text-white truncate leading-tight">
                   {staffSession ? staffSession.name : (user?.username || 'Guest')}
                 </p>
-                <p className="text-[10px] truncate capitalize" style={{ color: '#5050A0' }}>
+                <p className="text-[10px] truncate capitalize" style={{ color: 'var(--user-chip-text)' }}>
                   {staffSession
                     ? `${staffSession.role.toUpperCase()}${staffSession.department ? ` · ${staffSession.department}` : ''}`
                     : (user?.role === 'admin' ? 'Administrator' : 'TapInX User')}
@@ -260,9 +260,9 @@ export const Sidebar = ({ isOpen, onClose }) => {
           <button
             onClick={handleLogout}
             className="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl transition-all duration-200 group"
-            style={{ color: '#8080B0' }}
+            style={{ color: 'var(--text-muted)' }}
             onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,59,59,0.08)'; e.currentTarget.style.color = '#FF6B6B'; }}
-            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = '#8080B0'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; }}
           >
             <LogOut size={16} className="flex-shrink-0" />
             <span className="text-[13px] font-medium">Sign Out</span>
@@ -303,9 +303,9 @@ export const Topbar = ({ onToggleSidebar }) => {
         <button
           onClick={onToggleSidebar}
           className="lg:hidden p-2 rounded-xl transition-all duration-200"
-          style={{ color: '#8080B0', background: 'rgba(124,58,255,0.06)' }}
-          onMouseEnter={e => { e.currentTarget.style.background = 'rgba(124,58,255,0.14)'; e.currentTarget.style.color = '#fff'; }}
-          onMouseLeave={e => { e.currentTarget.style.background = 'rgba(124,58,255,0.06)'; e.currentTarget.style.color = '#8080B0'; }}
+          style={{ color: 'var(--text-muted)', background: 'var(--bg-btn-ghost)' }}
+          onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-btn-ghost-hover)'; e.currentTarget.style.color = '#fff'; }}
+          onMouseLeave={e => { e.currentTarget.style.background = 'var(--bg-btn-ghost)'; e.currentTarget.style.color = 'var(--text-muted)'; }}
         >
           <Menu size={20} />
         </button>
@@ -319,7 +319,7 @@ export const Topbar = ({ onToggleSidebar }) => {
           <Search
             className="absolute left-3.5 top-1/2 -translate-y-1/2 transition-colors duration-200"
             size={16}
-            style={{ color: searchFocused ? '#9B6AFF' : '#5050A0' }}
+            style={{ color: searchFocused ? '#FFFFFF' : 'var(--text-muted)' }}
           />
           <input
             type="text"
@@ -329,15 +329,15 @@ export const Topbar = ({ onToggleSidebar }) => {
             className="input-glow w-full pl-10 pr-4 py-2.5 rounded-xl text-sm transition-all duration-200"
             style={{
               background: 'rgba(255,255,255,0.04)',
-              border: `1px solid ${searchFocused ? 'rgba(124,58,255,0.45)' : 'rgba(124,58,255,0.12)'}`,
-              color: '#C4C4E0',
+              border: `1px solid ${searchFocused ? 'var(--border-search-focus)' : 'var(--border-search)'}`,
+              color: 'var(--text-primary)',
               outline: 'none',
             }}
           />
           {searchFocused && (
             <div
               className="absolute inset-0 rounded-xl pointer-events-none"
-              style={{ boxShadow: '0 0 0 3px rgba(124,58,255,0.1), 0 0 20px rgba(124,58,255,0.06)' }}
+              style={{ boxShadow: '0 0 0 3px rgba(255,255,255,0.06)' }}
             />
           )}
         </div>
@@ -347,9 +347,9 @@ export const Topbar = ({ onToggleSidebar }) => {
         {/* Notification bell */}
         <button
           className="relative p-2.5 rounded-xl transition-all duration-200"
-          style={{ color: '#8080B0', background: 'rgba(124,58,255,0.06)' }}
-          onMouseEnter={e => { e.currentTarget.style.background = 'rgba(124,58,255,0.14)'; e.currentTarget.style.color = '#9B6AFF'; }}
-          onMouseLeave={e => { e.currentTarget.style.background = 'rgba(124,58,255,0.06)'; e.currentTarget.style.color = '#8080B0'; }}
+          style={{ color: 'var(--text-muted)', background: 'var(--bg-btn-ghost)' }}
+          onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-btn-ghost-hover)'; e.currentTarget.style.color = '#fff'; }}
+          onMouseLeave={e => { e.currentTarget.style.background = 'var(--bg-btn-ghost)'; e.currentTarget.style.color = 'var(--text-muted)'; }}
         >
           <Bell size={18} />
           <span
@@ -362,20 +362,20 @@ export const Topbar = ({ onToggleSidebar }) => {
         <button
           onClick={toggleTheme}
           className="relative p-2.5 rounded-xl transition-all duration-200"
-          style={{ color: '#8080B0', background: 'rgba(124,58,255,0.06)' }}
-          onMouseEnter={e => { e.currentTarget.style.background = 'rgba(124,58,255,0.14)'; e.currentTarget.style.color = '#9B6AFF'; }}
-          onMouseLeave={e => { e.currentTarget.style.background = 'rgba(124,58,255,0.06)'; e.currentTarget.style.color = '#8080B0'; }}
+          style={{ color: 'var(--text-muted)', background: 'var(--bg-btn-ghost)' }}
+          onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-btn-ghost-hover)'; e.currentTarget.style.color = '#fff'; }}
+          onMouseLeave={e => { e.currentTarget.style.background = 'var(--bg-btn-ghost)'; e.currentTarget.style.color = 'var(--text-muted)'; }}
         >
           {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
         </button>
 
         {/* Divider */}
-        <div className="w-px h-6 hidden sm:block" style={{ background: 'rgba(124,58,255,0.12)' }} />
+        <div className="w-px h-6 hidden sm:block" style={{ background: 'var(--border-top)' }} />
 
         {/* User chip */}
         <div
           className="flex items-center gap-2.5 px-3 py-1.5 rounded-xl hidden sm:flex"
-          style={{ background: 'rgba(124,58,255,0.06)', border: '1px solid rgba(124,58,255,0.12)' }}
+          style={{ background: 'var(--user-chip-bg)', border: '1px solid var(--border-top)' }}
         >
           <div
             className="w-7 h-7 rounded-lg flex items-center justify-center text-[11px] font-bold flex-shrink-0"
@@ -387,7 +387,7 @@ export const Topbar = ({ onToggleSidebar }) => {
             <p className="text-[12px] font-semibold text-white leading-tight">
               {staffSession ? staffSession.name : (user?.username || 'Guest')}
             </p>
-            <p className="text-[10px] capitalize" style={{ color: '#5050A0' }}>
+            <p className="text-[10px] capitalize" style={{ color: 'var(--user-chip-text)' }}>
               {staffSession ? staffSession.role : (user?.role === 'admin' ? 'Admin' : 'User')}
             </p>
           </div>

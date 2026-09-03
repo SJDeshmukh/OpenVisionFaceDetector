@@ -19,21 +19,21 @@
   --color-warning:     #FFB020;
   --color-error:       #FF3B3B;
 
-  /* Deep Space Surfaces */
-  --color-space-950:   #040410;
-  --color-space-900:   #07071A;
-  --color-space-850:   #0A0924;
-  --color-space-800:   #0D0C2A;
-  --color-space-750:   #111032;
-  --color-space-700:   #15143A;
-  --color-space-600:   #1C1A4A;
-  --color-space-500:   #242260;
+  /* Neutral dark surfaces */
+  --color-space-950:   #050505;
+  --color-space-900:   #090909;
+  --color-space-850:   #0D0D0D;
+  --color-space-800:   #121212;
+  --color-space-750:   #171717;
+  --color-space-700:   #1D1D1D;
+  --color-space-600:   #292929;
+  --color-space-500:   #3A3A3A;
 
   /* Text */
   --color-text-bright: #FFFFFF;
-  --color-text-soft:   #C4C4E0;
-  --color-text-muted:  #8080B0;
-  --color-text-dim:    #505080;
+  --color-text-soft:   #E5E5E5;
+  --color-text-muted:  #A3A3A3;
+  --color-text-dim:    #737373;
 
   /* Legacy compatibility */
   --color-soft-blue:   #7C3AFF;
@@ -47,34 +47,34 @@
 
 /* ─── Variables ─────────────────────────────────────────── */
 :root {
-  --bg-body: #07071A;
+  --bg-body: #080808;
   --text-main: #FFFFFF;
-  --bg-sidebar: linear-gradient(180deg, #0A0924 0%, #080818 65%, #050510 100%);
-  --border-sidebar: rgba(124, 58, 255, 0.12);
+  --bg-sidebar: #050505;
+  --border-sidebar: rgba(255, 255, 255, 0.09);
   --shadow-sidebar: 4px 0 32px rgba(0,0,0,0.6);
-  --bg-topbar: rgba(7, 7, 26, 0.88);
+  --bg-topbar: rgba(8, 8, 8, 0.92);
   --shadow-topbar: 0 4px 24px rgba(0,0,0,0.4);
-  --text-muted: #8080B0;
+  --text-muted: #A3A3A3;
   --text-muted-hover: #fff;
-  --bg-nav-active: linear-gradient(90deg, rgba(124,58,255,0.22) 0%, rgba(124,58,255,0.06) 100%);
-  --bg-nav-hover: rgba(255,255,255,0.04);
-  --text-nav-hover: #C4C4E0;
-  --bg-btn-ghost: rgba(124,58,255,0.06);
-  --bg-btn-ghost-hover: rgba(124,58,255,0.14);
+  --bg-nav-active: rgba(255,255,255,0.09);
+  --bg-nav-hover: rgba(255,255,255,0.055);
+  --text-nav-hover: #F5F5F5;
+  --bg-btn-ghost: rgba(255,255,255,0.055);
+  --bg-btn-ghost-hover: rgba(255,255,255,0.1);
   --bg-search: rgba(255,255,255,0.04);
-  --border-search: rgba(124,58,255,0.12);
-  --border-search-focus: rgba(124,58,255,0.45);
-  --border-top: rgba(124,58,255,0.1);
-  --overlay-bg: rgba(4,4,20,0.82);
-  --user-chip-bg: rgba(124,58,255,0.06);
-  --user-chip-text: #5050A0;
+  --border-search: rgba(255,255,255,0.1);
+  --border-search-focus: rgba(255,255,255,0.32);
+  --border-top: rgba(255,255,255,0.08);
+  --overlay-bg: rgba(0,0,0,0.82);
+  --user-chip-bg: rgba(255,255,255,0.055);
+  --user-chip-text: #A3A3A3;
   
   /* Dynamic Component Variables */
-  --bg-card: rgba(17, 16, 50, 0.4);
-  --bg-card-alt: rgba(20, 20, 60, 0.3);
-  --border-card: rgba(124, 58, 255, 0.08); /* VERY subtle border for dark mode so it matches EnterpriseLayout sidebars */
+  --bg-card: #111111;
+  --bg-card-alt: #171717;
+  --border-card: rgba(255, 255, 255, 0.09);
   --text-primary: #FFFFFF;
-  --text-secondary: #C4C4E0;
+  --text-secondary: #B8B8B8;
 }
 
 [data-theme="light"] {
@@ -228,6 +228,20 @@
     border-color: var(--border-card) !important;
   }
 }
+
+/* Keep dark mode achromatic even where components use Tailwind slate utilities. */
+:root:not([data-theme="light"]) .bg-slate-950 { background-color: #050505 !important; }
+:root:not([data-theme="light"]) .bg-slate-900 { background-color: #0A0A0A !important; }
+:root:not([data-theme="light"]) .bg-slate-800 { background-color: #171717 !important; }
+:root:not([data-theme="light"]) .bg-slate-700 { background-color: #262626 !important; }
+:root:not([data-theme="light"]) [class~="bg-slate-950/65"],
+:root:not([data-theme="light"]) [class~="bg-slate-950/55"] { background-color: rgba(5, 5, 5, 0.78) !important; }
+:root:not([data-theme="light"]) [class~="bg-slate-900/95"],
+:root:not([data-theme="light"]) [class~="bg-slate-900/80"] { background-color: rgba(10, 10, 10, 0.94) !important; }
+:root:not([data-theme="light"]) .border-slate-800,
+:root:not([data-theme="light"]) .border-slate-700 { border-color: rgba(255, 255, 255, 0.1) !important; }
+:root:not([data-theme="light"]) .text-slate-400 { color: #A3A3A3 !important; }
+:root:not([data-theme="light"]) .text-slate-300 { color: #D4D4D4 !important; }
 
 /* Gradient text */
 .gradient-text {
