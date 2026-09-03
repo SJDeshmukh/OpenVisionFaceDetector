@@ -162,11 +162,12 @@ export const Sidebar = ({ isOpen, onClose }) => {
             <div
               className="w-9 h-9 rounded-xl flex items-center justify-center overflow-hidden flex-shrink-0"
               style={{
-                background: 'linear-gradient(135deg, #7C3AFF 0%, #06D6FF 100%)',
+                background: 'rgba(7, 11, 32, 0.96)',
+                border: '1px solid rgba(182,108,255,0.42)',
                 boxShadow: '0 0 18px rgba(124,58,255,0.65), 0 0 36px rgba(124,58,255,0.2)',
               }}
             >
-              <BrandLogo className="h-7 w-7" />
+              <BrandLogo className="h-8 w-8" />
             </div>
             <div>
               <p className="text-[15px] font-bold text-white leading-tight tracking-tight">TapInX</p>

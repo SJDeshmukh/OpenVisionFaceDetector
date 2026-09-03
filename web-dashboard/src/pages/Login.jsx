@@ -221,13 +221,14 @@ const Login = () => {
               style={{ border: '1px solid rgba(6,214,255,0.25)', animation: 'pulseRing 2.8s ease-in-out infinite 0.55s' }}
             />
             <div
-              className="w-full h-full rounded-full flex items-center justify-center"
+              className="w-full h-full rounded-2xl flex items-center justify-center"
               style={{
-                background: 'linear-gradient(135deg, #7C3AFF 0%, #06D6FF 100%)',
+                background: 'linear-gradient(145deg, #090C28 0%, #111748 100%)',
+                border: '1px solid rgba(182,108,255,0.5)',
                 boxShadow: '0 0 28px rgba(124,58,255,0.7), 0 0 56px rgba(124,58,255,0.25)',
               }}
             >
-              <BrandLogo className="h-11 w-11" />
+              <BrandLogo className="h-[58px] w-[58px]" />
             </div>
           </div>
 
