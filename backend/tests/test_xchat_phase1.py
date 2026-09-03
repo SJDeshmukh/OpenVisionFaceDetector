@@ -83,7 +83,7 @@ def xchat_db(tmp_path, monkeypatch):
 
 
 def test_tool_schemas_never_expose_tenant_identity():
-    assert len(xchat_tools.TOOL_SCHEMAS) == 16
+    assert len(xchat_tools.TOOL_SCHEMAS) == 17
     for tool in xchat_tools.TOOL_SCHEMAS:
         properties = tool["function"]["parameters"]["properties"]
         assert "vendor_id" not in properties
@@ -104,6 +104,14 @@ def test_absent_people_lists_registered_people_without_attendance(xchat_db):
     assert [person["name"] for person in result["people"]] == ["Alice"]
     assert xchat_tools.get_absent_people(1, "2026-08-01")["absent_count"] == 0
     assert xchat_tools.get_absent_people(2, "2026-08-02")["people"][0]["name"] == "Bob"
+
+
+def test_present_people_lists_names_with_attendance_and_is_vendor_scoped(xchat_db):
+    result = xchat_tools.get_present_people(1, "2026-08-02")
+    assert result["present_count"] == 1
+    assert [person["name"] for person in result["people"]] == ["Aaron"]
+    assert xchat_tools.get_present_people(1, "2026-08-03")["people"] == []
+    assert xchat_tools.get_present_people(2, "2026-08-01")["people"][0]["name"] == "Bob"
 
 
 def test_person_image_lookup_is_name_searchable_and_vendor_scoped(xchat_db):
@@ -231,6 +239,37 @@ class FakeProvider:
         return {"role": "assistant", "content": f"There are {tool_data['employees']} employees for 2026-08-01."}
 
 
+class PresentPeopleProvider:
+    def __init__(self):
+        self.calls = 0
+
+    def complete(self, messages, tools):
+        self.calls += 1
+        tool_names = {item["function"]["name"] for item in tools}
+        assert "get_present_people" in tool_names
+        if self.calls == 1:
+            return {"role": "assistant", "content": "", "tool_calls": [{
+                "id": "call-present", "function": {
+                    "name": "get_present_people",
+                    "arguments": json.dumps({"attendance_date": "2026-08-02"}),
+                },
+            }]}
+        tool_data = json.loads(messages[-1]["content"])["data"]
+        return {"role": "assistant", "content": f"{tool_data['people'][0]['name']} is present on 2026-08-02."}
+
+
+def test_present_name_question_uses_present_result_and_presentation(xchat_db):
+    result = xchat_service.answer_question(
+        "Name of the employees present on 2026-08-02", [], 1,
+        ["xchat_ai", "reports"], provider=PresentPeopleProvider(),
+    )
+    assert result["answer"] == "Aaron is present on 2026-08-02."
+    assert result["tools_used"] == ["get_present_people"]
+    assert result["presentation"]["metrics"][0]["label"] == "Present people"
+    assert result["presentation"]["tables"][0]["rows"][0]["name"] == "Aaron"
+    assert all(table["id"] != "absent-people" for table in result["presentation"]["tables"])
+
+
 def test_orchestrator_executes_tool_and_audits_metadata_only(xchat_db):
     result = xchat_service.process_message(
         "How was attendance on 2026-08-01?", None, 1, "alpha-admin", "admin",
@@ -288,6 +327,21 @@ def test_presenter_builds_indexed_table_and_requested_chart():
     assert presentation["charts"][0]["type"] == "line"
     assert presentation["charts"][0]["data"][0]["index"] == 1
     assert presentation["tables"][0]["rows"][1]["index"] == 2
+
+
+def test_present_people_builds_present_metric_and_name_table():
+    result = {
+        "date": "2026-08-02", "present_count": 1,
+        "people": [{"display_id": 102, "name": "Aaron", "department": "Sales", "designation": "Worker", "shift": "Night"}],
+    }
+    presentation = build_presentation(
+        "name of the employees present",
+        [{"name": "get_present_people", "result": result}],
+    )
+    assert presentation["metrics"][0]["label"] == "Present people"
+    assert presentation["metrics"][0]["value"] == 1
+    assert presentation["tables"][0]["title"] == "Present people · 2026-08-02"
+    assert presentation["tables"][0]["rows"][0]["name"] == "Aaron"
 
 
 def test_presenter_builds_multi_period_payroll_trend():

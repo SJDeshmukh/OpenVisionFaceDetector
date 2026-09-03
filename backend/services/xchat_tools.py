@@ -200,6 +200,45 @@ def get_attendance_summary(vendor_id, start_date, end_date, department=None):
     }
 
 
+def get_present_people(vendor_id, attendance_date=None, department=None, limit=25):
+    """List registered people with at least one attendance event on a day."""
+    requested_date = attendance_date or date.today().isoformat()
+    day, _ = _period(requested_date, requested_date)
+    row_limit = _limit(limit)
+    conn = _db()
+    c = conn.cursor()
+    try:
+        query = """
+            SELECT f.id, f.display_id, f.name, f.department, f.designation, f.shift
+            FROM faces f
+            WHERE f.vendor_id = ?
+              AND EXISTS (
+                  SELECT 1 FROM attendance a
+                  WHERE a.vendor_id = f.vendor_id AND a.person_id = f.id
+                    AND date(a.timestamp) = ?
+              )
+        """
+        params = [vendor_id, day.isoformat()]
+        if department:
+            query += " AND f.department = ?"
+            params.append(str(department))
+        query += " ORDER BY f.name"
+        c.execute(query, params)
+        rows = [_dict(row) for row in (c.fetchall() or [])]
+    finally:
+        conn.close()
+    people = [{
+        "display_id": row.get("display_id") or row.get("id"), "name": row.get("name"),
+        "department": row.get("department"), "designation": row.get("designation"),
+        "shift": row.get("shift"),
+    } for row in rows[:row_limit]]
+    return {
+        "date": day.isoformat(), "department": department or "All", "present_count": len(rows),
+        "people": people, "truncated": len(rows) > len(people), "source_path": "/attendance",
+        "note": "Present means a registered person has at least one attendance event recorded on this date.",
+    }
+
+
 def get_absent_people(vendor_id, attendance_date=None, department=None, limit=25):
     """List registered people with no attendance event on the requested day."""
     requested_date = attendance_date or date.today().isoformat()
@@ -666,6 +705,7 @@ def get_parent_access_summary(vendor_id):
 
 TOOL_REGISTRY = {
     "get_attendance_summary": get_attendance_summary,
+    "get_present_people": get_present_people,
     "get_absent_people": get_absent_people,
     "get_payroll_summary": get_payroll_summary,
     "get_person_payroll": get_person_payroll,
@@ -690,6 +730,7 @@ def _date_properties(*names):
 
 TOOL_SCHEMAS = [
     {"type": "function", "function": {"name": "get_attendance_summary", "description": "Summarize attendance, presence, late days, and attendance rate for a period.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "department": {"type": "string"}}, "required": ["start_date", "end_date"]}}},
+    {"type": "function", "function": {"name": "get_present_people", "description": "List the registered people who have an attendance event on a date. Use this for questions asking who is present, which employees are present, or for the names of people present today/on a specific day. Never use the absent-people tool for those questions. The date is optional and defaults to today.", "parameters": {"type": "object", "properties": {"attendance_date": {"type": "string", "description": "Date in YYYY-MM-DD format; omit for today"}, "department": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}}}},
     {"type": "function", "function": {"name": "get_absent_people", "description": "List the registered people who have no attendance event on a date. Use this for questions asking who is absent or missing today/on a specific day. The date is optional and defaults to today.", "parameters": {"type": "object", "properties": {"attendance_date": {"type": "string", "description": "Date in YYYY-MM-DD format; omit for today"}, "department": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}}}},
     {"type": "function", "function": {"name": "get_payroll_summary", "description": "Calculate total payable hours and estimated wages for a period.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "department": {"type": "string"}}, "required": ["start_date", "end_date"]}}},
     {"type": "function", "function": {"name": "get_person_payroll", "description": "Look up estimated wages and payable hours for a named individual. Use this whenever a user asks about one person's wage, salary, payroll, or hours. Dates are optional and default to the current month through today.", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "Full or partial person name"}, **_date_properties("start_date", "end_date")}, "required": ["name"]}}},
@@ -710,6 +751,7 @@ TOOL_SCHEMAS = [
 
 TOOL_FEATURES = {
     "get_attendance_summary": {"reports", "report_detailed", "live_attendance", "enable_attendance", "checkin_checkout"},
+    "get_present_people": {"reports", "report_detailed", "live_attendance", "enable_attendance", "checkin_checkout"},
     "get_absent_people": {"reports", "report_detailed", "live_attendance", "enable_attendance", "checkin_checkout"},
     "get_incomplete_attendance": {"reports", "report_detailed", "live_attendance", "enable_attendance", "checkin_checkout"},
     "get_payroll_summary": {"payroll", "report_payroll", "payable_hours"},
