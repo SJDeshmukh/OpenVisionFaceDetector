@@ -121,6 +121,23 @@ def build_presentation(question, tool_results):
                     [{"label": row.get("name"), **row} for row in rows], "employee-payroll-chart.png",
                 ))
 
+        elif name == "get_person_payroll":
+            presentation["metrics"].extend([
+                {"label": "Estimated wages", "value": result.get("estimated_wages", 0), "format": "currency", "currency": result.get("currency", "INR")},
+                {"label": "Payable hours", "value": result.get("total_payable_hours", 0), "format": "hours"},
+                {"label": "Matching people", "value": result.get("matched_people", 0), "format": "number"},
+            ])
+            rows = result.get("people") or []
+            if rows:
+                presentation["tables"].append(_table(
+                    "person-payroll", f"Individual payroll · {period_label}",
+                    [
+                        {"key": "name", "label": "Employee"}, {"key": "department", "label": "Department"},
+                        {"key": "designation", "label": "Designation"}, {"key": "hours", "label": "Hours", "format": "hours"},
+                        {"key": "estimated_wages", "label": "Estimated wages", "format": "currency", "currency": result.get("currency", "INR")},
+                    ], rows, "individual-payroll.csv",
+                ))
+
         elif name == "compare_payroll_periods":
             current, previous = result.get("current") or {}, result.get("previous") or {}
             currency = result.get("currency", "INR")

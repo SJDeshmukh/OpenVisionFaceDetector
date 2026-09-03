@@ -78,7 +78,7 @@ def xchat_db(tmp_path, monkeypatch):
 
 
 def test_tool_schemas_never_expose_tenant_identity():
-    assert len(xchat_tools.TOOL_SCHEMAS) == 13
+    assert len(xchat_tools.TOOL_SCHEMAS) == 14
     for tool in xchat_tools.TOOL_SCHEMAS:
         properties = tool["function"]["parameters"]["properties"]
         assert "vendor_id" not in properties
@@ -99,6 +99,15 @@ def test_person_image_lookup_is_name_searchable_and_vendor_scoped(xchat_db):
     assert result["image_count"] == 2
     assert {item["image"] for item in result["images"]} == {"alice-photo", "alice-capture"}
     assert xchat_tools.get_person_images(1, "Bob")["matched_people"] == 0
+
+
+def test_individual_payroll_lookup_is_name_searchable_and_vendor_scoped(xchat_db):
+    result = xchat_tools.get_person_payroll(1, "ali", "2026-08-01", "2026-08-01")
+    assert result["matched_people"] == 1
+    assert result["people"][0]["name"] == "Alice"
+    assert result["total_payable_hours"] == 8
+    assert result["estimated_wages"] == 800
+    assert xchat_tools.get_person_payroll(1, "Bob", "2026-08-01", "2026-08-01")["matched_people"] == 0
 
 
 def test_model_cannot_override_injected_vendor(xchat_db, monkeypatch):

@@ -218,6 +218,29 @@ def get_payroll_summary(vendor_id, start_date, end_date, department=None):
     }
 
 
+def get_person_payroll(vendor_id, name, start_date=None, end_date=None):
+    """Return an individual person's estimated payroll, defaulting to this month."""
+    search_name = str(name or "").strip()
+    if not search_name:
+        raise ValueError("A person's name is required")
+    today = date.today()
+    start_date = start_date or today.replace(day=1).isoformat()
+    end_date = end_date or today.isoformat()
+    start, end = _period(start_date, end_date)
+    metrics = _employee_metrics(vendor_id, start, end)
+    exact = [item for item in metrics if str(item.get("name") or "").casefold() == search_name.casefold()]
+    matches = exact or [item for item in metrics if search_name.casefold() in str(item.get("name") or "").casefold()]
+    return {
+        "period": {"start": start.isoformat(), "end": end.isoformat()},
+        "query": search_name, "matched_people": len(matches), "people": matches[:MAX_RESULT_ROWS],
+        "estimated_wages": round(sum(item["estimated_wages"] for item in matches), 2),
+        "total_payable_hours": round(sum(item["hours"] for item in matches), 2),
+        "currency": "INR",
+        "note": "Estimated wages use recorded payable hours and the person's daily-wage rate; statutory and manual adjustments are not included.",
+        "source_path": "/wages",
+    }
+
+
 def compare_payroll_periods(vendor_id, current_start, current_end, previous_start, previous_end, department=None):
     current = get_payroll_summary(vendor_id, current_start, current_end, department)
     previous = get_payroll_summary(vendor_id, previous_start, previous_end, department)
@@ -569,6 +592,7 @@ def get_parent_access_summary(vendor_id):
 TOOL_REGISTRY = {
     "get_attendance_summary": get_attendance_summary,
     "get_payroll_summary": get_payroll_summary,
+    "get_person_payroll": get_person_payroll,
     "compare_payroll_periods": compare_payroll_periods,
     "get_employee_hours_ranking": get_employee_hours_ranking,
     "get_incomplete_attendance": get_incomplete_attendance,
@@ -590,6 +614,7 @@ def _date_properties(*names):
 TOOL_SCHEMAS = [
     {"type": "function", "function": {"name": "get_attendance_summary", "description": "Summarize attendance, presence, late days, and attendance rate for a period.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "department": {"type": "string"}}, "required": ["start_date", "end_date"]}}},
     {"type": "function", "function": {"name": "get_payroll_summary", "description": "Calculate total payable hours and estimated wages for a period.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "department": {"type": "string"}}, "required": ["start_date", "end_date"]}}},
+    {"type": "function", "function": {"name": "get_person_payroll", "description": "Look up estimated wages and payable hours for a named individual. Use this whenever a user asks about one person's wage, salary, payroll, or hours. Dates are optional and default to the current month through today.", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "Full or partial person name"}, **_date_properties("start_date", "end_date")}, "required": ["name"]}}},
     {"type": "function", "function": {"name": "compare_payroll_periods", "description": "Compare estimated wages between two date periods.", "parameters": {"type": "object", "properties": {**_date_properties("current_start", "current_end", "previous_start", "previous_end"), "department": {"type": "string"}}, "required": ["current_start", "current_end", "previous_start", "previous_end"]}}},
     {"type": "function", "function": {"name": "get_employee_hours_ranking", "description": "Rank employees by payable hours in a period.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "department": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}, "order": {"type": "string", "enum": ["highest", "lowest"]}}, "required": ["start_date", "end_date"]}}},
     {"type": "function", "function": {"name": "get_incomplete_attendance", "description": "Find attendance days ending with a check-in but no later check-out.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "department": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}, "required": ["start_date", "end_date"]}}},
@@ -608,6 +633,7 @@ TOOL_FEATURES = {
     "get_attendance_summary": {"reports", "report_detailed", "live_attendance", "enable_attendance", "checkin_checkout"},
     "get_incomplete_attendance": {"reports", "report_detailed", "live_attendance", "enable_attendance", "checkin_checkout"},
     "get_payroll_summary": {"payroll", "report_payroll", "payable_hours"},
+    "get_person_payroll": {"payroll", "report_payroll", "payable_hours"},
     "compare_payroll_periods": {"payroll", "report_payroll", "payable_hours"},
     "get_employee_hours_ranking": {"payroll", "report_payroll", "payable_hours"},
     "get_device_status": {"cameras", "mobile_app", "geofencing", "live_attendance"},
