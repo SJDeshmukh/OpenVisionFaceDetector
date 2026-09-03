@@ -2,6 +2,8 @@ from flask import Blueprint, g, jsonify, request
 
 from middleware.handlers import rate_limit
 from services.auth_service import require_auth
+from services import stt_service
+from services.stt_service import SpeechToTextError
 from services.xchat_service import (
     XChatError,
     create_conversation,
@@ -24,6 +26,8 @@ def _feature_guard():
 
 
 def _error_response(exc):
+    if isinstance(exc, SpeechToTextError):
+        return jsonify({"error": str(exc), "code": exc.code}), exc.status_code
     if isinstance(exc, XChatError):
         return jsonify({"error": str(exc), "code": type(exc).__name__.upper()}), exc.status_code
     if isinstance(exc, ValueError):
@@ -68,6 +72,34 @@ def conversation_delete(conversation_id):
     try:
         delete_conversation(conversation_id, g.vendor_id, g.username)
         return jsonify({"status": "success"})
+    except Exception as exc:
+        return _error_response(exc)
+
+
+@xchat_bp.get("/xchat/transcription/status")
+@require_auth(roles=XCHAT_ROLES)
+def transcription_status():
+    if error := _feature_guard():
+        return error
+    return jsonify({"status": "success", **stt_service.speech_to_text.status()})
+
+
+@xchat_bp.post("/xchat/transcribe")
+@require_auth(roles=XCHAT_ROLES)
+@rate_limit(key_func=lambda: f"xchat-stt:{g.vendor_id}:{g.username}", limit=6, window=60)
+def transcription_create():
+    if error := _feature_guard():
+        return error
+    service = stt_service.speech_to_text
+    if request.content_length and request.content_length > service.max_audio_bytes + 262_144:
+        return jsonify({"error": "The audio recording is too large", "code": "INVALID_AUDIO"}), 413
+    audio_file = request.files.get("audio")
+    if not audio_file:
+        return jsonify({"error": "An audio recording is required", "code": "INVALID_AUDIO"}), 400
+    try:
+        audio_bytes = audio_file.stream.read(service.max_audio_bytes + 1)
+        result = service.transcribe(audio_bytes, audio_file.mimetype)
+        return jsonify({"status": "success", **result})
     except Exception as exc:
         return _error_response(exc)
 

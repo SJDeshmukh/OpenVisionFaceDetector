@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
-import { Bot, ChevronLeft, Clock3, History, Loader2, Plus, RotateCcw, Send, TimerReset, Trash2, X } from 'lucide-react';
+import { Bot, ChevronLeft, Clock3, History, Loader2, Mic, Plus, RotateCcw, Send, Square, TimerReset, Trash2, X } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { API_URL } from '../config';
 import { useAuth } from '../context/AuthContext';
+import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
 import XChatPresentation, { FormattedText } from './XChatPresentation';
 import BrandLogo from './BrandLogo';
 
@@ -85,6 +86,12 @@ const XChat = () => {
   const sendRef = useRef(null);
 
   const enabled = Boolean(user?.features?.includes('xchat_ai') && allowedRoles.has(user?.role));
+  const voice = useVoiceRecorder({
+    active: open && enabled,
+    blocked: loading,
+    onTranscript: (text) => sendRef.current?.(text),
+    onError: setError,
+  });
   const filters = useMemo(() => {
     const values = new URLSearchParams(location.search);
     return ['start_date', 'end_date', 'department'].reduce((result, key) => {
@@ -131,6 +138,7 @@ const XChat = () => {
   }, [retryJob]);
 
   const newChat = () => {
+    voice.cancel();
     setConversationId(null);
     setMessages([]);
     setError('');
@@ -251,9 +259,9 @@ const XChat = () => {
             {historyOpen && <button type="button" onClick={() => setHistoryOpen(false)} aria-label="Back to chat"><ChevronLeft size={20} /></button>}
             <span className="grid h-9 w-9 place-items-center rounded-xl bg-cyan-500/15"><BrandLogo className="h-7 w-7" /></span>
             <div className="min-w-0 flex-1"><h2 className="text-sm font-semibold">XChat</h2><p className="truncate text-[11px] text-slate-400">Assistant for your enabled features</p></div>
-            <button type="button" onClick={() => setHistoryOpen(!historyOpen)} className="rounded-lg p-2 hover:bg-slate-800" aria-label="Chat history"><History size={19} /></button>
+            <button type="button" onClick={() => { voice.cancel(); setHistoryOpen(!historyOpen); }} className="rounded-lg p-2 hover:bg-slate-800" aria-label="Chat history"><History size={19} /></button>
             <button type="button" onClick={newChat} className="rounded-lg p-2 hover:bg-slate-800" aria-label="New chat"><Plus size={19} /></button>
-            <button type="button" onClick={() => setOpen(false)} className="rounded-lg p-2 hover:bg-slate-800" aria-label="Close XChat"><X size={19} /></button>
+            <button type="button" onClick={() => { voice.cancel(); setOpen(false); }} className="rounded-lg p-2 hover:bg-slate-800" aria-label="Close XChat"><X size={19} /></button>
           </header>
 
           {historyOpen ? (
@@ -324,14 +332,53 @@ const XChat = () => {
                 </div>
               )}
               <footer className="shrink-0 border-t border-slate-800 bg-slate-900/80 p-3">
-                <div className="flex items-end gap-2 rounded-xl border border-slate-700 bg-slate-950 p-2 focus-within:border-cyan-600">
+                {voice.phase !== 'idle' && (
+                  <div role="status" className={`mb-2 flex items-center gap-3 rounded-xl border px-3 py-2.5 ${voice.phase === 'listening' ? 'border-cyan-500/50 bg-cyan-950/35' : 'border-violet-500/40 bg-violet-950/30'}`}>
+                    {voice.phase === 'listening' ? (
+                      <>
+                        <span className="relative grid h-9 w-9 shrink-0 place-items-center rounded-full bg-cyan-400/15 text-cyan-300">
+                          <span className="absolute inset-0 animate-ping rounded-full bg-cyan-400/15" />
+                          <Mic size={17} className="relative" />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-medium text-cyan-100">{voice.speechDetected ? 'Listening…' : 'Start speaking…'}</p>
+                          <p className="mt-0.5 text-[10px] text-cyan-300/70">Stops automatically when you pause</p>
+                        </div>
+                        <div className="flex h-7 items-center gap-0.5" aria-hidden="true">
+                          {[0.55, 0.85, 1, 0.72, 0.45].map((factor, index) => (
+                            <span key={index} className="w-1 rounded-full bg-cyan-300 transition-[height] duration-75"
+                              style={{ height: `${Math.max(4, Math.round(4 + voice.level * 22 * factor))}px` }} />
+                          ))}
+                        </div>
+                        <button type="button" onClick={voice.stop} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-red-500/15 text-red-300 hover:bg-red-500/25" aria-label="Stop and transcribe recording">
+                          <Square size={13} fill="currentColor" />
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-violet-400/15 text-violet-300"><Loader2 size={18} className="animate-spin" /></span>
+                        <div><p className="text-xs font-medium text-violet-100">Transcribing your question…</p><p className="mt-0.5 text-[10px] text-violet-300/70">Running Whisper locally on the server</p></div>
+                      </>
+                    )}
+                  </div>
+                )}
+                <div className={`flex items-end gap-2 rounded-xl border bg-slate-950 p-2 ${voice.phase === 'listening' ? 'border-cyan-500/70' : 'border-slate-700 focus-within:border-cyan-600'}`}>
                   <textarea value={draft} onChange={(event) => setDraft(event.target.value)} rows={1} maxLength={1000} placeholder="Ask about any enabled feature…"
                     onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); } }}
-                    className="max-h-24 min-h-9 flex-1 resize-none bg-transparent px-1 py-2 text-sm outline-none placeholder:text-slate-600" />
-                  <button type="button" disabled={!draft.trim() || loading} onClick={() => send()} aria-label="Send message"
+                    disabled={voice.phase !== 'idle'}
+                    className="max-h-24 min-h-9 flex-1 resize-none bg-transparent px-1 py-2 text-sm outline-none placeholder:text-slate-600 disabled:opacity-50" />
+                  {voice.available && (
+                    <button type="button" disabled={loading || voice.phase === 'transcribing'} onClick={voice.phase === 'listening' ? voice.stop : voice.start}
+                      aria-label={voice.phase === 'listening' ? 'Stop and transcribe recording' : 'Ask with your voice'} aria-pressed={voice.phase === 'listening'}
+                      className={`relative grid h-9 w-9 shrink-0 place-items-center rounded-lg transition disabled:cursor-not-allowed disabled:opacity-40 ${voice.phase === 'listening' ? 'bg-red-500 text-white shadow-lg shadow-red-950/50' : 'bg-slate-800 text-cyan-300 hover:bg-slate-700'}`}>
+                      {voice.phase === 'listening' && <span className="absolute inset-0 animate-ping rounded-lg bg-red-400/25" />}
+                      <Mic size={17} className="relative" />
+                    </button>
+                  )}
+                  <button type="button" disabled={!draft.trim() || loading || voice.phase !== 'idle'} onClick={() => send()} aria-label="Send message"
                     className="grid h-9 w-9 place-items-center rounded-lg bg-cyan-500 text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"><Send size={17} /></button>
                 </div>
-                <p className="mt-2 text-center text-[10px] text-slate-500">Read-only insights · Limited to your enabled features</p>
+                <p className="mt-2 text-center text-[10px] text-slate-500">Read-only insights{voice.available ? ' · Voice enabled' : ''} · Limited to your enabled features</p>
               </footer>
             </>
           )}

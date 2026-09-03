@@ -46,6 +46,13 @@ services:
       - MISTRAL_MODEL=${MISTRAL_MODEL:-mistral-small-latest}
       - XCHAT_HISTORY_DAYS=${XCHAT_HISTORY_DAYS:-30}
       - XCHAT_MAX_MESSAGES=${XCHAT_MAX_MESSAGES:-200}
+      - STT_ENABLED=${STT_ENABLED:-false}
+      - STT_MODEL=${STT_MODEL:-base}
+      - STT_CPU_THREADS=${STT_CPU_THREADS:-1}
+      - STT_MAX_AUDIO_SECONDS=${STT_MAX_AUDIO_SECONDS:-20}
+      - STT_MAX_AUDIO_BYTES=${STT_MAX_AUDIO_BYTES:-2500000}
+      - STT_VAD_MIN_SILENCE_MS=${STT_VAD_MIN_SILENCE_MS:-500}
+      - STT_LANGUAGE=${STT_LANGUAGE:-}
     depends_on:
       db:
         condition: service_healthy

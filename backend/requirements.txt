@@ -39,6 +39,7 @@ mtcnn
 scipy
 scikit-image
 albumentations
+faster-whisper>=1.1,<2
 
 # Face Recognition & Enhancement
 basicsr

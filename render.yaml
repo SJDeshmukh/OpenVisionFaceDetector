@@ -41,6 +41,14 @@ services:
         sync: false
       - key: MAIL_FROM_ADDRESS
         value: openvisionx@gmail.com
+      - key: STT_ENABLED
+        value: false
+      - key: STT_MODEL
+        value: base
+      - key: STT_CPU_THREADS
+        value: 1
+      - key: STT_MAX_AUDIO_SECONDS
+        value: 20
   - type: web
     name: face-detection-frontend
     env: static
