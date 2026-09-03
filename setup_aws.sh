@@ -353,7 +353,7 @@ if [[ "$USE_DOCKER" =~ ^[Yy]$ ]]; then
 fi
 
 log "Selected safe bare-metal deployment"
-sudo -v
+sudo -n true || die "Passwordless sudo is required for unattended AWS installation. Configure the deployment user in sudoers, then rerun."
 
 log "Stopping only existing OpenVision application services"
 stop_application_services
