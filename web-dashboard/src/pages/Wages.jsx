@@ -52,6 +52,7 @@ const Wages = () => {
   const [ownerConfigModalOpen, setOwnerConfigModalOpen] = useState(false);
   const [owners, setOwners] = useState([]);
   const [ownersLoading, setOwnersLoading] = useState(false);
+  const [ownersSaving, setOwnersSaving] = useState(false);
 
   useEffect(() => {
     if (user) {
@@ -441,6 +442,7 @@ const Wages = () => {
   };
 
   const saveOwners = async () => {
+    setOwnersSaving(true);
     try {
       const res = await fetch(`${API_BASE_URL}/vendor/owners`, {
         method: 'PUT',
@@ -454,12 +456,14 @@ const Wages = () => {
         alert("Owner accounts updated successfully!");
         setOwnerConfigModalOpen(false);
       } else {
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
         alert("Error: " + (data.error || "Failed to update owners"));
       }
     } catch (e) {
       console.error(e);
-      alert("Error saving owners");
+      alert("Error: Could not reach the server. Please try again.");
+    } finally {
+      setOwnersSaving(false);
     }
   };
 
@@ -1121,7 +1125,7 @@ const Wages = () => {
                         <div className="flex-1 space-y-2">
                           <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Owner Email / Username</label>
                           <input 
-                            type="text"
+                            type="password"
                             value={owner.username}
                             onChange={(e) => {
                               const newOwners = [...owners];
@@ -1143,6 +1147,7 @@ const Wages = () => {
                               setOwners(newOwners);
                             }}
                             placeholder="New password"
+                            minLength={8}
                             className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-slate-500/20 focus:border-slate-800 transition-all text-sm font-bold"
                           />
                         </div>
@@ -1179,9 +1184,10 @@ const Wages = () => {
               </button>
               <button
                 onClick={saveOwners}
-                className="flex-[2] py-3 bg-slate-800 text-white rounded-xl hover:bg-slate-900 font-bold shadow-lg shadow-slate-200 transition-all text-sm"
+                disabled={ownersSaving}
+                className="flex-[2] py-3 bg-slate-800 text-white rounded-xl hover:bg-slate-900 font-bold shadow-lg shadow-slate-200 transition-all text-sm disabled:cursor-wait disabled:opacity-60"
               >
-                Save Owner Access
+                {ownersSaving ? 'Saving…' : 'Save Owner Access'}
               </button>
             </div>
           </div>

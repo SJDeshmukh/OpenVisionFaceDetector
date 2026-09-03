@@ -841,14 +841,35 @@ def get_vendor_owners():
 @vendor_bp.route("/vendor/owners", methods=["PUT"])
 @vendor_required
 def sync_vendor_owners():
-    from app import get_db_connection, hash_password
+    from app import get_db_connection
+    from services.auth_service import hash_password
     vendor_id = request.vendor_id
     data = request.json or {}
     owners = data.get('owners', [])
     
     if not isinstance(owners, list):
         return jsonify({"error": "owners must be a list"}), 400
-        
+    if g.user_role not in {'vendor_admin', 'admin', 'owner'}:
+        return jsonify({"error": "Admin or owner access required"}), 403
+
+    normalized_owners = []
+    seen_usernames = set()
+    for owner_data in owners:
+        if not isinstance(owner_data, dict):
+            return jsonify({"error": "Each owner must be an object"}), 400
+        username = str(owner_data.get("username") or "").strip()
+        password = str(owner_data.get("password") or "")
+        if not username:
+            continue
+        username_key = username.casefold()
+        if username_key in seen_usernames:
+            return jsonify({"error": f"Duplicate owner username: {username}"}), 400
+        if password and len(password) < 8:
+            return jsonify({"error": f"Password must be at least 8 characters for {username}"}), 400
+        seen_usernames.add(username_key)
+        normalized_owners.append({"username": username, "password": password})
+
+    conn = None
     try:
         conn = get_db_connection()
         c = conn.cursor()
@@ -858,10 +879,9 @@ def sync_vendor_owners():
         current_owners = {row[0] for row in c.fetchall()}
         
         new_owner_usernames = set()
-        for owner_data in owners:
+        for owner_data in normalized_owners:
             o_username = owner_data.get("username")
             o_password = owner_data.get("password")
-            if not o_username: continue
             new_owner_usernames.add(o_username)
             
             if o_username in current_owners:
@@ -872,10 +892,14 @@ def sync_vendor_owners():
                 # Check for global uniqueness across all users
                 c.execute("SELECT username FROM system_users WHERE username = ?", (o_username,))
                 if c.fetchone():
-                    continue # Skip or handle conflict
+                    conn.rollback()
+                    conn.close()
+                    return jsonify({"error": f"Username is already used by another account: {o_username}"}), 409
                 
-                if not o_password or len(str(o_password)) < 8:
-                    continue
+                if not o_password:
+                    conn.rollback()
+                    conn.close()
+                    return jsonify({"error": f"A password of at least 8 characters is required for new owner {o_username}"}), 400
                 c.execute("INSERT INTO system_users (username, password, password_plain, role, vendor_id) VALUES (?, ?, NULL, 'owner', ?)",
                            (o_username, hash_password(o_password), vendor_id))
         
@@ -888,8 +912,11 @@ def sync_vendor_owners():
         conn.close()
         return jsonify({"status": "success"})
     except Exception as e:
-        if conn: conn.rollback(); conn.close()
-        return jsonify({"error": str(e)}), 500
+        logger.exception("Unable to update owner accounts for vendor %s", vendor_id)
+        if conn:
+            conn.rollback()
+            conn.close()
+        return jsonify({"error": "Unable to update owner accounts"}), 500
 
 
 @vendor_bp.route("/settings", methods=["GET"])
