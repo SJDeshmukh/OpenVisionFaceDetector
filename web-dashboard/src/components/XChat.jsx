@@ -236,7 +236,7 @@ const XChat = () => {
             <span className="xchat-orb-ring absolute inset-0 rounded-full" />
             <span className="xchat-orb-core absolute inset-[3px] rounded-full" />
             <span className="xchat-orb-scan absolute inset-x-2 top-1/2 h-px" />
-            <BrandLogo symbolOnly className="relative z-10 h-8 w-8 transition-transform duration-300 group-hover:scale-110" alt="" />
+            <BrandLogo className="relative z-10 h-8 w-8 transition-transform duration-300 group-hover:scale-110" alt="" />
           </span>
           <span className="xchat-launcher-label text-left">
             <span className="block text-sm font-semibold leading-tight">Ask XChat</span>
