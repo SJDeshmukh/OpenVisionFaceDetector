@@ -16,18 +16,43 @@ const dateRange = (days = 7) => {
   return { start: iso(start), end: iso(end) };
 };
 
-const Suggestions = ({ path, onSelect }) => {
+const Suggestions = ({ path, features, onSelect }) => {
   const week = dateRange(7);
   const monthStart = `${week.end.slice(0, 8)}01`;
-  const suggestions = path.includes('wage') || path.includes('payroll')
-    ? [
+  let suggestions;
+  if ((path.includes('wage') || path.includes('payroll')) && features.includes('payroll')) {
+    suggestions = [
         `What are my estimated wages from ${monthStart} to ${week.end}?`,
         `Who recorded the most payable hours from ${week.start} to ${week.end}?`,
-      ]
-    : [
+      ];
+  } else if (path.includes('leave') && features.includes('leave_management')) {
+    suggestions = [
+      `List pending leave requests from ${monthStart} to ${week.end}.`,
+      `Show a pie chart of leave requests by status from ${monthStart} to ${week.end}.`,
+    ];
+  } else if ((path.includes('class') || path.includes('bulk-image')) && features.some((feature) => ['classes', 'lecture_wise_reports', 'bulk_image_attendance'].includes(feature))) {
+    suggestions = [
+      `List lecture activity from ${week.start} to ${week.end}.`,
+      `Show a bar chart of lectures by subject from ${monthStart} to ${week.end}.`,
+    ];
+  } else if (path.includes('camera') && features.some((feature) => ['cameras', 'mobile_app', 'geofencing'].includes(feature))) {
+    suggestions = ['List my registered devices and their status.', 'Show a chart of device battery levels.'];
+  } else if (path.includes('timetable') && features.some((feature) => ['shifts', 'add_shift', 'night_shift_logic'].includes(feature))) {
+    suggestions = ['Show my published shift configuration.', 'Which configured activities run overnight?'];
+  } else if (path.includes('people') || path.includes('users')) {
+    suggestions = ['List registered people by department.', 'Show a pie chart of people by department.'];
+  } else if (path.includes('report') && features.includes('automated_email_reports')) {
+    suggestions = ['Show my automated report schedule and recent deliveries.', 'Which report frequencies and report types are configured?'];
+  } else if ((path.includes('settings') || path.includes('face-reset')) && features.some((feature) => ['parent_login', 'parent_alerts'].includes(feature))) {
+    suggestions = ['Summarize parent accounts and linked students.', 'How many parent face-reset requests are pending?'];
+  } else if (features.some((feature) => ['reports', 'report_detailed', 'live_attendance', 'enable_attendance'].includes(feature))) {
+    suggestions = [
         `Summarize attendance from ${week.start} to ${week.end}.`,
         `Which attendance records are incomplete from ${week.start} to ${week.end}?`,
       ];
+  } else {
+    suggestions = ['Which features are enabled for me, and what can I ask?', 'List registered people by department.'];
+  }
   return (
     <div className="grid gap-2 px-4 pb-4">
       {suggestions.map((suggestion) => (
@@ -208,7 +233,7 @@ const XChat = () => {
           <header className="flex h-16 shrink-0 items-center gap-3 border-b border-slate-800 bg-slate-900/95 px-4">
             {historyOpen && <button type="button" onClick={() => setHistoryOpen(false)} aria-label="Back to chat"><ChevronLeft size={20} /></button>}
             <span className="grid h-9 w-9 place-items-center rounded-xl bg-cyan-500/15 text-cyan-300"><Bot size={21} /></span>
-            <div className="min-w-0 flex-1"><h2 className="text-sm font-semibold">XChat</h2><p className="truncate text-[11px] text-slate-400">Read-only attendance & payroll</p></div>
+            <div className="min-w-0 flex-1"><h2 className="text-sm font-semibold">XChat</h2><p className="truncate text-[11px] text-slate-400">Assistant for your enabled features</p></div>
             <button type="button" onClick={() => setHistoryOpen(!historyOpen)} className="rounded-lg p-2 hover:bg-slate-800" aria-label="Chat history"><History size={19} /></button>
             <button type="button" onClick={newChat} className="rounded-lg p-2 hover:bg-slate-800" aria-label="New chat"><Plus size={19} /></button>
             <button type="button" onClick={() => setOpen(false)} className="rounded-lg p-2 hover:bg-slate-800" aria-label="Close XChat"><X size={19} /></button>
@@ -234,8 +259,8 @@ const XChat = () => {
               <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
                 {!messages.length && (
                   <div className="flex min-h-full flex-col justify-center">
-                    <div className="mb-5 text-center"><Bot className="mx-auto mb-3 text-cyan-400" size={34} /><h3 className="font-medium">Ask about your workforce data</h3><p className="mt-1 text-xs leading-5 text-slate-400">I can use five secure, read-only tools. Dates make answers more precise.</p></div>
-                    <Suggestions path={location.pathname} onSelect={send} />
+                    <div className="mb-5 text-center"><Bot className="mx-auto mb-3 text-cyan-400" size={34} /><h3 className="font-medium">Ask about your enabled features</h3><p className="mt-1 text-xs leading-5 text-slate-400">Feature-aware, read-only answers with private vendor data. Dates make reports more precise.</p></div>
+                    <Suggestions path={location.pathname} features={user?.features || []} onSelect={send} />
                   </div>
                 )}
                 <div className="space-y-4">
@@ -278,13 +303,13 @@ const XChat = () => {
               )}
               <footer className="shrink-0 border-t border-slate-800 bg-slate-900/80 p-3">
                 <div className="flex items-end gap-2 rounded-xl border border-slate-700 bg-slate-950 p-2 focus-within:border-cyan-600">
-                  <textarea value={draft} onChange={(event) => setDraft(event.target.value)} rows={1} maxLength={1000} placeholder="Ask about attendance or payroll…"
+                  <textarea value={draft} onChange={(event) => setDraft(event.target.value)} rows={1} maxLength={1000} placeholder="Ask about any enabled feature…"
                     onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); } }}
                     className="max-h-24 min-h-9 flex-1 resize-none bg-transparent px-1 py-2 text-sm outline-none placeholder:text-slate-600" />
                   <button type="button" disabled={!draft.trim() || loading} onClick={() => send()} aria-label="Send message"
                     className="grid h-9 w-9 place-items-center rounded-lg bg-cyan-500 text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"><Send size={17} /></button>
                 </div>
-                <p className="mt-2 text-center text-[10px] text-slate-500">Read-only insights · Verify payroll before processing</p>
+                <p className="mt-2 text-center text-[10px] text-slate-500">Read-only insights · Limited to your enabled features</p>
               </footer>
             </>
           )}

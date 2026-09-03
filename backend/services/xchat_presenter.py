@@ -180,6 +180,139 @@ def build_presentation(question, tool_results):
                     [{"label": label, "count": count} for label, count in sorted(counts.items())], "incomplete-by-department.png",
                 ))
 
+        elif name == "get_people_summary":
+            presentation["metrics"].append({"label": "Registered people", "value": result.get("total_people", 0), "format": "number"})
+            rows = result.get("people") or []
+            if rows:
+                presentation["tables"].append(_table(
+                    "people", "Registered people",
+                    [
+                        {"key": "display_id", "label": "ID"}, {"key": "name", "label": "Name"},
+                        {"key": "department", "label": "Department"}, {"key": "designation", "label": "Designation"},
+                        {"key": "shift", "label": "Shift"}, {"key": "wage_configured", "label": "Wage configured"},
+                    ], rows, "people.csv",
+                ))
+            breakdown = result.get("by_department") or {}
+            if wants_chart and breakdown:
+                presentation["charts"].append(_chart(
+                    "people-by-department", requested_chart_type, "People by department", "Department",
+                    [{"key": "count", "label": "People", "color": "#22d3ee"}],
+                    [{"label": label, "count": value} for label, value in breakdown.items()], "people-by-department.png",
+                ))
+
+        elif name == "get_device_status":
+            presentation["metrics"].extend([
+                {"label": "Registered devices", "value": result.get("registered_devices", 0), "format": "number"},
+                {"label": "Geofenced devices", "value": result.get("geofenced_devices", 0), "format": "number"},
+            ])
+            rows = result.get("devices") or []
+            if rows:
+                presentation["tables"].append(_table(
+                    "devices", "Registered devices",
+                    [
+                        {"key": "name", "label": "Device"}, {"key": "last_active", "label": "Last active", "format": "datetime"},
+                        {"key": "battery_percent", "label": "Battery", "format": "percent"},
+                        {"key": "geofence_configured", "label": "Geofence"}, {"key": "geofence_radius_m", "label": "Radius (m)"},
+                    ], rows, "device-status.csv",
+                ))
+            battery_rows = [row for row in rows if row.get("battery_percent") is not None]
+            if wants_chart and battery_rows:
+                presentation["charts"].append(_chart(
+                    "device-battery", requested_chart_type, "Device battery levels", "Device",
+                    [{"key": "battery_percent", "label": "Battery %", "color": "#34d399"}],
+                    [{"label": row.get("name"), **row} for row in battery_rows], "device-battery.png",
+                ))
+
+        elif name == "get_shift_configuration":
+            presentation["metrics"].extend([
+                {"label": "Daily working hours", "value": result.get("working_hours_per_day", 0), "format": "hours"},
+                {"label": "Configured shifts", "value": result.get("shift_count", 0), "format": "number"},
+            ])
+            rows = result.get("activities") or []
+            if rows:
+                presentation["tables"].append(_table(
+                    "shift-activities", "Published timetable activities",
+                    [
+                        {"key": "name", "label": "Activity"}, {"key": "start_time", "label": "Start"},
+                        {"key": "end_time", "label": "End"}, {"key": "type", "label": "Type"},
+                        {"key": "is_payable", "label": "Payable"}, {"key": "overnight", "label": "Overnight"},
+                    ], rows, "shift-activities.csv",
+                ))
+
+        elif name == "get_leave_summary":
+            presentation["metrics"].append({"label": "Leave requests", "value": result.get("total_requests", 0), "format": "number"})
+            rows = result.get("requests") or []
+            if rows:
+                presentation["tables"].append(_table(
+                    "leave-requests", f"Leave requests · {period_label}",
+                    [
+                        {"key": "name", "label": "Name"}, {"key": "leave_type", "label": "Type"},
+                        {"key": "start_date", "label": "Start", "format": "date"}, {"key": "end_date", "label": "End", "format": "date"},
+                        {"key": "status", "label": "Status"},
+                    ], rows, "leave-requests.csv",
+                ))
+            by_status = result.get("by_status") or {}
+            if wants_chart and by_status:
+                presentation["charts"].append(_chart(
+                    "leave-status", requested_chart_type, f"Leave requests by status · {period_label}", "Status",
+                    [{"key": "count", "label": "Requests", "color": "#818cf8"}],
+                    [{"label": label, "count": value} for label, value in by_status.items()], "leave-status.png",
+                ))
+
+        elif name == "get_class_activity_summary":
+            presentation["metrics"].extend([
+                {"label": "Configured classes", "value": result.get("configured_classes", 0), "format": "number"},
+                {"label": "Lectures", "value": result.get("lecture_count", 0), "format": "number"},
+            ])
+            rows = result.get("lectures") or []
+            if rows:
+                presentation["tables"].append(_table(
+                    "class-lectures", f"Lecture activity · {period_label}",
+                    [
+                        {"key": "date", "label": "Date", "format": "date"}, {"key": "subject", "label": "Subject"},
+                        {"key": "class_year", "label": "Class / Year"}, {"key": "division", "label": "Division"},
+                        {"key": "branch", "label": "Branch"}, {"key": "teacher", "label": "Teacher"},
+                        {"key": "attendance_count", "label": "Attendance", "format": "number"},
+                    ], rows, "lecture-activity.csv",
+                ))
+            if wants_chart and rows:
+                subject_counts = Counter(row.get("subject") or "Unspecified" for row in rows)
+                presentation["charts"].append(_chart(
+                    "lectures-by-subject", requested_chart_type, f"Lectures by subject · {period_label}", "Subject",
+                    [{"key": "count", "label": "Lectures", "color": "#f59e0b"}],
+                    [{"label": label, "count": count} for label, count in sorted(subject_counts.items())], "lectures-by-subject.png",
+                ))
+
+        elif name == "get_automated_report_status":
+            presentation["metrics"].extend([
+                {"label": "Schedule configured", "value": "Yes" if result.get("configured") else "No"},
+                {"label": "Schedule enabled", "value": "Yes" if result.get("enabled") else "No"},
+            ])
+            rows = result.get("deliveries") or []
+            if rows:
+                presentation["tables"].append(_table(
+                    "automated-report-deliveries", "Recent automated report deliveries",
+                    [
+                        {"key": "frequency", "label": "Frequency"}, {"key": "period_start", "label": "From", "format": "date"},
+                        {"key": "period_end", "label": "To", "format": "date"}, {"key": "status", "label": "Status"},
+                        {"key": "sent_at", "label": "Sent at", "format": "datetime"},
+                    ], rows, "automated-report-deliveries.csv",
+                ))
+            if wants_chart and rows:
+                status_counts = Counter(row.get("status") or "unknown" for row in rows)
+                presentation["charts"].append(_chart(
+                    "report-delivery-status", requested_chart_type, "Automated report delivery status", "Status",
+                    [{"key": "count", "label": "Deliveries", "color": "#22d3ee"}],
+                    [{"label": label, "count": count} for label, count in sorted(status_counts.items())], "report-delivery-status.png",
+                ))
+
+        elif name == "get_parent_access_summary":
+            presentation["metrics"].extend([
+                {"label": "Parent accounts", "value": result.get("parent_accounts", 0), "format": "number"},
+                {"label": "Student-parent links", "value": result.get("student_parent_links", 0), "format": "number"},
+                {"label": "Pending face resets", "value": result.get("pending_face_resets", 0), "format": "number"},
+            ])
+
     if wants_chart and len(payroll_summaries) > 1:
         trend_rows = []
         for item in payroll_summaries:

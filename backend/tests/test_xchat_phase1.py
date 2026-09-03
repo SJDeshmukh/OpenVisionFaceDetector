@@ -78,7 +78,7 @@ def xchat_db(tmp_path, monkeypatch):
 
 
 def test_tool_schemas_never_expose_tenant_identity():
-    assert len(xchat_tools.TOOL_SCHEMAS) == 5
+    assert len(xchat_tools.TOOL_SCHEMAS) == 12
     for tool in xchat_tools.TOOL_SCHEMAS:
         properties = tool["function"]["parameters"]["properties"]
         assert "vendor_id" not in properties
@@ -100,7 +100,7 @@ def test_model_cannot_override_injected_vendor(xchat_db, monkeypatch):
         "get_attendance_summary",
         {"vendor_id": 2, "start_date": "2026-08-01", "end_date": "2026-08-01"},
         vendor_id=1,
-        features=["xchat_ai"],
+        features=["xchat_ai", "reports"],
     )
     assert observed["vendor_id"] == 1
 
@@ -113,6 +113,45 @@ def test_payroll_tool_requires_entitlement(xchat_db):
             vendor_id=1,
             features=["xchat_ai"],
         )
+
+
+def test_only_enabled_feature_tools_are_exposed():
+    payroll_tools = {
+        item["function"]["name"]
+        for item in xchat_tools.available_tool_schemas(["xchat_ai", "payroll"])
+    }
+    assert {"get_people_summary", "get_payroll_summary", "compare_payroll_periods", "get_employee_hours_ranking"} <= payroll_tools
+    assert "get_leave_summary" not in payroll_tools
+    assert "get_device_status" not in payroll_tools
+
+    leave_tools = {
+        item["function"]["name"]
+        for item in xchat_tools.available_tool_schemas(["xchat_ai", "leave_management"])
+    }
+    assert leave_tools == {"get_people_summary", "get_leave_summary"}
+
+
+def test_orchestrator_sends_only_entitled_tools_to_mistral():
+    captured = {}
+
+    class CaptureProvider:
+        def complete(self, messages, tools):
+            captured["prompt"] = messages[0]["content"]
+            captured["tools"] = {item["function"]["name"] for item in tools}
+            return {"role": "assistant", "content": "Leave management is enabled."}
+
+    result = xchat_service.answer_question(
+        "What can I ask about leave?", [], 1, ["xchat_ai", "leave_management"], provider=CaptureProvider(),
+    )
+    assert result["answer"] == "Leave management is enabled."
+    assert captured["tools"] == {"get_people_summary", "get_leave_summary"}
+    assert "leave_management" in captured["prompt"]
+    assert "- payroll:" not in captured["prompt"]
+
+
+def test_disabled_feature_tool_cannot_be_called_directly(xchat_db):
+    with pytest.raises(PermissionError):
+        xchat_tools.execute_tool("get_device_status", {}, vendor_id=1, features=["xchat_ai"])
 
 
 def test_payroll_calculation_and_overnight_pairing_are_scoped(xchat_db):
@@ -157,7 +196,7 @@ class FakeProvider:
 def test_orchestrator_executes_tool_and_audits_metadata_only(xchat_db):
     result = xchat_service.process_message(
         "How was attendance on 2026-08-01?", None, 1, "alpha-admin", "admin",
-        ["xchat_ai", "payroll"], provider=FakeProvider(), ip_address="127.0.0.1",
+        ["xchat_ai", "payroll", "reports"], provider=FakeProvider(), ip_address="127.0.0.1",
     )
     assert "2 employees" in result["answer"]
     assert result["tools_used"] == ["get_attendance_summary"]
@@ -192,6 +231,9 @@ def test_page_context_is_allow_listed():
     assert xchat_service._sanitize_context({"page": "/admin/secrets", "filters": {"vendor_id": "2"}}) == {}
     assert xchat_service._sanitize_context({"page": "/reports", "filters": {"department": "Ops", "vendor_id": "2"}}) == {
         "page": "/reports", "filters": {"department": "Ops"},
+    }
+    assert xchat_service._sanitize_context({"page": "/classes", "filters": {"class_year": "FY", "division": "A"}}) == {
+        "page": "/classes", "filters": {"class_year": "FY", "division": "A"},
     }
 
 

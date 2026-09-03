@@ -12,6 +12,35 @@ from datetime import date, datetime, timedelta
 MAX_RANGE_DAYS = 366
 MAX_RESULT_ROWS = 25
 
+FEATURE_GUIDE = {
+    "reports": "Attendance summaries, trends, exports, and workforce reporting.",
+    "report_detailed": "Detailed check-in/check-out attendance reporting and export.",
+    "report_payroll": "Payroll and payable-hours reporting and export.",
+    "automated_email_reports": "Scheduled daily, weekly, or monthly attendance reports by email.",
+    "xchat_ai": "Read-only vendor assistant with private history, charts, tables, and downloads.",
+    "mobile_app": "Registered mobile-device access and device-slot management.",
+    "payroll": "Employee wage rates, payable hours, deductions, advances, and estimated payouts.",
+    "shifts": "Published work timetable and shift configuration.",
+    "live_attendance": "Live attendance events and currently checked-in workforce visibility.",
+    "cameras": "Registered attendance camera/device visibility and status.",
+    "add_shift": "Creation and publication of shift/timetable activities.",
+    "payable_hours": "Payable work-session and hours calculations.",
+    "enable_attendance": "Attendance capture and attendance record access.",
+    "night_shift_logic": "Overnight shift pairing across calendar-day boundaries.",
+    "geofencing": "Per-device attendance location boundaries and last-known locations.",
+    "whatsapp_alerts": "WhatsApp attendance-alert capability when an external provider is configured.",
+    "api_access": "Authenticated integration access to the platform APIs.",
+    "white_labeling": "Vendor-specific branding and interface configuration.",
+    "late_mark": "Late-arrival tracking and configured payroll deductions.",
+    "bulk_image_attendance": "Class or group attendance through bulk image processing.",
+    "classes": "Classes, divisions, branches, subjects, and class-scoped attendance.",
+    "leave_management": "Student/employee leave requests, approvals, pending items, and history.",
+    "parent_login": "Parent accounts linked to registered students.",
+    "lecture_wise_reports": "Lecture-level attendance and subject reporting.",
+    "parent_alerts": "Parent-facing attendance notifications when notification delivery is configured.",
+    "checkin_checkout": "Explicit check-in/check-out attendance workflow.",
+}
+
 
 def _db():
     from utils import get_db_connection
@@ -256,12 +285,230 @@ def get_incomplete_attendance(vendor_id, start_date, end_date, department=None, 
     }
 
 
+def get_people_summary(vendor_id, department=None, limit=20):
+    conn = _db()
+    c = conn.cursor()
+    try:
+        query = "SELECT id, name, department, designation, shift, daily_wage, display_id FROM faces WHERE vendor_id = ?"
+        params = [vendor_id]
+        if department:
+            query += " AND department = ?"
+            params.append(str(department))
+        query += " ORDER BY name"
+        c.execute(query, params)
+        people = [_dict(row) for row in (c.fetchall() or [])]
+    finally:
+        conn.close()
+    departments = defaultdict(int)
+    designations = defaultdict(int)
+    shifts = defaultdict(int)
+    for person in people:
+        departments[person.get("department") or "Unassigned"] += 1
+        designations[person.get("designation") or "Unassigned"] += 1
+        shifts[person.get("shift") or "Unassigned"] += 1
+    safe_people = [{
+        "display_id": person.get("display_id") or person.get("id"),
+        "name": person.get("name"), "department": person.get("department"),
+        "designation": person.get("designation"), "shift": person.get("shift"),
+        "wage_configured": bool(person.get("daily_wage")),
+    } for person in people[:_limit(limit)]]
+    return {
+        "total_people": len(people), "department": department or "All",
+        "by_department": dict(sorted(departments.items())),
+        "by_designation": dict(sorted(designations.items())),
+        "by_shift": dict(sorted(shifts.items())),
+        "people": safe_people, "truncated": len(people) > len(safe_people), "source_path": "/people",
+    }
+
+
+def get_device_status(vendor_id, limit=20):
+    conn = _db()
+    c = conn.cursor()
+    try:
+        c.execute("""
+            SELECT device_id, device_name, registered_at, last_login_at, last_active_at,
+                   battery_level, geofence_lat, geofence_lng, geofence_radius, last_lat, last_lng
+            FROM vendor_devices WHERE vendor_id = ? ORDER BY last_active_at DESC, registered_at DESC
+        """, (vendor_id,))
+        rows = [_dict(row) for row in (c.fetchall() or [])]
+    finally:
+        conn.close()
+    devices = []
+    for row in rows[:_limit(limit)]:
+        devices.append({
+            "device_id": row.get("device_id"), "name": row.get("device_name") or row.get("device_id"),
+            "last_active": str(row.get("last_active_at") or ""), "battery_percent": row.get("battery_level"),
+            "geofence_configured": bool(row.get("geofence_radius")),
+            "geofence_radius_m": row.get("geofence_radius"),
+            "last_location_available": row.get("last_lat") is not None and row.get("last_lng") is not None,
+        })
+    return {
+        "registered_devices": len(rows), "geofenced_devices": sum(1 for row in rows if row.get("geofence_radius")),
+        "devices": devices, "truncated": len(rows) > len(devices), "source_path": "/cameras",
+    }
+
+
+def get_shift_configuration(vendor_id):
+    conn = _db()
+    c = conn.cursor()
+    try:
+        c.execute("SELECT name, working_hours, shifts, live_timetable, last_modified_at, published_at FROM companies WHERE vendor_id = ? LIMIT 1", (vendor_id,))
+        row = _dict(c.fetchone())
+    finally:
+        conn.close()
+    if not row:
+        return {"configured": False, "activities": [], "source_path": "/timetable"}
+    def parsed(value):
+        try:
+            result = json.loads(value or "[]") if isinstance(value, str) else value
+            return result if isinstance(result, list) else []
+        except (TypeError, ValueError):
+            return []
+    timetable = parsed(row.get("live_timetable"))
+    shifts = parsed(row.get("shifts"))
+    activities = [{
+        "name": item.get("name"), "start_time": item.get("start_time"), "end_time": item.get("end_time"),
+        "type": item.get("type"), "is_payable": item.get("is_payable", item.get("type") == "Work"),
+        "overnight": bool(item.get("start_time") and item.get("end_time") and str(item["end_time"]) < str(item["start_time"])),
+    } for item in timetable[:MAX_RESULT_ROWS] if isinstance(item, dict)]
+    return {
+        "configured": bool(timetable or shifts), "company": row.get("name"),
+        "working_hours_per_day": row.get("working_hours"), "activities": activities,
+        "shift_count": len(shifts), "published_at": str(row.get("published_at") or ""),
+        "source_path": "/timetable",
+    }
+
+
+def get_leave_summary(vendor_id, start_date, end_date, status=None, limit=20):
+    start, end = _period(start_date, end_date)
+    conn = _db()
+    c = conn.cursor()
+    try:
+        query = """
+            SELECT lr.id, f.name, lr.leave_type, lr.start_date, lr.end_date, lr.final_status, lr.created_at
+            FROM leave_requests lr LEFT JOIN faces f ON f.id = lr.student_id AND f.vendor_id = lr.vendor_id
+            WHERE lr.vendor_id = ? AND lr.start_date <= ? AND lr.end_date >= ?
+        """
+        params = [vendor_id, end.isoformat(), start.isoformat()]
+        if status:
+            query += " AND LOWER(lr.final_status) = LOWER(?)"
+            params.append(str(status))
+        query += " ORDER BY lr.created_at DESC"
+        c.execute(query, params)
+        rows = [_dict(row) for row in (c.fetchall() or [])]
+    finally:
+        conn.close()
+    by_status, by_type = defaultdict(int), defaultdict(int)
+    for row in rows:
+        by_status[row.get("final_status") or "unknown"] += 1
+        by_type[row.get("leave_type") or "Unspecified"] += 1
+    records = [{
+        "name": row.get("name"), "leave_type": row.get("leave_type"),
+        "start_date": str(row.get("start_date")), "end_date": str(row.get("end_date")),
+        "status": row.get("final_status"),
+    } for row in rows[:_limit(limit)]]
+    return {
+        "period": {"start": start.isoformat(), "end": end.isoformat()}, "total_requests": len(rows),
+        "by_status": dict(sorted(by_status.items())), "by_type": dict(sorted(by_type.items())),
+        "requests": records, "truncated": len(rows) > len(records), "source_path": "/leave-management",
+    }
+
+
+def get_class_activity_summary(vendor_id, start_date, end_date, limit=20):
+    start, end = _period(start_date, end_date)
+    conn = _db()
+    c = conn.cursor()
+    try:
+        c.execute("SELECT COUNT(*) FROM classes WHERE vendor_id = ?", (vendor_id,))
+        class_count = (c.fetchone() or [0])[0]
+        c.execute("""
+            SELECT l.id, l.subject, l.class_year, l.division, l.branch, l.lecture_date, l.start_time, l.teacher,
+                   COUNT(la.id) AS attendance_count
+            FROM lectures l LEFT JOIN lecture_attendance la ON la.lecture_id = l.id AND la.vendor_id = l.vendor_id
+            WHERE l.vendor_id = ? AND l.lecture_date BETWEEN ? AND ?
+            GROUP BY l.id, l.subject, l.class_year, l.division, l.branch, l.lecture_date, l.start_time, l.teacher
+            ORDER BY l.lecture_date DESC, l.start_time DESC
+        """, (vendor_id, start.isoformat(), end.isoformat()))
+        rows = [_dict(row) for row in (c.fetchall() or [])]
+    finally:
+        conn.close()
+    lectures = [{
+        "subject": row.get("subject"), "class_year": row.get("class_year"), "division": row.get("division"),
+        "branch": row.get("branch"), "date": str(row.get("lecture_date")), "start_time": row.get("start_time"),
+        "teacher": row.get("teacher"), "attendance_count": row.get("attendance_count") or 0,
+    } for row in rows[:_limit(limit)]]
+    return {
+        "period": {"start": start.isoformat(), "end": end.isoformat()}, "configured_classes": class_count,
+        "lecture_count": len(rows), "lectures": lectures, "truncated": len(rows) > len(lectures),
+        "source_path": "/classes",
+    }
+
+
+def get_automated_report_status(vendor_id, limit=10):
+    conn = _db()
+    c = conn.cursor()
+    try:
+        c.execute("SELECT id, enabled, recipient_email, timezone, send_time, frequencies, report_types, updated_at FROM automated_report_schedules WHERE vendor_id = ? LIMIT 1", (vendor_id,))
+        schedule = _dict(c.fetchone())
+        deliveries = []
+        if schedule:
+            c.execute("SELECT frequency, period_start, period_end, status, recipient_email, error, created_at, sent_at FROM automated_report_deliveries WHERE vendor_id = ? ORDER BY created_at DESC LIMIT ?", (vendor_id, _limit(limit)))
+            deliveries = [_dict(row) for row in (c.fetchall() or [])]
+    finally:
+        conn.close()
+    if not schedule:
+        return {"configured": False, "deliveries": [], "source_path": "/reports"}
+    for key in ("frequencies", "report_types"):
+        try:
+            schedule[key] = json.loads(schedule.get(key) or "[]")
+        except (TypeError, ValueError):
+            schedule[key] = []
+    safe_deliveries = []
+    for row in deliveries:
+        safe_row = {
+            key: str(value) if key in {"period_start", "period_end", "created_at", "sent_at"} else value
+            for key, value in row.items()
+            if key != "error"
+        }
+        if row.get("error"):
+            safe_row["error_summary"] = str(row["error"])[:200]
+        safe_deliveries.append(safe_row)
+    return {
+        "configured": True, "enabled": bool(schedule.get("enabled")), "recipient_email": schedule.get("recipient_email"),
+        "timezone": schedule.get("timezone"), "send_time": schedule.get("send_time"),
+        "frequencies": schedule.get("frequencies"), "report_types": schedule.get("report_types"),
+        "deliveries": safe_deliveries, "source_path": "/reports",
+    }
+
+
+def get_parent_access_summary(vendor_id):
+    conn = _db()
+    c = conn.cursor()
+    try:
+        c.execute("SELECT COUNT(*) FROM parent_users WHERE vendor_id = ?", (vendor_id,))
+        parents = (c.fetchone() or [0])[0]
+        c.execute("SELECT COUNT(*) FROM student_parents WHERE vendor_id = ?", (vendor_id,))
+        links = (c.fetchone() or [0])[0]
+        c.execute("SELECT COUNT(*) FROM face_reset_requests WHERE vendor_id = ? AND LOWER(status) = 'pending'", (vendor_id,))
+        pending_resets = (c.fetchone() or [0])[0]
+    finally:
+        conn.close()
+    return {"parent_accounts": parents, "student_parent_links": links, "pending_face_resets": pending_resets, "source_path": "/settings"}
+
+
 TOOL_REGISTRY = {
     "get_attendance_summary": get_attendance_summary,
     "get_payroll_summary": get_payroll_summary,
     "compare_payroll_periods": compare_payroll_periods,
     "get_employee_hours_ranking": get_employee_hours_ranking,
     "get_incomplete_attendance": get_incomplete_attendance,
+    "get_people_summary": get_people_summary,
+    "get_device_status": get_device_status,
+    "get_shift_configuration": get_shift_configuration,
+    "get_leave_summary": get_leave_summary,
+    "get_class_activity_summary": get_class_activity_summary,
+    "get_automated_report_status": get_automated_report_status,
+    "get_parent_access_summary": get_parent_access_summary,
 }
 
 
@@ -275,17 +522,48 @@ TOOL_SCHEMAS = [
     {"type": "function", "function": {"name": "compare_payroll_periods", "description": "Compare estimated wages between two date periods.", "parameters": {"type": "object", "properties": {**_date_properties("current_start", "current_end", "previous_start", "previous_end"), "department": {"type": "string"}}, "required": ["current_start", "current_end", "previous_start", "previous_end"]}}},
     {"type": "function", "function": {"name": "get_employee_hours_ranking", "description": "Rank employees by payable hours in a period.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "department": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}, "order": {"type": "string", "enum": ["highest", "lowest"]}}, "required": ["start_date", "end_date"]}}},
     {"type": "function", "function": {"name": "get_incomplete_attendance", "description": "Find attendance days ending with a check-in but no later check-out.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "department": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}, "required": ["start_date", "end_date"]}}},
+    {"type": "function", "function": {"name": "get_people_summary", "description": "Count or list registered people by department, designation, or shift.", "parameters": {"type": "object", "properties": {"department": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}}}},
+    {"type": "function", "function": {"name": "get_device_status", "description": "List registered cameras/mobile devices and summarize activity, battery, and geofence configuration.", "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 25}}}}},
+    {"type": "function", "function": {"name": "get_shift_configuration", "description": "Read the published work timetable, working hours, payable activities, and overnight shifts.", "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {"name": "get_leave_summary", "description": "Summarize or list leave requests for an overlapping date period.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "status": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}, "required": ["start_date", "end_date"]}}},
+    {"type": "function", "function": {"name": "get_class_activity_summary", "description": "Summarize configured classes, lectures, subjects, teachers, and lecture attendance for a period.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "limit": {"type": "integer", "minimum": 1, "maximum": 25}}, "required": ["start_date", "end_date"]}}},
+    {"type": "function", "function": {"name": "get_automated_report_status", "description": "Read the automated email report schedule and recent delivery statuses.", "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 25}}}}},
+    {"type": "function", "function": {"name": "get_parent_access_summary", "description": "Summarize parent accounts, student links, and pending face-reset requests.", "parameters": {"type": "object", "properties": {}}}},
 ]
 
 
-PAYROLL_TOOLS = {"get_payroll_summary", "compare_payroll_periods", "get_employee_hours_ranking"}
+TOOL_FEATURES = {
+    "get_attendance_summary": {"reports", "report_detailed", "live_attendance", "enable_attendance", "checkin_checkout"},
+    "get_incomplete_attendance": {"reports", "report_detailed", "live_attendance", "enable_attendance", "checkin_checkout"},
+    "get_payroll_summary": {"payroll", "report_payroll", "payable_hours"},
+    "compare_payroll_periods": {"payroll", "report_payroll", "payable_hours"},
+    "get_employee_hours_ranking": {"payroll", "report_payroll", "payable_hours"},
+    "get_device_status": {"cameras", "mobile_app", "geofencing", "live_attendance"},
+    "get_shift_configuration": {"shifts", "add_shift", "night_shift_logic", "payable_hours"},
+    "get_leave_summary": {"leave_management"},
+    "get_class_activity_summary": {"classes", "bulk_image_attendance", "lecture_wise_reports"},
+    "get_automated_report_status": {"automated_email_reports"},
+    "get_parent_access_summary": {"parent_login", "parent_alerts"},
+}
+
+
+def available_tool_schemas(features):
+    enabled = set(features or [])
+    available = []
+    for schema in TOOL_SCHEMAS:
+        name = schema["function"]["name"]
+        required = TOOL_FEATURES.get(name)
+        if not required or required & enabled:
+            available.append(schema)
+    return available
 
 
 def execute_tool(name, arguments, vendor_id, features):
     if name not in TOOL_REGISTRY:
         raise ValueError("Unknown or unauthorized XChat tool")
-    if name in PAYROLL_TOOLS and not ({"payroll", "report_payroll"} & set(features or [])):
-        raise PermissionError("Payroll is not enabled for this vendor")
+    required = TOOL_FEATURES.get(name)
+    if required and not (required & set(features or [])):
+        raise PermissionError("The required feature is not enabled for this vendor")
     safe_arguments = dict(arguments or {})
     safe_arguments.pop("vendor_id", None)
     return TOOL_REGISTRY[name](vendor_id=vendor_id, **safe_arguments)
