@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Outlet } from 'react-router-dom';
 import { Sidebar, Topbar } from './EnterpriseLayout';
+import XChat from './XChat';
 
 const Layout = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -14,6 +15,7 @@ const Layout = () => {
           <Outlet />
         </div>
       </main>
+      <XChat />
     </div>
   );
 };

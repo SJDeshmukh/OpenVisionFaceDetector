@@ -143,6 +143,10 @@ def process_delete_vendor_task(vendor_id):
         
         # 6. Other vendor-specific data
         safe_delete("leave_staff")
+        safe_delete("xchat_messages")
+        safe_delete("xchat_conversations")
+        safe_delete("automated_report_deliveries")
+        safe_delete("automated_report_schedules")
         safe_delete("companies")
         safe_delete("subscriptions")
         safe_delete("active_sessions")
@@ -169,7 +173,7 @@ def process_delete_vendor_task(vendor_id):
                 tables = [
                     "class_batches", "attendance", "leave_requests", "student_parents", 
                     "person_embeddings", "system_users", "parent_tokens", "parent_users", 
-                    "faces", "leave_staff", "vendor_device_slots", "vendor_devices", 
+                    "faces", "leave_staff", "xchat_messages", "xchat_conversations", "vendor_device_slots", "vendor_devices",
                     "active_sessions", "invoices", "subscriptions", "companies", "audit_logs", "vendors"
                 ]
                 for t in tables:
@@ -210,6 +214,87 @@ def process_delete_vendor_task(vendor_id):
 
 if celery:
     process_delete_vendor_task = celery.task(name="tasks.process_delete_vendor")(process_delete_vendor_task)
+
+
+if celery:
+    @celery.task(name="tasks.dispatch_automated_reports")
+    def dispatch_automated_reports_task():
+        """Beat entrypoint. Claim due delivery rows before queueing to stay idempotent."""
+        from services.automated_reports_service import dispatch_due_reports
+        delivery_ids = dispatch_due_reports()
+        for delivery_id in delivery_ids:
+            send_automated_report_task.apply_async(args=[delivery_id], queue="normal_priority")
+        return {"queued": len(delivery_ids), "delivery_ids": delivery_ids}
+
+
+    @celery.task(bind=True, name="tasks.send_automated_report", max_retries=3)
+    def send_automated_report_task(self, delivery_id):
+        from services.automated_reports_service import build_report_attachments, _json_list
+        from services.email_service import send_email
+
+        conn = get_db_connection()
+        c = conn.cursor()
+        try:
+            c.execute("""
+                SELECT d.*, ars.operational_day_cutoff, ars.report_types,
+                       ars.enabled AS schedule_enabled, v.company_name, v.status AS vendor_status,
+                       s.features
+                FROM automated_report_deliveries d
+                JOIN automated_report_schedules ars ON ars.id = d.schedule_id
+                JOIN vendors v ON v.id = d.vendor_id
+                LEFT JOIN subscriptions s ON s.vendor_id = d.vendor_id
+                WHERE d.id = ?
+            """, (delivery_id,))
+            raw = c.fetchone()
+            if not raw:
+                return {"status": "missing"}
+            delivery = dict(raw)
+            if delivery.get("status") == "sent":
+                return {"status": "already_sent"}
+            features = _json_list(delivery.get("features"))
+            is_test = str(delivery.get("frequency") or "").startswith("test-")
+            if (not delivery.get("schedule_enabled") and not is_test) or delivery.get("vendor_status") != "active" or "automated_email_reports" not in features:
+                c.execute("UPDATE automated_report_deliveries SET status = 'skipped', error = ? WHERE id = ?", ("Schedule, vendor, or feature is inactive", delivery_id))
+                conn.commit()
+                return {"status": "skipped"}
+            c.execute("UPDATE automated_report_deliveries SET status = 'sending', attempts = COALESCE(attempts, 0) + 1, error = NULL WHERE id = ?", (delivery_id,))
+            conn.commit()
+        finally:
+            conn.close()
+
+        try:
+            start = datetime.fromisoformat(str(delivery["period_start"])).date()
+            end = datetime.fromisoformat(str(delivery["period_end"])).date()
+            vendor_name, attachments, event_count = build_report_attachments(
+                delivery["vendor_id"], start, end,
+                delivery.get("operational_day_cutoff") or "07:00",
+                _json_list(delivery.get("report_types")),
+            )
+            frequency_label = "Test" if str(delivery["frequency"]).startswith("test-") else str(delivery["frequency"]).title()
+            subject = f"{vendor_name} — {frequency_label} attendance report ({start} to {end})"
+            body = (
+                f"Hello {vendor_name},\n\n"
+                f"Your automated {frequency_label.lower()} attendance report for {start} to {end} is attached.\n"
+                f"The report contains {event_count} attendance events and uses your operational-day cutoff, so overnight shifts remain together.\n\n"
+                "Regards,\nOpenVisionX Reports"
+            )
+            message_id = send_email(subject, body, delivery["recipient_email"], attachments)
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("UPDATE automated_report_deliveries SET status = 'sent', sent_at = CURRENT_TIMESTAMP, message_id = ?, error = NULL WHERE id = ?", (message_id, delivery_id))
+            conn.commit()
+            conn.close()
+            return {"status": "sent", "message_id": message_id, "event_count": event_count}
+        except Exception as exc:
+            conn = get_db_connection()
+            c = conn.cursor()
+            final_attempt = self.request.retries >= self.max_retries
+            c.execute("UPDATE automated_report_deliveries SET status = ?, error = ? WHERE id = ?", ("failed" if final_attempt else "queued", str(exc)[:2000], delivery_id))
+            conn.commit()
+            conn.close()
+            if final_attempt:
+                raise
+            raise self.retry(exc=exc, countdown=min(900, 60 * (2 ** self.request.retries)))
 
 def ensure_task_events_table():
     conn = get_db_connection()

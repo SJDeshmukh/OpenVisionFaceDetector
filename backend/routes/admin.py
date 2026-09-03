@@ -878,6 +878,102 @@ def get_available_features():
     from app import socketio, is_testing
     return jsonify({"features": ALL_FEATURES, "bundles": BUNDLE_FEATURES})
 
+
+@admin_bp.route("/vendors/<int:vendor_id>/automated-report-schedule", methods=["GET"])
+@super_admin_required
+def get_automated_report_schedule(vendor_id):
+    from services.automated_reports_service import get_schedule
+    from services.email_service import smtp_is_configured
+    try:
+        return jsonify({"schedule": get_schedule(vendor_id), "smtp_configured": smtp_is_configured()})
+    except LookupError as exc:
+        return jsonify({"error": str(exc)}), 404
+
+
+@admin_bp.route("/vendors/<int:vendor_id>/automated-report-schedule", methods=["PUT"])
+@super_admin_required
+def update_automated_report_schedule(vendor_id):
+    from services.automated_reports_service import save_schedule
+    payload = request.json or {}
+    if payload.get("enabled"):
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+        row = c.fetchone()
+        conn.close()
+        try:
+            features = json.loads(row[0] or "[]") if row else []
+        except Exception:
+            features = []
+        if "automated_email_reports" not in features:
+            return jsonify({"error": "Enable the Automated Email Reports feature before activating its schedule"}), 400
+    try:
+        schedule = save_schedule(vendor_id, payload)
+        log_audit("automated_report_schedule_update", {
+            "enabled": schedule["enabled"], "frequencies": schedule["frequencies"],
+            "send_time": schedule["send_time"], "timezone": schedule["timezone"],
+        }, target_vendor_id=vendor_id)
+        return jsonify({"success": True, "schedule": schedule})
+    except LookupError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except (ValueError, TypeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@admin_bp.route("/vendors/<int:vendor_id>/automated-report-deliveries", methods=["GET"])
+@super_admin_required
+def get_automated_report_deliveries(vendor_id):
+    try:
+        limit = max(1, min(int(request.args.get("limit", 20)), 100))
+    except ValueError:
+        limit = 20
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute("""
+            SELECT id, frequency, period_start, period_end, status, attempts,
+                   recipient_email, message_id, error, created_at, sent_at
+            FROM automated_report_deliveries WHERE vendor_id = ?
+            ORDER BY created_at DESC LIMIT ?
+        """, (vendor_id, limit))
+        return jsonify({"deliveries": [dict(row) for row in (c.fetchall() or [])]})
+    finally:
+        conn.close()
+
+
+@admin_bp.route("/vendors/<int:vendor_id>/automated-report-test", methods=["POST"])
+@super_admin_required
+def send_automated_report_test(vendor_id):
+    if not celery:
+        return jsonify({"error": "Background worker is not configured"}), 503
+    from services.automated_reports_service import get_schedule
+    try:
+        schedule = get_schedule(vendor_id)
+    except LookupError as exc:
+        return jsonify({"error": str(exc)}), 404
+    if not schedule.get("id"):
+        return jsonify({"error": "Save the report schedule before sending a test"}), 400
+    recipient = str((request.json or {}).get("recipient_email") or schedule.get("recipient_email") or "").strip()
+    if not recipient:
+        return jsonify({"error": "Recipient email is required"}), 400
+    report_day = date.today() - timedelta(days=1)
+    unique_frequency = f"test-{secrets.token_hex(6)}"
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute("""
+            INSERT INTO automated_report_deliveries
+                (schedule_id, vendor_id, frequency, period_start, period_end, status, recipient_email)
+            VALUES (?, ?, ?, ?, ?, 'queued', ?)
+        """, (schedule["id"], vendor_id, unique_frequency, report_day.isoformat(), report_day.isoformat(), recipient))
+        delivery_id = c.lastrowid
+        conn.commit()
+    finally:
+        conn.close()
+    from tasks import send_automated_report_task
+    task = send_automated_report_task.apply_async(args=[delivery_id], queue="normal_priority")
+    return jsonify({"success": True, "delivery_id": delivery_id, "task_id": task.id}), 202
+
 @admin_bp.route("/registration/templates", methods=["GET"])
 @super_admin_required
 def get_registration_templates():
@@ -949,9 +1045,15 @@ def bulk_vendor_action():
                         feats = []
                 if enabled and feature not in feats:
                     feats.append(feature)
+                if enabled and feature == "automated_email_reports":
+                    for dependency in ("reports", "report_detailed"):
+                        if dependency not in feats:
+                            feats.append(dependency)
                 if not enabled:
                     feats = [f for f in feats if f != feature]
                 c.execute("UPDATE subscriptions SET features = ? WHERE vendor_id = ?", (json.dumps(feats), vid))
+                if feature == "automated_email_reports" and not enabled:
+                    c.execute("UPDATE automated_report_schedules SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE vendor_id = ?", (vid,))
                 log_audit("vendor_toggle_feature", {"feature": feature, "enabled": enabled}, target_vendor_id=vid)
                 try:
                     socketio.emit('features_updated', {'vendor_id': vid, 'features': feats}, room=f"vendor_{vid}")
@@ -1088,6 +1190,10 @@ def create_vendor():
         if features is None:
             from utils import BUNDLE_FEATURES
             features = BUNDLE_FEATURES.get(frontend_bundle_id, [])
+        if "automated_email_reports" in features:
+            for dependency in ("reports", "report_detailed"):
+                if dependency not in features:
+                    features.append(dependency)
         
         features_json = json.dumps(features)
         
@@ -1338,6 +1444,11 @@ def update_vendor_subscription(vendor_id):
         if 'features' in data:
             query += "features = ?, "
             features_val = data['features']
+            if isinstance(features_val, list) and 'automated_email_reports' in features_val:
+                for dependency in ('reports', 'report_detailed'):
+                    if dependency not in features_val:
+                        features_val.append(dependency)
+                data['features'] = features_val
             if isinstance(features_val, list):
                 features_val = json.dumps(features_val)
             params.append(features_val)
@@ -1418,6 +1529,15 @@ def update_vendor_subscription(vendor_id):
             query = query.rstrip(", ") + " WHERE vendor_id = ?"
             params.append(vendor_id)
             c.execute(query, params)
+            if 'features' in data:
+                current_features = data.get('features') or []
+                if isinstance(current_features, str):
+                    try:
+                        current_features = json.loads(current_features)
+                    except Exception:
+                        current_features = []
+                if 'automated_email_reports' not in current_features:
+                    c.execute("UPDATE automated_report_schedules SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE vendor_id = ?", (vendor_id,))
             conn.commit()
             
             # Log Audit

@@ -32,7 +32,7 @@ BUNDLE_FEATURES = {
     'tapinx_ui': ['reports', 'report_detailed', 'mobile_app', 'live_attendance', 'cameras', 'enable_attendance', 'geofencing', 'parent_alerts', 'checkin_checkout', 'parent_login']
 }
 
-ALL_FEATURES = ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'api_access', 'white_labeling', 'late_mark', 'bulk_image_attendance', 'classes', 'leave_management', 'parent_login', 'lecture_wise_reports', 'parent_alerts', 'checkin_checkout']
+ALL_FEATURES = ['reports', 'report_detailed', 'report_payroll', 'automated_email_reports', 'xchat_ai', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'api_access', 'white_labeling', 'late_mark', 'bulk_image_attendance', 'classes', 'leave_management', 'parent_login', 'lecture_wise_reports', 'parent_alerts', 'checkin_checkout']
 
 REGISTRATION_TEMPLATES = {
     "school": [

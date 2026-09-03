@@ -35,6 +35,12 @@ services:
         value: us-east-1
       - key: S3_BUCKET
         value:
+      - key: MAIL_SMTP_USERNAME
+        value: openvisionx@gmail.com
+      - key: MAIL_SMTP_APP_PASSWORD
+        sync: false
+      - key: MAIL_FROM_ADDRESS
+        value: openvisionx@gmail.com
   - type: web
     name: face-detection-frontend
     env: static
@@ -47,6 +53,27 @@ services:
     autoDeploy: true
     buildCommand: pip install -r backend/requirements.txt
     startCommand: cd backend && celery -A celery_app.celery worker -l info
+    envVars:
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: face-detection-redis
+          type: redis
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          name: face-detection-redis
+          type: redis
+      - key: MAIL_SMTP_USERNAME
+        value: openvisionx@gmail.com
+      - key: MAIL_SMTP_APP_PASSWORD
+        sync: false
+      - key: MAIL_FROM_ADDRESS
+        value: openvisionx@gmail.com
+  - type: worker
+    name: face-detection-celery-beat
+    env: python
+    autoDeploy: true
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: cd backend && celery -A celery_app.celery beat -l info
     envVars:
       - key: CELERY_BROKER_URL
         fromService:

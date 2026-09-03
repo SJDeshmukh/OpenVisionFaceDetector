@@ -32,6 +32,39 @@ Monorepo includes:
 - Web: React 19, Vite 7, TailwindCSS 4, Web Workers (Client-Side AI), MediaPipe, ONNX Runtime Web
 - Hosting: Render (web service + worker + Redis), S3-compatible storage optional
 
+### Automated report email (Gmail SMTP)
+
+Enable `automated_email_reports` for a vendor in the Superadmin portal, then configure its daily, weekly, and/or monthly schedule. Overnight attendance is grouped by the vendor's operational-day cutoff (07:00 by default) and sent at 08:00 in the configured timezone.
+
+Set these environment variables on both the API and Celery worker services:
+
+```env
+MAIL_SMTP_HOST=smtp.gmail.com
+MAIL_SMTP_PORT=587
+MAIL_SMTP_USERNAME=openvisionx@gmail.com
+MAIL_SMTP_APP_PASSWORD=<google-app-password>
+MAIL_FROM_ADDRESS=openvisionx@gmail.com
+MAIL_FROM_NAME=OpenVisionX Reports
+```
+
+Run exactly one Celery Beat instance alongside one or more Celery workers. The Beat process checks due schedules every minute; unique delivery records prevent duplicate emails.
+
+For the EC2 installer, run `bash setup_aws.sh` normally. It asks for the Gmail App Password using hidden terminal input and stores it in `backend/.env` with file mode `0600`. For an existing AWS deployment, run `bash setup_aws.sh configure-mail`; this updates only the protected mail configuration and restarts the API, worker, and Beat scheduler. Never place the password directly in `setup_aws.sh`.
+
+### XChat Phase 1 (Mistral)
+
+Enable `xchat_ai` for a vendor in the Superadmin portal. Vendor admins and owners then receive a read-only assistant for attendance summaries, estimated payroll, payroll-period comparisons, employee-hours rankings, and incomplete attendance. Tenant identity comes only from the authenticated server session; it is not exposed as an AI tool argument. Conversation history is private to the vendor and username, retained for 30 days by default, and queries write metadata-only audit events.
+
+On an existing EC2 deployment, securely install a newly generated Mistral key with hidden input:
+
+```bash
+bash setup_aws.sh configure-ai
+```
+
+For a fresh deployment, `bash setup_aws.sh` asks for it. The script stores it in the protected environment file with mode `0600`; do not put API keys in source files or commit them. Optional settings are `MISTRAL_MODEL=mistral-small-latest`, `MISTRAL_TIMEOUT_SECONDS=30`, `XCHAT_HISTORY_DAYS=30`, and `XCHAT_MAX_MESSAGES=200`.
+
+The AWS installer also enables `openvision-boot-check.service`. On every EC2 boot it idempotently starts the installed bare-metal services or Docker Compose stack and verifies the local API health endpoint. It does not repeat package installation, builds, database provisioning, or secret prompts. Run the same check manually with `bash setup_aws.sh boot-check`.
+
 ---
 
 ## 🗺️ Architecture

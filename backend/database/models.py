@@ -1,6 +1,6 @@
 from datetime import datetime
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import Column, Integer, String, Text, Float, DateTime, Date, ForeignKey, Boolean, LargeBinary, JSON
+from sqlalchemy import Column, Integer, String, Text, Float, DateTime, Date, ForeignKey, Boolean, LargeBinary, JSON, UniqueConstraint
 from sqlalchemy.orm import relationship, declarative_base
 
 db = SQLAlchemy()
@@ -127,6 +127,63 @@ class Subscription(Base):
     max_web_sessions = Column(Integer, default=1)
 
     vendor = relationship("Vendor", back_populates="subscription")
+
+class AutomatedReportSchedule(Base):
+    __tablename__ = 'automated_report_schedules'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    vendor_id = Column(Integer, ForeignKey('vendors.id'), unique=True, nullable=False)
+    enabled = Column(Integer, default=0)
+    recipient_email = Column(String(255))
+    timezone = Column(String(64), default='Asia/Kolkata')
+    send_time = Column(String(5), default='08:00')
+    operational_day_cutoff = Column(String(5), default='07:00')
+    grace_minutes = Column(Integer, default=30)
+    frequencies = Column(Text, default='[]')
+    daily_days = Column(Text, default='[]')
+    weekly_days = Column(Text, default='[]')
+    monthly_mode = Column(String(32), default='last_working_day')
+    monthly_day = Column(Integer)
+    report_types = Column(Text, default='["attendance_detail", "attendance_summary"]')
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+class AutomatedReportDelivery(Base):
+    __tablename__ = 'automated_report_deliveries'
+    __table_args__ = (UniqueConstraint('schedule_id', 'frequency', 'period_start', 'period_end', name='uq_automated_report_delivery_period'),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    schedule_id = Column(Integer, ForeignKey('automated_report_schedules.id'), nullable=False)
+    vendor_id = Column(Integer, ForeignKey('vendors.id'), nullable=False)
+    frequency = Column(String(32), nullable=False)
+    period_start = Column(Date, nullable=False)
+    period_end = Column(Date, nullable=False)
+    status = Column(String(20), default='queued')
+    attempts = Column(Integer, default=0)
+    recipient_email = Column(String(255))
+    message_id = Column(String(255))
+    error = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    sent_at = Column(DateTime)
+
+class XChatConversation(Base):
+    __tablename__ = 'xchat_conversations'
+    id = Column(String(36), primary_key=True)
+    vendor_id = Column(Integer, ForeignKey('vendors.id'), nullable=False)
+    username = Column(String(255), nullable=False)
+    title = Column(String(160))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+class XChatMessage(Base):
+    __tablename__ = 'xchat_messages'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    conversation_id = Column(String(36), ForeignKey('xchat_conversations.id'), nullable=False)
+    vendor_id = Column(Integer, ForeignKey('vendors.id'), nullable=False)
+    username = Column(String(255), nullable=False)
+    role = Column(String(16), nullable=False)
+    content = Column(Text, nullable=False)
+    tool_name = Column(String(80))
+    message_metadata = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 class VendorDevice(Base):
     __tablename__ = 'vendor_devices'

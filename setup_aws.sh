@@ -5,6 +5,9 @@
 #   bash setup_aws.sh          Interactive deployment (choose Docker or bare metal)
 #   bash setup_aws.sh check    Read-only source/configuration checks
 #   bash setup_aws.sh stop     Stop OpenVision application services only
+#   bash setup_aws.sh boot-check      Idempotently start and verify an installed deployment
+#   bash setup_aws.sh configure-mail  Securely configure Gmail SMTP and restart app services
+#   bash setup_aws.sh configure-ai    Securely configure Mistral XChat and restart the API
 #
 # Bare-metal environment overrides:
 #   DEPLOY_DOMAIN=tapinx.in    Public DNS name (default: tapinx.in)
@@ -23,6 +26,7 @@ MIGRATE_SQLITE="${MIGRATE_SQLITE:-0}"
 ENV_FILE="$SCRIPT_DIR/backend/.env"
 RUN_USER="$(id -un)"
 RUN_GROUP="$(id -gn)"
+MODE_FILE="$SCRIPT_DIR/.openvision-deployment-mode"
 
 [[ "$DEPLOY_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] || {
     printf 'ERROR: DEPLOY_DOMAIN contains invalid characters.\n' >&2
@@ -46,10 +50,18 @@ die() {
     exit 1
 }
 
+run_root() {
+    if [ "$EUID" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+
 on_error() {
     local exit_code=$?
     printf '\nDeployment failed at line %s (exit %s).\n' "${BASH_LINENO[0]}" "$exit_code" >&2
-    printf 'Inspect services with: sudo systemctl status openvision-backend openvision-celery --no-pager\n' >&2
+    printf 'Inspect services with: sudo systemctl status openvision-backend openvision-celery openvision-celery-beat --no-pager\n' >&2
     exit "$exit_code"
 }
 trap on_error ERR
@@ -86,6 +98,30 @@ env_set() {
     fi
 }
 
+file_env_set() {
+    local target_file="$1"
+    local key="$2"
+    local value="$3"
+    touch "$target_file"
+    if grep -q "^${key}=" "$target_file"; then
+        sed -i "s#^${key}=.*#${key}=${value}#" "$target_file"
+    else
+        printf '%s=%s\n' "$key" "$value" >> "$target_file"
+    fi
+}
+
+configure_mail_file() {
+    local target_file="$1"
+    local app_password="$2"
+    file_env_set "$target_file" MAIL_SMTP_HOST smtp.gmail.com
+    file_env_set "$target_file" MAIL_SMTP_PORT 587
+    file_env_set "$target_file" MAIL_SMTP_USERNAME openvisionx@gmail.com
+    file_env_set "$target_file" MAIL_SMTP_APP_PASSWORD "$app_password"
+    file_env_set "$target_file" MAIL_FROM_ADDRESS openvisionx@gmail.com
+    file_env_set "$target_file" MAIL_FROM_NAME "OpenVisionX Reports"
+    chmod 600 "$target_file"
+}
+
 wait_for_url() {
     local url="$1"
     local attempts="${2:-30}"
@@ -100,7 +136,74 @@ wait_for_url() {
 }
 
 stop_application_services() {
-    sudo systemctl stop openvision-backend openvision-celery face-backend 2>/dev/null || true
+    sudo systemctl stop openvision-backend openvision-celery openvision-celery-beat face-backend 2>/dev/null || true
+}
+
+install_boot_check_service() {
+    sudo tee /etc/systemd/system/openvision-boot-check.service >/dev/null <<UNIT
+[Unit]
+Description=OpenVision post-boot startup and health check
+After=network-online.target docker.service postgresql.service redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash ${SCRIPT_DIR}/setup_aws.sh boot-check
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    sudo systemctl daemon-reload
+    sudo systemctl enable openvision-boot-check.service
+}
+
+prompt_mail_app_password() {
+    local existing_value="${1:-}"
+    local entered_value=""
+    if [ -n "${MAIL_SMTP_APP_PASSWORD:-}" ]; then
+        entered_value="$MAIL_SMTP_APP_PASSWORD"
+    elif [ -n "$existing_value" ]; then
+        entered_value="$existing_value"
+    elif [ -t 0 ]; then
+        printf '\nGmail SMTP setup (input is hidden)\n' >&2
+        read -r -s -p "Paste the NEW Google App Password for openvisionx@gmail.com (Enter to skip): " entered_value
+        printf '\n' >&2
+    fi
+    entered_value="$(printf '%s' "$entered_value" | tr -d '[:space:]')"
+    if [ -n "$entered_value" ] && [[ ! "$entered_value" =~ ^[A-Za-z0-9]{16}$ ]]; then
+        die "MAIL_SMTP_APP_PASSWORD must be the 16-character Google App Password, without spaces"
+    fi
+    printf '%s' "$entered_value"
+}
+
+prompt_mistral_api_key() {
+    local existing_value="${1:-}"
+    local entered_value=""
+    if [ -n "${MISTRAL_API_KEY:-}" ]; then
+        entered_value="$MISTRAL_API_KEY"
+    elif [ -n "$existing_value" ]; then
+        entered_value="$existing_value"
+    elif [ -t 0 ]; then
+        printf '\nMistral XChat setup (input is hidden)\n' >&2
+        read -r -s -p "Paste a NEW Mistral API key (Enter to skip): " entered_value
+        printf '\n' >&2
+    fi
+    entered_value="$(printf '%s' "$entered_value" | tr -d '[:space:]')"
+    if [ -n "$entered_value" ] && [[ ! "$entered_value" =~ ^[A-Za-z0-9_-]{20,200}$ ]]; then
+        die "MISTRAL_API_KEY has an unexpected format"
+    fi
+    printf '%s' "$entered_value"
+}
+
+configure_ai_file() {
+    local target_file="$1"
+    local api_key="$2"
+    file_env_set "$target_file" MISTRAL_API_KEY "$api_key"
+    file_env_set "$target_file" MISTRAL_MODEL "mistral-small-latest"
+    file_env_set "$target_file" XCHAT_HISTORY_DAYS "30"
+    file_env_set "$target_file" XCHAT_MAX_MESSAGES "200"
+    chmod 600 "$target_file"
 }
 
 if [ "$ACTION" = "check" ]; then
@@ -124,13 +227,71 @@ if [ "$ACTION" = "stop" ]; then
     log "Stopping OpenVision application services"
     stop_application_services
     if command -v docker >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/docker-compose.yml" ]; then
-        sudo docker compose stop api worker 2>/dev/null || true
+        sudo docker compose stop api worker beat 2>/dev/null || true
     fi
     printf 'OpenVision API and worker services are stopped. PostgreSQL, Redis, Nginx, and unrelated containers were left running.\n'
     exit 0
 fi
 
-[ "$ACTION" = "setup" ] || die "Unknown command '$ACTION'. Use setup, check, or stop."
+if [ "$ACTION" = "boot-check" ]; then
+    require_source_tree
+    DEPLOYMENT_MODE="$(sed -n '1p' "$MODE_FILE" 2>/dev/null || true)"
+    if [ "$DEPLOYMENT_MODE" = "docker" ]; then
+        [ -f "$SCRIPT_DIR/.env" ] || die "Docker environment file is missing"
+        run_root docker compose up -d --remove-orphans
+    elif [ "$DEPLOYMENT_MODE" = "bare" ]; then
+        run_root systemctl start postgresql redis-server nginx
+        run_root systemctl start openvision-backend openvision-celery openvision-celery-beat
+    else
+        die "Deployment mode is unknown; run setup_aws.sh once to install OpenVision"
+    fi
+    wait_for_url "http://127.0.0.1:5001/api/health" 60 || die "OpenVision API failed its post-boot health check"
+    printf 'OpenVision %s deployment is running and healthy.\n' "$DEPLOYMENT_MODE"
+    exit 0
+fi
+
+if [ "$ACTION" = "configure-mail" ]; then
+    require_source_tree
+    SMTP_APP_PASSWORD="$(prompt_mail_app_password "")"
+    [ -n "$SMTP_APP_PASSWORD" ] || die "A Google App Password is required"
+    configure_mail_file "$ENV_FILE" "$SMTP_APP_PASSWORD"
+    if [ -f "$SCRIPT_DIR/.env" ]; then
+        configure_mail_file "$SCRIPT_DIR/.env" "$SMTP_APP_PASSWORD"
+    fi
+
+    if command -v docker >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/.env" ] && [ -n "$(sudo docker compose ps -q api 2>/dev/null || true)" ]; then
+        sudo docker compose up -d --no-deps --force-recreate api worker beat
+        printf 'Gmail SMTP configured; Docker API, worker, and Beat services restarted.\n'
+    elif command -v systemctl >/dev/null 2>&1 && systemctl cat openvision-backend.service >/dev/null 2>&1; then
+        sudo systemctl restart openvision-backend openvision-celery openvision-celery-beat
+        printf 'Gmail SMTP configured; OpenVision API, worker, and Beat services restarted.\n'
+    else
+        printf 'Gmail SMTP configured in backend/.env. Start or redeploy the OpenVision services to apply it.\n'
+    fi
+    exit 0
+fi
+
+if [ "$ACTION" = "configure-ai" ]; then
+    require_source_tree
+    MISTRAL_KEY="$(prompt_mistral_api_key "")"
+    [ -n "$MISTRAL_KEY" ] || die "A Mistral API key is required"
+    configure_ai_file "$ENV_FILE" "$MISTRAL_KEY"
+    if [ -f "$SCRIPT_DIR/.env" ]; then
+        configure_ai_file "$SCRIPT_DIR/.env" "$MISTRAL_KEY"
+    fi
+    if command -v docker >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/.env" ] && [ -n "$(sudo docker compose ps -q api 2>/dev/null || true)" ]; then
+        sudo docker compose up -d --no-deps --force-recreate api
+        printf 'Mistral XChat configured; Docker API restarted.\n'
+    elif command -v systemctl >/dev/null 2>&1 && systemctl cat openvision-backend.service >/dev/null 2>&1; then
+        sudo systemctl restart openvision-backend
+        printf 'Mistral XChat configured; OpenVision API restarted.\n'
+    else
+        printf 'Mistral XChat configured in backend/.env. Start or redeploy the API to apply it.\n'
+    fi
+    exit 0
+fi
+
+[ "$ACTION" = "setup" ] || die "Unknown command '$ACTION'. Use setup, check, stop, boot-check, configure-mail, or configure-ai."
 require_source_tree
 [ "$EUID" -ne 0 ] || die "Run this script as the normal deployment user, not with sudo. It requests sudo only where needed."
 
@@ -160,10 +321,33 @@ if [[ "$USE_DOCKER" =~ ^[Yy]$ ]]; then
     grep -q '^DB_PASSWORD=' "$ROOT_ENV" || printf 'DB_PASSWORD=%s\n' "$(openssl rand -hex 24)" >> "$ROOT_ENV"
     grep -q '^REDIS_PASSWORD=' "$ROOT_ENV" || printf 'REDIS_PASSWORD=%s\n' "$(openssl rand -hex 24)" >> "$ROOT_ENV"
     grep -q '^SECRET_KEY=' "$ROOT_ENV" || printf 'SECRET_KEY=%s\n' "$(openssl rand -hex 32)" >> "$ROOT_ENV"
+    EXISTING_MAIL_PASSWORD="$(sed -n 's/^MAIL_SMTP_APP_PASSWORD=//p' "$ROOT_ENV" | tail -n 1)"
+    SMTP_APP_PASSWORD="$(prompt_mail_app_password "$EXISTING_MAIL_PASSWORD")"
+    if [ -n "$SMTP_APP_PASSWORD" ]; then
+        if grep -q '^MAIL_SMTP_APP_PASSWORD=' "$ROOT_ENV"; then
+            sed -i "s#^MAIL_SMTP_APP_PASSWORD=.*#MAIL_SMTP_APP_PASSWORD=${SMTP_APP_PASSWORD}#" "$ROOT_ENV"
+        else
+            printf 'MAIL_SMTP_APP_PASSWORD=%s\n' "$SMTP_APP_PASSWORD" >> "$ROOT_ENV"
+        fi
+    else
+        printf 'WARNING: Gmail App Password was not configured; automated report emails will remain unavailable.\n' >&2
+    fi
+    grep -q '^MAIL_SMTP_USERNAME=' "$ROOT_ENV" || printf 'MAIL_SMTP_USERNAME=openvisionx@gmail.com\n' >> "$ROOT_ENV"
+    grep -q '^MAIL_FROM_ADDRESS=' "$ROOT_ENV" || printf 'MAIL_FROM_ADDRESS=openvisionx@gmail.com\n' >> "$ROOT_ENV"
+    EXISTING_MISTRAL_KEY="$(sed -n 's/^MISTRAL_API_KEY=//p' "$ROOT_ENV" | tail -n 1)"
+    MISTRAL_KEY="$(prompt_mistral_api_key "$EXISTING_MISTRAL_KEY")"
+    if [ -n "$MISTRAL_KEY" ]; then
+        configure_ai_file "$ROOT_ENV" "$MISTRAL_KEY"
+    else
+        printf 'WARNING: Mistral key was not configured; XChat will return a configuration error.\n' >&2
+    fi
 
     sudo docker compose config --quiet
     sudo docker compose up -d --build --remove-orphans --scale worker=1
     wait_for_url "http://127.0.0.1:5001/api/health" 45 || die "Docker API did not become healthy"
+    printf 'docker\n' > "$MODE_FILE"
+    chmod 600 "$MODE_FILE"
+    install_boot_check_service
     printf '\nDocker API deployment completed successfully at http://%s:5001\n' "$(hostname -I | awk '{print $1}')"
     exit 0
 fi
@@ -227,6 +411,8 @@ if [[ ! "$DB_PASSWORD" =~ ^[A-Za-z0-9]+$ ]]; then
 fi
 SECRET_KEY="$(env_get SECRET_KEY)"
 [ -n "$SECRET_KEY" ] || SECRET_KEY="$(openssl rand -hex 32)"
+SMTP_APP_PASSWORD="$(prompt_mail_app_password "$(env_get MAIL_SMTP_APP_PASSWORD)")"
+MISTRAL_KEY="$(prompt_mistral_api_key "$(env_get MISTRAL_API_KEY)")"
 
 log "Creating the dedicated PostgreSQL application role and database"
 if sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='openvision_app'" | grep -q 1; then
@@ -270,6 +456,21 @@ env_set CELERY_BROKER_URL "$REDIS_URL"
 env_set BACKEND_URL "http://${DEPLOY_DOMAIN}"
 env_set FRONTEND_URL "http://${DEPLOY_DOMAIN}"
 env_set LOW_RAM_MODE "$LOW_RAM_MODE"
+env_set MAIL_SMTP_HOST "smtp.gmail.com"
+env_set MAIL_SMTP_PORT "587"
+env_set MAIL_SMTP_USERNAME "openvisionx@gmail.com"
+env_set MAIL_FROM_ADDRESS "openvisionx@gmail.com"
+env_set MAIL_FROM_NAME "OpenVisionX Reports"
+if [ -n "$SMTP_APP_PASSWORD" ]; then
+    env_set MAIL_SMTP_APP_PASSWORD "$SMTP_APP_PASSWORD"
+else
+    printf 'WARNING: Gmail App Password was not configured; automated report emails will remain unavailable.\n' >&2
+fi
+if [ -n "$MISTRAL_KEY" ]; then
+    configure_ai_file "$ENV_FILE" "$MISTRAL_KEY"
+else
+    printf 'WARNING: Mistral key was not configured; XChat will return a configuration error.\n' >&2
+fi
 chmod 600 "$ENV_FILE"
 
 log "Creating the Python environment and installing project requirements"
@@ -422,11 +623,42 @@ PrivateTmp=true
 WantedBy=multi-user.target
 UNIT
 
+sudo tee /etc/systemd/system/openvision-celery-beat.service >/dev/null <<UNIT
+[Unit]
+Description=OpenVision Celery Beat Scheduler
+After=network-online.target redis-server.service openvision-celery.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${RUN_USER}
+Group=${RUN_GROUP}
+WorkingDirectory=${SCRIPT_DIR}/backend
+Environment="PATH=${SCRIPT_DIR}/backend/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONPATH=${SCRIPT_DIR}/backend:${SCRIPT_DIR}"
+EnvironmentFile=${ENV_FILE}
+ExecStart=${SCRIPT_DIR}/backend/.venv/bin/celery -A celery_app.celery beat --loglevel=info --schedule=/tmp/openvision-celerybeat-schedule
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillMode=mixed
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
 sudo systemctl daemon-reload
-sudo systemctl enable openvision-backend openvision-celery
-sudo systemctl restart openvision-backend openvision-celery
+sudo systemctl enable openvision-backend openvision-celery openvision-celery-beat
+sudo systemctl restart openvision-backend openvision-celery openvision-celery-beat
 sudo systemctl is-active --quiet openvision-backend
 sudo systemctl is-active --quiet openvision-celery
+sudo systemctl is-active --quiet openvision-celery-beat
+
+printf 'bare\n' > "$MODE_FILE"
+chmod 600 "$MODE_FILE"
+install_boot_check_service
 
 log "Running deployment health checks"
 wait_for_url "http://127.0.0.1:5001/api/health" 45 || {
@@ -453,7 +685,7 @@ if [ "$ENABLE_SSL" != "no" ]; then
             SSL_ENABLED=1
             env_set BACKEND_URL "https://${DEPLOY_DOMAIN}"
             env_set FRONTEND_URL "https://${DEPLOY_DOMAIN}"
-            sudo systemctl restart openvision-backend openvision-celery
+            sudo systemctl restart openvision-backend openvision-celery openvision-celery-beat
             wait_for_url "https://${DEPLOY_DOMAIN}/api/health" 20 \
                 || die "HTTPS certificate was installed, but the public health endpoint is unavailable"
         else
@@ -476,5 +708,5 @@ else
     printf 'API:       http://%s/api\n' "$DEPLOY_DOMAIN"
 fi
 printf 'Local health: http://127.0.0.1:5001/api/health\n'
-printf 'Services:     sudo systemctl status openvision-backend openvision-celery nginx\n'
+printf 'Services:     sudo systemctl status openvision-backend openvision-celery openvision-celery-beat nginx\n'
 printf 'Application logs: sudo journalctl -u openvision-backend -f\n'

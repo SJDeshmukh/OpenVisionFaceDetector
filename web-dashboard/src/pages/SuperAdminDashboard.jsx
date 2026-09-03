@@ -1,10 +1,140 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { Plus, Check, X, Shield, User, Users, Lock, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight, Search, Filter, ArrowLeft, ArrowRight, Eye, Settings, Trash2, Database, Download, RefreshCw, Layers, Upload, Activity, Battery, WifiOff, UploadCloud, Box } from 'lucide-react';
+import { Plus, Check, X, Shield, User, Users, Lock, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight, Search, Filter, ArrowLeft, ArrowRight, Eye, Settings, Trash2, Database, Download, RefreshCw, Layers, Upload, Activity, Battery, WifiOff, UploadCloud, Box, Mail, Send, Clock, AlertCircle } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { API_URL, FRONTEND_BUNDLES, BASE_URL } from '../config';
 import { useSocket } from '../context/SocketContext';
 import RegistrationConfigEditor from '../components/RegistrationConfigEditor';
+
+const REPORT_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const DEFAULT_REPORT_SCHEDULE = {
+  enabled: false,
+  recipient_email: '',
+  timezone: 'Asia/Kolkata',
+  send_time: '08:00',
+  operational_day_cutoff: '07:00',
+  grace_minutes: 30,
+  frequencies: [],
+  daily_days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
+  weekly_days: ['Sun'],
+  monthly_mode: 'last_working_day',
+  monthly_day: 1,
+  report_types: ['attendance_detail', 'attendance_summary']
+};
+
+const toggleListValue = (items, value) => items.includes(value)
+  ? items.filter(item => item !== value)
+  : [...items, value];
+
+const ReportScheduleEditor = ({ schedule, setSchedule, vendorEmail, smtpConfigured, canTest, testing, onTest, nightShiftEnabled, deliveries = [] }) => {
+  const selected = (key, value) => (schedule[key] || []).includes(value);
+  const updateList = (key, value) => setSchedule(prev => ({ ...prev, [key]: toggleListValue(prev[key] || [], value) }));
+  const cutoffLabel = nightShiftEnabled ? 'Night-shift operational cutoff' : 'Operational day cutoff';
+
+  return (
+    <section className="mt-5 overflow-hidden rounded-2xl border border-indigo-200 bg-gradient-to-br from-indigo-50 via-white to-sky-50 shadow-sm">
+      <div className="flex flex-col gap-4 border-b border-indigo-100 p-5 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-start gap-3">
+          <div className="rounded-xl bg-indigo-600 p-2.5 text-white shadow-sm"><Mail size={20} /></div>
+          <div>
+            <h3 className="font-semibold text-slate-900">Automated report email</h3>
+            <p className="mt-0.5 text-xs leading-5 text-slate-500">Reports are sent the morning after the selected operational day, keeping overnight shifts together.</p>
+          </div>
+        </div>
+        <label className="flex cursor-pointer items-center gap-3 rounded-full border border-indigo-200 bg-white px-4 py-2 shadow-sm">
+          <span className="text-sm font-medium text-slate-700">{schedule.enabled ? 'Active' : 'Inactive'}</span>
+          <input type="checkbox" className="h-4 w-4 accent-indigo-600" checked={!!schedule.enabled} onChange={e => setSchedule(prev => ({ ...prev, enabled: e.target.checked }))} />
+        </label>
+      </div>
+
+      <div className="space-y-5 p-5">
+        {!smtpConfigured && canTest && (
+          <div className="flex gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+            <AlertCircle size={16} className="mt-0.5 shrink-0" /> Gmail SMTP credentials are not configured on the backend. You can save the schedule, but delivery will fail until the app password is added.
+          </div>
+        )}
+        <div className="grid gap-4 md:grid-cols-2">
+          <label className="block text-sm font-medium text-slate-700">Recipient email
+            <input type="email" value={schedule.recipient_email || ''} placeholder={vendorEmail || 'reports@example.com'} onChange={e => setSchedule(prev => ({ ...prev, recipient_email: e.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 outline-none transition focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100" />
+          </label>
+          <label className="block text-sm font-medium text-slate-700">Timezone
+            <select value={schedule.timezone} onChange={e => setSchedule(prev => ({ ...prev, timezone: e.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100">
+              <option value="Asia/Kolkata">Asia/Kolkata (IST)</option>
+              <option value="UTC">UTC</option>
+              <option value="Asia/Dubai">Asia/Dubai</option>
+              <option value="Asia/Singapore">Asia/Singapore</option>
+            </select>
+          </label>
+        </div>
+
+        <div>
+          <div className="mb-2 text-sm font-medium text-slate-700">Frequency <span className="font-normal text-slate-400">(multi-select)</span></div>
+          <div className="grid gap-3 sm:grid-cols-3">
+            {[['daily', 'Daily', 'Selected operational days'], ['weekly', 'Weekly', 'Seven-day period'], ['monthly', 'Monthly', 'Calendar month']].map(([key, title, caption]) => (
+              <button key={key} type="button" onClick={() => updateList('frequencies', key)} className={`rounded-xl border p-3 text-left transition ${selected('frequencies', key) ? 'border-indigo-500 bg-indigo-600 text-white shadow-md shadow-indigo-100' : 'border-slate-200 bg-white text-slate-700 hover:border-indigo-300'}`}>
+                <div className="flex items-center justify-between"><span className="font-semibold">{title}</span>{selected('frequencies', key) && <Check size={16} />}</div>
+                <div className={`mt-1 text-xs ${selected('frequencies', key) ? 'text-indigo-100' : 'text-slate-400'}`}>{caption}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {selected('frequencies', 'daily') && <DayPicker title="Daily report days" values={schedule.daily_days} onToggle={day => updateList('daily_days', day)} />}
+        {selected('frequencies', 'weekly') && <DayPicker title="Weekly period ends on" values={schedule.weekly_days} onToggle={day => updateList('weekly_days', day)} />}
+
+        {selected('frequencies', 'monthly') && (
+          <div className="rounded-xl border border-slate-200 bg-white p-4">
+            <div className="mb-3 text-sm font-medium text-slate-700">Monthly period end</div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className={`cursor-pointer rounded-lg border p-3 ${schedule.monthly_mode === 'last_working_day' ? 'border-indigo-400 bg-indigo-50' : 'border-slate-200'}`}><input type="radio" className="mr-2 accent-indigo-600" checked={schedule.monthly_mode === 'last_working_day'} onChange={() => setSchedule(prev => ({ ...prev, monthly_mode: 'last_working_day' }))} />Last working day</label>
+              <label className={`cursor-pointer rounded-lg border p-3 ${schedule.monthly_mode === 'day_of_month' ? 'border-indigo-400 bg-indigo-50' : 'border-slate-200'}`}><input type="radio" className="mr-2 accent-indigo-600" checked={schedule.monthly_mode === 'day_of_month'} onChange={() => setSchedule(prev => ({ ...prev, monthly_mode: 'day_of_month' }))} />Specific day
+                {schedule.monthly_mode === 'day_of_month' && <input type="number" min="1" max="31" value={schedule.monthly_day || 1} onChange={e => setSchedule(prev => ({ ...prev, monthly_day: Number(e.target.value) }))} className="ml-3 w-16 rounded border border-slate-300 px-2 py-1" />}
+              </label>
+            </div>
+          </div>
+        )}
+
+        <div className="grid gap-4 rounded-xl border border-slate-200 bg-white p-4 md:grid-cols-3">
+          <label className="text-sm font-medium text-slate-700"><Clock size={14} className="mr-1 inline" />Send time
+            <input type="time" value={schedule.send_time} onChange={e => setSchedule(prev => ({ ...prev, send_time: e.target.value }))} className="mt-1.5 w-full rounded-lg border border-slate-200 px-3 py-2" />
+          </label>
+          <label className="text-sm font-medium text-slate-700">{cutoffLabel}
+            <input type="time" value={schedule.operational_day_cutoff} onChange={e => setSchedule(prev => ({ ...prev, operational_day_cutoff: e.target.value }))} className="mt-1.5 w-full rounded-lg border border-slate-200 px-3 py-2" />
+          </label>
+          <label className="text-sm font-medium text-slate-700">Closeout grace (minutes)
+            <input type="number" min="0" max="720" value={schedule.grace_minutes} onChange={e => setSchedule(prev => ({ ...prev, grace_minutes: Number(e.target.value) }))} className="mt-1.5 w-full rounded-lg border border-slate-200 px-3 py-2" />
+          </label>
+        </div>
+        <p className="text-xs leading-5 text-slate-500">Example: a Monday 10 PM–Tuesday 6 AM shift is included in Monday’s report. With a 7 AM cutoff and 30-minute grace period, it is ready for the 8 AM email.</p>
+
+        <div className="flex flex-col gap-3 border-t border-indigo-100 pt-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex gap-4 text-sm text-slate-600">
+            {[['attendance_detail', 'Detailed CSV'], ['attendance_summary', 'Summary CSV']].map(([key, label]) => <label key={key} className="flex items-center gap-2"><input type="checkbox" className="accent-indigo-600" checked={selected('report_types', key)} onChange={() => updateList('report_types', key)} />{label}</label>)}
+          </div>
+          <button type="button" disabled={!canTest || testing} onClick={onTest} className="inline-flex items-center justify-center gap-2 rounded-xl border border-indigo-200 bg-white px-4 py-2 text-sm font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"><Send size={15} />{testing ? 'Queueing…' : 'Send test report'}</button>
+        </div>
+        {deliveries.length > 0 && (
+          <div className="rounded-xl border border-slate-200 bg-white p-4">
+            <div className="mb-3 text-sm font-semibold text-slate-700">Recent deliveries</div>
+            <div className="space-y-2">{deliveries.slice(0, 4).map(item => (
+              <div key={item.id} className="flex flex-col gap-1 rounded-lg bg-slate-50 px-3 py-2 text-xs sm:flex-row sm:items-center sm:justify-between">
+                <span className="text-slate-600">{String(item.frequency || '').startsWith('test-') ? 'Test report' : `${item.frequency} · ${item.period_start} to ${item.period_end}`}</span>
+                <span className={`w-fit rounded-full px-2 py-0.5 font-semibold ${item.status === 'sent' ? 'bg-emerald-100 text-emerald-700' : item.status === 'failed' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'}`}>{item.status}</span>
+              </div>
+            ))}</div>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+};
+
+const DayPicker = ({ title, values = [], onToggle }) => (
+  <div className="rounded-xl border border-slate-200 bg-white p-4">
+    <div className="mb-3 text-sm font-medium text-slate-700">{title}</div>
+    <div className="flex flex-wrap gap-2">{REPORT_DAYS.map(day => <button key={day} type="button" onClick={() => onToggle(day)} className={`h-10 min-w-10 rounded-lg border px-2 text-xs font-semibold transition ${values.includes(day) ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-slate-200 text-slate-500 hover:border-indigo-300'}`}>{day}</button>)}</div>
+  </div>
+);
 
 const SuperAdminDashboard = () => {
   const { user } = useAuth();
@@ -88,10 +218,69 @@ const SuperAdminDashboard = () => {
     }
   };
   const [editingVendor, setEditingVendor] = useState(null);
+  const [reportSchedule, setReportSchedule] = useState({ ...DEFAULT_REPORT_SCHEDULE });
+  const [smtpConfigured, setSmtpConfigured] = useState(false);
+  const [testingReportEmail, setTestingReportEmail] = useState(false);
+  const [reportDeliveries, setReportDeliveries] = useState([]);
+
+  const fetchReportDeliveries = async (vendorId) => {
+    if (!vendorId) return setReportDeliveries([]);
+    try {
+      const response = await axios.get(`${API_URL}/admin/vendors/${vendorId}/automated-report-deliveries`, {
+        params: { limit: 10 }, headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      setReportDeliveries(response.data.deliveries || []);
+    } catch (_) {
+      setReportDeliveries([]);
+    }
+  };
+
+  const fetchReportSchedule = async (vendorId, fallbackEmail = '') => {
+    if (!vendorId) {
+      setReportSchedule({ ...DEFAULT_REPORT_SCHEDULE, recipient_email: fallbackEmail });
+      return;
+    }
+    try {
+      const response = await axios.get(`${API_URL}/admin/vendors/${vendorId}/automated-report-schedule`, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      setReportSchedule({ ...DEFAULT_REPORT_SCHEDULE, ...(response.data.schedule || {}) });
+      setSmtpConfigured(!!response.data.smtp_configured);
+      await fetchReportDeliveries(vendorId);
+    } catch (error) {
+      console.error('Error fetching automated report schedule:', error);
+      setReportSchedule({ ...DEFAULT_REPORT_SCHEDULE, recipient_email: fallbackEmail });
+    }
+  };
+
+  const saveReportSchedule = async (vendorId) => {
+    if (!vendorId || !(newVendor.features || []).includes('automated_email_reports')) return;
+    await axios.put(`${API_URL}/admin/vendors/${vendorId}/automated-report-schedule`, {
+      ...reportSchedule,
+      recipient_email: reportSchedule.recipient_email || newVendor.email
+    }, { headers: { Authorization: `Bearer ${user?.token}` } });
+  };
+
+  const handleTestReportEmail = async () => {
+    if (!editingVendor?.id) return;
+    setTestingReportEmail(true);
+    try {
+      await saveReportSchedule(editingVendor.id);
+      await axios.post(`${API_URL}/admin/vendors/${editingVendor.id}/automated-report-test`, {
+        recipient_email: reportSchedule.recipient_email || newVendor.email
+      }, { headers: { Authorization: `Bearer ${user?.token}` } });
+      await fetchReportDeliveries(editingVendor.id);
+      alert('Test report queued. Delivery status will be available in the report delivery history.');
+    } catch (error) {
+      alert('Unable to queue test report: ' + (error.response?.data?.error || error.message));
+    } finally {
+      setTestingReportEmail(false);
+    }
+  };
 
   // Features Config
   const [availableFeatures, setAvailableFeatures] = useState([
-    'reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 
+    'reports', 'report_detailed', 'report_payroll', 'automated_email_reports', 'xchat_ai', 'mobile_app', 'payroll', 'shifts',
     'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 
     'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'api_access', 'white_labeling', 
     'late_mark', 'bulk_image_attendance', 'classes', 'leave_management'
@@ -900,6 +1089,8 @@ const SuperAdminDashboard = () => {
           headers: { Authorization: `Bearer ${user?.token}` }
         });
 
+        await saveReportSchedule(editingVendor.id);
+
         alert("Vendor Updated Successfully!");
       } else {
         const liveMaxUsers = maxUsersRef.current ? maxUsersRef.current.value : newVendor.max_users;
@@ -945,6 +1136,8 @@ const SuperAdminDashboard = () => {
           });
         }
 
+        await saveReportSchedule(newVendorId);
+
         alert(`Vendor Created!\nAdmin: ${response.data.admin_credentials.username}\nUser: ${response.data.user_credentials.username}`);
       }
 
@@ -968,6 +1161,8 @@ const SuperAdminDashboard = () => {
         owners: []
       });
       setRegistrationConfig([]);
+      setReportSchedule({ ...DEFAULT_REPORT_SCHEDULE });
+      setReportDeliveries([]);
       fetchVendors();
     } catch (error) {
       alert("Error: " + (error.response?.data?.error || error.message));
@@ -1046,6 +1241,8 @@ const SuperAdminDashboard = () => {
       console.error("Error fetching registration config:", error);
       setRegistrationConfig([]);
     }
+
+    await fetchReportSchedule(vendor.id, vendor.email || '');
 
     setShowModal(true);
   };
@@ -1459,6 +1656,9 @@ const SuperAdminDashboard = () => {
                   retention_days: '90'
                 });
                 setRegistrationConfig([]);
+                setReportSchedule({ ...DEFAULT_REPORT_SCHEDULE });
+                setSmtpConfigured(false);
+                setReportDeliveries([]);
                 setShowModal(true);
               }}
               className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg flex items-center gap-2"
@@ -2910,9 +3110,12 @@ const SuperAdminDashboard = () => {
 
       {/* Create Modal */}
       {showModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-            <h2 className="text-xl font-bold mb-6">{editingVendor ? 'Edit Vendor Details' : 'Onboard New Vendor'}</h2>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+          <div className="max-h-[92vh] w-full max-w-5xl overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="mb-6 flex items-center justify-between border-b border-slate-100 pb-4">
+              <div><h2 className="text-xl font-bold text-slate-900">{editingVendor ? 'Edit vendor' : 'Onboard new vendor'}</h2><p className="mt-1 text-sm text-slate-500">Configure company access, product features, and automated operations in one place.</p></div>
+              <button type="button" onClick={() => { setShowModal(false); setEditingVendor(null); }} className="rounded-full p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"><X size={20} /></button>
+            </div>
             <form onSubmit={handleCreateVendor}>
 
               {/* Section 1: Company Details */}
@@ -3214,6 +3417,10 @@ const SuperAdminDashboard = () => {
                                 if (feature === 'report_payroll' || feature === 'report_detailed') {
                                   if (!newFeatures.includes('reports')) newFeatures.push('reports');
                                 }
+                                if (feature === 'automated_email_reports') {
+                                  if (!newFeatures.includes('reports')) newFeatures.push('reports');
+                                  if (!newFeatures.includes('report_detailed')) newFeatures.push('report_detailed');
+                                }
 
                                 // New Feature Dependencies
                                 if (feature === 'payable_hours') {
@@ -3234,6 +3441,9 @@ const SuperAdminDashboard = () => {
                                 if (feature === 'whatsapp_alerts') {
                                   if (!newFeatures.includes('reports')) newFeatures.push('reports');
                                 }
+                              }
+                              if (!checked && feature === 'automated_email_reports') {
+                                setReportSchedule(current => ({ ...current, enabled: false }));
                               }
                               return { ...prev, features: newFeatures };
                             });
@@ -3291,6 +3501,20 @@ const SuperAdminDashboard = () => {
                     ))}
                   </div>
                 </div>
+
+                {(newVendor.features || []).includes('automated_email_reports') && (
+                  <ReportScheduleEditor
+                    schedule={reportSchedule}
+                    setSchedule={setReportSchedule}
+                    vendorEmail={newVendor.email}
+                    smtpConfigured={smtpConfigured}
+                    canTest={!!editingVendor}
+                    testing={testingReportEmail}
+                    onTest={handleTestReportEmail}
+                    nightShiftEnabled={(newVendor.features || []).includes('night_shift_logic')}
+                    deliveries={reportDeliveries}
+                  />
+                )}
               </div>
 
               {/* Registration Configuration */}

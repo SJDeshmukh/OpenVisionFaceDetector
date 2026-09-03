@@ -45,6 +45,13 @@ def make_celery():
         timezone="UTC",
         enable_utc=True,
         task_ignore_result=False,
+        task_default_queue="normal_priority",
+        beat_schedule={
+            "dispatch-automated-reports-every-minute": {
+                "task": "tasks.dispatch_automated_reports",
+                "schedule": 60.0,
+            },
+        },
     )
     return app
 

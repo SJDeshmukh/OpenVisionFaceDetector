@@ -227,11 +227,12 @@ class PostgresCursorWrapper:
 
     @property
     def description(self):
-        """Expose standard DB-API column metadata from psycopg2.
+        """Expose DB-API column metadata from the wrapped psycopg2 cursor.
 
-        Shared SQLite/PostgreSQL query code uses cursor.description when it
-        needs to map tuple rows. Hiding this attribute caused PostgreSQL-only
-        500 responses from /api/attendance after records were inserted.
+        Several shared query paths use ``cursor.description`` to map tuple rows
+        into dictionaries.  The wrapper previously hid that standard cursor
+        attribute, causing PostgreSQL-only 500 responses after a successful
+        attendance insert.
         """
         return self.cursor.description
         
@@ -515,6 +516,10 @@ def _init_pg_schema_on_conn(conn):
         "CREATE TABLE IF NOT EXISTS registration_batch_items (id TEXT PRIMARY KEY, batch_id TEXT REFERENCES registration_batches(id), seq INTEGER, image_b64 TEXT, annotated_b64 TEXT, faces_json TEXT, status TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS subject_master (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), class_year TEXT, branch TEXT, subject_name TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, class_year, branch, subject_name))",
         "CREATE TABLE IF NOT EXISTS class_thresholds (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), class_year TEXT, division TEXT, branch TEXT, threshold REAL, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, class_year, division, branch))",
+        "CREATE TABLE IF NOT EXISTS automated_report_schedules (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id) UNIQUE NOT NULL, enabled INTEGER DEFAULT 0, recipient_email TEXT, timezone TEXT DEFAULT 'Asia/Kolkata', send_time TEXT DEFAULT '08:00', operational_day_cutoff TEXT DEFAULT '07:00', grace_minutes INTEGER DEFAULT 30, frequencies TEXT DEFAULT '[]', daily_days TEXT DEFAULT '[]', weekly_days TEXT DEFAULT '[]', monthly_mode TEXT DEFAULT 'last_working_day', monthly_day INTEGER, report_types TEXT DEFAULT '[\"attendance_detail\", \"attendance_summary\"]', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS automated_report_deliveries (id SERIAL PRIMARY KEY, schedule_id INTEGER REFERENCES automated_report_schedules(id) NOT NULL, vendor_id INTEGER REFERENCES vendors(id) NOT NULL, frequency TEXT NOT NULL, period_start DATE NOT NULL, period_end DATE NOT NULL, status TEXT DEFAULT 'queued', attempts INTEGER DEFAULT 0, recipient_email TEXT, message_id TEXT, error TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, sent_at TIMESTAMP, UNIQUE(schedule_id, frequency, period_start, period_end))",
+        "CREATE TABLE IF NOT EXISTS xchat_conversations (id TEXT PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id) NOT NULL, username TEXT NOT NULL, title TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS xchat_messages (id SERIAL PRIMARY KEY, conversation_id TEXT REFERENCES xchat_conversations(id) ON DELETE CASCADE, vendor_id INTEGER REFERENCES vendors(id) NOT NULL, username TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, tool_name TEXT, message_metadata TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
 
         # --- Performance Indices ---
         "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_time ON attendance(vendor_id, timestamp)",
@@ -526,6 +531,10 @@ def _init_pg_schema_on_conn(conn):
         "CREATE INDEX IF NOT EXISTS idx_lectures_vendor ON lectures(vendor_id, lecture_date)",
         "CREATE INDEX IF NOT EXISTS idx_lecture_attendance_lecture ON lecture_attendance(lecture_id)",
         "CREATE INDEX IF NOT EXISTS idx_lecture_attendance_person ON lecture_attendance(person_id, vendor_id)"
+        ,"CREATE INDEX IF NOT EXISTS idx_auto_report_due ON automated_report_schedules(enabled, vendor_id)"
+        ,"CREATE INDEX IF NOT EXISTS idx_auto_report_delivery_vendor ON automated_report_deliveries(vendor_id, created_at)"
+        ,"CREATE INDEX IF NOT EXISTS idx_xchat_conversation_owner ON xchat_conversations(vendor_id, username, updated_at)"
+        ,"CREATE INDEX IF NOT EXISTS idx_xchat_message_conversation ON xchat_messages(conversation_id, vendor_id, created_at)"
     ]
     for q in queries:
         try:
@@ -700,6 +709,10 @@ def init_sqlite_schema(conn):
         "CREATE TABLE IF NOT EXISTS registration_batch_items (id TEXT PRIMARY KEY, batch_id TEXT, seq INTEGER, image_b64 TEXT, annotated_b64 TEXT, faces_json TEXT, status TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS subject_master (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, class_year TEXT, branch TEXT, subject_name TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, class_year, branch, subject_name))",
         "CREATE TABLE IF NOT EXISTS class_thresholds (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, class_year TEXT, division TEXT, branch TEXT, threshold REAL, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, class_year, division, branch))",
+        "CREATE TABLE IF NOT EXISTS automated_report_schedules (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER UNIQUE NOT NULL, enabled INTEGER DEFAULT 0, recipient_email TEXT, timezone TEXT DEFAULT 'Asia/Kolkata', send_time TEXT DEFAULT '08:00', operational_day_cutoff TEXT DEFAULT '07:00', grace_minutes INTEGER DEFAULT 30, frequencies TEXT DEFAULT '[]', daily_days TEXT DEFAULT '[]', weekly_days TEXT DEFAULT '[]', monthly_mode TEXT DEFAULT 'last_working_day', monthly_day INTEGER, report_types TEXT DEFAULT '[\"attendance_detail\", \"attendance_summary\"]', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS automated_report_deliveries (id INTEGER PRIMARY KEY AUTOINCREMENT, schedule_id INTEGER NOT NULL, vendor_id INTEGER NOT NULL, frequency TEXT NOT NULL, period_start DATE NOT NULL, period_end DATE NOT NULL, status TEXT DEFAULT 'queued', attempts INTEGER DEFAULT 0, recipient_email TEXT, message_id TEXT, error TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, sent_at DATETIME, UNIQUE(schedule_id, frequency, period_start, period_end))",
+        "CREATE TABLE IF NOT EXISTS xchat_conversations (id TEXT PRIMARY KEY, vendor_id INTEGER NOT NULL, username TEXT NOT NULL, title TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS xchat_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT NOT NULL, vendor_id INTEGER NOT NULL, username TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, tool_name TEXT, message_metadata TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(conversation_id) REFERENCES xchat_conversations(id) ON DELETE CASCADE)",
 
         # --- Performance Indices ---
         "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_time ON attendance(vendor_id, timestamp)",
@@ -711,6 +724,10 @@ def init_sqlite_schema(conn):
         "CREATE INDEX IF NOT EXISTS idx_lectures_vendor ON lectures(vendor_id, lecture_date)",
         "CREATE INDEX IF NOT EXISTS idx_lecture_attendance_lecture ON lecture_attendance(lecture_id)",
         "CREATE INDEX IF NOT EXISTS idx_lecture_attendance_person ON lecture_attendance(person_id, vendor_id)"
+        ,"CREATE INDEX IF NOT EXISTS idx_auto_report_due ON automated_report_schedules(enabled, vendor_id)"
+        ,"CREATE INDEX IF NOT EXISTS idx_auto_report_delivery_vendor ON automated_report_deliveries(vendor_id, created_at)"
+        ,"CREATE INDEX IF NOT EXISTS idx_xchat_conversation_owner ON xchat_conversations(vendor_id, username, updated_at)"
+        ,"CREATE INDEX IF NOT EXISTS idx_xchat_message_conversation ON xchat_messages(conversation_id, vendor_id, created_at)"
     ]
     for q in queries:
         cur.execute(q)
