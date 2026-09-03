@@ -347,6 +347,7 @@
 /* Branded XChat launcher */
 .xchat-launcher {
   width: 60px;
+  cursor: pointer;
   background: linear-gradient(115deg, rgba(15, 23, 42, 0.97), rgba(30, 27, 75, 0.97));
   border: 1px solid rgba(122, 125, 255, 0.45);
   box-shadow: 0 14px 40px rgba(2, 6, 23, 0.55), 0 0 26px rgba(122, 125, 255, 0.28);
