@@ -129,6 +129,7 @@ def bulk_registration_upload():
         success_count = 0
         skipped_count = 0
         errors = []
+        observed_scope_fields = set()
 
         # Track existing dynamic fields for bulk_attendance_config
         c.execute("SELECT fields FROM bulk_attendance_config WHERE vendor_id = ?", (vendor_id,))
@@ -205,9 +206,15 @@ def bulk_registration_upload():
 
                 # Inject Class Scope if provided via Class Cards flow
                 if row_class_id: custom_dict['class_id'] = str(row_class_id)
-                if row_class_year: custom_dict['class_year'] = row_class_year
-                if row_division: custom_dict['division'] = row_division
-                if row_branch: custom_dict['branch'] = row_branch
+                if row_class_year:
+                    custom_dict['class_year'] = row_class_year
+                    observed_scope_fields.add('class_year')
+                if row_division:
+                    custom_dict['division'] = row_division
+                    observed_scope_fields.add('division')
+                if row_branch:
+                    custom_dict['branch'] = row_branch
+                    observed_scope_fields.add('branch')
 
                 custom_data_str = json.dumps(custom_dict, separators=(',', ':'))
 
@@ -265,6 +272,28 @@ def bulk_registration_upload():
             }
                 
             new_sync_fields.append(field_config)
+
+        # Class cards can supply scope outside the spreadsheet columns. Record
+        # only scope fields actually used by this upload so Reports can expose
+        # them without injecting class filters into unrelated vendors.
+        scope_labels = {
+            'class_year': 'Class / Year',
+            'division': 'Division / Section',
+            'branch': 'Branch / Department',
+        }
+        configured_names = {str(field.get('name') or '').strip().lower() for field in new_sync_fields}
+        for scope_name in ('class_year', 'division', 'branch'):
+            if scope_name in observed_scope_fields and scope_name not in configured_names:
+                new_sync_fields.append({
+                    'name': scope_name,
+                    'label': scope_labels[scope_name],
+                    'type': 'text',
+                    'required': False,
+                    'default': False,
+                    'is_name': False,
+                    'is_phone': False,
+                    'is_id': False,
+                })
 
         # Update strictly
         fields_json = json.dumps(new_sync_fields, separators=(',', ':'))

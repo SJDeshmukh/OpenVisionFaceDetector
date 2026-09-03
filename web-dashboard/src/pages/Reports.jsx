@@ -345,13 +345,13 @@ const Reports = () => {
 
               {(filterOptions.visible_standard_filters?.department ?? false) && (
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Department</label>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">{filterOptions.standard_filter_labels?.department || 'Department'}</label>
                   <select
                     value={filters.department}
                     onChange={(e) => setFilters({ ...filters, department: e.target.value })}
                     className="w-full rounded-lg border-slate-200 text-sm focus:ring-blue-500 focus:border-blue-500"
                   >
-                    <option value="">All Departments</option>
+                    <option value="">All {filterOptions.standard_filter_labels?.department || 'Departments'}</option>
                     {filterOptions.departments.map(dept => (
                       <option key={dept} value={dept}>{dept}</option>
                     ))}
@@ -361,13 +361,13 @@ const Reports = () => {
 
               {(filterOptions.visible_standard_filters?.designation ?? false) && (
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Designation</label>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">{filterOptions.standard_filter_labels?.designation || 'Designation'}</label>
                   <select
                     value={filters.designation}
                     onChange={(e) => setFilters({ ...filters, designation: e.target.value })}
                     className="w-full rounded-lg border-slate-200 text-sm focus:ring-blue-500 focus:border-blue-500"
                   >
-                    <option value="">All Designations</option>
+                    <option value="">All {filterOptions.standard_filter_labels?.designation || 'Designations'}</option>
                     {filterOptions.designations.map(desig => (
                       <option key={desig} value={desig}>{desig}</option>
                     ))}
@@ -377,13 +377,13 @@ const Reports = () => {
 
               {(filterOptions.visible_standard_filters?.shift ?? false) && (
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Shift</label>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">{filterOptions.standard_filter_labels?.shift || 'Shift'}</label>
                   <select
                     value={filters.shift}
                     onChange={(e) => setFilters({ ...filters, shift: e.target.value })}
                     className="w-full rounded-lg border-slate-200 text-sm focus:ring-blue-500 focus:border-blue-500"
                   >
-                    <option value="">All Shifts</option>
+                    <option value="">All {filterOptions.standard_filter_labels?.shift || 'Shifts'}</option>
                     {(filterOptions.shifts || []).map(s => (
                       <option key={s} value={s}>{s}</option>
                     ))}
@@ -393,13 +393,13 @@ const Reports = () => {
 
               {(filterOptions.visible_standard_filters?.phone ?? false) && (
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Phone</label>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">{filterOptions.standard_filter_labels?.phone || 'Phone'}</label>
                   <select
                     value={filters.phone}
                     onChange={(e) => setFilters({ ...filters, phone: e.target.value })}
                     className="w-full rounded-lg border-slate-200 text-sm focus:ring-blue-500 focus:border-blue-500"
                   >
-                    <option value="">All Phones</option>
+                    <option value="">All {filterOptions.standard_filter_labels?.phone || 'Phones'}</option>
                     {(filterOptions.phones || []).map(p => (
                       <option key={p} value={p}>{p}</option>
                     ))}
@@ -419,7 +419,7 @@ const Reports = () => {
                     })}
                     className="w-full rounded-lg border-slate-200 text-sm focus:ring-blue-500 focus:border-blue-500"
                   >
-                    <option value="">All {config.label}s</option>
+                    <option value="">All {config.label}</option>
                     {config.options && config.options.map(opt => (
                       <option key={opt} value={opt}>{opt}</option>
                     ))}

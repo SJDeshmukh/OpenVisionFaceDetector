@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
-import { Bot, ChevronLeft, Clock3, History, Loader2, MessageCircle, Plus, Send, Trash2, X } from 'lucide-react';
+import { Bot, ChevronLeft, Clock3, History, Loader2, MessageCircle, Plus, RotateCcw, Send, TimerReset, Trash2, X } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { API_URL } from '../config';
 import { useAuth } from '../context/AuthContext';
@@ -52,7 +52,10 @@ const XChat = () => {
   const [draft, setDraft] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [retryJob, setRetryJob] = useState(null);
+  const [lastFailedPrompt, setLastFailedPrompt] = useState('');
   const bottomRef = useRef(null);
+  const sendRef = useRef(null);
 
   const enabled = Boolean(user?.features?.includes('xchat_ai') && allowedRoles.has(user?.role));
   const filters = useMemo(() => {
@@ -86,10 +89,26 @@ const XChat = () => {
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, []);
 
+  useEffect(() => {
+    if (!retryJob) return undefined;
+    if (retryJob.remaining <= 0) {
+      const prompt = retryJob.text;
+      setRetryJob(null);
+      sendRef.current?.(prompt, { isRetry: true });
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      setRetryJob((current) => current ? { ...current, remaining: current.remaining - 1 } : null);
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [retryJob]);
+
   const newChat = () => {
     setConversationId(null);
     setMessages([]);
     setError('');
+    setRetryJob(null);
+    setLastFailedPrompt('');
     setHistoryOpen(false);
   };
 
@@ -119,12 +138,15 @@ const XChat = () => {
     }
   };
 
-  const send = async (preset) => {
+  const send = async (preset, options = {}) => {
     const text = String(preset || draft).trim();
     if (!text || loading) return;
     setDraft('');
     setError('');
-    setMessages((current) => [...current, { id: `local-${Date.now()}`, role: 'user', content: text }]);
+    if (!options.isRetry) {
+      setRetryJob(null);
+      setMessages((current) => [...current, { id: `local-${Date.now()}`, role: 'user', content: text }]);
+    }
     setLoading(true);
     try {
       const { data } = await axios.post(`${API_URL}/xchat/messages`, {
@@ -133,16 +155,41 @@ const XChat = () => {
         page_context: { page: location.pathname, filters },
       });
       setConversationId(data.conversation_id);
+      setRetryJob(null);
+      setLastFailedPrompt('');
       setMessages((current) => [...current, {
         id: `assistant-${Date.now()}`, role: 'assistant', content: data.answer,
         metadata: { tools_used: data.tools_used || [], sources: data.sources || [], presentation: data.presentation || {} },
       }]);
       loadConversations();
     } catch (requestError) {
-      setError(requestError.response?.data?.error || 'XChat is temporarily unavailable. Please try again.');
+      const status = requestError.response?.status;
+      const code = String(requestError.response?.data?.code || '');
+      const transient = (!status || status === 429 || status >= 500) && !code.includes('CONFIGURATION');
+      setLastFailedPrompt(text);
+      if (transient && !options.isRetry) {
+        setRetryJob({ text, remaining: 60 });
+      } else {
+        setError(code.includes('CONFIGURATION')
+          ? 'XChat is not configured. Please ask an administrator to check the Mistral API key.'
+          : 'Something went wrong while contacting the AI service. Your prompt was not lost.');
+      }
     } finally {
       setLoading(false);
     }
+  };
+  sendRef.current = send;
+
+  const retryNow = () => {
+    const text = retryJob?.text || lastFailedPrompt;
+    if (!text || loading) return;
+    setRetryJob(null);
+    sendRef.current?.(text, { isRetry: true });
+  };
+
+  const cancelRetry = () => {
+    setRetryJob(null);
+    setError('Automatic retry cancelled. Your prompt is saved and can be retried.');
   };
 
   if (!enabled) return null;
@@ -209,7 +256,26 @@ const XChat = () => {
                   <div ref={bottomRef} />
                 </div>
               </div>
-              {error && <div role="alert" className="mx-4 mb-2 rounded-lg border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">{error}</div>}
+              {retryJob && (
+                <div role="status" className="mx-4 mb-2 overflow-hidden rounded-xl border border-amber-700/50 bg-amber-950/35">
+                  <div className="flex items-center gap-3 px-3 py-2.5">
+                    <span className="relative grid h-9 w-9 shrink-0 place-items-center rounded-full bg-amber-500/15 text-amber-300">
+                      <TimerReset size={18} className="animate-pulse" />
+                      <span className="absolute -right-1 -top-1 rounded-full bg-amber-400 px-1 text-[9px] font-bold text-slate-950">{retryJob.remaining}</span>
+                    </span>
+                    <div className="min-w-0 flex-1"><p className="text-xs font-medium text-amber-200">AI service did not respond</p><p className="mt-0.5 text-[10px] text-amber-300/70">Automatically retrying in {retryJob.remaining} second{retryJob.remaining === 1 ? '' : 's'}…</p></div>
+                    <button type="button" onClick={retryNow} disabled={loading} className="rounded-lg bg-amber-400 px-2 py-1.5 text-[10px] font-semibold text-slate-950 hover:bg-amber-300">Retry now</button>
+                    <button type="button" onClick={cancelRetry} className="rounded-lg p-1 text-amber-300/70 hover:bg-amber-900/50 hover:text-amber-200" aria-label="Cancel automatic retry"><X size={15} /></button>
+                  </div>
+                  <div className="h-1 bg-amber-950"><div className="h-full bg-amber-400 transition-all duration-1000 ease-linear" style={{ width: `${((60 - retryJob.remaining) / 60) * 100}%` }} /></div>
+                </div>
+              )}
+              {error && (
+                <div role="alert" className="mx-4 mb-2 flex items-center gap-2 rounded-lg border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">
+                  <span className="min-w-0 flex-1">{error}</span>
+                  {lastFailedPrompt && <button type="button" onClick={retryNow} disabled={loading} className="flex shrink-0 items-center gap-1 rounded-md bg-red-900/60 px-2 py-1 text-[10px] text-red-100 hover:bg-red-800"><RotateCcw size={12} /> Retry</button>}
+                </div>
+              )}
               <footer className="shrink-0 border-t border-slate-800 bg-slate-900/80 p-3">
                 <div className="flex items-end gap-2 rounded-xl border border-slate-700 bg-slate-950 p-2 focus-within:border-cyan-600">
                   <textarea value={draft} onChange={(event) => setDraft(event.target.value)} rows={1} maxLength={1000} placeholder="Ask about attendance or payroll…"

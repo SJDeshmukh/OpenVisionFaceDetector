@@ -20,6 +20,9 @@ from services.attendance_service import (
 )
 from services.payroll_service import calculate_salary_breakdown, get_pending_advances
 from services.auth_service import require_auth
+from services.report_filter_service import (
+    STANDARD_FILTERS, custom_value, face_matches, merge_filter_configuration, parse_json_list,
+)
 from middleware.validation import validate_request
 from schemas import PayrollReportRequest
 
@@ -55,92 +58,31 @@ def get_report_filters():
     vendor_name = vendor_row['company_name'] if vendor_row else ''
     raw_reg = vendor_row['registration_config'] if vendor_row else None
     
-    # ---- features ----
-    c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
-    sub_row = c.fetchone()
-    vendor_features = []
-    try:
-        vendor_features = json.loads(sub_row['features'] or '[]') if sub_row else []
-        if isinstance(vendor_features, str):
-            vendor_features = json.loads(vendor_features)
-    except Exception:
-        vendor_features = []
-
-    # ---- parse registration_config to know which filters are visible/dynamic ----
-    # Start with all standard filters hidden; only enable those present in the config
-    visible_standard_filters = {"department": False, "designation": False, "shift": False, "phone": False}
-    has_reg_config = False
-    enabled_dynamic_fields = []  # [{key, label, options}]
+    # Registration configuration and bulk-upload fields are the only authorities
+    # for report filter visibility. The data itself supplies option values.
+    hydrated_registration = []
     if raw_reg:
         try:
             config_data = json.loads(raw_reg) if isinstance(raw_reg, str) else raw_reg
             from services.config_utils import hydrate_registration_config
-            config = hydrate_registration_config(vendor_id, config_data, conn=conn)
-            
-            if isinstance(config, list):
-                has_reg_config = len(config) > 0
-                for f in config:
-                    field_key = f.get("field") or f.get("key")
-                    if not field_key:
-                        continue
-                    is_enabled = f.get("enabled", True) is not False
-                    if field_key in visible_standard_filters:
-                        # Standard field: show only if present and enabled in the config
-                        visible_standard_filters[field_key] = is_enabled
-                    elif is_enabled:
-                        # Dynamic / custom field
-                        enabled_dynamic_fields.append({
-                            "key": str(field_key),
-                            "label": str(f.get("label") or field_key),
-                            "options": f.get("options")
-                        })
+            hydrated_registration = hydrate_registration_config(vendor_id, config_data, conn=conn)
         except Exception:
-            pass
-    # If no registration config exists, fall back to showing all standard filters
-    if not has_reg_config:
-        visible_standard_filters = {"department": True, "designation": True, "shift": True, "phone": True}
+            logger.exception("Unable to read report registration configuration for vendor %s", vendor_id)
 
-    # ---- always include bulk registration Excel headers as dynamic filters ----
+    bulk_fields = []
     try:
         c.execute("SELECT fields FROM bulk_attendance_config WHERE vendor_id = ?", (vendor_id,))
         bulk_row = c.fetchone()
         if bulk_row:
-            bulk_fields = json.loads(bulk_row['fields'] or '[]')
-            existing_keys = {f['key'] for f in enabled_dynamic_fields}
-            for bf in bulk_fields:
-                bkey = str(bf.get('name', '')).strip()
-                if not bkey or bkey in existing_keys:
-                    continue
-                enabled_dynamic_fields.append({
-                    "key": bkey,
-                    "label": str(bf.get('label') or bkey),
-                    "options": bf.get('options') or []
-                })
-                existing_keys.add(bkey)
+            bulk_fields = parse_json_list(bulk_row['fields'])
     except Exception:
-        pass
-
-    # ---- add class scope fields (class_year, division, branch) from custom_data ----
-    # These are set during bulk import but not in bulk_attendance_config
-    existing_keys = {f['key'] for f in enabled_dynamic_fields}
-    for scope_field in [
-        {"key": "class_year", "label": "Class / Year"},
-        {"key": "division", "label": "Division / Section"},
-        {"key": "branch", "label": "Branch / Department"},
-    ]:
-        if scope_field["key"] not in existing_keys:
-            enabled_dynamic_fields.append({
-                "key": scope_field["key"],
-                "label": scope_field["label"],
-                "options": []
-            })
-            existing_keys.add(scope_field["key"])
+        logger.exception("Unable to read bulk report fields for vendor %s", vendor_id)
+    visible_standard_filters, standard_filter_labels, enabled_dynamic_fields = merge_filter_configuration(
+        hydrated_registration, bulk_fields,
+    )
 
     # ---- collect active request-level filters for cascading ----
-    req_dept  = request.args.get('department', '')
-    req_desig = request.args.get('designation', '')
-    req_shift = request.args.get('shift', '')
-    req_phone = request.args.get('phone', '')
+    req_standard = {key: request.args.get(key, '') for key in STANDARD_FILTERS}
     req_dyn   = _parse_dynamic_args()
 
     # ---- fetch all faces for this vendor ----
@@ -161,46 +103,19 @@ def get_report_filters():
             d["custom"] = {}
         faces.append(d)
 
-    def _fuzzy_get(custom_dict, key):
-        val = custom_dict.get(key)
-        if val is not None:
-            return val
-        key_aliases = {
-            'student_id': ['id_number'],
-            'id_number': ['student_id'],
-            'class_section': ['class_id'],
-            'class_id': ['class_section']
-        }
-        for alias in key_aliases.get(key, []):
-            if alias in custom_dict:
-                return custom_dict[alias]
-        return None
-
-    # ---- apply cascading filters ----
-    def _face_matches(face):
-        if req_dept  and str(face.get('department') or '').strip() != req_dept:  return False
-        if req_desig and str(face.get('designation') or '').strip() != req_desig: return False
-        if req_shift and str(face.get('shift') or '').strip() != req_shift:       return False
-        if req_phone and str(face.get('phone') or '').strip() != req_phone:       return False
-        for dk, dv in req_dyn.items():
-            fval = _fuzzy_get(face['custom'], dk)
-            if fval is None or str(fval).strip() != dv: return False
-        return True
-
-    filtered = [f for f in faces if _face_matches(f)]
-
-    departments  = sorted({str(f.get('department')).strip() for f in filtered if f.get('department')})  if visible_standard_filters['department']  else []
-    designations = sorted({str(f.get('designation')).strip() for f in filtered if f.get('designation')}) if visible_standard_filters['designation'] else []
-    shifts       = sorted({str(f.get('shift')).strip()       for f in filtered if f.get('shift')})       if visible_standard_filters['shift']        else []
-    phones       = sorted({str(f.get('phone')).strip()       for f in filtered if f.get('phone')})       if visible_standard_filters['phone']        else []
+    standard_options = {}
+    for key in STANDARD_FILTERS:
+        candidates = [face for face in faces if face_matches(face, req_standard, req_dyn, exclude_standard=key)]
+        standard_options[key] = sorted({str(face.get(key)).strip() for face in candidates if face.get(key)}) if visible_standard_filters[key] else []
 
     # ---- build dynamic filter option lists ----
     dynamic_filters = {}
     for field in enabled_dynamic_fields:
         fk, fl = field['key'], field['label']
+        candidates = [face for face in faces if face_matches(face, req_standard, req_dyn, exclude_dynamic=fk)]
         unique_values = set()
-        for f in filtered:
-            val = _fuzzy_get(f['custom'], fk)
+        for f in candidates:
+            val = custom_value(f['custom'], fk)
             if val is not None and str(val).strip():
                 unique_values.add(str(val).strip())
         options = sorted(list(unique_values))[:200]
@@ -211,11 +126,12 @@ def get_report_filters():
 
     return jsonify({
         'vendor_name': vendor_name,
-        'departments': departments,
-        'designations': designations,
-        'shifts': shifts,
-        'phones': phones,
+        'departments': standard_options['department'],
+        'designations': standard_options['designation'],
+        'shifts': standard_options['shift'],
+        'phones': standard_options['phone'],
         'visible_standard_filters': visible_standard_filters,
+        'standard_filter_labels': standard_filter_labels,
         'dynamic_filters': dynamic_filters,
     })
 
@@ -437,7 +353,7 @@ def export_attendance(valid_data: PayrollReportRequest):
         # Apply dynamic (custom_data) filters – Python-side after parse
         match = True
         for dk, dv in dyn_filters.items():
-            if str(cdata.get(dk, '')).strip() != dv:
+            if str(custom_value(cdata, dk) or '').strip() != dv:
                 match = False
                 break
         if not match:
@@ -770,7 +686,7 @@ def export_payroll_daily():
                     cdata = json.loads(rd.get('custom_data') or '{}')
                 except Exception:
                     cdata = {}
-                if any(str(cdata.get(dk, '')).strip() != dv for dk, dv in dyn_filters.items()):
+                if any(str(custom_value(cdata, dk) or '').strip() != dv for dk, dv in dyn_filters.items()):
                     continue
             persons[rd['id']] = rd
 
