@@ -94,6 +94,18 @@ def build_presentation(question, tool_results):
                     ], [{"label": row.get("date"), **row} for row in rows], "attendance-trend.png",
                 ))
 
+        elif name == "get_absent_people":
+            presentation["metrics"].append({"label": "Absent people", "value": result.get("absent_count", 0), "format": "number"})
+            rows = result.get("people") or []
+            presentation["tables"].append(_table(
+                "absent-people", f"Absent people · {result.get('date') or ''}",
+                [
+                    {"key": "display_id", "label": "ID"}, {"key": "name", "label": "Name"},
+                    {"key": "department", "label": "Department"}, {"key": "designation", "label": "Designation"},
+                    {"key": "shift", "label": "Shift"},
+                ], rows, "absent-people.csv",
+            ))
+
         elif name == "get_payroll_summary":
             presentation["metrics"].extend([
                 {"label": "Estimated wages", "value": result.get("estimated_wages", 0), "format": "currency", "currency": result.get("currency", "INR")},

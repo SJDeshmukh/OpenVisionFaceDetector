@@ -78,7 +78,7 @@ def xchat_db(tmp_path, monkeypatch):
 
 
 def test_tool_schemas_never_expose_tenant_identity():
-    assert len(xchat_tools.TOOL_SCHEMAS) == 14
+    assert len(xchat_tools.TOOL_SCHEMAS) == 15
     for tool in xchat_tools.TOOL_SCHEMAS:
         properties = tool["function"]["parameters"]["properties"]
         assert "vendor_id" not in properties
@@ -91,6 +91,14 @@ def test_attendance_tool_is_strictly_vendor_scoped(xchat_db):
     assert alpha["present_person_days"] == 2
     assert beta["employees"] == 1
     assert beta["present_person_days"] == 1
+
+
+def test_absent_people_lists_registered_people_without_attendance(xchat_db):
+    result = xchat_tools.get_absent_people(1, "2026-08-02")
+    assert result["absent_count"] == 1
+    assert [person["name"] for person in result["people"]] == ["Alice"]
+    assert xchat_tools.get_absent_people(1, "2026-08-01")["absent_count"] == 0
+    assert xchat_tools.get_absent_people(2, "2026-08-02")["people"][0]["name"] == "Bob"
 
 
 def test_person_image_lookup_is_name_searchable_and_vendor_scoped(xchat_db):
