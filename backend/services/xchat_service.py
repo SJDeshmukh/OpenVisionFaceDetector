@@ -200,12 +200,30 @@ class GeminiProvider(MistralProvider):
         )
 
 
+class GroqProvider(MistralProvider):
+    def __init__(self, api_key=None, model=None, api_url=None, timeout=None, max_retries=None):
+        super().__init__(
+            api_key=api_key if api_key is not None else os.environ.get("GROQ_API_KEY", ""),
+            model=model or os.environ.get("GROQ_MODEL", "openai/gpt-oss-20b"),
+            api_url=api_url or os.environ.get(
+                "GROQ_API_URL",
+                "https://api.groq.com/openai/v1/chat/completions",
+            ),
+            timeout=timeout or os.environ.get("GROQ_TIMEOUT_SECONDS", "30"),
+            max_retries=max_retries if max_retries is not None else os.environ.get("GROQ_MAX_RETRIES", "2"),
+            provider_name="Groq",
+            include_parallel_tool_calls=False,
+        )
+
+
 def configured_provider():
     provider_name = os.environ.get("XCHAT_PROVIDER", "mistral").strip().lower()
     if provider_name == "gemini":
         return GeminiProvider()
     if provider_name == "mistral":
         return MistralProvider()
+    if provider_name in {"groq", "grok"}:
+        return GroqProvider()
     if provider_name in {"none", "disabled", "off"}:
         raise XChatConfigurationError("XChat AI is disabled")
     raise XChatConfigurationError(f"Unsupported XChat provider: {provider_name[:40]}")

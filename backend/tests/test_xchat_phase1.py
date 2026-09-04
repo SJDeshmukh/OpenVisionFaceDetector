@@ -302,6 +302,44 @@ def test_gemini_nested_error_is_logged_without_secret(monkeypatch, caplog):
     assert "test-gemini-secret" not in caplog.text
 
 
+def test_configured_groq_provider_uses_gpt_oss_with_tools(monkeypatch):
+    captured = {}
+    tools = [{"type": "function", "function": {"name": "get_status", "parameters": {"type": "object"}}}]
+    response = _FakeMistralResponse(
+        200,
+        {"choices": [{"message": {"role": "assistant", "content": "Groq ready"}}]},
+    )
+
+    def fake_post(url, **kwargs):
+        captured.update({"url": url, **kwargs})
+        return response
+
+    monkeypatch.setenv("XCHAT_PROVIDER", "groq")
+    monkeypatch.setenv("GROQ_API_KEY", "test-groq-secret")
+    monkeypatch.setattr(xchat_service.requests, "post", fake_post)
+
+    provider = xchat_service.configured_provider()
+    result = provider.complete([{"role": "user", "content": "Hello"}], tools)
+
+    assert isinstance(provider, xchat_service.GroqProvider)
+    assert captured["url"] == "https://api.groq.com/openai/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer test-groq-secret"
+    assert captured["json"]["model"] == "openai/gpt-oss-20b"
+    assert captured["json"]["tools"] == tools
+    assert captured["json"]["tool_choice"] == "auto"
+    assert "parallel_tool_calls" not in captured["json"]
+    assert result["content"] == "Groq ready"
+
+
+def test_groq_provider_does_not_fall_back_to_other_provider_keys(monkeypatch):
+    monkeypatch.setenv("MISTRAL_API_KEY", "mistral-only-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-only-key")
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+
+    with pytest.raises(xchat_service.XChatConfigurationError):
+        xchat_service.GroqProvider()
+
+
 def test_disabled_feature_tool_cannot_be_called_directly(xchat_db):
     with pytest.raises(PermissionError):
         xchat_tools.execute_tool("get_device_status", {}, vendor_id=1, features=["xchat_ai"])

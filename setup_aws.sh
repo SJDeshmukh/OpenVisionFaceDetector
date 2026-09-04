@@ -203,9 +203,9 @@ prompt_xchat_provider() {
         entered_value="$XCHAT_PROVIDER"
     elif [ -t 0 ]; then
         existing_value="${existing_value,,}"
-        [[ "$existing_value" =~ ^(gemini|mistral|none)$ ]] || existing_value="gemini"
+        [[ "$existing_value" =~ ^(gemini|mistral|groq|none)$ ]] || existing_value="gemini"
         printf '\nXChat AI provider\n' >&2
-        printf '  1) Gemini\n  2) Mistral\n  3) Disabled\n' >&2
+        printf '  1) Gemini\n  2) Mistral\n  3) Groq (openai/gpt-oss-20b)\n  4) Disabled\n' >&2
         read -r -p "Select provider (current/default: ${existing_value}): " entered_value
         entered_value="${entered_value:-$existing_value}"
     else
@@ -214,8 +214,9 @@ prompt_xchat_provider() {
     case "${entered_value,,}" in
         1|gemini) printf 'gemini' ;;
         2|mistral) printf 'mistral' ;;
-        3|none|disabled|off) printf 'none' ;;
-        *) die "Choose Gemini, Mistral, or Disabled for XChat" ;;
+        3|groq|grok) printf 'groq' ;;
+        4|none|disabled|off) printf 'none' ;;
+        *) die "Choose Gemini, Mistral, Groq, or Disabled for XChat" ;;
     esac
 }
 
@@ -254,6 +255,10 @@ prompt_gemini_api_key() {
     prompt_ai_api_key "Gemini" GEMINI_API_KEY "${1:-}"
 }
 
+prompt_groq_api_key() {
+    prompt_ai_api_key "Groq" GROQ_API_KEY "${1:-}"
+}
+
 configure_ai_file() {
     local target_file="$1"
     local provider_name="$2"
@@ -265,10 +270,15 @@ configure_ai_file() {
     file_env_set "$target_file" GEMINI_MODEL "gemini-3.8-flash"
     file_env_set "$target_file" GEMINI_TIMEOUT_SECONDS "30"
     file_env_set "$target_file" GEMINI_MAX_RETRIES "2"
+    file_env_set "$target_file" GROQ_MODEL "openai/gpt-oss-20b"
+    file_env_set "$target_file" GROQ_TIMEOUT_SECONDS "30"
+    file_env_set "$target_file" GROQ_MAX_RETRIES "2"
     if [ "$provider_name" = "gemini" ]; then
         file_env_set "$target_file" GEMINI_API_KEY "$api_key"
     elif [ "$provider_name" = "mistral" ]; then
         file_env_set "$target_file" MISTRAL_API_KEY "$api_key"
+    elif [ "$provider_name" = "groq" ]; then
+        file_env_set "$target_file" GROQ_API_KEY "$api_key"
     fi
     file_env_set "$target_file" XCHAT_HISTORY_DAYS "30"
     file_env_set "$target_file" XCHAT_MAX_MESSAGES "200"
@@ -279,8 +289,10 @@ existing_xchat_provider() {
     local target_file="$1"
     local configured_provider=""
     configured_provider="$(file_env_get "$target_file" XCHAT_PROVIDER)"
-    if [[ "${configured_provider,,}" =~ ^(gemini|mistral|none)$ ]]; then
+    if [[ "${configured_provider,,}" =~ ^(gemini|mistral|groq|none)$ ]]; then
         printf '%s' "${configured_provider,,}"
+    elif [ -n "$(file_env_get "$target_file" GROQ_API_KEY)" ]; then
+        printf 'groq'
     elif [ -n "$(file_env_get "$target_file" GEMINI_API_KEY)" ]; then
         printf 'gemini'
     elif [ -n "$(file_env_get "$target_file" MISTRAL_API_KEY)" ]; then
@@ -296,6 +308,7 @@ selected_ai_key() {
     case "$provider_name" in
         gemini) prompt_gemini_api_key "$(file_env_get "$target_file" GEMINI_API_KEY)" ;;
         mistral) prompt_mistral_api_key "$(file_env_get "$target_file" MISTRAL_API_KEY)" ;;
+        groq) prompt_groq_api_key "$(file_env_get "$target_file" GROQ_API_KEY)" ;;
         none) printf '' ;;
     esac
 }
@@ -304,6 +317,7 @@ selected_ai_model() {
     case "$1" in
         gemini) printf 'gemini-3.8-flash' ;;
         mistral) printf 'mistral-small-latest' ;;
+        groq) printf 'openai/gpt-oss-20b' ;;
         none) printf '' ;;
     esac
 }
@@ -368,6 +382,9 @@ model = os.environ["AI_MODEL"]
 if provider == "gemini":
     url = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000"
     headers = {"x-goog-api-key": api_key}
+elif provider == "groq":
+    url = "https://api.groq.com/openai/v1/models"
+    headers = {"Authorization": "Bearer " + api_key}
 else:
     url = "https://api.mistral.ai/v1/models"
     headers = {"Authorization": "Bearer " + api_key}
