@@ -394,6 +394,9 @@ elif provider == "groq":
     headers = {
         "Authorization": "Bearer " + api_key,
         "Content-Type": "application/json",
+        # Groq's Cloudflare policy rejects urllib's default Python-urllib UA
+        # with error 1010 before the request reaches API authentication.
+        "User-Agent": "OpenVisionX/1.0",
     }
     request = urllib.request.Request(url, data=payload, method="POST", headers=headers)
 else:
@@ -434,7 +437,7 @@ for attempt in range(3):
                 error = error["error"]
             detail = error.get("message") or error.get("status") or error.get("code") or error.get("type") or "request rejected"
         except Exception:
-            detail = "request rejected"
+            detail = body or "request rejected"
         detail = " ".join(str(detail).split())[:240]
         detail = detail.replace(api_key, "[redacted]")
         if exc.code in {429, 500, 502, 503, 504} and attempt < 2:
