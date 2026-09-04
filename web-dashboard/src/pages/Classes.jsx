@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { API_URL } from '../config';
@@ -45,18 +45,21 @@ const Classes = () => {
       const res = await axios.get(`${API_URL}/bulk-registration/faculty-logins`, {
         headers: { Authorization: `Bearer ${user?.token}` }
       });
-      const emails = (res.data?.logins || []).map(l => l.email);
+      const emails = (res.data?.logins || [])
+        .map(l => l.email || l.username)
+        .filter(Boolean);
       setFacultyLogins(emails);
     } catch (e) {
       console.error('Error fetching faculty', e);
     }
   };
 
-  useEffect(() => { 
+  useEffect(() => {
+    if (!user?.token) return;
     fetchItems(); 
     fetchMasterSubjects();
     fetchFaculty();
-  }, []);
+  }, [user?.token]);
 
   const addMasterSubject = async (e) => {
     e.preventDefault();
@@ -66,7 +69,7 @@ const Classes = () => {
         headers: { Authorization: `Bearer ${user?.token}` }
       });
       setMasterForm({ ...masterForm, subject_name: '' });
-      fetchMasterSubjects();
+      await fetchMasterSubjects();
     } catch (e) {
       alert(e.response?.data?.error || 'Failed to add master subject');
     }
@@ -216,7 +219,18 @@ const Classes = () => {
             ) : items.length === 0 ? (
               <tr><td colSpan={user?.role === 'faculty' ? 5 : 6} className="p-6 text-center text-slate-400">No classes yet</td></tr>
             ) : items.map(it => (
-              <Row key={it.id} it={it} onSave={update} onDelete={del} onManageSubjects={() => setManagingClass(it)} role={user?.role} />
+              <Row
+                key={it.id}
+                it={it}
+                onSave={update}
+                onDelete={del}
+                onManageSubjects={() => {
+                  setManagingClass(it);
+                  fetchMasterSubjects();
+                  fetchFaculty();
+                }}
+                role={user?.role}
+              />
             ))}
           </tbody>
         </table>
@@ -330,7 +344,8 @@ const SearchableDropdown = ({ value, onChange, options, placeholder, icon: Icon,
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const filtered = options.filter(opt => 
+  const safeOptions = (options || []).filter(opt => typeof opt === 'string' && opt.trim());
+  const filtered = safeOptions.filter(opt =>
     opt.toLowerCase().includes(search.toLowerCase())
   );
 
@@ -367,6 +382,7 @@ const SearchableDropdown = ({ value, onChange, options, placeholder, icon: Icon,
             filtered.map((opt, i) => (
               <button
                 key={i}
+                type="button"
                 onClick={() => {
                   onChange(opt);
                   setSearch('');
@@ -385,20 +401,30 @@ const SearchableDropdown = ({ value, onChange, options, placeholder, icon: Icon,
   );
 };
 
-import { useRef } from 'react';
-
 const ManageSubjectsModal = ({ cls, onClose, onUpdate, masterSubjects, facultyLogins }) => {
   const [subjects, setSubjects] = useState(cls.mapped_subjects || []);
   const [newSubj, setNewSubj] = useState({ subject: '', faculty: '' });
 
-  // Filter master subjects based on class context (year/branch)
-  const availableSubjects = masterSubjects
-    .filter(s => {
-      const yearMatch = !s.class_year || s.class_year.toLowerCase() === (cls.class_year || '').toLowerCase();
-      const branchMatch = !s.branch || s.branch.toLowerCase() === (cls.branch || '').toLowerCase();
-      return yearMatch && branchMatch;
-    })
-    .map(s => s.subject_name);
+  const normalize = (value) => String(value || '').trim().toLowerCase();
+  const classYear = normalize(cls.class_year);
+  const classBranch = normalize(cls.branch);
+  const subjectNames = Array.from(new Set(
+    (masterSubjects || [])
+      .map(s => String(s.subject_name || '').trim())
+      .filter(Boolean)
+  ));
+  const matchingSubjectNames = new Set(
+    (masterSubjects || [])
+      .filter(s => {
+        const subjectYear = normalize(s.class_year);
+        const subjectBranch = normalize(s.branch);
+        return (!subjectYear || subjectYear === classYear) && (!subjectBranch || subjectBranch === classBranch);
+      })
+      .map(s => String(s.subject_name || '').trim())
+      .filter(Boolean)
+  );
+  const matchingSubjects = subjectNames.filter(name => matchingSubjectNames.has(name));
+  const otherSubjects = subjectNames.filter(name => !matchingSubjectNames.has(name));
 
   const handleAdd = () => {
     if (!newSubj.subject.trim()) return;
@@ -430,13 +456,26 @@ const ManageSubjectsModal = ({ cls, onClose, onUpdate, masterSubjects, facultyLo
           <div className="bg-indigo-50/50 border border-indigo-100 p-4 rounded-xl flex flex-wrap lg:flex-nowrap gap-4 items-end">
             <div className="flex-1 min-w-[200px]">
               <label className="text-xs font-bold text-slate-600 mb-1.5 block uppercase tracking-tight">Subject *</label>
-              <SearchableDropdown
+              <select
                 value={newSubj.subject}
-                onChange={val => setNewSubj(p => ({ ...p, subject: val }))}
-                options={availableSubjects}
-                placeholder="Search or type subject..."
-                icon={Search}
-              />
+                onChange={e => setNewSubj(p => ({ ...p, subject: e.target.value }))}
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+              >
+                <option value="">{subjectNames.length ? 'Select a subject...' : 'No subjects configured'}</option>
+                {matchingSubjects.length > 0 && (
+                  <optgroup label="Subjects for this class">
+                    {matchingSubjects.map(subject => <option key={`matching-${subject}`} value={subject}>{subject}</option>)}
+                  </optgroup>
+                )}
+                {otherSubjects.length > 0 && (
+                  <optgroup label={matchingSubjects.length ? 'Other configured subjects' : 'All configured subjects'}>
+                    {otherSubjects.map(subject => <option key={`other-${subject}`} value={subject}>{subject}</option>)}
+                  </optgroup>
+                )}
+              </select>
+              {subjectNames.length === 0 && (
+                <p className="mt-1.5 text-xs text-amber-600">Add a subject in Subject Master, then reopen this window.</p>
+              )}
             </div>
             <div className="flex-1 min-w-[200px]">
               <label className="text-xs font-bold text-slate-600 mb-1.5 block uppercase tracking-tight">Teacher / Faculty</label>
@@ -509,4 +548,3 @@ const ManageSubjectsModal = ({ cls, onClose, onUpdate, masterSubjects, facultyLo
 };
 
 export default Classes;
-

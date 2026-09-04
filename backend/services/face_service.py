@@ -829,6 +829,17 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
             # ── Phase B: Per-face thumbnail generation & embeddings ──
             face_data = []
             embeddings_map = {} # {local_index: emb_norm}
+            # LOW_RAM_MODE intentionally disables the optional 3D mesh engine.
+            # Only use mesh presence as a false-positive filter when the engine
+            # produced at least one mesh for this image; otherwise retain the
+            # primary detector's valid boxes.
+            has_any_landmarks = False
+            if df is not None and hasattr(df, 'iloc'):
+                for row_index in range(len(df)):
+                    row_landmarks = df.iloc[row_index].get('landmarks_3d', [])
+                    if row_landmarks is not None and len(row_landmarks) > 0:
+                        has_any_landmarks = True
+                        break
             for i, ann in enumerate(anns or []):
                 # ann is now a dict: {"box": [x1,y1,x2,y2], "score": float, "landmarks_5": [...]}
                 box = ann.get('box', [0,0,0,0])
@@ -845,9 +856,10 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                         landmarks_3d = []
                     
                     
-                    # ── False-Positive Gate ──
-                    # No 3D landmarks → back-of-head, partial profile, or background blob.
-                    if landmarks_3d is None or len(landmarks_3d) == 0:
+                    # If the mesh engine worked for this image, keep its strict
+                    # false-positive filtering. If it is disabled/unavailable,
+                    # fall back to the primary detector instead of returning zero faces.
+                    if has_any_landmarks and (landmarks_3d is None or len(landmarks_3d) == 0):
                         continue
                     # Aspect ratio gate: a valid face box is roughly square (0.5–2.0).
                     # Ears, shoulders, and other body parts produce very narrow boxes
@@ -866,9 +878,10 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                         lmks_local = None
                         try:
                             # For thumbnail mesh and embeddings, we need crop-local landmarks
-                            lmks_local = np.array(landmarks_3d).copy()
-                            lmks_local[:, 0] -= cx1
-                            lmks_local[:, 1] -= cy1
+                            if landmarks_3d is not None and len(landmarks_3d) > 0:
+                                lmks_local = np.array(landmarks_3d).copy()
+                                lmks_local[:, 0] -= cx1
+                                lmks_local[:, 1] -= cy1
                         except Exception as e:
                             print(f"[FACE_SVC] Error processing landmarks: {e}", flush=True)
                         
@@ -1109,8 +1122,7 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
             # (background blob, partial body part, etc.).
             # Guard: if the 3D engine isn't running at all (no face has landmarks),
             # skip filtering so the UI still shows something.
-            has_any_landmarks = any(f.get('landmarks_3d') is not None and len(f.get('landmarks_3d')) > 0 for f in face_data)
-            faces = [f for f in face_data if f.get('landmarks_3d') is not None and len(f.get('landmarks_3d')) > 0] if has_any_landmarks else face_data
+            faces = face_data
 
             ok2, ann = cv2.imencode('.jpg', draw, [cv2.IMWRITE_JPEG_QUALITY, 85])
             annotated_b64 = f"data:image/jpeg;base64,{base64.b64encode(ann.tobytes()).decode('ascii')}" if ok2 else ''

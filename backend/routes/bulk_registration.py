@@ -533,7 +533,7 @@ def bulk_registration_upload_faculty():
 
 
 @bulk_registration_bp.route("/bulk-registration/faculty-logins", methods=["GET"])
-@require_auth(roles=['super_admin', 'vendor_admin', 'owner'])
+@require_auth(roles=['super_admin', 'vendor_admin', 'admin', 'owner'])
 def list_faculty_logins():
     """Vendor-scoped endpoint to list all faculty accounts with metadata."""
     vendor_id = g.vendor_id

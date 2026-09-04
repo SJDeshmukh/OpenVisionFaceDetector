@@ -26,7 +26,7 @@ _SCAN_JOBS: dict = {}
 _SCAN_JOBS_LOCK = _threading.Lock()
 
 
-def _get_faculty_identifiers(c, username):
+def _get_faculty_identifiers(c, username, vendor_id):
     """Fetch all possible strings that identify this faculty member (username, name, email)."""
     ids = {str(username or "").lower().strip()}
     if not username: return list(ids)
@@ -35,19 +35,32 @@ def _get_faculty_identifiers(c, username):
     f_row = None
     
     # 1. Direct link via person_id in system_users
-    c.execute("SELECT f.name, f.phone, f.custom_data, f.id FROM faces f JOIN system_users su ON su.person_id = f.id WHERE su.username = ?", (username,))
+    c.execute(
+        """SELECT f.name, f.phone, f.custom_data, f.id
+           FROM faces f
+           JOIN system_users su ON su.person_id = f.id
+           WHERE su.username = ? AND su.vendor_id = ? AND f.vendor_id = ?""",
+        (username, vendor_id, vendor_id),
+    )
     f_row = c.fetchone()
     
     # 2. If no direct link, search for any face where name or phone or custom_data matches username
     if not f_row:
         # Search name/phone directly first
-        c.execute("SELECT name, phone, custom_data, id FROM faces WHERE (LOWER(name) = ? OR phone = ?)", (username.lower(), username))
+        c.execute(
+            """SELECT name, phone, custom_data, id FROM faces
+               WHERE vendor_id = ? AND (LOWER(name) = ? OR phone = ?)""",
+            (vendor_id, username.lower(), username),
+        )
         f_row = c.fetchone()
         
     if not f_row:
         # Search in custom_data (SQL LIKE is faster than Python loop)
         search_pattern = f'%"{username}"%'
-        c.execute("SELECT name, phone, custom_data, id FROM faces WHERE custom_data LIKE ? LIMIT 1", (search_pattern,))
+        c.execute(
+            "SELECT name, phone, custom_data, id FROM faces WHERE vendor_id = ? AND custom_data LIKE ? LIMIT 1",
+            (vendor_id, search_pattern),
+        )
         f_row = c.fetchone()
 
     if f_row:
@@ -773,7 +786,7 @@ def faculty_assigned_classes():
     For faculty returns only classes where their username appears in mapped_subjects.
     Response: {classes: [{id, class_year, division, branch, label, subjects: [str]}]}
     """
-    if g.user_role not in ("faculty", "vendor_admin", "super_admin"):
+    if g.user_role not in ("faculty", "vendor_admin", "admin", "owner", "super_admin"):
         return jsonify({"error": "Forbidden"}), 403
 
     vendor_id = g.vendor_id
@@ -787,10 +800,10 @@ def faculty_assigned_classes():
         (vendor_id,)
     )
     rows = c.fetchall() or []
-    conn.close()
 
     # Fetch all known identifiers for this faculty (name, email, username)
-    faculty_ids = _get_faculty_identifiers(c, username)
+    faculty_ids = _get_faculty_identifiers(c, username, vendor_id)
+    conn.close()
     
     result = []
     for r in rows:

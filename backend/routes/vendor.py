@@ -1323,9 +1323,14 @@ def add_master_subject():
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        # INSERT OR IGNORE translated for PG, native for SQLite
-        c.execute("INSERT OR IGNORE INTO subject_master (vendor_id, class_year, branch, subject_name) VALUES (?, ?, ?, ?)",
-                  (vendor_id, class_year, branch, subject_name))
+        # Native UPSERT syntax works in both supported databases. Using an
+        # explicit conflict target also keeps duplicate submissions idempotent.
+        c.execute(
+            """INSERT INTO subject_master (vendor_id, class_year, branch, subject_name)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(vendor_id, class_year, branch, subject_name) DO NOTHING""",
+            (vendor_id, class_year, branch, subject_name),
+        )
         conn.commit()
         conn.close()
         return jsonify({"status": "success"})

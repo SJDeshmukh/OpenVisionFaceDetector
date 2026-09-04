@@ -1290,7 +1290,13 @@ def detect_faces(image_input, enhancer="GFPGAN", enhance_level=0.5, gfpgan_upsca
                     kpts_for_ldm.append(None)
                 crops_for_ldm.append(e_crop)
 
-            all_lmks = engine.extract_landmarks_batch(crops_for_ldm, kpts_for_ldm)
+            try:
+                all_lmks = engine.extract_landmarks_batch(crops_for_ldm, kpts_for_ldm)
+            except Exception as exc:
+                # The mesh model is an optional quality filter. A transient mesh
+                # failure must not discard valid boxes from the primary detector.
+                print(f"[3D_ENGINE] Batch landmark extraction failed; continuing with detector boxes: {exc}", flush=True)
+                all_lmks = [None] * n
             success_3d = 0
             # Minimum detection confidence to run 3D landmarks.
             # Low-score faces (backs of heads, partial views) produce false-positive meshes.

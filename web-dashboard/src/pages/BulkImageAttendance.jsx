@@ -932,11 +932,15 @@ const BulkImageAttendance = () => {
                     {(() => {
                       const confirmed = item.mappedFaces.filter(f => f.landmarks_3d && f.landmarks_3d.length > 0);
                       const total = item.mappedFaces.length;
-                      const filtered = total - confirmed.length;
+                      // LOW_RAM_MODE intentionally runs without the optional 3D
+                      // mesh. In that case all primary-detector faces are valid.
+                      const usingDetectorFallback = confirmed.length === 0;
+                      const visibleCount = usingDetectorFallback ? total : confirmed.length;
+                      const filtered = usingDetectorFallback ? 0 : total - confirmed.length;
                       return (
                         <h3 className="text-sm font-semibold text-slate-700 mb-3 flex items-center gap-2">
                           <Users size={14} />
-                          Detected Faces ({confirmed.length > 0 ? confirmed.length : total})
+                          Detected Faces ({visibleCount})
                           {filtered > 0 && (
                             <span className="text-[10px] font-normal text-slate-400" title={`${filtered} detection(s) removed — no 3D landmark mesh found (likely false positives)`}>
                               · {filtered} filtered
