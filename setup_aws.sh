@@ -7,7 +7,7 @@
 #   bash setup_aws.sh stop     Stop OpenVision application services only
 #   bash setup_aws.sh boot-check      Idempotently start and verify an installed deployment
 #   bash setup_aws.sh configure-mail  Securely configure Gmail SMTP and restart app services
-#   bash setup_aws.sh configure-ai    Securely configure Mistral XChat and restart the API
+#   bash setup_aws.sh configure-ai    Choose/configure the XChat AI provider and restart the API
 #
 # Bare-metal environment overrides:
 #   DEPLOY_DOMAIN=tapinx.in    Public DNS name (default: tapinx.in)
@@ -196,40 +196,116 @@ prompt_mail_app_password() {
     printf '%s' "$entered_value"
 }
 
-prompt_mistral_api_key() {
+prompt_xchat_provider() {
     local existing_value="${1:-}"
     local entered_value=""
-    if [ -n "${MISTRAL_API_KEY:-}" ]; then
-        entered_value="$MISTRAL_API_KEY"
+    if [ -n "${XCHAT_PROVIDER:-}" ]; then
+        entered_value="$XCHAT_PROVIDER"
     elif [ -t 0 ]; then
-        printf '\nMistral XChat setup (input is hidden)\n' >&2
+        existing_value="${existing_value,,}"
+        [[ "$existing_value" =~ ^(gemini|mistral|none)$ ]] || existing_value="gemini"
+        printf '\nXChat AI provider\n' >&2
+        printf '  1) Gemini\n  2) Mistral\n  3) Disabled\n' >&2
+        read -r -p "Select provider (current/default: ${existing_value}): " entered_value
+        entered_value="${entered_value:-$existing_value}"
+    else
+        entered_value="${existing_value:-none}"
+    fi
+    case "${entered_value,,}" in
+        1|gemini) printf 'gemini' ;;
+        2|mistral) printf 'mistral' ;;
+        3|none|disabled|off) printf 'none' ;;
+        *) die "Choose Gemini, Mistral, or Disabled for XChat" ;;
+    esac
+}
+
+prompt_ai_api_key() {
+    local provider_name="$1"
+    local env_name="$2"
+    local existing_value="${3:-}"
+    local entered_value=""
+    local supplied_value="${!env_name:-}"
+    if [ -n "$supplied_value" ]; then
+        entered_value="$supplied_value"
+    elif [ -t 0 ]; then
+        printf '\n%s XChat setup (input is hidden)\n' "$provider_name" >&2
         if [ -n "$existing_value" ]; then
-            read -r -s -p "Press Enter to keep the saved Mistral key, or paste a replacement: " entered_value
+            read -r -s -p "Press Enter to keep the saved ${provider_name} key, or paste a replacement: " entered_value
             entered_value="${entered_value:-$existing_value}"
         else
-            read -r -s -p "Paste a NEW Mistral API key (Enter to skip): " entered_value
+            read -r -s -p "Paste a NEW ${provider_name} API key: " entered_value
         fi
         printf '\n' >&2
     elif [ -n "$existing_value" ]; then
         entered_value="$existing_value"
     fi
     entered_value="$(printf '%s' "$entered_value" | tr -d '[:space:]')"
-    if [ -n "$entered_value" ] && [[ ! "$entered_value" =~ ^[A-Za-z0-9_-]{20,200}$ ]]; then
-        die "MISTRAL_API_KEY has an unexpected format"
+    if [ -n "$entered_value" ] && [[ ! "$entered_value" =~ ^[A-Za-z0-9._-]{20,200}$ ]]; then
+        die "${env_name} has an unexpected format"
     fi
     printf '%s' "$entered_value"
 }
 
+prompt_mistral_api_key() {
+    prompt_ai_api_key "Mistral" MISTRAL_API_KEY "${1:-}"
+}
+
+prompt_gemini_api_key() {
+    prompt_ai_api_key "Gemini" GEMINI_API_KEY "${1:-}"
+}
+
 configure_ai_file() {
     local target_file="$1"
-    local api_key="$2"
-    file_env_set "$target_file" MISTRAL_API_KEY "$api_key"
+    local provider_name="$2"
+    local api_key="$3"
+    file_env_set "$target_file" XCHAT_PROVIDER "$provider_name"
     file_env_set "$target_file" MISTRAL_MODEL "mistral-small-latest"
     file_env_set "$target_file" MISTRAL_TIMEOUT_SECONDS "30"
     file_env_set "$target_file" MISTRAL_MAX_RETRIES "2"
+    file_env_set "$target_file" GEMINI_MODEL "gemini-3.8-flash"
+    file_env_set "$target_file" GEMINI_TIMEOUT_SECONDS "30"
+    file_env_set "$target_file" GEMINI_MAX_RETRIES "2"
+    if [ "$provider_name" = "gemini" ]; then
+        file_env_set "$target_file" GEMINI_API_KEY "$api_key"
+    elif [ "$provider_name" = "mistral" ]; then
+        file_env_set "$target_file" MISTRAL_API_KEY "$api_key"
+    fi
     file_env_set "$target_file" XCHAT_HISTORY_DAYS "30"
     file_env_set "$target_file" XCHAT_MAX_MESSAGES "200"
     chmod 600 "$target_file"
+}
+
+existing_xchat_provider() {
+    local target_file="$1"
+    local configured_provider=""
+    configured_provider="$(file_env_get "$target_file" XCHAT_PROVIDER)"
+    if [[ "${configured_provider,,}" =~ ^(gemini|mistral|none)$ ]]; then
+        printf '%s' "${configured_provider,,}"
+    elif [ -n "$(file_env_get "$target_file" GEMINI_API_KEY)" ]; then
+        printf 'gemini'
+    elif [ -n "$(file_env_get "$target_file" MISTRAL_API_KEY)" ]; then
+        printf 'mistral'
+    else
+        printf 'gemini'
+    fi
+}
+
+selected_ai_key() {
+    local provider_name="$1"
+    local target_file="$2"
+    case "$provider_name" in
+        gemini) prompt_gemini_api_key "$(file_env_get "$target_file" GEMINI_API_KEY)" ;;
+        mistral) prompt_mistral_api_key "$(file_env_get "$target_file" MISTRAL_API_KEY)" ;;
+        none) printf '' ;;
+    esac
+}
+
+selected_ai_model() {
+    case "$1" in
+        gemini) printf 'gemini-3.8-flash' ;;
+        mistral) printf 'mistral-small-latest' ;;
+        none) printf '' ;;
+    esac
 }
 
 prompt_stt_enabled() {
@@ -273,11 +349,12 @@ verify_stt_health() {
     printf 'Local Whisper microphone: enabled and ready.\n'
 }
 
-verify_mistral_access() {
-    local api_key="$1"
-    local model_name="${2:-mistral-small-latest}"
+verify_ai_access() {
+    local provider_name="$1"
+    local api_key="$2"
+    local model_name="$3"
     [ -n "$api_key" ] || return 0
-    MISTRAL_API_KEY="$api_key" MISTRAL_MODEL="$model_name" python3 - <<'PY'
+    AI_PROVIDER="$provider_name" AI_API_KEY="$api_key" AI_MODEL="$model_name" python3 - <<'PY'
 import json
 import os
 import sys
@@ -285,50 +362,84 @@ import time
 import urllib.error
 import urllib.request
 
-url = "https://api.mistral.ai/v1/chat/completions"
-payload = json.dumps({
-    "model": os.environ["MISTRAL_MODEL"],
-    "messages": [{"role": "user", "content": "Reply OK"}],
-    "temperature": 0,
-    "max_tokens": 8,
-}).encode("utf-8")
-request = urllib.request.Request(url, data=payload, method="POST", headers={
-    "Authorization": "Bearer " + os.environ["MISTRAL_API_KEY"],
-    "Content-Type": "application/json",
-})
+provider = os.environ["AI_PROVIDER"]
+api_key = os.environ["AI_API_KEY"]
+model = os.environ["AI_MODEL"]
+if provider == "gemini":
+    url = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000"
+    headers = {"x-goog-api-key": api_key}
+else:
+    url = "https://api.mistral.ai/v1/models"
+    headers = {"Authorization": "Bearer " + api_key}
+request = urllib.request.Request(url, method="GET", headers=headers)
 
 for attempt in range(3):
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             data = json.load(response)
-        if not data.get("choices"):
-            raise RuntimeError("Mistral returned no completion choices")
-        print("Mistral API: key, billing, and model access verified.")
+        if isinstance(data, dict):
+            cards = data.get("models", []) if provider == "gemini" else data.get("data", [])
+        else:
+            cards = data
+        identifiers = set()
+        for card in cards if isinstance(cards, list) else []:
+            if not isinstance(card, dict):
+                continue
+            identifiers.update(str(card.get(field) or "") for field in ("id", "root", "name", "baseModelId"))
+            aliases = card.get("aliases") or []
+            identifiers.update(str(alias) for alias in aliases if alias)
+        identifiers.update(identifier.removeprefix("models/") for identifier in tuple(identifiers))
+        if model not in identifiers:
+            raise RuntimeError(f"configured model {model} is not available to this key")
+        print(f"{provider.title()} API: key accepted and configured model is available.")
         raise SystemExit(0)
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", "replace")
         try:
             error = json.loads(body)
-            detail = error.get("message") or error.get("code") or error.get("type") or "request rejected"
+            if isinstance(error, dict) and isinstance(error.get("error"), dict):
+                error = error["error"]
+            detail = error.get("message") or error.get("status") or error.get("code") or error.get("type") or "request rejected"
         except Exception:
             detail = "request rejected"
         detail = " ".join(str(detail).split())[:240]
-        detail = detail.replace(os.environ["MISTRAL_API_KEY"], "[redacted]")
+        detail = detail.replace(api_key, "[redacted]")
         if exc.code in {429, 500, 502, 503, 504} and attempt < 2:
             time.sleep(2 ** attempt)
             continue
-        print(f"Mistral API validation failed: HTTP {exc.code}: {detail}", file=sys.stderr)
+        if exc.code in {429, 500, 502, 503, 504}:
+            print(f"{provider.title()} API preflight deferred: HTTP {exc.code}: {detail}", file=sys.stderr)
+            raise SystemExit(75)
+        print(f"{provider.title()} API validation failed: HTTP {exc.code}: {detail}", file=sys.stderr)
         raise SystemExit(1)
     except (urllib.error.URLError, TimeoutError) as exc:
         if attempt < 2:
             time.sleep(2 ** attempt)
             continue
-        print(f"Mistral API validation failed: {type(exc).__name__}", file=sys.stderr)
-        raise SystemExit(1)
+        print(f"{provider.title()} API preflight deferred: {type(exc).__name__}", file=sys.stderr)
+        raise SystemExit(75)
     except Exception as exc:
-        print(f"Mistral API validation failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(f"{provider.title()} API validation failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         raise SystemExit(1)
 PY
+}
+
+validate_ai_for_deploy() {
+    local provider_name="$1"
+    local api_key="$2"
+    local model_name="$3"
+    local validation_status=0
+    if verify_ai_access "$provider_name" "$api_key" "$model_name"; then
+        return 0
+    else
+        validation_status=$?
+    fi
+    if [ "$validation_status" -eq 75 ]; then
+        printf 'WARNING: Continuing deployment because %s is rate-limited or temporarily unavailable.\n' "$provider_name" >&2
+        printf 'XChat will recover without redeployment when the provider quota/service recovers.\n' >&2
+        return 0
+    fi
+    die "${provider_name} API validation failed; correct the key/account shown above and rerun setup"
 }
 
 frontend_dependency_fingerprint() {
@@ -426,22 +537,25 @@ fi
 
 if [ "$ACTION" = "configure-ai" ]; then
     require_source_tree
-    MISTRAL_KEY="$(prompt_mistral_api_key "")"
-    [ -n "$MISTRAL_KEY" ] || die "A Mistral API key is required"
-    verify_mistral_access "$MISTRAL_KEY" "mistral-small-latest" \
-        || die "Mistral API validation failed; correct the key/account shown above and rerun setup"
-    configure_ai_file "$ENV_FILE" "$MISTRAL_KEY"
+    AI_PROVIDER="$(prompt_xchat_provider "$(existing_xchat_provider "$ENV_FILE")")"
+    AI_KEY="$(selected_ai_key "$AI_PROVIDER" "$ENV_FILE")"
+    AI_MODEL="$(selected_ai_model "$AI_PROVIDER")"
+    if [ "$AI_PROVIDER" != "none" ]; then
+        [ -n "$AI_KEY" ] || die "An API key is required for ${AI_PROVIDER}"
+        validate_ai_for_deploy "$AI_PROVIDER" "$AI_KEY" "$AI_MODEL"
+    fi
+    configure_ai_file "$ENV_FILE" "$AI_PROVIDER" "$AI_KEY"
     if [ -f "$SCRIPT_DIR/.env" ]; then
-        configure_ai_file "$SCRIPT_DIR/.env" "$MISTRAL_KEY"
+        configure_ai_file "$SCRIPT_DIR/.env" "$AI_PROVIDER" "$AI_KEY"
     fi
     if command -v docker >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/.env" ] && [ -n "$(sudo docker compose ps -q api 2>/dev/null || true)" ]; then
         sudo docker compose up -d --no-deps --force-recreate api
-        printf 'Mistral XChat configured; Docker API restarted.\n'
+        printf 'XChat provider set to %s; Docker API restarted.\n' "$AI_PROVIDER"
     elif command -v systemctl >/dev/null 2>&1 && systemctl cat openvision-backend.service >/dev/null 2>&1; then
         sudo systemctl restart openvision-backend
-        printf 'Mistral XChat configured; OpenVision API restarted.\n'
+        printf 'XChat provider set to %s; OpenVision API restarted.\n' "$AI_PROVIDER"
     else
-        printf 'Mistral XChat configured in backend/.env. Start or redeploy the API to apply it.\n'
+        printf 'XChat provider set to %s in backend/.env. Start or redeploy the API to apply it.\n' "$AI_PROVIDER"
     fi
     exit 0
 fi
@@ -491,15 +605,14 @@ if [[ "$USE_DOCKER" =~ ^[Yy]$ ]]; then
     grep -q '^MAIL_FROM_ADDRESS=' "$ROOT_ENV" || printf 'MAIL_FROM_ADDRESS=openvisionx@gmail.com\n' >> "$ROOT_ENV"
     STT_ENABLED_VALUE="$(prompt_stt_enabled "$(file_env_get "$ROOT_ENV" STT_ENABLED)")"
     configure_stt_file "$ROOT_ENV" "$STT_ENABLED_VALUE"
-    EXISTING_MISTRAL_KEY="$(sed -n 's/^MISTRAL_API_KEY=//p' "$ROOT_ENV" | tail -n 1)"
-    MISTRAL_KEY="$(prompt_mistral_api_key "$EXISTING_MISTRAL_KEY")"
-    if [ -n "$MISTRAL_KEY" ]; then
-        verify_mistral_access "$MISTRAL_KEY" "mistral-small-latest" \
-            || die "Mistral API validation failed; correct the key/account shown above and rerun setup"
-        configure_ai_file "$ROOT_ENV" "$MISTRAL_KEY"
-    else
-        printf 'WARNING: Mistral key was not configured; XChat will return a configuration error.\n' >&2
+    AI_PROVIDER="$(prompt_xchat_provider "$(existing_xchat_provider "$ROOT_ENV")")"
+    AI_KEY="$(selected_ai_key "$AI_PROVIDER" "$ROOT_ENV")"
+    AI_MODEL="$(selected_ai_model "$AI_PROVIDER")"
+    if [ "$AI_PROVIDER" != "none" ]; then
+        [ -n "$AI_KEY" ] || die "An API key is required for ${AI_PROVIDER}"
+        validate_ai_for_deploy "$AI_PROVIDER" "$AI_KEY" "$AI_MODEL"
     fi
+    configure_ai_file "$ROOT_ENV" "$AI_PROVIDER" "$AI_KEY"
 
     sudo docker compose config --quiet
     sudo docker compose up -d --build --remove-orphans --scale worker=1
@@ -572,10 +685,12 @@ fi
 SECRET_KEY="$(env_get SECRET_KEY)"
 [ -n "$SECRET_KEY" ] || SECRET_KEY="$(openssl rand -hex 32)"
 SMTP_APP_PASSWORD="$(prompt_mail_app_password "$(env_get MAIL_SMTP_APP_PASSWORD)")"
-MISTRAL_KEY="$(prompt_mistral_api_key "$(env_get MISTRAL_API_KEY)")"
-if [ -n "$MISTRAL_KEY" ]; then
-    verify_mistral_access "$MISTRAL_KEY" "mistral-small-latest" \
-        || die "Mistral API validation failed; correct the key/account shown above and rerun setup"
+AI_PROVIDER="$(prompt_xchat_provider "$(existing_xchat_provider "$ENV_FILE")")"
+AI_KEY="$(selected_ai_key "$AI_PROVIDER" "$ENV_FILE")"
+AI_MODEL="$(selected_ai_model "$AI_PROVIDER")"
+if [ "$AI_PROVIDER" != "none" ]; then
+    [ -n "$AI_KEY" ] || die "An API key is required for ${AI_PROVIDER}"
+    validate_ai_for_deploy "$AI_PROVIDER" "$AI_KEY" "$AI_MODEL"
 fi
 
 log "Creating the dedicated PostgreSQL application role and database"
@@ -632,11 +747,7 @@ if [ -n "$SMTP_APP_PASSWORD" ]; then
 else
     printf 'WARNING: Gmail App Password was not configured; automated report emails will remain unavailable.\n' >&2
 fi
-if [ -n "$MISTRAL_KEY" ]; then
-    configure_ai_file "$ENV_FILE" "$MISTRAL_KEY"
-else
-    printf 'WARNING: Mistral key was not configured; XChat will return a configuration error.\n' >&2
-fi
+configure_ai_file "$ENV_FILE" "$AI_PROVIDER" "$AI_KEY"
 chmod 600 "$ENV_FILE"
 
 log "Stopping only existing OpenVision application services"

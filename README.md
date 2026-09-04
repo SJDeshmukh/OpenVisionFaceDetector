@@ -51,17 +51,17 @@ Run exactly one Celery Beat instance alongside one or more Celery workers. The B
 
 For the EC2 installer, run `bash setup_aws.sh` normally. It asks for the Gmail App Password using hidden terminal input and stores it in `backend/.env` with file mode `0600`. For an existing AWS deployment, run `bash setup_aws.sh configure-mail`; this updates only the protected mail configuration and restarts the API, worker, and Beat scheduler. Never place the password directly in `setup_aws.sh`.
 
-### XChat Phase 1 (Mistral)
+### XChat Phase 1 (Gemini or Mistral)
 
 Enable `xchat_ai` for a vendor in the Superadmin portal. Vendor admins and owners then receive a read-only assistant for attendance summaries, estimated payroll, payroll-period comparisons, employee-hours rankings, and incomplete attendance. Tenant identity comes only from the authenticated server session; it is not exposed as an AI tool argument. Conversation history is private to the vendor and username, retained for 30 days by default, and queries write metadata-only audit events.
 
-On an existing EC2 deployment, securely install a newly generated Mistral key with hidden input:
+On an existing EC2 deployment, choose Gemini, Mistral, or disabled and securely configure the selected provider with hidden input:
 
 ```bash
 bash setup_aws.sh configure-ai
 ```
 
-For a fresh deployment, `bash setup_aws.sh` asks for it. The script stores it in the protected environment file with mode `0600` and validates the key, billing access, and configured model before interrupting the running application. Runtime calls retry transient `429` and `5xx` responses twice with backoff and log the provider status/code without exposing the key. Do not put API keys in source files or commit them. Optional settings are `MISTRAL_MODEL=mistral-small-latest`, `MISTRAL_TIMEOUT_SECONDS=30`, `MISTRAL_MAX_RETRIES=2`, `XCHAT_HISTORY_DAYS=30`, and `XCHAT_MAX_MESSAGES=200`.
+Fresh deployments also ask which XChat provider to activate. The script stores the selected key in the protected environment file with mode `0600` and checks the key and model before interrupting the running application. A temporary provider `429` or `5xx` response is reported but does not block deployment; invalid credentials still stop setup. Runtime calls retry transient responses twice with backoff and log the provider status/code without exposing the key. Do not put API keys in source files or commit them. Provider settings are `XCHAT_PROVIDER=gemini|mistral|none`, `GEMINI_MODEL=gemini-3.8-flash`, `MISTRAL_MODEL=mistral-small-latest`, and the corresponding timeout/max-retry variables. Conversation settings remain `XCHAT_HISTORY_DAYS=30` and `XCHAT_MAX_MESSAGES=200`.
 
 #### Local Whisper voice input
 

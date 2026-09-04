@@ -240,6 +240,68 @@ def test_mistral_provider_logs_safe_http_details(monkeypatch, caplog):
     assert "test-secret-key" not in caplog.text
 
 
+def test_mistral_provider_reports_exhausted_rate_limit(monkeypatch):
+    response = _FakeMistralResponse(429, {"code": "rate_limit", "message": "Rate limit exceeded"})
+    monkeypatch.setattr(xchat_service.requests, "post", lambda *args, **kwargs: response)
+    provider = xchat_service.MistralProvider(api_key="test-secret-key", max_retries=0)
+
+    with pytest.raises(xchat_service.XChatProviderError, match="rate or usage limit"):
+        provider.complete([{"role": "user", "content": "Hello"}], [])
+
+
+def test_configured_gemini_provider_uses_openai_compatible_tools(monkeypatch):
+    captured = {}
+    response = _FakeMistralResponse(
+        200,
+        {"choices": [{"message": {"role": "assistant", "content": "Gemini ready"}}]},
+    )
+
+    def fake_post(url, **kwargs):
+        captured.update({"url": url, **kwargs})
+        return response
+
+    monkeypatch.setenv("XCHAT_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-secret")
+    monkeypatch.setattr(xchat_service.requests, "post", fake_post)
+
+    provider = xchat_service.configured_provider()
+    result = provider.complete([{"role": "user", "content": "Hello"}], [])
+
+    assert isinstance(provider, xchat_service.GeminiProvider)
+    assert captured["url"].endswith("/v1beta/openai/chat/completions")
+    assert captured["headers"]["Authorization"] == "Bearer test-gemini-secret"
+    assert captured["json"]["model"] == "gemini-3.8-flash"
+    assert captured["json"]["tool_choice"] == "auto"
+    assert "parallel_tool_calls" not in captured["json"]
+    assert result["content"] == "Gemini ready"
+
+
+def test_gemini_provider_does_not_fall_back_to_mistral_key(monkeypatch):
+    monkeypatch.setenv("MISTRAL_API_KEY", "mistral-only-key")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    with pytest.raises(xchat_service.XChatConfigurationError):
+        xchat_service.GeminiProvider()
+
+
+def test_gemini_nested_error_is_logged_without_secret(monkeypatch, caplog):
+    response = _FakeMistralResponse(
+        403,
+        {"error": {"code": 403, "status": "PERMISSION_DENIED", "message": "Rejected test-gemini-secret"}},
+        {"x-request-id": "google-request-1"},
+    )
+    monkeypatch.setattr(xchat_service.requests, "post", lambda *args, **kwargs: response)
+    provider = xchat_service.GeminiProvider(api_key="test-gemini-secret", max_retries=0)
+
+    with caplog.at_level("WARNING"):
+        with pytest.raises(xchat_service.XChatConfigurationError, match="Gemini"):
+            provider.complete([{"role": "user", "content": "Hello"}], [])
+
+    assert "Gemini completion failed" in caplog.text
+    assert "status=403" in caplog.text
+    assert "test-gemini-secret" not in caplog.text
+
+
 def test_disabled_feature_tool_cannot_be_called_directly(xchat_db):
     with pytest.raises(PermissionError):
         xchat_tools.execute_tool("get_device_status", {}, vendor_id=1, features=["xchat_ai"])

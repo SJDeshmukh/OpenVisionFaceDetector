@@ -1,4 +1,4 @@
-"""XChat orchestration, persistence, and Mistral integration.
+"""XChat orchestration, persistence, and external AI-provider integration.
 
 The LLM is never trusted with tenant identity. Vendor and user ownership are
 injected by authenticated routes and repeated in every persistence query.
@@ -81,8 +81,13 @@ def _message_content(message):
 class MistralProvider:
     _TRANSIENT_STATUSES = {429, 500, 502, 503, 504}
 
-    def __init__(self, api_key=None, model=None, api_url=None, timeout=None, max_retries=None):
-        self.api_key = api_key or os.environ.get("MISTRAL_API_KEY")
+    def __init__(
+        self, api_key=None, model=None, api_url=None, timeout=None, max_retries=None,
+        provider_name="Mistral", include_parallel_tool_calls=True,
+    ):
+        self.provider_name = provider_name
+        self.include_parallel_tool_calls = include_parallel_tool_calls
+        self.api_key = api_key if api_key is not None else os.environ.get("MISTRAL_API_KEY")
         self.model = model or os.environ.get("MISTRAL_MODEL", "mistral-small-latest")
         self.api_url = api_url or os.environ.get("MISTRAL_API_URL", "https://api.mistral.ai/v1/chat/completions")
         self.timeout = int(timeout or os.environ.get("MISTRAL_TIMEOUT_SECONDS", "30"))
@@ -102,8 +107,9 @@ class MistralProvider:
         try:
             payload = response.json()
             if isinstance(payload, dict):
-                code = str(payload.get("code") or payload.get("type") or "-")[:120]
-                message = str(payload.get("message") or payload.get("detail") or message)
+                error_payload = payload.get("error") if isinstance(payload.get("error"), dict) else payload
+                code = str(error_payload.get("code") or error_payload.get("status") or error_payload.get("type") or "-")[:120]
+                message = str(error_payload.get("message") or error_payload.get("detail") or message)
         except (TypeError, ValueError):
             pass
         message = " ".join(message.split())[:300].replace(str(self.api_key), "[redacted]")
@@ -115,10 +121,11 @@ class MistralProvider:
             "messages": messages,
             "tools": tools,
             "tool_choice": "auto",
-            "parallel_tool_calls": False,
             "temperature": 0.1,
             "max_tokens": 700,
         }
+        if self.include_parallel_tool_calls:
+            body["parallel_tool_calls"] = False
         for attempt in range(self.max_retries + 1):
             try:
                 response = requests.post(
@@ -131,15 +138,15 @@ class MistralProvider:
                 if attempt < self.max_retries:
                     delay = 2 ** attempt
                     logger.warning(
-                        "Mistral transport retry: error=%s attempt=%s/%s delay=%ss",
-                        type(exc).__name__, attempt + 1, self.max_retries + 1, delay,
+                        "%s transport retry: error=%s attempt=%s/%s delay=%ss",
+                        self.provider_name, type(exc).__name__, attempt + 1, self.max_retries + 1, delay,
                     )
                     time.sleep(delay)
                     continue
-                logger.warning("Mistral completion failed: transport=%s", type(exc).__name__)
+                logger.warning("%s completion failed: transport=%s", self.provider_name, type(exc).__name__)
                 raise XChatProviderError("The AI service is temporarily unavailable") from exc
             except requests.RequestException as exc:
-                logger.warning("Mistral completion failed: transport=%s", type(exc).__name__)
+                logger.warning("%s completion failed: transport=%s", self.provider_name, type(exc).__name__)
                 raise XChatProviderError("The AI service is temporarily unavailable") from exc
 
             if response.status_code >= 400:
@@ -151,28 +158,57 @@ class MistralProvider:
                     except (TypeError, ValueError):
                         delay = 2 ** attempt
                     logger.warning(
-                        "Mistral HTTP retry: status=%s code=%s request_id=%s attempt=%s/%s delay=%ss message=%s",
-                        status, code, request_id, attempt + 1, self.max_retries + 1, delay, message,
+                        "%s HTTP retry: status=%s code=%s request_id=%s attempt=%s/%s delay=%ss message=%s",
+                        self.provider_name, status, code, request_id, attempt + 1, self.max_retries + 1, delay, message,
                     )
                     time.sleep(delay)
                     continue
                 logger.warning(
-                    "Mistral completion failed: status=%s code=%s request_id=%s message=%s",
-                    status, code, request_id, message,
+                    "%s completion failed: status=%s code=%s request_id=%s message=%s",
+                    self.provider_name, status, code, request_id, message,
                 )
-                error = requests.HTTPError(f"Mistral returned HTTP {status}", response=response)
-                if status in {401, 402, 403, 404, 422}:
-                    raise XChatConfigurationError("The configured Mistral account or model is unavailable") from error
+                error = requests.HTTPError(f"{self.provider_name} returned HTTP {status}", response=response)
+                if status in {400, 401, 402, 403, 404, 422}:
+                    raise XChatConfigurationError(f"The configured {self.provider_name} account or model is unavailable") from error
+                if status == 429:
+                    raise XChatProviderError(f"XChat has reached its {self.provider_name} rate or usage limit; try again later") from error
                 raise XChatProviderError("The AI service is temporarily unavailable") from error
 
             try:
                 payload = response.json()
                 return payload["choices"][0]["message"]
             except (KeyError, IndexError, TypeError, ValueError) as exc:
-                logger.warning("Mistral completion failed: malformed successful response")
+                logger.warning("%s completion failed: malformed successful response", self.provider_name)
                 raise XChatProviderError("The AI service returned an invalid response") from exc
 
         raise XChatProviderError("The AI service is temporarily unavailable")
+
+
+class GeminiProvider(MistralProvider):
+    def __init__(self, api_key=None, model=None, api_url=None, timeout=None, max_retries=None):
+        super().__init__(
+            api_key=api_key if api_key is not None else os.environ.get("GEMINI_API_KEY", ""),
+            model=model or os.environ.get("GEMINI_MODEL", "gemini-3.8-flash"),
+            api_url=api_url or os.environ.get(
+                "GEMINI_API_URL",
+                "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            ),
+            timeout=timeout or os.environ.get("GEMINI_TIMEOUT_SECONDS", "30"),
+            max_retries=max_retries if max_retries is not None else os.environ.get("GEMINI_MAX_RETRIES", "2"),
+            provider_name="Gemini",
+            include_parallel_tool_calls=False,
+        )
+
+
+def configured_provider():
+    provider_name = os.environ.get("XCHAT_PROVIDER", "mistral").strip().lower()
+    if provider_name == "gemini":
+        return GeminiProvider()
+    if provider_name == "mistral":
+        return MistralProvider()
+    if provider_name in {"none", "disabled", "off"}:
+        raise XChatConfigurationError("XChat AI is disabled")
+    raise XChatConfigurationError(f"Unsupported XChat provider: {provider_name[:40]}")
 
 
 def _system_prompt(features):
@@ -196,7 +232,7 @@ Use short paragraphs or simple lists. Do not produce Markdown tables or repeat l
 
 
 def answer_question(question, history, vendor_id, features, page_context=None, provider=None):
-    provider = provider or MistralProvider()
+    provider = provider or configured_provider()
     messages = [{"role": "system", "content": _system_prompt(features)}]
     for item in (history or [])[-MAX_CONTEXT_MESSAGES:]:
         if item.get("role") in {"user", "assistant"} and item.get("content"):
