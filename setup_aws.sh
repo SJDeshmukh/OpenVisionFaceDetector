@@ -273,6 +273,8 @@ configure_ai_file() {
     file_env_set "$target_file" GROQ_MODEL "openai/gpt-oss-20b"
     file_env_set "$target_file" GROQ_TIMEOUT_SECONDS "30"
     file_env_set "$target_file" GROQ_MAX_RETRIES "2"
+    file_env_set "$target_file" GROQ_REASONING_EFFORT "low"
+    file_env_set "$target_file" GROQ_MAX_OUTPUT_TOKENS "450"
     if [ "$provider_name" = "gemini" ]; then
         file_env_set "$target_file" GEMINI_API_KEY "$api_key"
     elif [ "$provider_name" = "mistral" ]; then

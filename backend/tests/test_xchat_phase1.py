@@ -177,6 +177,74 @@ def test_only_enabled_feature_tools_are_exposed():
     assert leave_tools == {"get_people_summary", "get_person_images", "get_leave_summary"}
 
 
+@pytest.mark.parametrize(("question", "expected"), [
+    ("Who is present today?", {"get_present_people"}),
+    ("Who is absent today?", {"get_absent_people"}),
+    ("Show the attendance rate this month", {"get_attendance_summary"}),
+    ("Who forgot to check out?", {"get_incomplete_attendance"}),
+    ("How much advance did Alice take?", {"get_person_advances"}),
+    ("Show this month's salary and payroll", xchat_service.PAYROLL_TOOLS),
+    ("What is our employee headcount?", {"get_people_summary"}),
+    ("Show Alice's attendance photos", {"get_person_images", "get_attendance_summary"}),
+    ("What is the camera battery status?", {"get_device_status"}),
+    ("Show the published shift timetable", {"get_shift_configuration"}),
+    ("List pending leave requests", {"get_leave_summary"}),
+    ("Show lectures, subjects, and faculty", {"get_class_activity_summary"}),
+    ("Did the scheduled email report run?", {"get_automated_report_status"}),
+    ("How many parent face-reset requests are pending?", {"get_parent_access_summary"}),
+])
+def test_intent_router_covers_each_tool_category(question, expected):
+    schemas = xchat_service._tool_schemas_for_question(
+        question, list(xchat_tools.FEATURE_GUIDE), history=[], page_context={},
+    )
+    assert {item["function"]["name"] for item in schemas} == expected
+
+
+def test_intent_router_unions_multi_feature_questions_and_falls_back_when_ambiguous():
+    features = list(xchat_tools.FEATURE_GUIDE)
+    routed = xchat_service._tool_schemas_for_question(
+        "Compare attendance and payroll this month", features, history=[], page_context={},
+    )
+    assert {item["function"]["name"] for item in routed} == {
+        "get_attendance_summary", *xchat_service.PAYROLL_TOOLS,
+    }
+
+    ambiguous = xchat_service._tool_schemas_for_question(
+        "Give me a useful overview", features, history=[], page_context={},
+    )
+    capability = xchat_service._tool_schemas_for_question(
+        "What can you help me with?", features, history=[], page_context={"page": "/classes/active"},
+    )
+    all_tools = {item["function"]["name"] for item in xchat_tools.available_tool_schemas(features)}
+    assert {item["function"]["name"] for item in ambiguous} == all_tools
+    assert {item["function"]["name"] for item in capability} == all_tools
+
+
+def test_intent_router_uses_history_and_page_only_for_unspecified_followups():
+    features = list(xchat_tools.FEATURE_GUIDE)
+    history = [
+        {"role": "user", "content": "Who is present today?"},
+        {"role": "assistant", "content": "Alice is present."},
+    ]
+    follow_up = xchat_service._tool_schemas_for_question(
+        "What about yesterday?", features, history=history, page_context={},
+    )
+    page_hint = xchat_service._tool_schemas_for_question(
+        "Show this page", features, history=[], page_context={"page": "/classes/active"},
+    )
+    assert {item["function"]["name"] for item in follow_up} == {"get_present_people"}
+    assert {item["function"]["name"] for item in page_hint} == {"get_class_activity_summary"}
+
+
+def test_intent_router_never_bypasses_feature_entitlements():
+    schemas = xchat_service._tool_schemas_for_question(
+        "Show payroll and camera status", ["xchat_ai", "payroll"], history=[], page_context={},
+    )
+    names = {item["function"]["name"] for item in schemas}
+    assert names == xchat_service.PAYROLL_TOOLS
+    assert "get_device_status" not in names
+
+
 def test_orchestrator_sends_only_entitled_tools_to_mistral():
     captured = {}
 
@@ -316,6 +384,8 @@ def test_configured_groq_provider_uses_gpt_oss_with_tools(monkeypatch):
 
     monkeypatch.setenv("XCHAT_PROVIDER", "groq")
     monkeypatch.setenv("GROQ_API_KEY", "test-groq-secret")
+    monkeypatch.delenv("GROQ_REASONING_EFFORT", raising=False)
+    monkeypatch.delenv("GROQ_MAX_OUTPUT_TOKENS", raising=False)
     monkeypatch.setattr(xchat_service.requests, "post", fake_post)
 
     provider = xchat_service.configured_provider()
@@ -327,8 +397,65 @@ def test_configured_groq_provider_uses_gpt_oss_with_tools(monkeypatch):
     assert captured["json"]["model"] == "openai/gpt-oss-20b"
     assert captured["json"]["tools"] == tools
     assert captured["json"]["tool_choice"] == "auto"
+    assert captured["json"]["max_tokens"] == 450
+    assert captured["json"]["reasoning_effort"] == "low"
+    assert captured["json"]["include_reasoning"] is False
     assert "parallel_tool_calls" not in captured["json"]
     assert result["content"] == "Groq ready"
+
+
+def test_groq_provider_accepts_supported_reasoning_effort_override(monkeypatch):
+    captured = {}
+    response = _FakeMistralResponse(
+        200, {"choices": [{"message": {"role": "assistant", "content": "Ready"}}]},
+    )
+    monkeypatch.setenv("GROQ_REASONING_EFFORT", "medium")
+    monkeypatch.setattr(
+        xchat_service.requests, "post",
+        lambda url, **kwargs: captured.update(kwargs) or response,
+    )
+
+    xchat_service.GroqProvider(api_key="test-key").complete([{"role": "user", "content": "Hi"}], [])
+
+    assert captured["json"]["reasoning_effort"] == "medium"
+
+
+def test_groq_provider_uses_safe_defaults_for_invalid_token_settings(monkeypatch):
+    captured = {}
+    response = _FakeMistralResponse(
+        200, {"choices": [{"message": {"role": "assistant", "content": "Ready"}}]},
+    )
+    monkeypatch.setenv("GROQ_REASONING_EFFORT", "unlimited")
+    monkeypatch.setenv("GROQ_MAX_OUTPUT_TOKENS", "not-a-number")
+    monkeypatch.setattr(
+        xchat_service.requests, "post",
+        lambda url, **kwargs: captured.update(kwargs) or response,
+    )
+
+    xchat_service.GroqProvider(api_key="test-key").complete([{"role": "user", "content": "Hi"}], [])
+
+    assert captured["json"]["reasoning_effort"] == "low"
+    assert captured["json"]["max_tokens"] == 450
+
+
+def test_provider_logs_token_usage_without_prompt_content(monkeypatch, caplog):
+    response = _FakeMistralResponse(200, {
+        "choices": [{"message": {"role": "assistant", "content": "Ready"}}],
+        "usage": {
+            "prompt_tokens": 120, "completion_tokens": 30, "total_tokens": 150,
+            "prompt_tokens_details": {"cached_tokens": 80},
+            "completion_tokens_details": {"reasoning_tokens": 12},
+        },
+    })
+    monkeypatch.setattr(xchat_service.requests, "post", lambda *args, **kwargs: response)
+
+    with caplog.at_level("INFO"):
+        xchat_service.GroqProvider(api_key="test-key").complete(
+            [{"role": "user", "content": "private attendance question"}], [],
+        )
+
+    assert "prompt=120 cached=80 completion=30 reasoning=12 total=150" in caplog.text
+    assert "private attendance question" not in caplog.text
 
 
 def test_groq_provider_does_not_fall_back_to_other_provider_keys(monkeypatch):
@@ -457,6 +584,98 @@ def test_page_context_is_allow_listed():
     assert xchat_service._sanitize_context({"page": "/classes", "filters": {"class_year": "FY", "division": "A"}}) == {
         "page": "/classes", "filters": {"class_year": "FY", "division": "A"},
     }
+
+
+def test_system_prompt_is_compact_and_still_contains_security_and_behavior_rules():
+    prompt = xchat_service._system_prompt(list(xchat_tools.FEATURE_GUIDE))
+
+    assert len(prompt) < 2000
+    assert "server controls tenant identity" in prompt
+    assert "get_present_people" in prompt
+    assert "get_absent_people" in prompt
+    assert "get_person_advances" in prompt
+    assert "never invent figures" in prompt
+    assert "payroll" in prompt.lower()
+
+
+def test_history_is_bounded_without_losing_the_latest_turns():
+    captured = {}
+
+    class CaptureProvider:
+        def complete(self, messages, tools):
+            captured["messages"] = messages
+            return {"role": "assistant", "content": "Ready"}
+
+    history = [
+        {"role": "user" if index % 2 == 0 else "assistant", "content": f"{index}:" + "x" * 3000}
+        for index in range(12)
+    ]
+    xchat_service.answer_question(
+        "Hello", history, 1, ["xchat_ai"], provider=CaptureProvider(),
+    )
+
+    sent_history = captured["messages"][1:-1]
+    assert len(sent_history) == xchat_service.MAX_CONTEXT_MESSAGES
+    assert sent_history[0]["content"].startswith("4:")
+    assert sent_history[-1]["content"].startswith("11:")
+    assert all(len(item["content"]) <= xchat_service.MAX_HISTORY_MESSAGE_LENGTH for item in sent_history)
+
+
+def test_model_tool_results_are_valid_bounded_json_without_mutating_ui_data():
+    result = {
+        "source_path": "/people",
+        "total_people": 40,
+        "people": [{"name": f"Person {index}", "bio": "x" * 800} for index in range(40)],
+    }
+
+    encoded = xchat_service._model_tool_result("get_people_summary", result)
+    payload = json.loads(encoded)
+
+    assert len(encoded) <= xchat_service.MAX_MODEL_TOOL_CONTENT
+    assert "source_path" not in payload["data"]
+    assert len(payload["data"]["people"]) < len(result["people"])
+    assert payload["data"]["_prompt_omissions"]
+    assert len(result["people"]) == 40
+    assert len(result["people"][0]["bio"]) == 800
+
+
+def test_model_tool_results_strip_image_payloads_but_keep_image_metadata():
+    result = {
+        "source_path": "/people", "matched_people": 1,
+        "images": [{"name": "Alice", "kind": "Registered photo", "image": "very-large-image-data"}],
+    }
+
+    data = json.loads(xchat_service._model_tool_result("get_person_images", result))["data"]
+
+    assert "images" not in data
+    assert data["people"] == [{"name": "Alice", "kind": "Registered photo"}]
+    assert result["images"][0]["image"] == "very-large-image-data"
+
+
+def test_provider_reasoning_is_not_resent_during_tool_rounds(xchat_db):
+    class ReasoningProvider:
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, messages, tools):
+            self.calls += 1
+            if self.calls == 1:
+                return {
+                    "role": "assistant", "content": "", "reasoning": "large private reasoning",
+                    "tool_calls": [{
+                        "id": "call-people",
+                        "function": {"name": "get_people_summary", "arguments": "{}"},
+                    }],
+                }
+            assert "reasoning" not in messages[-2]
+            assert messages[-2]["tool_calls"][0]["id"] == "call-people"
+            return {"role": "assistant", "content": "There are two people."}
+
+    result = xchat_service.answer_question(
+        "What is our employee headcount?", [], 1, ["xchat_ai"], provider=ReasoningProvider(),
+    )
+
+    assert result["answer"] == "There are two people."
 
 
 def test_presenter_builds_indexed_table_and_requested_chart():
