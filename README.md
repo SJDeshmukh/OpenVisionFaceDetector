@@ -63,9 +63,9 @@ bash setup_aws.sh configure-ai
 
 For a fresh deployment, `bash setup_aws.sh` asks for it. The script stores it in the protected environment file with mode `0600`; do not put API keys in source files or commit them. Optional settings are `MISTRAL_MODEL=mistral-small-latest`, `MISTRAL_TIMEOUT_SECONDS=30`, `XCHAT_HISTORY_DAYS=30`, and `XCHAT_MAX_MESSAGES=200`.
 
-#### Optional local Whisper voice input
+#### Local Whisper voice input
 
-XChat can record a short question in the browser, show a live audio animation, stop after silence, transcribe locally, and submit the resulting text automatically. Voice input is off by default. Enable it in the protected `backend/.env`, then restart the backend:
+XChat can record a short question in the browser, show a live audio animation, stop after silence, transcribe locally, and submit the resulting text automatically. The AWS installer asks whether to enable it, writes the protected configuration, installs the dependency, starts the services, and verifies that Whisper is ready. No manual environment editing or service command is required.
 
 ```env
 STT_ENABLED=true
@@ -77,7 +77,9 @@ STT_VAD_MIN_SILENCE_MS=500
 STT_LANGUAGE=
 ```
 
-The model is loaded once during API startup on CPU with INT8 computation. The first enabled startup can take longer while the model is downloaded. Inference is limited to one recording at a time for small servers. Browser microphone access requires HTTPS in production (or localhost during development). Set `STT_ENABLED=false` and restart the backend to disable model loading and hide the microphone.
+The model is loaded once during API startup on CPU with INT8 computation. The first enabled startup can take longer while the model is downloaded. Inference is limited to one recording at a time for small servers. Browser microphone access requires HTTPS in production (or localhost during development). Choose `n` at the installer's microphone prompt to write `STT_ENABLED=false`, disable model loading, and hide the microphone.
+
+The installer waits up to 15 minutes for Ubuntu's package-manager lock instead of failing immediately during `unattended-upgrades`. If a later deployment step fails, it also attempts to restore the OpenVision API, Celery worker, and Celery Beat services automatically.
 
 The AWS installer also enables `openvision-boot-check.service`. On every EC2 boot it idempotently starts the installed bare-metal services or Docker Compose stack and verifies the local API health endpoint. It does not repeat package installation, builds, database provisioning, or secret prompts. Run the same check manually with `bash setup_aws.sh boot-check`.
 

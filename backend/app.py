@@ -244,6 +244,15 @@ def health_check():
             "emb_cache_size": len(_VENDOR_EMB_CACHE)
         }
 
+        # Deployment health checks use this to confirm that an explicitly
+        # enabled local Whisper model actually finished loading. No tenant or
+        # recording data is exposed here.
+        try:
+            from services.stt_service import speech_to_text
+            stt_status = speech_to_text.status()
+        except Exception:
+            stt_status = {"enabled": False, "ready": False, "state": "unavailable"}
+
         return jsonify({
             "status": "healthy",
             "uptime_seconds": time.time() - getattr(app, "_start_time", time.time()),
@@ -254,6 +263,7 @@ def health_check():
             },
             "db_pool": pool_stats,
             "cache": cache_stats,
+            "stt": stt_status,
             "cpu_percent": psutil.cpu_percent()
         })
     except Exception as e:

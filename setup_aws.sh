@@ -27,6 +27,8 @@ ENV_FILE="$SCRIPT_DIR/backend/.env"
 RUN_USER="$(id -un)"
 RUN_GROUP="$(id -gn)"
 MODE_FILE="$SCRIPT_DIR/.openvision-deployment-mode"
+RECOVER_SYSTEMD_SERVICES=0
+APT_LOCK_TIMEOUT_SECONDS="${APT_LOCK_TIMEOUT_SECONDS:-900}"
 
 [[ "$DEPLOY_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] || {
     printf 'ERROR: DEPLOY_DOMAIN contains invalid characters.\n' >&2
@@ -45,7 +47,15 @@ log() {
     printf '\n==> %s\n' "$1"
 }
 
+recover_systemd_services() {
+    if [ "${RECOVER_SYSTEMD_SERVICES:-0}" = "1" ]; then
+        printf 'Restoring OpenVision services after the failed deployment...\n' >&2
+        sudo systemctl start openvision-backend openvision-celery openvision-celery-beat 2>/dev/null || true
+    fi
+}
+
 die() {
+    recover_systemd_services
     printf '\nERROR: %s\n' "$1" >&2
     exit 1
 }
@@ -60,6 +70,8 @@ run_root() {
 
 on_error() {
     local exit_code=$?
+    trap - ERR
+    recover_systemd_services
     printf '\nDeployment failed at line %s (exit %s).\n' "${BASH_LINENO[0]}" "$exit_code" >&2
     printf 'Inspect services with: sudo systemctl status openvision-backend openvision-celery openvision-celery-beat --no-pager\n' >&2
     exit "$exit_code"
@@ -108,6 +120,13 @@ file_env_set() {
     else
         printf '%s=%s\n' "$key" "$value" >> "$target_file"
     fi
+}
+
+file_env_get() {
+    local target_file="$1"
+    local key="$2"
+    [ -f "$target_file" ] || return 0
+    sed -n "s/^${key}=//p" "$target_file" | tail -n 1
 }
 
 configure_mail_file() {
@@ -204,6 +223,47 @@ configure_ai_file() {
     file_env_set "$target_file" XCHAT_HISTORY_DAYS "30"
     file_env_set "$target_file" XCHAT_MAX_MESSAGES "200"
     chmod 600 "$target_file"
+}
+
+prompt_stt_enabled() {
+    local existing_value="${1:-}"
+    local entered_value=""
+    if [ -n "${STT_ENABLED:-}" ]; then
+        entered_value="$STT_ENABLED"
+    elif [ -t 0 ]; then
+        printf '\nXChat local microphone setup\n' >&2
+        read -r -p "Enable local Whisper base voice input on this server? (Y/n): " entered_value
+        entered_value="${entered_value:-y}"
+    else
+        entered_value="${existing_value:-false}"
+    fi
+    case "${entered_value,,}" in
+        y|yes|1|true|on) printf 'true' ;;
+        n|no|0|false|off) printf 'false' ;;
+        *) die "Answer y or n when asked whether to enable local Whisper" ;;
+    esac
+}
+
+configure_stt_file() {
+    local target_file="$1"
+    local enabled_value="$2"
+    file_env_set "$target_file" STT_ENABLED "$enabled_value"
+    file_env_set "$target_file" STT_MODEL base
+    file_env_set "$target_file" STT_CPU_THREADS 1
+    file_env_set "$target_file" STT_MAX_AUDIO_SECONDS 20
+    file_env_set "$target_file" STT_MAX_AUDIO_BYTES 2500000
+    file_env_set "$target_file" STT_VAD_MIN_SILENCE_MS 500
+}
+
+verify_stt_health() {
+    local url="$1"
+    local enabled_value="$2"
+    [ "$enabled_value" = "true" ] || return 0
+    if ! curl --fail --silent --show-error --max-time 10 "$url" \
+        | python3 -c 'import json, sys; data=json.load(sys.stdin); sys.exit(0 if data.get("stt", {}).get("ready") is True else 1)'; then
+        return 1
+    fi
+    printf 'Local Whisper microphone: enabled and ready.\n'
 }
 
 if [ "$ACTION" = "check" ]; then
@@ -305,14 +365,14 @@ if [[ "$USE_DOCKER" =~ ^[Yy]$ ]]; then
     command -v openssl >/dev/null 2>&1 || die "openssl is required"
 
     if ! command -v docker >/dev/null 2>&1; then
-        sudo apt-get update
-        sudo apt-get install -y ca-certificates curl gnupg lsb-release
+        sudo apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT_SECONDS" update
+        sudo env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT_SECONDS" install -y ca-certificates curl gnupg lsb-release
         sudo install -m 0755 -d /etc/apt/keyrings
         curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
         printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu %s stable\n' \
             "$(dpkg --print-architecture)" "$(lsb_release -cs)" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
-        sudo apt-get update
-        sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+        sudo apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT_SECONDS" update
+        sudo env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT_SECONDS" install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
     fi
 
     ROOT_ENV="$SCRIPT_DIR/.env"
@@ -334,6 +394,8 @@ if [[ "$USE_DOCKER" =~ ^[Yy]$ ]]; then
     fi
     grep -q '^MAIL_SMTP_USERNAME=' "$ROOT_ENV" || printf 'MAIL_SMTP_USERNAME=openvisionx@gmail.com\n' >> "$ROOT_ENV"
     grep -q '^MAIL_FROM_ADDRESS=' "$ROOT_ENV" || printf 'MAIL_FROM_ADDRESS=openvisionx@gmail.com\n' >> "$ROOT_ENV"
+    STT_ENABLED_VALUE="$(prompt_stt_enabled "$(file_env_get "$ROOT_ENV" STT_ENABLED)")"
+    configure_stt_file "$ROOT_ENV" "$STT_ENABLED_VALUE"
     EXISTING_MISTRAL_KEY="$(sed -n 's/^MISTRAL_API_KEY=//p' "$ROOT_ENV" | tail -n 1)"
     MISTRAL_KEY="$(prompt_mistral_api_key "$EXISTING_MISTRAL_KEY")"
     if [ -n "$MISTRAL_KEY" ]; then
@@ -344,7 +406,13 @@ if [[ "$USE_DOCKER" =~ ^[Yy]$ ]]; then
 
     sudo docker compose config --quiet
     sudo docker compose up -d --build --remove-orphans --scale worker=1
-    wait_for_url "http://127.0.0.1:5001/api/health" 45 || die "Docker API did not become healthy"
+    HEALTH_ATTEMPTS=45
+    [ "$STT_ENABLED_VALUE" = "true" ] && HEALTH_ATTEMPTS=300
+    wait_for_url "http://127.0.0.1:5001/api/health" "$HEALTH_ATTEMPTS" || die "Docker API did not become healthy"
+    verify_stt_health "http://127.0.0.1:5001/api/health" "$STT_ENABLED_VALUE" || {
+        sudo docker compose logs --tail=100 api || true
+        die "Local Whisper was enabled but did not become ready"
+    }
     printf 'docker\n' > "$MODE_FILE"
     chmod 600 "$MODE_FILE"
     install_boot_check_service
@@ -353,18 +421,13 @@ if [[ "$USE_DOCKER" =~ ^[Yy]$ ]]; then
 fi
 
 log "Selected safe bare-metal deployment"
+RECOVER_SYSTEMD_SERVICES=1
 sudo -n true || die "Passwordless sudo is required for unattended AWS installation. Configure the deployment user in sudoers, then rerun."
 
-log "Stopping only existing OpenVision application services"
-stop_application_services
-if sudo lsof -nP -iTCP:5001 -sTCP:LISTEN >/dev/null 2>&1; then
-    sudo lsof -nP -iTCP:5001 -sTCP:LISTEN || true
-    die "Port 5001 is occupied by a process outside the OpenVision systemd services"
-fi
-
 log "Installing operating-system dependencies"
-sudo apt-get update
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+printf 'Package-manager lock wait timeout: %s seconds.\n' "$APT_LOCK_TIMEOUT_SECONDS"
+sudo apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT_SECONDS" update
+sudo env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT_SECONDS" install -y \
     python3-pip python3-venv python3-dev \
     postgresql postgresql-contrib libpq-dev \
     redis-server redis-tools \
@@ -380,10 +443,17 @@ fi
 if [ "$NODE_MAJOR" -lt 24 ]; then
     log "Installing Node.js 24 LTS"
     curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
-    sudo apt-get install -y nodejs
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT_SECONDS" install -y nodejs
 fi
 node --version
 npm --version
+
+log "Stopping only existing OpenVision application services"
+stop_application_services
+if sudo lsof -nP -iTCP:5001 -sTCP:LISTEN >/dev/null 2>&1; then
+    sudo lsof -nP -iTCP:5001 -sTCP:LISTEN || true
+    die "Port 5001 is occupied by a process outside the OpenVision systemd services"
+fi
 
 log "Configuring swap without replacing existing swap data"
 if [ ! -e /swapfile ]; then
@@ -456,12 +526,8 @@ env_set CELERY_BROKER_URL "$REDIS_URL"
 env_set BACKEND_URL "http://${DEPLOY_DOMAIN}"
 env_set FRONTEND_URL "http://${DEPLOY_DOMAIN}"
 env_set LOW_RAM_MODE "$LOW_RAM_MODE"
-[ -n "$(env_get STT_ENABLED)" ] || env_set STT_ENABLED "false"
-[ -n "$(env_get STT_MODEL)" ] || env_set STT_MODEL "base"
-[ -n "$(env_get STT_CPU_THREADS)" ] || env_set STT_CPU_THREADS "1"
-[ -n "$(env_get STT_MAX_AUDIO_SECONDS)" ] || env_set STT_MAX_AUDIO_SECONDS "20"
-[ -n "$(env_get STT_MAX_AUDIO_BYTES)" ] || env_set STT_MAX_AUDIO_BYTES "2500000"
-[ -n "$(env_get STT_VAD_MIN_SILENCE_MS)" ] || env_set STT_VAD_MIN_SILENCE_MS "500"
+STT_ENABLED_VALUE="$(prompt_stt_enabled "$(env_get STT_ENABLED)")"
+configure_stt_file "$ENV_FILE" "$STT_ENABLED_VALUE"
 env_set MAIL_SMTP_HOST "smtp.gmail.com"
 env_set MAIL_SMTP_PORT "587"
 env_set MAIL_SMTP_USERNAME "openvisionx@gmail.com"
@@ -667,9 +733,15 @@ chmod 600 "$MODE_FILE"
 install_boot_check_service
 
 log "Running deployment health checks"
-wait_for_url "http://127.0.0.1:5001/api/health" 45 || {
+HEALTH_ATTEMPTS=45
+[ "$STT_ENABLED_VALUE" = "true" ] && HEALTH_ATTEMPTS=300
+wait_for_url "http://127.0.0.1:5001/api/health" "$HEALTH_ATTEMPTS" || {
     sudo journalctl -u openvision-backend -n 100 --no-pager || true
     die "OpenVision API did not become healthy"
+}
+verify_stt_health "http://127.0.0.1:5001/api/health" "$STT_ENABLED_VALUE" || {
+    sudo journalctl -u openvision-backend -n 100 --no-pager || true
+    die "Local Whisper was enabled but did not become ready"
 }
 curl --fail --silent --show-error -H "Host: ${DEPLOY_DOMAIN}" http://127.0.0.1/api/health >/dev/null \
     || die "Nginx could not proxy the API health endpoint"
@@ -702,6 +774,8 @@ if [ "$ENABLE_SSL" != "no" ]; then
             "$DEPLOY_DOMAIN" "${DOMAIN_IP:-nothing}" "$PUBLIC_IP"
     fi
 fi
+
+RECOVER_SYSTEMD_SERVICES=0
 
 printf '\n%s\n' "=============================================================================="
 printf '%s\n' "OPENVISION BARE-METAL DEPLOYMENT COMPLETED"
