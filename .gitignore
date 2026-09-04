@@ -17,6 +17,7 @@ backend/.env
 .env
 .omniroute.env
 .omniroute-data/
+ai-provider-keys.env
 *.env.local
 *.env.bak
 *.bak

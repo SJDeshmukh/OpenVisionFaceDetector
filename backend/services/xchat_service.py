@@ -133,6 +133,7 @@ class MistralProvider:
         max_output_tokens=700, request_options=None, require_api_key=True,
     ):
         self.provider_name = provider_name
+        self.trace_id = uuid.uuid4().hex[:12]
         self.include_parallel_tool_calls = include_parallel_tool_calls
         self.request_options = dict(request_options or {})
         self.api_key = api_key if api_key is not None else os.environ.get("MISTRAL_API_KEY")
@@ -177,8 +178,8 @@ class MistralProvider:
         prompt_details = usage.get("prompt_tokens_details") or {}
         completion_details = usage.get("completion_tokens_details") or {}
         logger.info(
-            "%s token usage: prompt=%s cached=%s completion=%s reasoning=%s total=%s",
-            self.provider_name,
+            "%s token usage: trace=%s model=%s prompt=%s cached=%s completion=%s reasoning=%s total=%s",
+            self.provider_name, self.trace_id, self.model,
             usage.get("prompt_tokens", "-"),
             prompt_details.get("cached_tokens", 0) if isinstance(prompt_details, dict) else 0,
             usage.get("completion_tokens", "-"),
@@ -213,15 +214,22 @@ class MistralProvider:
                 if attempt < self.max_retries:
                     delay = 2 ** attempt
                     logger.warning(
-                        "%s transport retry: error=%s attempt=%s/%s delay=%ss",
-                        self.provider_name, type(exc).__name__, attempt + 1, self.max_retries + 1, delay,
+                        "%s transport retry: trace=%s model=%s error=%s attempt=%s/%s delay=%ss",
+                        self.provider_name, self.trace_id, self.model, type(exc).__name__,
+                        attempt + 1, self.max_retries + 1, delay,
                     )
                     time.sleep(delay)
                     continue
-                logger.warning("%s completion failed: transport=%s", self.provider_name, type(exc).__name__)
+                logger.warning(
+                    "%s completion failed: trace=%s model=%s transport=%s",
+                    self.provider_name, self.trace_id, self.model, type(exc).__name__,
+                )
                 raise XChatProviderError("The AI service is temporarily unavailable") from exc
             except requests.RequestException as exc:
-                logger.warning("%s completion failed: transport=%s", self.provider_name, type(exc).__name__)
+                logger.warning(
+                    "%s completion failed: trace=%s model=%s transport=%s",
+                    self.provider_name, self.trace_id, self.model, type(exc).__name__,
+                )
                 raise XChatProviderError("The AI service is temporarily unavailable") from exc
 
             if response.status_code >= 400:
@@ -233,14 +241,16 @@ class MistralProvider:
                     except (TypeError, ValueError):
                         delay = 2 ** attempt
                     logger.warning(
-                        "%s HTTP retry: status=%s code=%s request_id=%s attempt=%s/%s delay=%ss message=%s",
-                        self.provider_name, status, code, request_id, attempt + 1, self.max_retries + 1, delay, message,
+                        "%s HTTP retry: trace=%s model=%s status=%s code=%s request_id=%s "
+                        "attempt=%s/%s delay=%ss message=%s",
+                        self.provider_name, self.trace_id, self.model, status, code, request_id,
+                        attempt + 1, self.max_retries + 1, delay, message,
                     )
                     time.sleep(delay)
                     continue
                 logger.warning(
-                    "%s completion failed: status=%s code=%s request_id=%s message=%s",
-                    self.provider_name, status, code, request_id, message,
+                    "%s completion failed: trace=%s model=%s status=%s code=%s request_id=%s message=%s",
+                    self.provider_name, self.trace_id, self.model, status, code, request_id, message,
                 )
                 error = requests.HTTPError(f"{self.provider_name} returned HTTP {status}", response=response)
                 if status in {400, 401, 402, 403, 404, 422}:
@@ -254,7 +264,10 @@ class MistralProvider:
                 self._log_usage(payload)
                 return payload["choices"][0]["message"]
             except (KeyError, IndexError, TypeError, ValueError) as exc:
-                logger.warning("%s completion failed: malformed successful response", self.provider_name)
+                logger.warning(
+                    "%s completion failed: trace=%s model=%s malformed successful response",
+                    self.provider_name, self.trace_id, self.model,
+                )
                 raise XChatProviderError("The AI service returned an invalid response") from exc
 
         raise XChatProviderError("The AI service is temporarily unavailable")
@@ -301,6 +314,29 @@ class GroqProvider(MistralProvider):
         )
 
 
+class CerebrasProvider(MistralProvider):
+    """Cerebras' OpenAI-compatible chat API with native tool calling."""
+
+    def __init__(self, api_key=None, model=None, api_url=None, timeout=None, max_retries=None):
+        try:
+            max_output_tokens = int(os.environ.get("CEREBRAS_MAX_OUTPUT_TOKENS", "700"))
+        except (TypeError, ValueError):
+            max_output_tokens = 700
+        super().__init__(
+            api_key=api_key if api_key is not None else os.environ.get("CEREBRAS_API_KEY", ""),
+            model=model or os.environ.get("CEREBRAS_MODEL", "gpt-oss-120b"),
+            api_url=api_url or os.environ.get(
+                "CEREBRAS_API_URL",
+                "https://api.cerebras.ai/v1/chat/completions",
+            ),
+            timeout=timeout or os.environ.get("CEREBRAS_TIMEOUT_SECONDS", "30"),
+            max_retries=max_retries if max_retries is not None else os.environ.get("CEREBRAS_MAX_RETRIES", "2"),
+            provider_name="Cerebras",
+            include_parallel_tool_calls=True,
+            max_output_tokens=max_output_tokens,
+        )
+
+
 class OmniRouteProvider(MistralProvider):
     """OpenAI-compatible local/remote OmniRoute gateway with automatic fallback."""
 
@@ -325,6 +361,90 @@ class OmniRouteProvider(MistralProvider):
         )
 
 
+class OrchestratedProvider:
+    """Try an ordered provider chain and stay on the first successful fallback.
+
+    A new instance is created for each XChat request, so OmniRoute is preferred
+    again for every user message. Within a multi-round tool exchange, the model
+    that succeeded remains preferred to avoid repeatedly waiting on a failed
+    upstream and to keep the assistant/tool transcript coherent.
+    """
+
+    def __init__(self, providers):
+        self.providers = tuple(providers or ())
+        if not self.providers:
+            raise XChatConfigurationError("XChat AI is not configured")
+        self.provider_name = "XChat orchestration"
+        self.trace_id = uuid.uuid4().hex[:12]
+        self._preferred_index = 0
+        self._round = 0
+        for provider in self.providers:
+            provider.trace_id = self.trace_id
+
+    @property
+    def provider_names(self):
+        return tuple(provider.provider_name for provider in self.providers)
+
+    def complete(self, messages, tools):
+        self._round += 1
+        failures = []
+        for index in range(self._preferred_index, len(self.providers)):
+            provider = self.providers[index]
+            try:
+                result = provider.complete(messages, tools)
+                if index != self._preferred_index:
+                    logger.info(
+                        "XChat provider selected: trace=%s round=%s provider=%s model=%s",
+                        self.trace_id, self._round, provider.provider_name, provider.model,
+                    )
+                self._preferred_index = index
+                return result
+            except (XChatProviderError, XChatConfigurationError) as exc:
+                failures.append(exc)
+                next_provider = self.providers[index + 1] if index + 1 < len(self.providers) else None
+                if next_provider is not None:
+                    logger.warning(
+                        "XChat provider fallback: trace=%s round=%s from=%s to=%s reason=%s",
+                        self.trace_id, self._round, provider.provider_name,
+                        next_provider.provider_name, type(exc).__name__,
+                    )
+
+        logger.warning(
+            "XChat provider chain exhausted: trace=%s round=%s providers=%s",
+            self.trace_id, self._round, ",".join(self.provider_names),
+        )
+        if failures and all(isinstance(exc, XChatConfigurationError) for exc in failures):
+            raise XChatConfigurationError("No configured AI provider is currently available") from failures[-1]
+        raise XChatProviderError("All configured AI providers are temporarily unavailable") from failures[-1]
+
+
+def _orchestrated_omniroute_provider():
+    try:
+        max_retries = int(os.environ.get("XCHAT_ORCHESTRATION_PROVIDER_RETRIES", "0"))
+    except (TypeError, ValueError):
+        max_retries = 0
+    max_retries = max(0, min(max_retries, 1))
+    providers = [OmniRouteProvider(max_retries=max_retries)]
+    configured_fallbacks = os.environ.get(
+        "XCHAT_FALLBACK_PROVIDERS", "groq,gemini,cerebras",
+    ).split(",")
+    factories = {
+        "groq": ("GROQ_API_KEY", GroqProvider),
+        "gemini": ("GEMINI_API_KEY", GeminiProvider),
+        "cerebras": ("CEREBRAS_API_KEY", CerebrasProvider),
+    }
+    seen = set()
+    for raw_name in configured_fallbacks:
+        name = raw_name.strip().lower()
+        if not name or name in seen or name not in factories:
+            continue
+        seen.add(name)
+        key_name, factory = factories[name]
+        if os.environ.get(key_name, "").strip():
+            providers.append(factory(max_retries=max_retries))
+    return OrchestratedProvider(providers)
+
+
 def configured_provider():
     provider_name = os.environ.get("XCHAT_PROVIDER", "mistral").strip().lower()
     if provider_name == "gemini":
@@ -333,8 +453,10 @@ def configured_provider():
         return MistralProvider()
     if provider_name in {"groq", "grok"}:
         return GroqProvider()
+    if provider_name == "cerebras":
+        return CerebrasProvider()
     if provider_name in {"omniroute", "omni-route", "omni"}:
-        return OmniRouteProvider()
+        return _orchestrated_omniroute_provider()
     if provider_name in {"none", "disabled", "off"}:
         raise XChatConfigurationError("XChat AI is disabled")
     raise XChatConfigurationError(f"Unsupported XChat provider: {provider_name[:40]}")
@@ -468,7 +590,9 @@ def answer_question(question, history, vendor_id, features, page_context=None, p
     total_calls = 0
     tool_schemas = _tool_schemas_for_question(question, features, history, context)
     logger.info(
-        "XChat prompt scope: tools=%s history_messages=%s",
+        "XChat prompt scope: trace=%s providers=%s tools=%s history_messages=%s",
+        getattr(provider, "trace_id", "-"),
+        ",".join(getattr(provider, "provider_names", (getattr(provider, "provider_name", "unknown"),))),
         len(tool_schemas), len(messages) - 2,
     )
     for _ in range(MAX_TOOL_CALLS):

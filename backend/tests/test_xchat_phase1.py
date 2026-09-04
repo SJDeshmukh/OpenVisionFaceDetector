@@ -485,12 +485,17 @@ def test_configured_omniroute_provider_uses_auto_model_and_optional_gateway_key(
     monkeypatch.setenv("XCHAT_PROVIDER", "omniroute")
     monkeypatch.setenv("OMNIROUTE_API_URL", "http://127.0.0.1:20128/v1/chat/completions")
     monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)
     monkeypatch.setattr(xchat_service.requests, "post", fake_post)
 
     provider = xchat_service.configured_provider()
     result = provider.complete([{"role": "user", "content": "Hello"}], tools)
 
-    assert isinstance(provider, xchat_service.OmniRouteProvider)
+    assert isinstance(provider, xchat_service.OrchestratedProvider)
+    assert provider.provider_names == ("OmniRoute",)
+    assert isinstance(provider.providers[0], xchat_service.OmniRouteProvider)
     assert captured["url"] == "http://127.0.0.1:20128/v1/chat/completions"
     assert "Authorization" not in captured["headers"]
     assert captured["json"]["model"] == "auto"
@@ -515,6 +520,103 @@ def test_omniroute_provider_sends_configured_gateway_key(monkeypatch):
     )
 
     assert captured["headers"]["Authorization"] == "Bearer omniroute-gateway-key"
+
+
+def test_cerebras_provider_uses_openai_compatible_tool_calling(monkeypatch):
+    captured = {}
+    tools = [{"type": "function", "function": {"name": "get_status", "parameters": {"type": "object"}}}]
+    response = _FakeMistralResponse(
+        200, {"choices": [{"message": {"role": "assistant", "content": "Cerebras ready"}}]},
+    )
+    monkeypatch.setattr(
+        xchat_service.requests, "post",
+        lambda url, **kwargs: captured.update({"url": url, **kwargs}) or response,
+    )
+
+    result = xchat_service.CerebrasProvider(api_key="test-cerebras-key").complete(
+        [{"role": "user", "content": "Hello"}], tools,
+    )
+
+    assert captured["url"] == "https://api.cerebras.ai/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer test-cerebras-key"
+    assert captured["json"]["model"] == "gpt-oss-120b"
+    assert captured["json"]["tools"] == tools
+    assert captured["json"]["parallel_tool_calls"] is False
+    assert result["content"] == "Cerebras ready"
+
+
+class _StubProvider:
+    def __init__(self, name, outcomes):
+        self.provider_name = name
+        self.model = f"{name.lower()}-model"
+        self.trace_id = "initial"
+        self.outcomes = list(outcomes)
+        self.calls = 0
+
+    def complete(self, messages, tools):
+        self.calls += 1
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def test_orchestration_uses_omniroute_first_when_it_is_healthy():
+    omni = _StubProvider("OmniRoute", [{"role": "assistant", "content": "primary"}])
+    groq = _StubProvider("Groq", [{"role": "assistant", "content": "fallback"}])
+
+    result = xchat_service.OrchestratedProvider([omni, groq]).complete([], [])
+
+    assert result["content"] == "primary"
+    assert omni.calls == 1
+    assert groq.calls == 0
+
+
+def test_orchestration_falls_forward_and_stays_on_successful_provider(caplog):
+    omni = _StubProvider("OmniRoute", [xchat_service.XChatProviderError("timeout")])
+    groq = _StubProvider("Groq", [
+        {"role": "assistant", "tool_calls": [{"id": "call-1"}]},
+        {"role": "assistant", "content": "final"},
+    ])
+    gemini = _StubProvider("Gemini", [{"role": "assistant", "content": "unused"}])
+    provider = xchat_service.OrchestratedProvider([omni, groq, gemini])
+
+    with caplog.at_level("INFO"):
+        first = provider.complete([], [])
+        second = provider.complete([], [])
+
+    assert first["tool_calls"]
+    assert second["content"] == "final"
+    assert omni.calls == 1
+    assert groq.calls == 2
+    assert gemini.calls == 0
+    assert omni.trace_id == groq.trace_id == gemini.trace_id == provider.trace_id
+    assert "from=OmniRoute to=Groq" in caplog.text
+    assert "provider=Groq model=groq-model" in caplog.text
+
+
+def test_orchestration_raises_after_every_provider_fails():
+    providers = [
+        _StubProvider("OmniRoute", [xchat_service.XChatProviderError("timeout")]),
+        _StubProvider("Groq", [xchat_service.XChatConfigurationError("bad key")]),
+    ]
+
+    with pytest.raises(xchat_service.XChatProviderError, match="All configured"):
+        xchat_service.OrchestratedProvider(providers).complete([], [])
+
+
+def test_configured_omniroute_orchestration_uses_only_available_keys(monkeypatch):
+    monkeypatch.setenv("XCHAT_PROVIDER", "omniroute")
+    monkeypatch.setenv("XCHAT_FALLBACK_PROVIDERS", "groq,gemini,groq,cerebras")
+    monkeypatch.setenv("GROQ_API_KEY", "groq-key")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("CEREBRAS_API_KEY", "cerebras-key")
+    monkeypatch.setenv("XCHAT_ORCHESTRATION_PROVIDER_RETRIES", "8")
+
+    provider = xchat_service.configured_provider()
+
+    assert provider.provider_names == ("OmniRoute", "Groq", "Cerebras")
+    assert all(candidate.max_retries == 1 for candidate in provider.providers)
 
 
 def test_disabled_feature_tool_cannot_be_called_directly(xchat_db):

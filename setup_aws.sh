@@ -12,6 +12,10 @@
 #   bash setup_aws.sh omniroute-password  Reveal the saved dashboard bootstrap password
 #   bash setup_aws.sh omniroute-key       Reveal the saved XChat gateway key
 #
+# Optional provider fallbacks:
+#   Put GROQ_API_KEY, GEMINI_API_KEY, and/or CEREBRAS_API_KEY in
+#   ai-provider-keys.env (mode 0600). OmniRoute remains the first provider.
+#
 # Bare-metal environment overrides:
 #   DEPLOY_DOMAIN=tapinx.in    Public DNS name (default: tapinx.in)
 #   ENABLE_SSL=auto|yes|no     Provision Let's Encrypt when DNS resolves here
@@ -33,8 +37,10 @@ MODE_FILE="$SCRIPT_DIR/.openvision-deployment-mode"
 OMNIROUTE_ENV_FILE="$SCRIPT_DIR/.omniroute.env"
 OMNIROUTE_DATA_DIR="$SCRIPT_DIR/.omniroute-data"
 OMNIROUTE_SERVICE="openvision-omniroute.service"
+AI_PROVIDER_KEYS_FILE="${AI_PROVIDER_KEYS_FILE:-$SCRIPT_DIR/ai-provider-keys.env}"
 RECOVER_SYSTEMD_SERVICES=0
 APT_LOCK_TIMEOUT_SECONDS="${APT_LOCK_TIMEOUT_SECONDS:-900}"
+ORCHESTRATION_KEYS_NOTICE_SHOWN=0
 
 [[ "$DEPLOY_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] || {
     printf 'ERROR: DEPLOY_DOMAIN contains invalid characters.\n' >&2
@@ -396,12 +402,15 @@ detected_deployment_mode() {
 
 show_omniroute_status() {
     local gateway_key="" initial_password="" service_state="not installed" runtime_mode="" xchat_env="$ENV_FILE"
+    local fallback_providers="" fallback_display=""
     runtime_mode="$(detected_deployment_mode)"
     if [ "$runtime_mode" = "docker" ] && [ -f "$SCRIPT_DIR/.env" ]; then
         xchat_env="$SCRIPT_DIR/.env"
     fi
     gateway_key="$(saved_omniroute_gateway_key)"
     initial_password="$(file_env_get "$OMNIROUTE_ENV_FILE" INITIAL_PASSWORD)"
+    fallback_providers="$(file_env_get "$xchat_env" XCHAT_FALLBACK_PROVIDERS)"
+    fallback_display="${fallback_providers//,/ -> }"
     if [ "$runtime_mode" = "docker" ] && command -v docker >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/docker-compose.yml" ]; then
         if [ -n "$(run_root docker compose --profile omniroute ps -q omniroute 2>/dev/null || true)" ]; then
             service_state="docker $(run_root docker compose --profile omniroute ps --status running -q omniroute 2>/dev/null | grep -q . && printf running || printf stopped)"
@@ -413,6 +422,7 @@ show_omniroute_status() {
     printf 'OmniRoute service:   %s\n' "$service_state"
     printf 'Dashboard password: %s\n' "$([ -n "$initial_password" ] && printf 'generated and saved' || printf 'not generated')"
     printf 'XChat gateway key:   %s\n' "$(mask_secret "$gateway_key")"
+    printf 'XChat provider chain: OmniRoute%s\n' "$([ -n "$fallback_display" ] && printf ' -> %s' "$fallback_display")"
     printf 'Protected secrets:   %s\n' "$OMNIROUTE_ENV_FILE"
     printf 'XChat environment:   %s\n' "$xchat_env"
 }
@@ -565,6 +575,52 @@ prompt_omniroute_api_key() {
     printf '%s' "$entered_value"
 }
 
+prepare_ai_provider_keys_file() {
+    [ -e "$AI_PROVIDER_KEYS_FILE" ] || return 0
+    [ -f "$AI_PROVIDER_KEYS_FILE" ] || die "AI provider keys path is not a regular file: $AI_PROVIDER_KEYS_FILE"
+    chmod 600 "$AI_PROVIDER_KEYS_FILE" \
+        || die "Unable to protect $AI_PROVIDER_KEYS_FILE; make it owned by $RUN_USER and rerun setup"
+    [ "$(stat -c '%a' "$AI_PROVIDER_KEYS_FILE")" = "600" ] \
+        || die "$AI_PROVIDER_KEYS_FILE must have file mode 0600"
+}
+
+validate_orchestration_key() {
+    local key_name="$1"
+    local value="$2"
+    [[ "$value" =~ ^[A-Za-z0-9._-]{20,300}$ ]] \
+        || die "$key_name in $AI_PROVIDER_KEYS_FILE has an unexpected format"
+}
+
+configure_orchestration_file() {
+    local target_file="$1"
+    local provider_name="$2"
+    local key_name="" value=""
+    local imported=()
+
+    file_env_set "$target_file" XCHAT_FALLBACK_PROVIDERS "groq,gemini,cerebras"
+    file_env_set "$target_file" XCHAT_ORCHESTRATION_PROVIDER_RETRIES "0"
+    [ "$provider_name" = "omniroute" ] || return 0
+    prepare_ai_provider_keys_file
+    [ -f "$AI_PROVIDER_KEYS_FILE" ] || return 0
+
+    for key_name in GROQ_API_KEY GEMINI_API_KEY CEREBRAS_API_KEY; do
+        value="$(file_env_get "$AI_PROVIDER_KEYS_FILE" "$key_name" | tr -d '\r\n')"
+        [ -n "$value" ] || continue
+        validate_orchestration_key "$key_name" "$value"
+        file_env_set "$target_file" "$key_name" "$value"
+        imported+=("${key_name%_API_KEY}")
+    done
+    if [ "${#imported[@]}" -eq 0 ] \
+        && grep -Eq '^[[:space:]]*[^#[:space:]].*$' "$AI_PROVIDER_KEYS_FILE"; then
+        die "$AI_PROVIDER_KEYS_FILE contains no supported KEY=value entries; use ai-provider-keys.env.example"
+    fi
+    chmod 600 "$target_file"
+    if [ "${#imported[@]}" -gt 0 ] && [ "$ORCHESTRATION_KEYS_NOTICE_SHOWN" -eq 0 ]; then
+        printf 'XChat fallback keys imported securely for: %s.\n' "$(IFS=,; printf '%s' "${imported[*]}")"
+        ORCHESTRATION_KEYS_NOTICE_SHOWN=1
+    fi
+}
+
 configure_ai_file() {
     local target_file="$1"
     local provider_name="$2"
@@ -581,9 +637,14 @@ configure_ai_file() {
     file_env_set "$target_file" GROQ_MAX_RETRIES "2"
     file_env_set "$target_file" GROQ_REASONING_EFFORT "low"
     file_env_set "$target_file" GROQ_MAX_OUTPUT_TOKENS "450"
+    file_env_set "$target_file" CEREBRAS_MODEL "gpt-oss-120b"
+    file_env_set "$target_file" CEREBRAS_API_URL "https://api.cerebras.ai/v1/chat/completions"
+    file_env_set "$target_file" CEREBRAS_TIMEOUT_SECONDS "30"
+    file_env_set "$target_file" CEREBRAS_MAX_RETRIES "2"
+    file_env_set "$target_file" CEREBRAS_MAX_OUTPUT_TOKENS "700"
     file_env_set "$target_file" OMNIROUTE_MODEL "auto"
     file_env_set "$target_file" OMNIROUTE_TIMEOUT_SECONDS "60"
-    file_env_set "$target_file" OMNIROUTE_MAX_RETRIES "2"
+    file_env_set "$target_file" OMNIROUTE_MAX_RETRIES "0"
     file_env_set "$target_file" OMNIROUTE_MAX_OUTPUT_TOKENS "700"
     if [ "$provider_name" = "gemini" ]; then
         file_env_set "$target_file" GEMINI_API_KEY "$api_key"
@@ -594,6 +655,7 @@ configure_ai_file() {
     elif [ "$provider_name" = "omniroute" ]; then
         file_env_set "$target_file" OMNIROUTE_API_KEY "$api_key"
     fi
+    configure_orchestration_file "$target_file" "$provider_name"
     file_env_set "$target_file" XCHAT_HISTORY_DAYS "30"
     file_env_set "$target_file" XCHAT_MAX_MESSAGES "200"
     chmod 600 "$target_file"
@@ -727,6 +789,18 @@ elif provider == "omniroute":
     if api_key:
         headers["Authorization"] = "Bearer " + api_key
     request = urllib.request.Request(url, data=payload, method="POST", headers=headers)
+elif provider == "cerebras":
+    url = "https://api.cerebras.ai/v1/chat/completions"
+    payload = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": "Reply OK."}],
+    }).encode("utf-8")
+    headers = {
+        "Authorization": "Bearer " + api_key,
+        "Content-Type": "application/json",
+        "User-Agent": "OpenVisionX/1.0",
+    }
+    request = urllib.request.Request(url, data=payload, method="POST", headers=headers)
 else:
     url = "https://api.mistral.ai/v1/models"
     headers = {"Authorization": "Bearer " + api_key}
@@ -736,7 +810,7 @@ for attempt in range(3):
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             data = json.load(response)
-        if provider in {"groq", "omniroute"}:
+        if provider in {"groq", "omniroute", "cerebras"}:
             if not isinstance(data, dict) or not isinstance(data.get("choices"), list) or not data["choices"]:
                 raise RuntimeError(f"{provider} returned no completion choices")
             print(f"{provider.title()} API: configured model accepted by chat completions.")
@@ -787,6 +861,46 @@ for attempt in range(3):
         print(f"{provider.title()} API validation failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         raise SystemExit(1)
 PY
+}
+
+validate_orchestration_fallbacks() {
+    local target_file="$1"
+    local provider_name="$2"
+    local fallback_name="" key_name="" model_name="" key_value="" validation_status=0
+    local enabled=()
+    [ "$provider_name" = "omniroute" ] || return 0
+
+    for fallback_name in groq gemini cerebras; do
+        case "$fallback_name" in
+            groq)
+                key_name="GROQ_API_KEY"
+                model_name="$(file_env_get "$target_file" GROQ_MODEL)"
+                ;;
+            gemini)
+                key_name="GEMINI_API_KEY"
+                model_name="$(file_env_get "$target_file" GEMINI_MODEL)"
+                ;;
+            cerebras)
+                key_name="CEREBRAS_API_KEY"
+                model_name="$(file_env_get "$target_file" CEREBRAS_MODEL)"
+                ;;
+        esac
+        key_value="$(file_env_get "$target_file" "$key_name")"
+        [ -n "$key_value" ] || continue
+        if verify_ai_access "$fallback_name" "$key_value" "$model_name"; then
+            enabled+=("$fallback_name")
+            continue
+        else
+            validation_status=$?
+        fi
+        if [ "$validation_status" -eq 75 ]; then
+            printf 'WARNING: %s fallback preflight was deferred; keeping it in the chain.\n' "$fallback_name" >&2
+            enabled+=("$fallback_name")
+        else
+            printf 'WARNING: %s fallback validation failed; excluding it until the next successful setup run.\n' "$fallback_name" >&2
+        fi
+    done
+    file_env_set "$target_file" XCHAT_FALLBACK_PROVIDERS "$(IFS=,; printf '%s' "${enabled[*]}")"
 }
 
 validate_ai_for_deploy() {
@@ -954,6 +1068,12 @@ if [ "$ACTION" = "configure-ai" ]; then
     if [ -f "$SCRIPT_DIR/.env" ]; then
         configure_ai_file "$SCRIPT_DIR/.env" "$AI_PROVIDER" "$AI_KEY"
     fi
+    validate_orchestration_fallbacks "$AI_CONFIG_FILE" "$AI_PROVIDER"
+    ACTIVE_FALLBACK_PROVIDERS="$(file_env_get "$AI_CONFIG_FILE" XCHAT_FALLBACK_PROVIDERS)"
+    file_env_set "$ENV_FILE" XCHAT_FALLBACK_PROVIDERS "$ACTIVE_FALLBACK_PROVIDERS"
+    if [ -f "$SCRIPT_DIR/.env" ]; then
+        file_env_set "$SCRIPT_DIR/.env" XCHAT_FALLBACK_PROVIDERS "$ACTIVE_FALLBACK_PROVIDERS"
+    fi
     if command -v docker >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/.env" ] && [ -n "$(sudo docker compose ps -q api 2>/dev/null || true)" ]; then
         sudo docker compose up -d --no-deps --force-recreate api
         printf 'XChat provider set to %s; Docker API restarted.\n' "$AI_PROVIDER"
@@ -1022,6 +1142,7 @@ if [[ "$USE_DOCKER" =~ ^[Yy]$ ]]; then
         validate_ai_for_deploy "$AI_PROVIDER" "$AI_KEY" "$AI_MODEL"
     fi
     configure_ai_file "$ROOT_ENV" "$AI_PROVIDER" "$AI_KEY"
+    validate_orchestration_fallbacks "$ROOT_ENV" "$AI_PROVIDER"
 
     sudo docker compose config --quiet
     if [ "$AI_PROVIDER" = "omniroute" ]; then
@@ -1164,6 +1285,7 @@ else
     printf 'WARNING: Gmail App Password was not configured; automated report emails will remain unavailable.\n' >&2
 fi
 configure_ai_file "$ENV_FILE" "$AI_PROVIDER" "$AI_KEY"
+validate_orchestration_fallbacks "$ENV_FILE" "$AI_PROVIDER"
 chmod 600 "$ENV_FILE"
 
 log "Stopping only existing OpenVision application services"
