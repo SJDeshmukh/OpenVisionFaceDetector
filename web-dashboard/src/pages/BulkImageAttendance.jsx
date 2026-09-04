@@ -137,8 +137,7 @@ const BulkImageAttendance = () => {
             class_year: selectedClass.class_year,
             division: selectedClass.division,
             branch: selectedClass.branch
-          },
-          headers: { Authorization: `Bearer ${user?.token}` }
+          }
         });
         const list = (res.data?.persons || []).map(p => ({
           id: p.person_id || p.id,
@@ -155,7 +154,7 @@ const BulkImageAttendance = () => {
     // Load classes for filtering/scope
     (async () => {
       try {
-        const r = await axios.get(`${API_URL}/classes`, { headers: { Authorization: `Bearer ${user?.token}` } });
+        const r = await axios.get(`${API_URL}/classes`);
         setClasses(r.data?.classes || []);
       } catch (_) { }
     })();
@@ -164,9 +163,7 @@ const BulkImageAttendance = () => {
 
   const fetchLectures = async () => {
     try {
-      const res = await axios.get(`${API_URL}/bulk-attendance/lectures`, {
-        headers: { Authorization: `Bearer ${user?.token}` }
-      });
+      const res = await axios.get(`${API_URL}/bulk-attendance/lectures`);
       setLectures(res.data?.lectures || []);
     } catch (e) {
       console.error(e);
@@ -175,7 +172,7 @@ const BulkImageAttendance = () => {
 
   useEffect(() => {
     fetchLectures();
-  }, [user?.token]);
+  }, [user?.id]);
 
   // Implicitly handle lecture creation/selection based on Subject Dropdown
   useEffect(() => {
@@ -216,8 +213,6 @@ const BulkImageAttendance = () => {
             teacher: autoTeacher,
             lecture_date: today,
             start_time: new Date().toTimeString().slice(0, 5)
-          }, {
-            headers: { Authorization: `Bearer ${user?.token}` }
           });
           await fetchLectures();
           const newId = String(res.data?.lecture_id || '');
@@ -270,9 +265,7 @@ const BulkImageAttendance = () => {
       if (!y && !d && !b) return;
       try {
         const qs = new URLSearchParams({ class_year: y, division: d, branch: b });
-        const r = await axios.get(`${API_URL}/class-threshold?${qs.toString()}`, {
-          headers: { Authorization: `Bearer ${user?.token}` }
-        });
+        const r = await axios.get(`${API_URL}/class-threshold?${qs.toString()}`);
         if (r.data && typeof r.data.threshold === 'number') {
           const thr = Math.max(0, Math.min(1, r.data.threshold));
           setSimThreshold(thr);
@@ -282,15 +275,13 @@ const BulkImageAttendance = () => {
     };
     loadThreshold();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedClass.class_year, selectedClass.division, selectedClass.branch, user?.token]);
+  }, [selectedClass.class_year, selectedClass.division, selectedClass.branch, user?.id]);
 
   const ensureBatch = async () => {
     // If we have a stored batchId, verify it still exists in the backend
     if (batchId) {
       try {
-        await axios.get(`${API_URL}/class-batch/status?batch_id=${batchId}`, {
-          headers: { Authorization: `Bearer ${user?.token}` }
-        });
+        await axios.get(`${API_URL}/class-batch/status?batch_id=${batchId}`);
         return batchId; // batch is valid
       } catch (e) {
         // Batch is stale/gone — clear it and create a new one
@@ -298,9 +289,7 @@ const BulkImageAttendance = () => {
         setBatchId('');
       }
     }
-    const res = await axios.post(`${API_URL}/class-batch/start`, selectedClass, {
-      headers: { Authorization: `Bearer ${user?.token}` }
-    });
+    const res = await axios.post(`${API_URL}/class-batch/start`, selectedClass);
     const id = res.data?.batch_id;
     if (id) {
       if (batchLsKey) localStorage.setItem(batchLsKey, id);
@@ -311,9 +300,7 @@ const BulkImageAttendance = () => {
 
   const fetchBatchStatus = async (id) => {
     const params = new URLSearchParams({ batch_id: id, exclude_images: '1' });
-    const res = await axios.get(`${API_URL}/class-batch/status?${params.toString()}`, {
-      headers: { Authorization: `Bearer ${user?.token}` }
-    });
+    const res = await axios.get(`${API_URL}/class-batch/status?${params.toString()}`);
     const rawItems = res.data?.items || [];
 
     // Compute everything BEFORE setting any React state
@@ -379,7 +366,7 @@ const BulkImageAttendance = () => {
   useEffect(() => {
     let interval;
     const poll = async () => {
-      if (batchId && user?.token) {
+      if (batchId) {
         try {
           await fetchBatchStatus(batchId);
         } catch (e) {
@@ -403,7 +390,7 @@ const BulkImageAttendance = () => {
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [batchId, user?.token]);
+  }, [batchId, user?.id, batchLsKey]);
 
   const onUploadImages = async (files) => {
     const rawArr = Array.from(files || []).filter(f => f.type.startsWith('image/'));
@@ -473,9 +460,7 @@ const BulkImageAttendance = () => {
       fd.append('fast', 'true');
 
       const params = new URLSearchParams();
-      const res = await axios.post(`${API_URL}/class-batch/add?${params.toString()}`, fd, {
-        headers: { Authorization: `Bearer ${user?.token}` }
-      });
+      const res = await axios.post(`${API_URL}/class-batch/add?${params.toString()}`, fd);
 
       // If we got a task_id, we could track it, but the existing batchId polling
       // already handles the per-item status updates.
@@ -539,8 +524,6 @@ const BulkImageAttendance = () => {
         division: selectedClass.division || '',
         branch: selectedClass.branch || '',
         threshold: simThreshold
-      }, {
-        headers: { Authorization: `Bearer ${user?.token}` }
       });
       alert('Saved embeddings successfully');
     } catch (e) {
@@ -671,8 +654,6 @@ const BulkImageAttendance = () => {
         person_id: personId,
         image: f.thumbs?.face || f.thumb,
         fidelity: 1.0
-      }, {
-        headers: { Authorization: `Bearer ${user?.token}` }
       });
 
       if (resp.data?.success && resp.data?.image) {
@@ -870,7 +851,7 @@ const BulkImageAttendance = () => {
               const id = batchLsKey ? localStorage.getItem(batchLsKey) : batchId;
               if (!confirm('End session and clear all data for a fresh start?')) return;
               try {
-                if (id) await axios.post(`${API_URL}/class-batch/clear`, { batch_id: id }, { headers: { Authorization: `Bearer ${user?.token}` } });
+                if (id) await axios.post(`${API_URL}/class-batch/clear`, { batch_id: id });
               } catch (_) {}
               // Clear persisted keys
               if (batchLsKey) localStorage.removeItem(batchLsKey);
@@ -908,13 +889,14 @@ const BulkImageAttendance = () => {
               <div key={item.id} className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
                 <div className="relative bg-slate-100 h-64 sm:h-80 flex-shrink-0 flex items-center justify-center overflow-hidden">
                   <img
-                      src={item.image ? (item.image.startsWith('data:') ? item.image : `data:image/jpeg;base64,${item.image}`) : `${API_URL}/class-batch/item-image/${item.id}?type=${item.status === 'done' ? 'annotated' : 'raw'}&token=${user?.token}&t=${Date.now()}`}
+                      src={item.image ? (item.image.startsWith('data:') ? item.image : `data:image/jpeg;base64,${item.image}`) : `${API_URL}/class-batch/item-image/${item.id}?type=${item.status === 'done' ? 'annotated' : 'raw'}`}
                       alt={`frame-seq-${item.seq}`}
                       className={`w-full h-full object-contain p-2 ${item.status !== 'done' ? 'opacity-70 blur-[1px]' : ''}`}
                       onError={(e) => {
                         // If annotated fails, try raw
-                        if (e.target.src.includes('type=annotated')) {
-                          e.target.src = `${API_URL}/class-batch/item-image/${item.id}?type=raw&token=${user?.token}&t=${Date.now()}`;
+                        if (e.currentTarget.src.includes('type=annotated') && e.currentTarget.dataset.fallback !== 'raw') {
+                          e.currentTarget.dataset.fallback = 'raw';
+                          e.currentTarget.src = `${API_URL}/class-batch/item-image/${item.id}?type=raw`;
                         }
                       }}
                   />

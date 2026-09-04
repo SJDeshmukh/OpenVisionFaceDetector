@@ -286,28 +286,12 @@ def class_batch_status(valid_data: ClassBatchStatusSchema):
     return jsonify({"batch": {"id": b[0], "class_year": b[1], "division": b[2], "branch": b[3], "status": b[4]}, "items": items})
 
 @attendance_class_bp.route("/class-batch/item-image/<item_id>", methods=["GET"])
+@require_auth()
 def class_batch_item_image(item_id):
-    # Support token in query params for <img> tags
-    token = request.args.get('token')
-    if token:
-        # Manually verify token or just use it if provided
-        # For simplicity and consistency, let's try to populate g.vendor_id
-        from services.auth_service import verify_token
-        user_data = verify_token(token)
-        if not user_data:
-            return jsonify({"error": "unauthorized"}), 401
-        vendor_id = user_data.get('vendor_id')
-    else:
-        # Fallback to standard require_auth logic (implicit)
-        @require_auth()
-        def _protected():
-            return g.vendor_id
-        try:
-            vendor_id = _protected()
-            if isinstance(vendor_id, tuple): # error response
-                return vendor_id
-        except Exception:
-            return jsonify({"error": "unauthorized"}), 401
+    # Dashboard authentication is carried by the HttpOnly session cookie. Keep
+    # image authorization on the same path as every other protected endpoint;
+    # putting tokens in image URLs leaks them into browser/proxy logs.
+    vendor_id = g.vendor_id
 
     image_type = request.args.get('type', 'raw') # 'raw' or 'annotated'
     
@@ -329,7 +313,9 @@ def class_batch_item_image(item_id):
     if not row:
         return jsonify({"error": "item not found"}), 404
         
-    img_b64 = row[1] if image_type == 'annotated' else row[0]
+    # A completed scan may legitimately have no annotated image (for example
+    # when no faces were found). In that case still show the uploaded image.
+    img_b64 = (row[1] or row[0]) if image_type == 'annotated' else row[0]
     
     if not img_b64:
         return jsonify({"error": "image not available"}), 404
