@@ -79,36 +79,100 @@ def _message_content(message):
 
 
 class MistralProvider:
-    def __init__(self, api_key=None, model=None, api_url=None, timeout=None):
+    _TRANSIENT_STATUSES = {429, 500, 502, 503, 504}
+
+    def __init__(self, api_key=None, model=None, api_url=None, timeout=None, max_retries=None):
         self.api_key = api_key or os.environ.get("MISTRAL_API_KEY")
         self.model = model or os.environ.get("MISTRAL_MODEL", "mistral-small-latest")
         self.api_url = api_url or os.environ.get("MISTRAL_API_URL", "https://api.mistral.ai/v1/chat/completions")
         self.timeout = int(timeout or os.environ.get("MISTRAL_TIMEOUT_SECONDS", "30"))
+        try:
+            configured_retries = int(max_retries if max_retries is not None else os.environ.get("MISTRAL_MAX_RETRIES", "2"))
+        except (TypeError, ValueError):
+            configured_retries = 2
+        self.max_retries = max(0, min(configured_retries, 4))
         if not self.api_key:
             raise XChatConfigurationError("XChat AI is not configured")
 
-    def complete(self, messages, tools):
+    def _http_error_details(self, response):
+        status = int(getattr(response, "status_code", 0) or 0)
+        request_id = str(response.headers.get("x-request-id") or response.headers.get("request-id") or "-")[:120]
+        code = "-"
+        message = "request rejected"
         try:
-            response = requests.post(
-                self.api_url,
-                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-                json={
-                    "model": self.model,
-                    "messages": messages,
-                    "tools": tools,
-                    "tool_choice": "auto",
-                    "parallel_tool_calls": False,
-                    "temperature": 0.1,
-                    "max_tokens": 700,
-                },
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
             payload = response.json()
-            return payload["choices"][0]["message"]
-        except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as exc:
-            logger.warning("Mistral completion failed: %s", type(exc).__name__)
-            raise XChatProviderError("The AI service is temporarily unavailable") from exc
+            if isinstance(payload, dict):
+                code = str(payload.get("code") or payload.get("type") or "-")[:120]
+                message = str(payload.get("message") or payload.get("detail") or message)
+        except (TypeError, ValueError):
+            pass
+        message = " ".join(message.split())[:300].replace(str(self.api_key), "[redacted]")
+        return status, code, request_id, message
+
+    def complete(self, messages, tools):
+        body = {
+            "model": self.model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": "auto",
+            "parallel_tool_calls": False,
+            "temperature": 0.1,
+            "max_tokens": 700,
+        }
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = requests.post(
+                    self.api_url,
+                    headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                    json=body,
+                    timeout=self.timeout,
+                )
+            except (requests.Timeout, requests.ConnectionError) as exc:
+                if attempt < self.max_retries:
+                    delay = 2 ** attempt
+                    logger.warning(
+                        "Mistral transport retry: error=%s attempt=%s/%s delay=%ss",
+                        type(exc).__name__, attempt + 1, self.max_retries + 1, delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                logger.warning("Mistral completion failed: transport=%s", type(exc).__name__)
+                raise XChatProviderError("The AI service is temporarily unavailable") from exc
+            except requests.RequestException as exc:
+                logger.warning("Mistral completion failed: transport=%s", type(exc).__name__)
+                raise XChatProviderError("The AI service is temporarily unavailable") from exc
+
+            if response.status_code >= 400:
+                status, code, request_id, message = self._http_error_details(response)
+                if status in self._TRANSIENT_STATUSES and attempt < self.max_retries:
+                    retry_after = response.headers.get("Retry-After")
+                    try:
+                        delay = max(1, min(int(retry_after), 8))
+                    except (TypeError, ValueError):
+                        delay = 2 ** attempt
+                    logger.warning(
+                        "Mistral HTTP retry: status=%s code=%s request_id=%s attempt=%s/%s delay=%ss message=%s",
+                        status, code, request_id, attempt + 1, self.max_retries + 1, delay, message,
+                    )
+                    time.sleep(delay)
+                    continue
+                logger.warning(
+                    "Mistral completion failed: status=%s code=%s request_id=%s message=%s",
+                    status, code, request_id, message,
+                )
+                error = requests.HTTPError(f"Mistral returned HTTP {status}", response=response)
+                if status in {401, 402, 403, 404, 422}:
+                    raise XChatConfigurationError("The configured Mistral account or model is unavailable") from error
+                raise XChatProviderError("The AI service is temporarily unavailable") from error
+
+            try:
+                payload = response.json()
+                return payload["choices"][0]["message"]
+            except (KeyError, IndexError, TypeError, ValueError) as exc:
+                logger.warning("Mistral completion failed: malformed successful response")
+                raise XChatProviderError("The AI service returned an invalid response") from exc
+
+        raise XChatProviderError("The AI service is temporarily unavailable")
 
 
 def _system_prompt(features):

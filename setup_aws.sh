@@ -201,12 +201,17 @@ prompt_mistral_api_key() {
     local entered_value=""
     if [ -n "${MISTRAL_API_KEY:-}" ]; then
         entered_value="$MISTRAL_API_KEY"
-    elif [ -n "$existing_value" ]; then
-        entered_value="$existing_value"
     elif [ -t 0 ]; then
         printf '\nMistral XChat setup (input is hidden)\n' >&2
-        read -r -s -p "Paste a NEW Mistral API key (Enter to skip): " entered_value
+        if [ -n "$existing_value" ]; then
+            read -r -s -p "Press Enter to keep the saved Mistral key, or paste a replacement: " entered_value
+            entered_value="${entered_value:-$existing_value}"
+        else
+            read -r -s -p "Paste a NEW Mistral API key (Enter to skip): " entered_value
+        fi
         printf '\n' >&2
+    elif [ -n "$existing_value" ]; then
+        entered_value="$existing_value"
     fi
     entered_value="$(printf '%s' "$entered_value" | tr -d '[:space:]')"
     if [ -n "$entered_value" ] && [[ ! "$entered_value" =~ ^[A-Za-z0-9_-]{20,200}$ ]]; then
@@ -220,6 +225,8 @@ configure_ai_file() {
     local api_key="$2"
     file_env_set "$target_file" MISTRAL_API_KEY "$api_key"
     file_env_set "$target_file" MISTRAL_MODEL "mistral-small-latest"
+    file_env_set "$target_file" MISTRAL_TIMEOUT_SECONDS "30"
+    file_env_set "$target_file" MISTRAL_MAX_RETRIES "2"
     file_env_set "$target_file" XCHAT_HISTORY_DAYS "30"
     file_env_set "$target_file" XCHAT_MAX_MESSAGES "200"
     chmod 600 "$target_file"
@@ -264,6 +271,92 @@ verify_stt_health() {
         return 1
     fi
     printf 'Local Whisper microphone: enabled and ready.\n'
+}
+
+verify_mistral_access() {
+    local api_key="$1"
+    local model_name="${2:-mistral-small-latest}"
+    [ -n "$api_key" ] || return 0
+    MISTRAL_API_KEY="$api_key" MISTRAL_MODEL="$model_name" python3 - <<'PY'
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+
+url = "https://api.mistral.ai/v1/chat/completions"
+payload = json.dumps({
+    "model": os.environ["MISTRAL_MODEL"],
+    "messages": [{"role": "user", "content": "Reply OK"}],
+    "temperature": 0,
+    "max_tokens": 8,
+}).encode("utf-8")
+request = urllib.request.Request(url, data=payload, method="POST", headers={
+    "Authorization": "Bearer " + os.environ["MISTRAL_API_KEY"],
+    "Content-Type": "application/json",
+})
+
+for attempt in range(3):
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            data = json.load(response)
+        if not data.get("choices"):
+            raise RuntimeError("Mistral returned no completion choices")
+        print("Mistral API: key, billing, and model access verified.")
+        raise SystemExit(0)
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")
+        try:
+            error = json.loads(body)
+            detail = error.get("message") or error.get("code") or error.get("type") or "request rejected"
+        except Exception:
+            detail = "request rejected"
+        detail = " ".join(str(detail).split())[:240]
+        detail = detail.replace(os.environ["MISTRAL_API_KEY"], "[redacted]")
+        if exc.code in {429, 500, 502, 503, 504} and attempt < 2:
+            time.sleep(2 ** attempt)
+            continue
+        print(f"Mistral API validation failed: HTTP {exc.code}: {detail}", file=sys.stderr)
+        raise SystemExit(1)
+    except (urllib.error.URLError, TimeoutError) as exc:
+        if attempt < 2:
+            time.sleep(2 ** attempt)
+            continue
+        print(f"Mistral API validation failed: {type(exc).__name__}", file=sys.stderr)
+        raise SystemExit(1)
+    except Exception as exc:
+        print(f"Mistral API validation failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        raise SystemExit(1)
+PY
+}
+
+frontend_dependency_fingerprint() {
+    (
+        cd "$SCRIPT_DIR/web-dashboard"
+        {
+            node --version
+            npm --version
+            sha256sum package.json package-lock.json
+        } | sha256sum | awk '{print $1}'
+    )
+}
+
+frontend_source_fingerprint() {
+    local dependency_fingerprint="$1"
+    (
+        cd "$SCRIPT_DIR/web-dashboard"
+        {
+            printf '%s\n' "$dependency_fingerprint" "${VITE_API_URL:-}"
+            find src public -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+            for source_file in index.html vite.config.js postcss.config.js package.json package-lock.json; do
+                [ ! -f "$source_file" ] || sha256sum "$source_file"
+            done
+            for env_file in .env.production .env.production.local; do
+                [ ! -f "$env_file" ] || sha256sum "$env_file"
+            done
+        } | sha256sum | awk '{print $1}'
+    )
 }
 
 if [ "$ACTION" = "check" ]; then
@@ -335,6 +428,8 @@ if [ "$ACTION" = "configure-ai" ]; then
     require_source_tree
     MISTRAL_KEY="$(prompt_mistral_api_key "")"
     [ -n "$MISTRAL_KEY" ] || die "A Mistral API key is required"
+    verify_mistral_access "$MISTRAL_KEY" "mistral-small-latest" \
+        || die "Mistral API validation failed; correct the key/account shown above and rerun setup"
     configure_ai_file "$ENV_FILE" "$MISTRAL_KEY"
     if [ -f "$SCRIPT_DIR/.env" ]; then
         configure_ai_file "$SCRIPT_DIR/.env" "$MISTRAL_KEY"
@@ -399,6 +494,8 @@ if [[ "$USE_DOCKER" =~ ^[Yy]$ ]]; then
     EXISTING_MISTRAL_KEY="$(sed -n 's/^MISTRAL_API_KEY=//p' "$ROOT_ENV" | tail -n 1)"
     MISTRAL_KEY="$(prompt_mistral_api_key "$EXISTING_MISTRAL_KEY")"
     if [ -n "$MISTRAL_KEY" ]; then
+        verify_mistral_access "$MISTRAL_KEY" "mistral-small-latest" \
+            || die "Mistral API validation failed; correct the key/account shown above and rerun setup"
         configure_ai_file "$ROOT_ENV" "$MISTRAL_KEY"
     else
         printf 'WARNING: Mistral key was not configured; XChat will return a configuration error.\n' >&2
@@ -448,13 +545,6 @@ fi
 node --version
 npm --version
 
-log "Stopping only existing OpenVision application services"
-stop_application_services
-if sudo lsof -nP -iTCP:5001 -sTCP:LISTEN >/dev/null 2>&1; then
-    sudo lsof -nP -iTCP:5001 -sTCP:LISTEN || true
-    die "Port 5001 is occupied by a process outside the OpenVision systemd services"
-fi
-
 log "Configuring swap without replacing existing swap data"
 if [ ! -e /swapfile ]; then
     sudo fallocate -l 4G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=4096 status=progress
@@ -483,6 +573,10 @@ SECRET_KEY="$(env_get SECRET_KEY)"
 [ -n "$SECRET_KEY" ] || SECRET_KEY="$(openssl rand -hex 32)"
 SMTP_APP_PASSWORD="$(prompt_mail_app_password "$(env_get MAIL_SMTP_APP_PASSWORD)")"
 MISTRAL_KEY="$(prompt_mistral_api_key "$(env_get MISTRAL_API_KEY)")"
+if [ -n "$MISTRAL_KEY" ]; then
+    verify_mistral_access "$MISTRAL_KEY" "mistral-small-latest" \
+        || die "Mistral API validation failed; correct the key/account shown above and rerun setup"
+fi
 
 log "Creating the dedicated PostgreSQL application role and database"
 if sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='openvision_app'" | grep -q 1; then
@@ -545,6 +639,13 @@ else
 fi
 chmod 600 "$ENV_FILE"
 
+log "Stopping only existing OpenVision application services"
+stop_application_services
+if sudo lsof -nP -iTCP:5001 -sTCP:LISTEN >/dev/null 2>&1; then
+    sudo lsof -nP -iTCP:5001 -sTCP:LISTEN || true
+    die "Port 5001 is occupied by a process outside the OpenVision systemd services"
+fi
+
 log "Creating the Python environment and installing project requirements"
 if [ ! -d "$SCRIPT_DIR/backend/.venv" ]; then
     python3 -m venv "$SCRIPT_DIR/backend/.venv"
@@ -583,8 +684,38 @@ PGPASSWORD="$DB_PASSWORD" psql -h 127.0.0.1 -U openvision_app -d face_detection 
 log "Building the web dashboard"
 (
     cd "$SCRIPT_DIR/web-dashboard"
-    npm ci --legacy-peer-deps
-    NODE_OPTIONS="--max-old-space-size=1536" npm run build
+    FRONTEND_CACHE_DIR="$SCRIPT_DIR/.openvision-cache"
+    DEPENDENCY_STAMP="$FRONTEND_CACHE_DIR/frontend-dependencies.sha256"
+    BUILD_STAMP="$FRONTEND_CACHE_DIR/frontend-build.sha256"
+    mkdir -p "$FRONTEND_CACHE_DIR"
+
+    DEPENDENCY_FINGERPRINT="$(frontend_dependency_fingerprint)"
+    REUSED_DEPENDENCIES=0
+    if [ -x node_modules/.bin/vite ] \
+        && [ "$(sed -n '1p' "$DEPENDENCY_STAMP" 2>/dev/null || true)" = "$DEPENDENCY_FINGERPRINT" ]; then
+        printf 'Frontend dependencies unchanged; reusing node_modules.\n'
+        REUSED_DEPENDENCIES=1
+    else
+        npm ci --legacy-peer-deps --prefer-offline --no-audit
+        printf '%s\n' "$DEPENDENCY_FINGERPRINT" > "$DEPENDENCY_STAMP"
+    fi
+
+    BUILD_FINGERPRINT="$(frontend_source_fingerprint "$DEPENDENCY_FINGERPRINT")"
+    if [ -f dist/index.html ] && [ -d dist/assets ] \
+        && [ "$(sed -n '1p' "$BUILD_STAMP" 2>/dev/null || true)" = "$BUILD_FINGERPRINT" ]; then
+        printf 'Frontend sources unchanged; reusing the verified dashboard build.\n'
+    else
+        if ! NODE_OPTIONS="--max-old-space-size=1536" npm run build; then
+            if [ "$REUSED_DEPENDENCIES" -ne 1 ]; then
+                exit 1
+            fi
+            printf 'Cached frontend dependencies failed; rebuilding them once.\n'
+            npm ci --legacy-peer-deps --prefer-offline --no-audit
+            printf '%s\n' "$DEPENDENCY_FINGERPRINT" > "$DEPENDENCY_STAMP"
+            NODE_OPTIONS="--max-old-space-size=1536" npm run build
+        fi
+        printf '%s\n' "$BUILD_FINGERPRINT" > "$BUILD_STAMP"
+    fi
     [ -f dist/index.html ] || die "Dashboard build did not create dist/index.html"
 )
 

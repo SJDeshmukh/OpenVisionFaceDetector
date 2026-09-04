@@ -61,7 +61,7 @@ On an existing EC2 deployment, securely install a newly generated Mistral key wi
 bash setup_aws.sh configure-ai
 ```
 
-For a fresh deployment, `bash setup_aws.sh` asks for it. The script stores it in the protected environment file with mode `0600`; do not put API keys in source files or commit them. Optional settings are `MISTRAL_MODEL=mistral-small-latest`, `MISTRAL_TIMEOUT_SECONDS=30`, `XCHAT_HISTORY_DAYS=30`, and `XCHAT_MAX_MESSAGES=200`.
+For a fresh deployment, `bash setup_aws.sh` asks for it. The script stores it in the protected environment file with mode `0600` and validates the key, billing access, and configured model before interrupting the running application. Runtime calls retry transient `429` and `5xx` responses twice with backoff and log the provider status/code without exposing the key. Do not put API keys in source files or commit them. Optional settings are `MISTRAL_MODEL=mistral-small-latest`, `MISTRAL_TIMEOUT_SECONDS=30`, `MISTRAL_MAX_RETRIES=2`, `XCHAT_HISTORY_DAYS=30`, and `XCHAT_MAX_MESSAGES=200`.
 
 #### Local Whisper voice input
 

@@ -195,6 +195,51 @@ def test_orchestrator_sends_only_entitled_tools_to_mistral():
     assert "- payroll:" not in captured["prompt"]
 
 
+class _FakeMistralResponse:
+    def __init__(self, status_code, payload, headers=None):
+        self.status_code = status_code
+        self._payload = payload
+        self.headers = headers or {}
+
+    def json(self):
+        return self._payload
+
+
+def test_mistral_provider_retries_transient_http_failures(monkeypatch):
+    responses = iter([
+        _FakeMistralResponse(429, {"code": "rate_limit", "message": "Slow down"}, {"Retry-After": "1"}),
+        _FakeMistralResponse(200, {"choices": [{"message": {"role": "assistant", "content": "Ready"}}]}),
+    ])
+    calls = []
+    monkeypatch.setattr(xchat_service.requests, "post", lambda *args, **kwargs: calls.append(kwargs) or next(responses))
+    monkeypatch.setattr(xchat_service.time, "sleep", lambda seconds: None)
+
+    provider = xchat_service.MistralProvider(api_key="test-secret-key", max_retries=2)
+    result = provider.complete([{"role": "user", "content": "Hello"}], [])
+
+    assert result["content"] == "Ready"
+    assert len(calls) == 2
+
+
+def test_mistral_provider_logs_safe_http_details(monkeypatch, caplog):
+    response = _FakeMistralResponse(
+        401,
+        {"code": "invalid_api_key", "message": "Rejected test-secret-key"},
+        {"x-request-id": "request-123"},
+    )
+    monkeypatch.setattr(xchat_service.requests, "post", lambda *args, **kwargs: response)
+    provider = xchat_service.MistralProvider(api_key="test-secret-key", max_retries=0)
+
+    with caplog.at_level("WARNING"):
+        with pytest.raises(xchat_service.XChatConfigurationError):
+            provider.complete([{"role": "user", "content": "Hello"}], [])
+
+    assert "status=401" in caplog.text
+    assert "code=invalid_api_key" in caplog.text
+    assert "request_id=request-123" in caplog.text
+    assert "test-secret-key" not in caplog.text
+
+
 def test_disabled_feature_tool_cannot_be_called_directly(xchat_db):
     with pytest.raises(PermissionError):
         xchat_tools.execute_tool("get_device_status", {}, vendor_id=1, features=["xchat_ai"])
