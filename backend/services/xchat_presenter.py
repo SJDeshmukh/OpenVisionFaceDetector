@@ -4,7 +4,10 @@ from collections import Counter
 
 
 CHART_WORDS = ("chart", "graph", "trend", "visual", "plot", "pie", "bar", "line")
-LIST_WORDS = ("list", "table", "breakdown", "details", "detail", "who", "which", "rank")
+LIST_WORDS = (
+    "list", "table", "breakdown", "details", "detail", "who", "which", "rank",
+    "report", "download", "export", "excel", "xlsx", "spreadsheet", "csv",
+)
 MAX_PRESENTATION_ROWS = 100
 
 

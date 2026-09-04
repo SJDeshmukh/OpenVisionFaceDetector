@@ -1,4 +1,4 @@
-from flask import Blueprint, g, jsonify, request
+from flask import Blueprint, g, jsonify, request, send_file
 
 from middleware.handlers import rate_limit
 from services.auth_service import require_auth
@@ -8,6 +8,7 @@ from services.xchat_service import (
     XChatError,
     create_conversation,
     delete_conversation,
+    export_table_excel,
     get_messages,
     list_conversations,
     process_message,
@@ -60,6 +61,25 @@ def conversation_messages(conversation_id):
         return error
     try:
         return jsonify({"status": "success", "messages": get_messages(conversation_id, g.vendor_id, g.username)})
+    except Exception as exc:
+        return _error_response(exc)
+
+
+@xchat_bp.get("/xchat/conversations/<conversation_id>/messages/<int:message_id>/tables/<table_id>/excel")
+@require_auth(roles=XCHAT_ROLES)
+def conversation_table_excel(conversation_id, message_id, table_id):
+    if error := _feature_guard():
+        return error
+    try:
+        output, filename = export_table_excel(
+            conversation_id, message_id, table_id, g.vendor_id, g.username,
+        )
+        return send_file(
+            output,
+            as_attachment=True,
+            download_name=filename,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
     except Exception as exc:
         return _error_response(exc)
 

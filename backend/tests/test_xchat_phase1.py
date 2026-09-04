@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+from openpyxl import load_workbook
 
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -192,6 +193,8 @@ def test_only_enabled_feature_tools_are_exposed():
     ("Show lectures, subjects, and faculty", {"get_class_activity_summary"}),
     ("Did the scheduled email report run?", {"get_automated_report_status"}),
     ("How many parent face-reset requests are pending?", {"get_parent_access_summary"}),
+    ("Download an Excel report for this month", {"get_attendance_summary"}),
+    ("Export payroll to Excel", xchat_service.PAYROLL_TOOLS),
 ])
 def test_intent_router_covers_each_tool_category(question, expected):
     schemas = xchat_service._tool_schemas_for_question(
@@ -467,6 +470,53 @@ def test_groq_provider_does_not_fall_back_to_other_provider_keys(monkeypatch):
         xchat_service.GroqProvider()
 
 
+def test_configured_omniroute_provider_uses_auto_model_and_optional_gateway_key(monkeypatch):
+    captured = {}
+    tools = [{"type": "function", "function": {"name": "get_status", "parameters": {"type": "object"}}}]
+    response = _FakeMistralResponse(
+        200,
+        {"choices": [{"message": {"role": "assistant", "content": "OmniRoute ready"}}]},
+    )
+
+    def fake_post(url, **kwargs):
+        captured.update({"url": url, **kwargs})
+        return response
+
+    monkeypatch.setenv("XCHAT_PROVIDER", "omniroute")
+    monkeypatch.setenv("OMNIROUTE_API_URL", "http://127.0.0.1:20128/v1/chat/completions")
+    monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
+    monkeypatch.setattr(xchat_service.requests, "post", fake_post)
+
+    provider = xchat_service.configured_provider()
+    result = provider.complete([{"role": "user", "content": "Hello"}], tools)
+
+    assert isinstance(provider, xchat_service.OmniRouteProvider)
+    assert captured["url"] == "http://127.0.0.1:20128/v1/chat/completions"
+    assert "Authorization" not in captured["headers"]
+    assert captured["json"]["model"] == "auto"
+    assert captured["json"]["tools"] == tools
+    assert captured["json"]["tool_choice"] == "auto"
+    assert "parallel_tool_calls" not in captured["json"]
+    assert result["content"] == "OmniRoute ready"
+
+
+def test_omniroute_provider_sends_configured_gateway_key(monkeypatch):
+    captured = {}
+    response = _FakeMistralResponse(
+        200, {"choices": [{"message": {"role": "assistant", "content": "Ready"}}]},
+    )
+    monkeypatch.setattr(
+        xchat_service.requests, "post",
+        lambda url, **kwargs: captured.update(kwargs) or response,
+    )
+
+    xchat_service.OmniRouteProvider(api_key="omniroute-gateway-key").complete(
+        [{"role": "user", "content": "Hi"}], [],
+    )
+
+    assert captured["headers"]["Authorization"] == "Bearer omniroute-gateway-key"
+
+
 def test_disabled_feature_tool_cannot_be_called_directly(xchat_db):
     with pytest.raises(PermissionError):
         xchat_tools.execute_tool("get_device_status", {}, vendor_id=1, features=["xchat_ai"])
@@ -557,6 +607,7 @@ def test_orchestrator_executes_tool_and_audits_metadata_only(xchat_db):
     assert "How was attendance" not in audit["details"]
     assert "get_attendance_summary" in audit["details"]
     assert len(stored_messages) == 2
+    assert isinstance(result["message_id"], int)
 
 
 def test_failed_new_chat_leaves_audit_but_no_empty_history(xchat_db):
@@ -693,6 +744,24 @@ def test_presenter_builds_indexed_table_and_requested_chart():
     assert presentation["tables"][0]["rows"][1]["index"] == 2
 
 
+def test_excel_report_request_builds_downloadable_table():
+    result = {
+        "period": {"start": "2026-08-01", "end": "2026-08-02"},
+        "employees": 2, "present_person_days": 3, "late_person_days": 1, "attendance_rate_percent": 75,
+        "daily_breakdown": [
+            {"date": "2026-08-01", "present_employees": 2, "late_employees": 1, "attendance_events": 4},
+        ],
+    }
+
+    presentation = build_presentation(
+        "Download an Excel attendance report",
+        [{"name": "get_attendance_summary", "result": result}],
+    )
+
+    assert presentation["tables"][0]["id"] == "attendance-daily"
+    assert presentation["tables"][0]["download_name"] == "attendance-daily.csv"
+
+
 def test_present_people_builds_present_metric_and_name_table():
     result = {
         "date": "2026-08-02", "present_count": 1,
@@ -725,3 +794,32 @@ def test_structured_presentation_is_persisted_in_history(xchat_db):
     xchat_service.save_exchange(conversation_id, 1, "alpha-admin", "List attendance", "Here it is.", {"presentation": presentation})
     messages = xchat_service.get_messages(conversation_id, 1, "alpha-admin")
     assert messages[-1]["metadata"]["presentation"] == presentation
+
+
+def test_excel_export_is_real_workbook_and_scoped_to_saved_chat_table(xchat_db):
+    conversation_id = xchat_service.create_conversation(1, "alpha-admin")
+    presentation = {"tables": [{
+        "id": "attendance-table",
+        "title": "Attendance / Daily",
+        "download_name": "daily attendance.csv",
+        "columns": [{"key": "name", "label": "Name"}, {"key": "present", "label": "Present"}],
+        "rows": [{"index": 1, "name": "Alice", "present": 1}, {"index": 2, "name": "=2+2", "present": 0}],
+    }]}
+    message_id = xchat_service.save_exchange(
+        conversation_id, 1, "alpha-admin", "Export attendance", "Here it is.", {"presentation": presentation},
+    )
+
+    output, filename = xchat_service.export_table_excel(
+        conversation_id, message_id, "attendance-table", 1, "alpha-admin",
+    )
+    workbook = load_workbook(output)
+    worksheet = workbook.active
+
+    assert filename == "daily-attendance.xlsx"
+    assert worksheet.title == "Attendance   Daily"
+    assert worksheet.freeze_panes == "A2"
+    assert [cell.value for cell in worksheet[1]] == ["#", "Name", "Present"]
+    assert [cell.value for cell in worksheet[2]] == [1, "Alice", 1]
+    assert worksheet["B3"].value == "'=2+2"
+    with pytest.raises(xchat_service.XChatNotFoundError):
+        xchat_service.export_table_excel(conversation_id, message_id, "attendance-table", 2, "beta-admin")

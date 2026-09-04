@@ -51,17 +51,30 @@ Run exactly one Celery Beat instance alongside one or more Celery workers. The B
 
 For the EC2 installer, run `bash setup_aws.sh` normally. It asks for the Gmail App Password using hidden terminal input and stores it in `backend/.env` with file mode `0600`. For an existing AWS deployment, run `bash setup_aws.sh configure-mail`; this updates only the protected mail configuration and restarts the API, worker, and Beat scheduler. Never place the password directly in `setup_aws.sh`.
 
-### XChat Phase 1 (Gemini, Mistral, or Groq)
+### XChat Phase 1 (Gemini, Mistral, Groq, or OmniRoute)
 
 Enable `xchat_ai` for a vendor in the Superadmin portal. Vendor admins and owners then receive a read-only assistant for attendance summaries, estimated payroll, payroll-period comparisons, employee-hours rankings, and incomplete attendance. Tenant identity comes only from the authenticated server session; it is not exposed as an AI tool argument. Conversation history is private to the vendor and username, retained for 30 days by default, and queries write metadata-only audit events.
 
-On an existing EC2 deployment, choose Gemini, Mistral, Groq, or disabled and securely configure the selected provider with hidden input:
+On an existing EC2 deployment, choose Gemini, Mistral, Groq, OmniRoute, or disabled and securely configure the selected provider with hidden input:
 
 ```bash
 bash setup_aws.sh configure-ai
 ```
 
-Fresh deployments also ask which XChat provider to activate. The script stores the selected key in the protected environment file with mode `0600` and checks the key and model before interrupting the running application. A temporary provider `429` or `5xx` response is reported but does not block deployment; invalid credentials still stop setup. Runtime calls retry transient responses twice with backoff and log provider token usage/status/code without exposing prompts or keys. Do not put API keys in source files or commit them. Provider settings are `XCHAT_PROVIDER=gemini|mistral|groq|none`, `GEMINI_MODEL=gemini-3.8-flash`, `MISTRAL_MODEL=mistral-small-latest`, `GROQ_MODEL=openai/gpt-oss-20b`, and the corresponding timeout/max-retry variables. Groq defaults to `GROQ_REASONING_EFFORT=low` and `GROQ_MAX_OUTPUT_TOKENS=450`; XChat also narrows clear questions to relevant entitled tools while retaining the full permitted tool set for ambiguous questions. Conversation settings remain `XCHAT_HISTORY_DAYS=30` and `XCHAT_MAX_MESSAGES=200`.
+Fresh deployments also ask which XChat provider to activate. The script stores the selected gateway key in the protected application environment with mode `0600`, reuses it on later runs, and checks the key and model before interrupting the running application. A temporary provider `429` or `5xx` response is reported but does not block deployment; invalid credentials still stop setup. Runtime calls retry transient responses twice with backoff and log provider token usage/status/code without exposing prompts or keys. Do not put API keys in source files or commit them. Provider settings are `XCHAT_PROVIDER=gemini|mistral|groq|omniroute|none`, `GEMINI_MODEL=gemini-3.8-flash`, `MISTRAL_MODEL=mistral-small-latest`, `GROQ_MODEL=openai/gpt-oss-20b`, and `OMNIROUTE_MODEL=auto`, with corresponding timeout/max-retry variables. Groq defaults to `GROQ_REASONING_EFFORT=low` and `GROQ_MAX_OUTPUT_TOKENS=450`; XChat also narrows clear questions to relevant entitled tools while retaining the full permitted tool set for ambiguous questions. Conversation settings remain `XCHAT_HISTORY_DAYS=30` and `XCHAT_MAX_MESSAGES=200`.
+
+OmniRoute runs as a separate local gateway and exposes an OpenAI-compatible API. A single `bash setup_aws.sh` invocation handles it: select option **4** when asked for the XChat provider, and the installer completes the remaining OmniRoute work without a browser, dashboard login, copied key, PM2 command, or second setup command. For a bare-metal deployment, it adds Node.js 24 and the OmniRoute CLI only when missing, then creates and enables `openvision-omniroute.service`. For Docker, it starts the Compose `omniroute` profile with a persistent data volume.
+
+The first run generates the dashboard password and encryption/signing secrets once in `.omniroute.env`. After the gateway is healthy, the installer uses OmniRoute's authenticated loopback CLI to create one key named **OpenVision XChat**, extracts the returned key without printing it, saves it in the same protected file, copies it to the active application environment, validates an `auto` completion, and continues deployment. Later runs detect and reuse that saved key instead of creating another. The secrets file is ignored by Git and protected with mode `0600`.
+
+These commands are optional diagnostics after deployment; they are not additional setup steps:
+
+```bash
+bash setup_aws.sh omniroute-status
+bash setup_aws.sh omniroute-key
+```
+
+The current OmniRoute release requires Node.js `>=22.22.2 <23` or `>=24 <27`; Node.js 20 is not sufficient. The installer uses Node.js 24 and does not perform a full operating-system upgrade. XChat uses model `auto`; bare metal calls the loopback API, while the Docker API calls the private Compose service. Port `20128` is bound only to `127.0.0.1`, so do not add a public EC2 Security Group or UFW rule for it.
 
 #### Local Whisper voice input
 

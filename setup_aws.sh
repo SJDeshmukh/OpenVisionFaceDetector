@@ -8,6 +8,9 @@
 #   bash setup_aws.sh boot-check      Idempotently start and verify an installed deployment
 #   bash setup_aws.sh configure-mail  Securely configure Gmail SMTP and restart app services
 #   bash setup_aws.sh configure-ai    Choose/configure the XChat AI provider and restart the API
+#   bash setup_aws.sh omniroute-status    Show install/service/key status without exposing secrets
+#   bash setup_aws.sh omniroute-password  Reveal the saved dashboard bootstrap password
+#   bash setup_aws.sh omniroute-key       Reveal the saved XChat gateway key
 #
 # Bare-metal environment overrides:
 #   DEPLOY_DOMAIN=tapinx.in    Public DNS name (default: tapinx.in)
@@ -27,6 +30,9 @@ ENV_FILE="$SCRIPT_DIR/backend/.env"
 RUN_USER="$(id -un)"
 RUN_GROUP="$(id -gn)"
 MODE_FILE="$SCRIPT_DIR/.openvision-deployment-mode"
+OMNIROUTE_ENV_FILE="$SCRIPT_DIR/.omniroute.env"
+OMNIROUTE_DATA_DIR="$SCRIPT_DIR/.omniroute-data"
+OMNIROUTE_SERVICE="openvision-omniroute.service"
 RECOVER_SYSTEMD_SERVICES=0
 APT_LOCK_TIMEOUT_SECONDS="${APT_LOCK_TIMEOUT_SECONDS:-900}"
 
@@ -129,6 +135,288 @@ file_env_get() {
     sed -n "s/^${key}=//p" "$target_file" | tail -n 1
 }
 
+mask_secret() {
+    local value="${1:-}"
+    if [ -z "$value" ]; then
+        printf 'not saved'
+    elif [ "${#value}" -le 12 ]; then
+        printf 'saved (masked)'
+    else
+        printf '%s...%s' "${value:0:6}" "${value: -4}"
+    fi
+}
+
+saved_omniroute_gateway_key() {
+    local value=""
+    value="$(file_env_get "$OMNIROUTE_ENV_FILE" OPENVISION_XCHAT_API_KEY)"
+    if [ "$(detected_deployment_mode)" = "docker" ] && [ -f "$SCRIPT_DIR/.env" ]; then
+        [ -n "$value" ] || value="$(file_env_get "$SCRIPT_DIR/.env" OMNIROUTE_API_KEY)"
+    fi
+    if [ -z "$value" ]; then
+        value="$(file_env_get "$ENV_FILE" OMNIROUTE_API_KEY)"
+    fi
+    if [ -z "$value" ] && [ -f "$SCRIPT_DIR/.env" ]; then
+        value="$(file_env_get "$SCRIPT_DIR/.env" OMNIROUTE_API_KEY)"
+    fi
+    printf '%s' "$value"
+}
+
+node_supports_omniroute() {
+    local version="" major=0 minor=0 patch=0
+    command -v node >/dev/null 2>&1 || return 1
+    version="$(node --version 2>/dev/null || true)"
+    if [[ "$version" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+        major="${BASH_REMATCH[1]}"
+        minor="${BASH_REMATCH[2]}"
+        patch="${BASH_REMATCH[3]}"
+    else
+        return 1
+    fi
+    if [ "$major" -eq 22 ]; then
+        [ "$minor" -gt 22 ] || { [ "$minor" -eq 22 ] && [ "$patch" -ge 2 ]; }
+        return
+    fi
+    [ "$major" -ge 24 ] && [ "$major" -lt 27 ]
+}
+
+install_omniroute_cli() {
+    local npm_prefix=""
+    if ! node_supports_omniroute; then
+        log "Installing Node.js 24 for OmniRoute"
+        run_root apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT_SECONDS" update
+        run_root env DEBIAN_FRONTEND=noninteractive apt-get \
+            -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT_SECONDS" install -y ca-certificates curl openssl
+        if [ "$EUID" -eq 0 ]; then
+            curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
+        else
+            curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
+        fi
+        run_root env DEBIAN_FRONTEND=noninteractive apt-get \
+            -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT_SECONDS" install -y nodejs
+    fi
+    node_supports_omniroute || die "OmniRoute requires Node.js >=22.22.2 <23 or >=24 <27"
+    if ! command -v omniroute >/dev/null 2>&1; then
+        log "Installing OmniRoute"
+        npm_prefix="$(npm config get prefix)"
+        if [ -d "$npm_prefix" ] && [ -w "$npm_prefix" ]; then
+            npm install -g omniroute@latest
+        else
+            run_root npm install -g omniroute@latest
+        fi
+    fi
+}
+
+ensure_omniroute_secret() {
+    local key="$1"
+    local value="$2"
+    [ -n "$(file_env_get "$OMNIROUTE_ENV_FILE" "$key")" ] \
+        || file_env_set "$OMNIROUTE_ENV_FILE" "$key" "$value"
+}
+
+ensure_random_omniroute_secret() {
+    local key="$1"
+    local byte_count="$2"
+    if [ -z "$(file_env_get "$OMNIROUTE_ENV_FILE" "$key")" ]; then
+        file_env_set "$OMNIROUTE_ENV_FILE" "$key" "$(openssl rand -hex "$byte_count")"
+    fi
+}
+
+configure_omniroute_secret_file() {
+    local runtime_mode="$1"
+    local initial_password="${INITIAL_PASSWORD:-}"
+    local data_dir="$OMNIROUTE_DATA_DIR"
+    local bind_host="127.0.0.1"
+
+    command -v openssl >/dev/null 2>&1 || die "openssl is required to create OmniRoute secrets"
+    touch "$OMNIROUTE_ENV_FILE"
+    chmod 600 "$OMNIROUTE_ENV_FILE"
+
+    ensure_random_omniroute_secret JWT_SECRET 32
+    ensure_random_omniroute_secret API_KEY_SECRET 32
+    if [ -z "$(file_env_get "$OMNIROUTE_ENV_FILE" INITIAL_PASSWORD)" ]; then
+        initial_password="${initial_password:-$(openssl rand -hex 24)}"
+        initial_password="$(printf '%s' "$initial_password" | tr -d '\r\n')"
+        [ "${#initial_password}" -ge 16 ] || die "INITIAL_PASSWORD must contain at least 16 characters"
+        file_env_set "$OMNIROUTE_ENV_FILE" INITIAL_PASSWORD "$initial_password"
+    fi
+    ensure_random_omniroute_secret STORAGE_ENCRYPTION_KEY 32
+    ensure_omniroute_secret STORAGE_ENCRYPTION_KEY_VERSION "v1"
+    ensure_random_omniroute_secret MACHINE_ID_SALT 32
+    ensure_random_omniroute_secret OMNIROUTE_WS_BRIDGE_SECRET 32
+
+    if [ "$runtime_mode" = "docker" ]; then
+        data_dir="/app/data"
+        bind_host="0.0.0.0"
+    else
+        mkdir -p "$OMNIROUTE_DATA_DIR"
+        chmod 700 "$OMNIROUTE_DATA_DIR"
+    fi
+    file_env_set "$OMNIROUTE_ENV_FILE" PORT "20128"
+    file_env_set "$OMNIROUTE_ENV_FILE" NODE_ENV "production"
+    file_env_set "$OMNIROUTE_ENV_FILE" DATA_DIR "$data_dir"
+    file_env_set "$OMNIROUTE_ENV_FILE" OMNIROUTE_SERVER_HOST "$bind_host"
+    file_env_set "$OMNIROUTE_ENV_FILE" BASE_URL "http://127.0.0.1:20128"
+    file_env_set "$OMNIROUTE_ENV_FILE" REQUIRE_API_KEY "true"
+    file_env_set "$OMNIROUTE_ENV_FILE" ALLOW_API_KEY_REVEAL "false"
+    file_env_set "$OMNIROUTE_ENV_FILE" AUTH_COOKIE_SECURE "false"
+    file_env_set "$OMNIROUTE_ENV_FILE" APP_LOG_TO_FILE "true"
+    file_env_set "$OMNIROUTE_ENV_FILE" OMNIROUTE_MEMORY_MB "1024"
+    chmod 600 "$OMNIROUTE_ENV_FILE"
+}
+
+install_omniroute_systemd_service() {
+    local omniroute_bin="" node_bin_dir=""
+    [ "$RUN_USER" != "root" ] || die "Run configure-ai as the normal deployment user, not with sudo"
+    install_omniroute_cli
+    omniroute_bin="$(readlink -f "$(command -v omniroute)")"
+    node_bin_dir="$(dirname "$(readlink -f "$(command -v node)")")"
+    sudo tee "/etc/systemd/system/${OMNIROUTE_SERVICE}" >/dev/null <<UNIT
+[Unit]
+Description=OpenVision OmniRoute AI gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${RUN_USER}
+Group=${RUN_GROUP}
+WorkingDirectory=${SCRIPT_DIR}
+Environment="PATH=${node_bin_dir}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+EnvironmentFile=${OMNIROUTE_ENV_FILE}
+ExecStart=${omniroute_bin} serve --no-open --no-tray --no-recovery
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=40
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now "$OMNIROUTE_SERVICE"
+}
+
+extract_created_omniroute_key() {
+    python3 -c '
+import json
+import sys
+
+payload = sys.stdin.read()
+decoder = json.JSONDecoder()
+for offset, char in enumerate(payload):
+    if char != "{":
+        continue
+    try:
+        candidate, _ = decoder.raw_decode(payload, offset)
+    except json.JSONDecodeError:
+        continue
+    if isinstance(candidate, dict) and isinstance(candidate.get("key"), str):
+        key = candidate["key"].strip()
+        if len(key) >= 20:
+            print(key)
+            raise SystemExit(0)
+print("OmniRoute CLI did not return a usable API key", file=sys.stderr)
+raise SystemExit(1)
+'
+}
+
+provision_omniroute_gateway_key() {
+    local runtime_mode="$1"
+    local gateway_key="${OMNIROUTE_API_KEY:-}"
+    local cli_output=""
+
+    [ -n "$gateway_key" ] || gateway_key="$(saved_omniroute_gateway_key)"
+    if [ -n "$gateway_key" ]; then
+        if [ -z "$(file_env_get "$OMNIROUTE_ENV_FILE" OPENVISION_XCHAT_API_KEY)" ]; then
+            file_env_set "$OMNIROUTE_ENV_FILE" OPENVISION_XCHAT_API_KEY "$gateway_key"
+            chmod 600 "$OMNIROUTE_ENV_FILE"
+        fi
+        printf 'OmniRoute XChat key: reusing the saved key.\n'
+        return 0
+    fi
+
+    log "Creating the OmniRoute XChat API key through the local CLI"
+    if [ "$runtime_mode" = "docker" ]; then
+        if ! cli_output="$(run_root docker compose --profile omniroute exec -T omniroute \
+            env OMNIROUTE_BASE_URL=http://127.0.0.1:20128 \
+            omniroute --output json --quiet --no-color api api-keys post-api-keys \
+            --body '{"name":"OpenVision XChat"}' 2>&1)"; then
+            die "OmniRoute local CLI could not create the XChat API key"
+        fi
+    else
+        if ! cli_output="$(OMNIROUTE_BASE_URL=http://127.0.0.1:20128 \
+            omniroute --output json --quiet --no-color api api-keys post-api-keys \
+            --body '{"name":"OpenVision XChat"}' 2>&1)"; then
+            die "OmniRoute local CLI could not create the XChat API key"
+        fi
+    fi
+    gateway_key="$(printf '%s' "$cli_output" | extract_created_omniroute_key)"
+    [[ "$gateway_key" =~ ^[A-Za-z0-9._-]{20,200}$ ]] \
+        || die "OmniRoute returned an API key with an unexpected format"
+    file_env_set "$OMNIROUTE_ENV_FILE" OPENVISION_XCHAT_API_KEY "$gateway_key"
+    chmod 600 "$OMNIROUTE_ENV_FILE"
+    printf 'OmniRoute XChat key: created once and saved for reuse.\n'
+}
+
+ensure_omniroute_gateway() {
+    local runtime_mode="$1"
+    local existing_gateway_key=""
+    configure_omniroute_secret_file "$runtime_mode"
+    if [ "$runtime_mode" = "docker" ]; then
+        run_root docker compose --profile omniroute up -d omniroute
+    else
+        install_omniroute_systemd_service
+    fi
+    wait_for_url "http://127.0.0.1:20128/" 60 || die "OmniRoute did not become ready on loopback port 20128"
+    if [ "$runtime_mode" = "bare" ]; then
+        sudo systemctl is-active --quiet "$OMNIROUTE_SERVICE" || {
+            sudo journalctl -u "$OMNIROUTE_SERVICE" -n 100 --no-pager || true
+            die "The OmniRoute systemd service did not remain active"
+        }
+    fi
+    provision_omniroute_gateway_key "$runtime_mode"
+    existing_gateway_key="$(saved_omniroute_gateway_key)"
+    [ -n "$existing_gateway_key" ] || die "OmniRoute XChat key provisioning did not persist a key"
+    printf 'OmniRoute is running headlessly. Its generated secrets and XChat key are preserved in %s (mode 0600).\n' "$OMNIROUTE_ENV_FILE"
+}
+
+detected_deployment_mode() {
+    local deployment_mode=""
+    deployment_mode="$(sed -n '1p' "$MODE_FILE" 2>/dev/null || true)"
+    if [[ "$deployment_mode" =~ ^(docker|bare)$ ]]; then
+        printf '%s' "$deployment_mode"
+    elif command -v docker >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/.env" ]; then
+        printf 'docker'
+    else
+        printf 'bare'
+    fi
+}
+
+show_omniroute_status() {
+    local gateway_key="" initial_password="" service_state="not installed" runtime_mode="" xchat_env="$ENV_FILE"
+    runtime_mode="$(detected_deployment_mode)"
+    if [ "$runtime_mode" = "docker" ] && [ -f "$SCRIPT_DIR/.env" ]; then
+        xchat_env="$SCRIPT_DIR/.env"
+    fi
+    gateway_key="$(saved_omniroute_gateway_key)"
+    initial_password="$(file_env_get "$OMNIROUTE_ENV_FILE" INITIAL_PASSWORD)"
+    if [ "$runtime_mode" = "docker" ] && command -v docker >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/docker-compose.yml" ]; then
+        if [ -n "$(run_root docker compose --profile omniroute ps -q omniroute 2>/dev/null || true)" ]; then
+            service_state="docker $(run_root docker compose --profile omniroute ps --status running -q omniroute 2>/dev/null | grep -q . && printf running || printf stopped)"
+        fi
+    elif command -v systemctl >/dev/null 2>&1 && systemctl cat "$OMNIROUTE_SERVICE" >/dev/null 2>&1; then
+        service_state="$(systemctl is-active "$OMNIROUTE_SERVICE" 2>/dev/null || true)"
+    fi
+    printf 'OmniRoute CLI:       %s\n' "$(command -v omniroute >/dev/null 2>&1 && omniroute --version 2>/dev/null | head -n 1 || printf 'not installed')"
+    printf 'OmniRoute service:   %s\n' "$service_state"
+    printf 'Dashboard password: %s\n' "$([ -n "$initial_password" ] && printf 'generated and saved' || printf 'not generated')"
+    printf 'XChat gateway key:   %s\n' "$(mask_secret "$gateway_key")"
+    printf 'Protected secrets:   %s\n' "$OMNIROUTE_ENV_FILE"
+    printf 'XChat environment:   %s\n' "$xchat_env"
+}
+
 configure_mail_file() {
     local target_file="$1"
     local app_password="$2"
@@ -203,9 +491,9 @@ prompt_xchat_provider() {
         entered_value="$XCHAT_PROVIDER"
     elif [ -t 0 ]; then
         existing_value="${existing_value,,}"
-        [[ "$existing_value" =~ ^(gemini|mistral|groq|none)$ ]] || existing_value="gemini"
+        [[ "$existing_value" =~ ^(gemini|mistral|groq|omniroute|none)$ ]] || existing_value="gemini"
         printf '\nXChat AI provider\n' >&2
-        printf '  1) Gemini\n  2) Mistral\n  3) Groq (openai/gpt-oss-20b)\n  4) Disabled\n' >&2
+        printf '  1) Gemini\n  2) Mistral\n  3) Groq (openai/gpt-oss-20b)\n  4) OmniRoute (auto routing/fallback)\n  5) Disabled\n' >&2
         read -r -p "Select provider (current/default: ${existing_value}): " entered_value
         entered_value="${entered_value:-$existing_value}"
     else
@@ -215,8 +503,9 @@ prompt_xchat_provider() {
         1|gemini) printf 'gemini' ;;
         2|mistral) printf 'mistral' ;;
         3|groq|grok) printf 'groq' ;;
-        4|none|disabled|off) printf 'none' ;;
-        *) die "Choose Gemini, Mistral, Groq, or Disabled for XChat" ;;
+        4|omniroute|omni-route|omni) printf 'omniroute' ;;
+        5|none|disabled|off) printf 'none' ;;
+        *) die "Choose Gemini, Mistral, Groq, OmniRoute, or Disabled for XChat" ;;
     esac
 }
 
@@ -259,6 +548,23 @@ prompt_groq_api_key() {
     prompt_ai_api_key "Groq" GROQ_API_KEY "${1:-}"
 }
 
+prompt_omniroute_api_key() {
+    local existing_value="${1:-}"
+    local entered_value=""
+    if [ -n "${OMNIROUTE_API_KEY:-}" ]; then
+        entered_value="$OMNIROUTE_API_KEY"
+    elif [ -n "$(file_env_get "$OMNIROUTE_ENV_FILE" OPENVISION_XCHAT_API_KEY)" ]; then
+        entered_value="$(file_env_get "$OMNIROUTE_ENV_FILE" OPENVISION_XCHAT_API_KEY)"
+    elif [ -n "$existing_value" ]; then
+        entered_value="$existing_value"
+    fi
+    entered_value="$(printf '%s' "$entered_value" | tr -d '[:space:]')"
+    if [ -n "$entered_value" ] && [[ ! "$entered_value" =~ ^[A-Za-z0-9._-]{20,200}$ ]]; then
+        die "OMNIROUTE_API_KEY has an unexpected format"
+    fi
+    printf '%s' "$entered_value"
+}
+
 configure_ai_file() {
     local target_file="$1"
     local provider_name="$2"
@@ -275,12 +581,18 @@ configure_ai_file() {
     file_env_set "$target_file" GROQ_MAX_RETRIES "2"
     file_env_set "$target_file" GROQ_REASONING_EFFORT "low"
     file_env_set "$target_file" GROQ_MAX_OUTPUT_TOKENS "450"
+    file_env_set "$target_file" OMNIROUTE_MODEL "auto"
+    file_env_set "$target_file" OMNIROUTE_TIMEOUT_SECONDS "60"
+    file_env_set "$target_file" OMNIROUTE_MAX_RETRIES "2"
+    file_env_set "$target_file" OMNIROUTE_MAX_OUTPUT_TOKENS "700"
     if [ "$provider_name" = "gemini" ]; then
         file_env_set "$target_file" GEMINI_API_KEY "$api_key"
     elif [ "$provider_name" = "mistral" ]; then
         file_env_set "$target_file" MISTRAL_API_KEY "$api_key"
     elif [ "$provider_name" = "groq" ]; then
         file_env_set "$target_file" GROQ_API_KEY "$api_key"
+    elif [ "$provider_name" = "omniroute" ]; then
+        file_env_set "$target_file" OMNIROUTE_API_KEY "$api_key"
     fi
     file_env_set "$target_file" XCHAT_HISTORY_DAYS "30"
     file_env_set "$target_file" XCHAT_MAX_MESSAGES "200"
@@ -291,8 +603,10 @@ existing_xchat_provider() {
     local target_file="$1"
     local configured_provider=""
     configured_provider="$(file_env_get "$target_file" XCHAT_PROVIDER)"
-    if [[ "${configured_provider,,}" =~ ^(gemini|mistral|groq|none)$ ]]; then
+    if [[ "${configured_provider,,}" =~ ^(gemini|mistral|groq|omniroute|none)$ ]]; then
         printf '%s' "${configured_provider,,}"
+    elif [ -n "$(file_env_get "$target_file" OMNIROUTE_API_KEY)" ]; then
+        printf 'omniroute'
     elif [ -n "$(file_env_get "$target_file" GROQ_API_KEY)" ]; then
         printf 'groq'
     elif [ -n "$(file_env_get "$target_file" GEMINI_API_KEY)" ]; then
@@ -311,6 +625,7 @@ selected_ai_key() {
         gemini) prompt_gemini_api_key "$(file_env_get "$target_file" GEMINI_API_KEY)" ;;
         mistral) prompt_mistral_api_key "$(file_env_get "$target_file" MISTRAL_API_KEY)" ;;
         groq) prompt_groq_api_key "$(file_env_get "$target_file" GROQ_API_KEY)" ;;
+        omniroute) prompt_omniroute_api_key "$(file_env_get "$target_file" OMNIROUTE_API_KEY)" ;;
         none) printf '' ;;
     esac
 }
@@ -320,6 +635,7 @@ selected_ai_model() {
         gemini) printf 'gemini-3.8-flash' ;;
         mistral) printf 'mistral-small-latest' ;;
         groq) printf 'openai/gpt-oss-20b' ;;
+        omniroute) printf 'auto' ;;
         none) printf '' ;;
     esac
 }
@@ -369,8 +685,8 @@ verify_ai_access() {
     local provider_name="$1"
     local api_key="$2"
     local model_name="$3"
-    [ -n "$api_key" ] || return 0
-    AI_PROVIDER="$provider_name" AI_API_KEY="$api_key" AI_MODEL="$model_name" python3 - <<'PY'
+    [ -n "$api_key" ] || [ "$provider_name" = "omniroute" ] || return 0
+    AI_PROVIDER="$provider_name" AI_API_KEY="$api_key" AI_MODEL="$model_name" AI_API_URL="${OMNIROUTE_API_URL:-}" python3 - <<'PY'
 import json
 import os
 import sys
@@ -401,6 +717,16 @@ elif provider == "groq":
         "User-Agent": "OpenVisionX/1.0",
     }
     request = urllib.request.Request(url, data=payload, method="POST", headers=headers)
+elif provider == "omniroute":
+    url = os.environ.get("AI_API_URL") or "http://127.0.0.1:20128/v1/chat/completions"
+    payload = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": "Reply OK."}],
+    }).encode("utf-8")
+    headers = {"Content-Type": "application/json", "User-Agent": "OpenVisionX/1.0"}
+    if api_key:
+        headers["Authorization"] = "Bearer " + api_key
+    request = urllib.request.Request(url, data=payload, method="POST", headers=headers)
 else:
     url = "https://api.mistral.ai/v1/models"
     headers = {"Authorization": "Bearer " + api_key}
@@ -410,10 +736,10 @@ for attempt in range(3):
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             data = json.load(response)
-        if provider == "groq":
+        if provider in {"groq", "omniroute"}:
             if not isinstance(data, dict) or not isinstance(data.get("choices"), list) or not data["choices"]:
-                raise RuntimeError("Groq returned no completion choices")
-            print("Groq API: key and configured model accepted by chat completions.")
+                raise RuntimeError(f"{provider} returned no completion choices")
+            print(f"{provider.title()} API: configured model accepted by chat completions.")
             raise SystemExit(0)
         if isinstance(data, dict):
             cards = data.get("models", []) if provider == "gemini" else data.get("data", [])
@@ -441,7 +767,8 @@ for attempt in range(3):
         except Exception:
             detail = body or "request rejected"
         detail = " ".join(str(detail).split())[:240]
-        detail = detail.replace(api_key, "[redacted]")
+        if api_key:
+            detail = detail.replace(api_key, "[redacted]")
         if exc.code in {429, 500, 502, 503, 504} and attempt < 2:
             time.sleep(2 ** attempt)
             continue
@@ -525,13 +852,35 @@ if [ "$ACTION" = "check" ]; then
     exit 0
 fi
 
+if [ "$ACTION" = "omniroute-status" ]; then
+    show_omniroute_status
+    exit 0
+fi
+
+if [ "$ACTION" = "omniroute-password" ]; then
+    OMNIROUTE_SAVED_PASSWORD="$(file_env_get "$OMNIROUTE_ENV_FILE" INITIAL_PASSWORD)"
+    [ -n "$OMNIROUTE_SAVED_PASSWORD" ] || die "OmniRoute dashboard password has not been generated; select OmniRoute with configure-ai first"
+    printf 'Warning: this prints the dashboard password to your terminal. Do not paste it into logs or chat.\n' >&2
+    printf '%s\n' "$OMNIROUTE_SAVED_PASSWORD"
+    exit 0
+fi
+
+if [ "$ACTION" = "omniroute-key" ]; then
+    OMNIROUTE_SAVED_KEY="$(saved_omniroute_gateway_key)"
+    [ -n "$OMNIROUTE_SAVED_KEY" ] || die "No OmniRoute XChat gateway key is saved; run setup or configure-ai and select OmniRoute"
+    printf 'Warning: this prints the XChat gateway key to your terminal. Do not paste it into logs or chat.\n' >&2
+    printf '%s\n' "$OMNIROUTE_SAVED_KEY"
+    exit 0
+fi
+
 if [ "$ACTION" = "stop" ]; then
     log "Stopping OpenVision application services"
     stop_application_services
+    sudo systemctl stop "$OMNIROUTE_SERVICE" 2>/dev/null || true
     if command -v docker >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/docker-compose.yml" ]; then
-        sudo docker compose stop api worker beat 2>/dev/null || true
+        sudo docker compose --profile omniroute stop api worker beat omniroute 2>/dev/null || true
     fi
-    printf 'OpenVision API and worker services are stopped. PostgreSQL, Redis, Nginx, and unrelated containers were left running.\n'
+    printf 'OpenVision API, worker services, and its OmniRoute gateway are stopped. PostgreSQL, Redis, Nginx, and unrelated containers were left running.\n'
     exit 0
 fi
 
@@ -540,9 +889,20 @@ if [ "$ACTION" = "boot-check" ]; then
     DEPLOYMENT_MODE="$(sed -n '1p' "$MODE_FILE" 2>/dev/null || true)"
     if [ "$DEPLOYMENT_MODE" = "docker" ]; then
         [ -f "$SCRIPT_DIR/.env" ] || die "Docker environment file is missing"
-        run_root docker compose up -d --remove-orphans
+        if [ "$(file_env_get "$SCRIPT_DIR/.env" XCHAT_PROVIDER)" = "omniroute" ]; then
+            [ -f "$OMNIROUTE_ENV_FILE" ] || die "OmniRoute secrets file is missing; restore it instead of generating replacement encryption secrets"
+            run_root docker compose --profile omniroute up -d --remove-orphans
+            wait_for_url "http://127.0.0.1:20128/" 60 || die "OmniRoute failed its post-boot health check"
+        else
+            run_root docker compose up -d --remove-orphans
+        fi
     elif [ "$DEPLOYMENT_MODE" = "bare" ]; then
         run_root systemctl start postgresql redis-server nginx
+        if [ "$(file_env_get "$ENV_FILE" XCHAT_PROVIDER)" = "omniroute" ]; then
+            [ -f "$OMNIROUTE_ENV_FILE" ] || die "OmniRoute secrets file is missing; restore it instead of generating replacement encryption secrets"
+            run_root systemctl start "$OMNIROUTE_SERVICE"
+            wait_for_url "http://127.0.0.1:20128/" 60 || die "OmniRoute failed its post-boot health check"
+        fi
         run_root systemctl start openvision-backend openvision-celery openvision-celery-beat
     else
         die "Deployment mode is unknown; run setup_aws.sh once to install OpenVision"
@@ -575,8 +935,16 @@ fi
 
 if [ "$ACTION" = "configure-ai" ]; then
     require_source_tree
-    AI_PROVIDER="$(prompt_xchat_provider "$(existing_xchat_provider "$ENV_FILE")")"
-    AI_KEY="$(selected_ai_key "$AI_PROVIDER" "$ENV_FILE")"
+    AI_RUNTIME_MODE="$(detected_deployment_mode)"
+    AI_CONFIG_FILE="$ENV_FILE"
+    if [ "$AI_RUNTIME_MODE" = "docker" ] && [ -f "$SCRIPT_DIR/.env" ]; then
+        AI_CONFIG_FILE="$SCRIPT_DIR/.env"
+    fi
+    AI_PROVIDER="$(prompt_xchat_provider "$(existing_xchat_provider "$AI_CONFIG_FILE")")"
+    if [ "$AI_PROVIDER" = "omniroute" ]; then
+        ensure_omniroute_gateway "$AI_RUNTIME_MODE"
+    fi
+    AI_KEY="$(selected_ai_key "$AI_PROVIDER" "$AI_CONFIG_FILE")"
     AI_MODEL="$(selected_ai_model "$AI_PROVIDER")"
     if [ "$AI_PROVIDER" != "none" ]; then
         [ -n "$AI_KEY" ] || die "An API key is required for ${AI_PROVIDER}"
@@ -598,7 +966,7 @@ if [ "$ACTION" = "configure-ai" ]; then
     exit 0
 fi
 
-[ "$ACTION" = "setup" ] || die "Unknown command '$ACTION'. Use setup, check, stop, boot-check, configure-mail, or configure-ai."
+[ "$ACTION" = "setup" ] || die "Unknown command '$ACTION'. Use setup, check, stop, boot-check, configure-mail, configure-ai, omniroute-status, omniroute-password, or omniroute-key."
 require_source_tree
 [ "$EUID" -ne 0 ] || die "Run this script as the normal deployment user, not with sudo. It requests sudo only where needed."
 
@@ -644,6 +1012,9 @@ if [[ "$USE_DOCKER" =~ ^[Yy]$ ]]; then
     STT_ENABLED_VALUE="$(prompt_stt_enabled "$(file_env_get "$ROOT_ENV" STT_ENABLED)")"
     configure_stt_file "$ROOT_ENV" "$STT_ENABLED_VALUE"
     AI_PROVIDER="$(prompt_xchat_provider "$(existing_xchat_provider "$ROOT_ENV")")"
+    if [ "$AI_PROVIDER" = "omniroute" ]; then
+        ensure_omniroute_gateway docker
+    fi
     AI_KEY="$(selected_ai_key "$AI_PROVIDER" "$ROOT_ENV")"
     AI_MODEL="$(selected_ai_model "$AI_PROVIDER")"
     if [ "$AI_PROVIDER" != "none" ]; then
@@ -653,7 +1024,11 @@ if [[ "$USE_DOCKER" =~ ^[Yy]$ ]]; then
     configure_ai_file "$ROOT_ENV" "$AI_PROVIDER" "$AI_KEY"
 
     sudo docker compose config --quiet
-    sudo docker compose up -d --build --remove-orphans --scale worker=1
+    if [ "$AI_PROVIDER" = "omniroute" ]; then
+        sudo docker compose --profile omniroute up -d --build --remove-orphans --scale worker=1
+    else
+        sudo docker compose up -d --build --remove-orphans --scale worker=1
+    fi
     HEALTH_ATTEMPTS=45
     [ "$STT_ENABLED_VALUE" = "true" ] && HEALTH_ATTEMPTS=300
     wait_for_url "http://127.0.0.1:5001/api/health" "$HEALTH_ATTEMPTS" || die "Docker API did not become healthy"
@@ -724,6 +1099,9 @@ SECRET_KEY="$(env_get SECRET_KEY)"
 [ -n "$SECRET_KEY" ] || SECRET_KEY="$(openssl rand -hex 32)"
 SMTP_APP_PASSWORD="$(prompt_mail_app_password "$(env_get MAIL_SMTP_APP_PASSWORD)")"
 AI_PROVIDER="$(prompt_xchat_provider "$(existing_xchat_provider "$ENV_FILE")")"
+if [ "$AI_PROVIDER" = "omniroute" ]; then
+    ensure_omniroute_gateway bare
+fi
 AI_KEY="$(selected_ai_key "$AI_PROVIDER" "$ENV_FILE")"
 AI_MODEL="$(selected_ai_model "$AI_PROVIDER")"
 if [ "$AI_PROVIDER" != "none" ]; then

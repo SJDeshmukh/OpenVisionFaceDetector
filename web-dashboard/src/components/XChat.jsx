@@ -199,7 +199,7 @@ const XChat = () => {
       setRetryJob(null);
       setLastFailedPrompt('');
       setMessages((current) => [...current, {
-        id: `assistant-${Date.now()}`, role: 'assistant', content: data.answer,
+        id: data.message_id || `assistant-${Date.now()}`, role: 'assistant', content: data.answer,
         metadata: { tools_used: data.tools_used || [], sources: data.sources || [], presentation: data.presentation || {} },
       }]);
       loadConversations();
@@ -212,7 +212,7 @@ const XChat = () => {
         setRetryJob({ text, remaining: 60 });
       } else {
         setError(code.includes('CONFIGURATION')
-          ? 'XChat is not configured. Please ask an administrator to check the Mistral API key.'
+          ? 'XChat is not configured. Please ask an administrator to check the selected AI provider and credentials.'
           : 'Something went wrong while contacting the AI service. Your prompt was not lost.');
       }
     } finally {
@@ -298,7 +298,7 @@ const XChat = () => {
                     <div key={message.id} className={message.role === 'user' ? 'flex justify-end' : 'flex justify-start'}>
                       <div className={`${message.role === 'user' ? 'max-w-[88%] rounded-br-md bg-blue-600 text-white' : 'w-full rounded-bl-md border border-slate-800 bg-slate-900 text-slate-200'} rounded-2xl px-3.5 py-3 text-sm leading-6`}>
                         {message.role === 'assistant' ? <FormattedText>{message.content}</FormattedText> : <div className="whitespace-pre-wrap break-words">{message.content}</div>}
-                        {message.role === 'assistant' && <XChatPresentation presentation={message.metadata?.presentation} />}
+                        {message.role === 'assistant' && <XChatPresentation presentation={message.metadata?.presentation} conversationId={conversationId} messageId={message.id} />}
                         {message.role === 'assistant' && message.metadata?.sources?.length > 0 && (
                           <div className="mt-2 flex flex-wrap gap-1.5 border-t border-slate-800 pt-2">
                             {message.metadata.sources.map((source) => <button key={source} type="button" onClick={() => { setOpen(false); navigate(source); }} className="rounded-full bg-cyan-950/60 px-2 py-0.5 text-[10px] text-cyan-300 hover:bg-cyan-900">View source</button>)}

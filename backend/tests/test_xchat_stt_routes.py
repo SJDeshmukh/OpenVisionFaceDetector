@@ -79,3 +79,31 @@ def test_transcription_route_rejects_missing_audio(monkeypatch):
 
     assert status == 400
     assert response.get_json()["code"] == "INVALID_AUDIO"
+
+
+def test_excel_route_downloads_authenticated_users_saved_table(monkeypatch):
+    app = Flask(__name__)
+    workbook = BytesIO(b"xlsx-data")
+    received = {}
+
+    def fake_export(conversation_id, message_id, table_id, vendor_id, username):
+        received.update({
+            "conversation_id": conversation_id, "message_id": message_id, "table_id": table_id,
+            "vendor_id": vendor_id, "username": username,
+        })
+        return workbook, "attendance.xlsx"
+
+    monkeypatch.setattr(xchat, "_feature_guard", lambda: None)
+    monkeypatch.setattr(xchat, "export_table_excel", fake_export)
+
+    with app.test_request_context("/api/xchat/conversations/chat-1/messages/12/tables/daily/excel"):
+        flask.g.vendor_id = 7
+        flask.g.username = "owner"
+        response = _route_function(xchat.conversation_table_excel)("chat-1", 12, "daily")
+
+    assert received == {
+        "conversation_id": "chat-1", "message_id": 12, "table_id": "daily",
+        "vendor_id": 7, "username": "owner",
+    }
+    assert response.mimetype == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    assert "attendance.xlsx" in response.headers["Content-Disposition"]

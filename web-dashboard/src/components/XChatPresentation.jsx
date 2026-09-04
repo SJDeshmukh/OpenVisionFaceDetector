@@ -1,9 +1,11 @@
 import { useRef, useState } from 'react';
-import { BarChart3, Download, FileDown } from 'lucide-react';
+import axios from 'axios';
+import { BarChart3, Download, FileDown, FileSpreadsheet, Loader2 } from 'lucide-react';
 import {
   Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart,
   Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts';
+import { API_URL } from '../config';
 
 const COLORS = ['#22d3ee', '#818cf8', '#f59e0b', '#34d399', '#fb7185', '#a78bfa', '#60a5fa', '#f472b6'];
 
@@ -15,7 +17,7 @@ const downloadBlob = (blob, filename) => {
   document.body.appendChild(link);
   link.click();
   link.remove();
-  URL.revokeObjectURL(url);
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
 
 const csvValue = (value) => {
@@ -111,33 +113,68 @@ const ImageGallery = ({ images }) => {
   );
 };
 
-const DataTable = ({ table }) => (
-  <section className="mt-3 overflow-hidden rounded-xl border border-slate-700/70 bg-slate-950/55">
-    <div className="flex items-center justify-between gap-2 border-b border-slate-800 px-3 py-2.5">
-      <h4 className="min-w-0 truncate text-xs font-semibold text-slate-200" title={table.title}>{table.title}</h4>
-      <button type="button" onClick={() => downloadCsv(table.columns, table.rows, table.download_name)}
-        className="flex shrink-0 items-center gap-1 rounded-lg bg-cyan-950/70 px-2 py-1 text-[10px] font-medium text-cyan-300 hover:bg-cyan-900" title="Download indexed CSV">
-        <FileDown size={13} /> CSV
-      </button>
-    </div>
-    <div className="max-h-64 overflow-auto">
-      <table className="min-w-full border-collapse text-[11px]">
-        <thead className="sticky top-0 z-10 bg-slate-900 text-slate-400">
-          <tr><th className="px-2 py-2 text-right font-medium">#</th>{table.columns.map((column) => <th key={column.key} className="whitespace-nowrap px-2 py-2 text-left font-medium">{column.label}</th>)}</tr>
-        </thead>
-        <tbody className="divide-y divide-slate-800/80">
-          {table.rows.map((row) => (
-            <tr key={`${table.id}-${row.index}`} className="hover:bg-slate-900/80">
-              <td className="px-2 py-2 text-right tabular-nums text-slate-500">{row.index}</td>
-              {table.columns.map((column) => <td key={column.key} className="max-w-48 whitespace-nowrap px-2 py-2 text-slate-300" title={formatValue(row[column.key], column)}>{formatValue(row[column.key], column)}</td>)}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-    <div className="border-t border-slate-800 px-3 py-1.5 text-[10px] text-slate-500">{table.rows.length.toLocaleString('en-IN')} indexed row{table.rows.length === 1 ? '' : 's'}</div>
-  </section>
-);
+const DataTable = ({ table, conversationId, messageId }) => {
+  const [excelLoading, setExcelLoading] = useState(false);
+  const [excelError, setExcelError] = useState('');
+  const canDownloadExcel = Boolean(conversationId && /^\d+$/.test(String(messageId)));
+
+  const downloadExcel = async () => {
+    if (!canDownloadExcel || excelLoading) return;
+    setExcelLoading(true);
+    setExcelError('');
+    try {
+      const response = await axios.get(
+        `${API_URL}/xchat/conversations/${encodeURIComponent(conversationId)}/messages/${messageId}/tables/${encodeURIComponent(table.id)}/excel`,
+        { responseType: 'blob' },
+      );
+      const fallbackName = String(table.download_name || 'xchat-report.csv').replace(/\.csv$/i, '.xlsx');
+      const disposition = response.headers?.['content-disposition'] || '';
+      const headerName = disposition.match(/filename="?([^";]+)"?/i)?.[1];
+      downloadBlob(response.data, headerName || fallbackName);
+    } catch (requestError) {
+      setExcelError(requestError.response?.status === 404 ? 'Excel report expired.' : 'Excel download failed.');
+    } finally {
+      setExcelLoading(false);
+    }
+  };
+
+  return (
+    <section className="mt-3 overflow-hidden rounded-xl border border-slate-700/70 bg-slate-950/55">
+      <div className="flex items-center justify-between gap-2 border-b border-slate-800 px-3 py-2.5">
+        <h4 className="min-w-0 truncate text-xs font-semibold text-slate-200" title={table.title}>{table.title}</h4>
+        <div className="flex shrink-0 gap-1">
+          <button type="button" onClick={() => downloadCsv(table.columns, table.rows, table.download_name)}
+            className="flex items-center gap-1 rounded-lg bg-cyan-950/70 px-2 py-1 text-[10px] font-medium text-cyan-300 hover:bg-cyan-900" title="Download indexed CSV">
+            <FileDown size={13} /> CSV
+          </button>
+          {canDownloadExcel && (
+            <button type="button" onClick={downloadExcel} disabled={excelLoading}
+              className="flex items-center gap-1 rounded-lg bg-emerald-950/70 px-2 py-1 text-[10px] font-medium text-emerald-300 hover:bg-emerald-900 disabled:cursor-wait disabled:opacity-60" title="Download Excel report (.xlsx)">
+              {excelLoading ? <Loader2 size={13} className="animate-spin" /> : <FileSpreadsheet size={13} />} Excel
+            </button>
+          )}
+        </div>
+      </div>
+      {excelError && <p className="border-b border-red-900/60 bg-red-950/30 px-3 py-1 text-[10px] text-red-300">{excelError}</p>}
+      <div className="max-h-64 overflow-auto">
+        <table className="min-w-full border-collapse text-[11px]">
+          <thead className="sticky top-0 z-10 bg-slate-900 text-slate-400">
+            <tr><th className="px-2 py-2 text-right font-medium">#</th>{table.columns.map((column) => <th key={column.key} className="whitespace-nowrap px-2 py-2 text-left font-medium">{column.label}</th>)}</tr>
+          </thead>
+          <tbody className="divide-y divide-slate-800/80">
+            {table.rows.map((row) => (
+              <tr key={`${table.id}-${row.index}`} className="hover:bg-slate-900/80">
+                <td className="px-2 py-2 text-right tabular-nums text-slate-500">{row.index}</td>
+                {table.columns.map((column) => <td key={column.key} className="max-w-48 whitespace-nowrap px-2 py-2 text-slate-300" title={formatValue(row[column.key], column)}>{formatValue(row[column.key], column)}</td>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="border-t border-slate-800 px-3 py-1.5 text-[10px] text-slate-500">{table.rows.length.toLocaleString('en-IN')} indexed row{table.rows.length === 1 ? '' : 's'}</div>
+    </section>
+  );
+};
 
 const ChartCard = ({ chart }) => {
   const [type, setType] = useState(chart.type || 'bar');
@@ -212,14 +249,14 @@ const ChartCard = ({ chart }) => {
   );
 };
 
-const XChatPresentation = ({ presentation }) => {
+const XChatPresentation = ({ presentation, conversationId, messageId }) => {
   if (!presentation) return null;
   return (
     <div>
       <Metrics metrics={presentation.metrics} />
       <ImageGallery images={presentation.images} />
       {presentation.charts?.map((chart) => <ChartCard key={chart.id} chart={chart} />)}
-      {presentation.tables?.map((table) => <DataTable key={table.id} table={table} />)}
+      {presentation.tables?.map((table) => <DataTable key={table.id} table={table} conversationId={conversationId} messageId={messageId} />)}
     </div>
   );
 };
