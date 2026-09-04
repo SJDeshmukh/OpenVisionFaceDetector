@@ -9,8 +9,11 @@ import io
 import time
 import re
 from datetime import datetime, date, timedelta
-from services.auth_service import authenticate_vendor_access, extract_token, verify_token
-from utils import parse_db_date, parse_db_datetime, cache_get, cache_set, cache_delete_vendor_prefix
+from services.auth_service import authenticate_vendor_access, extract_token, verify_password, verify_token
+from utils import (
+    parse_db_date, parse_db_datetime, cache_get, cache_set,
+    cache_delete_vendor_prefix, get_db_connection,
+)
 from services.person_scope_service import (
     apply_class_mapping,
     class_id_for,
@@ -20,6 +23,7 @@ from services.person_scope_service import (
     person_type_for,
     vendor_vertical,
 )
+from services.timetable_service import remove_activity, remove_shift
 
 # Mock Auth Decorators
 def vendor_required(f):
@@ -65,6 +69,27 @@ def rate_limit(*args, **kwargs):
 from utils import require_feature
 
 vendor_bp = Blueprint('vendor_bp', __name__)
+
+TIMETABLE_MANAGER_ROLES = {'super_admin', 'vendor_admin', 'admin', 'owner'}
+
+
+def _verify_current_web_password(cursor, supplied_password):
+    """Verify a destructive action against the active web-login identity."""
+    if not supplied_password:
+        return "Your current web-login password is required", 400
+    token = extract_token(request.headers.get('Authorization')) or request.cookies.get('token')
+    claims = verify_token(token) if token else None
+    if not claims or claims.get('platform') != 'web' or claims.get('username') != getattr(g, 'username', None):
+        return "A valid web-login session is required", 403
+    cursor.execute("SELECT password FROM system_users WHERE username = ?", (claims['username'],))
+    row = cursor.fetchone()
+    stored_password = row[0] if row else None
+    if not verify_password(supplied_password, stored_password):
+        # This is an authorization failure for one destructive action, not an
+        # invalid session. Returning 401 would make the dashboard log the user
+        # out through its global response interceptor.
+        return "Incorrect password", 403
+    return None
 
 from utils import ALL_FEATURES, log_audit
 
@@ -382,6 +407,9 @@ def create_company():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
 
+    if g.user_role not in TIMETABLE_MANAGER_ROLES:
+        return jsonify({"error": "Admin or owner access is required"}), 403
+
     if not vendor_id:
         return jsonify({"error": "Vendor Context Required"}), 400
     
@@ -420,6 +448,9 @@ def update_company_settings(company_id):
     from services.auth_service import extract_token, verify_token
     vendor_id, error = authenticate_vendor_access()
     if error: return error
+
+    if g.user_role not in TIMETABLE_MANAGER_ROLES:
+        return jsonify({"error": "Admin or owner access is required"}), 403
 
     if not vendor_id:
         return jsonify({"error": "Vendor Context Required"}), 400
@@ -521,6 +552,9 @@ def update_draft_timetable(company_id):
     vendor_id, error = authenticate_vendor_access()
     if error: return error
 
+    if g.user_role not in TIMETABLE_MANAGER_ROLES:
+        return jsonify({"error": "Admin or owner access is required"}), 403
+
     if not vendor_id:
         return jsonify({"error": "Vendor Context Required"}), 400
 
@@ -537,8 +571,6 @@ def update_draft_timetable(company_id):
 
     data = request.json
     draft_timetable = data.get("draft_timetable") # Expecting JSON string or object
-    modified_by = data.get("modified_by", "unknown")
-    
     if draft_timetable is None:
         conn.close()
         return jsonify({"error": "draft_timetable is required"}), 400
@@ -549,7 +581,7 @@ def update_draft_timetable(company_id):
     c.execute("""UPDATE companies 
                  SET draft_timetable = ?, last_modified_by = ?, last_modified_at = ? 
                  WHERE id = ?""", 
-              (draft_timetable, modified_by, datetime.now(), company_id))
+              (draft_timetable, g.username, datetime.now(), company_id))
     conn.commit()
     conn.close()
     return jsonify({"success": True})
@@ -562,6 +594,9 @@ def publish_timetable(company_id):
     from services.auth_service import extract_token, verify_token
     vendor_id, error = authenticate_vendor_access()
     if error: return error
+
+    if g.user_role not in TIMETABLE_MANAGER_ROLES:
+        return jsonify({"error": "Admin or owner access is required"}), 403
 
     if not vendor_id:
         return jsonify({"error": "Vendor Context Required"}), 400
@@ -577,17 +612,135 @@ def publish_timetable(company_id):
              conn.close()
              return jsonify({"error": "Access Denied"}), 403
 
-    data = request.json
-    published_by = data.get("published_by", "unknown")
-    
     # Copy draft to live
     c.execute("""UPDATE companies 
                  SET live_timetable = draft_timetable, published_by = ?, published_at = ? 
                  WHERE id = ?""", 
-              (published_by, datetime.now(), company_id))
+              (g.username, datetime.now(), company_id))
     conn.commit()
     conn.close()
     return jsonify({"success": True})
+
+
+@vendor_bp.route("/companies/<int:company_id>/shifts/<shift_id>", methods=["DELETE"])
+@require_feature("shifts")
+def delete_company_shift(company_id, shift_id):
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+    if g.user_role not in TIMETABLE_MANAGER_ROLES:
+        return jsonify({"error": "Admin or owner access is required"}), 403
+
+    data = request.get_json(silent=True) or {}
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute(
+            "SELECT shifts, draft_timetable FROM companies WHERE id = ? AND vendor_id = ?",
+            (company_id, vendor_id),
+        )
+        company = c.fetchone()
+        if not company:
+            return jsonify({"error": "Company not found"}), 404
+        password_error = _verify_current_web_password(c, data.get("password"))
+        if password_error:
+            return jsonify({"error": password_error[0]}), password_error[1]
+
+        updated_shifts, updated_activities = remove_shift(company[0], company[1], shift_id)
+        if updated_shifts is None:
+            return jsonify({"error": "Shift not found"}), 404
+        c.execute(
+            """UPDATE companies
+               SET shifts = ?, draft_timetable = ?, last_modified_by = ?, last_modified_at = ?
+               WHERE id = ? AND vendor_id = ?""",
+            (json.dumps(updated_shifts), json.dumps(updated_activities), g.username,
+             datetime.now(), company_id, vendor_id),
+        )
+        conn.commit()
+        cache_delete_vendor_prefix(vendor_id)
+        log_audit(
+            "timetable_shift_delete",
+            {"company_id": company_id, "shift_id": shift_id},
+            target_vendor_id=vendor_id,
+            actor=g.username,
+        )
+        try:
+            from app import socketio
+            socketio.emit(
+                'timetable_updated',
+                {'vendor_id': vendor_id, 'company_id': company_id, 'kind': 'shift_deleted'},
+                room=f"vendor_{vendor_id}",
+            )
+        except Exception:
+            pass
+        return jsonify({
+            "success": True,
+            "shifts": updated_shifts,
+            "draft_timetable": updated_activities,
+        })
+    except Exception as exc:
+        conn.rollback()
+        return jsonify({"error": str(exc)}), 500
+    finally:
+        conn.close()
+
+
+@vendor_bp.route("/companies/<int:company_id>/activities/<activity_id>", methods=["DELETE"])
+@require_feature("shifts")
+def delete_company_activity(company_id, activity_id):
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+    if g.user_role not in TIMETABLE_MANAGER_ROLES:
+        return jsonify({"error": "Admin or owner access is required"}), 403
+
+    data = request.get_json(silent=True) or {}
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute(
+            "SELECT draft_timetable FROM companies WHERE id = ? AND vendor_id = ?",
+            (company_id, vendor_id),
+        )
+        company = c.fetchone()
+        if not company:
+            return jsonify({"error": "Company not found"}), 404
+        password_error = _verify_current_web_password(c, data.get("password"))
+        if password_error:
+            return jsonify({"error": password_error[0]}), password_error[1]
+
+        updated_activities = remove_activity(company[0], activity_id)
+        if updated_activities is None:
+            return jsonify({"error": "Activity not found"}), 404
+        c.execute(
+            """UPDATE companies
+               SET draft_timetable = ?, last_modified_by = ?, last_modified_at = ?
+               WHERE id = ? AND vendor_id = ?""",
+            (json.dumps(updated_activities), g.username, datetime.now(), company_id, vendor_id),
+        )
+        conn.commit()
+        cache_delete_vendor_prefix(vendor_id)
+        log_audit(
+            "timetable_activity_delete",
+            {"company_id": company_id, "activity_id": activity_id},
+            target_vendor_id=vendor_id,
+            actor=g.username,
+        )
+        try:
+            from app import socketio
+            socketio.emit(
+                'timetable_updated',
+                {'vendor_id': vendor_id, 'company_id': company_id, 'kind': 'activity_deleted'},
+                room=f"vendor_{vendor_id}",
+            )
+        except Exception:
+            pass
+        return jsonify({"success": True, "draft_timetable": updated_activities})
+    except Exception as exc:
+        conn.rollback()
+        return jsonify({"error": str(exc)}), 500
+    finally:
+        conn.close()
 
 
 @vendor_bp.route("/classes", methods=["GET"])

@@ -11,7 +11,8 @@ import {
   Edit2, 
   Check, 
   X,
-  Building2
+  Building2,
+  Lock
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { API_URL, BASE_URL } from '../config';
@@ -22,6 +23,7 @@ const SCHOOL_ACTIVITY_TYPES = ['College', 'Hostel', 'Meal', 'Break', 'Custom'];
 
 const Timetable = () => {
   const { user } = useAuth();
+  const canManageTimetable = ['super_admin', 'vendor_admin', 'admin', 'owner'].includes(user?.role);
   const [vendors, setVendors] = useState([]);
   const [businessTypes, setBusinessTypes] = useState([]);
   const [selectedBusinessType, setSelectedBusinessType] = useState('all');
@@ -66,6 +68,10 @@ const Timetable = () => {
     active: true,
     description: ''
   });
+  const [deleteRequest, setDeleteRequest] = useState(null);
+  const [deletePassword, setDeletePassword] = useState('');
+  const [deleteError, setDeleteError] = useState('');
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     if (!user) return;
@@ -254,7 +260,12 @@ const Timetable = () => {
           end_time: item.end_time || '17:00',
           enabled: item.enabled !== false,
           is_payable: item.is_payable !== false, // Default true
-          rules: item.rules || {}
+          rules: {
+            attendance_enabled: true,
+            grace_period: 15,
+            greeting: 'normal',
+            ...(item.rules || {})
+          }
         }));
 
       setActivities(safeDraft);
@@ -277,7 +288,7 @@ const Timetable = () => {
     // Check for duplicate name
     const isDuplicate = shifts.some(s => 
       s.name.toLowerCase() === shiftForm.name.trim().toLowerCase() && 
-      s.id !== shiftForm.id
+      String(s.id) !== String(shiftForm.id)
     );
     
     if (isDuplicate) {
@@ -292,7 +303,7 @@ const Timetable = () => {
 
     let updatedShifts;
     if (editingShift) {
-      updatedShifts = shifts.map(s => s.id === newShift.id ? newShift : s);
+      updatedShifts = shifts.map(s => String(s.id) === String(newShift.id) ? newShift : s);
     } else {
       updatedShifts = [...shifts, newShift];
     }
@@ -305,31 +316,15 @@ const Timetable = () => {
       resetShiftForm();
       // Optional: Update activities if shift times changed? For now, keep them independent or user manually updates.
     } catch (error) {
-      alert("Failed to save shift");
+      alert(error.response?.data?.error || "Failed to save shift");
       console.error(error);
     }
   };
 
-  const handleDeleteShift = async (id) => {
-    if (!confirm("Delete this shift? Activities linked to this shift will lose the association.")) return;
-    const updatedShifts = shifts.filter(s => s.id !== id);
-    try {
-      const params = getVendorParams();
-      await axios.put(`${API_URL}/companies/${selectedCompanyId}`, { shifts: updatedShifts }, params ? { params } : undefined);
-      setShifts(updatedShifts);
-      
-      // Update activities to remove deleted shift_id
-      const updatedActivities = activities.map(a => 
-        a.shift_id === id ? { ...a, shift_id: '' } : a
-      );
-      if (JSON.stringify(updatedActivities) !== JSON.stringify(activities)) {
-        setActivities(updatedActivities);
-        handleSaveDraft(updatedActivities);
-      }
-    } catch (error) {
-      alert("Failed to delete shift");
-      console.error(error);
-    }
+  const handleDeleteShift = (shift) => {
+    setDeleteRequest({ type: 'shift', id: shift.id, name: shift.name });
+    setDeletePassword('');
+    setDeleteError('');
   };
 
   const openShiftModal = () => {
@@ -339,7 +334,14 @@ const Timetable = () => {
 
   const openEditShiftModal = (shift) => {
     setEditingShift(shift);
-    setShiftForm(shift);
+    setShiftForm({
+      id: shift.id,
+      name: shift.name || '',
+      start_time: shift.start_time || '09:00',
+      end_time: shift.end_time || '17:00',
+      active: shift.active !== false,
+      description: shift.description || ''
+    });
     setShowShiftModal(true);
   };
 
@@ -380,9 +382,11 @@ const Timetable = () => {
       setIsDirty(false);
       // alert("Draft saved successfully!"); // Removed alert for smoother auto-save UX
       console.log("Draft auto-saved");
+      return true;
     } catch (error) {
       console.error("Failed to save draft", error);
-      alert("Failed to save draft to backend");
+      alert(error.response?.data?.error || "Failed to save draft to backend");
+      return false;
     }
   };
 
@@ -408,7 +412,7 @@ const Timetable = () => {
     }
   };
 
-  const handleSaveActivity = () => {
+  const handleSaveActivity = async () => {
     if (!activityForm.name.trim()) {
         alert("Activity name is required");
         return;
@@ -417,7 +421,7 @@ const Timetable = () => {
     // Check for duplicate name
     const isDuplicate = activities.some(a => 
       a.name.toLowerCase() === activityForm.name.trim().toLowerCase() && 
-      a.id !== activityForm.id
+      String(a.id) !== String(activityForm.id)
     );
 
     if (isDuplicate) {
@@ -432,7 +436,7 @@ const Timetable = () => {
 
     let updatedActivities;
     if (editingActivity) {
-      updatedActivities = activities.map(a => a.id === newActivity.id ? newActivity : a);
+      updatedActivities = activities.map(a => String(a.id) === String(newActivity.id) ? newActivity : a);
     } else {
       updatedActivities = [...activities, newActivity];
     }
@@ -440,23 +444,54 @@ const Timetable = () => {
     // Sort by start time
     updatedActivities.sort((a, b) => a.start_time.localeCompare(b.start_time));
 
+    const saved = await handleSaveDraft(updatedActivities);
+    if (!saved) return;
     setActivities(updatedActivities);
-    setIsDirty(true);
-    
-    // Auto-save changes to draft
-    handleSaveDraft(updatedActivities);
-    
+    setIsDirty(false);
     setShowActivityModal(false);
     resetActivityForm();
   };
 
-  const handleDeleteActivity = async (id) => {
-    if (!confirm("Delete this activity?")) return;
-    const updated = activities.filter(a => a.id !== id);
-    setActivities(updated);
-    setIsDirty(false);
-    // Auto-save
-    await handleSaveDraft(updated);
+  const handleDeleteActivity = (activity) => {
+    setDeleteRequest({ type: 'activity', id: activity.id, name: activity.name });
+    setDeletePassword('');
+    setDeleteError('');
+  };
+
+  const closeDeleteConfirmation = () => {
+    if (deleting) return;
+    setDeleteRequest(null);
+    setDeletePassword('');
+    setDeleteError('');
+  };
+
+  const confirmProtectedDelete = async () => {
+    if (!deleteRequest || !selectedCompanyId) return;
+    if (!deletePassword) {
+      setDeleteError('Enter the password used for this web login.');
+      return;
+    }
+    setDeleting(true);
+    setDeleteError('');
+    try {
+      const params = getVendorParams();
+      const resource = deleteRequest.type === 'shift' ? 'shifts' : 'activities';
+      const response = await axios.delete(
+        `${API_URL}/companies/${selectedCompanyId}/${resource}/${encodeURIComponent(deleteRequest.id)}`,
+        { data: { password: deletePassword }, ...(params ? { params } : {}) }
+      );
+      if (deleteRequest.type === 'shift') {
+        setShifts(Array.isArray(response.data?.shifts) ? response.data.shifts : []);
+      }
+      setActivities(Array.isArray(response.data?.draft_timetable) ? response.data.draft_timetable : []);
+      setIsDirty(false);
+      setDeleteRequest(null);
+      setDeletePassword('');
+    } catch (error) {
+      setDeleteError(error.response?.data?.error || 'Delete failed');
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const openAddModal = () => {
@@ -466,7 +501,17 @@ const Timetable = () => {
 
   const openEditModal = (activity) => {
     setEditingActivity(activity);
-    setActivityForm(activity);
+    setActivityForm({
+      ...activity,
+      shift_id: activity.shift_id || '',
+      days: Array.isArray(activity.days) ? activity.days : [],
+      rules: {
+        attendance_enabled: true,
+        grace_period: 15,
+        greeting: 'normal',
+        ...(activity.rules || {})
+      }
+    });
     setShowActivityModal(true);
   };
 
@@ -562,36 +607,41 @@ const Timetable = () => {
               <Building2 className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" size={18} />
             </div>
             
-            <button 
-              onClick={() => setShowCompanyModal(true)}
-              className="p-2.5 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors text-slate-600 hover:text-slate-800 shadow-sm"
-              title="Add Company"
-            >
-              <Plus size={20} />
-            </button>
+            {canManageTimetable && (
+              <>
+                <button
+                  onClick={() => setShowCompanyModal(true)}
+                  className="p-2.5 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors text-slate-600 hover:text-slate-800 shadow-sm"
+                  title="Add Company"
+                  aria-label="Add company"
+                >
+                  <Plus size={20} />
+                </button>
 
-            <div className="h-8 w-px bg-slate-200 mx-2 hidden md:block"></div>
+                <div className="h-8 w-px bg-slate-200 mx-2 hidden md:block"></div>
 
-            <button 
-              onClick={handleSaveDraft}
-              disabled={!isDirty}
-              className={`flex items-center space-x-2 px-4 py-2.5 rounded-lg font-medium transition-all shadow-sm ${
-                isDirty 
-                  ? 'bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100' 
-                  : 'bg-slate-50 text-slate-500 border border-slate-200 cursor-not-allowed'
-              }`}
-            >
-              <Save size={18} />
-              <span>Save Draft</span>
-            </button>
+                <button
+                  onClick={handleSaveDraft}
+                  disabled={!isDirty}
+                  className={`flex items-center space-x-2 px-4 py-2.5 rounded-lg font-medium transition-all shadow-sm ${
+                    isDirty
+                      ? 'bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100'
+                      : 'bg-slate-50 text-slate-500 border border-slate-200 cursor-not-allowed'
+                  }`}
+                >
+                  <Save size={18} />
+                  <span>Save Draft</span>
+                </button>
 
-            <button 
-              onClick={handlePublish}
-              className="flex items-center space-x-2 px-4 py-2.5 bg-green-50 text-green-600 border border-green-200 rounded-lg hover:bg-green-100 font-medium transition-all shadow-sm"
-            >
-              <UploadCloud size={18} />
-              <span>Publish Live</span>
-            </button>
+                <button
+                  onClick={handlePublish}
+                  className="flex items-center space-x-2 px-4 py-2.5 bg-green-50 text-green-600 border border-green-200 rounded-lg hover:bg-green-100 font-medium transition-all shadow-sm"
+                >
+                  <UploadCloud size={18} />
+                  <span>Publish Live</span>
+                </button>
+              </>
+            )}
           </div>
         </header>
 
@@ -604,13 +654,15 @@ const Timetable = () => {
               <Building2 className="text-purple-500" size={24} />
               <span>Shifts</span>
             </h2>
-            <button 
-              onClick={openShiftModal}
-              className="flex items-center space-x-1 px-3 py-1.5 bg-purple-50 text-purple-600 rounded-lg hover:bg-purple-100 text-sm font-medium transition-colors border border-purple-100"
-            >
-              <Plus size={16} />
-              <span>Add Shift</span>
-            </button>
+            {canManageTimetable && (
+              <button
+                onClick={openShiftModal}
+                className="flex items-center space-x-1 px-3 py-1.5 bg-purple-50 text-purple-600 rounded-lg hover:bg-purple-100 text-sm font-medium transition-colors border border-purple-100"
+              >
+                <Plus size={16} />
+                <span>Add Shift</span>
+              </button>
+            )}
           </div>
           
           {shifts.length === 0 ? (
@@ -623,10 +675,22 @@ const Timetable = () => {
                 <div key={shift.id} className="border border-slate-200 rounded-lg p-4 hover:shadow-md transition-shadow relative group bg-slate-50/50">
                   <div className="flex justify-between items-start mb-2">
                     <h3 className="font-semibold text-slate-900">{shift.name}</h3>
-                    <div className="flex space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button onClick={() => openEditShiftModal(shift)} className="p-1.5 bg-white border border-slate-200 rounded hover:text-blue-600 text-slate-400 shadow-sm"><Edit2 size={14} /></button>
-                      <button onClick={() => handleDeleteShift(shift.id)} className="p-1.5 bg-white border border-slate-200 rounded hover:text-red-600 text-slate-400 shadow-sm"><Trash2 size={14} /></button>
-                    </div>
+                    {canManageTimetable && (
+                      <div className="flex space-x-1">
+                        <button
+                          onClick={() => openEditShiftModal(shift)}
+                          className="p-1.5 bg-white border border-slate-200 rounded hover:text-blue-600 text-slate-500 shadow-sm"
+                          title={`Edit ${shift.name}`}
+                          aria-label={`Edit ${shift.name}`}
+                        ><Edit2 size={14} /></button>
+                        <button
+                          onClick={() => handleDeleteShift(shift)}
+                          className="p-1.5 bg-white border border-slate-200 rounded hover:text-red-600 text-slate-500 shadow-sm"
+                          title={`Delete ${shift.name}`}
+                          aria-label={`Delete ${shift.name}`}
+                        ><Trash2 size={14} /></button>
+                      </div>
+                    )}
                   </div>
                   <div className="text-sm text-slate-600 mb-2 flex items-center space-x-2">
                     <Clock size={14} />
@@ -652,13 +716,15 @@ const Timetable = () => {
                   <Clock className="text-blue-500" size={24} />
                   <span>Daily Schedule</span>
                 </h2>
-                <button 
-                  onClick={openAddModal}
-                  className="flex items-center space-x-1 px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 text-sm font-medium transition-colors border border-blue-100"
-                >
-                  <Plus size={16} />
-                  <span>Add Activity</span>
-                </button>
+                {canManageTimetable && (
+                  <button
+                    onClick={openAddModal}
+                    className="flex items-center space-x-1 px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 text-sm font-medium transition-colors border border-blue-100"
+                  >
+                    <Plus size={16} />
+                    <span>Add Activity</span>
+                  </button>
+                )}
               </div>
 
               {loading ? (
@@ -667,9 +733,11 @@ const Timetable = () => {
                 <div className="text-center py-12 border-2 border-dashed border-slate-200 rounded-xl">
                   <Calendar className="mx-auto text-slate-500 mb-3" size={48} />
                   <p className="text-slate-600">No activities defined yet.</p>
-                  <button onClick={openAddModal} className="mt-4 text-blue-600 hover:text-blue-700 text-sm font-medium">
-                    Create your first activity
-                  </button>
+                  {canManageTimetable && (
+                    <button onClick={openAddModal} className="mt-4 text-blue-600 hover:text-blue-700 text-sm font-medium">
+                      Create your first activity
+                    </button>
+                  )}
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -729,20 +797,24 @@ const Timetable = () => {
                       </div>
 
                       {/* Actions */}
-                      <div className="flex items-center space-x-2 opacity-0 group-hover:opacity-100 transition-opacity ml-4">
+                      {canManageTimetable && <div className="flex items-center space-x-2 ml-4">
                         <button 
                           onClick={() => openEditModal(activity)}
-                          className="p-2 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-blue-600 transition-colors"
+                          className="p-2 border border-slate-200 hover:bg-slate-100 rounded-lg text-slate-500 hover:text-blue-600 transition-colors"
+                          title={`Edit ${activity.name}`}
+                          aria-label={`Edit ${activity.name}`}
                         >
                           <Edit2 size={18} />
                         </button>
                         <button 
-                          onClick={() => handleDeleteActivity(activity.id)}
-                          className="p-2 hover:bg-red-50 rounded-lg text-slate-400 hover:text-red-600 transition-colors"
+                          onClick={() => handleDeleteActivity(activity)}
+                          className="p-2 border border-slate-200 hover:bg-red-50 rounded-lg text-slate-500 hover:text-red-600 transition-colors"
+                          title={`Delete ${activity.name}`}
+                          aria-label={`Delete ${activity.name}`}
                         >
                           <Trash2 size={18} />
                         </button>
-                      </div>
+                      </div>}
                     </div>
                   ))}
                 </div>
@@ -784,6 +856,73 @@ const Timetable = () => {
         </div>
       </div>
 
+      {/* Password-confirmed destructive action */}
+      {deleteRequest && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[80] p-4">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              confirmProtectedDelete();
+            }}
+            className="w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+          >
+            <div className="flex items-center gap-3 border-b border-slate-100 bg-red-50 px-6 py-4">
+              <div className="rounded-full bg-red-100 p-2 text-red-600"><Lock size={18} /></div>
+              <div>
+                <h3 className="font-bold text-slate-900">Confirm deletion</h3>
+                <p className="text-xs text-slate-600">This action requires your current web-login password.</p>
+              </div>
+            </div>
+            <div className="space-y-4 p-6">
+              <p className="text-sm text-slate-700">
+                Delete {deleteRequest.type} <strong>{deleteRequest.name}</strong>?
+                {deleteRequest.type === 'shift' && ' Linked draft activities will be unassigned from this shift.'}
+              </p>
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-slate-800">
+                  Password for {user?.username}
+                </label>
+                <input
+                  type="password"
+                  value={deletePassword}
+                  onChange={(event) => {
+                    setDeletePassword(event.target.value);
+                    setDeleteError('');
+                  }}
+                  autoComplete="current-password"
+                  autoFocus
+                  className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-slate-900 outline-none focus:border-red-500 focus:ring-2 focus:ring-red-500/20"
+                  placeholder="Enter current password"
+                />
+                {deleteError && <p className="mt-2 text-sm font-medium text-red-600">{deleteError}</p>}
+              </div>
+              <p className="text-xs text-slate-500">
+                {deleteRequest.type === 'activity'
+                  ? 'This updates the draft. Use Publish Live when you want the live timetable to change.'
+                  : 'Linked activities are unassigned in the draft; publish it when you want the live timetable to change.'}
+              </p>
+            </div>
+            <div className="flex justify-end gap-3 border-t border-slate-100 bg-slate-50 px-6 py-4">
+              <button
+                type="button"
+                onClick={closeDeleteConfirmation}
+                disabled={deleting}
+                className="rounded-lg px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-200 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={deleting || !deletePassword}
+                className="rounded-lg bg-red-600 px-5 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {deleting ? 'Deleting…' : `Delete ${deleteRequest.type}`}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {/* Activity Modal */}
       {showActivityModal && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
@@ -805,14 +944,13 @@ const Timetable = () => {
                   <select 
                     value={activityForm.shift_id}
                     onChange={(e) => {
-                        const sId = Number(e.target.value);
-                        const selectedShift = shifts.find(s => s.id === sId);
+                        const selectedShift = shifts.find(s => String(s.id) === String(e.target.value));
                         
                         // Auto-fill activity details if shift is selected
                         if (selectedShift) {
                             setActivityForm({
                                 ...activityForm, 
-                                shift_id: sId,
+                                shift_id: selectedShift.id,
                                 name: activityForm.name || selectedShift.name,
                                 start_time: selectedShift.start_time || activityForm.start_time,
                                 end_time: selectedShift.end_time || activityForm.end_time
