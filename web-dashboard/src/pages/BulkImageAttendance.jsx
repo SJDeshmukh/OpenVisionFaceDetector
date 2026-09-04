@@ -45,6 +45,20 @@ const BulkImageAttendance = () => {
   const [useClientAI, setUseClientAI] = useState(false);
   const [showMeshFaces, setShowMeshFaces] = useState({}); // key: globalIndex -> bool
 
+  // The lecture response is the authoritative roster for the selected class.
+  // Merge it with /persons so faculty-scoped queries cannot leave the count or
+  // assignment dropdown empty when the lecture already contains the students.
+  const availablePeople = Array.from(new Map([
+    ...people,
+    ...lectureRoster.map(row => ({
+      id: row.person_id,
+      name: row.name,
+      display_id: row.display_id
+    }))
+  ].filter(person => person.id && person.name).map(person => [String(person.id), person])).values())
+    .sort((a, b) => a.name.localeCompare(b.name));
+  peopleById.current = new Map(availablePeople.map(person => [String(person.id), person.name]));
+
   // Load user-scoped batch ID once user is available
   useEffect(() => {
     if (batchLsKey) {
@@ -52,10 +66,6 @@ const BulkImageAttendance = () => {
       if (stored) setBatchId(stored);
     }
   }, [batchLsKey]);
-
-  useEffect(() => {
-    peopleById.current = new Map(people.map(p => [String(p.id), p.name]));
-  }, [people]);
 
   const applyThresholdToFaces = (threshold) => {
     setAssign(prevAssign => {
@@ -247,7 +257,7 @@ const BulkImageAttendance = () => {
       setLectureRoster(prev => {
         const exists = prev.find(r => String(r.person_id) === String(personId));
         if (exists) return prev.map(r => String(r.person_id) === String(personId) ? { ...r, status: newStatus } : r);
-        const person = people.find(p => String(p.id) === String(personId));
+        const person = availablePeople.find(p => String(p.id) === String(personId));
         return [...prev, { person_id: personId, status: newStatus, name: person?.name || '' }];
       });
     } catch (e) {
@@ -765,7 +775,7 @@ const BulkImageAttendance = () => {
 
           {selectedLectureId ? (
             <span className="text-sm font-semibold text-emerald-700 bg-emerald-50 px-3 py-1.5 rounded-full border border-emerald-200 ml-auto">
-              {presentCount} / {people.length} present (Roster Synced)
+              {presentCount} / {lectureRoster.length || availablePeople.length} present (Roster Synced)
             </span>
           ) : (
             <span className="text-sm font-medium text-orange-600 bg-orange-50 px-3 py-1.5 rounded-full border border-orange-200 ml-auto">Select Subject to sync Roster</span>
@@ -1013,7 +1023,7 @@ const BulkImageAttendance = () => {
                             <div className="mb-2">
                               <span className="inline-block px-2 py-0.5 text-[10px] rounded bg-emerald-600 text-white">
                                 {(() => {
-                                  const p = people.find(person => String(person.id) === String(assign[f.globalIndex]));
+                                  const p = availablePeople.find(person => String(person.id) === String(assign[f.globalIndex]));
                                   return p ? `${p.name} (#${p.display_id})` : 'Assigned';
                                 })()}
                               </span>
@@ -1025,7 +1035,7 @@ const BulkImageAttendance = () => {
                             onChange={(e) => setAssign(prev => ({ ...prev, [f.globalIndex]: e.target.value }))}
                           >
                             <option value="">Assign person…</option>
-                            {people.map(p => (
+                            {availablePeople.map(p => (
                               <option key={p.id} value={p.id}>{p.name} (#{p.display_id})</option>
                             ))}
                           </select>
