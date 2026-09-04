@@ -382,18 +382,34 @@ model = os.environ["AI_MODEL"]
 if provider == "gemini":
     url = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000"
     headers = {"x-goog-api-key": api_key}
+    request = urllib.request.Request(url, method="GET", headers=headers)
 elif provider == "groq":
-    url = "https://api.groq.com/openai/v1/models"
-    headers = {"Authorization": "Bearer " + api_key}
+    # Some valid Groq keys are denied access to the model-list endpoint even
+    # though they can use the configured model. Validate the route XChat uses.
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    payload = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": "Reply OK."}],
+    }).encode("utf-8")
+    headers = {
+        "Authorization": "Bearer " + api_key,
+        "Content-Type": "application/json",
+    }
+    request = urllib.request.Request(url, data=payload, method="POST", headers=headers)
 else:
     url = "https://api.mistral.ai/v1/models"
     headers = {"Authorization": "Bearer " + api_key}
-request = urllib.request.Request(url, method="GET", headers=headers)
+    request = urllib.request.Request(url, method="GET", headers=headers)
 
 for attempt in range(3):
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             data = json.load(response)
+        if provider == "groq":
+            if not isinstance(data, dict) or not isinstance(data.get("choices"), list) or not data["choices"]:
+                raise RuntimeError("Groq returned no completion choices")
+            print("Groq API: key and configured model accepted by chat completions.")
+            raise SystemExit(0)
         if isinstance(data, dict):
             cards = data.get("models", []) if provider == "gemini" else data.get("data", [])
         else:
