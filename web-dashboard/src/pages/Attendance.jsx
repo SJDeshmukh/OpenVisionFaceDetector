@@ -45,11 +45,13 @@ const Attendance = () => {
   });
   const [deviceOptions, setDeviceOptions] = useState([]);
   const { user } = useAuth();
+  const schoolFlow = Boolean(user?.vertical && ['school', 'hostel'].includes(String(user.vertical).toLowerCase()));
+  const [personType, setPersonType] = useState('student');
   const filtersRef = useRef(filters);
   useEffect(() => {
     filtersRef.current = filters;
   }, [filters]);
-  const personLabel = (user?.vertical && ['school', 'hostel'].includes(String(user.vertical).toLowerCase())) ? 'Student' : 'Employee';
+  const personLabel = schoolFlow ? (personType === 'faculty' ? 'Faculty' : 'Student') : 'Employee';
 
   useEffect(() => {
     fetchFilters(filtersRef.current);
@@ -80,16 +82,17 @@ const Attendance = () => {
       socket.off('attendance_updated', handleAttendanceUpdated);
       socket.off('persons_updated', handlePersonsUpdated);
     };
-  }, [filters, socket, user?.vendor_id]); // Re-create listener when filters change to ensure correct context if needed
+  }, [filters, socket, user?.vendor_id, personType]); // Re-create listener when filters change to ensure correct context if needed
 
   useEffect(() => {
     const t = setTimeout(() => fetchFilters(filtersRef.current), 250);
     return () => clearTimeout(t);
-  }, [filters]);
+  }, [filters, personType]);
 
   const fetchFilters = async (activeFilters) => {
     try {
       const params = new URLSearchParams();
+      if (schoolFlow) params.append('person_type', personType);
       const f = activeFilters || {};
       Object.entries(filterOptions.dynamic_filters || {}).forEach(([key]) => {
         const v = f[key];
@@ -117,6 +120,7 @@ const Attendance = () => {
 
     try {
       const params = new URLSearchParams();
+      if (schoolFlow) params.append('person_type', personType);
       if (filters.startDate) params.append('start_date', filters.startDate);
       if (filters.endDate) params.append('end_date', filters.endDate);
       Object.entries(filterOptions.dynamic_filters || {}).forEach(([key, cfg]) => {
@@ -159,6 +163,7 @@ const Attendance = () => {
 
   const handleExport = () => {
     const params = new URLSearchParams();
+    if (schoolFlow) params.append('person_type', personType);
     if (filters.startDate) params.append('start_date', filters.startDate);
     if (filters.endDate) params.append('end_date', filters.endDate);
     Object.entries(filterOptions.dynamic_filters || {}).forEach(([key, cfg]) => {
@@ -239,6 +244,17 @@ const Attendance = () => {
           <p className="text-slate-500">Track {personLabel.toLowerCase()} check-ins and movements.</p>
         </div>
         <div className="flex space-x-3">
+          {schoolFlow && (
+            <select
+              value={personType}
+              onChange={(event) => setPersonType(event.target.value)}
+              className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-slate-700 font-medium"
+              aria-label="Attendance person type"
+            >
+              <option value="student">Student Attendance</option>
+              <option value="faculty">Faculty Attendance</option>
+            </select>
+          )}
           <div className="relative">
             <button
               onClick={() => {
@@ -331,7 +347,7 @@ const Attendance = () => {
             >
               <option value="">{`All ${cfg?.label || key}`}</option>
               {(cfg?.options || []).map(opt => (
-                <option key={opt} value={opt}>{opt}</option>
+                <option key={opt} value={opt}>{cfg?.option_labels?.[opt] || opt}</option>
               ))}
             </select>
           </div>

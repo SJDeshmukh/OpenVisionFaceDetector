@@ -14,12 +14,15 @@ import {
   Plus,
   X,
   CreditCard,
-  FileText
+  FileText,
+  RefreshCw
 } from 'lucide-react';
 import { API_URL } from '../config';
+import { useSocket } from '../context/SocketContext';
 
 const Settings = () => {
   const { user } = useAuth();
+  const { socket } = useSocket();
 
   // System Settings State
   const [threshold, setThreshold] = useState(0.6);
@@ -38,29 +41,47 @@ const Settings = () => {
   // Subscription State
   const [subscription, setSubscription] = useState(null);
   const [invoices, setInvoices] = useState([]);
+  const [refreshingBilling, setRefreshingBilling] = useState(false);
 
   useEffect(() => {
     fetchSettings();
-    if (['vendor_admin', 'admin'].includes(user?.role)) {
+    if (['vendor_admin', 'admin', 'owner'].includes(user?.role)) {
       fetchSystemUsers();
       fetchSubscription();
     }
   }, [user]);
 
   const fetchSubscription = async () => {
+    setRefreshingBilling(true);
     try {
-      const res = await axios.get(`${API_URL}/vendor/subscription`, {
-        headers: { Authorization: `Bearer ${user?.token}` }
-      });
+      const requestConfig = {
+        headers: { Authorization: `Bearer ${user?.token}` },
+        params: { _ts: Date.now() }
+      };
+      const [res, invoiceRes] = await Promise.all([
+        axios.get(`${API_URL}/vendor/subscription`, requestConfig),
+        axios.get(`${API_URL}/vendor/invoices`, requestConfig).catch(() => null)
+      ]);
       if (res.data) {
-        const { invoices, ...sub } = res.data;
+        const { invoices: embeddedInvoices, ...sub } = res.data;
         setSubscription(sub);
-        setInvoices(invoices || []);
+        setInvoices(invoiceRes?.data?.invoices || embeddedInvoices || []);
       }
     } catch (error) {
       console.error("Error fetching subscription:", error);
+    } finally {
+      setRefreshingBilling(false);
     }
   };
+
+  useEffect(() => {
+    if (!socket || !['vendor_admin', 'admin', 'owner'].includes(user?.role)) return undefined;
+    const handleInvoiceUpdated = (data) => {
+      if (String(data?.vendor_id) === String(user?.vendor_id)) fetchSubscription();
+    };
+    socket.on('invoice_updated', handleInvoiceUpdated);
+    return () => socket.off('invoice_updated', handleInvoiceUpdated);
+  }, [socket, user?.role, user?.vendor_id]);
 
   const fetchSettings = async () => {
     try {
@@ -191,7 +212,7 @@ const Settings = () => {
         </button>}
       </div>
 
-      {['vendor_admin', 'admin'].includes(user?.role) && subscription && (
+      {['vendor_admin', 'admin', 'owner'].includes(user?.role) && subscription && (
         <Section title="Subscription & Billing" icon={CreditCard}>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="bg-blue-50 p-4 rounded-lg border border-blue-100">
@@ -219,6 +240,16 @@ const Settings = () => {
             <div>
               <h4 className="font-semibold text-slate-800 mb-3 flex items-center gap-2">
                 <FileText size={16} className="text-slate-500" /> Invoices
+                <button
+                  type="button"
+                  onClick={fetchSubscription}
+                  disabled={refreshingBilling}
+                  className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-700 disabled:opacity-50"
+                  title="Refresh invoices"
+                >
+                  <RefreshCw size={13} className={refreshingBilling ? 'animate-spin' : ''} />
+                  Refresh
+                </button>
               </h4>
               <div className="max-h-40 overflow-y-auto">
                 <table className="w-full text-sm text-left">
@@ -243,9 +274,11 @@ const Settings = () => {
                                 {(() => {
                                   try {
                                     const d = JSON.parse(inv.details);
+                                    const deviceCount = d.active_users ?? d.max_devices ?? 0;
                                     return (
                                       <>
-                                        <div>{d.active_users} users</div>
+                                        {deviceCount > 0 && <div>{deviceCount} devices</div>}
+                                        {Number(d.max_employees || 0) > 0 && <div>{d.max_employees} employees</div>}
                                         {d.setup_fee > 0 && <div>+ Setup</div>}
                                       </>
                                     );

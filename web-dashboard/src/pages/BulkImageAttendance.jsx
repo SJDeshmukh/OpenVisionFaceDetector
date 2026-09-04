@@ -144,6 +144,7 @@ const BulkImageAttendance = () => {
       try {
         const res = await axios.get(`${API_URL}/persons`, {
           params: {
+            person_type: 'student',
             class_year: selectedClass.class_year,
             division: selectedClass.division,
             branch: selectedClass.branch

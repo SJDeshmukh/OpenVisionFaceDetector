@@ -87,7 +87,7 @@ def public_business_types():
             "default_registration_config": [
                 {"field": "student_id", "label": "Student ID", "type": "text", "required": True},
                 {"field": "phone", "label": "Student Mobile Number", "type": "text", "required": True},
-                {"field": "class_section", "label": "Class/Section", "type": "text", "required": False}
+                {"field": "class_id", "label": "Class/Section", "type": "class_select", "required": True}
             ]
         },
         # ── TapInX — School / College ─────────────────────────────────────────
@@ -100,7 +100,7 @@ def public_business_types():
             "default_registration_config": [
                 {"field": "student_id", "label": "Student ID", "type": "text", "required": True},
                 {"field": "phone", "label": "Student Mobile Number", "type": "text", "required": True},
-                {"field": "class_section", "label": "Class/Section", "type": "text", "required": False}
+                {"field": "class_id", "label": "Class/Section", "type": "class_select", "required": True}
             ]
         },
         # ── TapInX — Daily Wages (no parent login) ───────────────────────────

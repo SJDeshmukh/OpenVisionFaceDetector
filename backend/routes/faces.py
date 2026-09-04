@@ -22,6 +22,15 @@ import db_factory
 from db_factory import set_row_factory
 from concurrent.futures import ThreadPoolExecutor
 from services.face_service import _extract_structural_vector
+from services.person_scope_service import (
+    class_scope_matches,
+    is_school_hostel,
+    normalize_person_type,
+    parse_custom_data,
+    person_type_for,
+    requested_person_type,
+    vendor_vertical,
+)
 
 def _get_faculty_identifiers(c, username):
     """Fetch all possible strings that identify this faculty member (username, name, email)."""
@@ -434,7 +443,8 @@ def get_persons():
 
     # Cache based on vendor and request parameters
     cache_params = sorted(request.args.items())
-    cache_key = f"vendor:{vendor_id}:persons_list:{hash(tuple(cache_params))}"
+    caller_scope = f"{getattr(g, 'user_role', '')}:{getattr(g, 'username', '')}"
+    cache_key = f"vendor:{vendor_id}:persons_list:{caller_scope}:{hash(tuple(cache_params))}"
     cached = cache_get(cache_key)
     if cached:
         return jsonify(cached)
@@ -442,133 +452,121 @@ def get_persons():
     conn = get_db_connection()
     set_row_factory(conn)
     c = conn.cursor()
-    
-    query = "SELECT id, display_id, name, department, designation, shift, daily_wage, face_image, phone, custom_data FROM faces"
-    params = []
-    
-    if vendor_id:
-        if g.user_role == 'faculty':
-            # 1. Identify which classes this faculty is assigned to
-            c.execute("SELECT class_year, division, branch, mapped_subjects FROM classes WHERE vendor_id = ?", (vendor_id,))
-            all_classes = c.fetchall() or []
-            assigned_classes = []
-            
-            # Fetch all known identifiers for this faculty (name, email, username)
-            faculty_ids = _get_faculty_identifiers(c, g.username)
-            
-            for cl in all_classes:
-                try:
-                    ms_raw = cl[3] if not hasattr(cl, 'keys') else cl['mapped_subjects']
-                    ms = json.loads(ms_raw) if ms_raw else []
-                    if any(_faculty_matches(m.get('faculty', ''), faculty_ids) for m in ms):
-                        y = cl[0] if not hasattr(cl, 'keys') else cl['class_year']
-                        d = cl[1] if not hasattr(cl, 'keys') else cl['division']
-                        b = cl[2] if not hasattr(cl, 'keys') else cl['branch']
-                        assigned_classes.append((y, d, b)) # (year, div, branch)
-                except (json.JSONDecodeError, ValueError): pass
-            
-            if not assigned_classes:
-                conn.close()
-                return jsonify({"persons": []}) # No assigned classes = no students visible
-            
-            # 2. Build query to filter by these classes
-            query += " WHERE vendor_id = ?"
-            params.append(vendor_id)
-            
-            # Build a filter that matches ANY of the assigned classes
-            is_pg = getattr(conn, "_is_pg", False)
-            class_filters = []
-            for y, d, b in assigned_classes:
-                if is_pg:
-                    # Use LOWER(TRIM(...)) for robustness against casing/whitespace in bulk-uploaded data
-                    f = "( (LOWER(TRIM(custom_data::jsonb->>'class_year')) = LOWER(TRIM(?)) OR LOWER(TRIM(custom_data::jsonb->>'Year')) = LOWER(TRIM(?))) AND (LOWER(TRIM(custom_data::jsonb->>'division')) = LOWER(TRIM(?)) OR LOWER(TRIM(custom_data::jsonb->>'Division')) = LOWER(TRIM(?))) AND (LOWER(TRIM(custom_data::jsonb->>'branch')) = LOWER(TRIM(?)) OR LOWER(TRIM(custom_data::jsonb->>'Branch')) = LOWER(TRIM(?))) )"
-                    class_filters.append(f)
-                    params.extend([str(y).lower().strip(), str(y).lower().strip(), str(d).lower().strip(), str(d).lower().strip(), str(b).lower().strip(), str(b).lower().strip()])
-                else:
-                    f = "( (custom_data LIKE ? OR custom_data LIKE ? OR custom_data LIKE ? OR custom_data LIKE ?) AND (custom_data LIKE ? OR custom_data LIKE ? OR custom_data LIKE ? OR custom_data LIKE ?) AND (custom_data LIKE ? OR custom_data LIKE ? OR custom_data LIKE ? OR custom_data LIKE ?) )"
-                    class_filters.append(f)
-                    params.extend([
-                        f'%\"class_year\":\"{y}\"%', f'%\"class_year\": \"{y}\"%', f'%\"Year\":\"{y}\"%', f'%\"Year\": \"{y}\"%',
-                        f'%\"division\":\"{d}\"%', f'%\"division\": \"{d}\"%', f'%\"Division\":\"{d}\"%', f'%\"Division\": \"{d}\"%',
-                        f'%\"branch\":\"{b}\"%', f'%\"branch\": \"{b}\"%', f'%\"Branch\":\"{b}\"%', f'%\"Branch\": \"{b}\"%'
-                    ])
-            
-            if class_filters:
-                query += " AND (" + " OR ".join(class_filters) + ")"
-        else:
-            query += " WHERE vendor_id = ?"
-            params.append(vendor_id)
-        
-    is_pg = getattr(conn, "_is_pg", False)
-    class_year = request.args.get('class_year')
-    division = request.args.get('division')
-    branch = request.args.get('branch')
-    
-    if class_year:
-        if is_pg:
-            query += " AND (LOWER(TRIM(custom_data::jsonb->>'class_year')) = LOWER(TRIM(?)) OR LOWER(TRIM(custom_data::jsonb->>'Year')) = LOWER(TRIM(?)) OR LOWER(TRIM(custom_data::jsonb->>'year')) = LOWER(TRIM(?)))"
-            params.extend([str(class_year), str(class_year), str(class_year)])
-        else:
-            query += " AND (LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ?)"
-            params += [
-                f'%\"class_year\":\"{class_year.lower()}\"%', f'%\"class_year\": \"{class_year.lower()}\"%',
-                f'%\"year\":\"{class_year.lower()}\"%', f'%\"year\": \"{class_year.lower()}\"%',
-                f'%\"Year\":\"{class_year.lower()}\"%', f'%\"Year\": \"{class_year.lower()}\"%'
-            ]
-            
-    if division:
-        if is_pg:
-            query += " AND (LOWER(TRIM(custom_data::jsonb->>'division')) = LOWER(TRIM(?)) OR LOWER(TRIM(custom_data::jsonb->>'Division')) = LOWER(TRIM(?)))"
-            params += [str(division), str(division)]
-        else:
-            query += " AND (LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ?)"
-            params += [
-                f'%\"division\":\"{division.lower()}\"%', f'%\"division\": \"{division.lower()}\"%',
-                f'%\"Division\":\"{division.lower()}\"%', f'%\"Division\": \"{division.lower()}\"%'
-            ]
-            
-    if branch:
-        if is_pg:
-            query += " AND (LOWER(TRIM(custom_data::jsonb->>'branch')) = LOWER(TRIM(?)) OR LOWER(TRIM(custom_data::jsonb->>'Branch')) = LOWER(TRIM(?)))"
-            params += [str(branch), str(branch)]
-        else:
-            query += " AND (LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ? OR LOWER(custom_data) LIKE ?)"
-            params += [
-                f'%\"branch\":\"{branch.lower()}\"%', f'%\"branch\": \"{branch.lower()}\"%',
-                f'%\"Branch\":\"{branch.lower()}\"%', f'%\"Branch\": \"{branch.lower()}\"%'
-            ]
-            
-    # Default sorting to ensure stability (Display ID based)
-    query += " ORDER BY display_id ASC"
-
-    # Optional pagination
+    vertical = vendor_vertical(c, vendor_id) if vendor_id else ""
     try:
-        limit = int(request.args.get('limit', 500))
-        offset = int(request.args.get('offset', 0))
-        if limit > 0:
-            query += " LIMIT ? OFFSET ?"
-            params += [limit, offset]
-    except (ValueError, TypeError):
-        pass
+        wanted_type = requested_person_type(request.args.get("person_type"), vertical)
+    except ValueError as exc:
+        conn.close()
+        return jsonify({"error": str(exc)}), 400
+    # Faculty screens are student rosters, never a faculty directory.
+    if getattr(g, "user_role", None) == "faculty":
+        wanted_type = "student"
+
+    query = """
+        SELECT f.id, f.display_id, f.name, f.department, f.designation,
+               f.shift, f.daily_wage, f.face_image, f.phone, f.custom_data,
+               (SELECT su.role FROM system_users su
+                WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
+                LIMIT 1) AS system_role
+        FROM faces f
+    """
+    params = []
+    if vendor_id:
+        query += " WHERE f.vendor_id = ?"
+        params.append(vendor_id)
+    query += " ORDER BY f.display_id ASC"
+
+    assigned_classes = None
+    if vendor_id and getattr(g, "user_role", None) == "faculty":
+        faculty_ids = _get_faculty_identifiers(c, g.username)
+        c.execute(
+            "SELECT id, class_year, division, branch, mapped_subjects "
+            "FROM classes WHERE vendor_id = ?",
+            (vendor_id,),
+        )
+        assigned_classes = []
+        for class_row in c.fetchall() or []:
+            row = dict(class_row) if hasattr(class_row, "keys") else {
+                "id": class_row[0], "class_year": class_row[1],
+                "division": class_row[2], "branch": class_row[3],
+                "mapped_subjects": class_row[4],
+            }
+            try:
+                mapped = json.loads(row.get("mapped_subjects") or "[]")
+            except (TypeError, ValueError):
+                mapped = []
+            if any(
+                isinstance(item, dict)
+                and _faculty_matches(item.get("faculty", ""), faculty_ids)
+                for item in mapped
+            ):
+                assigned_classes.append(row)
+
+        # Timetable allocations are also valid faculty-to-class assignments.
+        c.execute(
+            "SELECT DISTINCT class_year, division, branch FROM lectures "
+            "WHERE vendor_id = ? AND teacher = ?",
+            (vendor_id, g.username),
+        )
+        for lecture_row in c.fetchall() or []:
+            assigned_classes.append({
+                "id": "",
+                "class_year": lecture_row[0],
+                "division": lecture_row[1],
+                "branch": lecture_row[2],
+            })
     try:
         c.execute(query, params)
         rows = c.fetchall()
-        conn.close()
     except Exception as e:
         logger.error("Persons query failed", exc_info=True)
-        if conn: conn.close()
+        conn.close()
         return jsonify({"error": str(e)}), 500
-    
+
+    class_id = request.args.get("class_id")
+    class_year = request.args.get("class_year")
+    division = request.args.get("division")
+    branch = request.args.get("branch")
     persons = []
     for row in rows:
         r = dict(row) if not isinstance(row, dict) else row.copy()
-        if r.get("custom_data") and isinstance(r["custom_data"], str):
-            try:
-                r["custom_data"] = json.loads(r["custom_data"])
-            except Exception:
-                pass
+        custom = parse_custom_data(r.get("custom_data"))
+        resolved_type = person_type_for(custom, r.pop("system_role", None), vertical)
+        if wanted_type and resolved_type != wanted_type:
+            continue
+        if assigned_classes is not None and not any(
+            class_scope_matches(
+                custom,
+                class_id=scope.get("id"),
+                class_year=scope.get("class_year"),
+                division=scope.get("division"),
+                branch=scope.get("branch"),
+            )
+            for scope in assigned_classes
+        ):
+            continue
+        if any((class_id, class_year, division, branch)) and not class_scope_matches(
+            custom, class_id=class_id, class_year=class_year,
+            division=division, branch=branch,
+        ):
+            continue
+        custom["person_type"] = resolved_type
+        r["person_type"] = resolved_type
+        r["custom_data"] = custom
         persons.append(r)
-    
+
+    try:
+        offset = max(0, int(request.args.get("offset", 0)))
+        limit = int(request.args.get("limit", 500))
+    except (ValueError, TypeError):
+        offset, limit = 0, 500
+    if limit > 0:
+        persons = persons[offset:offset + limit]
+    else:
+        persons = persons[offset:]
+    conn.close()
+
     result = {"persons": persons}
     cache_set(cache_key, result, 300) # 5 min cache
     return jsonify(result)
@@ -583,7 +581,7 @@ def upload_face():
     caller_vendor_id, error = authenticate_vendor_access()
     if error: return error
 
-    data = request.json
+    data = request.get_json(silent=True) or {}
     person_id = data.get("person_id")
     name = data.get("name")
     templates = data.get("templates")
@@ -611,14 +609,13 @@ def upload_face():
         # 'class_year', 'division', 'branch' are intentional kept out here to be part of custom_dict
         # because the faces table lacks these columns and they must be in custom_data for UI.
     }
-    custom_dict = {k: v for k, v in data.items() if k not in standard_fields}
+    custom_dict = parse_custom_data(data.get("custom_data"))
+    custom_dict.update({k: v for k, v in data.items() if k not in standard_fields})
     
     # Ensure scope fields are in custom_dict for UI visibility (Faces table lacks columns)
     if class_year: custom_dict['class_year'] = class_year
     if division: custom_dict['division'] = division
     if branch: custom_dict['branch'] = branch
-    
-    custom_data = json.dumps(custom_dict, separators=(',', ':')) if custom_dict else None
     
     # --- AUTOMATED EXTRACTION FOR NEW UPLOADS ---
     # We always re-extract embeddings from the face_image if provided to ensure
@@ -664,6 +661,41 @@ def upload_face():
     if not name:
         return jsonify({"error": "Missing name"}), 400
 
+    # Generic/mobile enrollment is the student enrollment path for School and
+    # Hostel tenants. Faculty must use the dedicated faculty endpoints.
+    metadata_conn = get_db_connection()
+    try:
+        metadata_cursor = metadata_conn.cursor()
+        vertical = vendor_vertical(metadata_cursor, vendor_id) if vendor_id else ""
+        if is_school_hostel(vertical):
+            incoming_type = normalize_person_type(
+                data.get("person_type") or custom_dict.get("person_type"), "student"
+            )
+            if incoming_type != "student":
+                return jsonify({
+                    "error": "Faculty must be enrolled through Faculty Enrolment"
+                }), 400
+            custom_dict["person_type"] = "student"
+
+            # Updates may retain an existing class, but every resulting student
+            # record must have a real class ID.
+            if not custom_dict.get("class_id") and person_id:
+                metadata_cursor.execute(
+                    "SELECT custom_data FROM faces WHERE id = ? AND vendor_id = ?",
+                    (person_id, vendor_id),
+                )
+                existing_scope_row = metadata_cursor.fetchone()
+                existing_scope = parse_custom_data(existing_scope_row[0] if existing_scope_row else None)
+                if existing_scope.get("class_id"):
+                    custom_dict["class_id"] = existing_scope["class_id"]
+
+            if not custom_dict.get("class_id"):
+                return jsonify({
+                    "error": "Class allocation is required for School/Hostel students"
+                }), 400
+    finally:
+        metadata_conn.close()
+
     submitted_class_id = custom_dict.get('class_id')
     if submitted_class_id:
         class_conn = get_db_connection()
@@ -683,9 +715,10 @@ def upload_face():
                 'division': division or '',
                 'branch': branch or '',
             })
-            custom_data = json.dumps(custom_dict, separators=(',', ':'))
         finally:
             class_conn.close()
+
+    custom_data = json.dumps(custom_dict, separators=(',', ':')) if custom_dict else None
 
     try:
         c = get_db_connection().cursor()
@@ -695,11 +728,6 @@ def upload_face():
     try:
         conn_check = get_db_connection()
         cc = conn_check.cursor()
-        vertical = None
-        if vendor_id:
-            cc.execute("SELECT vertical FROM vendors WHERE id = ?", (vendor_id,))
-            r = cc.fetchone()
-            vertical = r[0] if r else None
         # Identify Student Number
         student_number = None
         try:
@@ -715,10 +743,24 @@ def upload_face():
             if student_number:
                 if getattr(conn_check, "_is_pg", False):
                     # Postgres JSONB search
-                    cc.execute("SELECT id FROM faces WHERE vendor_id = %s AND (custom_data::jsonb ->> 'student_id' = %s OR custom_data::jsonb ->> 'id_number' = %s OR custom_data::jsonb ->> 'student_number' = %s) LIMIT 1", (vendor_id, student_number, student_number, student_number))
+                    cc.execute("""SELECT f.id FROM faces f WHERE f.vendor_id = %s
+                                  AND (f.custom_data::jsonb ->> 'student_id' = %s
+                                    OR f.custom_data::jsonb ->> 'id_number' = %s
+                                    OR f.custom_data::jsonb ->> 'student_number' = %s)
+                                  AND NOT EXISTS (
+                                      SELECT 1 FROM system_users su
+                                      WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                                        AND LOWER(su.role) = 'faculty'
+                                  ) LIMIT 1""", (vendor_id, student_number, student_number, student_number))
                 else:
                     # SQLite JSON search (using LIKE as fallback or json_extract if available)
-                    cc.execute("SELECT id FROM faces WHERE vendor_id = ? AND (custom_data LIKE ? OR custom_data LIKE ? OR custom_data LIKE ?) LIMIT 1", 
+                    cc.execute("""SELECT f.id FROM faces f WHERE f.vendor_id = ?
+                                  AND (f.custom_data LIKE ? OR f.custom_data LIKE ? OR f.custom_data LIKE ?)
+                                  AND NOT EXISTS (
+                                      SELECT 1 FROM system_users su
+                                      WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                                        AND LOWER(su.role) = 'faculty'
+                                  ) LIMIT 1""",
                                (vendor_id, f'%"student_id":"{student_number}"%', f'%"id_number":"{student_number}"%', f'%"student_number":"{student_number}"%'))
                 row_id = cc.fetchone()
                 if row_id:
@@ -727,14 +769,20 @@ def upload_face():
 
             # B) Try match by exact Name (only if still no person_id)
             if not person_id and name:
-                cc.execute("SELECT id FROM faces WHERE vendor_id = ? AND name = ? LIMIT 2", (vendor_id, name))
+                cc.execute("""SELECT f.id FROM faces f
+                              WHERE f.vendor_id = ? AND f.name = ?
+                                AND NOT EXISTS (
+                                    SELECT 1 FROM system_users su
+                                    WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                                      AND LOWER(su.role) = 'faculty'
+                                ) LIMIT 2""", (vendor_id, name))
                 matched_names = cc.fetchall()
                 if len(matched_names) == 1:
                     row_id = matched_names[0]
                     person_id = str(row_id[0] if not isinstance(row_id, dict) else row_id.get("id"))
                     logger.info(f"[UPLOAD] Auto-matched name '{name}' to existing ID {person_id}")
 
-        if vertical == 'school' and student_number and not person_id:
+        if is_school_hostel(vertical) and student_number and not person_id:
             # Only block if we STILL haven't found a person to update
             cc.execute("SELECT id, custom_data FROM faces WHERE vendor_id = ?", (vendor_id,))
             rows = cc.fetchall()
@@ -827,6 +875,16 @@ def upload_face():
                 print(f"Image processing error: {e}")
                 pass
         if person_id:
+            if is_school_hostel(vertical):
+                c.execute(
+                    "SELECT role FROM system_users WHERE person_id = ? AND vendor_id = ? "
+                    "AND LOWER(role) = 'faculty' LIMIT 1",
+                    (person_id, vendor_id),
+                )
+                if c.fetchone():
+                    return jsonify({
+                        "error": "A faculty profile cannot be edited through Student Enrolment"
+                    }), 409
             if caller_vendor_id:
                 c.execute(
                     "SELECT name, templates, face_image, phone, department, designation, shift, vendor_id, custom_data FROM faces WHERE id=? AND vendor_id=?",
@@ -853,16 +911,14 @@ def upload_face():
                 "vendor_id": row[7],
                 "custom_data": row[8]
             }
-            if custom_data is None and existing["custom_data"]:
-                try:
-                    old = json.loads(existing["custom_data"])
-                    for k, v in custom_dict.items():
-                        # Only overwrite if the new value is non-empty
-                        if v is not None and str(v).strip() != "":
-                            old[k] = v
-                    custom_data = json.dumps(old, separators=(',', ':'))
-                except Exception:
-                    custom_data = existing["custom_data"]
+            old = parse_custom_data(existing["custom_data"])
+            for k, v in custom_dict.items():
+                # Only overwrite if the new value is non-empty.
+                if v is not None and str(v).strip() != "":
+                    old[k] = v
+            if is_school_hostel(vertical):
+                old["person_type"] = "student"
+            custom_data = json.dumps(old, separators=(',', ':')) if old else None
             fields = []
             params = []
             if name is not None:
@@ -901,7 +957,7 @@ def upload_face():
                 
                 # CRITICAL: Sync metadata to person_embeddings if scope changed
                 # Ensure the recognition engine can still find these embeddings under the new class/division/branch
-                if class_year is not None or division is not None or branch is not None:
+                if submitted_class_id or class_year is not None or division is not None or branch is not None:
                     sync_fields = []
                     sync_params = []
                     if class_year is not None: sync_fields.append("class_year = ?"); sync_params.append(str(class_year))
@@ -1036,8 +1092,9 @@ def upload_face():
                             else:
                                 # Proactively create it if it didn't exist
                                 from services.auth_service import hash_password
-                                c.execute("INSERT OR IGNORE INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (?, ?, NULL, 'user', ?, ?)",
-                                          (new_sid, hash_password(new_phone), existing.get("vendor_id"), person_id))
+                                login_role = 'student' if is_school_hostel(vertical) else 'user'
+                                c.execute("INSERT OR IGNORE INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (?, ?, NULL, ?, ?, ?)",
+                                          (new_sid, hash_password(new_phone), login_role, existing.get("vendor_id"), person_id))
             except Exception:
                 pass
         else:
@@ -1074,9 +1131,10 @@ def upload_face():
                         if not c.fetchone():
                             # Create system user
                             # Using phone as initial password
+                            login_role = 'student' if is_school_hostel(vertical) else 'user'
                             c.execute(
-                                "INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (?, ?, NULL, 'user', ?, ?)",
-                                (student_id, hash_password(student_phone), vendor_id, new_id)
+                                "INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (?, ?, NULL, ?, ?, ?)",
+                                (student_id, hash_password(student_phone), login_role, vendor_id, new_id)
                             )
                             # We don't need to commit here if the outer transaction commits
             except Exception as e:
@@ -1186,11 +1244,22 @@ def download_faces():
     conn = get_db_connection()
     set_row_factory(conn)
     c = conn.cursor()
+    vertical = vendor_vertical(c, vendor_id) if vendor_id else ""
+    try:
+        wanted_type = requested_person_type(request.args.get("person_type"), vertical)
+    except ValueError as exc:
+        conn.close()
+        return jsonify({"error": str(exc)}), 400
+    if getattr(g, "user_role", None) == "faculty":
+        wanted_type = "student"
     
     query = """
-        SELECT f.*, su.role as system_role
+        SELECT f.*,
+               (SELECT su.role FROM system_users su
+                WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                ORDER BY CASE LOWER(su.role) WHEN 'faculty' THEN 0 WHEN 'student' THEN 1 ELSE 2 END
+                LIMIT 1) AS system_role
         FROM faces f
-        LEFT JOIN system_users su ON f.id = su.person_id
     """
     params = []
     
@@ -1198,7 +1267,7 @@ def download_faces():
     if vendor_id:
         if g.user_role == 'faculty':
             # 1. Identify which classes this faculty is assigned to
-            c.execute("SELECT class_year, division, branch, mapped_subjects FROM classes WHERE vendor_id = ?", (vendor_id,))
+            c.execute("SELECT id, class_year, division, branch, mapped_subjects FROM classes WHERE vendor_id = ?", (vendor_id,))
             all_classes_rows = c.fetchall() or []
             assigned_set = set()
             
@@ -1208,13 +1277,14 @@ def download_faces():
             for cl in all_classes_rows:
                 try:
                     # In Postgres DictRow or SQLite Row, index access works
-                    ms_raw = cl[3] if not hasattr(cl, 'keys') else cl['mapped_subjects']
+                    ms_raw = cl[4] if not hasattr(cl, 'keys') else cl['mapped_subjects']
                     ms = json.loads(ms_raw) if ms_raw else []
                     if any(_faculty_matches(m.get('faculty', ''), faculty_ids) for m in ms):
-                        y = cl[0] if not hasattr(cl, 'keys') else cl['class_year']
-                        d = cl[1] if not hasattr(cl, 'keys') else cl['division']
-                        b = cl[2] if not hasattr(cl, 'keys') else cl['branch']
-                        assigned_set.add((str(y or '').strip().lower(), 
+                        class_id = cl[0] if not hasattr(cl, 'keys') else cl['id']
+                        y = cl[1] if not hasattr(cl, 'keys') else cl['class_year']
+                        d = cl[2] if not hasattr(cl, 'keys') else cl['division']
+                        b = cl[3] if not hasattr(cl, 'keys') else cl['branch']
+                        assigned_set.add((str(class_id or '').strip(), str(y or '').strip().lower(),
                                          str(d or '').strip().lower(), 
                                          str(b or '').strip().lower()))
                 except: pass
@@ -1225,7 +1295,7 @@ def download_faces():
                 y = lc[0] if not hasattr(lc, 'keys') else lc['class_year']
                 d = lc[1] if not hasattr(lc, 'keys') else lc['division']
                 b = lc[2] if not hasattr(lc, 'keys') else lc['branch']
-                assigned_set.add((str(y or '').strip().lower(), 
+                assigned_set.add(("", str(y or '').strip().lower(),
                                  str(d or '').strip().lower(), 
                                  str(b or '').strip().lower()))
             
@@ -1239,24 +1309,13 @@ def download_faces():
             all_vendor_faces = c.fetchall()
             for f in all_vendor_faces:
                 r = dict(f)
-                try:
-                    cd = json.loads(r.get("custom_data") or "{}")
-                except: cd = {}
-                
-                s_year  = str(cd.get('class_year') or cd.get('year') or cd.get('Year') or '').strip().lower()
-                s_div   = str(cd.get('division') or cd.get('Division') or '').strip().lower()
-                s_branch = str(cd.get('branch') or cd.get('Branch') or '').strip().lower()
-                s_class = str(cd.get('class_section') or cd.get('class') or '').strip().lower()
-                
-                match = False
-                for ly, ld, lb in assigned_classes:
-                    year_ok = (not ly) or (ly in s_year) or (ly in s_class)
-                    div_ok  = (not ld) or (ld == s_div)  or (ld in s_class)
-                    branch_ok = (not lb) or (lb == s_branch) or (lb in s_class)
-                    if year_ok and div_ok and branch_ok:
-                        match = True
-                        break
-                if match:
+                custom = parse_custom_data(r.get("custom_data"))
+                if person_type_for(custom, r.get("system_role"), vertical) != "student":
+                    continue
+                if any(class_scope_matches(
+                    custom, class_id=class_id, class_year=ly,
+                    division=ld, branch=lb,
+                ) for class_id, ly, ld, lb in assigned_classes):
                     rows.append(f)
         else:
             # For admin/owner, fetch all for vendor
@@ -1272,6 +1331,11 @@ def download_faces():
     resp_faces = []
     for row in rows:
         r = dict(row)
+        custom = parse_custom_data(r.get("custom_data"))
+        resolved_type = person_type_for(custom, r.get("system_role"), vertical)
+        if wanted_type and resolved_type != wanted_type:
+            continue
+        custom["person_type"] = resolved_type
         face_item = {
             "id": str(r.get("id")),
             "display_id": r.get("display_id") or r.get("id"),
@@ -1283,7 +1347,8 @@ def download_faces():
             "designation": r.get("designation", ""),
             "shift": r.get("shift", ""),
             "role": r.get("system_role"),
-            "custom_data": json.loads(r["custom_data"]) if r.get("custom_data") else {}
+            "person_type": resolved_type,
+            "custom_data": custom,
         }
         
         try:

@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import {
   FileText,
   Download,
+  FileSpreadsheet,
   Calendar,
   Filter,
   BarChart2,
@@ -29,7 +30,10 @@ const COLORS = ['#22c55e', '#f59e0b', '#ef4444'];
 
 const Reports = () => {
   const { user } = useAuth();
-  const personLabel = (user?.vertical && ['school', 'hostel'].includes(String(user.vertical).toLowerCase())) ? 'Student' : 'Employee';
+  const schoolFlow = Boolean(user?.vertical && ['school', 'hostel'].includes(String(user.vertical).toLowerCase()));
+  const [personType, setPersonType] = useState('student');
+  const personLabel = schoolFlow ? (personType === 'faculty' ? 'Faculty' : 'Student') : 'Employee';
+  const personLabelPlural = personLabel === 'Faculty' ? 'Faculty' : `${personLabel}s`;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [analytics, setAnalytics] = useState({
@@ -64,17 +68,18 @@ const Reports = () => {
   useEffect(() => {
     fetchAnalytics();
     fetchFilters(filtersRef.current);
-  }, []);
+  }, [personType, user?.vendor_id]);
 
   useEffect(() => {
     const t = setTimeout(() => fetchFilters(filtersRef.current), 250);
     return () => clearTimeout(t);
-  }, [filters]);
+  }, [filters, personType]);
 
   const fetchFilters = async (activeFilters) => {
     try {
       const f = activeFilters || {};
       const params = new URLSearchParams();
+      if (schoolFlow) params.append('person_type', personType);
       if (f.department) params.append('department', f.department);
       if (f.designation) params.append('designation', f.designation);
       if (f.shift) params.append('shift', f.shift);
@@ -117,7 +122,9 @@ const Reports = () => {
   const fetchAnalytics = async () => {
     try {
       setLoading(true);
-      const res = await axios.get(`${API_URL}/reports/analytics`);
+      const res = await axios.get(`${API_URL}/reports/analytics`, {
+        params: schoolFlow ? { person_type: personType } : {},
+      });
       setAnalytics(res.data);
       setError(null);
     } catch (error) {
@@ -135,6 +142,7 @@ const Reports = () => {
     const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
     let url = `${API_URL}/reports/export?start_date=${startDate}&end_date=${endDate}`;
+    if (schoolFlow) url += `&person_type=${personType}`;
     if (user?.token) {
       url += `&token=${user.token}`;
     }
@@ -145,6 +153,7 @@ const Reports = () => {
     const params = new URLSearchParams();
     params.append('start_date', filters.startDate);
     params.append('end_date', filters.endDate);
+    if (schoolFlow) params.append('person_type', personType);
     if (filters.department) params.append('department', filters.department);
     if (filters.designation) params.append('designation', filters.designation);
     if (filters.shift) params.append('shift', filters.shift);
@@ -165,6 +174,22 @@ const Reports = () => {
       : `${API_URL}/reports/export`;
 
     window.location.href = `${endpoint}?${params.toString()}`;
+  };
+
+  const handleExcelExport = () => {
+    const params = new URLSearchParams();
+    params.append('start_date', filters.startDate);
+    params.append('end_date', filters.endDate);
+    if (schoolFlow) params.append('person_type', personType);
+    if (filters.department) params.append('department', filters.department);
+    if (filters.designation) params.append('designation', filters.designation);
+    if (filters.shift) params.append('shift', filters.shift);
+    if (filters.phone) params.append('phone', filters.phone);
+    Object.entries(filters.dynamic || {}).forEach(([key, value]) => {
+      if (value) params.append(`dynamic_${key}`, value);
+    });
+    if (user?.token) params.append('token', user.token);
+    window.location.href = `${API_URL}/reports/payroll/export-excel?${params.toString()}`;
   };
 
   return (
@@ -200,7 +225,18 @@ const Reports = () => {
           <h1 className="text-2xl font-bold text-slate-800">System Reports</h1>
           <p className="text-slate-500">Real-time attendance analytics and data export.</p>
         </div>
-        <div className="flex space-x-3">
+        <div className="flex flex-wrap gap-3">
+          {schoolFlow && (
+            <select
+              value={personType}
+              onChange={(event) => setPersonType(event.target.value)}
+              className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-slate-700 font-medium"
+              aria-label="Report person type"
+            >
+              <option value="student">Student Reports</option>
+              <option value="faculty">Faculty Reports</option>
+            </select>
+          )}
           <button
             onClick={() => fetchAnalytics()}
             className="flex items-center space-x-2 px-4 py-2 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 font-medium transition-colors"
@@ -214,6 +250,14 @@ const Reports = () => {
           >
             <Download size={18} />
             <span>Export Report</span>
+          </button>
+          <button
+            onClick={handleExcelExport}
+            className="flex items-center space-x-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-medium transition-colors shadow-sm"
+            title="Download the selected report as Excel"
+          >
+            <FileSpreadsheet size={18} />
+            <span>Excel Report</span>
           </button>
         </div>
       </div>
@@ -243,12 +287,16 @@ const Reports = () => {
               <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-semibold">
                 <span className="flex items-center gap-1.5 text-blue-600">
                   <span className="w-2 h-2 rounded-full bg-blue-500 inline-block" />
-                  {analytics.summary.total_students ?? analytics.summary.total_users} {personLabel}s
+                  {analytics.summary.total_users} {personLabelPlural}
                 </span>
-                <span className="flex items-center gap-1.5 text-indigo-600">
-                  <span className="w-2 h-2 rounded-full bg-indigo-500 inline-block" />
-                  {analytics.summary.total_faculty ?? 0} Admin
-                </span>
+                {schoolFlow && (
+                  <span className="flex items-center gap-1.5 text-indigo-600">
+                    <span className="w-2 h-2 rounded-full bg-indigo-500 inline-block" />
+                    {personType === 'student'
+                      ? `${analytics.summary.total_faculty ?? 0} Faculty`
+                      : `${analytics.summary.total_students ?? 0} Students`}
+                  </span>
+                )}
               </div>
             </div>
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
@@ -421,7 +469,7 @@ const Reports = () => {
                   >
                     <option value="">All {config.label}</option>
                     {config.options && config.options.map(opt => (
-                      <option key={opt} value={opt}>{opt}</option>
+                      <option key={opt} value={opt}>{config.option_labels?.[opt] || opt}</option>
                     ))}
                   </select>
                 </div>

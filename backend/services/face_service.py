@@ -13,6 +13,14 @@ import os
 
 from utils import get_db_connection, _VENDOR_EMB_CACHE, _now_ts, USE_FAISS, _faiss, _FAISS_LOCK, LOW_RAM_MODE, decode_image_to_rgb
 from db_factory import get_table_columns
+from services.person_scope_service import (
+    class_scope_for,
+    class_scope_matches,
+    parse_custom_data,
+    person_type_for,
+    requested_person_type,
+    vendor_vertical,
+)
 
 def get_realtime_engine():
     from app import get_realtime_engine as _get
@@ -221,16 +229,62 @@ def _cluster_batch_embeddings(embeddings_map: dict, threshold: float = 0.75) -> 
             clusters.append({'centroid': v, 'indices': [idx]})
     return clusters
 
-def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str | None = None, division: str | None = None, branch: str | None = None):
+def _ensure_vendor_emb_cache(
+    vendor_id: int,
+    ttl_sec: int = 300,
+    class_year: str | None = None,
+    division: str | None = None,
+    branch: str | None = None,
+    person_type: str | None = None,
+    class_id: str | None = None,
+    force_refresh: bool = False,
+):
     try:
         class_y = str(class_year or "")
         div = str(division or "")
         br = str(branch or "")
-        key = f"{vendor_id}_{class_y}_{div}_{br}"
+        requested_type_key = str(person_type or "").strip().lower()
+        class_id_key = str(class_id or "").strip()
+        key = f"{vendor_id}_{requested_type_key}_{class_id_key}_{class_y}_{div}_{br}"
         
         conn = get_db_connection()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
+
+        vertical = vendor_vertical(c, vendor_id) if vendor_id else ""
+        wanted_type = requested_person_type(person_type, vertical)
+        c.execute("""
+            SELECT f.id, f.name, f.face_image, f.department, f.custom_data,
+                   (SELECT su.role FROM system_users su
+                    WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                    ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
+                    LIMIT 1) AS system_role
+            FROM faces f WHERE f.vendor_id = ?
+        """, (int(vendor_id or 0),))
+        person_metadata = {}
+        for metadata_row in c.fetchall() or []:
+            if hasattr(metadata_row, "keys"):
+                metadata = dict(metadata_row)
+            else:
+                metadata = {
+                    "id": metadata_row[0], "name": metadata_row[1],
+                    "face_image": metadata_row[2], "department": metadata_row[3],
+                    "custom_data": metadata_row[4], "system_role": metadata_row[5],
+                }
+            custom = parse_custom_data(metadata.get("custom_data"))
+            resolved_type = person_type_for(custom, metadata.get("system_role"), vertical)
+            if wanted_type and resolved_type != wanted_type:
+                continue
+            if any((class_id, class_year, division, branch)) and not class_scope_matches(
+                custom, class_id=class_id, class_year=class_year,
+                division=division, branch=branch,
+            ):
+                continue
+            metadata["custom_data"] = custom
+            metadata["person_type"] = resolved_type
+            metadata["scope"] = class_scope_for(custom)
+            person_metadata[int(metadata["id"])] = metadata
+        valid_person_ids = set(person_metadata)
         
         # Fast multi-process staleness check
         try:
@@ -247,7 +301,7 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
             current_sig = "0_0"
 
         ent = _VENDOR_EMB_CACHE.get(key)
-        if ent and ent.get('sig') == current_sig and (_now_ts() - ent.get('ts', 0.0)) < ttl_sec and ent.get('items'):
+        if not force_refresh and ent and ent.get('sig') == current_sig and (_now_ts() - ent.get('ts', 0.0)) < ttl_sec and ent.get('items'):
             conn.close()
             return ent
             
@@ -257,28 +311,14 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
             q = "SELECT person_id, vec, dim, struct_vec, class_year, division, branch FROM person_embeddings WHERE vendor_id = ?"
             args = [int(vendor_id or 0)]
             
-            # Case-insensitive robust filtering for Postgres/SQLite
-            if class_year:
-                q += " AND (LOWER(TRIM(class_year)) = LOWER(TRIM(?)) OR class_year IS NULL OR class_year = '')"
-                args.append(str(class_year))
-            if division:
-                q += " AND LOWER(TRIM(division)) = LOWER(TRIM(?))"
-                args.append(str(division))
-            if branch:
-                q += " AND LOWER(TRIM(branch)) = LOWER(TRIM(?))"
-                args.append(str(branch))
             c.execute(q, args)
             rows_emb = c.fetchall() or []
-            
-            # The primary query already filters by class_year, division, and branch.
-            # We don't need to secondary-filter by faces.custom_data as it's often out of sync.
-            valid_person_ids = None
 
             id_set = set()
             for r in rows_emb:
                 try:
                     pid = int(r['person_id'] if isinstance(r, sqlite3.Row) else r[0])
-                    if valid_person_ids is not None and pid not in valid_person_ids:
+                    if pid not in valid_person_ids:
                         continue
 
                     vb = r['vec'] if isinstance(r, sqlite3.Row) else r[1]
@@ -298,7 +338,17 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
                         v = np.frombuffer(vb, dtype=np.float32)
                         if v.size == dim:
                             v = _normalize_vec(v)
-                            items.append({'person_id': pid, 'name': '', 'vec': v, 'struct_vec': s_vec, 'class_year': class_y, 'division': div, 'branch': br})
+                            meta = person_metadata.get(pid, {})
+                            scope = meta.get("scope", {})
+                            items.append({
+                                'person_id': pid, 'name': meta.get('name', ''),
+                                'vec': v, 'struct_vec': s_vec,
+                                'class_id': scope.get('class_id', ''),
+                                'class_year': scope.get('class_year', class_y),
+                                'division': scope.get('division', div),
+                                'branch': scope.get('branch', br),
+                                'person_type': meta.get('person_type'),
+                            })
                             id_set.add(pid)
                 except Exception:
                     continue
@@ -355,16 +405,6 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
             where = []
             if vendor_id:
                 where.append("vendor_id = ?"); params.append(vendor_id)
-            if class_year:
-                # STRICT FILTERING: Use LIKE for exact JSON field match to avoid including unassigned students
-                where.append("custom_data LIKE ?")
-                params.append(f'%\"class_year\":\"{class_year}\"%')
-            if division:
-                where.append("custom_data LIKE ?")
-                params.append(f'%\"division\":\"{division}\"%')
-            if branch:
-                where.append("custom_data LIKE ?")
-                params.append(f'%\"branch\":\"{branch}\"%')
             if where:
                 base_query += " WHERE " + " AND ".join(where)
             c.execute(base_query, params)
@@ -373,6 +413,8 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
             for r in rows:
                 try:
                     pid = int(r['id'] if isinstance(r, sqlite3.Row) else r[0])
+                    if pid not in valid_person_ids:
+                        continue
                     if pid in emb_pid_set:
                         continue  # already have pre-computed embedding
                     nm = r['name'] if isinstance(r, sqlite3.Row) else r[1]
@@ -428,11 +470,18 @@ def _ensure_vendor_emb_cache(vendor_id: int, ttl_sec: int = 300, class_year: str
                         except Exception:
                             pass
                     if emb is not None and emb.size > 0:
+                        meta = person_metadata.get(pid, {})
+                        scope = meta.get("scope", {})
                         items.append({
                             'person_id': int(pid),
                             'name': str(nm),
                             'vec': emb,
-                            'struct_vec': struct_vec_reg
+                            'struct_vec': struct_vec_reg,
+                            'class_id': scope.get('class_id', ''),
+                            'class_year': scope.get('class_year', ''),
+                            'division': scope.get('division', ''),
+                            'branch': scope.get('branch', ''),
+                            'person_type': meta.get('person_type'),
                         })
                 except Exception:
                     continue
@@ -533,9 +582,6 @@ def _suggest_via_projection(
             if target_year   and item_year   != target_year:   ok = False
             if target_div    and item_div    != target_div:    ok = False
             if target_branch and item_branch != target_branch: ok = False
-            # Unassigned student matches any class scope
-            if target_year and item_year == "":
-                ok = True
             if not ok:
                 continue
 
@@ -675,10 +721,6 @@ def _suggest_from_cache(vec: np.ndarray, cache: dict, topk: int = 3, struct_vec=
             if target_div and item_div != target_div: is_perfect = False
             if target_branch and item_branch != target_branch: is_perfect = False
             
-            # Flexible filtering: If student has NO class assigned, they match ANY class filter 
-            # (Matches 11b5fbd4 flexible behavior)
-            if target_year and item_year == "": is_perfect = True
-            
             # If a strict class scope was requested and this person is not in it, skip.
             if (target_year or target_div or target_branch) and not is_perfect:
                 continue
@@ -780,7 +822,16 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
         print(f"[FACE_SVC] detect_faces took {_t1-_t0:.1f}s", flush=True)
         faces = []
         class_year = params.get('class_year'); division = params.get('division'); branch = params.get('branch')
-        vcache = _ensure_vendor_emb_cache(vendor_id, class_year=class_year, division=division, branch=branch)
+        class_id = params.get('class_id')
+        person_type = params.get('person_type')
+        vcache = _ensure_vendor_emb_cache(
+            vendor_id,
+            class_year=class_year,
+            division=division,
+            branch=branch,
+            class_id=class_id,
+            person_type=person_type,
+        )
         if isinstance(annotated, tuple) and len(annotated) == 2:
             img_rgb, anns = annotated
             draw = cv2.cvtColor(img_rgb.copy(), cv2.COLOR_RGB2BGR)
@@ -1035,18 +1086,19 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
 
                         # Landmark mesh thumbnail — crop the face region from the annotated draw buffer
                         lmk_thumb_b64 = None
-                        try:
-                            pad_lmk = int(max(bx2 - bx1, by2 - by1) * 0.35)
-                            lx1 = max(0, bx1 - pad_lmk); ly1 = max(0, by1 - pad_lmk)
-                            lx2 = min(draw.shape[1], bx2 + pad_lmk); ly2 = min(draw.shape[0], by2 + pad_lmk)
-                            lmk_region = draw[ly1:ly2, lx1:lx2]
-                            if lmk_region.size > 0:
-                                lmk_resized = cv2.resize(lmk_region, (240, 240), interpolation=cv2.INTER_AREA)
-                                ok_lmk, buf_lmk = cv2.imencode('.jpg', lmk_resized, [cv2.IMWRITE_JPEG_QUALITY, 88])
-                                if ok_lmk:
-                                    lmk_thumb_b64 = f"data:image/jpeg;base64,{base64.b64encode(buf_lmk).decode('ascii')}"
-                        except Exception:
-                            pass
+                        if landmarks_3d is not None and len(landmarks_3d) >= 68:
+                            try:
+                                pad_lmk = int(max(bx2 - bx1, by2 - by1) * 0.35)
+                                lx1 = max(0, bx1 - pad_lmk); ly1 = max(0, by1 - pad_lmk)
+                                lx2 = min(draw.shape[1], bx2 + pad_lmk); ly2 = min(draw.shape[0], by2 + pad_lmk)
+                                lmk_region = draw[ly1:ly2, lx1:lx2]
+                                if lmk_region.size > 0:
+                                    lmk_resized = cv2.resize(lmk_region, (240, 240), interpolation=cv2.INTER_AREA)
+                                    ok_lmk, buf_lmk = cv2.imencode('.jpg', lmk_resized, [cv2.IMWRITE_JPEG_QUALITY, 88])
+                                    if ok_lmk:
+                                        lmk_thumb_b64 = f"data:image/jpeg;base64,{base64.b64encode(buf_lmk).decode('ascii')}"
+                            except Exception:
+                                pass
 
                         f_entry = {
                             "index": i,

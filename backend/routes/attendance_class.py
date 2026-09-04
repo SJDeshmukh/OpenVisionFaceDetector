@@ -14,6 +14,7 @@ from services.face_service import (
     _normalize_vec, _decode_data_uri_to_rgb, _ensure_vendor_emb_cache, _suggest_from_cache
 )
 from services.auth_service import require_auth
+from services.person_scope_service import class_scope_matches, person_type_for, vendor_vertical
 from middleware.validation import validate_request
 from schemas import (
     ClassBatchStartSchema, ClassBatchAddSchema, 
@@ -32,6 +33,16 @@ def class_batch_start(valid_data: ClassBatchStartSchema):
     conn = get_db_connection()
     _ensure_class_batch_tables(conn)
     c = conn.cursor()
+    c.execute(
+        """SELECT id FROM classes WHERE vendor_id = ?
+           AND LOWER(TRIM(COALESCE(class_year, ''))) = LOWER(TRIM(?))
+           AND LOWER(TRIM(COALESCE(division, ''))) = LOWER(TRIM(?))
+           AND LOWER(TRIM(COALESCE(branch, ''))) = LOWER(TRIM(?)) LIMIT 1""",
+        (vendor_id, valid_data.class_year or '', valid_data.division or '', valid_data.branch or ''),
+    )
+    if not c.fetchone():
+        conn.close()
+        return jsonify({"error": "Select a valid configured class before taking student attendance"}), 400
     c.execute("INSERT INTO class_batches (id, vendor_id, class_year, division, branch, status) VALUES (?, ?, ?, ?, ?, ?)",
               (bid, vendor_id, valid_data.class_year, valid_data.division, valid_data.branch, 'active'))
     conn.commit(); conn.close()
@@ -47,6 +58,7 @@ def class_batch_add(valid_data: ClassBatchAddSchema):
         "class_year": valid_data.class_year,
         "division": valid_data.division,
         "branch": valid_data.branch,
+        "person_type": "student",
         "fast": valid_data.fast,
         "det_max_side": valid_data.det_max_side
     }
@@ -140,7 +152,10 @@ def class_batch_add_inferred():
     batch_row = c.fetchone()
     if not batch_row: conn.close(); return jsonify({"error": "batch not found"}), 404
     class_year, division, branch = batch_row[1], batch_row[2], batch_row[3]
-    vcache = _ensure_vendor_emb_cache(vendor_id, class_year=class_year, division=division, branch=branch)
+    vcache = _ensure_vendor_emb_cache(
+        vendor_id, class_year=class_year, division=division,
+        branch=branch, person_type="student",
+    )
     created_ids = []
     for item in items_data:
         image_b64 = item.get('image_b64')
@@ -186,6 +201,7 @@ def class_batch_commit(valid_data: ClassBatchCommitSchema):
     import sqlite3
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
+    vertical = vendor_vertical(c, vendor_id)
     if threshold is not None:
         try:
             c.execute("INSERT INTO class_thresholds (vendor_id, class_year, division, branch, threshold) VALUES (?, ?, ?, ?, ?) ON CONFLICT(vendor_id, class_year, division, branch) DO UPDATE SET threshold=excluded.threshold, updated_at=CURRENT_TIMESTAMP", (vendor_id, str(class_year), str(division), str(branch), float(threshold)))
@@ -218,10 +234,27 @@ def class_batch_commit(valid_data: ClassBatchCommitSchema):
             vec_blob, dim = emb.astype(np.float32).tobytes(), int(emb.size)
             pid_key = int(person_id)
             if pid_key not in person_name_cache:
-                c.execute("SELECT name FROM faces WHERE id = ? AND vendor_id = ?", (pid_key, vendor_id))
+                c.execute("""SELECT f.name, f.custom_data,
+                             (SELECT su.role FROM system_users su
+                              WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                              ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
+                              LIMIT 1) AS system_role
+                             FROM faces f WHERE f.id = ? AND f.vendor_id = ?""", (pid_key, vendor_id))
                 rname = c.fetchone()
-                person_name_cache[pid_key] = (rname['name'] if isinstance(rname, sqlite3.Row) else (rname[0] if rname else '')) if rname else ''
+                if not rname:
+                    person_name_cache[pid_key] = ''
+                else:
+                    custom = rname['custom_data'] if isinstance(rname, sqlite3.Row) else rname[1]
+                    role = rname['system_role'] if isinstance(rname, sqlite3.Row) else rname[2]
+                    if person_type_for(custom, role, vertical) != 'student' or not class_scope_matches(
+                        custom, class_year=class_year, division=division, branch=branch,
+                    ):
+                        person_name_cache[pid_key] = ''
+                    else:
+                        person_name_cache[pid_key] = rname['name'] if isinstance(rname, sqlite3.Row) else rname[0]
             assigned_name = person_name_cache.get(pid_key, '')
+            if not assigned_name:
+                continue
             
             # Capture the original AI guess (or None if it was Unknown)
             original_pid = face.get('person_id')
@@ -355,7 +388,10 @@ def class_batch_refresh():
     c.execute("SELECT id, vendor_id, class_year, division, branch FROM class_batches WHERE id = ? AND vendor_id = ?", (bid, vendor_id))
     row = c.fetchone()
     if not row: conn.close(); return jsonify({"error": "batch not found"}), 404
-    params = {"class_year": str(row[2] or ""), "division": str(row[3] or ""), "branch": str(row[4] or "")}
+    params = {
+        "class_year": str(row[2] or ""), "division": str(row[3] or ""),
+        "branch": str(row[4] or ""), "person_type": "student",
+    }
     try:
         if 'fast' in data: params["fast"] = bool(data.get('fast'))
         if 'det_max_side' in data and data.get('det_max_side') is not None: params["det_max_side"] = int(data.get('det_max_side'))

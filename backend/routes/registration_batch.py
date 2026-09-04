@@ -4,8 +4,9 @@ import json
 import base64
 import numpy as np
 from flask import Blueprint, request, jsonify, g
-from utils import get_db_connection
+from utils import get_db_connection, cache_delete_vendor_prefix
 from services.auth_service import require_auth
+from services.person_scope_service import is_school_hostel, parse_custom_data, vendor_vertical
 from middleware.validation import validate_request
 from schemas import (
     RegistrationBatchStartSchema, RegistrationBatchAddSchema, 
@@ -44,6 +45,8 @@ def registration_batch_add(valid_data: RegistrationBatchAddSchema):
     if not c.fetchone():
         conn.close()
         return jsonify({"error": "batch not found"}), 404
+    if is_school_hostel(vendor_vertical(c, vendor_id)):
+        params["person_type"] = "student"
         
     files = request.files.getlist('images')
     if not files and 'image' in request.files:
@@ -91,6 +94,7 @@ def registration_batch_status(valid_data: RegistrationBatchStatusSchema):
     
     conn = get_db_connection()
     c = conn.cursor()
+
     c.execute("SELECT id, status FROM registration_batches WHERE id = ? AND vendor_id = ?", (bid, vendor_id))
     b = c.fetchone()
     if not b:
@@ -122,10 +126,41 @@ def registration_batch_commit(valid_data: RegistrationBatchCommitSchema):
     import sqlite3
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
+
+    c.execute("SELECT id FROM registration_batches WHERE id = ? AND vendor_id = ?", (bid, vendor_id))
+    if not c.fetchone():
+        conn.close()
+        return jsonify({"error": "batch not found"}), 404
+
+    vertical = vendor_vertical(c, vendor_id)
+    school_student_flow = is_school_hostel(vertical)
+    class_map = {}
+    if school_student_flow:
+        c.execute(
+            "SELECT id, class_year, division, branch FROM classes WHERE vendor_id = ?",
+            (vendor_id,),
+        )
+        for class_row in c.fetchall() or []:
+            class_map[str(class_row[0])] = {
+                "class_id": str(class_row[0]),
+                "class_year": class_row[1] or "",
+                "division": class_row[2] or "",
+                "branch": class_row[3] or "",
+            }
+        missing_class = next(
+            (assignment.name for assignment in assigns if str(assignment.class_id or "") not in class_map),
+            None,
+        )
+        if missing_class:
+            conn.close()
+            return jsonify({
+                "error": f"A valid class/section is required for every student ({missing_class})"
+            }), 400
     
     try:
         from multiple_face_detection import app as mfd_app
     except Exception:
+        conn.close()
         return jsonify({"error": "embedder unavailable"}), 500
         
     saved = 0
@@ -156,15 +191,21 @@ def registration_batch_commit(valid_data: RegistrationBatchCommitSchema):
             # Check if student exists or create
             phone = a.phone
             student_number = a.student_number
-            custom_data = a.custom_data or {}
+            custom_data = parse_custom_data(a.custom_data)
             if student_number:
                 custom_data['student_number'] = student_number
-            if a.class_year:
-                custom_data['class_year'] = a.class_year
-            if a.division:
-                custom_data['division'] = a.division
-            if a.branch:
-                custom_data['branch'] = a.branch
+            if school_student_flow:
+                custom_data.update(class_map[str(a.class_id)])
+                custom_data['person_type'] = 'student'
+            else:
+                if a.class_id:
+                    custom_data['class_id'] = str(a.class_id)
+                if a.class_year:
+                    custom_data['class_year'] = a.class_year
+                if a.division:
+                    custom_data['division'] = a.division
+                if a.branch:
+                    custom_data['branch'] = a.branch
                 
             # Try to find existing person by student_number or name+phone
             person_id = None
@@ -173,7 +214,13 @@ def registration_batch_commit(valid_data: RegistrationBatchCommitSchema):
                 # This handles both spaced and compact JSON formats
                 pattern_compact = f'%"student_number":"{student_number}"%'
                 pattern_spaced = f'%"student_number": "{student_number}"%'
-                c.execute("SELECT id FROM faces WHERE vendor_id = ? AND (custom_data LIKE ? OR custom_data LIKE ?)", 
+                c.execute("""SELECT f.id FROM faces f
+                             WHERE f.vendor_id = ? AND (f.custom_data LIKE ? OR f.custom_data LIKE ?)
+                               AND NOT EXISTS (
+                                   SELECT 1 FROM system_users su
+                                   WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                                     AND LOWER(su.role) = 'faculty'
+                               )""",
                           (vendor_id, pattern_compact, pattern_spaced))
                 r = c.fetchone()
                 if r:
@@ -193,8 +240,12 @@ def registration_batch_commit(valid_data: RegistrationBatchCommitSchema):
                     person_id = c.lastrowid
             else:
                 # Update existing person image
+                c.execute("SELECT custom_data FROM faces WHERE id = ? AND vendor_id = ?", (person_id, vendor_id))
+                existing_row = c.fetchone()
+                merged_custom = parse_custom_data(existing_row[0] if existing_row else None)
+                merged_custom.update(custom_data)
                 c.execute("UPDATE faces SET face_image = ?, name = ?, phone = ?, custom_data = ? WHERE id = ? AND vendor_id = ?",
-                          (uri, name, phone, json.dumps(custom_data, separators=(',', ':')), person_id, vendor_id))
+                          (uri, name, phone, json.dumps(merged_custom, separators=(',', ':')), person_id, vendor_id))
 
             # Process Embedding
             # uri is the face thumbnail — already a detected+refined crop from the pipeline.
@@ -231,10 +282,13 @@ def registration_batch_commit(valid_data: RegistrationBatchCommitSchema):
                         landmarks_3d = face.get('landmarks_3d') or []
                         lmks_json = json.dumps(landmarks_3d) if landmarks_3d else None
 
+                    embedding_year = custom_data.get('class_year') or ""
+                    embedding_division = custom_data.get('division') or ""
+                    embedding_branch = custom_data.get('branch') or ""
                     c.execute("""
                         INSERT INTO person_embeddings (vendor_id, person_id, class_year, division, branch, vec, dim, struct_vec, landmarks_3d) 
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (vendor_id, person_id, a.class_year or "", a.division or "", a.branch or "", vec_blob, dim, struct_blob, lmks_json))
+                    """, (vendor_id, person_id, embedding_year, embedding_division, embedding_branch, vec_blob, dim, struct_blob, lmks_json))
 
             saved += 1
         except Exception as e:
@@ -260,6 +314,7 @@ def registration_batch_commit(valid_data: RegistrationBatchCommitSchema):
             del _VENDOR_EMB_CACHE[k]
     except Exception:
         pass
+    cache_delete_vendor_prefix(vendor_id)
     conn.close()
     return jsonify({"ok": True, "saved": saved})
 

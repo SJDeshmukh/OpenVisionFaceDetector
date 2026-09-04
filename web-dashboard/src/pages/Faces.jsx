@@ -6,6 +6,7 @@ import { Search, Filter, SlidersHorizontal, Loader2, Upload, X, Check, ArrowRigh
 
 const Faces = () => {
   const { user } = useAuth();
+  const schoolFlow = Boolean(user?.vertical && ['school', 'hostel'].includes(String(user.vertical).toLowerCase()));
   const [persons, setPersons] = useState([]);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState('');
@@ -17,12 +18,13 @@ const Faces = () => {
     dynamicValue: ''
   });
   const [classes, setClasses] = useState([]);
-  const [selectedClass, setSelectedClass] = useState({ class_year: '', division: '', branch: '' });
+  const [selectedClass, setSelectedClass] = useState({ id: '', class_year: '', division: '', branch: '' });
   
   const [batchId, setBatchId] = useState('');
   const [batchItems, setBatchItems] = useState([]);
   const [registrationMode, setRegistrationMode] = useState(false);
   const [assignments, setAssignments] = useState({}); // itemId:faceIndex -> { name, student_number, ... }
+  const [showMeshFaces, setShowMeshFaces] = useState({});
   const [uploading, setUploading] = useState(false);
 
   const batchStorageKey = user?.vendor_id ? `registration_batch_id_${user.vendor_id}` : null;
@@ -31,6 +33,7 @@ const Faces = () => {
     setBatchId(batchStorageKey ? (localStorage.getItem(batchStorageKey) || '') : '');
     setBatchItems([]);
     setAssignments({});
+    setShowMeshFaces({});
     setRegistrationMode(false);
   }, [batchStorageKey]);
 
@@ -39,6 +42,7 @@ const Faces = () => {
       setLoading(true);
       try {
         const res = await axios.get(`${API_URL}/persons`, {
+          params: schoolFlow ? { person_type: 'student' } : {},
           headers: { Authorization: `Bearer ${user?.token}` }
         });
         const items = (res.data?.persons || []).map(p => {
@@ -78,7 +82,7 @@ const Faces = () => {
         setClasses(r.data?.classes || []);
       } catch (_) { /* ignore */ }
     })();
-  }, [user]);
+  }, [user, schoolFlow]);
 
   // Polling logic for registration batch
   useEffect(() => {
@@ -104,7 +108,7 @@ const Faces = () => {
       interval = setInterval(poll, 3000);
     }
     return () => clearInterval(interval);
-  }, [batchId, batchStorageKey, user?.vendor_id]);
+  }, [batchId, batchStorageKey, user?.vendor_id, user?.token]);
 
   const dynamicKeys = useMemo(() => {
     const keys = new Set();
@@ -126,9 +130,15 @@ const Faces = () => {
     const q = query.trim().toLowerCase();
     return persons.filter(p => {
       const cd = p.custom || {};
-      if (selectedClass.class_year && String(cd.class_year || '') !== String(selectedClass.class_year)) return false;
-      if (selectedClass.division && String(cd.division || '') !== String(selectedClass.division)) return false;
-      if (selectedClass.branch && String(cd.branch || '') !== String(selectedClass.branch)) return false;
+      if (selectedClass.id) {
+        if (cd.class_id) {
+          if (String(cd.class_id) !== String(selectedClass.id)) return false;
+        } else {
+          if (String(cd.class_year || '') !== String(selectedClass.class_year)) return false;
+          if (String(cd.division || '') !== String(selectedClass.division)) return false;
+          if (String(cd.branch || '') !== String(selectedClass.branch || '')) return false;
+        }
+      }
       if (filters.department && p.department !== filters.department) return false;
       if (filters.designation && p.designation !== filters.designation) return false;
       if (filters.shift && p.shift !== filters.shift) return false;
@@ -198,6 +208,16 @@ const Faces = () => {
       alert('No faces assigned for registration');
       return;
     }
+    const incomplete = keys.find(key => {
+      const assignment = assignments[key] || {};
+      return !String(assignment.name || '').trim() || (schoolFlow && !assignment.class_id);
+    });
+    if (incomplete) {
+      alert(schoolFlow
+        ? 'Every student needs a name and a class/section before registration.'
+        : 'Every person needs a name before registration.');
+      return;
+    }
 
     const payload = {
       batch_id: batchId,
@@ -206,6 +226,7 @@ const Faces = () => {
         return {
           item_id: itemId,
           face_index: parseInt(faceIndex),
+          ...(schoolFlow ? { person_type: 'student' } : {}),
           ...assignments[k]
         };
       })
@@ -239,6 +260,7 @@ const Faces = () => {
     setBatchItems([]);
     setRegistrationMode(false);
     setAssignments({});
+    setShowMeshFaces({});
   };
 
   const applySuggestion = (assignmentKey, sug) => {
@@ -271,15 +293,15 @@ const Faces = () => {
           <div className="flex flex-wrap items-center gap-3">
             <select
               className="p-2 border rounded-lg bg-white min-w-[200px]"
-              value={`${selectedClass.class_year}|${selectedClass.division}|${selectedClass.branch}`}
+              value={selectedClass.id || ''}
               onChange={(e) => {
-                const [y, d, b] = e.target.value.split('|');
-                setSelectedClass({ class_year: y || '', division: d || '', branch: b || '' });
+                const selected = classes.find(item => String(item.id) === e.target.value);
+                setSelectedClass(selected || { id: '', class_year: '', division: '', branch: '' });
               }}
             >
-              <option value="||">Filter by Class (Optional)</option>
+              <option value="">Filter by Class (Optional)</option>
               {classes.map(c => (
-                <option key={c.id} value={`${c.class_year}|${c.division}|${c.branch}`}>
+                <option key={c.id} value={c.id}>
                   {c.label || `${c.class_year} ${c.branch} ${c.division}`}
                 </option>
               ))}
@@ -364,7 +386,7 @@ const Faces = () => {
               onClick={() => {
                 setFilters({ department: '', designation: '', shift: '', dynamicKey: '', dynamicValue: '' });
                 setQuery('');
-                setSelectedClass({ class_year: '', division: '', branch: '' });
+                setSelectedClass({ id: '', class_year: '', division: '', branch: '' });
               }}
               className="px-3 py-2 text-sm text-slate-500 hover:text-indigo-600 transition-colors"
             >
@@ -430,6 +452,9 @@ const Faces = () => {
                         const assignmentKey = `${item.id}:${f.index}`;
                         const currentAssign = assignments[assignmentKey] || {};
                         const topSug = f.suggestions?.[0];
+                        const landmarkCount = Array.isArray(f.landmarks_3d) ? f.landmarks_3d.length : 0;
+                        const meshImage = landmarkCount >= 68 ? f.thumbs?.lmk : null;
+                        const showingMesh = Boolean(showMeshFaces[assignmentKey] && meshImage);
                         
                         return (
                           <div key={idx} className="bg-slate-50 p-5 rounded-2xl border border-slate-100 space-y-4">
@@ -437,12 +462,33 @@ const Faces = () => {
                               {/* Visual Match Section */}
                               <div className="flex items-center gap-4 bg-white p-3 rounded-xl border border-slate-100 shadow-sm">
                                 <div className="text-center space-y-1">
-                                  <div className="text-[10px] font-bold text-slate-400 uppercase">Detected</div>
-                                  <img 
-                                    src={f.thumbs?.face || f.thumb} 
-                                    className="w-24 h-24 rounded-lg object-cover border-2 border-indigo-100" 
-                                    alt="detected"
-                                  />
+                                  <div className="text-[10px] font-bold text-slate-400 uppercase">
+                                    {showingMesh ? `3D · ${landmarkCount} points` : 'Detected'}
+                                  </div>
+                                  <div className="relative w-24 h-24">
+                                    <img
+                                      src={showingMesh ? meshImage : (f.thumbs?.face || f.thumb)}
+                                      className="w-24 h-24 rounded-lg object-cover border-2 border-indigo-100"
+                                      alt={showingMesh ? '3D facial landmark coordinates' : 'detected'}
+                                    />
+                                    {meshImage ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => setShowMeshFaces(prev => ({ ...prev, [assignmentKey]: !prev[assignmentKey] }))}
+                                        className={`absolute top-1 right-1 px-1.5 py-0.5 text-[9px] font-bold rounded shadow ${showingMesh ? 'bg-emerald-600 text-white' : 'bg-black/60 text-emerald-300'}`}
+                                        title={showingMesh ? 'Show face photo' : 'Show 3D facial coordinates'}
+                                      >
+                                        {showingMesh ? 'PHOTO' : '3D'}
+                                      </button>
+                                    ) : (
+                                      <span
+                                        className="absolute bottom-1 left-1 right-1 rounded bg-slate-900/65 px-1 py-0.5 text-[8px] font-semibold text-slate-200"
+                                        title="The 3D landmark engine did not return coordinates for this detection"
+                                      >
+                                        3D unavailable
+                                      </span>
+                                    )}
+                                  </div>
                                 </div>
                                 
                                 <ArrowRight className="text-slate-300" size={20} />
@@ -520,21 +566,29 @@ const Faces = () => {
                                   />
                                 </div>
                                 <div className="space-y-1">
-                                  <label className="text-[10px] font-bold text-slate-400 uppercase">Class assignment</label>
+                                  <label className="text-[10px] font-bold text-slate-400 uppercase">
+                                    Class assignment{schoolFlow ? ' *' : ''}
+                                  </label>
                                   <select
                                     className="w-full p-2.5 text-sm border rounded-xl bg-white focus:ring-2 focus:ring-indigo-500 outline-none transition-all shadow-sm"
-                                    value={`${currentAssign.class_year || ''}|${currentAssign.division || ''}|${currentAssign.branch || ''}`}
+                                    value={currentAssign.class_id || ''}
                                     onChange={(e) => {
-                                      const [y, d, b] = e.target.value.split('|');
+                                      const selected = classes.find(item => String(item.id) === e.target.value);
                                       setAssignments(prev => ({
-                                        ...prev,
-                                        [assignmentKey]: { ...currentAssign, class_year: y, division: d, branch: b }
+                                        ...prev, [assignmentKey]: {
+                                          ...currentAssign,
+                                          class_id: selected ? String(selected.id) : '',
+                                          class_year: selected?.class_year || '',
+                                          division: selected?.division || '',
+                                          branch: selected?.branch || '',
+                                        }
                                       }));
                                     }}
+                                    required={schoolFlow}
                                   >
-                                    <option value="||">Select Class...</option>
+                                    <option value="">Select Class...</option>
                                     {classes.map(c => (
-                                      <option key={c.id} value={`${c.class_year}|${c.division}|${c.branch}`}>
+                                      <option key={c.id} value={c.id}>
                                         {c.label || `${c.class_year} ${c.branch} ${c.division}`}
                                       </option>
                                     ))}

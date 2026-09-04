@@ -10,7 +10,16 @@ import time
 import re
 from datetime import datetime, date, timedelta
 from services.auth_service import authenticate_vendor_access, extract_token, verify_token
-from utils import parse_db_date, parse_db_datetime, cache_get, cache_set
+from utils import parse_db_date, parse_db_datetime, cache_get, cache_set, cache_delete_vendor_prefix
+from services.person_scope_service import (
+    apply_class_mapping,
+    class_id_for,
+    class_scope_matches,
+    is_school_hostel,
+    parse_custom_data,
+    person_type_for,
+    vendor_vertical,
+)
 
 # Mock Auth Decorators
 def vendor_required(f):
@@ -652,11 +661,27 @@ def create_class():
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        
+
+        class_year = str(data.get('class_year') or '').strip()
+        division = str(data.get('division') or '').strip()
+        branch = str(data.get('branch') or '').strip()
+        if is_school_hostel(vendor_vertical(c, vendor_id)) and (not class_year or not division):
+            conn.close()
+            return jsonify({"error": "Class year and section/division are required"}), 400
+        c.execute(
+            """SELECT id FROM classes WHERE vendor_id = ?
+               AND LOWER(TRIM(COALESCE(class_year, ''))) = LOWER(TRIM(?))
+               AND LOWER(TRIM(COALESCE(division, ''))) = LOWER(TRIM(?))
+               AND LOWER(TRIM(COALESCE(branch, ''))) = LOWER(TRIM(?)) LIMIT 1""",
+            (vendor_id, class_year, division, branch),
+        )
+        if c.fetchone():
+            conn.close()
+            return jsonify({"error": "This class/section already exists"}), 409
         mapped_subjects_json = json.dumps(data.get('mapped_subjects') or [])
         
         c.execute("INSERT INTO classes (vendor_id, class_year, division, branch, label, mapped_subjects) VALUES (?, ?, ?, ?, ?, ?)",
-                  (vendor_id, str(data.get('class_year') or ''), str(data.get('division') or ''), str(data.get('branch') or ''), str(data.get('label') or ''), mapped_subjects_json))
+                  (vendor_id, class_year, division, branch, str(data.get('label') or ''), mapped_subjects_json))
         conn.commit()
         new_id = c.lastrowid
         conn.close()
@@ -683,11 +708,29 @@ def update_class(cid: int):
         conn = get_db_connection()
         c = conn.cursor()
             
-        c.execute("SELECT vendor_id FROM classes WHERE id = ?", (cid,))
+        c.execute("SELECT vendor_id, class_year, division, branch FROM classes WHERE id = ?", (cid,))
         row = c.fetchone()
         if not row or (vendor_id and int(row[0]) != int(vendor_id)):
             conn.close()
             return jsonify({"error": "not found"}), 404
+        old_year, old_division, old_branch = row[1], row[2], row[3]
+        new_year = str(data.get('class_year', old_year) or '').strip()
+        new_division = str(data.get('division', old_division) or '').strip()
+        new_branch = str(data.get('branch', old_branch) or '').strip()
+        if is_school_hostel(vendor_vertical(c, vendor_id)) and (not new_year or not new_division):
+            conn.close()
+            return jsonify({"error": "Class year and section/division are required"}), 400
+        c.execute(
+            """SELECT id FROM classes WHERE vendor_id = ? AND id <> ?
+               AND LOWER(TRIM(COALESCE(class_year, ''))) = LOWER(TRIM(?))
+               AND LOWER(TRIM(COALESCE(division, ''))) = LOWER(TRIM(?))
+               AND LOWER(TRIM(COALESCE(branch, ''))) = LOWER(TRIM(?)) LIMIT 1""",
+            (vendor_id, cid, new_year, new_division, new_branch),
+        )
+        if c.fetchone():
+            conn.close()
+            return jsonify({"error": "This class/section already exists"}), 409
+
         fields = []; params = []
         for k in ["class_year", "division", "branch", "label"]:
             if k in data:
@@ -699,7 +742,38 @@ def update_class(cid: int):
         if fields:
             params.append(cid)
             c.execute(f"UPDATE classes SET {', '.join(fields)} WHERE id = ?", params)
+            # Class ID is authoritative. Keep every linked student's snapshots
+            # and recognition metadata aligned when a class is renamed.
+            c.execute("""SELECT f.id, f.custom_data,
+                                (SELECT su.role FROM system_users su
+                                 WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                                 ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
+                                 LIMIT 1) AS system_role
+                         FROM faces f WHERE f.vendor_id = ?""", (vendor_id,))
+            face_rows = c.fetchall() or []
+            affected_ids = []
+            vertical = vendor_vertical(c, vendor_id)
+            for face_row in face_rows:
+                custom = parse_custom_data(face_row[1])
+                if person_type_for(custom, face_row[2], vertical) != 'student':
+                    continue
+                linked = class_id_for(custom) == str(cid)
+                legacy_match = not class_id_for(custom) and class_scope_matches(
+                    custom, class_year=old_year, division=old_division, branch=old_branch,
+                )
+                if not linked and not legacy_match:
+                    continue
+                updated = apply_class_mapping(custom, cid, new_year, new_division, new_branch)
+                updated['person_type'] = 'student'
+                c.execute("UPDATE faces SET custom_data = ? WHERE id = ? AND vendor_id = ?",
+                          (json.dumps(updated, separators=(',', ':')), face_row[0], vendor_id))
+                affected_ids.append(face_row[0])
+            for person_id in affected_ids:
+                c.execute("""UPDATE person_embeddings SET class_year = ?, division = ?, branch = ?
+                             WHERE person_id = ? AND vendor_id = ?""",
+                          (new_year, new_division, new_branch, person_id, vendor_id))
             conn.commit()
+            cache_delete_vendor_prefix(vendor_id)
         conn.close()
         return jsonify({"ok": True})
     except Exception as e:
@@ -722,8 +796,39 @@ def delete_class(cid: int):
     try:
         conn = get_db_connection()
         c = conn.cursor()
+        c.execute("SELECT class_year, division, branch FROM classes WHERE id = ? AND vendor_id = ?", (cid, vendor_id))
+        class_row = c.fetchone()
+        if not class_row:
+            conn.close()
+            return jsonify({"error": "not found"}), 404
+        c.execute("""SELECT f.id, f.custom_data,
+                            (SELECT su.role FROM system_users su
+                             WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                             ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
+                             LIMIT 1) AS system_role
+                     FROM faces f WHERE f.vendor_id = ?""", (vendor_id,))
+        face_rows = c.fetchall() or []
+        vertical = vendor_vertical(c, vendor_id)
+        assigned = []
+        for face_row in face_rows:
+            if person_type_for(face_row[1], face_row[2], vertical) != 'student':
+                continue
+            custom = parse_custom_data(face_row[1])
+            if class_id_for(custom) == str(cid) or (
+                not class_id_for(custom) and class_scope_matches(
+                    custom, class_year=class_row[0], division=class_row[1], branch=class_row[2],
+                )
+            ):
+                assigned.append(face_row[0])
+        if assigned:
+            conn.close()
+            return jsonify({
+                "error": "Move all students to another class before deleting this class",
+                "assigned_students": len(assigned),
+            }), 409
         c.execute("DELETE FROM classes WHERE id = ? AND vendor_id = ?", (cid, vendor_id))
         conn.commit()
+        cache_delete_vendor_prefix(vendor_id)
         conn.close()
         return jsonify({"ok": True})
     except Exception as e:

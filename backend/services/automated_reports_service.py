@@ -6,6 +6,7 @@ import re
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from services.person_scope_service import person_type_for, requested_person_type, vendor_vertical
 
 DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 FREQUENCIES = ("daily", "weekly", "monthly")
@@ -258,14 +259,29 @@ def build_report_attachments(vendor_id, period_start, period_end, cutoff="07:00"
         c.execute("SELECT company_name FROM vendors WHERE id = ?", (vendor_id,))
         vendor = c.fetchone()
         vendor_name = vendor[0] if vendor else f"Vendor {vendor_id}"
+        vertical = vendor_vertical(c, vendor_id)
+        wanted_type = requested_person_type(None, vertical)
         c.execute("""
             SELECT a.name, a.timestamp, a.status, a.activity, a.is_late,
-                   f.department, f.designation, f.shift, f.phone
+                   f.department, f.designation, f.shift, f.phone, f.custom_data,
+                   (SELECT su.role FROM system_users su
+                    WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                    ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
+                    LIMIT 1) AS system_role
             FROM attendance a LEFT JOIN faces f ON a.person_id = f.id
             WHERE a.vendor_id = ? AND a.timestamp >= ? AND a.timestamp < ?
             ORDER BY a.timestamp ASC
         """, (vendor_id, window_start, window_end))
-        rows = [_row_dict(row) for row in (c.fetchall() or [])]
+        rows = []
+        for raw_row in c.fetchall() or []:
+            row = _row_dict(raw_row)
+            resolved_type = person_type_for(
+                row.get("custom_data"), row.get("system_role"), vertical,
+            )
+            if wanted_type and resolved_type != wanted_type:
+                continue
+            row["person_type"] = resolved_type
+            rows.append(row)
     finally:
         conn.close()
 

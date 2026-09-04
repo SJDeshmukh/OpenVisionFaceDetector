@@ -17,6 +17,14 @@ from datetime import datetime
 from services.auth_service import authenticate_vendor_access, require_auth, verify_token, extract_token
 from db_factory import get_db_connection, set_row_factory
 from utils import cache_delete_vendor_prefix
+from services.person_scope_service import (
+    class_scope_for,
+    class_scope_matches,
+    is_school_hostel,
+    parse_custom_data,
+    person_type_for,
+    vendor_vertical,
+)
 
 logger = logging.getLogger(__name__)
 bulk_attendance_bp = Blueprint('bulk_attendance', __name__)
@@ -102,6 +110,8 @@ def _cleanup_scan_jobs():
 def _run_scan_job(job_id: str, raw: bytes, params: dict, vendor_id: int):
     try:
         from services.face_service import _detect_faces_from_bytes
+        params = dict(params or {})
+        params["person_type"] = "student"
         faces_raw, _ = _detect_faces_from_bytes(raw, params, vendor_id)
     except Exception as exc:
         logger.warning("async scan job %s error: %s", job_id, exc)
@@ -145,6 +155,31 @@ def _row(conn):
     if not getattr(conn, "_is_pg", False):
         conn.row_factory = sqlite3.Row
     return conn
+
+
+def _student_face(c, vendor_id, person_id, class_year="", division="", branch="", class_id=""):
+    """Return a student face row only when it belongs to the requested class."""
+    c.execute("""
+        SELECT f.id, f.name, f.custom_data,
+               (SELECT su.role FROM system_users su
+                WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
+                LIMIT 1) AS system_role
+        FROM faces f WHERE f.id = ? AND f.vendor_id = ?
+    """, (person_id, vendor_id))
+    row = c.fetchone()
+    if not row:
+        return None
+    custom = row[2]
+    role = row[3]
+    if person_type_for(custom, role, vendor_vertical(c, vendor_id)) != "student":
+        return None
+    if any((class_id, class_year, division, branch)) and not class_scope_matches(
+        custom, class_id=class_id, class_year=class_year,
+        division=division, branch=branch,
+    ):
+        return None
+    return row
 
 
 def _upsert_config(c, vendor_id, fields_json, now):
@@ -315,6 +350,23 @@ def create_lecture():
     today = datetime.utcnow().strftime('%Y-%m-%d')
     conn  = get_db_connection()
     c     = conn.cursor()
+    class_year = data.get('class_year', '') or ''
+    division = data.get('division', '') or ''
+    branch = data.get('branch', '') or ''
+    if is_school_hostel(vendor_vertical(c, vendor_id)):
+        if not any((class_year, division, branch)):
+            conn.close()
+            return jsonify({"error": "A class is required for student attendance"}), 400
+        c.execute(
+            """SELECT id FROM classes WHERE vendor_id = ?
+               AND LOWER(TRIM(COALESCE(class_year, ''))) = LOWER(TRIM(?))
+               AND LOWER(TRIM(COALESCE(division, ''))) = LOWER(TRIM(?))
+               AND LOWER(TRIM(COALESCE(branch, ''))) = LOWER(TRIM(?)) LIMIT 1""",
+            (vendor_id, class_year, division, branch),
+        )
+        if not c.fetchone():
+            conn.close()
+            return jsonify({"error": "Select a valid configured class"}), 400
     c.execute(
         """INSERT INTO lectures
            (vendor_id, subject, class_year, division, branch, lecture_date, start_time, teacher, created_at)
@@ -322,9 +374,9 @@ def create_lecture():
         (
             vendor_id,
             subject,
-            data.get('class_year', '') or '',
-            data.get('division',   '') or '',
-            data.get('branch',     '') or '',
+            class_year,
+            division,
+            branch,
             data.get('lecture_date') or today,
             data.get('start_time',  '') or '',
             data.get('teacher',     '') or '',
@@ -343,6 +395,7 @@ def get_lecture(lecture_id):
     vendor_id = g.vendor_id
     conn = _row(get_db_connection())
     c    = conn.cursor()
+    vertical = vendor_vertical(c, vendor_id)
 
     c.execute("SELECT * FROM lectures WHERE id = ? AND vendor_id = ?", (lecture_id, vendor_id))
     lec = c.fetchone()
@@ -383,7 +436,12 @@ def get_lecture(lecture_id):
     # 2. Fetch all students who *should* be in this class
     is_pg = getattr(conn, "_is_pg", False)
     ph = "%s" if is_pg else "?"
-    c.execute(f"SELECT id, name, display_id, custom_data FROM faces WHERE vendor_id = {ph} ORDER BY name", (vendor_id,))
+    c.execute(f"""SELECT f.id, f.name, f.display_id, f.custom_data,
+                         (SELECT su.role FROM system_users su
+                          WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                          ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
+                          LIMIT 1) AS system_role
+                  FROM faces f WHERE f.vendor_id = {ph} ORDER BY f.name""", (vendor_id,))
     all_faces = c.fetchall() or []
     
     roster = []
@@ -395,33 +453,29 @@ def get_lecture(lecture_id):
         fname = fr[1]
         f_did = fr[2]
         f_cd  = fr[3]
+        f_role = fr[4]
+
+        if person_type_for(f_cd, f_role, vertical) != "student":
+            continue
+        if not class_scope_matches(
+            f_cd, class_year=l_year, division=l_div, branch=l_branch,
+        ):
+            continue
         
         # If student already has a record, use it
         if fid in marked_map:
             roster.append(marked_map[fid])
             continue
             
-        # Otherwise, check if they belong to this class
-        try:
-            cd = json.loads(f_cd) if isinstance(f_cd, str) else (f_cd if isinstance(f_cd, dict) else {})
-        except Exception: cd = {}
-        
-        s_year  = str(cd.get('class_year') or cd.get('year') or cd.get('Year') or '').strip().lower()
-        s_div   = str(cd.get('division') or cd.get('Division') or '').strip().lower()
-        s_class = str(cd.get('class_section') or cd.get('class') or '').strip().lower()
-        
-        year_ok = (not l_year_norm) or (l_year_norm in s_year) or (l_year_norm in s_class)
-        div_ok  = (not l_div_norm)  or (l_div_norm == s_div)  or (l_div_norm in s_class)
-        
-        if year_ok and div_ok:
-            roster.append({
-                "person_id": fid,
-                "status":    "absent",
-                "marked_at": None,
-                "name":      fname,
-                "display_id": f_did,
-                "custom_data": f_cd
-            })
+        roster.append({
+            "person_id": fid,
+            "status":    "absent",
+            "marked_at": None,
+            "name":      fname,
+            "display_id": f_did,
+            "custom_data": f_cd,
+            "person_type": "student",
+        })
 
     conn.close()
 
@@ -496,34 +550,18 @@ def mark_lecture_attendance(lecture_id):
         try:
             pid = int(entry.get('person_id'))
             status = entry.get('status', 'present')
-            l_id = int(entry.get('lecture_id') or lecture_id)
+            # The URL-selected lecture is authoritative; a batch entry cannot
+            # redirect a student mark into another class's lecture.
+            l_id = int(lecture_id)
 
-            # Class segregation: skip students whose class doesn't match this lecture
-            if lecture_has_class:
-                c.execute("SELECT custom_data FROM faces WHERE id = ? AND vendor_id = ?", (pid, vendor_id))
-                face_row = c.fetchone()
-                if face_row:
-                    raw_cd = face_row[0] if isinstance(face_row, (list, tuple)) else face_row.get('custom_data')
-                    try:
-                        cd = json.loads(raw_cd) if isinstance(raw_cd, str) else (raw_cd if isinstance(raw_cd, dict) else {})
-                    except Exception:
-                        cd = {}
-                    
-                    # Robust extraction of student year/division/class from metadata
-                    s_year  = str(cd.get('class_year') or cd.get('year') or cd.get('Year') or '').strip().lower()
-                    s_div   = str(cd.get('division') or cd.get('Division') or '').strip().lower()
-                    s_class = str(cd.get('class_section') or cd.get('class') or '').strip().lower()
-                    
-                    # Normalize lecture values
-                    l_year_norm = str(lecture_class_year or '').strip().lower()
-                    l_div_norm  = str(lecture_class_div or '').strip().lower()
-                    
-                    year_match = (not l_year_norm) or (l_year_norm in s_year) or (l_year_norm in s_class)
-                    div_match  = (not l_div_norm)  or (l_div_norm == s_div)  or (l_div_norm in s_class)
-                    
-                    if not (year_match and div_match):
-                        skipped_class_mismatch += 1
-                        continue
+            # Every lecture-attendance target must be a student in this exact class.
+            student_row = _student_face(
+                c, vendor_id, pid, class_year=l_year,
+                division=l_div, branch=l_branch,
+            )
+            if not student_row:
+                skipped_class_mismatch += 1
+                continue
             
             if status not in ('present', 'absent'):
                 status = 'present'
@@ -545,9 +583,7 @@ def mark_lecture_attendance(lecture_id):
             # Sync to core attendance logs
             if status == 'present':
                 image = entry.get('image', '')
-                c.execute("SELECT name FROM faces WHERE id = ?", (pid,))
-                fr = c.fetchone()
-                name = fr[0] if fr else "Unknown"
+                name = student_row[1]
                 
                 # Check for recent duplicate for this specific lecture to avoid redundant logs
                 c.execute(
@@ -631,6 +667,12 @@ def get_student_lecture_history(person_id):
     conn = _row(get_db_connection())
     c    = conn.cursor()
 
+    student_row = _student_face(c, vendor_id, person_id)
+    if not student_row:
+        conn.close()
+        return jsonify({"error": "Student not found"}), 404
+    student_custom_data = student_row[2]
+
     q = """
         SELECT l.id AS lecture_id, l.subject, l.class_year, l.division, l.branch,
                l.lecture_date, l.start_time, l.teacher,
@@ -649,7 +691,17 @@ def get_student_lecture_history(person_id):
     q += " ORDER BY l.lecture_date DESC, l.start_time DESC"
 
     c.execute(q, params)
-    rows = [dict(r) for r in (c.fetchall() or [])]
+    rows = []
+    for raw_row in c.fetchall() or []:
+        row = dict(raw_row)
+        if any((row.get('class_year'), row.get('division'), row.get('branch'))) and not class_scope_matches(
+            student_custom_data,
+            class_year=row.get('class_year'),
+            division=row.get('division'),
+            branch=row.get('branch'),
+        ):
+            continue
+        rows.append(row)
     conn.close()
     return jsonify({"attendance": rows, "person_id": person_id})
 
@@ -704,26 +756,11 @@ def get_parent_lecture_attendance():
         conn.close()
         return jsonify({"error": "No student linked to this parent account"}), 404
 
-    # Resolve student's class_section for lecture filtering
-    c.execute("SELECT custom_data FROM faces WHERE id = ? AND vendor_id = ?" if not getattr(conn, "_is_pg", False) else "SELECT custom_data FROM faces WHERE id = %s AND vendor_id = %s", (person_id, vendor_id))
-    face_row = c.fetchone()
-    student_class = ''
-    if face_row:
-        raw_cd = face_row[0] if isinstance(face_row, (list, tuple)) else face_row.get('custom_data')
-        try:
-            cd = json.loads(raw_cd) if raw_cd else {}
-            # Robust metadata extraction (handles multiple key formats)
-            s_year = str(cd.get('class_year') or cd.get('year') or '').strip().lower()
-            s_div  = str(cd.get('division') or cd.get('Division') or '').strip().lower()
-            s_class = str(cd.get('class_section') or cd.get('class') or '').strip().lower()
-            
-            # Combine them for checking against lecture fields
-            student_class_context = f"{s_year} {s_div} {s_class}"
-            
-            # We overwrite student_class here so the logic below works
-            student_class = student_class_context.strip()
-        except Exception:
-            pass
+    student_row = _student_face(c, vendor_id, person_id)
+    if not student_row:
+        conn.close()
+        return jsonify({"error": "No student linked to this parent account"}), 404
+    student_custom_data = student_row[2]
 
     start_date = request.args.get('start_date', '').strip()
     end_date   = request.args.get('end_date',   '').strip()
@@ -752,14 +789,13 @@ def get_parent_lecture_attendance():
     rows = []
     for r in (c.fetchall() or []):
         d = dict(r)
-        if student_class:
-            l_class_year = str(d.get('class_year') or '').strip().lower()
-            l_class_div  = str(d.get('division')   or '').strip().lower()
-            # If lecture has year/div, it must be found within the student's normalized class context
-            if l_class_year and l_class_year not in student_class:
-                continue
-            if l_class_div and l_class_div not in student_class:
-                continue
+        if any((d.get('class_year'), d.get('division'), d.get('branch'))) and not class_scope_matches(
+            student_custom_data,
+            class_year=d.get('class_year'),
+            division=d.get('division'),
+            branch=d.get('branch'),
+        ):
+            continue
         # Format date for mobile app regex: YYYY-MM-DD
         if 'lecture_date' in d and d['lecture_date']:
             try:
@@ -884,6 +920,14 @@ def faculty_sync_attendance():
                 l_div  = lecture[3] if len(lecture) > 3 else ''
                 l_branch = lecture[4] if len(lecture) > 4 else ''
 
+            student_row = _student_face(
+                c, vendor_id, person_id, class_year=l_year,
+                division=l_div, branch=l_branch,
+            )
+            if not student_row:
+                errors += 1
+                continue
+
             if is_pg:
                 c.execute(
                     """INSERT INTO lecture_attendance (lecture_id, vendor_id, person_id, status, marked_at)
@@ -902,9 +946,7 @@ def faculty_sync_attendance():
 
             # Sync to core attendance logs if present
             if status == 'present':
-                c.execute(f"SELECT name FROM faces WHERE id = {ph}", (person_id,))
-                fr = c.fetchone()
-                name = fr[0] if fr else "Unknown"
+                name = student_row[1]
                 
                 c.execute(
                     f"SELECT id FROM attendance WHERE person_id = {ph} AND lecture_id = {ph} AND vendor_id = {ph}",
@@ -958,7 +1000,29 @@ def faculty_scan_image():
     except Exception:
         return jsonify({"error": "invalid image encoding"}), 400
 
-    params = {"fast": True, "crop_mode": "Portrait", "det_max_side": 1280}
+    params = {
+        "fast": True, "crop_mode": "Portrait", "det_max_side": 1280,
+        "person_type": "student",
+    }
+    lecture_id = data.get("lecture_id")
+    if lecture_id:
+        conn = get_db_connection()
+        try:
+            c = conn.cursor()
+            c.execute(
+                "SELECT class_year, division, branch FROM lectures WHERE id = ? AND vendor_id = ?",
+                (lecture_id, vendor_id),
+            )
+            lecture = c.fetchone()
+            if not lecture:
+                return jsonify({"error": "Lecture not found"}), 404
+            params.update({
+                "class_year": lecture[0] or "",
+                "division": lecture[1] or "",
+                "branch": lecture[2] or "",
+            })
+        finally:
+            conn.close()
 
     _cleanup_scan_jobs()
     job_id = str(_uuid.uuid4())
@@ -1005,8 +1069,13 @@ def faculty_class_students():
         return jsonify({"error": "Forbidden"}), 403
 
     vendor_id  = g.vendor_id
+    class_id   = request.args.get("class_id", "").strip()
     class_year = request.args.get("class_year", "").strip()
     division   = request.args.get("division", "").strip()
+    branch     = request.args.get("branch", "").strip()
+
+    if not any((class_id, class_year, division, branch)):
+        return jsonify({"error": "class_id or class scope is required"}), 400
 
     conn   = get_db_connection()
     c      = conn.cursor()
@@ -1014,45 +1083,25 @@ def faculty_class_students():
     ph     = "%s" if is_pg else "?"
 
     c.execute(
-        f"""SELECT DISTINCT pe.person_id, f.name, f.display_id
-            FROM person_embeddings pe
-            JOIN faces f ON f.id = pe.person_id
-            WHERE pe.vendor_id = {ph}
-              AND LOWER(TRIM(pe.class_year)) = LOWER(TRIM({ph}))
-              AND LOWER(TRIM(pe.division))   = LOWER(TRIM({ph}))
-            ORDER BY f.display_id ASC""",
-        (vendor_id, class_year, division),
+        f"""SELECT f.id, f.name, f.custom_data, f.display_id,
+                   (SELECT su.role FROM system_users su
+                    WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                    ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
+                    LIMIT 1) AS system_role
+            FROM faces f WHERE f.vendor_id = {ph} ORDER BY f.display_id ASC""",
+        (vendor_id,),
     )
-    rows = c.fetchall() or []
-
-    # Fallback: if person_embeddings had no results, query faces table
-    # and filter by custom_data JSON containing class_section info
-    if not rows and (class_year or division):
-        c.execute(
-            f"SELECT id, name, custom_data, display_id FROM faces WHERE vendor_id = {ph} ORDER BY display_id ASC",
-            (vendor_id,),
-        )
-        all_faces = c.fetchall() or []
-        filtered = []
-        for fr in all_faces:
-            fid   = fr[0]
-            fname = fr[1] or ""
-            raw_cd = fr[2]
-            try:
-                cd = json.loads(raw_cd) if raw_cd else {}
-            except Exception:
-                cd = {}
-            
-            s_year = str(cd.get('class_year') or cd.get('year') or '').strip().lower()
-            s_div  = str(cd.get('division') or cd.get('Division') or '').strip().lower()
-            s_class = str(cd.get('class_section') or cd.get('class') or '').strip().lower()
-            
-            year_ok = (not class_year) or (class_year.lower() in s_year) or (class_year.lower() in s_class)
-            div_ok  = (not division)   or (division.lower()   in s_div)  or (division.lower()   in s_class)
-            if year_ok and div_ok:
-                filtered.append((fid, fname, fr[3]))
-        if filtered:
-            rows = filtered
+    vertical = vendor_vertical(c, vendor_id)
+    rows = []
+    for face_row in c.fetchall() or []:
+        if person_type_for(face_row[2], face_row[4], vertical) != "student":
+            continue
+        if not class_scope_matches(
+            face_row[2], class_id=class_id, class_year=class_year,
+            division=division, branch=branch,
+        ):
+            continue
+        rows.append((face_row[0], face_row[1], face_row[3]))
 
     conn.close()
 
@@ -1093,16 +1142,15 @@ def faculty_save_embedding():
     is_pg  = getattr(conn, "_is_pg", False)
     ph     = "%s" if is_pg else "?"
 
-    c.execute(f"SELECT id FROM faces WHERE id = {ph} AND vendor_id = {ph}", (person_id, vendor_id))
-    if not c.fetchone():
+    student_row = _student_face(c, vendor_id, person_id)
+    if not student_row:
         conn.close()
-        return jsonify({"error": "Person not found"}), 404
+        return jsonify({"error": "Student not found"}), 404
 
-    c.execute(f"SELECT class_year, division, branch FROM person_embeddings WHERE person_id = {ph} LIMIT 1", (person_id,))
-    row = c.fetchone()
-    class_year = row[0] if row else ""
-    division   = row[1] if row else ""
-    branch     = row[2] if row else ""
+    scope = class_scope_for(student_row[2])
+    class_year = scope["class_year"]
+    division   = scope["division"]
+    branch     = scope["branch"]
 
     vec_blob = emb.astype(_np.float32).tobytes()
     dim      = int(emb.size)

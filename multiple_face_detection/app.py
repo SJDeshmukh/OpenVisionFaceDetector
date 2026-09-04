@@ -23,8 +23,15 @@ from multiple_face_detection.mobile_embedder import FacePluginEmbedder
 _bulk_attendance_cache = {"v": None, "ts": 0.0}
 _BULK_CACHE_TTL = 60.0
 
+def _force_3d_engine() -> bool:
+    return str(os.environ.get("FORCE_3D_ENGINE", "0")).strip().lower() in ("1", "true", "yes", "y")
+
 def is_bulk_attendance_allowed() -> bool:
     """Checks if ANY active vendor has bulk_image_attendance enabled. Cached 60 s."""
+    # The dedicated EC2 Celery worker sets this flag because it is the single,
+    # memory-bounded process responsible for producing landmark meshes.
+    if _force_3d_engine():
+        return True
     import time as _t
     _now = _t.monotonic()
     if _bulk_attendance_cache["v"] is not None and (_now - _bulk_attendance_cache["ts"]) < _BULK_CACHE_TTL:
@@ -55,14 +62,13 @@ def _is_bulk_attendance_uncached() -> bool:
         for row in rows:
             try:
                 features = json.loads(row[0]) if isinstance(row[0], str) else row[0]
-                if 'bulk_image_attendance' in features:
+                if features and 'bulk_image_attendance' in features:
                     return True
-            except:
+            except Exception:
                 continue
-            return True
     except Exception as e:
         # If DB fails or not initialized, check for FORCE environment variable
-        if os.environ.get("FORCE_3D_ENGINE", "0") in ("1", "true", "yes"):
+        if _force_3d_engine():
              return True
         print(f"[MFD] Feature check failed: {e}", flush=True)
         return False
@@ -115,7 +121,7 @@ def get_realtime_engine(device=None):
     global _mesh_engine
     try:
         from backend.utils import LOW_RAM_MODE
-        if LOW_RAM_MODE:
+        if LOW_RAM_MODE and not _force_3d_engine():
             print("[3D_ENGINE] Bypassing 3D engine in LOW_RAM_MODE to save memory.", flush=True)
             return None
     except Exception: pass

@@ -65,7 +65,9 @@ const isClassField = (field) => ['class', 'class_id', 'class_section'].includes(
 
 const People = () => {
   const { user } = useAuth();
-  const personLabel = (user?.vertical && ['school', 'hostel'].includes(String(user.vertical).toLowerCase())) ? 'Student' : 'Employee';
+  const schoolFlow = Boolean(user?.vertical && ['school', 'hostel'].includes(String(user.vertical).toLowerCase()));
+  const personLabel = schoolFlow ? 'Student' : 'Employee';
+  const peopleCacheKey = `people_cache_${user?.vendor_id}_${schoolFlow ? 'student' : 'people'}_${user?.role || 'anonymous'}_${user?.username || ''}`;
   const [users, setUsers] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [shifts, setShifts] = useState([]);
@@ -126,7 +128,7 @@ const People = () => {
   useEffect(() => {
     if (user) {
       // Load initial data from localStorage for instant loading
-      const cachedUsers = localStorage.getItem(`people_cache_${user?.vendor_id}`);
+      const cachedUsers = localStorage.getItem(peopleCacheKey);
       if (cachedUsers) {
         try {
           setUsers(JSON.parse(cachedUsers));
@@ -164,13 +166,16 @@ const People = () => {
       // Faculty uses /persons which filters to their assigned classes server-side
       const isFaculty = user?.role === 'faculty';
       const response = isFaculty
-        ? await axios.get(`${API_URL}/persons`)
-        : await axios.get(`${API_URL}/sync/download?limit=200`);
-      const faces = isFaculty ? (response.data.persons || []) : (response.data.faces || []);
+        ? await axios.get(`${API_URL}/persons`, { params: { person_type: 'student' } })
+        : await axios.get(`${API_URL}/sync/download`, { params: { limit: 200, ...(schoolFlow ? { person_type: 'student' } : {}) } });
+      const receivedFaces = isFaculty ? (response.data.persons || []) : (response.data.faces || []);
+      const faces = schoolFlow
+        ? receivedFaces.filter(face => (face.person_type || face.custom_data?.person_type || 'student') === 'student' && face.role !== 'faculty')
+        : receivedFaces;
       setUsers(faces);
       setLoading(false);
       if (!isFaculty) {
-        localStorage.setItem(`people_cache_${user?.vendor_id}`, JSON.stringify(faces));
+        localStorage.setItem(peopleCacheKey, JSON.stringify(faces));
       }
     } catch (error) {
       console.error("Error fetching users:", error);
@@ -437,6 +442,10 @@ const People = () => {
       return;
     }
     if (!formData.name) return;
+    if (schoolFlow && !formData.class_id) {
+      alert("Please allocate the student to a class/section.");
+      return;
+    }
 
     setSubmitting(true);
     try {
@@ -457,7 +466,8 @@ const People = () => {
         face_image: formData.photo,
         templates: formData.templates,
         display_id: formData.display_id,
-        ...formData // Spread all other dynamic fields
+        ...formData, // Spread all other dynamic fields
+        ...(schoolFlow ? { person_type: 'student' } : {}),
       };
 
       // Cleanup
@@ -473,8 +483,12 @@ const People = () => {
           payload.division = selectedClass.division;
           payload.branch = selectedClass.branch;
           // Store original mapping in custom_data
+          const existingCustom = typeof formData.custom_data === 'string'
+            ? JSON.parse(formData.custom_data || '{}')
+            : (formData.custom_data || {});
           payload.custom_data = JSON.stringify({
-             ...JSON.parse(formData.custom_data || '{}'),
+             ...existingCustom,
+             ...(schoolFlow ? { person_type: 'student' } : {}),
              class_id: formData.class_id,
              class_year: selectedClass.class_year,
              division: selectedClass.division,
@@ -527,8 +541,14 @@ const People = () => {
       });
     }
 
+    if (schoolFlow && !baseColumns.some(isClassField)) {
+      baseColumns.push({
+        field: 'class_id', key: 'class_id', label: 'Class/Section',
+        type: 'class_select', required: true,
+      });
+    }
     return baseColumns;
-  }, [vendorConfig, bulkAttendanceFields, user?.features]);
+  }, [vendorConfig, bulkAttendanceFields, user?.features, schoolFlow]);
 
   // Dynamically identify the Name header from the registration config
   const nameHeaderObj = registrationColumns.find(isNameField);
@@ -564,6 +584,14 @@ const People = () => {
     if ((rawValue === null || rawValue === '') && ['student_id', 'student id'].includes(String(effectiveField).toLowerCase())) {
       rawValue = person?.custom_data?.student_id || person?.student_id || person?.display_id;
     }
+
+    if (isClassField({ field: effectiveField }) && rawValue !== null && rawValue !== '') {
+      const assignedClass = vendorClasses.find(cls => String(cls.id) === String(rawValue));
+      if (assignedClass) {
+        return assignedClass.label || [assignedClass.class_year, assignedClass.division, assignedClass.branch]
+          .filter(Boolean).join(' - ');
+      }
+    }
     
     if (rawValue !== null && rawValue !== undefined) {
       const v = rawValue;
@@ -581,14 +609,16 @@ const People = () => {
       if (selectedClassForView.id === 'unassigned') {
         result = result.filter(u => !u.custom_data?.class_id && !u.custom_data?.class_year && u.role !== 'faculty');
       } else {
-        result = result.filter(u => 
-          String(u.custom_data?.class_id) === String(selectedClassForView.id) ||
-          (
+        result = result.filter(u => {
+          if (u.custom_data?.class_id) {
+            return String(u.custom_data.class_id) === String(selectedClassForView.id);
+          }
+          return (
             String(u.custom_data?.class_year) === String(selectedClassForView.class_year) &&
             String(u.custom_data?.division) === String(selectedClassForView.division) &&
-            (!u.custom_data?.branch || String(u.custom_data?.branch) === String(selectedClassForView.branch))
-          )
-        );
+            String(u.custom_data?.branch || '') === String(selectedClassForView.branch || '')
+          );
+        });
       }
     }
 
@@ -805,14 +835,16 @@ const People = () => {
               
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                 {vendorClasses.map((cls) => {
-                  const studentsInClass = users.filter(u => 
-                    String(u.custom_data?.class_id) === String(cls.id) ||
-                    (
+                  const studentsInClass = users.filter(u => {
+                    if (u.custom_data?.class_id) {
+                      return String(u.custom_data.class_id) === String(cls.id);
+                    }
+                    return (
                       String(u.custom_data?.class_year) === String(cls.class_year) &&
                       String(u.custom_data?.division) === String(cls.division) &&
-                      (!u.custom_data?.branch || String(u.custom_data?.branch) === String(cls.branch))
-                    )
-                  ).length;
+                      String(u.custom_data?.branch || '') === String(cls.branch || '')
+                    );
+                  }).length;
 
                   return (
                     <button
@@ -1115,11 +1147,11 @@ const People = () => {
                 })}
                 
                 {/* Simplified Class Selection */}
-                {classField && vendorClasses.length > 0 && (
+                {classField && (
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-slate-700">
                       {classField.label || 'Select Class'}
-                      {classField.required && <span className="text-red-500 ml-1">*</span>}
+                      {(schoolFlow || classField.required) && <span className="text-red-500 ml-1">*</span>}
                     </label>
                     <div className="relative">
                       <select
@@ -1146,7 +1178,7 @@ const People = () => {
                           }
                         }}
                         className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                        required={classField.required}
+                        required={schoolFlow || classField.required}
                       >
                         <option value="">-- Choose Class --</option>
                         {vendorClasses.map(c => (
@@ -1227,7 +1259,7 @@ const People = () => {
                       </button>
                     ))}
                     
-                    <button
+                    {!schoolFlow && <button
                       onClick={() => {
                         setSelectedBulkClass(null);
                         setBulkImportPhase('upload');
@@ -1235,7 +1267,7 @@ const People = () => {
                       className="flex items-center justify-center p-4 border border-dashed border-slate-300 rounded-xl hover:border-slate-400 hover:bg-slate-50 transition-all text-slate-500 text-sm font-medium"
                     >
                       Skip Class Assignment
-                    </button>
+                    </button>}
                   </div>
                 </>
               ) : !bulkImportProgress ? (

@@ -30,6 +30,12 @@ from services.auth_service import (
     generate_token,
 )
 from services.restoration_service import run_restore
+from services.person_scope_service import (
+    is_school_hostel,
+    person_type_for,
+    requested_person_type,
+    vendor_vertical,
+)
 
 def trigger_model_download_if_needed(features):
     """Background task to ensure heavy AI models are downloaded if bulk_image_attendance is selected."""
@@ -1084,17 +1090,29 @@ def export_employees(vendor_id):
     import csv, io
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT name, phone, department, designation, shift, daily_wage, custom_data FROM faces WHERE vendor_id = ?", (vendor_id,))
-    rows = c.fetchall()
+    vertical = vendor_vertical(c, vendor_id)
+    try:
+        wanted_type = requested_person_type(request.args.get("person_type"), vertical)
+    except ValueError as exc:
+        conn.close()
+        return jsonify({"error": str(exc)}), 400
+    c.execute("""SELECT f.name, f.phone, f.department, f.designation, f.shift,
+                        f.daily_wage, f.custom_data,
+                        (SELECT su.role FROM system_users su
+                         WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                         ORDER BY CASE LOWER(su.role) WHEN 'faculty' THEN 0 WHEN 'student' THEN 1 ELSE 2 END
+                         LIMIT 1) AS system_role
+                 FROM faces f WHERE f.vendor_id = ?""", (vendor_id,))
+    rows = [row for row in c.fetchall() if not wanted_type or person_type_for(row[6], row[7], vertical) == wanted_type]
     conn.close()
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["name","phone","department","designation","shift","daily_wage","custom_data"])
     for r in rows:
-        if isinstance(r, dict):
-            writer.writerow([r.get("name"), r.get("phone"), r.get("department"), r.get("designation"), r.get("shift"), r.get("daily_wage"), r.get("custom_data")])
+        if hasattr(r, "keys"):
+            writer.writerow([r["name"], r["phone"], r["department"], r["designation"], r["shift"], r["daily_wage"], r["custom_data"]])
         else:
-            writer.writerow(list(r))
+            writer.writerow(list(r[:7]))
     return output.getvalue(), 200, {"Content-Type": "text/csv"}
 
 @admin_bp.route("/vendors/<int:vendor_id>/employees/import", methods=["POST"])
@@ -1105,6 +1123,15 @@ def import_employees(vendor_id):
     csv_data = data.get("csv_data")
     if not csv_data:
         return jsonify({"error": "csv_data required (string)"}), 400
+
+    scope_conn = get_db_connection()
+    scope_cursor = scope_conn.cursor()
+    school_student_flow = is_school_hostel(vendor_vertical(scope_cursor, vendor_id))
+    scope_conn.close()
+    if school_student_flow:
+        return jsonify({
+            "error": "Use Student Bulk Import for School/Hostel records so every student has a class/section"
+        }), 400
     
     if celery:
         from tasks import process_import_employees_task
@@ -1252,11 +1279,11 @@ def create_vendor():
         # 5. Handle Vertical Spcifics
         if vertical:
             c.execute("UPDATE vendors SET vertical = ? WHERE id = ?", (vertical, vendor_id))
-            if str(vertical).strip().lower() == "school":
+            if str(vertical).strip().lower() in {"school", "hostel"}:
                 rc = json.dumps([
                     {"field": "student_id", "label": "Student ID", "type": "text", "required": True, "options": []},
                     {"field": "phone", "label": "Mobile Number", "type": "text", "required": True, "options": []},
-                    {"field": "department", "label": "Class/Section", "type": "text", "required": False, "options": []}
+                    {"field": "class_id", "label": "Class/Section", "type": "class_select", "required": True, "options": []}
                 ])
                 c.execute("UPDATE vendors SET registration_config = ? WHERE id = ?", (rc, vendor_id))
         
@@ -1710,7 +1737,7 @@ def update_vendor_details(vendor_id):
             params.append(vendor_id)
             c.execute(query, params)
             try:
-                if 'vertical' in data and str(data.get('vertical') or '').strip().lower() == 'school':
+                if 'vertical' in data and str(data.get('vertical') or '').strip().lower() in {'school', 'hostel'}:
                     c.execute("SELECT registration_config FROM vendors WHERE id = ?", (vendor_id,))
                     r = c.fetchone()
                     needs_set = False
@@ -1726,7 +1753,7 @@ def update_vendor_details(vendor_id):
                         rc = json.dumps([
                             {"field": "student_id", "label": "Student ID", "type": "text", "required": True, "options": []},
                             {"field": "phone", "label": "Mobile Number", "type": "text", "required": True, "options": []},
-                            {"field": "department", "label": "Class/Section", "type": "text", "required": False, "options": []}
+                            {"field": "class_id", "label": "Class/Section", "type": "class_select", "required": True, "options": []}
                         ])
                         c.execute("UPDATE vendors SET registration_config = ? WHERE id = ?", (rc, vendor_id))
             except Exception:
@@ -2155,20 +2182,6 @@ def generate_invoice(vendor_id):
         
     total_amount = monthly_cost + setup_fee
     
-    # Check for Setup Fee
-    setup_fee = 0
-    if sub['setup_fee'] and not sub['setup_fee_paid']:
-        setup_fee = sub['setup_fee']
-        
-    total_amount = monthly_cost + setup_fee
-    
-    # Check for Setup Fee
-    setup_fee = 0
-    if sub['setup_fee'] and not sub['setup_fee_paid']:
-        setup_fee = sub['setup_fee']
-        
-    total_amount = monthly_cost + setup_fee
-    
     details = {
         "max_employees": max_employees_count,
         "cost_per_employee": cost_per_employee,
@@ -2192,11 +2205,22 @@ def generate_invoice(vendor_id):
     # Actually, better to mark setup_fee_paid ONLY when invoice is paid.
     
     conn.commit()
+    # The vendor subscription response embeds its invoice list and is cached for
+    # an hour. Invalidate it immediately so Vendor Settings sees this invoice.
+    cache_delete(f"vendor:{vendor_id}:subscription")
     try:
         log_audit("invoice_generate", {"amount": total_amount}, target_vendor_id=vendor_id, status="success")
     except Exception:
         pass
     conn.close()
+    try:
+        socketio.emit(
+            'invoice_updated',
+            {'vendor_id': vendor_id, 'action': 'generated'},
+            room=f"vendor_{vendor_id}",
+        )
+    except Exception:
+        pass
     if is_async:
         job_id = create_job(content_type="application/json", ttl=600)
         def _bg():
@@ -2214,26 +2238,45 @@ def generate_invoice(vendor_id):
 def update_invoice_status(invoice_id):
     from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
-    data = request.json
-    status = data.get("status") # paid, overdue, generated
+    data = request.get_json(silent=True) or {}
+    status = str(data.get("status") or "").strip().lower()
+    if status not in {'paid', 'overdue', 'generated'}:
+        return jsonify({"error": "status must be paid, overdue, or generated"}), 400
     
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
+    c.execute("SELECT details, vendor_id FROM invoices WHERE id = ?", (invoice_id,))
+    invoice = c.fetchone()
+    if not invoice:
+        conn.close()
+        return jsonify({"error": "Invoice not found"}), 404
+
+    vendor_id = invoice['vendor_id']
     c.execute("UPDATE invoices SET status = ? WHERE id = ?", (status, invoice_id))
     
     # If paid, check if it included setup fee and update subscription
     if status == 'paid':
-        c.execute("SELECT details, vendor_id FROM invoices WHERE id = ?", (invoice_id,))
-        invoice = c.fetchone()
-        if invoice:
-            details = json.loads(invoice['details'])
-            if details.get('setup_fee', 0) > 0:
-                c.execute("UPDATE subscriptions SET setup_fee_paid = 1 WHERE vendor_id = ?", (invoice['vendor_id'],))
+        try:
+            raw_details = invoice['details']
+            details = json.loads(raw_details) if isinstance(raw_details, str) else (raw_details or {})
+        except Exception:
+            details = {}
+        if details.get('setup_fee', 0) > 0:
+            c.execute("UPDATE subscriptions SET setup_fee_paid = 1 WHERE vendor_id = ?", (vendor_id,))
     
     conn.commit()
     conn.close()
+    cache_delete(f"vendor:{vendor_id}:subscription")
+    try:
+        socketio.emit(
+            'invoice_updated',
+            {'vendor_id': vendor_id, 'invoice_id': invoice_id, 'status': status, 'action': 'status'},
+            room=f"vendor_{vendor_id}",
+        )
+    except Exception:
+        pass
     return jsonify({"success": True})
 
 @admin_bp.route("/system/health", methods=["GET"])

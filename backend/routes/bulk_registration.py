@@ -8,6 +8,7 @@ import pandas as pd
 from flask import Blueprint, request, jsonify, g
 from utils import get_db_connection, log_audit, vendor_has_feature
 from services.auth_service import require_auth, hash_password
+from services.person_scope_service import is_school_hostel, parse_custom_data
 from openpyxl import load_workbook
 
 bulk_registration_bp = Blueprint('bulk_registration_bp', __name__)
@@ -118,7 +119,13 @@ def bulk_registration_upload():
         c.execute("SELECT vertical FROM vendors WHERE id = ?", (vendor_id,))
         _vrow = c.fetchone()
         _vendor_vertical = ((_vrow['vertical'] or '') if hasattr(_vrow, 'keys') else (_vrow[0] or '')) if _vrow else ''
+        school_student_flow = is_school_hostel(_vendor_vertical)
         student_id_custom_key = 'student_number' if _vendor_vertical == 'bulk_attendance_attendx' else 'student_id'
+
+        if school_student_flow and not req_class_id and not excel_class_id_key:
+            return jsonify({
+                "error": "Class allocation is required for every student. Select a class or include a class_id column."
+            }), 400
 
         # Get features for automated login creation ("Inking")
         c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
@@ -166,30 +173,68 @@ def bulk_registration_upload():
                             continue
                         row_class_year, row_division, row_branch = row_class[0], row_class[1], row_class[2]
 
+                if school_student_flow and not row_class_id:
+                    errors.append(f"Row {row_idx + 2}: class allocation is required for students")
+                    skipped_count += 1
+                    continue
+
                 phone = str(row.get(phone_key) or "").strip()
 
-                # Duplicate detection: case-insensitive name + phone match within same vendor
+                # Duplicate detection is student-scoped. A faculty profile with the
+                # same name/phone must never block or absorb a student registration.
                 if phone:
                     c.execute(
-                        "SELECT id FROM faces WHERE vendor_id = ? AND LOWER(name) = LOWER(?) AND phone = ?",
-                        (vendor_id, name, phone)
+                        """SELECT f.id FROM faces f
+                           WHERE f.vendor_id = ? AND LOWER(f.name) = LOWER(?) AND f.phone = ?
+                             AND NOT EXISTS (
+                                 SELECT 1 FROM system_users su
+                                 WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                                   AND LOWER(su.role) = 'faculty'
+                             )""",
+                        (vendor_id, name, phone),
                     )
                 elif row_class_id:
-                    c.execute(
-                        "SELECT id FROM faces WHERE vendor_id = ? AND LOWER(name) = LOWER(?) AND json_extract(custom_data, '$.class_id') = ?",
-                        (vendor_id, name, row_class_id)
-                    )
+                    if getattr(conn, "_is_pg", False):
+                        c.execute(
+                            """SELECT f.id FROM faces f
+                               WHERE f.vendor_id = ? AND LOWER(f.name) = LOWER(?)
+                                 AND f.custom_data::jsonb->>'class_id' = ?
+                                 AND NOT EXISTS (
+                                     SELECT 1 FROM system_users su
+                                     WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                                       AND LOWER(su.role) = 'faculty'
+                                 )""",
+                            (vendor_id, name, str(row_class_id)),
+                        )
+                    else:
+                        c.execute(
+                            """SELECT f.id FROM faces f
+                               WHERE f.vendor_id = ? AND LOWER(f.name) = LOWER(?)
+                                 AND json_extract(f.custom_data, '$.class_id') = ?
+                                 AND NOT EXISTS (
+                                     SELECT 1 FROM system_users su
+                                     WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                                       AND LOWER(su.role) = 'faculty'
+                                 )""",
+                            (vendor_id, name, str(row_class_id)),
+                        )
                 else:
                     c.execute(
-                        "SELECT id FROM faces WHERE vendor_id = ? AND LOWER(name) = LOWER(?)",
-                        (vendor_id, name)
+                        """SELECT f.id FROM faces f
+                           WHERE f.vendor_id = ? AND LOWER(f.name) = LOWER(?)
+                             AND NOT EXISTS (
+                                 SELECT 1 FROM system_users su
+                                 WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                                   AND LOWER(su.role) = 'faculty'
+                             )""",
+                        (vendor_id, name),
                     )
                 if c.fetchone():
                     skipped_count += 1
                     continue
 
                 # Build custom_data; exclude name and phone (stored in core columns)
-                custom_dict = {}
+                custom_dict = {"person_type": "student"}
                 for k, v in row.items():
                     if k in [name_key, phone_key, id_key]:
                         continue
@@ -234,10 +279,11 @@ def bulk_registration_upload():
                 if inking_enabled and student_id_val and phone:
                     c.execute("SELECT username FROM system_users WHERE username = ?", (student_id_val,))
                     if not c.fetchone():
+                        login_role = 'student' if school_student_flow else 'user'
                         c.execute("""
                             INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id)
-                            VALUES (?, ?, NULL, 'user', ?, ?)
-                        """, (student_id_val, hash_password(phone), vendor_id, person_id))
+                            VALUES (?, ?, NULL, ?, ?, ?)
+                        """, (student_id_val, hash_password(phone), login_role, vendor_id, person_id))
 
                 success_count += 1
             except Exception as e:
@@ -255,6 +301,7 @@ def bulk_registration_upload():
                 'name' if h == name_key else
                 'phone' if h == phone_key else
                 student_id_custom_key if h == id_key else
+                'class_id' if h == excel_class_id_key else
                 field_name
             )
             existing_f = next((f for f in existing_fields if str(f.get('label') or '').strip().lower() == field_name.lower() or str(f.get('name') or '').strip().lower() == canonical_name.lower()), None)
@@ -295,6 +342,28 @@ def bulk_registration_upload():
                     'is_id': False,
                 })
 
+        # Spreadsheet synchronization must not remove the authoritative class
+        # selector from School/Hostel registration. The class may have come
+        # from the class card rather than from an Excel column.
+        if school_student_flow:
+            class_config = next(
+                (field for field in new_sync_fields if str(field.get('name') or '').strip().lower() == 'class_id'),
+                None,
+            )
+            if class_config:
+                class_config.update({'type': 'class_select', 'required': True})
+            else:
+                new_sync_fields.append({
+                    'name': 'class_id',
+                    'label': 'Class / Section',
+                    'type': 'class_select',
+                    'required': True,
+                    'default': False,
+                    'is_name': False,
+                    'is_phone': False,
+                    'is_id': False,
+                })
+
         # Update strictly
         fields_json = json.dumps(new_sync_fields, separators=(',', ':'))
         c.execute("""
@@ -317,8 +386,9 @@ def bulk_registration_upload():
                     **existing_reg,
                     "field": f['name'],
                     "label": f['label'],
-                    "type": existing_reg.get('type') or 'text',
+                    "type": 'class_select' if f['name'] == 'class_id' else (existing_reg.get('type') or f.get('type') or 'text'),
                     "enabled": True,
+                    "required": True if f['name'] == 'class_id' else bool(f.get('required', existing_reg.get('required', False))),
                     "is_name": f.get('is_name', False),
                     "is_phone": f.get('is_phone', False),
                     "is_id": f.get('is_id', False),
@@ -327,7 +397,7 @@ def bulk_registration_upload():
                 new_reg_config.append({
                     "field": f['name'],
                     "label": f['label'],
-                    "type": "text",
+                    "type": f.get('type') or "text",
                     "enabled": True,
                     "required": bool(f.get('required', False)),
                     "is_name": f.get('is_name', False),
@@ -387,8 +457,8 @@ def create_faculty_single():
 
         name_val = name or email.split('@')[0]
         c.execute(
-            "INSERT INTO faces (name, phone, designation, vendor_id) VALUES (?, ?, ?, ?)",
-            (name_val, phone, designation, vendor_id)
+            "INSERT INTO faces (name, phone, designation, vendor_id, custom_data) VALUES (?, ?, ?, ?, ?)",
+            (name_val, phone, designation, vendor_id, json.dumps({"person_type": "faculty"}))
         )
         person_id = c.lastrowid
 
@@ -501,9 +571,12 @@ def bulk_registration_upload_faculty():
                 name_val = "Faculty"
 
             c.execute("""
-                INSERT INTO faces (name, phone, designation, vendor_id)
-                VALUES (?, ?, ?, ?)
-            """, (name_val, item['phone'] or '', item['designation'] or 'Faculty', vendor_id))
+                INSERT INTO faces (name, phone, designation, vendor_id, custom_data)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                name_val, item['phone'] or '', item['designation'] or 'Faculty', vendor_id,
+                json.dumps({"person_type": "faculty"}),
+            ))
             person_id = c.lastrowid
 
             # Create SystemUser
@@ -655,19 +728,27 @@ def update_faculty_login(username):
 
         # 2. Update faces record
         if person_id:
+            c.execute("SELECT custom_data FROM faces WHERE id = ? AND vendor_id = ?", (person_id, vendor_id))
+            face_row = c.fetchone()
+            faculty_custom = parse_custom_data(face_row[0] if face_row else None)
+            faculty_custom["person_type"] = "faculty"
             c.execute("""
                 UPDATE faces 
                 SET name = COALESCE(?, name), 
                     phone = COALESCE(?, phone), 
-                    designation = COALESCE(?, designation)
+                    designation = COALESCE(?, designation),
+                    custom_data = ?
                 WHERE id = ? AND vendor_id = ?
-            """, (new_name, new_phone, new_designation, person_id, vendor_id))
+            """, (new_name, new_phone, new_designation, json.dumps(faculty_custom), person_id, vendor_id))
         elif new_name or new_phone or new_designation:
             # Create Face record if it somehow didn't exist
             c.execute("""
-                INSERT INTO faces (name, phone, designation, vendor_id)
-                VALUES (?, ?, ?, ?)
-            """, (new_name or username.split('@')[0], new_phone or '', new_designation or 'Faculty', vendor_id))
+                INSERT INTO faces (name, phone, designation, vendor_id, custom_data)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                new_name or username.split('@')[0], new_phone or '', new_designation or 'Faculty',
+                vendor_id, json.dumps({"person_type": "faculty"}),
+            ))
             new_person_id = c.lastrowid
             c.execute("UPDATE system_users SET person_id = ? WHERE username = ? AND vendor_id = ?", (new_person_id, username, vendor_id))
             

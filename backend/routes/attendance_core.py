@@ -3,7 +3,7 @@ import logging
 import sqlite3
 import numpy as np
 import base64
-from datetime import datetime, timedelta
+from datetime import datetime
 from collections import defaultdict
 from flask import Blueprint, request, jsonify
 
@@ -22,9 +22,37 @@ from services.attendance_service import (
 from services.auth_service import require_auth, verify_token, extract_token
 from middleware.validation import validate_request
 from schemas import AttendanceFilterSchema, PersonEventSchema, PublicAttendanceRequest
+from services.person_scope_service import (
+    class_scope_for,
+    parse_custom_data,
+    person_type_for,
+    requested_person_type,
+    vendor_vertical,
+)
+from services.report_filter_service import custom_value
 from flask import Blueprint, request, jsonify, g
 
 attendance_core_bp = Blueprint('attendance_core_bp', __name__)
+
+def _person_scope_context(cursor, vendor_id, requested_type=None):
+    vertical = vendor_vertical(cursor, vendor_id)
+    wanted_type = requested_person_type(requested_type, vertical)
+    cursor.execute("""
+        SELECT f.id, f.name, f.custom_data,
+               (SELECT su.role FROM system_users su
+                WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
+                LIMIT 1) AS system_role
+        FROM faces f WHERE f.vendor_id = ?
+    """, (vendor_id,))
+    people = {}
+    for row in cursor.fetchall() or []:
+        resolved = person_type_for(row[2], row[3], vertical)
+        people[int(row[0])] = {
+            "name": row[1], "custom_data": parse_custom_data(row[2]),
+            "person_type": resolved,
+        }
+    return vertical, wanted_type, people
 
 @attendance_core_bp.route("/attendance/filters", methods=["GET"])
 @require_auth()
@@ -32,13 +60,15 @@ attendance_core_bp = Blueprint('attendance_core_bp', __name__)
 def get_attendance_filters(valid_data: AttendanceFilterSchema):
     vendor_id = g.vendor_id
     
-    cache_key = f"vendor:{vendor_id}:attendance_filters"
+    cache_key = f"vendor:{vendor_id}:attendance_filters:{hash(tuple(sorted(request.args.items())))}"
     cached = cache_get(cache_key)
     if cached: return jsonify(cached)
 
     conn = get_db_connection()
     set_row_factory(conn)
     c = conn.cursor()
+    vertical = vendor_vertical(c, vendor_id)
+    wanted_type = requested_person_type(valid_data.person_type, vertical)
     
     c.execute("SELECT registration_config FROM vendors WHERE id = ?", (vendor_id,))
     row = c.fetchone()
@@ -64,17 +94,39 @@ def get_attendance_filters(valid_data: AttendanceFilterSchema):
         except Exception:
             logger.debug("Failed to load registration config for vendor %s", vendor_id, exc_info=True)
 
-    c.execute("SELECT name, department, designation, shift, phone, custom_data FROM faces WHERE vendor_id = ?", (vendor_id,))
+    c.execute("""SELECT f.id, f.name, f.department, f.designation, f.shift, f.phone,
+                        f.custom_data,
+                        (SELECT su.role FROM system_users su
+                         WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                         ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
+                         LIMIT 1) AS system_role
+                 FROM faces f WHERE f.vendor_id = ?""", (vendor_id,))
     faces = []
     for r in c.fetchall():
         d = dict(r)
-        try: d["custom"] = json.loads(d.get("custom_data") or "{}")
-        except (json.JSONDecodeError, ValueError): d["custom"] = {}
+        d["custom"] = parse_custom_data(d.get("custom_data"))
+        d["person_type"] = person_type_for(d["custom"], d.get("system_role"), vertical)
+        if wanted_type and d["person_type"] != wanted_type:
+            continue
         faces.append(d)
+    c.execute("SELECT id, class_year, division, branch, label FROM classes WHERE vendor_id = ?", (vendor_id,))
+    class_option_labels = {}
+    for class_row in c.fetchall() or []:
+        class_id = str(class_row[0])
+        fallback_label = " - ".join(
+            str(value).strip() for value in (class_row[1], class_row[2], class_row[3])
+            if value not in (None, "")
+        )
+        class_option_labels[class_id] = str(class_row[4] or fallback_label or class_id)
     conn.close()
     
     # Apply standard request filters if any
-    request_args = valid_data.dict(exclude_none=True)
+    request_args = {
+        key: value for key, value in request.args.items()
+        if value not in (None, "") and key not in {
+            "start_date", "end_date", "limit", "offset", "person_type", "device_name",
+        }
+    }
     
     def _fuzzy_get_local(custom_dict, key):
         if not key: return None
@@ -141,7 +193,13 @@ def get_attendance_filters(valid_data: AttendanceFilterSchema):
             if field.get("options"):
                 allowed = [str(x) for x in (field.get("options") or [])]
                 options = [x for x in allowed if x in unique_values] if unique_values else allowed
-            dynamic_filters[fk] = {"label": fl, "options": options}
+            filter_config = {"label": fl, "options": options}
+            normalized_filter_key = fk.strip().lower().replace(" ", "_").replace("-", "_")
+            if normalized_filter_key in {"class", "class_id", "class_section"}:
+                filter_config["option_labels"] = {
+                    value: class_option_labels.get(str(value), str(value)) for value in options
+                }
+            dynamic_filters[fk] = filter_config
 
     result = {
         "names": names, "departments": departments, "designations": designations,
@@ -158,13 +216,14 @@ def get_attendance_summary(valid_data: AttendanceFilterSchema):
     vendor_id = g.vendor_id
 
     date_str = valid_data.start_date or datetime.now().strftime('%Y-%m-%d')
-    cache_key = f"vendor:{vendor_id}:attendance_summary:{date_str}"
+    cache_key = f"vendor:{vendor_id}:attendance_summary:{date_str}:{valid_data.person_type or 'default'}"
     cached = cache_get(cache_key)
     if cached: return jsonify(cached)
 
     conn = get_db_connection()
     set_row_factory(conn)
     c = conn.cursor()
+    _vertical, wanted_type, people = _person_scope_context(c, vendor_id, valid_data.person_type)
     
     c.execute("SELECT live_timetable FROM companies WHERE vendor_id = ?", (vendor_id,))
     crow = c.fetchone()
@@ -183,10 +242,27 @@ def get_attendance_summary(valid_data: AttendanceFilterSchema):
     conn.close()
 
     user_recs = defaultdict(list)
-    for r in rows: user_recs[r['name']].append(dict(r))
+    user_names = {}
+    user_person_ids = {}
+    allowed_names = {
+        person["name"] for person in people.values()
+        if not wanted_type or person["person_type"] == wanted_type
+    }
+    for r in rows:
+        row_dict = dict(r)
+        person = people.get(int(row_dict.get("person_id"))) if row_dict.get("person_id") else None
+        if person:
+            if wanted_type and person["person_type"] != wanted_type:
+                continue
+        elif wanted_type and row_dict.get("name") not in allowed_names:
+            continue
+        group_key = f"id:{row_dict['person_id']}" if row_dict.get("person_id") else f"name:{row_dict['name']}"
+        user_names[group_key] = person["name"] if person else row_dict["name"]
+        user_person_ids[group_key] = row_dict.get("person_id")
+        user_recs[group_key].append(row_dict)
 
     summary = []
-    for user, records in user_recs.items():
+    for user_key, records in user_recs.items():
         stats = calculate_daily_hours(records, timetable, date_str=date_str)
         status = "Present"
         if stats['total_hours'] == 0: status = "Absent"
@@ -197,7 +273,8 @@ def get_attendance_summary(valid_data: AttendanceFilterSchema):
         
         arr_status = calculate_arrival_status(exp_start, stats['sessions'], day_acts)
         summary.append({
-            "name": user, "date": date_str, "status": status, "arrival_status": arr_status,
+            "name": user_names[user_key], "person_id": user_person_ids[user_key],
+            "date": date_str, "status": status, "arrival_status": arr_status,
             "schedule": {"expected_hours": round(exp_hours, 2), "expected_start": exp_start, "expected_end": exp_end},
             **stats
         })
@@ -264,6 +341,7 @@ def person_event(valid_data: PersonEventSchema):
         return jsonify({"speak": True, "text": "Hello! You are not recognized. Please register first."})
 
     resolved_pid = person_id
+    resolved_scope = {"class_year": "", "division": "", "branch": ""}
     if recognized:
         conn_r = get_db_connection(); cr = conn_r.cursor()
         if isinstance(resolved_pid, str) and resolved_pid.startswith("local:"):
@@ -276,11 +354,16 @@ def person_event(valid_data: PersonEventSchema):
             rr = cr.fetchone()
             if rr: resolved_pid = rr[0]
         if resolved_pid:
-            cr.execute("SELECT name, vendor_id FROM faces WHERE id = ? LIMIT 1", (resolved_pid,))
+            cr.execute(
+                """SELECT name, vendor_id, custom_data FROM faces
+                   WHERE id = ? AND (? IS NULL OR vendor_id = ?) LIMIT 1""",
+                (resolved_pid, vendor_id_to_check, vendor_id_to_check),
+            )
             rr = cr.fetchone()
             if rr:
                 name = rr[0] if not name else name
                 vendor_id_to_check = rr[1] if not vendor_id_to_check else vendor_id_to_check
+                resolved_scope = class_scope_for(rr[2])
             else: resolved_pid = None
         conn_r.close()
 
@@ -359,8 +442,14 @@ def person_event(valid_data: PersonEventSchema):
     # Full late logic here...
 
     try:
-        c.execute("INSERT INTO attendance (name, timestamp, status, captured_image, activity, is_late, vendor_id, person_id, device_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", 
-                  (name, current_time_obj, new_status, captured_image, activity_name, is_late, vendor_id_to_check, person_id, curr_dev_id))
+        c.execute("""INSERT INTO attendance
+                     (name, timestamp, status, captured_image, activity, is_late,
+                      vendor_id, person_id, device_id, class_year, division, branch)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  (name, current_time_obj, new_status, captured_image, activity_name,
+                   is_late, vendor_id_to_check, person_id, curr_dev_id,
+                   resolved_scope.get("class_year", ""), resolved_scope.get("division", ""),
+                   resolved_scope.get("branch", "")))
         conn.commit()
         if vendor_id_to_check: cache_delete_vendor_prefix(vendor_id_to_check)
         if vendor_id_to_check and socketio:
@@ -400,9 +489,15 @@ def get_attendance(valid_data: AttendanceFilterSchema):
     if cached: return jsonify(cached)
 
     conn = get_db_connection(); conn.row_factory = sqlite3.Row; c = conn.cursor()
+    vertical = vendor_vertical(c, vendor_id)
+    wanted_type = requested_person_type(valid_data.person_type, vertical)
     s_date, e_date, name = valid_data.start_date, valid_data.end_date, valid_data.name
     query = """
         SELECT a.*, f.department, f.designation, f.shift, f.phone, f.custom_data AS face_custom_data,
+               (SELECT su.role FROM system_users su
+                WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
+                LIMIT 1) AS system_role,
                vd.device_name
         FROM attendance a
         LEFT JOIN faces f ON f.vendor_id = a.vendor_id
@@ -420,26 +515,64 @@ def get_attendance(valid_data: AttendanceFilterSchema):
     if s_date: query += " AND date(a.timestamp) >= ?"; params.append(s_date)
     if e_date: query += " AND date(a.timestamp) <= ?"; params.append(e_date)
     if name: query += " AND a.name LIKE ?"; params.append(f"%{name}%")
-    query += " ORDER BY a.timestamp DESC LIMIT 500"
+    query += " ORDER BY a.timestamp DESC"
     c.execute(query, params)
     columns = [description[0] for description in c.description]
     rows = c.fetchall(); conn.close()
 
     attendance = []
+    dynamic_filters = {
+        key: value for key, value in request.args.items()
+        if value not in (None, "") and key not in {
+            "start_date", "end_date", "name", "person_id", "department",
+            "designation", "shift", "phone", "limit", "offset", "person_type",
+            "device_name",
+        }
+    }
+    requested_device = str(request.args.get("device_name") or "").strip()
     for row in rows:
         r = dict(row) if hasattr(row, "keys") else dict(zip(columns, row))
+        custom = parse_custom_data(r.get("face_custom_data"))
+        resolved_type = person_type_for(custom, r.get("system_role"), vertical)
+        if wanted_type and resolved_type != wanted_type:
+            continue
+        if valid_data.person_id is not None and int(r.get("person_id") or 0) != int(valid_data.person_id):
+            continue
+        if valid_data.department and str(r.get("department") or "") != valid_data.department:
+            continue
+        if valid_data.designation and str(r.get("designation") or "") != valid_data.designation:
+            continue
+        if valid_data.shift and str(r.get("shift") or "") != valid_data.shift:
+            continue
+        if valid_data.phone and str(r.get("phone") or "") != valid_data.phone:
+            continue
+        device_name = r.get("device_name") or r.get("device_id") or ""
+        if requested_device and str(device_name) != requested_device:
+            continue
+        if any(
+            str(custom_value(custom, key) or "").strip() != str(value).strip()
+            for key, value in dynamic_filters.items()
+        ):
+            continue
         attendance.append({
-            "id": r["id"], "name": r["name"], "timestamp": str(r["timestamp"]),
+            "id": r["id"], "person_id": r.get("person_id"),
+            "vendor_id": r.get("vendor_id"), "name": r["name"],
+            "timestamp": str(r["timestamp"]),
             "status": r["status"], "activity": r["activity"], "is_late": r.get("is_late", 0),
             "department": r["department"], "designation": r["designation"],
             "captured_image": r["captured_image"],
-            "device_name": r["device_name"] or r["device_id"],
+            "device_name": device_name,
+            "class_id": custom.get("class_id"),
             "class_year": r.get("class_year"),
             "division": r.get("division"),
             "branch": r.get("branch"),
             "subject": r.get("subject"),
-            "lecture_id": r.get("lecture_id")
+            "lecture_id": r.get("lecture_id"),
+            "person_type": resolved_type,
         })
+    offset = max(0, int(valid_data.offset or 0))
+    limit = int(valid_data.limit or 500)
+    attendance = attendance[offset:offset + limit] if limit > 0 else attendance[offset:]
     result = {"attendance": attendance}
     cache_set(cache_key, result, 60)
     return jsonify(result)
@@ -450,11 +583,19 @@ def get_attendance(valid_data: AttendanceFilterSchema):
 def public_attendance_by_student(valid_data: PublicAttendanceRequest):
     student_number = valid_data.student_number
     conn = get_db_connection(); c = conn.cursor()
-    c.execute("SELECT id, vendor_id, custom_data FROM faces WHERE vendor_id = ? AND custom_data IS NOT NULL", (g.vendor_id,))
+    vertical = vendor_vertical(c, g.vendor_id)
+    c.execute("""SELECT f.id, f.vendor_id, f.custom_data,
+                        (SELECT su.role FROM system_users su
+                         WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                         ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
+                         LIMIT 1) AS system_role
+                 FROM faces f WHERE f.vendor_id = ? AND f.custom_data IS NOT NULL""", (g.vendor_id,))
     pid, vid = None, None
     for r in c.fetchall():
         try:
             cd = json.loads(r[2])
+            if person_type_for(cd, r[3], vertical) != "student":
+                continue
             if str(cd.get('student_id') or cd.get('id_number') or '').strip() == student_number:
                 pid, vid = r[0], r[1]; break
         except (json.JSONDecodeError, ValueError): pass

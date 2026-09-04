@@ -542,6 +542,17 @@ def cache_delete_vendor_prefix(vendor_id):
     for k in to_del:
         del CACHE[k]
 
+    # Recognition caches use a compact numeric prefix instead of the API cache
+    # prefix. Clear them in the same operation so a class reassignment or a
+    # student/faculty type correction is visible to the very next scan.
+    embedding_prefix = f"{int(vendor_id or 0)}_"
+    embedding_keys = [
+        key for key in list(_VENDOR_EMB_CACHE.keys())
+        if str(key).startswith(embedding_prefix)
+    ]
+    for key in embedding_keys:
+        del _VENDOR_EMB_CACHE[key]
+
 # --- Job Registry ---
 JOBS = {}
 def create_job(content_type="application/json", ttl=600):

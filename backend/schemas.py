@@ -11,8 +11,18 @@ class AttendanceFilterSchema(BaseModel):
     designation: Optional[str] = None
     shift: Optional[str] = None
     phone: Optional[str] = None
+    person_type: Optional[str] = None
     limit: Optional[int] = 500
     offset: Optional[int] = 0
+
+    @validator('person_type')
+    def validate_person_type(cls, value):
+        if value is None:
+            return value
+        normalized = str(value).strip().lower()
+        if normalized not in {'student', 'faculty', 'employee'}:
+            raise ValueError('person_type must be student, faculty, or employee')
+        return normalized
 
 class PersonEventSchema(BaseModel):
     detected: bool = False
@@ -57,6 +67,16 @@ class ClassBatchStatusSchema(BaseModel):
 class PayrollReportRequest(BaseModel):
     start_date: Optional[str] = None
     end_date: Optional[str] = None
+    person_type: Optional[str] = None
+
+    @validator('person_type')
+    def validate_person_type(cls, value):
+        if value is None:
+            return value
+        normalized = str(value).strip().lower()
+        if normalized not in {'student', 'faculty', 'employee'}:
+            raise ValueError('person_type must be student, faculty, or employee')
+        return normalized
 
 class PublicAttendanceRequest(BaseModel):
     student_number: str
@@ -79,9 +99,11 @@ class RegistrationBatchAssignment(BaseModel):
     name: str
     phone: Optional[str] = ""
     student_number: Optional[str] = ""
+    class_id: Optional[str] = ""
     class_year: Optional[str] = ""
     division: Optional[str] = ""
     branch: Optional[str] = ""
+    person_type: Optional[str] = None
     custom_data: Optional[Dict[str, Any]] = {}
 
 class RegistrationBatchCommitSchema(BaseModel):

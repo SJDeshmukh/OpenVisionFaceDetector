@@ -52,7 +52,8 @@ const Dashboard = () => {
   const { user, logout } = useAuth();
   const { socket, joinVendor } = useSocket();
   const [activeTab, setActiveTab] = useState('overview');
-  const personLabel = (user?.vertical && ['school', 'hostel'].includes(String(user.vertical).toLowerCase())) ? 'Student' : 'Employee';
+  const schoolFlow = Boolean(user?.vertical && ['school', 'hostel'].includes(String(user.vertical).toLowerCase()));
+  const personLabel = schoolFlow ? 'Student' : 'Employee';
   const [stats, setStats] = useState({
     total: 0,
     present: 0,
@@ -76,7 +77,7 @@ const Dashboard = () => {
 
   useEffect(() => {
     // Load initial data from localStorage for instant loading
-    const cachedData = localStorage.getItem(`dashboard_cache_${user?.vendor_id}`);
+    const cachedData = localStorage.getItem(`dashboard_cache_${user?.vendor_id}_${schoolFlow ? 'student' : 'people'}`);
     if (cachedData) {
       try {
         const parsed = JSON.parse(cachedData);
@@ -92,8 +93,8 @@ const Dashboard = () => {
     const fetchData = async () => {
       try {
         const [analyticsRes, attendanceRes] = await Promise.all([
-          axios.get(`${API_URL}/reports/analytics`),
-          axios.get(`${API_URL}/attendance`)
+          axios.get(`${API_URL}/reports/analytics`, { params: schoolFlow ? { person_type: 'student' } : {} }),
+          axios.get(`${API_URL}/attendance`, { params: schoolFlow ? { person_type: 'student' } : {} })
         ]);
 
         setError(null);
@@ -101,7 +102,7 @@ const Dashboard = () => {
         const attendance = attendanceRes.data.attendance || [];
 
         const newStats = {
-          total: summary.total_users,
+          total: schoolFlow ? (summary.total_students ?? summary.total_users) : summary.total_users,
           present: summary.present_today,
           absent: summary.absent_today,
           late: summary.late_today,
@@ -115,7 +116,7 @@ const Dashboard = () => {
         setRecentActivity(attendance.slice(0, 5));
 
         // Save to cache
-        localStorage.setItem(`dashboard_cache_${user?.vendor_id}`, JSON.stringify({
+        localStorage.setItem(`dashboard_cache_${user?.vendor_id}_${schoolFlow ? 'student' : 'people'}`, JSON.stringify({
           stats: newStats,
           chartData: bar_data || [],
           deptData: dept_data || [],

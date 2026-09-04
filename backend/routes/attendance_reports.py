@@ -25,8 +25,33 @@ from services.report_filter_service import (
 )
 from middleware.validation import validate_request
 from schemas import PayrollReportRequest
+from services.person_scope_service import (
+    parse_custom_data,
+    person_type_for,
+    requested_person_type,
+    vendor_vertical,
+)
 
 attendance_reports_bp = Blueprint('attendance_reports_bp', __name__)
+
+
+def _scope_face_rows(cursor, vendor_id, rows, requested_type=None):
+    """Filter face rows using the shared School/Hostel identity contract."""
+    vertical = vendor_vertical(cursor, vendor_id)
+    wanted_type = requested_person_type(requested_type, vertical)
+    scoped = []
+    for row in rows:
+        item = dict(row) if hasattr(row, "keys") else row
+        custom = item.get("custom_data") if isinstance(item, dict) else None
+        role = item.get("system_role") if isinstance(item, dict) else None
+        resolved_type = person_type_for(custom, role, vertical)
+        if wanted_type and resolved_type != wanted_type:
+            continue
+        if isinstance(item, dict):
+            item["person_type"] = resolved_type
+            item["custom"] = parse_custom_data(custom)
+        scoped.append(item)
+    return scoped, wanted_type, vertical
 
 # ---------------------------------------------------------------------------
 # Helper: parse dynamic filters from request args (dynamic_<field>=value)
@@ -87,21 +112,28 @@ def get_report_filters():
 
     # ---- fetch all faces for this vendor ----
     c.execute(
-        "SELECT department, designation, shift, phone, custom_data "
-        "FROM faces WHERE vendor_id = ?",
+        """SELECT f.department, f.designation, f.shift, f.phone, f.custom_data,
+                  (SELECT su.role FROM system_users su
+                   WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                   ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
+                   LIMIT 1) AS system_role
+           FROM faces f WHERE f.vendor_id = ?""",
         (vendor_id,)
     )
     faces_raw = c.fetchall()
+    faces, _wanted_type, _vertical = _scope_face_rows(
+        c, vendor_id, faces_raw, request.args.get("person_type"),
+    )
+    c.execute("SELECT id, class_year, division, branch, label FROM classes WHERE vendor_id = ?", (vendor_id,))
+    class_option_labels = {}
+    for class_row in c.fetchall() or []:
+        class_id = str(class_row[0])
+        fallback_label = " - ".join(
+            str(value).strip() for value in (class_row[1], class_row[2], class_row[3])
+            if value not in (None, "")
+        )
+        class_option_labels[class_id] = str(class_row[4] or fallback_label or class_id)
     conn.close()
-
-    faces = []
-    for r in faces_raw:
-        d = dict(r)
-        try:
-            d["custom"] = json.loads(d.get("custom_data") or "{}")
-        except Exception:
-            d["custom"] = {}
-        faces.append(d)
 
     standard_options = {}
     for key in STANDARD_FILTERS:
@@ -122,7 +154,13 @@ def get_report_filters():
         # if the config defines a fixed option list, always show all configured options
         if field.get('options'):
             options = [str(x) for x in field['options']]
-        dynamic_filters[fk] = {'label': fl, 'options': options}
+        filter_config = {'label': fl, 'options': options}
+        normalized_filter_key = fk.strip().lower().replace(' ', '_').replace('-', '_')
+        if normalized_filter_key in {'class', 'class_id', 'class_section'}:
+            filter_config['option_labels'] = {
+                value: class_option_labels.get(str(value), str(value)) for value in options
+            }
+        dynamic_filters[fk] = filter_config
 
     return jsonify({
         'vendor_name': vendor_name,
@@ -144,7 +182,7 @@ def get_analytics(valid_data: PayrollReportRequest):
     start_date = valid_data.start_date or (datetime.now() - timedelta(days=6)).strftime('%Y-%m-%d')
     end_date = valid_data.end_date or datetime.now().strftime('%Y-%m-%d')
         
-    cache_key = f"vendor:{vendor_id}:analytics:{start_date}:{end_date}"
+    cache_key = f"vendor:{vendor_id}:analytics:{start_date}:{end_date}:{valid_data.person_type or 'default'}"
     cached = cache_get(cache_key)
     if cached: return jsonify(cached)
 
@@ -163,23 +201,29 @@ def get_analytics(valid_data: PayrollReportRequest):
     # 2. Fetch all faces, then separate faculty from students.
     #    Faculty upload creates face records too, so we must exclude them from
     #    the student attendance denominator (absent/present calculations).
-    c.execute("SELECT id, name, department, designation FROM faces WHERE vendor_id = ?", (vendor_id,))
-    all_faces = {row['id']: dict(row) for row in c.fetchall()}
+    c.execute("""SELECT f.id, f.name, f.department, f.designation, f.custom_data,
+                        (SELECT su.role FROM system_users su
+                         WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                         ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
+                         LIMIT 1) AS system_role
+                 FROM faces f WHERE f.vendor_id = ?""", (vendor_id,))
+    face_rows = c.fetchall() or []
+    vertical = vendor_vertical(c, vendor_id)
+    wanted_type = requested_person_type(valid_data.person_type, vertical)
+    all_faces = {}
+    for row in face_rows:
+        info = dict(row)
+        info['person_type'] = person_type_for(
+            info.get('custom_data'), info.get('system_role'), vertical,
+        )
+        all_faces[info['id']] = info
 
-    # Identify faculty person_ids via system_users
-    c.execute("""
-        SELECT person_id FROM system_users
-        WHERE vendor_id = ? AND role = 'faculty' AND person_id IS NOT NULL
-    """, (vendor_id,))
-    faculty_ids = {row[0] for row in c.fetchall()}
-
-    total_faculty = len(faculty_ids)
-    total_all = len(all_faces)
-
-    # Analytics (present/absent/late) runs on students only —
-    # faculty face records skew absent_today if they never check in.
-    persons = {pid: info for pid, info in all_faces.items() if pid not in faculty_ids}
-    total_students = len(persons)
+    total_faculty = sum(1 for info in all_faces.values() if info['person_type'] == 'faculty')
+    total_students = sum(1 for info in all_faces.values() if info['person_type'] == 'student')
+    persons = {
+        pid: info for pid, info in all_faces.items()
+        if not wanted_type or info['person_type'] == wanted_type
+    }
     
     # 3. Fetch Attendance
     try:
@@ -247,7 +291,7 @@ def get_analytics(valid_data: PayrollReportRequest):
     today_str = datetime.now().strftime('%Y-%m-%d')
     present_today = daily_stats[today_str]["present"]
     late_today = daily_stats[today_str]["late"]
-    absent_today = max(0, total_students - present_today)
+    absent_today = max(0, len(persons) - present_today)
     on_time_today = max(0, present_today - late_today)
 
     pie_data = [
@@ -260,13 +304,13 @@ def get_analytics(valid_data: PayrollReportRequest):
     for d_str in all_dates:
         p = daily_stats[d_str]["present"]
         l = daily_stats[d_str]["late"]
-        a = max(0, total_students - p)
+        a = max(0, len(persons) - p)
         try:
             d_name = datetime.strptime(d_str, '%Y-%m-%d').strftime('%a')
         except (ValueError, TypeError):
             d_name = d_str
         bar_data.append({
-            "name": d_name, "date": d_str, "present": p, "absent": a, "late": l, "total": total_students
+            "name": d_name, "date": d_str, "present": p, "absent": a, "late": l, "total": len(persons)
         })
 
     result = {
@@ -276,9 +320,12 @@ def get_analytics(valid_data: PayrollReportRequest):
         "pie_data": pie_data,
         "dept_data": [],
         "summary": {
-            "total_users": total_all,
+            # ``total_users`` is the active report population. Keep the two
+            # explicit counters as an all-school breakdown for the UI.
+            "total_users": total_persons,
             "total_students": total_students,
             "total_faculty": total_faculty,
+            "person_type": wanted_type,
             "present_today": present_today,
             "absent_today": absent_today,   # based on students only
             "late_today": late_today,
@@ -311,7 +358,11 @@ def export_attendance(valid_data: PayrollReportRequest):
     # Build query with optional standard-filter JOINs on faces
     query = """
         SELECT a.name, a.timestamp, a.status, a.activity, a.is_late,
-               f.department, f.designation, f.shift, f.phone, f.custom_data
+               f.department, f.designation, f.shift, f.phone, f.custom_data,
+               (SELECT su.role FROM system_users su
+                WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
+                LIMIT 1) AS system_role
         FROM attendance a
         LEFT JOIN faces f ON a.person_id = f.id
         WHERE date(a.timestamp) BETWEEN ? AND ? AND a.vendor_id = ?
@@ -330,6 +381,8 @@ def export_attendance(valid_data: PayrollReportRequest):
     query += " ORDER BY a.timestamp ASC"
     c.execute(query, params)
     db_rows = c.fetchall()
+    vertical = vendor_vertical(c, vendor_id)
+    wanted_type = requested_person_type(valid_data.person_type, vertical)
     conn.close()
 
     # Extract unique custom-data keys and apply dynamic filters
@@ -338,6 +391,7 @@ def export_attendance(valid_data: PayrollReportRequest):
     for row in db_rows:
         row_dict  = dict(row)
         cdata_str = row_dict.pop('custom_data', None)
+        system_role = row_dict.pop('system_role', None)
         cdata     = {}
         if cdata_str:
             try:
@@ -348,6 +402,10 @@ def export_attendance(valid_data: PayrollReportRequest):
                             custom_keys.append(k)
             except Exception:
                 pass
+        resolved_type = person_type_for(cdata, system_role, vertical)
+        if wanted_type and resolved_type != wanted_type:
+            continue
+        row_dict['person_type'] = resolved_type
         row_dict['parsed_custom'] = cdata
 
         # Apply dynamic (custom_data) filters – Python-side after parse
@@ -471,12 +529,36 @@ def get_payroll_report(valid_data: PayrollReportRequest):
         payroll_fields = ["basic_salary", "hra", "conveyance", "special_allowance", "pf_enabled", "esi_enabled", "gratuity_enabled", "professional_tax", "joining_date"]
         extra = [col for col in (["late_allowance_days", "late_deduction_amount"] + payroll_fields) if col in fcols]
         extra_select = ", " + ", ".join(extra) if extra else ""
-        c.execute(f"SELECT id, name, daily_wage, department, designation, face_image, phone, display_id, custom_data{extra_select} FROM faces WHERE vendor_id = ? ORDER BY id ASC", (vendor_id,))
+        c.execute(f"""SELECT f.id, f.name, f.daily_wage, f.department, f.designation,
+                             f.face_image, f.phone, f.display_id, f.custom_data,
+                             (SELECT su.role FROM system_users su
+                              WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                              ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
+                              LIMIT 1) AS system_role{extra_select}
+                      FROM faces f WHERE f.vendor_id = ? ORDER BY f.id ASC""", (vendor_id,))
     except Exception:
         logger.debug("Extended faces columns unavailable, falling back to base columns", exc_info=True)
-        c.execute("SELECT id, name, daily_wage, department, designation, face_image, phone FROM faces WHERE vendor_id = ? ORDER BY id ASC", (vendor_id,))
+        c.execute("""SELECT f.id, f.name, f.daily_wage, f.department, f.designation,
+                            f.face_image, f.phone, f.custom_data,
+                            (SELECT su.role FROM system_users su
+                             WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                             ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
+                             LIMIT 1) AS system_role
+                     FROM faces f WHERE f.vendor_id = ? ORDER BY f.id ASC""", (vendor_id,))
     
-    persons = {row['id']: dict(row) for row in c.fetchall()}
+    person_rows = c.fetchall() or []
+    vertical = vendor_vertical(c, vendor_id)
+    wanted_type = requested_person_type(valid_data.person_type, vertical)
+    persons = {}
+    for row in person_rows:
+        person = dict(row)
+        resolved_type = person_type_for(
+            person.get('custom_data'), person.get('system_role'), vertical,
+        )
+        if wanted_type and resolved_type != wanted_type:
+            continue
+        person['person_type'] = resolved_type
+        persons[person['id']] = person
     
     global_allowance = int(stored_settings.get('global_late_allowance', 7))
     global_deduction = float(stored_settings.get('global_late_deduction', 0.0))
@@ -667,7 +749,13 @@ def export_payroll_daily():
         extra = [col for col in (["late_allowance_days", "late_deduction_amount"] + payroll_fields) if col in fcols]
         extra_select = ", " + ", ".join(extra) if extra else ""
         
-        faces_query  = f"SELECT id, name, daily_wage, shift, department, designation, phone, custom_data, display_id{extra_select} FROM faces WHERE vendor_id = ?"
+        faces_query  = f"""SELECT id, name, daily_wage, shift, department, designation,
+                                  phone, custom_data, display_id{extra_select},
+                                  (SELECT su.role FROM system_users su
+                                   WHERE su.person_id = faces.id AND su.vendor_id = faces.vendor_id
+                                   ORDER BY CASE LOWER(su.role) WHEN 'faculty' THEN 0 WHEN 'student' THEN 1 ELSE 2 END
+                                   LIMIT 1) AS system_role
+                           FROM faces WHERE vendor_id = ?"""
         faces_params = [vendor_id]
         if f_dept:  faces_query += " AND department = ?";  faces_params.append(f_dept)
         if f_desig: faces_query += " AND designation = ?"; faces_params.append(f_desig)
@@ -675,7 +763,9 @@ def export_payroll_daily():
         if f_phone: faces_query += " AND phone = ?" ;      faces_params.append(f_phone)
 
         c.execute(faces_query, faces_params)
-        all_faces = c.fetchall()
+        all_faces, _, _ = _scope_face_rows(
+            c, vendor_id, c.fetchall(), request.args.get("person_type"),
+        )
 
         # Apply dynamic (custom_data) filter if any
         persons = {}
@@ -757,6 +847,12 @@ def export_payroll_excel():
     if not start_date or not end_date:
         return jsonify({"error": "start_date and end_date required"}), 400
 
+    f_dept = request.args.get('department', '').strip()
+    f_desig = request.args.get('designation', '').strip()
+    f_shift = request.args.get('shift', '').strip()
+    f_phone = request.args.get('phone', '').strip()
+    dyn_filters = _parse_dynamic_args()
+
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -787,8 +883,30 @@ def export_payroll_excel():
         extra = [col for col in (["late_allowance_days", "late_deduction_amount"] + payroll_fields) if col in fcols]
         extra_select = ", " + ", ".join(extra) if extra else ""
         
-        c.execute(f"SELECT id, name, daily_wage, display_id{extra_select} FROM faces WHERE vendor_id = ?", (vendor_id,))
-        persons = {r['id']: dict(r) for r in c.fetchall()}
+        faces_query = f"""SELECT id, name, daily_wage, display_id, department,
+                                  designation, shift, phone, custom_data{extra_select},
+                       (SELECT su.role FROM system_users su
+                        WHERE su.person_id = faces.id AND su.vendor_id = faces.vendor_id
+                        ORDER BY CASE LOWER(su.role) WHEN 'faculty' THEN 0 WHEN 'student' THEN 1 ELSE 2 END
+                        LIMIT 1) AS system_role
+                           FROM faces WHERE vendor_id = ?"""
+        faces_params = [vendor_id]
+        if f_dept: faces_query += " AND department = ?"; faces_params.append(f_dept)
+        if f_desig: faces_query += " AND designation = ?"; faces_params.append(f_desig)
+        if f_shift: faces_query += " AND shift = ?"; faces_params.append(f_shift)
+        if f_phone: faces_query += " AND phone = ?"; faces_params.append(f_phone)
+        c.execute(faces_query, faces_params)
+        scoped_faces, _, _ = _scope_face_rows(
+            c, vendor_id, c.fetchall(), request.args.get("person_type"),
+        )
+        persons = {}
+        for person in scoped_faces:
+            if dyn_filters and any(
+                str(custom_value(person.get('custom'), key) or '').strip() != value
+                for key, value in dyn_filters.items()
+            ):
+                continue
+            persons[person['id']] = person
 
         setting_suffix = f'_vendor_{vendor_id}'
         c.execute("SELECT key, value FROM system_settings WHERE key IN (?, ?)",
