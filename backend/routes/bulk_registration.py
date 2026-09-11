@@ -13,6 +13,10 @@ from services.spreadsheet_mapping_service import map_spreadsheet_headers
 
 bulk_registration_bp = Blueprint('bulk_registration_bp', __name__)
 
+
+class RowSavepointRecoveryError(RuntimeError):
+    """Raised when a failed import row cannot be isolated safely."""
+
 def _requested_header_mapping():
     raw = request.form.get('header_mapping')
     if not raw:
@@ -38,7 +42,8 @@ def bulk_registration_upload():
         return jsonify({"error": "No file selected"}), 400
 
     ext = filename.split('.')[-1].lower()
-    
+    conn = None
+
     try:
         data = []
         if ext == 'csv':
@@ -62,9 +67,22 @@ def bulk_registration_upload():
         req_division = None
         req_branch = None
 
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT vertical FROM vendors WHERE id = ?", (vendor_id,))
+        vendor_row = c.fetchone()
+        vendor_vertical = (
+            (vendor_row['vertical'] if hasattr(vendor_row, 'keys') else vendor_row[0])
+            if vendor_row else ''
+        ) or ''
+        school_student_flow = is_school_hostel(vendor_vertical)
+        employee_record_flow = (
+            not school_student_flow and vendor_vertical != 'bulk_attendance_attendx'
+        )
+
         headers = list(data[0].keys())
         mapping_result = map_spreadsheet_headers(
-            headers, data, context="student",
+            headers, data, context="employee" if employee_record_flow else "student",
             manual_mapping=_requested_header_mapping(),
             vendor_id=vendor_id, username=getattr(g, 'username', ''),
         )
@@ -88,9 +106,6 @@ def bulk_registration_upload():
                 "suggested_mapping": {key: str(value) for key, value in header_mapping.items()},
             }), 400
 
-        conn = get_db_connection()
-        c = conn.cursor()
-
         # Treat class metadata from the browser as untrusted. Resolve the class
         # exclusively inside the authenticated vendor before any preview/import
         # data is processed.
@@ -104,13 +119,14 @@ def bulk_registration_upload():
                 return jsonify({"error": "The selected class does not belong to this business"}), 400
             req_class_year, req_division, req_branch = class_row[0], class_row[1], class_row[2]
 
-        # Determine the correct custom_data key for student ID based on vendor vertical.
-        # AttendX uses 'student_number'; TapInX / school / hostel use 'student_id'.
-        c.execute("SELECT vertical FROM vendors WHERE id = ?", (vendor_id,))
-        _vrow = c.fetchone()
-        _vendor_vertical = ((_vrow['vertical'] or '') if hasattr(_vrow, 'keys') else (_vrow[0] or '')) if _vrow else ''
-        school_student_flow = is_school_hostel(_vendor_vertical)
-        student_id_custom_key = 'student_number' if _vendor_vertical == 'bulk_attendance_attendx' else 'student_id'
+        # Persist the uploaded identity under the business-appropriate key.
+        # AttendX retains its shared student/employee number for compatibility.
+        if vendor_vertical == 'bulk_attendance_attendx':
+            person_id_custom_key = 'student_number'
+        elif school_student_flow:
+            person_id_custom_key = 'student_id'
+        else:
+            person_id_custom_key = 'employee_id'
 
         if school_student_flow and not req_class_id and not excel_class_id_key:
             return jsonify({
@@ -139,6 +155,10 @@ def bulk_registration_upload():
         else:
             existing_fields = json.loads(bulk_row[0] or '[]') if bulk_row else []
         for row_idx, row in enumerate(data):
+            savepoint_name = f"bulk_import_row_{row_idx}"
+            c.execute(f"SAVEPOINT {savepoint_name}")
+            row_error = None
+            release_savepoint = True
             try:
                 name = str(row.get(name_key) or "").strip()
                 if not name:
@@ -224,7 +244,9 @@ def bulk_registration_upload():
                     continue
 
                 # Build custom_data; exclude name and phone (stored in core columns)
-                custom_dict = {"person_type": "student"}
+                custom_dict = {
+                    "person_type": "employee" if employee_record_flow else "student"
+                }
                 canonical_by_header = {header: canonical for canonical, header in header_mapping.items()}
                 core_keys = {key for key in (name_key, phone_key, id_key, department_key, designation_key, shift_key, excel_class_id_key) if key is not None}
                 for k, v in row.items():
@@ -239,7 +261,7 @@ def bulk_registration_upload():
                 if id_key:
                     id_val = str(row.get(id_key) or '').strip()
                     if id_val:
-                        custom_dict[student_id_custom_key] = id_val
+                        custom_dict[person_id_custom_key] = id_val
 
                 # Inject Class Scope if provided via Class Cards flow
                 if row_class_id: custom_dict['class_id'] = str(row_class_id)
@@ -282,7 +304,36 @@ def bulk_registration_upload():
 
                 success_count += 1
             except Exception as e:
+                row_error = e
+                try:
+                    c.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+                except Exception as recovery_error:
+                    release_savepoint = False
+                    raise RowSavepointRecoveryError(
+                        f"Could not recover from row {row_idx + 2} error: {e}"
+                    ) from recovery_error
+                skipped_count += 1
                 errors.append(f"Row {row_idx + 2}: {str(e)}")
+            finally:
+                if release_savepoint:
+                    try:
+                        c.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+                    except Exception as release_error:
+                        if row_error is not None:
+                            raise RowSavepointRecoveryError(
+                                f"Could not finalize recovery from row {row_idx + 2} error: {row_error}"
+                            ) from release_error
+                        raise
+
+        if success_count == 0 and errors:
+            conn.rollback()
+            return jsonify({
+                "error": (
+                    f"No {'employees' if employee_record_flow else 'students'} were imported. "
+                    f"{errors[0]}"
+                ),
+                "errors": errors[:10],
+            }), 400
 
         # CRITICAL: Strictly synchronize registration config with CURRENT Excel headers
         # This replaces all previous dynamic fields with the ones in the current Excel.
@@ -293,7 +344,7 @@ def bulk_registration_upload():
             if not field_name:
                 continue
             mapped_name = next((canonical for canonical, header in header_mapping.items() if header == h), None)
-            canonical_name = student_id_custom_key if mapped_name == 'person_id' else (mapped_name or field_name)
+            canonical_name = person_id_custom_key if mapped_name == 'person_id' else (mapped_name or field_name)
             existing_f = next((f for f in existing_fields if str(f.get('label') or '').strip().lower() == field_name.lower() or str(f.get('name') or '').strip().lower() == canonical_name.lower()), None)
 
             field_config = {
@@ -402,7 +453,10 @@ def bulk_registration_upload():
 
         return jsonify({
             "success": True,
-            "message": f"Successfully registered {success_count} students.",
+            "message": (
+                f"Successfully registered {success_count} "
+                f"{'employees' if employee_record_flow else 'students'}."
+            ),
             "skipped": skipped_count,
             "errors": errors[:10],
             "header_mapping": {key: str(value) for key, value in header_mapping.items()},
@@ -411,13 +465,19 @@ def bulk_registration_upload():
         })
 
     except Exception as e:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         return jsonify({"error": f"Import failed: {str(e)}"}), 500
 
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')

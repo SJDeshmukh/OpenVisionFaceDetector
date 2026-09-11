@@ -541,6 +541,12 @@ const People = () => {
       setBulkMappingRequest(null);
       setBulkImportProgress('success');
       if (res.data.mapping_warning) addToast(res.data.mapping_warning, 'warning');
+      if (Array.isArray(res.data.errors) && res.data.errors.length > 0) {
+        addToast(
+          `${res.data.skipped || res.data.errors.length} row(s) were skipped. ${res.data.errors[0]}`,
+          'warning'
+        );
+      }
       setTimeout(() => {
         setIsBulkImportModalOpen(false);
         setBulkImportProgress(null);
