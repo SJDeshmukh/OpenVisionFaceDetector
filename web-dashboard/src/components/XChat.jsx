@@ -220,10 +220,11 @@ const XChat = () => {
     } catch (requestError) {
       const status = requestError.response?.status;
       const code = String(requestError.response?.data?.code || '');
+      const responseError = String(requestError.response?.data?.error || '').trim();
       const transient = (!status || status === 429 || status >= 500) && !code.includes('CONFIGURATION');
       setLastFailedPrompt(text);
       if (transient && !options.isRetry) {
-        setRetryJob({ text, remaining: 60 });
+        setRetryJob({ text, remaining: 60, error: responseError });
       } else {
         if (status === 402 || code.includes('CREDITLIMIT')) {
           setCredits((current) => current ? { ...current, blocked: true, remaining_tokens: 0 } : current);
@@ -346,7 +347,7 @@ const XChat = () => {
                       <TimerReset size={18} className="animate-pulse" />
                       <span className="absolute -right-1 -top-1 rounded-full bg-amber-400 px-1 text-[9px] font-bold text-slate-950">{retryJob.remaining}</span>
                     </span>
-                    <div className="min-w-0 flex-1"><p className="text-xs font-medium text-amber-200">AI service did not respond</p><p className="mt-0.5 text-[10px] text-amber-300/70">Automatically retrying in {retryJob.remaining} second{retryJob.remaining === 1 ? '' : 's'}…</p></div>
+                    <div className="min-w-0 flex-1"><p className="text-xs font-medium text-amber-200">AI response could not be completed</p><p className="mt-0.5 text-[10px] text-amber-300/70">{retryJob.error || 'The request ended before a response could be shown.'} Automatically retrying in {retryJob.remaining} second{retryJob.remaining === 1 ? '' : 's'}…</p></div>
                     <button type="button" onClick={retryNow} disabled={loading} className="rounded-lg bg-amber-400 px-2 py-1.5 text-[10px] font-semibold text-slate-950 hover:bg-amber-300">Retry now</button>
                     <button type="button" onClick={cancelRetry} className="rounded-lg p-1 text-amber-300/70 hover:bg-amber-900/50 hover:text-amber-200" aria-label="Cancel automatic retry"><X size={15} /></button>
                   </div>

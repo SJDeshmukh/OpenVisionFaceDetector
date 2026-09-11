@@ -2,7 +2,7 @@ import json
 import sqlite3
 import sys
 import types
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
@@ -298,7 +298,13 @@ def test_configured_bedrock_nemotron_uses_chat_completions_and_tracks_usage(monk
     captured = {}
     tools = [{"type": "function", "function": {"name": "get_status", "parameters": {"type": "object"}}}]
     response = _FakeMistralResponse(200, {
-        "choices": [{"message": {"role": "assistant", "content": "Nemotron ready"}}],
+        "choices": [{
+            "finish_reason": "stop",
+            "message": {
+                "role": "assistant", "content": "Nemotron ready",
+                "reasoning_content": "private chain of thought",
+            },
+        }],
         "usage": {"prompt_tokens": 45, "completion_tokens": 12, "total_tokens": 57},
     })
 
@@ -324,6 +330,8 @@ def test_configured_bedrock_nemotron_uses_chat_completions_and_tracks_usage(monk
     assert "parallel_tool_calls" not in captured["json"]
     assert provider.usage_totals == {"input_tokens": 45, "output_tokens": 12, "total_tokens": 57}
     assert result["content"] == "Nemotron ready"
+    assert result["_finish_reason"] == "stop"
+    assert result["_has_reasoning"] is True
 
 
 def test_mistral_provider_retries_transient_http_failures(monkeypatch):
@@ -897,6 +905,100 @@ def test_provider_reasoning_is_not_resent_during_tool_rounds(xchat_db):
     )
 
     assert result["answer"] == "There are two people."
+
+
+def test_empty_final_content_after_tool_call_gets_one_formatting_retry(xchat_db):
+    class EmptyThenRecoveredProvider:
+        def __init__(self):
+            self.calls = []
+
+        def complete(self, messages, tools):
+            self.calls.append({"messages": list(messages), "tools": list(tools)})
+            if len(self.calls) == 1:
+                return {
+                    "role": "assistant", "content": "", "tool_calls": [{
+                        "id": "call-people",
+                        "function": {"name": "get_people_summary", "arguments": "{}"},
+                    }],
+                }
+            if len(self.calls) == 2:
+                return {
+                    "role": "assistant", "content": "", "reasoning_content": "SECRET_REASONING_SENTINEL",
+                    "_finish_reason": "stop", "_has_reasoning": True,
+                }
+            return {"role": "assistant", "content": "There are two people."}
+
+    provider = EmptyThenRecoveredProvider()
+    result = xchat_service.answer_question(
+        "What is our employee headcount?", [], 1, ["xchat_ai"], provider=provider,
+    )
+
+    assert result["answer"] == "There are two people."
+    assert len(provider.calls) == 3
+    assert provider.calls[2]["tools"] == []
+    assert "Return only the concise" in provider.calls[2]["messages"][-1]["content"]
+    assert "SECRET_REASONING_SENTINEL" not in json.dumps(provider.calls[2]["messages"])
+
+
+def test_repeated_empty_final_content_uses_retrieved_data_presentation(xchat_db):
+    class AlwaysEmptyFinalProvider:
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, _messages, _tools):
+            self.calls += 1
+            if self.calls == 1:
+                return {
+                    "role": "assistant", "content": "", "tool_calls": [{
+                        "id": "call-people",
+                        "function": {"name": "get_people_summary", "arguments": "{}"},
+                    }],
+                }
+            return {"role": "assistant", "content": ""}
+
+    provider = AlwaysEmptyFinalProvider()
+    result = xchat_service.answer_question(
+        "What is our employee headcount?", [], 1, ["xchat_ai"], provider=provider,
+    )
+
+    assert provider.calls == 3
+    assert result["answer"].startswith("I retrieved the requested records")
+    assert result["tools_used"] == ["get_people_summary"]
+    assert result["presentation"]["metrics"]
+
+
+def test_empty_content_without_retrieved_data_remains_a_provider_error():
+    class EmptyProvider:
+        def complete(self, _messages, _tools):
+            return {"role": "assistant", "content": ""}
+
+    with pytest.raises(xchat_service.XChatProviderError, match="empty response"):
+        xchat_service.answer_question(
+            "What can you do?", [], 1, ["xchat_ai"], provider=EmptyProvider(),
+        )
+
+
+def test_save_exchange_serializes_native_report_dates(xchat_db):
+    conversation_id = xchat_service.create_conversation(1, "alpha-admin")
+
+    message_id = xchat_service.save_exchange(
+        conversation_id, 1, "alpha-admin", "Show advances", "Here are the advances.",
+        {"presentation": {"tables": [{"rows": [{"date": date(2026, 8, 1)}]}]}},
+    )
+
+    conn = _connection(xchat_db)
+    stored = conn.execute(
+        "SELECT message_metadata FROM xchat_messages WHERE id = ?", (message_id,),
+    ).fetchone()[0]
+    conn.close()
+    assert json.loads(stored)["presentation"]["tables"][0]["rows"][0]["date"] == "2026-08-01"
+
+
+def test_message_content_accepts_openai_compatible_content_shapes():
+    assert xchat_service._message_content({"content": {"text": "Ready"}}) == "Ready"
+    assert xchat_service._message_content({
+        "content": ["First", {"text": "Second"}, {"text": {"value": "Third"}}],
+    }) == "First\nSecond\nThird"
 
 
 def test_presenter_builds_indexed_table_and_requested_chart():

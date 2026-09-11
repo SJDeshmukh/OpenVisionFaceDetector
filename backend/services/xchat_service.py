@@ -123,8 +123,21 @@ def _message_content(message):
     content = message.get("content") if isinstance(message, dict) else None
     if isinstance(content, str):
         return content
+    if isinstance(content, dict):
+        text = content.get("text", content.get("content"))
+        return text if isinstance(text, str) else ""
     if isinstance(content, list):
-        return "\n".join(str(part.get("text") or "") for part in content if isinstance(part, dict))
+        parts = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                text = part.get("text", part.get("content"))
+                if isinstance(text, str):
+                    parts.append(text)
+                elif isinstance(text, dict) and isinstance(text.get("value"), str):
+                    parts.append(text["value"])
+        return "\n".join(parts)
     return ""
 
 
@@ -279,7 +292,26 @@ class MistralProvider:
             try:
                 payload = response.json()
                 self._log_usage(payload)
-                return payload["choices"][0]["message"]
+                choice = payload["choices"][0]
+                message = choice["message"]
+                if not isinstance(message, dict):
+                    raise TypeError("message must be an object")
+                # Preserve only safe response metadata needed for diagnostics.
+                # Reasoning text is deliberately neither retained nor logged.
+                result = dict(message)
+                result["_finish_reason"] = str(choice.get("finish_reason") or "")[:80]
+                result["_has_reasoning"] = any(
+                    message.get(key) not in (None, "", [], {})
+                    for key in ("reasoning", "reasoning_content")
+                )
+                logger.info(
+                    "%s response shape: trace=%s model=%s finish_reason=%s content_chars=%s "
+                    "tool_calls=%s has_reasoning=%s",
+                    self.provider_name, self.trace_id, self.model,
+                    result["_finish_reason"] or "-", len(_message_content(message)),
+                    len(message.get("tool_calls") or []), result["_has_reasoning"],
+                )
+                return result
             except (KeyError, IndexError, TypeError, ValueError) as exc:
                 logger.warning(
                     "%s completion failed: trace=%s model=%s malformed successful response",
@@ -651,6 +683,7 @@ def answer_question(question, history, vendor_id, features, page_context=None, p
     source_paths = set()
     total_calls = 0
     tool_schemas = _tool_schemas_for_question(question, features, history, context)
+    final_answer_retry = False
     logger.info(
         "XChat prompt scope: trace=%s providers=%s tools=%s history_messages=%s",
         getattr(provider, "trace_id", "-"),
@@ -658,14 +691,53 @@ def answer_question(question, history, vendor_id, features, page_context=None, p
         len(tool_schemas), len(messages) - 2,
     )
     for _ in range(MAX_TOOL_CALLS):
-        assistant = provider.complete(messages, tool_schemas)
+        assistant = provider.complete(messages, [] if final_answer_retry else tool_schemas)
         tool_calls = assistant.get("tool_calls") or []
         if not tool_calls:
             answer = _message_content(assistant).strip()
             if not answer:
-                raise XChatProviderError("The AI service returned an empty response")
+                if tool_results and not final_answer_retry:
+                    final_answer_retry = True
+                    logger.warning(
+                        "XChat empty final response; retrying answer formatting: "
+                        "trace=%s finish_reason=%s has_reasoning=%s tools_used=%s",
+                        getattr(provider, "trace_id", "-"),
+                        str(assistant.get("_finish_reason") or "-")[:80],
+                        bool(assistant.get("_has_reasoning")), len(tool_results),
+                    )
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "Return only the concise, user-facing final answer based on the tool "
+                            "results above. Do not call another tool and do not include private reasoning."
+                        ),
+                    })
+                    continue
+                if tool_results:
+                    logger.warning(
+                        "XChat final response remained empty; using tool presentation fallback: "
+                        "trace=%s tools_used=%s",
+                        getattr(provider, "trace_id", "-"), len(tool_results),
+                    )
+                    answer = "I retrieved the requested records. Review the summary and detailed results below."
+                else:
+                    raise XChatProviderError("The AI service returned an empty response")
             return {
                 "answer": answer,
+                "tools_used": tools_used,
+                "sources": sorted(source_paths),
+                "presentation": build_presentation(question, tool_results),
+                "usage": dict(getattr(provider, "usage_totals", {}) or {}),
+            }
+
+        if final_answer_retry:
+            logger.warning(
+                "XChat provider attempted another tool call during final formatting; "
+                "using tool presentation fallback: trace=%s",
+                getattr(provider, "trace_id", "-"),
+            )
+            return {
+                "answer": "I retrieved the requested records. Review the summary and detailed results below.",
                 "tools_used": tools_used,
                 "sources": sorted(source_paths),
                 "presentation": build_presentation(question, tool_results),
@@ -875,7 +947,9 @@ def save_exchange(conversation_id, vendor_id, username, question, answer, metada
         )
         cursor.execute(
             "INSERT INTO xchat_messages (conversation_id, vendor_id, username, role, content, message_metadata) VALUES (?, ?, ?, 'assistant', ?, ?)",
-            (conversation_id, vendor_id, username, answer, json.dumps(metadata or {}, separators=(",", ":"))),
+            # PostgreSQL returns native date/datetime values for some report
+            # rows. Keep persistence JSON-safe without changing the UI payload.
+            (conversation_id, vendor_id, username, answer, json.dumps(metadata or {}, default=str, separators=(",", ":"))),
         )
         assistant_message_id = cursor.lastrowid
         title = conversation.get("title")
@@ -983,21 +1057,28 @@ def process_message(question, conversation_id, vendor_id, username, role, featur
     tools_used = []
     status = "error"
     usage_recorded = False
+    stage = "answer"
     try:
         result = answer_question(clean_question, history, vendor_id, features, page_context, provider)
         tools_used = result["tools_used"]
         usage = dict(getattr(provider, "usage_totals", {}) or result.get("usage") or {})
+        stage = "metering"
         credit_status = record_usage(
             vendor_id, username, conversation_id, getattr(provider, "model", "unknown"), usage, _db,
         )
         usage_recorded = True
+        stage = "persistence"
         message_id = save_exchange(conversation_id, vendor_id, username, clean_question, result["answer"], {
             "tools_used": tools_used, "sources": result["sources"], "presentation": result.get("presentation", {}),
             "usage": usage,
         })
         status = "success"
         return {"conversation_id": conversation_id, "message_id": message_id, **result, "credits": credit_status}
-    except Exception:
+    except Exception as exc:
+        logger.exception(
+            "XChat request failed: trace=%s stage=%s type=%s",
+            getattr(provider, "trace_id", "-"), stage, type(exc).__name__,
+        )
         if created_conversation:
             try:
                 delete_conversation(conversation_id, vendor_id, username)
