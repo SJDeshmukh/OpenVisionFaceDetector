@@ -22,7 +22,12 @@ const Suggestions = ({ path, features, onSelect }) => {
   const week = dateRange(7);
   const monthStart = `${week.end.slice(0, 8)}01`;
   let suggestions;
-  if ((path.includes('wage') || path.includes('payroll')) && features.includes('payroll')) {
+  if (path.includes('/owner/advances')) {
+    suggestions = [
+      'How many advances are remaining for approval?',
+      'List all pending employee advance requests and their amounts.',
+    ];
+  } else if ((path.includes('wage') || path.includes('payroll')) && features.includes('payroll')) {
     suggestions = [
         `What are my estimated wages from ${monthStart} to ${week.end}?`,
         `Who recorded the most payable hours from ${week.start} to ${week.end}?`,

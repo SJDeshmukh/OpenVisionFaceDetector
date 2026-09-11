@@ -185,6 +185,22 @@ def build_presentation(question, tool_results):
                 ], result.get("records") or [], "individual-advances.csv",
             ))
 
+        elif name == "get_advance_approval_summary":
+            presentation["metrics"].extend([
+                {"label": "Pending approvals", "value": result.get("pending_count", 0), "format": "number"},
+                {"label": "Pending amount", "value": result.get("pending_amount", 0), "format": "currency", "currency": result.get("currency", "INR")},
+                {"label": "Matching requests", "value": result.get("matching_count", 0), "format": "number"},
+            ])
+            presentation["tables"].append(_table(
+                "advance-approvals", "Employee advance approvals",
+                [
+                    {"key": "display_id", "label": "Employee ID"}, {"key": "name", "label": "Employee"},
+                    {"key": "date", "label": "Requested", "format": "date"},
+                    {"key": "amount", "label": "Amount", "format": "currency", "currency": result.get("currency", "INR")},
+                    {"key": "deduction_month", "label": "Deduction month"}, {"key": "status", "label": "Status"},
+                ], result.get("records") or [], "advance-approvals.csv",
+            ))
+
         elif name == "compare_payroll_periods":
             current, previous = result.get("current") or {}, result.get("previous") or {}
             currency = result.get("currency", "INR")

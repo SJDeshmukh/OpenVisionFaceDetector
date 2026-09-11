@@ -33,7 +33,7 @@ def xchat_db(tmp_path, monkeypatch):
         CREATE TABLE companies (vendor_id INTEGER, live_timetable TEXT, working_hours REAL);
         CREATE TABLE faces (id INTEGER PRIMARY KEY, vendor_id INTEGER, name TEXT, department TEXT, designation TEXT, daily_wage REAL, face_image TEXT, display_id INTEGER, shift TEXT);
         CREATE TABLE attendance (id INTEGER PRIMARY KEY, vendor_id INTEGER, person_id INTEGER, name TEXT, timestamp TEXT, status TEXT, activity TEXT, is_late INTEGER, captured_image TEXT);
-        CREATE TABLE advances (id INTEGER PRIMARY KEY, vendor_id INTEGER, person_id INTEGER, amount REAL, amount_cash REAL, amount_online REAL, date TEXT, deduction_month TEXT, status TEXT);
+        CREATE TABLE advances (id INTEGER PRIMARY KEY, vendor_id INTEGER, person_id INTEGER, amount REAL, amount_cash REAL, amount_online REAL, date TEXT, deduction_month TEXT, status TEXT, created_at TEXT);
         CREATE TABLE xchat_conversations (id TEXT PRIMARY KEY, vendor_id INTEGER, username TEXT, title TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE xchat_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT, vendor_id INTEGER, username TEXT, role TEXT, content TEXT, tool_name TEXT, message_metadata TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE audit_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, actor_username TEXT, actor_role TEXT, target_vendor_id INTEGER, action TEXT, details TEXT, ip TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);
@@ -56,9 +56,9 @@ def xchat_db(tmp_path, monkeypatch):
         (5, 2, 21, "Bob", "2026-08-01 09:00:00", "CHECK_IN", "Work", 0, "bob-capture"),
         (6, 2, 21, "Bob", "2026-08-01 21:00:00", "CHECK_OUT", "Work", 0, None),
     ])
-    conn.executemany("INSERT INTO advances VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", [
-        (1, 1, 11, 300, 100, 200, "2026-08-01", "2026-08", "pending"),
-        (2, 2, 21, 9000, 9000, 0, "2026-08-01", "2026-08", "approved"),
+    conn.executemany("INSERT INTO advances VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
+        (1, 1, 11, 300, 100, 200, "2026-08-01", "2026-08", "pending", "2026-08-01 10:00:00"),
+        (2, 2, 21, 9000, 9000, 0, "2026-08-01", "2026-08", "approved", "2026-08-01 11:00:00"),
     ])
     conn.commit()
     conn.close()
@@ -84,7 +84,7 @@ def xchat_db(tmp_path, monkeypatch):
 
 
 def test_tool_schemas_never_expose_tenant_identity():
-    assert len(xchat_tools.TOOL_SCHEMAS) == 17
+    assert len(xchat_tools.TOOL_SCHEMAS) == 18
     for tool in xchat_tools.TOOL_SCHEMAS:
         properties = tool["function"]["parameters"]["properties"]
         assert "vendor_id" not in properties
@@ -202,6 +202,7 @@ def test_only_enabled_feature_tools_are_exposed():
     ("Show the attendance rate this month", {"get_attendance_summary"}),
     ("Who forgot to check out?", {"get_incomplete_attendance"}),
     ("How much advance did Alice take?", {"get_person_advances"}),
+    ("How many advances are remaining for approvals?", {"get_advance_approval_summary"}),
     ("Show this month's salary and payroll", xchat_service.PAYROLL_TOOLS),
     ("What is our employee headcount?", {"get_people_summary"}),
     ("Show Alice's attendance photos", {"get_person_images", "get_attendance_summary"}),
@@ -239,6 +240,35 @@ def test_intent_router_unions_multi_feature_questions_and_falls_back_when_ambigu
     all_tools = {item["function"]["name"] for item in xchat_tools.available_tool_schemas(features)}
     assert {item["function"]["name"] for item in ambiguous} == all_tools
     assert {item["function"]["name"] for item in capability} == all_tools
+
+
+def test_advance_approval_summary_is_tenant_scoped(xchat_db):
+    summary = xchat_tools.get_advance_approval_summary(1)
+
+    assert summary["pending_count"] == 1
+    assert summary["pending_amount"] == 300
+    assert summary["matching_count"] == 1
+    assert [item["name"] for item in summary["records"]] == ["Alice"]
+    assert all(item["amount"] != 9000 for item in summary["records"])
+
+
+def test_advance_approval_presenter_exposes_count_amount_and_queue():
+    result = {
+        "pending_count": 1, "pending_amount": 300, "matching_count": 1, "currency": "INR",
+        "records": [{
+            "display_id": 101, "name": "Alice", "date": "2026-08-01",
+            "amount": 300, "deduction_month": "2026-08", "status": "pending",
+        }],
+    }
+
+    presentation = build_presentation(
+        "How many advances are remaining for approvals?",
+        [{"name": "get_advance_approval_summary", "result": result}],
+    )
+
+    assert presentation["metrics"][0] == {"label": "Pending approvals", "value": 1, "format": "number"}
+    assert presentation["metrics"][1]["value"] == 300
+    assert presentation["tables"][0]["rows"][0]["name"] == "Alice"
 
 
 def test_intent_router_uses_history_and_page_only_for_unspecified_followups():

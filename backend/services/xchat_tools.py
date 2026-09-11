@@ -5,6 +5,7 @@ intentionally absent from every model-visible schema.
 """
 
 import json
+import re
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 
@@ -394,6 +395,85 @@ def get_person_advances(vendor_id, name, deduction_month=None, limit=20):
     }
 
 
+def get_advance_approval_summary(vendor_id, status="pending", deduction_month=None, limit=20):
+    """Summarize and list the authenticated vendor's advance approval queue."""
+    selected_status = str(status or "pending").strip().lower()
+    allowed_statuses = {"pending", "approved", "rejected", "deducted", "all"}
+    if selected_status not in allowed_statuses:
+        raise ValueError("status must be pending, approved, rejected, deducted, or all")
+    month = str(deduction_month or "").strip()
+    if month and not re.fullmatch(r"\d{4}-(?:0[1-9]|1[0-2])", month):
+        raise ValueError("deduction_month must use YYYY-MM format")
+
+    conn = _db()
+    c = conn.cursor()
+    try:
+        summary_sql = """
+            SELECT status, COUNT(*) AS request_count, COALESCE(SUM(amount), 0) AS total_amount
+            FROM advances WHERE vendor_id = ?
+        """
+        summary_params = [vendor_id]
+        if month:
+            summary_sql += " AND deduction_month = ?"
+            summary_params.append(month)
+        summary_sql += " GROUP BY status"
+        c.execute(summary_sql, summary_params)
+        summary_rows = [_dict(row) for row in (c.fetchall() or [])]
+
+        detail_sql = """
+            SELECT a.id, f.name, f.display_id, a.amount, a.amount_cash, a.amount_online,
+                   a.date, a.deduction_month, a.status, a.created_at
+            FROM advances a
+            JOIN faces f ON f.id = a.person_id AND f.vendor_id = a.vendor_id
+            WHERE a.vendor_id = ?
+        """
+        detail_params = [vendor_id]
+        if month:
+            detail_sql += " AND a.deduction_month = ?"
+            detail_params.append(month)
+        if selected_status != "all":
+            detail_sql += " AND LOWER(a.status) = ?"
+            detail_params.append(selected_status)
+        detail_sql += " ORDER BY a.created_at DESC, a.id DESC LIMIT ?"
+        detail_params.append(_limit(limit))
+        c.execute(detail_sql, detail_params)
+        detail_rows = [_dict(row) for row in (c.fetchall() or [])]
+    finally:
+        conn.close()
+
+    by_status = {
+        str(row.get("status") or "unknown").lower(): {
+            "count": int(row.get("request_count") or 0),
+            "amount": round(float(row.get("total_amount") or 0), 2),
+        }
+        for row in summary_rows
+    }
+    pending = by_status.get("pending", {"count": 0, "amount": 0.0})
+    if selected_status == "all":
+        matching_count = sum(item["count"] for item in by_status.values())
+        matching_amount = round(sum(item["amount"] for item in by_status.values()), 2)
+    else:
+        selected = by_status.get(selected_status, {"count": 0, "amount": 0.0})
+        matching_count, matching_amount = selected["count"], selected["amount"]
+    records = [{
+        "id": row.get("id"), "name": row.get("name"),
+        "display_id": row.get("display_id"), "amount": float(row.get("amount") or 0),
+        "amount_cash": float(row.get("amount_cash") or 0),
+        "amount_online": float(row.get("amount_online") or 0),
+        "date": str(row.get("date") or ""), "deduction_month": row.get("deduction_month"),
+        "status": str(row.get("status") or "pending").lower(),
+    } for row in detail_rows]
+    return {
+        "status_filter": selected_status, "deduction_month": month or "All",
+        "pending_count": pending["count"], "pending_amount": pending["amount"],
+        "matching_count": matching_count, "matching_amount": matching_amount,
+        "totals_by_status": by_status, "records": records,
+        "truncated": matching_count > len(records), "currency": "INR",
+        "source_path": "/owner/advances",
+        "note": "Pending advances require an owner decision and do not affect payroll until approved.",
+    }
+
+
 def compare_payroll_periods(vendor_id, current_start, current_end, previous_start, previous_end, department=None):
     current = get_payroll_summary(vendor_id, current_start, current_end, department)
     previous = get_payroll_summary(vendor_id, previous_start, previous_end, department)
@@ -749,6 +829,7 @@ TOOL_REGISTRY = {
     "get_payroll_summary": get_payroll_summary,
     "get_person_payroll": get_person_payroll,
     "get_person_advances": get_person_advances,
+    "get_advance_approval_summary": get_advance_approval_summary,
     "compare_payroll_periods": compare_payroll_periods,
     "get_employee_hours_ranking": get_employee_hours_ranking,
     "get_incomplete_attendance": get_incomplete_attendance,
@@ -774,6 +855,7 @@ TOOL_SCHEMAS = [
     {"type": "function", "function": {"name": "get_payroll_summary", "description": "Calculate total payable hours and estimated wages for a period.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "department": {"type": "string"}}, "required": ["start_date", "end_date"]}}},
     {"type": "function", "function": {"name": "get_person_payroll", "description": "Look up gross earnings, owner-approved advance deductions, net payable, and payable hours for a named individual. Use this whenever a user asks about one person's wage, salary, payroll, current amount to pay, or hours. Dates are optional and default to the current month through today.", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "Full or partial person name"}, **_date_properties("start_date", "end_date")}, "required": ["name"]}}},
     {"type": "function", "function": {"name": "get_person_advances", "description": "List advance payments taken by a named person and total them. Use this for questions about an individual's advances; do not use the payroll estimate tool. Optionally filter by deduction month.", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "Full or partial person name"}, "deduction_month": {"type": "string", "description": "Optional month in YYYY-MM format"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}, "required": ["name"]}}},
+    {"type": "function", "function": {"name": "get_advance_approval_summary", "description": "Count, total, or list employee advance requests in the owner approval queue. Use this for pending, awaiting approval, approved, rejected, remaining, or vendor-wide advance questions. Defaults to pending requests.", "parameters": {"type": "object", "properties": {"status": {"type": "string", "enum": ["pending", "approved", "rejected", "deducted", "all"], "description": "Approval status; omit to show pending"}, "deduction_month": {"type": "string", "description": "Optional payroll deduction month in YYYY-MM format"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}}}},
     {"type": "function", "function": {"name": "compare_payroll_periods", "description": "Compare estimated wages between two date periods.", "parameters": {"type": "object", "properties": {**_date_properties("current_start", "current_end", "previous_start", "previous_end"), "department": {"type": "string"}}, "required": ["current_start", "current_end", "previous_start", "previous_end"]}}},
     {"type": "function", "function": {"name": "get_employee_hours_ranking", "description": "Rank employees by payable hours in a period.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "department": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}, "order": {"type": "string", "enum": ["highest", "lowest"]}}, "required": ["start_date", "end_date"]}}},
     {"type": "function", "function": {"name": "get_incomplete_attendance", "description": "Find attendance days ending with a check-in but no later check-out.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "department": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}, "required": ["start_date", "end_date"]}}},
@@ -796,6 +878,7 @@ TOOL_FEATURES = {
     "get_payroll_summary": {"payroll", "report_payroll", "payable_hours"},
     "get_person_payroll": {"payroll", "report_payroll", "payable_hours"},
     "get_person_advances": {"payroll", "report_payroll", "payable_hours"},
+    "get_advance_approval_summary": {"payroll", "report_payroll", "payable_hours", "wages"},
     "compare_payroll_periods": {"payroll", "report_payroll", "payable_hours"},
     "get_employee_hours_ranking": {"payroll", "report_payroll", "payable_hours"},
     "get_device_status": {"cameras", "mobile_app", "geofencing", "live_attendance"},
