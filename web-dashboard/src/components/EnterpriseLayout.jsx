@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { Image as ImageIcon } from 'lucide-react';
 import BrandLogo from './BrandLogo';
+import { getBusinessTerminology } from '../lib/businessTerminology';
 
 const adminNavItems = [
   { name: 'Dashboard',            path: '/dashboard',            icon: LayoutDashboard },
@@ -68,6 +69,7 @@ const overlayVariants = {
 /* ── Sidebar ── */
 export const Sidebar = ({ isOpen, onClose }) => {
   const { user, staffSession, logout } = useAuth();
+  const terminology = getBusinessTerminology(user?.vertical);
   const navigate = useNavigate();
   const [liveFeedUnlocked, setLiveFeedUnlocked] = useState(false);
   const [seqIndex, setSeqIndex] = useState(0);
@@ -125,6 +127,12 @@ export const Sidebar = ({ isOpen, onClose }) => {
     }
     if (!faceResetSupported) navItems = navItems.filter(item => item.name !== 'Face Reset Requests');
   }
+
+  const navLabel = (item) => {
+    if (item.path === '/people') return terminology.people;
+    if (item.path === '/classes') return terminology.groups;
+    return item.name;
+  };
 
   return (
     <>
@@ -220,7 +228,7 @@ export const Sidebar = ({ isOpen, onClose }) => {
                       }}
                     />
                     <span className="relative z-10 text-[13px] font-medium leading-none truncate flex-1">
-                      {item.name}
+                      {navLabel(item)}
                     </span>
                     {isActive && (
                       <ChevronRight size={13} className="relative z-10 flex-shrink-0" style={{ color: '#FFFFFF' }} />

@@ -132,6 +132,24 @@ def test_individual_payroll_lookup_is_name_searchable_and_vendor_scoped(xchat_db
     assert xchat_tools.get_person_payroll(1, "Bob", "2026-08-01", "2026-08-01")["matched_people"] == 0
 
 
+def test_individual_payroll_deducts_only_owner_approved_advances(xchat_db):
+    pending = xchat_tools.get_person_payroll(1, "Alice", "2026-08-01", "2026-08-31")
+    assert pending["gross_earnings"] == 800
+    assert pending["approved_advance_deduction"] == 0
+    assert pending["net_payable"] == 800
+
+    conn = _connection(xchat_db)
+    conn.execute("UPDATE advances SET status = 'approved' WHERE id = 1")
+    conn.commit()
+    conn.close()
+
+    approved = xchat_tools.get_person_payroll(1, "Alice", "2026-08-01", "2026-08-31")
+    assert approved["gross_earnings"] == 800
+    assert approved["approved_advance_deduction"] == 300
+    assert approved["net_payable"] == 500
+    assert approved["estimated_wages"] == 500
+
+
 def test_individual_advance_lookup_is_name_searchable_and_vendor_scoped(xchat_db):
     result = xchat_tools.get_person_advances(1, "ali")
     assert result["advance_count"] == 1
@@ -276,6 +294,38 @@ class _FakeMistralResponse:
         return self._payload
 
 
+def test_configured_bedrock_nemotron_uses_chat_completions_and_tracks_usage(monkeypatch):
+    captured = {}
+    tools = [{"type": "function", "function": {"name": "get_status", "parameters": {"type": "object"}}}]
+    response = _FakeMistralResponse(200, {
+        "choices": [{"message": {"role": "assistant", "content": "Nemotron ready"}}],
+        "usage": {"prompt_tokens": 45, "completion_tokens": 12, "total_tokens": 57},
+    })
+
+    def fake_post(url, **kwargs):
+        captured.update({"url": url, **kwargs})
+        return response
+
+    monkeypatch.setenv("XCHAT_PROVIDER", "bedrock")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "test-bedrock-secret")
+    monkeypatch.setenv("AWS_BEDROCK_REGION", "ap-south-1")
+    monkeypatch.setenv("AWS_BEDROCK_RUNTIME_BASE_URL", "https://bedrock-runtime.ap-south-1.amazonaws.com")
+    monkeypatch.setattr(xchat_service.requests, "post", fake_post)
+
+    provider = xchat_service.configured_provider()
+    result = provider.complete([{"role": "user", "content": "Hello"}], tools)
+
+    assert isinstance(provider, xchat_service.BedrockNemotronProvider)
+    assert captured["url"] == "https://bedrock-runtime.ap-south-1.amazonaws.com/openai/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer test-bedrock-secret"
+    assert captured["json"]["model"] == "nvidia.nemotron-nano-3-30b"
+    assert captured["json"]["tools"] == tools
+    assert captured["json"]["tool_choice"] == "auto"
+    assert "parallel_tool_calls" not in captured["json"]
+    assert provider.usage_totals == {"input_tokens": 45, "output_tokens": 12, "total_tokens": 57}
+    assert result["content"] == "Nemotron ready"
+
+
 def test_mistral_provider_retries_transient_http_failures(monkeypatch):
     responses = iter([
         _FakeMistralResponse(429, {"code": "rate_limit", "message": "Slow down"}, {"Retry-After": "1"}),
@@ -290,6 +340,22 @@ def test_mistral_provider_retries_transient_http_failures(monkeypatch):
 
     assert result["content"] == "Ready"
     assert len(calls) == 2
+
+
+def test_provider_omits_tool_controls_for_header_mapping_calls(monkeypatch):
+    captured = {}
+    response = _FakeMistralResponse(
+        200, {"choices": [{"message": {"role": "assistant", "content": "{}"}}]},
+    )
+    monkeypatch.setattr(
+        xchat_service.requests, "post",
+        lambda url, **kwargs: captured.update(kwargs) or response,
+    )
+    xchat_service.BedrockNemotronProvider(api_key="test-key", max_retries=0).complete(
+        [{"role": "user", "content": "Map headers"}], [],
+    )
+    assert "tools" not in captured["json"]
+    assert "tool_choice" not in captured["json"]
 
 
 def test_mistral_provider_logs_safe_http_details(monkeypatch, caplog):
@@ -322,6 +388,7 @@ def test_mistral_provider_reports_exhausted_rate_limit(monkeypatch):
 
 def test_configured_gemini_provider_uses_openai_compatible_tools(monkeypatch):
     captured = {}
+    tools = [{"type": "function", "function": {"name": "get_status", "parameters": {"type": "object"}}}]
     response = _FakeMistralResponse(
         200,
         {"choices": [{"message": {"role": "assistant", "content": "Gemini ready"}}]},
@@ -336,12 +403,13 @@ def test_configured_gemini_provider_uses_openai_compatible_tools(monkeypatch):
     monkeypatch.setattr(xchat_service.requests, "post", fake_post)
 
     provider = xchat_service.configured_provider()
-    result = provider.complete([{"role": "user", "content": "Hello"}], [])
+    result = provider.complete([{"role": "user", "content": "Hello"}], tools)
 
     assert isinstance(provider, xchat_service.GeminiProvider)
     assert captured["url"].endswith("/v1beta/openai/chat/completions")
     assert captured["headers"]["Authorization"] == "Bearer test-gemini-secret"
     assert captured["json"]["model"] == "gemini-3.8-flash"
+    assert captured["json"]["tools"] == tools
     assert captured["json"]["tool_choice"] == "auto"
     assert "parallel_tool_calls" not in captured["json"]
     assert result["content"] == "Gemini ready"

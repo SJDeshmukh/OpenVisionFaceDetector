@@ -7,6 +7,7 @@ import json
 import base64
 import re
 import os
+import math
 import secrets
 import qrcode
 from io import BytesIO
@@ -163,7 +164,7 @@ def get_audit_logs():
 def impersonate_vendor():
     from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
-    data = request.json
+    data = request.get_json(silent=True) or {}
     vendor_id = data.get('vendor_id')
     
     if not vendor_id:
@@ -785,14 +786,22 @@ def get_vendors():
     
     # Get Vendors with Subscription Details
     try:
-        cols = get_table_columns(conn, "subscriptions")
-        subs_cols = [info[1] for info in c.fetchall()]
+        subs_cols = get_table_columns(conn, "subscriptions")
     except Exception:
         subs_cols = []
     max_web_select = "s.max_web_sessions" if "max_web_sessions" in subs_cols else "1 AS max_web_sessions"
+    xchat_select = ", ".join([
+        "s.xchat_billing_mode" if "xchat_billing_mode" in subs_cols else "'payg' AS xchat_billing_mode",
+        "s.xchat_token_limit" if "xchat_token_limit" in subs_cols else "0 AS xchat_token_limit",
+        "s.xchat_tokens_used" if "xchat_tokens_used" in subs_cols else "0 AS xchat_tokens_used",
+        "s.xchat_input_tokens" if "xchat_input_tokens" in subs_cols else "0 AS xchat_input_tokens",
+        "s.xchat_output_tokens" if "xchat_output_tokens" in subs_cols else "0 AS xchat_output_tokens",
+        "s.xchat_tokens_billed" if "xchat_tokens_billed" in subs_cols else "0 AS xchat_tokens_billed",
+        "s.xchat_price_per_1k_tokens" if "xchat_price_per_1k_tokens" in subs_cols else "0 AS xchat_price_per_1k_tokens",
+    ])
     query = f"""
         SELECT v.*, 
-               s.plan_type, s.start_date, s.end_date, s.max_users, s.max_employees, s.max_mobile_devices, {max_web_select}, s.cost_per_user, s.cost_per_employee, s.setup_fee, s.setup_fee_paid, s.features,
+               s.plan_type, s.start_date, s.end_date, s.max_users, s.max_employees, s.max_mobile_devices, {max_web_select}, s.cost_per_user, s.cost_per_employee, s.setup_fee, s.setup_fee_paid, s.features, {xchat_select},
                (SELECT username FROM system_users WHERE vendor_id = v.id AND role = 'vendor_admin' LIMIT 1) as admin_username,
                NULL as admin_password,
                (SELECT username FROM system_users WHERE vendor_id = v.id AND role = 'user' LIMIT 1) as user_username,
@@ -1178,8 +1187,18 @@ def create_vendor():
     from app import socketio, is_testing
     from db_factory import get_db_connection
     from services.auth_service import authenticate_vendor_access
-    data = request.json
+    data = request.get_json(silent=True) or {}
     company_name = data.get("company_name")
+    from services.xchat_billing_service import normalize_billing_mode
+    try:
+        data['xchat_billing_mode'] = normalize_billing_mode(data.get('xchat_billing_mode', 'payg'))
+        data['xchat_token_limit'] = max(0, int(data.get('xchat_token_limit') or 0))
+        rate = float(data.get('xchat_price_per_1k_tokens') or 0)
+        if not math.isfinite(rate) or rate < 0:
+            raise ValueError("XChat token price must be a non-negative number")
+        data['xchat_price_per_1k_tokens'] = rate
+    except (TypeError, ValueError) as exc:
+        return jsonify({"error": str(exc) or "Invalid XChat token limit"}), 400
     
     if not company_name:
         return jsonify({"error": "Company Name is required"}), 400
@@ -1237,6 +1256,14 @@ def create_vendor():
         if "grace_period_days" in subs_cols:
             s_cols.append("grace_period_days")
             s_vals.append(0)
+        for field, default in (
+            ('xchat_billing_mode', 'payg'), ('xchat_token_limit', 0),
+            ('xchat_tokens_used', 0), ('xchat_tokens_billed', 0),
+            ('xchat_price_per_1k_tokens', 0),
+        ):
+            if field in subs_cols:
+                s_cols.append(field)
+                s_vals.append(default if field == 'xchat_tokens_billed' else data.get(field, default))
             
         placeholders = ", ".join(["?"] * len(s_cols))
         c.execute(f"INSERT INTO subscriptions ({', '.join(s_cols)}) VALUES ({placeholders})", tuple(s_vals))
@@ -1280,10 +1307,11 @@ def create_vendor():
         if vertical:
             c.execute("UPDATE vendors SET vertical = ? WHERE id = ?", (vertical, vendor_id))
             if str(vertical).strip().lower() in {"school", "hostel"}:
+                hostel_flow = str(vertical).strip().lower() == "hostel"
                 rc = json.dumps([
-                    {"field": "student_id", "label": "Student ID", "type": "text", "required": True, "options": []},
-                    {"field": "phone", "label": "Mobile Number", "type": "text", "required": True, "options": []},
-                    {"field": "class_id", "label": "Class/Section", "type": "class_select", "required": True, "options": []}
+                    {"field": "student_id", "label": "Resident ID" if hostel_flow else "Student ID", "type": "text", "required": True, "options": []},
+                    {"field": "phone", "label": "Resident Mobile Number" if hostel_flow else "Student Mobile Number", "type": "text", "required": True, "options": []},
+                    {"field": "class_id", "label": "Room/Block" if hostel_flow else "Class/Section", "type": "class_select", "required": True, "options": []}
                 ])
                 c.execute("UPDATE vendors SET registration_config = ? WHERE id = ?", (rc, vendor_id))
         
@@ -1401,7 +1429,27 @@ def get_vendor_subscription_admin(vendor_id):
 def update_vendor_subscription(vendor_id):
     from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
-    data = request.json
+    data = request.get_json(silent=True) or {}
+    from services.xchat_billing_service import normalize_billing_mode
+    if 'xchat_billing_mode' in data:
+        try:
+            data['xchat_billing_mode'] = normalize_billing_mode(data['xchat_billing_mode'])
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+    for token_field in ('xchat_token_limit', 'xchat_tokens_used'):
+        if token_field in data:
+            try:
+                data[token_field] = max(0, int(data[token_field] or 0))
+            except (TypeError, ValueError):
+                return jsonify({"error": f"{token_field} must be a non-negative integer"}), 400
+    if 'xchat_price_per_1k_tokens' in data:
+        try:
+            rate = float(data['xchat_price_per_1k_tokens'] or 0)
+            if not math.isfinite(rate) or rate < 0:
+                raise ValueError
+            data['xchat_price_per_1k_tokens'] = rate
+        except (TypeError, ValueError):
+            return jsonify({"error": "xchat_price_per_1k_tokens must be a non-negative number"}), 400
     
     conn = get_db_connection()
     c = conn.cursor()
@@ -1457,6 +1505,14 @@ def update_vendor_subscription(vendor_id):
             if "max_web_sessions" in subs_cols:
                 cols.insert(7, "max_web_sessions")
                 vals.insert(7, max_web_sessions)
+            for field, default in (
+                ('xchat_billing_mode', 'payg'), ('xchat_token_limit', 0),
+                ('xchat_tokens_used', 0), ('xchat_tokens_billed', 0),
+                ('xchat_price_per_1k_tokens', 0),
+            ):
+                if field in subs_cols:
+                    cols.append(field)
+                    vals.append(default if field == 'xchat_tokens_billed' else data.get(field, default))
             placeholders = ", ".join(["?"] * len(cols))
             c.execute(f"INSERT INTO subscriptions ({', '.join(cols)}) VALUES ({placeholders})", tuple(vals))
             conn.commit()
@@ -1465,7 +1521,7 @@ def update_vendor_subscription(vendor_id):
         query = "UPDATE subscriptions SET "
         params = []
         
-        fields = ['start_date', 'end_date', 'plan_type', 'max_users', 'max_employees', 'max_mobile_devices', 'max_web_sessions', 'cost_per_user', 'cost_per_employee', 'setup_fee', 'setup_fee_paid']
+        fields = ['start_date', 'end_date', 'plan_type', 'max_users', 'max_employees', 'max_mobile_devices', 'max_web_sessions', 'cost_per_user', 'cost_per_employee', 'setup_fee', 'setup_fee_paid', 'xchat_billing_mode', 'xchat_token_limit', 'xchat_tokens_used', 'xchat_price_per_1k_tokens']
         
         # Handle aliases or logic
         if 'features' in data:
@@ -1518,6 +1574,9 @@ def update_vendor_subscription(vendor_id):
         if 'max_users' in data and 'max_mobile_devices' not in data:
              query += "max_mobile_devices = ?, "
              params.append(data['max_users'])
+
+        if data.get('xchat_tokens_used') == 0:
+            query += "xchat_input_tokens = 0, xchat_output_tokens = 0, xchat_tokens_billed = 0, "
              
         # Capture old limits
         old_web = None
@@ -1750,10 +1809,11 @@ def update_vendor_details(vendor_id):
                         except Exception:
                             needs_set = True
                     if needs_set:
+                        hostel_flow = str(data.get('vertical') or '').strip().lower() == 'hostel'
                         rc = json.dumps([
-                            {"field": "student_id", "label": "Student ID", "type": "text", "required": True, "options": []},
-                            {"field": "phone", "label": "Mobile Number", "type": "text", "required": True, "options": []},
-                            {"field": "class_id", "label": "Class/Section", "type": "class_select", "required": True, "options": []}
+                            {"field": "student_id", "label": "Resident ID" if hostel_flow else "Student ID", "type": "text", "required": True, "options": []},
+                            {"field": "phone", "label": "Resident Mobile Number" if hostel_flow else "Student Mobile Number", "type": "text", "required": True, "options": []},
+                            {"field": "class_id", "label": "Room/Block" if hostel_flow else "Class/Section", "type": "class_select", "required": True, "options": []}
                         ])
                         c.execute("UPDATE vendors SET registration_config = ? WHERE id = ?", (rc, vendor_id))
             except Exception:
@@ -1935,10 +1995,10 @@ def delete_vendor(vendor_id):
                 pass
         tables = [
             # Child tables first (they reference faces/parent_users/lectures which reference vendors)
-            "lecture_attendance", "face_reset_requests", "student_parents",
+            "lecture_attendance", "face_reset_requests", "student_parents", "xchat_messages",
             "advances", "leave_requests", "person_embeddings",
             # Tables that reference vendors directly
-            "class_batches", "attendance", "lectures",
+            "class_batches", "attendance", "lectures", "xchat_token_usage", "xchat_conversations",
             "system_users", "parent_tokens", "parent_users",
             "faces", "leave_staff", "vendor_device_slots", "vendor_devices",
             "active_sessions", "invoices", "subscriptions", "companies",
@@ -2149,14 +2209,25 @@ def generate_invoice(vendor_id):
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    
+
+    # Serialize invoice generation per vendor so two simultaneous clicks cannot
+    # charge the same unbilled token watermark twice.
+    is_pg = getattr(conn, "_is_pg", False)
+    if not is_pg:
+        c.execute("BEGIN IMMEDIATE")
+
     # Get Subscription Details
-    c.execute("SELECT * FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+    select_subscription = "SELECT * FROM subscriptions WHERE vendor_id = ?"
+    if is_pg:
+        select_subscription += " FOR UPDATE"
+    c.execute(select_subscription, (vendor_id,))
     sub = c.fetchone()
     if not sub:
         conn.close()
         return jsonify({"error": "No subscription found"}), 404
         
+    sub = dict(sub)
+
     # Get Billable Unit Count (Phones/Users) - Matching Dashboard Logic
     # User requested: "amount should be number of users multiplied by the amount per employee"
     # Interpreted as: Number of Phones (Users) * Cost per Unit
@@ -2174,13 +2245,23 @@ def generate_invoice(vendor_id):
     device_cost_total = billed_device_count * cost_per_user
     
     monthly_cost = employee_cost_total + device_cost_total
+
+    # Bill only AI tokens consumed since the previous generated invoice. The
+    # watermark prevents the same cumulative usage from being charged twice.
+    from services.xchat_billing_service import calculate_token_charge
+    xchat_calculation = calculate_token_charge(
+        sub.get('xchat_tokens_used', 0),
+        sub.get('xchat_tokens_billed', 0),
+        sub.get('xchat_price_per_1k_tokens', 0),
+    )
+    xchat_charge = xchat_calculation['unbilled_charge']
     
     # Check for Setup Fee
     setup_fee = 0
     if sub['setup_fee'] and not sub['setup_fee_paid']:
         setup_fee = sub['setup_fee']
         
-    total_amount = monthly_cost + setup_fee
+    total_amount = round(monthly_cost + setup_fee + xchat_charge, 2)
     
     details = {
         "max_employees": max_employees_count,
@@ -2190,7 +2271,14 @@ def generate_invoice(vendor_id):
         "employee_cost_total": employee_cost_total,
         "device_cost_total": device_cost_total,
         "monthly_charge": monthly_cost,
-        "setup_fee": setup_fee
+        "setup_fee": setup_fee,
+        "xchat": {
+            **xchat_calculation,
+            "input_tokens_total": int(sub.get('xchat_input_tokens') or 0),
+            "output_tokens_total": int(sub.get('xchat_output_tokens') or 0),
+            "billing_unit": "1000_tokens",
+            "charge": xchat_charge,
+        },
     }
     
     # Create Invoice
@@ -2200,6 +2288,12 @@ def generate_invoice(vendor_id):
     c.execute("""INSERT INTO invoices (vendor_id, invoice_date, due_date, amount, status, details)
                  VALUES (?, ?, ?, ?, ?, ?)""",
               (vendor_id, invoice_date, due_date, total_amount, 'generated', json.dumps(details)))
+
+    if xchat_calculation['unbilled_tokens'] > 0:
+        c.execute(
+            "UPDATE subscriptions SET xchat_tokens_billed = ? WHERE vendor_id = ?",
+            (xchat_calculation['tokens_used'], vendor_id),
+        )
               
     # If setup fee was included, mark it as paid (or maybe only after invoice is paid? Let's keep it simple for now)
     # Actually, better to mark setup_fee_paid ONLY when invoice is paid.
@@ -2587,15 +2681,19 @@ def restore_vendor():
         c.execute("SELECT row_json FROM archive_objects WHERE table_name='subscriptions' AND vendor_id = ?", (target_vendor_id,))
         for (row_json,) in c.fetchall():
             obj = json.loads(row_json)
-            sql = """INSERT INTO subscriptions (vendor_id, plan_type, start_date, end_date, max_users, max_employees, max_mobile_devices, cost_per_user, cost_per_employee, setup_fee, features, max_web_sessions)
-                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""" if is_pg else \
-                  """INSERT INTO subscriptions (vendor_id, plan_type, start_date, end_date, max_users, max_employees, max_mobile_devices, cost_per_user, cost_per_employee, setup_fee, features, max_web_sessions)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+            sql = """INSERT INTO subscriptions (vendor_id, plan_type, start_date, end_date, max_users, max_employees, max_mobile_devices, cost_per_user, cost_per_employee, setup_fee, features, max_web_sessions, xchat_billing_mode, xchat_token_limit, xchat_tokens_used, xchat_input_tokens, xchat_output_tokens, xchat_tokens_billed, xchat_price_per_1k_tokens)
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""" if is_pg else \
+                  """INSERT INTO subscriptions (vendor_id, plan_type, start_date, end_date, max_users, max_employees, max_mobile_devices, cost_per_user, cost_per_employee, setup_fee, features, max_web_sessions, xchat_billing_mode, xchat_token_limit, xchat_tokens_used, xchat_input_tokens, xchat_output_tokens, xchat_tokens_billed, xchat_price_per_1k_tokens)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
             c.execute(sql, (
                 new_vendor_id, obj.get("plan_type") or "custom", obj.get("start_date"), obj.get("end_date"),
                 obj.get("max_users"), obj.get("max_employees"), obj.get("max_mobile_devices"),
                 obj.get("cost_per_user"), obj.get("cost_per_employee"), obj.get("setup_fee") or 0, 
-                obj.get("features"), obj.get("max_web_sessions") or 1
+                obj.get("features"), obj.get("max_web_sessions") or 1,
+                obj.get("xchat_billing_mode") or "payg", obj.get("xchat_token_limit") or 0,
+                obj.get("xchat_tokens_used") or 0, obj.get("xchat_input_tokens") or 0,
+                obj.get("xchat_output_tokens") or 0, obj.get("xchat_tokens_billed") or 0,
+                obj.get("xchat_price_per_1k_tokens") or 0,
             ))
 
         # 3. Restore Companies
@@ -3227,11 +3325,15 @@ def portable_import_vendor():
             
             # 2. Restore Subscription
             if s_data:
-                c.execute("""INSERT INTO subscriptions (vendor_id, plan_type, start_date, end_date, status, max_users, max_employees, cost_per_user, setup_fee, setup_fee_paid, max_mobile_devices, cost_per_employee, grace_period_days, max_web_sessions, features)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                c.execute("""INSERT INTO subscriptions (vendor_id, plan_type, start_date, end_date, status, max_users, max_employees, cost_per_user, setup_fee, setup_fee_paid, max_mobile_devices, cost_per_employee, grace_period_days, max_web_sessions, features, xchat_billing_mode, xchat_token_limit, xchat_tokens_used, xchat_input_tokens, xchat_output_tokens, xchat_tokens_billed, xchat_price_per_1k_tokens)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                           (new_vendor_id, s_data.get("plan_type"), s_data.get("start_date"), s_data.get("end_date"), s_data.get("status"),
                            s_data.get("max_users"), s_data.get("max_employees"), s_data.get("cost_per_user"), s_data.get("setup_fee"), s_data.get("setup_fee_paid"),
-                           s_data.get("max_mobile_devices"), s_data.get("cost_per_employee"), s_data.get("grace_period_days"), s_data.get("max_web_sessions"), s_data.get("features")))
+                           s_data.get("max_mobile_devices"), s_data.get("cost_per_employee"), s_data.get("grace_period_days"), s_data.get("max_web_sessions"), s_data.get("features"),
+                           s_data.get("xchat_billing_mode") or "payg", s_data.get("xchat_token_limit") or 0,
+                           s_data.get("xchat_tokens_used") or 0, s_data.get("xchat_input_tokens") or 0,
+                           s_data.get("xchat_output_tokens") or 0, s_data.get("xchat_tokens_billed") or 0,
+                           s_data.get("xchat_price_per_1k_tokens") or 0))
             
             # 3. Restore Company
             if c_data:

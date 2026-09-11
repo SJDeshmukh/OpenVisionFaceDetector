@@ -41,9 +41,9 @@ REGISTRATION_TEMPLATES = {
         {"field": "class_section", "label": "Class/Section", "enabled": False}
     ],
     "hostel": [
-        {"field": "student_id", "label": "Student ID", "enabled": True},
-        {"field": "phone", "label": "Student Mobile Number", "enabled": True},
-        {"field": "class_section", "label": "Class/Section", "enabled": False}
+        {"field": "student_id", "label": "Resident ID", "enabled": True},
+        {"field": "phone", "label": "Resident Mobile Number", "enabled": True},
+        {"field": "class_section", "label": "Room/Block", "enabled": False}
     ],
     "daily_wages": [
         {"field": "employee_id", "label": "Employee ID", "enabled": True},

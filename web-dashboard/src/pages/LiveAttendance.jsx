@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { API_URL } from '../config';
+import { getBusinessTerminology } from '../lib/businessTerminology';
 import { useSocket } from '../context/SocketContext';
 import { 
   Video, 
@@ -16,6 +17,7 @@ import {
 
 const LiveAttendance = () => {
   const { user } = useAuth();
+  const terminology = getBusinessTerminology(user?.vertical);
   const [liveImage, setLiveImage] = useState(null);
   const [logs, setLogs] = useState([]);
   const [devices, setDevices] = useState([]);
@@ -333,7 +335,7 @@ useEffect(() => {
                       <h3 className="font-semibold text-slate-800 truncate">{log.name}</h3>
                       <span className="text-xs text-slate-400 font-mono">{new Date(log.timestamp.replace(' ', 'T')).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'})}</span>
                     </div>
-                    <p className="text-xs text-slate-500 mb-1.5">{log.department || ((user?.vertical && ['school','hostel'].includes(String(user.vertical).toLowerCase())) ? 'Student' : 'Employee')}</p>
+                    <p className="text-xs text-slate-500 mb-1.5">{log.department || terminology.person}</p>
                     
                     <div className="flex flex-wrap gap-2">
                       <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium border ${getStatusColor(log.status, log.is_late)}`}>

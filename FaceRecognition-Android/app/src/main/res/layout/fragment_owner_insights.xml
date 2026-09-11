@@ -91,13 +91,13 @@
                 </LinearLayout>
             </androidx.cardview.widget.CardView>
 
-            <!-- Card: Month Total -->
+            <!-- Card: Approved Month Total -->
             <androidx.cardview.widget.CardView
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_columnWeight="1"
                 android:layout_margin="4dp"
-                app:cardBackgroundColor="@color/vision_navy_800"
+                app:cardBackgroundColor="@color/status_success_dark"
                 app:cardCornerRadius="12dp">
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -107,7 +107,7 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="Month Total (₹)"
+                        android:text="Approved This Month (₹)"
                         android:textColor="@color/vision_text_secondary"
                         android:textSize="12sp"/>
                     <TextView

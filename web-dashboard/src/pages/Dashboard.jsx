@@ -29,6 +29,7 @@ import { API_URL } from '../config';
 import ActivityDashboard from '../components/ActivityDashboard';
 import { useAuth } from '../context/AuthContext';
 import { useSocket } from '../context/SocketContext';
+import { getBusinessTerminology, usesStudentRecords } from '../lib/businessTerminology';
 
 const KpiCard = ({ title, value, subtext, icon: Icon, color }) => (
   <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-between h-32 relative overflow-hidden group hover:shadow-md transition-shadow">
@@ -52,8 +53,10 @@ const Dashboard = () => {
   const { user, logout } = useAuth();
   const { socket, joinVendor } = useSocket();
   const [activeTab, setActiveTab] = useState('overview');
-  const schoolFlow = Boolean(user?.vertical && ['school', 'hostel'].includes(String(user.vertical).toLowerCase()));
-  const personLabel = schoolFlow ? 'Student' : 'Employee';
+  const terminology = getBusinessTerminology(user?.vertical);
+  const schoolFlow = usesStudentRecords(user?.vertical);
+  const personLabel = terminology.person;
+  const peopleLabel = terminology.people;
   const [stats, setStats] = useState({
     total: 0,
     present: 0,
@@ -235,7 +238,7 @@ const Dashboard = () => {
             <div>
               <h3 className="font-bold text-lg">Leave Return Alerts</h3>
               <p className="text-sm text-amber-700/80">
-                {stats.overdue_leaves_count} {personLabel}{stats.overdue_leaves_count > 1 ? 's have' : ' has'} not returned after their approved leave ended.
+                {stats.overdue_leaves_count} {stats.overdue_leaves_count === 1 ? personLabel : peopleLabel} {stats.overdue_leaves_count === 1 ? 'has' : 'have'} not returned after their approved leave ended.
               </p>
             </div>
           </div>
@@ -253,7 +256,7 @@ const Dashboard = () => {
           {/* KPI Cards */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
             <KpiCard
-              title={`Total ${personLabel}s`}
+              title={`Total ${peopleLabel}`}
               value={stats.total}
               subtext="Registered in system"
               icon={Users}
@@ -376,7 +379,7 @@ const Dashboard = () => {
                     <span className="font-bold text-slate-800">₹{Number(subscription.cost_per_user || 0)}</span>
                   </div>
                   <div className="flex justify-between items-center mt-1">
-                    <span className="text-sm text-slate-500">Cost per Employee</span>
+                    <span className="text-sm text-slate-500">Cost per {personLabel}</span>
                     <span className="font-bold text-slate-800">₹{Number(subscription.cost_per_employee || 0)}</span>
                   </div>
                 </div>
@@ -444,7 +447,7 @@ const Dashboard = () => {
                         <span className="font-semibold text-slate-800">{subscription.max_users ?? 0}</span>
                       </div>
                       <div className="flex items-center justify-between bg-slate-50 border border-slate-100 rounded-lg px-3 py-2">
-                        <span className="text-slate-600">Max Employees</span>
+                        <span className="text-slate-600">Max {peopleLabel}</span>
                         <span className="font-semibold text-slate-800">{subscription.max_employees ?? 0}</span>
                       </div>
                       <div className="flex items-center justify-between bg-slate-50 border border-slate-100 rounded-lg px-3 py-2">
@@ -456,7 +459,7 @@ const Dashboard = () => {
                         <span className="font-semibold text-slate-800">₹{Number(subscription.cost_per_user || 0)}</span>
                       </div>
                       <div className="flex items-center justify-between bg-slate-50 border border-slate-100 rounded-lg px-3 py-2">
-                        <span className="text-slate-600">Cost Per Employee</span>
+                        <span className="text-slate-600">Cost Per {personLabel}</span>
                         <span className="font-semibold text-slate-800">₹{Number(subscription.cost_per_employee || 0)}</span>
                       </div>
                     </div>

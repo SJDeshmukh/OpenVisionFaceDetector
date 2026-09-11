@@ -9,7 +9,10 @@ import {
   Filter,
   BarChart2,
   PieChart as PieChartIcon,
-  RefreshCw
+  RefreshCw,
+  Mail,
+  Send,
+  X
 } from 'lucide-react';
 import {
   BarChart,
@@ -25,17 +28,21 @@ import {
   Legend
 } from 'recharts';
 import { API_URL } from '../config';
+import { getBusinessTerminology, usesStudentRecords } from '../lib/businessTerminology';
 
 const COLORS = ['#22c55e', '#f59e0b', '#ef4444'];
 
 const Reports = () => {
   const { user } = useAuth();
-  const schoolFlow = Boolean(user?.vertical && ['school', 'hostel'].includes(String(user.vertical).toLowerCase()));
+  const terminology = getBusinessTerminology(user?.vertical);
+  const schoolFlow = usesStudentRecords(user?.vertical);
   const [personType, setPersonType] = useState('student');
-  const personLabel = schoolFlow ? (personType === 'faculty' ? 'Faculty' : 'Student') : 'Employee';
-  const personLabelPlural = personLabel === 'Faculty' ? 'Faculty' : `${personLabel}s`;
+  const personLabelPlural = personType === 'faculty' && schoolFlow ? terminology.staffPlural : terminology.people;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [emailPromptOpen, setEmailPromptOpen] = useState(false);
+  const [emailSending, setEmailSending] = useState(false);
+  const [emailNotice, setEmailNotice] = useState(null);
   const [analytics, setAnalytics] = useState({
     pie_data: [],
     bar_data: [],
@@ -192,8 +199,89 @@ const Reports = () => {
     window.location.href = `${API_URL}/reports/payroll/export-excel?${params.toString()}`;
   };
 
+  const selectedReportMonth = (filters.endDate || new Date().toISOString().split('T')[0]).slice(0, 7);
+  const selectedReportMonthLabel = new Date(`${selectedReportMonth}-01T00:00:00`).toLocaleDateString(undefined, {
+    month: 'long', year: 'numeric'
+  });
+  const canSendEmployeeReports = ['super_admin', 'vendor_admin', 'admin', 'owner'].includes(user?.role);
+
+  const sendEmployeeReports = async () => {
+    setEmailSending(true);
+    setEmailNotice(null);
+    try {
+      const response = await axios.post(`${API_URL}/reports/email-employees`, {
+        month: selectedReportMonth,
+        person_type: schoolFlow ? personType : undefined,
+      });
+      setEmailPromptOpen(false);
+      setEmailNotice({
+        type: 'success',
+        message: `${response.data.recipient_count} employee report${response.data.recipient_count === 1 ? '' : 's'} queued for email.`,
+      });
+    } catch (requestError) {
+      setEmailPromptOpen(false);
+      setEmailNotice({
+        type: 'error',
+        message: requestError.response?.data?.error || 'Could not queue employee report emails.',
+      });
+    } finally {
+      setEmailSending(false);
+    }
+  };
+
   return (
     <div className="space-y-8">
+      {(emailPromptOpen || emailNotice) && (
+        <div className="fixed top-5 right-5 z-50 w-[min(92vw,26rem)] rounded-xl border border-slate-200 bg-white p-4 shadow-2xl" role="status">
+          <div className="flex items-start gap-3">
+            <div className={`mt-0.5 rounded-full p-2 ${emailNotice?.type === 'error' ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600'}`}>
+              <Mail size={18} />
+            </div>
+            <div className="min-w-0 flex-1">
+              {emailPromptOpen ? (
+                <>
+                  <p className="font-bold text-slate-900">Send reports to employees?</p>
+                  <p className="mt-1 text-sm text-slate-600">
+                    Send each employee their attendance and wage report for {selectedReportMonthLabel}. Only employees with a registered email will receive it.
+                  </p>
+                  <div className="mt-4 flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setEmailPromptOpen(false)}
+                      disabled={emailSending}
+                      className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={sendEmployeeReports}
+                      disabled={emailSending}
+                      className="flex items-center gap-2 rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      <Send size={15} />
+                      {emailSending ? 'Queueing…' : 'Yes, Send'}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <p className={`pr-7 text-sm font-semibold ${emailNotice?.type === 'error' ? 'text-red-700' : 'text-emerald-700'}`}>
+                  {emailNotice?.message}
+                </p>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => { setEmailPromptOpen(false); setEmailNotice(null); }}
+              className="absolute right-3 top-3 rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+              aria-label="Close notification"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Branding Header */}
       <div className="flex flex-col sm:flex-row justify-between items-center bg-white p-6 rounded-2xl border border-slate-200 shadow-sm mb-6 bg-gradient-to-r from-white to-blue-50/30">
         <div className="flex items-center space-x-4">
@@ -226,6 +314,16 @@ const Reports = () => {
           <p className="text-slate-500">Real-time attendance analytics and data export.</p>
         </div>
         <div className="flex flex-wrap gap-3">
+          {canSendEmployeeReports && (
+            <button
+              onClick={() => { setEmailNotice(null); setEmailPromptOpen(true); }}
+              className="flex items-center space-x-2 px-4 py-2 bg-violet-600 text-white rounded-lg hover:bg-violet-700 font-medium transition-colors shadow-sm"
+              title={`Email attendance and wages for ${selectedReportMonthLabel}`}
+            >
+              <Mail size={18} />
+              <span>Send Reports to Employees</span>
+            </button>
+          )}
           {schoolFlow && (
             <select
               value={personType}
@@ -233,8 +331,8 @@ const Reports = () => {
               className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-slate-700 font-medium"
               aria-label="Report person type"
             >
-              <option value="student">Student Reports</option>
-              <option value="faculty">Faculty Reports</option>
+              <option value="student">{terminology.person} Reports</option>
+              <option value="faculty">{terminology.staff} Reports</option>
             </select>
           )}
           <button
@@ -293,8 +391,8 @@ const Reports = () => {
                   <span className="flex items-center gap-1.5 text-indigo-600">
                     <span className="w-2 h-2 rounded-full bg-indigo-500 inline-block" />
                     {personType === 'student'
-                      ? `${analytics.summary.total_faculty ?? 0} Faculty`
-                      : `${analytics.summary.total_students ?? 0} Students`}
+                      ? `${analytics.summary.total_faculty ?? 0} ${terminology.staffPlural}`
+                      : `${analytics.summary.total_students ?? 0} ${terminology.people}`}
                   </span>
                 )}
               </div>

@@ -79,19 +79,24 @@ def calculate_salary_breakdown(gross_pay, config, pf_percent=12.0, esi_percent=0
         "net_before_advances": net_before_advances
     }
 
-def get_pending_advances(conn, person_id, month_str):
+def get_approved_advances(conn, person_id, month_str):
     """
-    Fetch pending advances for a person likely to be deducted.
+    Fetch owner-approved advances that must be deducted from payroll.
     month_str: YYYY-MM
     """
     c = conn.cursor()
     # Support both PG and SQLite
     is_pg = getattr(conn, "_is_pg", False)
     if is_pg:
-        c.execute("SELECT id, amount FROM advances WHERE person_id = %s AND deduction_month = %s AND status = 'pending'", (person_id, month_str))
+        c.execute("SELECT id, amount FROM advances WHERE person_id = %s AND deduction_month = %s AND status = 'approved'", (person_id, month_str))
     else:
-        c.execute("SELECT id, amount FROM advances WHERE person_id = ? AND deduction_month = ? AND status = 'pending'", (person_id, month_str))
+        c.execute("SELECT id, amount FROM advances WHERE person_id = ? AND deduction_month = ? AND status = 'approved'", (person_id, month_str))
     return c.fetchall()
+
+
+# Kept as a compatibility alias for older imports. The behavior is intentionally
+# approved-only: pending owner requests are never payroll deductions.
+get_pending_advances = get_approved_advances
 
 def mark_advances_deducted(conn, advance_ids):
     if not advance_ids:

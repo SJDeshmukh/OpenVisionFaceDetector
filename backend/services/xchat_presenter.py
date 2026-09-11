@@ -150,7 +150,9 @@ def build_presentation(question, tool_results):
 
         elif name == "get_person_payroll":
             presentation["metrics"].extend([
-                {"label": "Estimated wages", "value": result.get("estimated_wages", 0), "format": "currency", "currency": result.get("currency", "INR")},
+                {"label": "Net payable now", "value": result.get("net_payable", result.get("estimated_wages", 0)), "format": "currency", "currency": result.get("currency", "INR")},
+                {"label": "Gross earnings", "value": result.get("gross_earnings", result.get("estimated_wages", 0)), "format": "currency", "currency": result.get("currency", "INR")},
+                {"label": "Approved advances", "value": result.get("approved_advance_deduction", 0), "format": "currency", "currency": result.get("currency", "INR")},
                 {"label": "Payable hours", "value": result.get("total_payable_hours", 0), "format": "hours"},
                 {"label": "Matching people", "value": result.get("matched_people", 0), "format": "number"},
             ])
@@ -161,7 +163,9 @@ def build_presentation(question, tool_results):
                     [
                         {"key": "name", "label": "Employee"}, {"key": "department", "label": "Department"},
                         {"key": "designation", "label": "Designation"}, {"key": "hours", "label": "Hours", "format": "hours"},
-                        {"key": "estimated_wages", "label": "Estimated wages", "format": "currency", "currency": result.get("currency", "INR")},
+                        {"key": "gross_earnings", "label": "Gross earnings", "format": "currency", "currency": result.get("currency", "INR")},
+                        {"key": "approved_advance_deduction", "label": "Approved advance", "format": "currency", "currency": result.get("currency", "INR")},
+                        {"key": "net_payable", "label": "Net payable", "format": "currency", "currency": result.get("currency", "INR")},
                     ], rows, "individual-payroll.csv",
                 ))
 

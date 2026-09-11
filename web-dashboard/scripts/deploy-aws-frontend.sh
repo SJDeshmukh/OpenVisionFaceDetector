@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+a#!/usr/bin/env bash
 set -euo pipefail
 
 BUCKET_NAME="${BUCKET_NAME:-}"

@@ -3,10 +3,12 @@ import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { API_URL } from '../config';
 import { Search, Filter, SlidersHorizontal, Loader2, Upload, X, Check, ArrowRight } from 'lucide-react';
+import { getBusinessTerminology, usesStudentRecords } from '../lib/businessTerminology';
 
 const Faces = () => {
   const { user } = useAuth();
-  const schoolFlow = Boolean(user?.vertical && ['school', 'hostel'].includes(String(user.vertical).toLowerCase()));
+  const terminology = getBusinessTerminology(user?.vertical);
+  const schoolFlow = usesStudentRecords(user?.vertical);
   const [persons, setPersons] = useState([]);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState('');
@@ -214,8 +216,8 @@ const Faces = () => {
     });
     if (incomplete) {
       alert(schoolFlow
-        ? 'Every student needs a name and a class/section before registration.'
-        : 'Every person needs a name before registration.');
+        ? `Every ${terminology.person.toLowerCase()} needs a name and a ${terminology.group.toLowerCase()} before registration.`
+        : `Every ${terminology.person.toLowerCase()} needs a name before registration.`);
       return;
     }
 
@@ -277,13 +279,13 @@ const Faces = () => {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-slate-800">People Management</h1>
+        <h1 className="text-2xl font-bold text-slate-800">{terminology.people} Face Gallery</h1>
         {batchId && (
           <button 
             onClick={() => setRegistrationMode(!registrationMode)}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${registrationMode ? 'bg-indigo-100 text-indigo-700' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}
           >
-            {registrationMode ? 'View People Gallery' : 'View Upload Progress'}
+            {registrationMode ? `View ${terminology.people} Gallery` : 'View Upload Progress'}
           </button>
         )}
       </div>
@@ -291,7 +293,7 @@ const Faces = () => {
       {!registrationMode && (
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-4">
           <div className="flex flex-wrap items-center gap-3">
-            <select
+            {terminology.groupedPeople && <select
               className="p-2 border rounded-lg bg-white min-w-[200px]"
               value={selectedClass.id || ''}
               onChange={(e) => {
@@ -299,13 +301,13 @@ const Faces = () => {
                 setSelectedClass(selected || { id: '', class_year: '', division: '', branch: '' });
               }}
             >
-              <option value="">Filter by Class (Optional)</option>
+              <option value="">Filter by {terminology.group} (Optional)</option>
               {classes.map(c => (
                 <option key={c.id} value={c.id}>
                   {c.label || `${c.class_year} ${c.branch} ${c.division}`}
                 </option>
               ))}
-            </select>
+            </select>}
 
             <label className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 cursor-pointer disabled:opacity-50 transition-colors">
               {uploading ? <Loader2 className="animate-spin" size={18} /> : <Upload size={18} />}
@@ -416,7 +418,7 @@ const Faces = () => {
                 disabled={loading || Object.keys(assignments).length === 0}
                 className="px-6 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 shadow-sm transition-all font-medium"
               >
-                Register {Object.keys(assignments).length} Person(s)
+                Register {Object.keys(assignments).length} {Object.keys(assignments).length === 1 ? terminology.person : terminology.people}
               </button>
             </div>
           </div>
@@ -542,7 +544,7 @@ const Faces = () => {
                                   />
                                 </div>
                                 <div className="space-y-1">
-                                  <label className="text-[10px] font-bold text-slate-400 uppercase">Student / ID Number</label>
+                                  <label className="text-[10px] font-bold text-slate-400 uppercase">{terminology.person} ID Number</label>
                                   <input 
                                     placeholder="Eg: STU123"
                                     className="w-full p-2.5 text-sm border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all shadow-sm"
@@ -565,9 +567,9 @@ const Faces = () => {
                                     }))}
                                   />
                                 </div>
-                                <div className="space-y-1">
+                                {terminology.groupedPeople && <div className="space-y-1">
                                   <label className="text-[10px] font-bold text-slate-400 uppercase">
-                                    Class assignment{schoolFlow ? ' *' : ''}
+                                    {terminology.group} assignment{schoolFlow ? ' *' : ''}
                                   </label>
                                   <select
                                     className="w-full p-2.5 text-sm border rounded-xl bg-white focus:ring-2 focus:ring-indigo-500 outline-none transition-all shadow-sm"
@@ -586,14 +588,14 @@ const Faces = () => {
                                     }}
                                     required={schoolFlow}
                                   >
-                                    <option value="">Select Class...</option>
+                                    <option value="">Select {terminology.group}...</option>
                                     {classes.map(c => (
                                       <option key={c.id} value={c.id}>
                                         {c.label || `${c.class_year} ${c.branch} ${c.division}`}
                                       </option>
                                     ))}
                                   </select>
-                                </div>
+                                </div>}
                               </div>
                             </div>
                             
@@ -642,12 +644,12 @@ const Faces = () => {
           {loading ? (
             <div className="col-span-full py-20 flex flex-col items-center justify-center text-slate-400">
               <Loader2 className="animate-spin mb-3" />
-              <span>Loading people data...</span>
+              <span>Loading {terminology.people.toLowerCase()} data...</span>
             </div>
           ) : filtered.length === 0 ? (
             <div className="col-span-full py-20 flex flex-col items-center justify-center text-slate-400 bg-white rounded-xl border border-dashed">
               <Search className="mb-3 text-slate-200" size={48} />
-              <div className="text-lg font-medium">No people found</div>
+              <div className="text-lg font-medium">No {terminology.people.toLowerCase()} found</div>
               <p className="text-sm">Try adjusting your filters or search query.</p>
             </div>
           ) : (
@@ -677,7 +679,7 @@ const Faces = () => {
                         p.custom?.class_year || p.custom?.Year, 
                         p.custom?.branch || p.custom?.Department, 
                         p.custom?.division || p.custom?.Division
-                      ].filter(Boolean).join(' • ') || 'No Class Assigned'}
+                      ].filter(Boolean).join(' • ') || `No ${terminology.group} Assigned`}
                     </div>
                   </div>
                   <div className="pt-2 border-t flex flex-wrap gap-1">

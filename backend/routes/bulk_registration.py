@@ -9,16 +9,19 @@ from flask import Blueprint, request, jsonify, g
 from utils import get_db_connection, log_audit, vendor_has_feature
 from services.auth_service import require_auth, hash_password
 from services.person_scope_service import is_school_hostel, parse_custom_data
-from openpyxl import load_workbook
+from services.spreadsheet_mapping_service import map_spreadsheet_headers
 
 bulk_registration_bp = Blueprint('bulk_registration_bp', __name__)
 
-def _fuzzy_match(header, targets):
-    h = str(header).strip().lower()
-    for t in targets:
-        if t.lower() in h:
-            return True
-    return False
+def _requested_header_mapping():
+    raw = request.form.get('header_mapping')
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
 
 @bulk_registration_bp.route("/bulk-registration/upload", methods=["POST"])
 @require_auth(roles=['super_admin', 'vendor_admin', 'owner'])
@@ -60,43 +63,30 @@ def bulk_registration_upload():
         req_branch = None
 
         headers = list(data[0].keys())
-        excel_class_id_key = next(
-            (h for h in headers if str(h).strip().lower().replace(' ', '_') == 'class_id'),
-            None,
+        mapping_result = map_spreadsheet_headers(
+            headers, data, context="student",
+            manual_mapping=_requested_header_mapping(),
+            vendor_id=vendor_id, username=getattr(g, 'username', ''),
         )
-
-        # Mapping Logic - Expanded for better auto-identification
-        name_targets = ["name", "full name", "student name", "employee name", "person name", "first name"]
-        id_targets = [
-            "student id", "student_id", "student number", "student_number", "student no",
-            "roll number", "roll no", "roll num", "enrollment number", "enrollment no",
-            "enroll no", "admission number", "admission no", "id number", "id"
-        ]
-        phone_targets = [
-            "mobile", "phone", "contact", "whatsapp", "parent number", "parent mobile",
-            "alternative number", "student mobile number", "student mobile", "student phone",
-            "student contact", "contact number", "contact mobile"
-        ]
-        dept_targets = ["department", "dept", "branch", "class", "section"]
-        desig_targets = ["designation", "role", "post"]
-        shift_targets = ["shift", "timing"]
-
-        name_key = next((h for h in headers if _fuzzy_match(h, name_targets)), None)
-        phone_key = next((h for h in headers if _fuzzy_match(h, phone_targets)), None)
-
-        # Identify ID column for Automated Login Creation logic
-        id_key = next((h for h in headers if _fuzzy_match(h, id_targets)), None)
-        if not id_key and data:
-            first_row = data[0]
-            for h in headers:
-                val = str(first_row.get(h) or "").strip()
-                # Pattern: Alphanumeric, 4-20 chars, must contain at least one digit
-                if re.match(r'^(?=.*[0-9])[A-Za-z0-9\-_]{4,20}$', val):
-                    id_key = h
-                    break
+        header_mapping = mapping_result['mapping']
+        name_key = header_mapping.get('name')
+        phone_key = header_mapping.get('phone')
+        id_key = header_mapping.get('person_id')
+        excel_class_id_key = header_mapping.get('class_id')
+        department_key = header_mapping.get('department')
+        designation_key = header_mapping.get('designation')
+        shift_key = header_mapping.get('shift')
+        class_year_key = header_mapping.get('class_year')
+        division_key = header_mapping.get('division')
+        branch_key = header_mapping.get('branch')
 
         if not name_key:
-            return jsonify({"error": "Could not identify 'Name' column. Please ensure one of the headers contains 'Name'."}), 400
+            return jsonify({
+                "error": "Could not safely identify the person name column.",
+                "code": "HEADER_MAPPING_REQUIRED",
+                "headers": [str(header) for header in headers],
+                "suggested_mapping": {key: str(value) for key, value in header_mapping.items()},
+            }), 400
 
         conn = get_db_connection()
         c = conn.cursor()
@@ -156,9 +146,9 @@ def bulk_registration_upload():
                     continue
 
                 row_class_id = req_class_id
-                row_class_year = req_class_year
-                row_division = req_division
-                row_branch = req_branch
+                row_class_year = req_class_year or (str(row.get(class_year_key) or '').strip() if class_year_key else None)
+                row_division = req_division or (str(row.get(division_key) or '').strip() if division_key else None)
+                row_branch = req_branch or (str(row.get(branch_key) or '').strip() if branch_key else None)
                 if not row_class_id and excel_class_id_key:
                     row_class_id = str(row.get(excel_class_id_key) or '').strip()
                     if row_class_id:
@@ -178,7 +168,7 @@ def bulk_registration_upload():
                     skipped_count += 1
                     continue
 
-                phone = str(row.get(phone_key) or "").strip()
+                phone = str(row.get(phone_key) or "").strip() if phone_key else ""
 
                 # Duplicate detection is student-scoped. A faculty profile with the
                 # same name/phone must never block or absorb a student registration.
@@ -235,11 +225,13 @@ def bulk_registration_upload():
 
                 # Build custom_data; exclude name and phone (stored in core columns)
                 custom_dict = {"person_type": "student"}
+                canonical_by_header = {header: canonical for canonical, header in header_mapping.items()}
+                core_keys = {key for key in (name_key, phone_key, id_key, department_key, designation_key, shift_key, excel_class_id_key) if key is not None}
                 for k, v in row.items():
-                    if k in [name_key, phone_key, id_key]:
+                    if k in core_keys:
                         continue
                     if v is not None:
-                        custom_dict[str(k).strip()] = str(v).strip()
+                        custom_dict[canonical_by_header.get(k, str(k).strip())] = str(v).strip()
 
                 # Always store student ID in custom_data under the normalised key so
                 # the parent login lookup (_extract_student_number_from_custom_data)
@@ -267,10 +259,13 @@ def bulk_registration_upload():
                 c.execute("SELECT COALESCE(MAX(display_id), 0) + 1 FROM faces WHERE vendor_id = ?", (vendor_id,))
                 next_display_id = c.fetchone()[0]
 
+                department = str(row.get(department_key) or '').strip() if department_key else ''
+                designation = str(row.get(designation_key) or '').strip() if designation_key else ''
+                shift = str(row.get(shift_key) or '').strip() if shift_key else ''
                 c.execute("""
                     INSERT INTO faces (name, phone, department, designation, shift, vendor_id, custom_data, display_id)
-                    VALUES (?, ?, '', '', '', ?, ?, ?)
-                """, (name, phone, vendor_id, custom_data_str, next_display_id))
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (name, phone, department, designation, shift, vendor_id, custom_data_str, next_display_id))
 
                 person_id = c.lastrowid
 
@@ -297,13 +292,8 @@ def bulk_registration_upload():
             field_name = str(h).strip()
             if not field_name:
                 continue
-            canonical_name = (
-                'name' if h == name_key else
-                'phone' if h == phone_key else
-                student_id_custom_key if h == id_key else
-                'class_id' if h == excel_class_id_key else
-                field_name
-            )
+            mapped_name = next((canonical for canonical, header in header_mapping.items() if header == h), None)
+            canonical_name = student_id_custom_key if mapped_name == 'person_id' else (mapped_name or field_name)
             existing_f = next((f for f in existing_fields if str(f.get('label') or '').strip().lower() == field_name.lower() or str(f.get('name') or '').strip().lower() == canonical_name.lower()), None)
 
             field_config = {
@@ -313,9 +303,9 @@ def bulk_registration_upload():
                 "type": (existing_f or {}).get("type") or "text",
                 "required": bool((existing_f or {}).get("required", h == name_key)),
                 "default": False,
-                "is_name": h == name_key,
-                "is_phone": h == phone_key,
-                "is_id": h == id_key,
+                "is_name": canonical_name == 'name',
+                "is_phone": canonical_name == 'phone',
+                "is_id": mapped_name == 'person_id',
             }
                 
             new_sync_fields.append(field_config)
@@ -408,13 +398,16 @@ def bulk_registration_upload():
         c.execute("UPDATE vendors SET registration_config = ? WHERE id = ?", (json.dumps(new_reg_config, separators=(',', ':')), vendor_id))
 
         conn.commit()
-        log_audit('bulk_registration', details={"success_count": success_count, "skipped_count": skipped_count, "filename": filename}, target_vendor_id=vendor_id)
+        log_audit('bulk_registration', details={"success_count": success_count, "skipped_count": skipped_count, "filename": filename, "mapping_method": mapping_result['method']}, target_vendor_id=vendor_id)
 
         return jsonify({
             "success": True,
             "message": f"Successfully registered {success_count} students.",
             "skipped": skipped_count,
-            "errors": errors[:10]
+            "errors": errors[:10],
+            "header_mapping": {key: str(value) for key, value in header_mapping.items()},
+            "mapping_method": mapping_result['method'],
+            "mapping_warning": mapping_result.get('warning'),
         })
 
     except Exception as e:
@@ -507,19 +500,18 @@ def bulk_registration_upload_faculty():
         if not data:
             return jsonify({"error": "File is empty"}), 400
 
-        # Attempt to map columns
+        # Map headers once. Raw faculty rows are not sent to the model.
         headers = list(data[0].keys())
-        email_key = None
-        name_key = None
-        phone_key = None
-        desig_key = None
-
-        for h in headers:
-            h_low = str(h).lower().strip()
-            if 'email' in h_low: email_key = h
-            elif 'name' in h_low: name_key = h
-            elif 'phone' in h_low or 'mobile' in h_low: phone_key = h
-            elif 'designation' in h_low or 'role' in h_low or 'desig' in h_low: desig_key = h
+        mapping_result = map_spreadsheet_headers(
+            headers, data, context="faculty",
+            manual_mapping=_requested_header_mapping(),
+            vendor_id=vendor_id, username=getattr(g, 'username', ''),
+        )
+        header_mapping = mapping_result['mapping']
+        email_key = header_mapping.get('email')
+        name_key = header_mapping.get('name')
+        phone_key = header_mapping.get('phone')
+        desig_key = header_mapping.get('designation')
 
         if not email_key:
             # Fallback to searching all cells if no explicit email column
@@ -591,14 +583,17 @@ def bulk_registration_upload_faculty():
         conn.commit()
         conn.close()
 
-        log_audit('faculty_upload', details={"created": created, "skipped": skipped, "filename": file.filename}, target_vendor_id=vendor_id)
+        log_audit('faculty_upload', details={"created": created, "skipped": skipped, "filename": file.filename, "mapping_method": mapping_result['method']}, target_vendor_id=vendor_id)
 
         return jsonify({
             "success": True,
             "message": f"Created {created} faculty login(s). {skipped} already existed.",
             "created": created,
             "skipped": skipped,
-            "temporary_credentials": temporary_credentials
+            "temporary_credentials": temporary_credentials,
+            "header_mapping": {key: str(value) for key, value in header_mapping.items()},
+            "mapping_method": mapping_result['method'],
+            "mapping_warning": mapping_result.get('warning'),
         })
 
     except Exception as e:

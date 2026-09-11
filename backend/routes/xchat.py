@@ -104,6 +104,15 @@ def transcription_status():
     return jsonify({"status": "success", **stt_service.speech_to_text.status()})
 
 
+@xchat_bp.get("/xchat/credits")
+@require_auth(roles=XCHAT_ROLES)
+def credit_status():
+    if error := _feature_guard():
+        return error
+    from services.xchat_billing_service import get_credit_status
+    return jsonify({"status": "success", "credits": get_credit_status(g.vendor_id)})
+
+
 @xchat_bp.post("/xchat/transcribe")
 @require_auth(roles=XCHAT_ROLES)
 @rate_limit(key_func=lambda: f"xchat-stt:{g.vendor_id}:{g.username}", limit=6, window=60)

@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { API_URL } from '../config';
+import { getBusinessTerminology, usesStudentRecords } from '../lib/businessTerminology';
 
 import { useSocket } from '../context/SocketContext';
 
@@ -45,13 +46,14 @@ const Attendance = () => {
   });
   const [deviceOptions, setDeviceOptions] = useState([]);
   const { user } = useAuth();
-  const schoolFlow = Boolean(user?.vertical && ['school', 'hostel'].includes(String(user.vertical).toLowerCase()));
+  const terminology = getBusinessTerminology(user?.vertical);
+  const schoolFlow = usesStudentRecords(user?.vertical);
   const [personType, setPersonType] = useState('student');
   const filtersRef = useRef(filters);
   useEffect(() => {
     filtersRef.current = filters;
   }, [filters]);
-  const personLabel = schoolFlow ? (personType === 'faculty' ? 'Faculty' : 'Student') : 'Employee';
+  const personLabel = schoolFlow ? (personType === 'faculty' ? terminology.staff : terminology.person) : terminology.person;
 
   useEffect(() => {
     fetchFilters(filtersRef.current);
@@ -251,8 +253,8 @@ const Attendance = () => {
               className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-slate-700 font-medium"
               aria-label="Attendance person type"
             >
-              <option value="student">Student Attendance</option>
-              <option value="faculty">Faculty Attendance</option>
+              <option value="student">{terminology.person} Attendance</option>
+              <option value="faculty">{terminology.staff} Attendance</option>
             </select>
           )}
           <div className="relative">
@@ -477,7 +479,7 @@ const Attendance = () => {
                                     <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Time</th>
                                     <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Date</th>
                                     <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Subject</th>
-                                    <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Class</th>
+                                    <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">{terminology.group}</th>
                                     <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Place</th>
                                     <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Status</th>
                                   </tr>

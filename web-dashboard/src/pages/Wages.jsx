@@ -189,6 +189,46 @@ const Wages = () => {
     };
   }, [socket, user, hasChanges, workingHoursChanged, startDate, endDate]);
 
+  const recalculatePayrollPerson = (person) => {
+    const hourlyRate = (person.daily_wage || 0) / Math.max(parseFloat(workingHours) || 0, 0.01);
+    const baseCost = (person.total_hours || 0) * hourlyRate;
+    const allowance = person.late_allowance_days ?? globalSettings.allowance;
+    const deduction = person.late_deduction_amount ?? globalSettings.deduction;
+    const lateMarks = person.late_marks_count || 0;
+    const lateDeduction = Math.max(0, lateMarks - allowance) * deduction;
+
+    const configuredBasic = parseFloat(person.basic_salary || 0);
+    const configuredHra = parseFloat(person.hra || 0);
+    const configuredConveyance = parseFloat(person.conveyance || 0);
+    const configuredSpecial = parseFloat(person.special_allowance || 0);
+    const basic = configuredBasic || baseCost * 0.5;
+    const hra = configuredHra || baseCost * 0.2;
+    const conveyance = configuredConveyance || 0;
+    const specialAllowance = configuredSpecial || Math.max(0, baseCost - basic - hra - conveyance);
+    const gross = basic + hra + conveyance + specialAllowance;
+    const pf = person.pf_enabled ? Math.min(basic, 15000) * (parseFloat(pfPercentage) / 100) : 0;
+    const esi = person.esi_enabled && gross <= 21000 ? gross * (parseFloat(esiPercentage) / 100) : 0;
+    const professionalTax = parseFloat(person.professional_tax || 0);
+    const statutoryDeduction = pf + esi + professionalTax;
+    const advanceDeduction = parseFloat(person.advance_deduction || 0);
+    const finalPayout = gross - statutoryDeduction - lateDeduction - advanceDeduction;
+
+    return {
+      ...person,
+      base_cost: baseCost.toFixed(2),
+      late_deduction: lateDeduction.toFixed(2),
+      breakdown: {
+        ...(person.breakdown || {}),
+        components: { basic, hra, conveyance, special_allowance: specialAllowance },
+        deductions: { pf, esi, pt: professionalTax, total_statutory: statutoryDeduction },
+        gross,
+        net_before_advances: gross - statutoryDeduction,
+      },
+      final_payout: finalPayout.toFixed(2),
+      total_cost: finalPayout.toFixed(2),
+    };
+  };
+
   const handleWageChange = (index, field, value) => {
     const newData = [...payrollData];
 
@@ -211,26 +251,20 @@ const Wages = () => {
       newData[index][field] = value === '' ? 0 : parseFloat(value);
     }
 
-    // Recalculate
-    const hourlyRate = (newData[index].daily_wage || 0) / workingHours;
-    const baseCost = (newData[index].total_hours || 0) * hourlyRate;
-
-    // Late Deduction
-    const allowance = newData[index].late_allowance_days ?? globalSettings.allowance;
-    const deduction = newData[index].late_deduction_amount ?? globalSettings.deduction;
-    const lateMarks = newData[index].late_marks_count || 0;
-
-    const deductableLates = Math.max(0, lateMarks - allowance);
-    const totalDeduction = deductableLates * deduction;
-
-    const finalPayout = baseCost - totalDeduction;
-
-    newData[index].base_cost = baseCost.toFixed(2);
-    newData[index].late_deduction = totalDeduction.toFixed(2);
-    newData[index].final_payout = finalPayout.toFixed(2);
-    newData[index].total_cost = finalPayout.toFixed(2);
+    newData[index] = recalculatePayrollPerson(newData[index]);
 
     setPayrollData(newData);
+    setHasChanges(true);
+  };
+
+  const enablePfAndEsiForAll = () => {
+    if (!payrollData.length) return;
+    const updated = payrollData.map(person => recalculatePayrollPerson({
+      ...person,
+      pf_enabled: 1,
+      esi_enabled: 1,
+    }));
+    setPayrollData(updated);
     setHasChanges(true);
   };
 
@@ -475,6 +509,17 @@ const Wages = () => {
           <p className="text-sm text-slate-500 mt-1">Manage employee daily wages and calculate estimated costs.</p>
         </div>
 
+        <div className="flex flex-wrap justify-end gap-2">
+          <button
+            onClick={enablePfAndEsiForAll}
+            disabled={!payrollData.length || loading}
+            className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-2 shadow-sm transition-all"
+            title="Enable PF and ESI for every employee shown below; gratuity remains unchanged"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/><path d="M16 6h4v4"/></svg>
+            Enable PF &amp; ESI for All
+          </button>
+
         {hasChanges && (
           <button
             onClick={saveWages}
@@ -507,6 +552,7 @@ const Wages = () => {
             Manage Owners
           </button>
         )}
+        </div>
       </div>
 
       {error && (

@@ -297,7 +297,7 @@ def get_payroll_summary(vendor_id, start_date, end_date, department=None):
 
 
 def get_person_payroll(vendor_id, name, start_date=None, end_date=None):
-    """Return an individual person's estimated payroll, defaulting to this month."""
+    """Return individual net payroll after approved advances, defaulting to this month."""
     search_name = str(name or "").strip()
     if not search_name:
         raise ValueError("A person's name is required")
@@ -308,13 +308,52 @@ def get_person_payroll(vendor_id, name, start_date=None, end_date=None):
     metrics = _employee_metrics(vendor_id, start, end)
     exact = [item for item in metrics if str(item.get("name") or "").casefold() == search_name.casefold()]
     matches = exact or [item for item in metrics if search_name.casefold() in str(item.get("name") or "").casefold()]
+    person_ids = [item["person_id"] for item in matches]
+    approved_by_person = defaultdict(float)
+    if person_ids:
+        months = []
+        cursor = start.replace(day=1)
+        while cursor <= end:
+            months.append(cursor.strftime("%Y-%m"))
+            cursor = (cursor.replace(day=28) + timedelta(days=4)).replace(day=1)
+        conn = _db()
+        c = conn.cursor()
+        try:
+            person_placeholders = ", ".join("?" for _ in person_ids)
+            month_placeholders = ", ".join("?" for _ in months)
+            c.execute(f"""
+                SELECT person_id, COALESCE(SUM(amount), 0) AS approved_total
+                FROM advances
+                WHERE vendor_id = ? AND status = 'approved'
+                  AND person_id IN ({person_placeholders})
+                  AND deduction_month IN ({month_placeholders})
+                GROUP BY person_id
+            """, [vendor_id, *person_ids, *months])
+            for row in c.fetchall() or []:
+                approved_by_person[row[0]] = float(row[1] or 0)
+        finally:
+            conn.close()
+
+    for item in matches:
+        gross = float(item.get("estimated_wages") or 0)
+        advance = round(approved_by_person[item["person_id"]], 2)
+        item["gross_earnings"] = round(gross, 2)
+        item["approved_advance_deduction"] = advance
+        item["net_payable"] = round(gross - advance, 2)
+
+    gross_total = round(sum(item["gross_earnings"] for item in matches), 2)
+    approved_advance_total = round(sum(item["approved_advance_deduction"] for item in matches), 2)
+    net_total = round(sum(item["net_payable"] for item in matches), 2)
     return {
         "period": {"start": start.isoformat(), "end": end.isoformat()},
         "query": search_name, "matched_people": len(matches), "people": matches[:MAX_RESULT_ROWS],
-        "estimated_wages": round(sum(item["estimated_wages"] for item in matches), 2),
+        "estimated_wages": net_total,
+        "gross_earnings": gross_total,
+        "approved_advance_deduction": approved_advance_total,
+        "net_payable": net_total,
         "total_payable_hours": round(sum(item["hours"] for item in matches), 2),
         "currency": "INR",
-        "note": "Estimated wages use recorded payable hours and the person's daily-wage rate; statutory and manual adjustments are not included.",
+        "note": "Net payable uses recorded payable hours and deducts owner-approved advances scheduled for the selected month(s). Pending or rejected advances are not deducted; statutory and other manual adjustments are not included.",
         "source_path": "/wages",
     }
 
@@ -733,7 +772,7 @@ TOOL_SCHEMAS = [
     {"type": "function", "function": {"name": "get_present_people", "description": "List the registered people who have an attendance event on a date. Use this for questions asking who is present, which employees are present, or for the names of people present today/on a specific day. Never use the absent-people tool for those questions. The date is optional and defaults to today.", "parameters": {"type": "object", "properties": {"attendance_date": {"type": "string", "description": "Date in YYYY-MM-DD format; omit for today"}, "department": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}}}},
     {"type": "function", "function": {"name": "get_absent_people", "description": "List the registered people who have no attendance event on a date. Use this for questions asking who is absent or missing today/on a specific day. The date is optional and defaults to today.", "parameters": {"type": "object", "properties": {"attendance_date": {"type": "string", "description": "Date in YYYY-MM-DD format; omit for today"}, "department": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}}}},
     {"type": "function", "function": {"name": "get_payroll_summary", "description": "Calculate total payable hours and estimated wages for a period.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "department": {"type": "string"}}, "required": ["start_date", "end_date"]}}},
-    {"type": "function", "function": {"name": "get_person_payroll", "description": "Look up estimated wages and payable hours for a named individual. Use this whenever a user asks about one person's wage, salary, payroll, or hours. Dates are optional and default to the current month through today.", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "Full or partial person name"}, **_date_properties("start_date", "end_date")}, "required": ["name"]}}},
+    {"type": "function", "function": {"name": "get_person_payroll", "description": "Look up gross earnings, owner-approved advance deductions, net payable, and payable hours for a named individual. Use this whenever a user asks about one person's wage, salary, payroll, current amount to pay, or hours. Dates are optional and default to the current month through today.", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "Full or partial person name"}, **_date_properties("start_date", "end_date")}, "required": ["name"]}}},
     {"type": "function", "function": {"name": "get_person_advances", "description": "List advance payments taken by a named person and total them. Use this for questions about an individual's advances; do not use the payroll estimate tool. Optionally filter by deduction month.", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "Full or partial person name"}, "deduction_month": {"type": "string", "description": "Optional month in YYYY-MM format"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}, "required": ["name"]}}},
     {"type": "function", "function": {"name": "compare_payroll_periods", "description": "Compare estimated wages between two date periods.", "parameters": {"type": "object", "properties": {**_date_properties("current_start", "current_end", "previous_start", "previous_end"), "department": {"type": "string"}}, "required": ["current_start", "current_end", "previous_start", "previous_end"]}}},
     {"type": "function", "function": {"name": "get_employee_hours_ranking", "description": "Rank employees by payable hours in a period.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "department": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}, "order": {"type": "string", "enum": ["highest", "lowest"]}}, "required": ["start_date", "end_date"]}}},

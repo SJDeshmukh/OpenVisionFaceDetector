@@ -18,7 +18,7 @@ from utils import (
 from services.attendance_service import (
     calculate_daily_hours, calculate_expected_hours, calculate_arrival_status
 )
-from services.payroll_service import calculate_salary_breakdown, get_pending_advances
+from services.payroll_service import calculate_salary_breakdown, get_approved_advances
 from services.auth_service import require_auth
 from services.report_filter_service import (
     STANDARD_FILTERS, custom_value, face_matches, merge_filter_configuration, parse_json_list,
@@ -33,6 +33,40 @@ from services.person_scope_service import (
 )
 
 attendance_reports_bp = Blueprint('attendance_reports_bp', __name__)
+
+
+@attendance_reports_bp.route("/reports/email-employees", methods=["POST"])
+@require_auth(roles=["super_admin", "vendor_admin", "admin", "owner"])
+def email_employee_monthly_reports():
+    """Queue one private monthly attendance/payroll email per registered employee."""
+    payload = request.get_json(silent=True) or {}
+    month = str(payload.get("month") or "").strip()
+    person_type = payload.get("person_type")
+    from services.employee_email_reports_service import count_employee_report_recipients, month_period
+    try:
+        month_period(month)
+        recipient_count = count_employee_report_recipients(g.vendor_id, person_type)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception:
+        logger.exception("Unable to prepare employee report email batch for vendor %s", g.vendor_id)
+        return jsonify({"error": "Could not prepare employee report emails"}), 500
+    if recipient_count == 0:
+        return jsonify({"error": "No employees in this report have a registered email address"}), 400
+    try:
+        from tasks import send_employee_monthly_reports_task
+        task = send_employee_monthly_reports_task.apply_async(
+            args=[g.vendor_id, month, person_type], queue="normal_priority",
+        )
+    except (ImportError, AttributeError):
+        return jsonify({"error": "Background email worker is not configured"}), 503
+    except Exception:
+        logger.exception("Unable to queue employee report emails for vendor %s", g.vendor_id)
+        return jsonify({"error": "Could not queue employee report emails"}), 503
+    return jsonify({
+        "success": True, "status": "queued", "task_id": task.id,
+        "recipient_count": recipient_count, "month": month,
+    }), 202
 
 
 def _scope_face_rows(cursor, vendor_id, rows, requested_type=None):
@@ -658,7 +692,7 @@ def get_payroll_report(valid_data: PayrollReportRequest):
         )
         
         # Fetch and process advances
-        advances = get_pending_advances(conn, pid, target_month)
+        advances = get_approved_advances(conn, pid, target_month)
         advance_total = sum(adv[1] for adv in advances)
         
         final_payout = round(breakdown['net_before_advances'] - total_deduction - advance_total, 2)

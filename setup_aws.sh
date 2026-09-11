@@ -501,9 +501,9 @@ prompt_xchat_provider() {
         entered_value="$XCHAT_PROVIDER"
     elif [ -t 0 ]; then
         existing_value="${existing_value,,}"
-        [[ "$existing_value" =~ ^(gemini|mistral|groq|omniroute|none)$ ]] || existing_value="gemini"
+        [[ "$existing_value" =~ ^(bedrock|gemini|mistral|groq|omniroute|none)$ ]] || existing_value="bedrock"
         printf '\nXChat AI provider\n' >&2
-        printf '  1) Gemini\n  2) Mistral\n  3) Groq (openai/gpt-oss-20b)\n  4) OmniRoute (auto routing/fallback)\n  5) Disabled\n' >&2
+        printf '  1) Gemini\n  2) Mistral\n  3) Groq (openai/gpt-oss-20b)\n  4) OmniRoute (auto routing/fallback)\n  5) AWS Bedrock (nvidia.nemotron-nano-3-30b)\n  6) Disabled\n' >&2
         read -r -p "Select provider (current/default: ${existing_value}): " entered_value
         entered_value="${entered_value:-$existing_value}"
     else
@@ -514,8 +514,9 @@ prompt_xchat_provider() {
         2|mistral) printf 'mistral' ;;
         3|groq|grok) printf 'groq' ;;
         4|omniroute|omni-route|omni) printf 'omniroute' ;;
-        5|none|disabled|off) printf 'none' ;;
-        *) die "Choose Gemini, Mistral, Groq, OmniRoute, or Disabled for XChat" ;;
+        5|bedrock|aws-bedrock|aws_bedrock|nemotron) printf 'bedrock' ;;
+        6|none|disabled|off) printf 'none' ;;
+        *) die "Choose Gemini, Mistral, Groq, OmniRoute, AWS Bedrock, or Disabled for XChat" ;;
     esac
 }
 
@@ -556,6 +557,30 @@ prompt_gemini_api_key() {
 
 prompt_groq_api_key() {
     prompt_ai_api_key "Groq" GROQ_API_KEY "${1:-}"
+}
+
+prompt_bedrock_api_key() {
+    local existing_value="${1:-}"
+    local entered_value=""
+    if [ -n "${AWS_BEARER_TOKEN_BEDROCK:-}" ]; then
+        entered_value="$AWS_BEARER_TOKEN_BEDROCK"
+    elif [ -t 0 ]; then
+        printf '\nAWS Bedrock XChat setup (input is hidden)\n' >&2
+        if [ -n "$existing_value" ]; then
+            read -r -s -p "Press Enter to keep the saved Bedrock API key, or paste a replacement: " entered_value
+            entered_value="${entered_value:-$existing_value}"
+        else
+            read -r -s -p "Paste a NEW AWS Bedrock long-term API key: " entered_value
+        fi
+        printf '\n' >&2
+    elif [ -n "$existing_value" ]; then
+        entered_value="$existing_value"
+    fi
+    entered_value="$(printf '%s' "$entered_value" | tr -d '[:space:]')"
+    if [ -n "$entered_value" ] && [[ ! "$entered_value" =~ ^[A-Za-z0-9._:/+=-]{20,1000}$ ]]; then
+        die "AWS_BEARER_TOKEN_BEDROCK has an unexpected format"
+    fi
+    printf '%s' "$entered_value"
 }
 
 prompt_omniroute_api_key() {
@@ -626,6 +651,13 @@ configure_ai_file() {
     local provider_name="$2"
     local api_key="$3"
     file_env_set "$target_file" XCHAT_PROVIDER "$provider_name"
+    file_env_set "$target_file" AWS_BEDROCK_REGION "${AWS_BEDROCK_REGION:-ap-south-1}"
+    file_env_set "$target_file" AWS_BEDROCK_RUNTIME_BASE_URL "${AWS_BEDROCK_RUNTIME_BASE_URL:-https://bedrock-runtime.ap-south-1.amazonaws.com}"
+    file_env_set "$target_file" AWS_BEDROCK_MODEL "nvidia.nemotron-nano-3-30b"
+    file_env_set "$target_file" AWS_BEDROCK_TIMEOUT_SECONDS "60"
+    file_env_set "$target_file" AWS_BEDROCK_MAX_RETRIES "2"
+    file_env_set "$target_file" AWS_BEDROCK_MAX_OUTPUT_TOKENS "700"
+    file_env_set "$target_file" SPREADSHEET_LLM_MAPPING_ENABLED "true"
     file_env_set "$target_file" MISTRAL_MODEL "mistral-small-latest"
     file_env_set "$target_file" MISTRAL_TIMEOUT_SECONDS "30"
     file_env_set "$target_file" MISTRAL_MAX_RETRIES "2"
@@ -646,7 +678,9 @@ configure_ai_file() {
     file_env_set "$target_file" OMNIROUTE_TIMEOUT_SECONDS "60"
     file_env_set "$target_file" OMNIROUTE_MAX_RETRIES "0"
     file_env_set "$target_file" OMNIROUTE_MAX_OUTPUT_TOKENS "700"
-    if [ "$provider_name" = "gemini" ]; then
+    if [ "$provider_name" = "bedrock" ]; then
+        file_env_set "$target_file" AWS_BEARER_TOKEN_BEDROCK "$api_key"
+    elif [ "$provider_name" = "gemini" ]; then
         file_env_set "$target_file" GEMINI_API_KEY "$api_key"
     elif [ "$provider_name" = "mistral" ]; then
         file_env_set "$target_file" MISTRAL_API_KEY "$api_key"
@@ -665,8 +699,10 @@ existing_xchat_provider() {
     local target_file="$1"
     local configured_provider=""
     configured_provider="$(file_env_get "$target_file" XCHAT_PROVIDER)"
-    if [[ "${configured_provider,,}" =~ ^(gemini|mistral|groq|omniroute|none)$ ]]; then
+    if [[ "${configured_provider,,}" =~ ^(bedrock|gemini|mistral|groq|omniroute|none)$ ]]; then
         printf '%s' "${configured_provider,,}"
+    elif [ -n "$(file_env_get "$target_file" AWS_BEARER_TOKEN_BEDROCK)" ]; then
+        printf 'bedrock'
     elif [ -n "$(file_env_get "$target_file" OMNIROUTE_API_KEY)" ]; then
         printf 'omniroute'
     elif [ -n "$(file_env_get "$target_file" GROQ_API_KEY)" ]; then
@@ -676,7 +712,7 @@ existing_xchat_provider() {
     elif [ -n "$(file_env_get "$target_file" MISTRAL_API_KEY)" ]; then
         printf 'mistral'
     else
-        printf 'gemini'
+        printf 'bedrock'
     fi
 }
 
@@ -684,6 +720,7 @@ selected_ai_key() {
     local provider_name="$1"
     local target_file="$2"
     case "$provider_name" in
+        bedrock) prompt_bedrock_api_key "$(file_env_get "$target_file" AWS_BEARER_TOKEN_BEDROCK)" ;;
         gemini) prompt_gemini_api_key "$(file_env_get "$target_file" GEMINI_API_KEY)" ;;
         mistral) prompt_mistral_api_key "$(file_env_get "$target_file" MISTRAL_API_KEY)" ;;
         groq) prompt_groq_api_key "$(file_env_get "$target_file" GROQ_API_KEY)" ;;
@@ -694,6 +731,7 @@ selected_ai_key() {
 
 selected_ai_model() {
     case "$1" in
+        bedrock) printf 'nvidia.nemotron-nano-3-30b' ;;
         gemini) printf 'gemini-3.8-flash' ;;
         mistral) printf 'mistral-small-latest' ;;
         groq) printf 'openai/gpt-oss-20b' ;;
@@ -747,8 +785,14 @@ verify_ai_access() {
     local provider_name="$1"
     local api_key="$2"
     local model_name="$3"
+    local api_url=""
     [ -n "$api_key" ] || [ "$provider_name" = "omniroute" ] || return 0
-    AI_PROVIDER="$provider_name" AI_API_KEY="$api_key" AI_MODEL="$model_name" AI_API_URL="${OMNIROUTE_API_URL:-}" python3 - <<'PY'
+    if [ "$provider_name" = "bedrock" ]; then
+        api_url="${AWS_BEDROCK_RUNTIME_BASE_URL:-https://bedrock-runtime.ap-south-1.amazonaws.com}"
+    elif [ "$provider_name" = "omniroute" ]; then
+        api_url="${OMNIROUTE_API_URL:-}"
+    fi
+    AI_PROVIDER="$provider_name" AI_API_KEY="$api_key" AI_MODEL="$model_name" AI_API_URL="$api_url" python3 - <<'PY'
 import json
 import os
 import sys
@@ -759,7 +803,26 @@ import urllib.request
 provider = os.environ["AI_PROVIDER"]
 api_key = os.environ["AI_API_KEY"]
 model = os.environ["AI_MODEL"]
-if provider == "gemini":
+if provider == "bedrock":
+    runtime_base = (os.environ.get("AI_API_URL") or "https://bedrock-runtime.ap-south-1.amazonaws.com").rstrip("/")
+    if runtime_base.endswith("/chat/completions"):
+        url = runtime_base
+    elif runtime_base.endswith("/openai/v1"):
+        url = runtime_base + "/chat/completions"
+    else:
+        url = runtime_base + "/openai/v1/chat/completions"
+    payload = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": "Reply OK."}],
+        "max_tokens": 16,
+    }).encode("utf-8")
+    headers = {
+        "Authorization": "Bearer " + api_key,
+        "Content-Type": "application/json",
+        "User-Agent": "OpenVisionX/1.0",
+    }
+    request = urllib.request.Request(url, data=payload, method="POST", headers=headers)
+elif provider == "gemini":
     url = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000"
     headers = {"x-goog-api-key": api_key}
     request = urllib.request.Request(url, method="GET", headers=headers)
@@ -810,7 +873,7 @@ for attempt in range(3):
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             data = json.load(response)
-        if provider in {"groq", "omniroute", "cerebras"}:
+        if provider in {"bedrock", "groq", "omniroute", "cerebras"}:
             if not isinstance(data, dict) or not isinstance(data.get("choices"), list) or not data["choices"]:
                 raise RuntimeError(f"{provider} returned no completion choices")
             print(f"{provider.title()} API: configured model accepted by chat completions.")

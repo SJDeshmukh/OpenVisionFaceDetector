@@ -74,6 +74,7 @@ const XChat = () => {
   const [open, setOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [conversations, setConversations] = useState([]);
+  const [credits, setCredits] = useState(null);
   const [conversationId, setConversationId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState('');
@@ -109,8 +110,20 @@ const XChat = () => {
     }
   };
 
+  const loadCredits = async () => {
+    try {
+      const { data } = await axios.get(`${API_URL}/xchat/credits`);
+      setCredits(data.credits || null);
+    } catch {
+      // Credit status is supplementary; a temporary failure must not hide XChat.
+    }
+  };
+
   useEffect(() => {
-    if (open && enabled) loadConversations();
+    if (open && enabled) {
+      loadConversations();
+      loadCredits();
+    }
   }, [open, enabled]);
 
   useEffect(() => {
@@ -196,6 +209,7 @@ const XChat = () => {
         page_context: { page: location.pathname, filters },
       });
       setConversationId(data.conversation_id);
+      if (data.credits) setCredits(data.credits);
       setRetryJob(null);
       setLastFailedPrompt('');
       setMessages((current) => [...current, {
@@ -211,9 +225,14 @@ const XChat = () => {
       if (transient && !options.isRetry) {
         setRetryJob({ text, remaining: 60 });
       } else {
-        setError(code.includes('CONFIGURATION')
-          ? 'XChat is not configured. Please ask an administrator to check the selected AI provider and credentials.'
-          : 'Something went wrong while contacting the AI service. Your prompt was not lost.');
+        if (status === 402 || code.includes('CREDITLIMIT')) {
+          setCredits((current) => current ? { ...current, blocked: true, remaining_tokens: 0 } : current);
+          setError(requestError.response?.data?.error || 'XChat token credits are exhausted. Please contact your administrator.');
+        } else {
+          setError(code.includes('CONFIGURATION')
+            ? 'XChat is not configured. Please ask an administrator to check the selected AI provider and credentials.'
+            : 'Something went wrong while contacting the AI service. Your prompt was not lost.');
+        }
       }
     } finally {
       setLoading(false);
@@ -258,7 +277,16 @@ const XChat = () => {
           <header className="flex h-16 shrink-0 items-center gap-3 border-b border-slate-800 bg-slate-900/95 px-4">
             {historyOpen && <button type="button" onClick={() => setHistoryOpen(false)} aria-label="Back to chat"><ChevronLeft size={20} /></button>}
             <span className="grid h-9 w-9 place-items-center rounded-xl bg-cyan-500/15"><BrandLogo className="h-7 w-7" /></span>
-            <div className="min-w-0 flex-1"><h2 className="text-sm font-semibold">XChat</h2><p className="truncate text-[11px] text-slate-400">Assistant for your enabled features</p></div>
+            <div className="min-w-0 flex-1">
+              <h2 className="text-sm font-semibold">XChat</h2>
+              <p className={`truncate text-[11px] ${credits?.blocked ? 'text-red-400' : 'text-slate-400'}`}>
+                {credits?.billing_mode === 'fixed'
+                  ? `${Number(credits.remaining_tokens || 0).toLocaleString()} tokens remaining`
+                  : credits?.billing_mode === 'payg'
+                    ? `Pay as you go · ${Number(credits.tokens_used || 0).toLocaleString()} used`
+                    : 'Assistant for your enabled features'}
+              </p>
+            </div>
             <button type="button" onClick={() => { voice.cancel(); setHistoryOpen(!historyOpen); }} className="rounded-lg p-2 hover:bg-slate-800" aria-label="Chat history"><History size={19} /></button>
             <button type="button" onClick={newChat} className="rounded-lg p-2 hover:bg-slate-800" aria-label="New chat"><Plus size={19} /></button>
             <button type="button" onClick={() => { voice.cancel(); setOpen(false); }} className="rounded-lg p-2 hover:bg-slate-800" aria-label="Close XChat"><X size={19} /></button>
@@ -363,9 +391,10 @@ const XChat = () => {
                   </div>
                 )}
                 <div className={`flex items-end gap-2 rounded-xl border bg-slate-950 p-2 ${voice.phase === 'listening' ? 'border-cyan-500/70' : 'border-slate-700 focus-within:border-cyan-600'}`}>
-                  <textarea value={draft} onChange={(event) => setDraft(event.target.value)} rows={1} maxLength={1000} placeholder="Ask about any enabled feature…"
+                  <textarea value={draft} onChange={(event) => setDraft(event.target.value)} rows={1} maxLength={1000}
+                    placeholder={credits?.blocked ? 'Token credits exhausted' : 'Ask about any enabled feature…'}
                     onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); } }}
-                    disabled={voice.phase !== 'idle'}
+                    disabled={voice.phase !== 'idle' || credits?.blocked}
                     className="max-h-24 min-h-9 flex-1 resize-none bg-transparent px-1 py-2 text-sm outline-none placeholder:text-slate-600 disabled:opacity-50" />
                   {voice.available && (
                     <button type="button" disabled={loading || voice.phase === 'transcribing'} onClick={voice.phase === 'listening' ? voice.stop : voice.start}
@@ -375,7 +404,7 @@ const XChat = () => {
                       <Mic size={17} className="relative" />
                     </button>
                   )}
-                  <button type="button" disabled={!draft.trim() || loading || voice.phase !== 'idle'} onClick={() => send()} aria-label="Send message"
+                  <button type="button" disabled={!draft.trim() || loading || voice.phase !== 'idle' || credits?.blocked} onClick={() => send()} aria-label="Send message"
                     className="grid h-9 w-9 place-items-center rounded-lg bg-cyan-500 text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"><Send size={17} /></button>
                 </div>
                 <p className="mt-2 text-center text-[10px] text-slate-500">Read-only insights{voice.available ? ' · Voice enabled' : ''} · Limited to your enabled features</p>

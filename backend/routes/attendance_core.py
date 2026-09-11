@@ -3,7 +3,7 @@ import logging
 import sqlite3
 import numpy as np
 import base64
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import defaultdict
 from flask import Blueprint, request, jsonify
 
@@ -33,6 +33,35 @@ from services.report_filter_service import custom_value
 from flask import Blueprint, request, jsonify, g
 
 attendance_core_bp = Blueprint('attendance_core_bp', __name__)
+
+_MAX_CLIENT_CLOCK_DRIFT = timedelta(hours=24)
+
+
+def _resolve_event_time(timestamp):
+    """Use client time only for plausible offline replays.
+
+    Live mobile attendance is expected to omit ``timestamp`` and therefore uses
+    server time. Keeping a bounded client timestamp allows a short offline queue
+    to preserve its event time without letting an incorrectly configured phone
+    put attendance years in the past or future.
+    """
+    server_now = datetime.now()
+    if not timestamp:
+        return server_now
+
+    parsed = None
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            parsed = datetime.strptime(timestamp, fmt)
+            break
+        except (ValueError, TypeError):
+            continue
+
+    if parsed is None or abs(server_now - parsed) > _MAX_CLIENT_CLOCK_DRIFT:
+        logger.warning("Ignoring implausible attendance timestamp; using server time")
+        return server_now
+    return parsed
+
 
 def _person_scope_context(cursor, vendor_id, requested_type=None):
     vertical = vendor_vertical(cursor, vendor_id)
@@ -328,13 +357,7 @@ def person_event(valid_data: PersonEventSchema):
 
     captured_image = valid_data.image
     is_attendance = valid_data.is_attendance
-    ts_str = valid_data.timestamp
-    current_time_obj = datetime.now()
-    if ts_str:
-        try: current_time_obj = datetime.strptime(ts_str, "%Y-%m-%dT%H:%M:%S.%f")
-        except (ValueError, TypeError):
-            try: current_time_obj = datetime.strptime(ts_str, "%Y-%m-%dT%H:%M:%S")
-            except (ValueError, TypeError): pass
+    current_time_obj = _resolve_event_time(valid_data.timestamp)
 
     if not detected: return jsonify({"speak": False})
     if detected and not recognized:

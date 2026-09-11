@@ -227,6 +227,18 @@ if celery:
         return {"queued": len(delivery_ids), "delivery_ids": delivery_ids}
 
 
+    @celery.task(name="tasks.send_employee_monthly_reports")
+    def send_employee_monthly_reports_task(vendor_id, month, person_type=None):
+        from services.employee_email_reports_service import send_employee_monthly_reports
+        return send_employee_monthly_reports(vendor_id, month, person_type)
+
+
+    @celery.task(name="tasks.send_advance_notification")
+    def send_advance_notification_task(advance_id, event):
+        from services.employee_email_reports_service import send_advance_notification
+        return send_advance_notification(advance_id, event)
+
+
     @celery.task(bind=True, name="tasks.send_automated_report", max_retries=3)
     def send_automated_report_task(self, delivery_id):
         from services.automated_reports_service import build_report_attachments, _json_list

@@ -492,7 +492,7 @@ def _init_pg_schema_on_conn(conn):
         "CREATE TABLE IF NOT EXISTS advance_revisions (id SERIAL PRIMARY KEY, advance_id INTEGER NOT NULL, vendor_id INTEGER NOT NULL, person_id INTEGER NOT NULL, old_amount REAL, new_amount REAL, old_amount_cash REAL, new_amount_cash REAL, old_amount_online REAL, new_amount_online REAL, old_date DATE, new_date DATE, old_deduction_month TEXT, new_deduction_month TEXT, edited_by TEXT, edited_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS attendance (id SERIAL PRIMARY KEY, name TEXT, timestamp TIMESTAMP, status TEXT, captured_image TEXT, activity TEXT, is_late INTEGER DEFAULT 0, device_id TEXT, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id), attendance_date DATE, class_year TEXT, division TEXT, branch TEXT, subject TEXT, lecture_id INTEGER)",
         "CREATE TABLE IF NOT EXISTS system_users (username TEXT PRIMARY KEY, password TEXT, password_plain TEXT, role TEXT, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id), has_set_password INTEGER DEFAULT 0, force_password_change INTEGER DEFAULT 0, last_active_at TIMESTAMP)",
-        "CREATE TABLE IF NOT EXISTS subscriptions (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id) UNIQUE, plan_type TEXT, start_date TIMESTAMP, end_date TIMESTAMP, status TEXT DEFAULT 'active', max_users INTEGER, max_employees INTEGER, cost_per_user REAL, setup_fee REAL, setup_fee_paid INTEGER, features TEXT, max_mobile_devices INTEGER DEFAULT 1, cost_per_employee REAL DEFAULT 0, grace_period_days INTEGER DEFAULT 0, max_web_sessions INTEGER DEFAULT 1)",
+        "CREATE TABLE IF NOT EXISTS subscriptions (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id) UNIQUE, plan_type TEXT, start_date TIMESTAMP, end_date TIMESTAMP, status TEXT DEFAULT 'active', max_users INTEGER, max_employees INTEGER, cost_per_user REAL, setup_fee REAL, setup_fee_paid INTEGER, features TEXT, max_mobile_devices INTEGER DEFAULT 1, cost_per_employee REAL DEFAULT 0, grace_period_days INTEGER DEFAULT 0, max_web_sessions INTEGER DEFAULT 1, xchat_billing_mode TEXT DEFAULT 'payg', xchat_token_limit BIGINT DEFAULT 0, xchat_tokens_used BIGINT DEFAULT 0, xchat_input_tokens BIGINT DEFAULT 0, xchat_output_tokens BIGINT DEFAULT 0, xchat_tokens_billed BIGINT DEFAULT 0, xchat_price_per_1k_tokens REAL DEFAULT 0)",
         "CREATE TABLE IF NOT EXISTS vendor_devices (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), device_id TEXT, device_name TEXT, registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, last_login_at TIMESTAMP, last_active_at TIMESTAMP, battery_level REAL, geofence_lat REAL, geofence_lng REAL, geofence_radius REAL DEFAULT 0, last_lat REAL, last_lng REAL, UNIQUE(vendor_id, device_id))",
         "CREATE TABLE IF NOT EXISTS vendor_device_slots (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), slot_name TEXT, assigned_device_id TEXT, assigned_at TIMESTAMP, UNIQUE(vendor_id, slot_name))",
         "CREATE TABLE IF NOT EXISTS active_sessions (token TEXT PRIMARY KEY, username TEXT, vendor_id INTEGER, device_id TEXT, platform TEXT, last_active TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
@@ -521,6 +521,7 @@ def _init_pg_schema_on_conn(conn):
         "CREATE TABLE IF NOT EXISTS automated_report_deliveries (id SERIAL PRIMARY KEY, schedule_id INTEGER REFERENCES automated_report_schedules(id) NOT NULL, vendor_id INTEGER REFERENCES vendors(id) NOT NULL, frequency TEXT NOT NULL, period_start DATE NOT NULL, period_end DATE NOT NULL, status TEXT DEFAULT 'queued', attempts INTEGER DEFAULT 0, recipient_email TEXT, message_id TEXT, error TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, sent_at TIMESTAMP, UNIQUE(schedule_id, frequency, period_start, period_end))",
         "CREATE TABLE IF NOT EXISTS xchat_conversations (id TEXT PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id) NOT NULL, username TEXT NOT NULL, title TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS xchat_messages (id SERIAL PRIMARY KEY, conversation_id TEXT REFERENCES xchat_conversations(id) ON DELETE CASCADE, vendor_id INTEGER REFERENCES vendors(id) NOT NULL, username TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, tool_name TEXT, message_metadata TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS xchat_token_usage (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id) NOT NULL, username TEXT NOT NULL, conversation_id TEXT, model TEXT, usage_type TEXT DEFAULT 'chat', input_tokens BIGINT DEFAULT 0, output_tokens BIGINT DEFAULT 0, total_tokens BIGINT DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
 
         # --- Performance Indices ---
         "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_time ON attendance(vendor_id, timestamp)",
@@ -536,6 +537,7 @@ def _init_pg_schema_on_conn(conn):
         ,"CREATE INDEX IF NOT EXISTS idx_auto_report_delivery_vendor ON automated_report_deliveries(vendor_id, created_at)"
         ,"CREATE INDEX IF NOT EXISTS idx_xchat_conversation_owner ON xchat_conversations(vendor_id, username, updated_at)"
         ,"CREATE INDEX IF NOT EXISTS idx_xchat_message_conversation ON xchat_messages(conversation_id, vendor_id, created_at)"
+        ,"CREATE INDEX IF NOT EXISTS idx_xchat_token_usage_vendor ON xchat_token_usage(vendor_id, created_at)"
     ]
     for q in queries:
         try:
@@ -595,6 +597,14 @@ def _init_pg_schema_on_conn(conn):
         ("subscriptions", "cost_per_employee", "REAL DEFAULT 0"),
         ("subscriptions", "setup_fee", "REAL DEFAULT 0"),
         ("subscriptions", "setup_fee_paid", "INTEGER DEFAULT 0"),
+        ("subscriptions", "xchat_billing_mode", "TEXT DEFAULT 'payg'"),
+        ("subscriptions", "xchat_token_limit", "BIGINT DEFAULT 0"),
+        ("subscriptions", "xchat_tokens_used", "BIGINT DEFAULT 0"),
+        ("subscriptions", "xchat_input_tokens", "BIGINT DEFAULT 0"),
+        ("subscriptions", "xchat_output_tokens", "BIGINT DEFAULT 0"),
+        ("subscriptions", "xchat_tokens_billed", "BIGINT DEFAULT 0"),
+        ("subscriptions", "xchat_price_per_1k_tokens", "REAL DEFAULT 0"),
+        ("xchat_token_usage", "usage_type", "TEXT DEFAULT 'chat'"),
         ("faces", "basic_salary", "REAL DEFAULT 0"),
         ("faces", "hra", "REAL DEFAULT 0"),
         ("faces", "conveyance", "REAL DEFAULT 0"),
@@ -700,7 +710,7 @@ def init_sqlite_schema(conn):
         "CREATE TABLE IF NOT EXISTS advance_revisions (id INTEGER PRIMARY KEY AUTOINCREMENT, advance_id INTEGER NOT NULL, vendor_id INTEGER NOT NULL, person_id INTEGER NOT NULL, old_amount REAL, new_amount REAL, old_amount_cash REAL, new_amount_cash REAL, old_amount_online REAL, new_amount_online REAL, old_date DATE, new_date DATE, old_deduction_month TEXT, new_deduction_month TEXT, edited_by TEXT, edited_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS attendance (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, timestamp DATETIME, status TEXT, captured_image TEXT, activity TEXT, is_late INTEGER DEFAULT 0, device_id TEXT, vendor_id INTEGER, person_id INTEGER, attendance_date DATE, class_year TEXT, division TEXT, branch TEXT, subject TEXT, lecture_id INTEGER)",
         "CREATE TABLE IF NOT EXISTS system_users (username TEXT PRIMARY KEY, password TEXT, password_plain TEXT, role TEXT, vendor_id INTEGER, person_id INTEGER, has_set_password INTEGER DEFAULT 0, force_password_change INTEGER DEFAULT 0)",
-        "CREATE TABLE IF NOT EXISTS subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER UNIQUE, plan_type TEXT, start_date DATETIME, end_date DATETIME, status TEXT DEFAULT 'active', max_users INTEGER, max_employees INTEGER, cost_per_user REAL, setup_fee REAL, setup_fee_paid INTEGER, features TEXT, max_mobile_devices INTEGER DEFAULT 1, cost_per_employee REAL DEFAULT 0, grace_period_days INTEGER DEFAULT 0, max_web_sessions INTEGER DEFAULT 1)",
+        "CREATE TABLE IF NOT EXISTS subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER UNIQUE, plan_type TEXT, start_date DATETIME, end_date DATETIME, status TEXT DEFAULT 'active', max_users INTEGER, max_employees INTEGER, cost_per_user REAL, setup_fee REAL, setup_fee_paid INTEGER, features TEXT, max_mobile_devices INTEGER DEFAULT 1, cost_per_employee REAL DEFAULT 0, grace_period_days INTEGER DEFAULT 0, max_web_sessions INTEGER DEFAULT 1, xchat_billing_mode TEXT DEFAULT 'payg', xchat_token_limit INTEGER DEFAULT 0, xchat_tokens_used INTEGER DEFAULT 0, xchat_input_tokens INTEGER DEFAULT 0, xchat_output_tokens INTEGER DEFAULT 0, xchat_tokens_billed INTEGER DEFAULT 0, xchat_price_per_1k_tokens REAL DEFAULT 0)",
         "CREATE TABLE IF NOT EXISTS vendor_devices (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, device_id TEXT, device_name TEXT, registered_at DATETIME DEFAULT CURRENT_TIMESTAMP, last_login_at DATETIME, last_active_at DATETIME, battery_level REAL, geofence_lat REAL, geofence_lng REAL, geofence_radius REAL DEFAULT 0, last_lat REAL, last_lng REAL, UNIQUE(vendor_id, device_id))",
         "CREATE TABLE IF NOT EXISTS vendor_device_slots (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, slot_name TEXT, assigned_device_id TEXT, assigned_at DATETIME, UNIQUE(vendor_id, slot_name))",
         "CREATE TABLE IF NOT EXISTS active_sessions (token TEXT PRIMARY KEY, username TEXT, vendor_id INTEGER, device_id TEXT, platform TEXT, last_active DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
@@ -728,6 +738,7 @@ def init_sqlite_schema(conn):
         "CREATE TABLE IF NOT EXISTS automated_report_deliveries (id INTEGER PRIMARY KEY AUTOINCREMENT, schedule_id INTEGER NOT NULL, vendor_id INTEGER NOT NULL, frequency TEXT NOT NULL, period_start DATE NOT NULL, period_end DATE NOT NULL, status TEXT DEFAULT 'queued', attempts INTEGER DEFAULT 0, recipient_email TEXT, message_id TEXT, error TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, sent_at DATETIME, UNIQUE(schedule_id, frequency, period_start, period_end))",
         "CREATE TABLE IF NOT EXISTS xchat_conversations (id TEXT PRIMARY KEY, vendor_id INTEGER NOT NULL, username TEXT NOT NULL, title TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS xchat_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT NOT NULL, vendor_id INTEGER NOT NULL, username TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, tool_name TEXT, message_metadata TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(conversation_id) REFERENCES xchat_conversations(id) ON DELETE CASCADE)",
+        "CREATE TABLE IF NOT EXISTS xchat_token_usage (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER NOT NULL, username TEXT NOT NULL, conversation_id TEXT, model TEXT, usage_type TEXT DEFAULT 'chat', input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, total_tokens INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
 
         # --- Performance Indices ---
         "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_time ON attendance(vendor_id, timestamp)",
@@ -743,6 +754,7 @@ def init_sqlite_schema(conn):
         ,"CREATE INDEX IF NOT EXISTS idx_auto_report_delivery_vendor ON automated_report_deliveries(vendor_id, created_at)"
         ,"CREATE INDEX IF NOT EXISTS idx_xchat_conversation_owner ON xchat_conversations(vendor_id, username, updated_at)"
         ,"CREATE INDEX IF NOT EXISTS idx_xchat_message_conversation ON xchat_messages(conversation_id, vendor_id, created_at)"
+        ,"CREATE INDEX IF NOT EXISTS idx_xchat_token_usage_vendor ON xchat_token_usage(vendor_id, created_at)"
     ]
     for q in queries:
         cur.execute(q)
@@ -793,11 +805,16 @@ def init_sqlite_schema(conn):
         except Exception:
             pass
             
-    for col in ["max_web_sessions INTEGER DEFAULT 1", "grace_period_days INTEGER DEFAULT 0", "cost_per_employee REAL DEFAULT 0", "setup_fee REAL DEFAULT 0", "setup_fee_paid INTEGER DEFAULT 0"]:
+    for col in ["max_web_sessions INTEGER DEFAULT 1", "grace_period_days INTEGER DEFAULT 0", "cost_per_employee REAL DEFAULT 0", "setup_fee REAL DEFAULT 0", "setup_fee_paid INTEGER DEFAULT 0", "xchat_billing_mode TEXT DEFAULT 'payg'", "xchat_token_limit INTEGER DEFAULT 0", "xchat_tokens_used INTEGER DEFAULT 0", "xchat_input_tokens INTEGER DEFAULT 0", "xchat_output_tokens INTEGER DEFAULT 0", "xchat_tokens_billed INTEGER DEFAULT 0", "xchat_price_per_1k_tokens REAL DEFAULT 0"]:
         try:
             cur.execute(f"ALTER TABLE subscriptions ADD COLUMN {col}")
         except Exception:
             pass
+
+    try:
+        cur.execute("ALTER TABLE xchat_token_usage ADD COLUMN usage_type TEXT DEFAULT 'chat'")
+    except Exception:
+        pass
             
     for col in ["basic_salary REAL DEFAULT 0", "hra REAL DEFAULT 0", "conveyance REAL DEFAULT 0", "special_allowance REAL DEFAULT 0", "pf_enabled INTEGER DEFAULT 0", "esi_enabled INTEGER DEFAULT 0", "gratuity_enabled INTEGER DEFAULT 0", "professional_tax REAL DEFAULT 0", "joining_date DATE"]:
         try:

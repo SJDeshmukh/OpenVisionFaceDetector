@@ -3,9 +3,11 @@ import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { API_URL } from '../config';
 import { Plus, Trash2, Save, BookOpen, X, Search, ChevronDown, GraduationCap } from 'lucide-react';
+import { getBusinessTerminology } from '../lib/businessTerminology';
 
 const Classes = () => {
   const { user } = useAuth();
+  const terminology = getBusinessTerminology(user?.vertical);
   const [items, setItems] = useState([]);
   const [form, setForm] = useState({ class_year: '', division: '', branch: '', label: '' });
   const [loading, setLoading] = useState(false);
@@ -113,7 +115,7 @@ const Classes = () => {
   };
 
   const del = async (id) => {
-    if (!confirm('Delete this class?')) return;
+    if (!confirm(`Delete this ${terminology.group.toLowerCase()}?`)) return;
     try {
       await axios.delete(`${API_URL}/classes/${id}`, {
         headers: { Authorization: `Bearer ${user?.token}` }
@@ -126,21 +128,21 @@ const Classes = () => {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-slate-800">Classes</h1>
+      <h1 className="text-2xl font-bold text-slate-800">{terminology.groups}</h1>
       {user?.role !== 'faculty' && (
         <form onSubmit={create} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm grid grid-cols-1 md:grid-cols-5 gap-3">
-          <input className="p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all" placeholder="Year" value={form.class_year} onChange={e => setForm({ ...form, class_year: e.target.value })} />
-          <input className="p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all" placeholder="Division" value={form.division} onChange={e => setForm({ ...form, division: e.target.value })} />
-          <input className="p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all" placeholder="Branch" value={form.branch} onChange={e => setForm({ ...form, branch: e.target.value })} />
-          <input className="p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all" placeholder="Label (e.g., TY-CSE-A)" value={form.label} onChange={e => setForm({ ...form, label: e.target.value })} />
+          <input className="p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all" placeholder={terminology.academic ? 'Year' : 'Floor'} value={form.class_year} onChange={e => setForm({ ...form, class_year: e.target.value })} />
+          <input className="p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all" placeholder={terminology.academic ? 'Division' : 'Block'} value={form.division} onChange={e => setForm({ ...form, division: e.target.value })} />
+          <input className="p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all" placeholder={terminology.academic ? 'Branch' : 'Wing / Building'} value={form.branch} onChange={e => setForm({ ...form, branch: e.target.value })} />
+          <input className="p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all" placeholder={terminology.academic ? 'Label (e.g., TY-CSE-A)' : 'Room label (e.g., A-101)'} value={form.label} onChange={e => setForm({ ...form, label: e.target.value })} />
           <button className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-all shadow-sm hover:shadow-md">
-            <Plus size={16} /> Add Class
+            <Plus size={16} /> Add {terminology.group}
           </button>
         </form>
       )}
 
       {/* Subject Master Section */}
-      {user?.role !== 'faculty' && (
+      {user?.role !== 'faculty' && terminology.academic && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
           <button 
             onClick={() => setShowMasterPanel(!showMasterPanel)}
@@ -206,18 +208,18 @@ const Classes = () => {
           <thead className="bg-slate-50 border-b border-slate-200">
             <tr>
               <th className="p-3">Label</th>
-              <th className="p-3">Year</th>
-              <th className="p-3">Division</th>
-              <th className="p-3">Branch</th>
-              <th className="p-3">Subjects/Faculty</th>
+              <th className="p-3">{terminology.academic ? 'Year' : 'Floor'}</th>
+              <th className="p-3">{terminology.academic ? 'Division' : 'Block'}</th>
+              <th className="p-3">{terminology.academic ? 'Branch' : 'Wing / Building'}</th>
+              {terminology.academic && <th className="p-3">Subjects/{terminology.staff}</th>}
               {user?.role !== 'faculty' && <th className="p-3 w-48">Actions</th>}
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={user?.role === 'faculty' ? 5 : 6} className="p-6 text-center text-slate-400">Loading…</td></tr>
+              <tr><td colSpan={(terminology.academic ? 4 : 3) + (user?.role === 'faculty' ? 1 : 2)} className="p-6 text-center text-slate-400">Loading…</td></tr>
             ) : items.length === 0 ? (
-              <tr><td colSpan={user?.role === 'faculty' ? 5 : 6} className="p-6 text-center text-slate-400">No classes yet</td></tr>
+              <tr><td colSpan={(terminology.academic ? 4 : 3) + (user?.role === 'faculty' ? 1 : 2)} className="p-6 text-center text-slate-400">No {terminology.groups.toLowerCase()} yet</td></tr>
             ) : items.map(it => (
               <Row
                 key={it.id}
@@ -230,13 +232,14 @@ const Classes = () => {
                   fetchFaculty();
                 }}
                 role={user?.role}
+                showSubjects={terminology.academic}
               />
             ))}
           </tbody>
         </table>
       </div>
 
-      {managingClass && (
+      {terminology.academic && managingClass && (
         <ManageSubjectsModal
           cls={managingClass}
           onClose={() => setManagingClass(null)}
@@ -252,7 +255,7 @@ const Classes = () => {
   );
 };
 
-const Row = ({ it, onSave, onDelete, onManageSubjects, role }) => {
+const Row = ({ it, onSave, onDelete, onManageSubjects, role, showSubjects }) => {
   const [edit, setEdit] = useState({ ...it });
   useEffect(() => {
     setEdit({ ...it });
@@ -290,7 +293,7 @@ const Row = ({ it, onSave, onDelete, onManageSubjects, role }) => {
           <input value={edit.branch || ''} onChange={e => setEdit({ ...edit, branch: e.target.value })} className="p-2 border rounded-lg w-full" />
         )}
       </td>
-      <td className="p-3">
+      {showSubjects && <td className="p-3">
         <div className="space-y-1">
           {it.mapped_subjects && it.mapped_subjects.length > 0 ? (
             it.mapped_subjects.map((ms, idx) => (
@@ -304,7 +307,7 @@ const Row = ({ it, onSave, onDelete, onManageSubjects, role }) => {
             <span className="text-sm text-slate-400 italic">No subjects mapped</span>
           )}
         </div>
-      </td>
+      </td>}
       {!isFaculty && (
         <td className="p-3">
           <div className="flex items-center gap-2">
@@ -316,9 +319,9 @@ const Row = ({ it, onSave, onDelete, onManageSubjects, role }) => {
             })} className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 inline-flex items-center gap-1 text-sm">
               <Save size={14} /> Save
             </button>
-            <button onClick={onManageSubjects} className="px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 inline-flex items-center gap-1 text-sm">
+            {showSubjects && <button onClick={onManageSubjects} className="px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 inline-flex items-center gap-1 text-sm">
               <BookOpen size={14} /> Subjects
-            </button>
+            </button>}
             <button onClick={() => onDelete(it.id)} className="px-3 py-1.5 rounded-lg bg-red-600 text-white hover:bg-red-700 inline-flex items-center gap-1 text-sm">
               <Trash2 size={14} /> Del
             </button>

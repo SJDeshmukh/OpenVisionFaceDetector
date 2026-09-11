@@ -85,9 +85,9 @@ def public_business_types():
             "allow_parent_login": True,
             "default_frontend_bundle_id": "tapinx_ui",
             "default_registration_config": [
-                {"field": "student_id", "label": "Student ID", "type": "text", "required": True},
-                {"field": "phone", "label": "Student Mobile Number", "type": "text", "required": True},
-                {"field": "class_id", "label": "Class/Section", "type": "class_select", "required": True}
+                {"field": "student_id", "label": "Resident ID", "type": "text", "required": True},
+                {"field": "phone", "label": "Resident Mobile Number", "type": "text", "required": True},
+                {"field": "class_id", "label": "Room/Block", "type": "class_select", "required": True}
             ]
         },
         # ── TapInX — School / College ─────────────────────────────────────────

@@ -159,6 +159,9 @@ const SuperAdminDashboard = () => {
     cost_per_user: '', cost_per_employee: '', // Explicit costs
     max_users: '', max_employees: '',
     max_web_sessions: '',
+    xchat_billing_mode: 'payg', xchat_token_limit: '1000000', xchat_tokens_used: 0,
+    xchat_input_tokens: 0, xchat_output_tokens: 0, xchat_tokens_billed: 0,
+    xchat_price_per_1k_tokens: '0', xchat_reset_usage: false,
     registration_template: '',
     admin_username: '', admin_password: '',
     user_username: '', user_password: '',
@@ -187,8 +190,16 @@ const SuperAdminDashboard = () => {
     },
     {
       value: 'hostel', label: 'Hostel / Accommodation', default_frontend_bundle_id: 'attendance_ui', default_registration_config: [
-        { field: 'student_id', label: 'Student ID', type: 'text', required: true, options: [] },
-        { field: 'student_phone', label: 'Phone Number of Student', type: 'text', required: true, options: [] }
+        { field: 'student_id', label: 'Resident ID', type: 'text', required: true, options: [] },
+        { field: 'student_phone', label: 'Phone Number of Resident', type: 'text', required: true, options: [] },
+        { field: 'class_id', label: 'Room/Block', type: 'class_select', required: true, options: [] }
+      ]
+    },
+    {
+      value: 'daily_wages', label: 'Daily Wages', default_frontend_bundle_id: 'tapinx_ui', default_registration_config: [
+        { field: 'employee_id', label: 'Employee ID', type: 'text', required: true, options: [] },
+        { field: 'phone', label: 'Contact Mobile', type: 'text', required: false, options: [] },
+        { field: 'department', label: 'Department', type: 'text', required: false, options: [] }
       ]
     },
     {
@@ -330,8 +341,14 @@ const SuperAdminDashboard = () => {
          {"field": "student_phone", "label": "Phone Number of Student", "enabled": true}
      ],
      "hostel": [
-         {"field": "student_id", "label": "Student ID", "enabled": true},
-         {"field": "student_phone", "label": "Phone Number of Student", "enabled": true}
+         {"field": "student_id", "label": "Resident ID", "enabled": true},
+         {"field": "student_phone", "label": "Phone Number of Resident", "enabled": true},
+         {"field": "class_id", "label": "Room/Block", "enabled": true}
+     ],
+     "daily_wages": [
+         {"field": "employee_id", "label": "Employee ID", "enabled": true},
+         {"field": "phone", "label": "Contact Mobile", "enabled": true},
+         {"field": "department", "label": "Department", "enabled": true}
      ],
      "class_attendance": [
          {"field": "student_id", "label": "Student ID", "enabled": true},
@@ -1083,7 +1100,11 @@ const SuperAdminDashboard = () => {
           max_employees: normalizePositiveInt(liveMaxEmployees, 1),
           max_web_sessions: normalizePositiveInt(liveMaxWeb, 1),
           plan_type: 'custom',
-          features: newVendor.features
+          features: newVendor.features,
+          xchat_billing_mode: newVendor.xchat_billing_mode || 'payg',
+          xchat_token_limit: Math.max(0, Number.parseInt(newVendor.xchat_token_limit || 0, 10)),
+          xchat_price_per_1k_tokens: Math.max(0, Number.parseFloat(newVendor.xchat_price_per_1k_tokens || 0)),
+          ...(newVendor.xchat_reset_usage ? { xchat_tokens_used: 0 } : {})
         }, {
           headers: { Authorization: `Bearer ${user?.token}` }
         });
@@ -1098,7 +1119,15 @@ const SuperAdminDashboard = () => {
             max_employees: sub.max_employees != null ? String(sub.max_employees) : prev.max_employees,
             max_web_sessions: sub.max_web_sessions != null ? String(sub.max_web_sessions) : prev.max_web_sessions,
             cost_per_user: sub.cost_per_user != null ? sub.cost_per_user : prev.cost_per_user,
-            cost_per_employee: sub.cost_per_employee != null ? sub.cost_per_employee : prev.cost_per_employee
+            cost_per_employee: sub.cost_per_employee != null ? sub.cost_per_employee : prev.cost_per_employee,
+            xchat_billing_mode: sub.xchat_billing_mode || prev.xchat_billing_mode,
+            xchat_token_limit: sub.xchat_token_limit != null ? String(sub.xchat_token_limit) : prev.xchat_token_limit,
+            xchat_tokens_used: sub.xchat_tokens_used ?? prev.xchat_tokens_used,
+            xchat_input_tokens: sub.xchat_input_tokens ?? prev.xchat_input_tokens,
+            xchat_output_tokens: sub.xchat_output_tokens ?? prev.xchat_output_tokens,
+            xchat_tokens_billed: sub.xchat_tokens_billed ?? prev.xchat_tokens_billed,
+            xchat_price_per_1k_tokens: sub.xchat_price_per_1k_tokens != null ? String(sub.xchat_price_per_1k_tokens) : prev.xchat_price_per_1k_tokens,
+            xchat_reset_usage: false
           }));
           setVendors(prev => prev.map(v => v.id === editingVendor.id ? {
             ...v,
@@ -1107,7 +1136,14 @@ const SuperAdminDashboard = () => {
             max_web_sessions: sub.max_web_sessions ?? v.max_web_sessions,
             cost_per_user: sub.cost_per_user ?? v.cost_per_user,
             cost_per_employee: sub.cost_per_employee ?? v.cost_per_employee,
-            max_mobile_devices: sub.max_mobile_devices ?? v.max_mobile_devices
+            max_mobile_devices: sub.max_mobile_devices ?? v.max_mobile_devices,
+            xchat_billing_mode: sub.xchat_billing_mode || v.xchat_billing_mode,
+            xchat_token_limit: sub.xchat_token_limit ?? v.xchat_token_limit,
+            xchat_tokens_used: sub.xchat_tokens_used ?? v.xchat_tokens_used,
+            xchat_input_tokens: sub.xchat_input_tokens ?? v.xchat_input_tokens,
+            xchat_output_tokens: sub.xchat_output_tokens ?? v.xchat_output_tokens,
+            xchat_tokens_billed: sub.xchat_tokens_billed ?? v.xchat_tokens_billed,
+            xchat_price_per_1k_tokens: sub.xchat_price_per_1k_tokens ?? v.xchat_price_per_1k_tokens
           } : v));
           fetchVendors();
         } catch (_) { }
@@ -1179,6 +1215,9 @@ const SuperAdminDashboard = () => {
         cost_per_user: '', cost_per_employee: '',
         max_users: '', max_employees: '',
         max_web_sessions: '',
+        xchat_billing_mode: 'payg', xchat_token_limit: '1000000', xchat_tokens_used: 0,
+        xchat_input_tokens: 0, xchat_output_tokens: 0, xchat_tokens_billed: 0,
+        xchat_price_per_1k_tokens: '0', xchat_reset_usage: false,
         registration_template: '',
         admin_username: '', admin_password: '',
         user_username: '', user_password: '',
@@ -1223,6 +1262,14 @@ const SuperAdminDashboard = () => {
         max_users: (sub && sub.max_users != null) ? String(sub.max_users) : (vendor.max_users || ''),
         max_employees: (sub && sub.max_employees != null) ? String(sub.max_employees) : (vendor.max_employees || ''),
         max_web_sessions: (sub && sub.max_web_sessions != null) ? String(sub.max_web_sessions) : String(normalizePositiveInt(vendor.max_web_sessions, 1)),
+        xchat_billing_mode: (sub && sub.xchat_billing_mode) || vendor.xchat_billing_mode || 'payg',
+        xchat_token_limit: String((sub && sub.xchat_token_limit != null) ? sub.xchat_token_limit : (vendor.xchat_token_limit || 0)),
+        xchat_tokens_used: (sub && sub.xchat_tokens_used != null) ? sub.xchat_tokens_used : (vendor.xchat_tokens_used || 0),
+        xchat_input_tokens: (sub && sub.xchat_input_tokens != null) ? sub.xchat_input_tokens : (vendor.xchat_input_tokens || 0),
+        xchat_output_tokens: (sub && sub.xchat_output_tokens != null) ? sub.xchat_output_tokens : (vendor.xchat_output_tokens || 0),
+        xchat_tokens_billed: (sub && sub.xchat_tokens_billed != null) ? sub.xchat_tokens_billed : (vendor.xchat_tokens_billed || 0),
+        xchat_price_per_1k_tokens: String((sub && sub.xchat_price_per_1k_tokens != null) ? sub.xchat_price_per_1k_tokens : (vendor.xchat_price_per_1k_tokens || 0)),
+        xchat_reset_usage: false,
         admin_username: vendor.admin_username || '',
         admin_password: '',
         user_username: vendor.user_username || '',
@@ -1248,6 +1295,14 @@ const SuperAdminDashboard = () => {
         max_users: vendor.max_users || '',
         max_employees: vendor.max_employees || '',
         max_web_sessions: normalizePositiveInt(vendor.max_web_sessions, 1),
+        xchat_billing_mode: vendor.xchat_billing_mode || 'payg',
+        xchat_token_limit: String(vendor.xchat_token_limit || 0),
+        xchat_tokens_used: vendor.xchat_tokens_used || 0,
+        xchat_input_tokens: vendor.xchat_input_tokens || 0,
+        xchat_output_tokens: vendor.xchat_output_tokens || 0,
+        xchat_tokens_billed: vendor.xchat_tokens_billed || 0,
+        xchat_price_per_1k_tokens: String(vendor.xchat_price_per_1k_tokens || 0),
+        xchat_reset_usage: false,
         admin_username: vendor.admin_username || '',
         admin_password: '',
         user_username: vendor.user_username || '',
@@ -1675,6 +1730,9 @@ const SuperAdminDashboard = () => {
                   cost_per_user: '', cost_per_employee: '',
                   max_users: '', max_employees: '',
                   max_web_sessions: '',
+                  xchat_billing_mode: 'payg', xchat_token_limit: '1000000', xchat_tokens_used: 0,
+                  xchat_input_tokens: 0, xchat_output_tokens: 0, xchat_tokens_billed: 0,
+                  xchat_price_per_1k_tokens: '0', xchat_reset_usage: false,
                   registration_template: '',
                   admin_username: '', admin_password: '',
                   user_username: '', user_password: '',
@@ -3093,6 +3151,13 @@ const SuperAdminDashboard = () => {
                                             Emps: {details.max_employees} x ₹{details.cost_per_employee}
                                           </span>
                                         )}
+                                        {details.xchat && (
+                                          <span className="rounded bg-violet-50 px-1 text-violet-700">
+                                            XChat: {Number(details.xchat.unbilled_tokens || 0).toLocaleString()} tokens
+                                            {' '}x ₹{Number(details.xchat.price_per_1k_tokens || 0).toLocaleString()}/1K
+                                            {' '}= ₹{Number(details.xchat.charge || 0).toFixed(2)}
+                                          </span>
+                                        )}
                                       </div>
                                     );
                                   } catch (e) { return '-'; }
@@ -3344,6 +3409,104 @@ const SuperAdminDashboard = () => {
                       placeholder="Default: 1"
                     />
                   </div>
+                  {(newVendor.features || []).includes('xchat_ai') && (
+                    <div className="md:col-span-2 rounded-xl border border-violet-200 bg-white p-4">
+                      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <p className="text-sm font-bold text-violet-800">XChat Token Credits</p>
+                          <p className="text-xs text-slate-500">Usage is metered from the model provider response, vendor-wise.</p>
+                        </div>
+                        <div className="text-right text-xs text-slate-600">
+                          <span className="font-semibold">Used: {Number(newVendor.xchat_tokens_used || 0).toLocaleString()} tokens</span>
+                          {newVendor.xchat_billing_mode === 'fixed' && (
+                            <span className="ml-3 font-semibold text-violet-700">
+                              Remaining: {Math.max(0, Number(newVendor.xchat_token_limit || 0) - Number(newVendor.xchat_tokens_used || 0)).toLocaleString()}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                        <div>
+                          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Billing Mode</label>
+                          <select
+                            value={newVendor.xchat_billing_mode || 'payg'}
+                            onChange={e => setNewVendor({ ...newVendor, xchat_billing_mode: e.target.value })}
+                            className="w-full rounded-lg border border-slate-200 bg-white p-2 text-sm focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
+                          >
+                            <option value="payg">Pay as you go</option>
+                            <option value="fixed">Fixed token credits</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Token Limit</label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="1000"
+                            disabled={newVendor.xchat_billing_mode !== 'fixed'}
+                            value={newVendor.xchat_token_limit ?? ''}
+                            onChange={e => setNewVendor({ ...newVendor, xchat_token_limit: e.target.value })}
+                            className="w-full rounded-lg border border-slate-200 bg-white p-2 text-sm disabled:bg-slate-100 disabled:text-slate-400 focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
+                            placeholder="e.g. 1000000"
+                          />
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Price per 1,000 Tokens (₹)</label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={newVendor.xchat_price_per_1k_tokens ?? ''}
+                            onChange={e => setNewVendor({ ...newVendor, xchat_price_per_1k_tokens: e.target.value })}
+                            className="w-full rounded-lg border border-slate-200 bg-white p-2 text-sm focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
+                            placeholder="e.g. 2.50"
+                          />
+                        </div>
+                      </div>
+                      <div className="mt-3 grid grid-cols-1 gap-2 rounded-lg bg-violet-50 p-3 text-xs sm:grid-cols-3">
+                        <div>
+                          <span className="block text-slate-500">Total consumption value</span>
+                          <strong className="text-violet-800">
+                            ₹{((Number(newVendor.xchat_tokens_used || 0) / 1000) * Number(newVendor.xchat_price_per_1k_tokens || 0)).toFixed(2)}
+                          </strong>
+                          <span className="mt-0.5 block text-[10px] text-slate-500">
+                            Input {Number(newVendor.xchat_input_tokens || 0).toLocaleString()} · Output {Number(newVendor.xchat_output_tokens || 0).toLocaleString()}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="block text-slate-500">Already invoiced</span>
+                          <strong className="text-violet-800">{Number(newVendor.xchat_tokens_billed || 0).toLocaleString()} tokens</strong>
+                        </div>
+                        <div>
+                          <span className="block text-slate-500">Next invoice XChat charge</span>
+                          <strong className="text-violet-800">
+                            ₹{((Math.max(0, Number(newVendor.xchat_tokens_used || 0) - Number(newVendor.xchat_tokens_billed || 0)) / 1000) * Number(newVendor.xchat_price_per_1k_tokens || 0)).toFixed(2)}
+                          </strong>
+                        </div>
+                      </div>
+                      <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-xs text-slate-500">
+                          {newVendor.xchat_billing_mode === 'fixed'
+                            ? 'New chatbot requests stop when the used total reaches this limit.'
+                            : 'All tokens are tracked for billing, with no automatic cutoff.'}
+                        </p>
+                        {editingVendor && (
+                          <button
+                            type="button"
+                            disabled={!Number(newVendor.xchat_tokens_used || 0)}
+                            onClick={() => {
+                              if (window.confirm('Reset this vendor’s XChat token usage to zero when you save?')) {
+                                setNewVendor({ ...newVendor, xchat_tokens_used: 0, xchat_reset_usage: true });
+                              }
+                            }}
+                            className="rounded-lg border border-violet-200 px-3 py-1.5 text-xs font-semibold text-violet-700 hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            Reset Usage
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">Registration Template</label>
                     <select

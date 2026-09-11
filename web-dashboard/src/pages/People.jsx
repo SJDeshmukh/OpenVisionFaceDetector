@@ -20,6 +20,7 @@ import {
 import { useSocket } from '../context/SocketContext';
 import { API_URL, BASE_URL } from '../config';
 import { motion, AnimatePresence } from 'framer-motion';
+import { getBusinessTerminology, localizeBusinessLabel, usesStudentRecords } from '../lib/businessTerminology';
 
 const Toast = ({ message, type, onClose }) => (
   <motion.div
@@ -65,8 +66,14 @@ const isClassField = (field) => ['class', 'class_id', 'class_section'].includes(
 
 const People = () => {
   const { user } = useAuth();
-  const schoolFlow = Boolean(user?.vertical && ['school', 'hostel'].includes(String(user.vertical).toLowerCase()));
-  const personLabel = schoolFlow ? 'Student' : 'Employee';
+  const terminology = useMemo(() => getBusinessTerminology(user?.vertical), [user?.vertical]);
+  const schoolFlow = usesStudentRecords(user?.vertical);
+  const personLabel = terminology.person;
+  const peopleLabel = terminology.people;
+  const groupLabel = terminology.group;
+  const groupsLabel = terminology.groups;
+  const staffLabel = terminology.staff;
+  const staffPluralLabel = terminology.staffPlural;
   const peopleCacheKey = `people_cache_${user?.vendor_id}_${schoolFlow ? 'student' : 'people'}_${user?.role || 'anonymous'}_${user?.username || ''}`;
   const [users, setUsers] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
@@ -83,6 +90,7 @@ const People = () => {
   const [isBulkImportModalOpen, setIsBulkImportModalOpen] = useState(false);
   const [bulkImportProgress, setBulkImportProgress] = useState(null);
   const [bulkImportError, setBulkImportError] = useState(null);
+  const [bulkMappingRequest, setBulkMappingRequest] = useState(null);
   const [isFacultyUploadModalOpen, setIsFacultyUploadModalOpen] = useState(false);
   const [facultyUploadProgress, setFacultyUploadProgress] = useState(null);
   const [facultyUploadResult, setFacultyUploadResult] = useState(null);
@@ -329,7 +337,7 @@ const People = () => {
         if (resp.data && resp.data.status === 'success') {
           setUsers(prev => prev.filter(u => u.id !== id));
           fetchUsers(); // Re-fetch to pull newly calculated display_ids
-          addToast("Student deleted successfully.", 'success');
+          addToast(`${personLabel} deleted successfully.`, 'success');
         } else {
           const msg = resp.data?.error || 'Failed to delete';
           alert(msg);
@@ -345,8 +353,8 @@ const People = () => {
   const handleClearAll = async () => {
     const isFacultyTab = activeTab === 'faculty';
     const confirmMsg = isFacultyTab 
-      ? "This will delete ALL faculty login accounts. Students and attendance records will NOT be affected. Are you sure?"
-      : "CRITICAL: This will delete ALL registered students and their facial data. The Superadmin field configuration will be preserved. This action cannot be undone. Are you sure?";
+      ? `This will delete ALL ${staffPluralLabel.toLowerCase()} login accounts. ${peopleLabel} and attendance records will NOT be affected. Are you sure?`
+      : `CRITICAL: This will delete ALL registered ${peopleLabel.toLowerCase()} and their facial data. The Superadmin field configuration will be preserved. This action cannot be undone. Are you sure?`;
 
     if (window.confirm(confirmMsg)) {
       try {
@@ -354,7 +362,7 @@ const People = () => {
         const resp = await axios.delete(url);
         
         if (resp.data && resp.data.status === 'success') {
-          addToast(isFacultyTab ? "All faculty accounts cleared" : "All people data cleared", 'success');
+          addToast(isFacultyTab ? `All ${staffPluralLabel.toLowerCase()} accounts cleared` : `All ${peopleLabel.toLowerCase()} cleared`, 'success');
           if (isFacultyTab) {
             setFacultyLogins([]);
           } else {
@@ -390,7 +398,7 @@ const People = () => {
     try {
       const resp = await axios.put(`${API_URL}/bulk-registration/faculty/${selectedFaculty.email}`, facultyFormData);
       if (resp.data && resp.data.success) {
-        addToast("Faculty updated successfully", 'success');
+        addToast(`${staffLabel} updated successfully`, 'success');
         setIsFacultyEditModalOpen(false);
         fetchFacultyLogins();
       } else {
@@ -410,7 +418,7 @@ const People = () => {
     try {
       const res = await axios.post(`${API_URL}/bulk-registration/faculty`, addFacultyFormData);
       if (res.data?.success) {
-        addToast('Faculty added successfully', 'success');
+        addToast(`${staffLabel} added successfully`, 'success');
         setIsAddFacultyModalOpen(false);
         setAddFacultyFormData({ name: '', email: '', phone: '', designation: '', password: '' });
         fetchFacultyLogins();
@@ -425,11 +433,11 @@ const People = () => {
   };
 
   const handleDeleteFaculty = async (email) => {
-    if (!window.confirm(`Delete faculty ${email}? This cannot be undone.`)) return;
+    if (!window.confirm(`Delete ${staffLabel.toLowerCase()} ${email}? This cannot be undone.`)) return;
     try {
       await axios.delete(`${API_URL}/bulk-registration/faculty/${encodeURIComponent(email)}`);
       setFacultyLogins(prev => prev.filter(f => f.email !== email));
-      addToast('Faculty deleted successfully', 'success');
+      addToast(`${staffLabel} deleted successfully`, 'success');
     } catch (e) {
       addToast(e.response?.data?.error || 'Delete failed', 'error');
     }
@@ -443,7 +451,7 @@ const People = () => {
     }
     if (!formData.name) return;
     if (schoolFlow && !formData.class_id) {
-      alert("Please allocate the student to a class/section.");
+      alert(`Please allocate the ${personLabel.toLowerCase()} to a ${groupLabel.toLowerCase()}.`);
       return;
     }
 
@@ -512,6 +520,51 @@ const People = () => {
     }
   };
 
+  const uploadPeopleSpreadsheet = async (file, headerMapping = null) => {
+    if (!file) return;
+    const formData = new FormData();
+    formData.append('file', file);
+    if (headerMapping) formData.append('header_mapping', JSON.stringify(headerMapping));
+    if (selectedBulkClass) {
+      formData.append('class_id', selectedBulkClass.id);
+      formData.append('class_year', selectedBulkClass.class_year);
+      formData.append('division', selectedBulkClass.division);
+      formData.append('branch', selectedBulkClass.branch);
+    }
+    setBulkImportProgress('uploading');
+    setBulkImportError(null);
+    try {
+      const res = await axios.post(`${API_URL}/bulk-registration/upload`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      });
+      if (!res.data.success) throw new Error(res.data.error || 'Import failed');
+      setBulkMappingRequest(null);
+      setBulkImportProgress('success');
+      if (res.data.mapping_warning) addToast(res.data.mapping_warning, 'warning');
+      setTimeout(() => {
+        setIsBulkImportModalOpen(false);
+        setBulkImportProgress(null);
+        setBulkImportPhase('cards');
+        setSelectedBulkClass(null);
+        fetchUsers();
+        fetchConfig();
+      }, 2000);
+    } catch (err) {
+      const payload = err.response?.data;
+      if (payload?.code === 'HEADER_MAPPING_REQUIRED' && Array.isArray(payload.headers)) {
+        setBulkMappingRequest({
+          file,
+          headers: payload.headers,
+          mapping: payload.suggested_mapping || {},
+        });
+        setBulkImportProgress('mapping');
+        return;
+      }
+      setBulkImportError(payload?.error || err.message || 'Connection error');
+      setBulkImportProgress(null);
+    }
+  };
+
   // Determine columns based on Vendor Config (SuperAdmin defined)
   const registrationColumns = useMemo(() => {
     let baseColumns = [];
@@ -522,6 +575,7 @@ const People = () => {
           ...field,
           field: field.field || field.key,
           type: field.type || 'text',
+          label: localizeBusinessLabel(field.label, terminology),
         }));
     } else if (user?.features?.includes('bulk_image_attendance')) {
       // Fallback logic
@@ -533,7 +587,7 @@ const People = () => {
         baseColumns.push({ 
           field: fieldName, 
           key: fieldName, 
-          label: f.label, 
+          label: localizeBusinessLabel(f.label, terminology),
           required: f.required, 
           type: f.type, 
           options: f.options 
@@ -543,12 +597,12 @@ const People = () => {
 
     if (schoolFlow && !baseColumns.some(isClassField)) {
       baseColumns.push({
-        field: 'class_id', key: 'class_id', label: 'Class/Section',
+        field: 'class_id', key: 'class_id', label: groupLabel,
         type: 'class_select', required: true,
       });
     }
     return baseColumns;
-  }, [vendorConfig, bulkAttendanceFields, user?.features, schoolFlow]);
+  }, [vendorConfig, bulkAttendanceFields, user?.features, schoolFlow, groupLabel, terminology]);
 
   // Dynamically identify the Name header from the registration config
   const nameHeaderObj = registrationColumns.find(isNameField);
@@ -661,8 +715,8 @@ const People = () => {
     <div className="p-6 max-w-7xl mx-auto">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">{user?.role === 'faculty' ? 'My Students' : 'People Management'}</h1>
-          <p className="text-slate-500">{user?.role === 'faculty' ? 'Students enrolled in your assigned classes.' : `Manage ${personLabel.toLowerCase()}s and their facial data.`}</p>
+          <h1 className="text-2xl font-bold text-slate-800">{user?.role === 'faculty' ? `My ${peopleLabel}` : `${peopleLabel} Management`}</h1>
+          <p className="text-slate-500">{user?.role === 'faculty' ? `${peopleLabel} enrolled in your assigned ${groupsLabel.toLowerCase()}.` : `Manage ${peopleLabel.toLowerCase()} and their facial data.`}</p>
         </div>
         
         {user?.role !== 'faculty' && (
@@ -676,7 +730,11 @@ const People = () => {
                   <Plus size={18} /> Add {personLabel}
                 </button>
                 <button
-                  onClick={() => setIsBulkImportModalOpen(true)}
+                  onClick={() => {
+                    setBulkImportPhase(terminology.groupedPeople ? 'cards' : 'upload');
+                    setSelectedBulkClass(null);
+                    setIsBulkImportModalOpen(true);
+                  }}
                   className="flex items-center gap-2 bg-white border border-slate-200 text-slate-700 px-4 py-2 rounded-lg hover:bg-slate-50 font-medium transition-all shadow-sm"
                 >
                   <Upload size={18} /> Bulk Import
@@ -689,13 +747,13 @@ const People = () => {
                   onClick={() => setIsAddFacultyModalOpen(true)}
                   className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 font-medium transition-all shadow-lg shadow-indigo-500/20"
                 >
-                  <Plus size={18} /> Add Faculty
+                  <Plus size={18} /> Add {staffLabel}
                 </button>
                 <button
                   onClick={() => setIsFacultyUploadModalOpen(true)}
                   className="flex items-center gap-2 bg-white border border-slate-200 text-slate-700 px-4 py-2 rounded-lg hover:bg-slate-50 font-medium transition-all shadow-sm"
                 >
-                  <Upload size={18} /> Bulk Upload Faculty
+                  <Upload size={18} /> Bulk Upload {staffPluralLabel}
                 </button>
               </>
             )}
@@ -704,19 +762,19 @@ const People = () => {
       </div>
 
       {/* Tab switcher — only show for non-faculty admins */}
-      {user?.role !== 'faculty' && (user?.features?.includes('bulk_image_attendance') || user?.features?.includes('classes')) && (
+      {user?.role !== 'faculty' && terminology.groupedPeople && (user?.features?.includes('bulk_image_attendance') || user?.features?.includes('classes')) && (
         <div className="flex gap-1 border-b border-slate-200">
           <button
             onClick={() => setActiveTab('people')}
             className={`px-4 py-2.5 text-sm font-semibold transition-colors rounded-t-lg ${activeTab === 'people' ? 'bg-white border border-b-white border-slate-200 text-blue-600' : 'text-slate-500 hover:text-slate-700'}`}
           >
-            {personLabel}s
+            {peopleLabel}
           </button>
           <button
             onClick={() => { setActiveTab('faculty'); fetchFacultyLogins(); }}
             className={`px-4 py-2.5 text-sm font-semibold transition-colors rounded-t-lg ${activeTab === 'faculty' ? 'bg-white border border-b-white border-slate-200 text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
           >
-            Faculty Logins
+            {staffLabel} Logins
           </button>
         </div>
       )}
@@ -727,7 +785,7 @@ const People = () => {
             <div>
               <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
                 <Shield size={20} className="text-indigo-600" />
-                Faculty Accounts
+                {staffLabel} Accounts
               </h3>
               <p className="text-sm text-slate-500 mt-1 italic">Logins created via Excel upload. Default password is <span className="text-amber-600 font-bold">1234</span> until changed.</p>
             </div>
@@ -737,7 +795,7 @@ const People = () => {
                 className="flex items-center gap-2 px-4 py-2 bg-white border border-rose-200 text-rose-600 font-bold rounded-lg hover:bg-rose-50 transition-all shadow-sm"
               >
                 <Trash2 size={16} />
-                Clear All Faculty
+                Clear All {staffPluralLabel}
               </button>
               <button 
                 onClick={fetchFacultyLogins}
@@ -750,12 +808,12 @@ const People = () => {
             </div>
           </div>
           {facultyLoading ? (
-            <div className="py-12 text-center text-slate-400 text-sm">Loading faculty...</div>
+            <div className="py-12 text-center text-slate-400 text-sm">Loading {staffPluralLabel.toLowerCase()}...</div>
           ) : facultyLogins.length === 0 ? (
             <div className="py-16 text-center text-slate-400">
               <User size={40} className="mx-auto mb-3 opacity-20" />
-              <p className="text-sm">No faculty logins yet.</p>
-              <p className="text-xs mt-1">Use "Upload Faculty Logins" to create them from an Excel file.</p>
+              <p className="text-sm">No {staffPluralLabel.toLowerCase()} logins yet.</p>
+              <p className="text-xs mt-1">Use "Upload {staffLabel} Logins" to create them from an Excel file.</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -806,7 +864,7 @@ const People = () => {
                           <button
                             onClick={() => handleDeleteFaculty(f.email)}
                             className="p-1 text-slate-400 hover:text-red-500 transition-colors"
-                            title="Delete Faculty"
+                            title={`Delete ${staffLabel}`}
                           >
                             <Trash2 size={15} />
                           </button>
@@ -824,12 +882,12 @@ const People = () => {
       {/* Filters & Search + Table — only shown on people tab */}
       {activeTab === 'people' && (
         <>
-          {isBulkAttendanceEnabled && !selectedClassForView ? (
+          {terminology.groupedPeople && isBulkAttendanceEnabled && !selectedClassForView ? (
             <div className="mt-4">
               <div className="flex items-center justify-between mb-6">
                 <div>
-                  <h2 className="text-xl font-bold text-slate-800">Select Class</h2>
-                  <p className="text-sm text-slate-500">View and manage students by their assigned classes.</p>
+                  <h2 className="text-xl font-bold text-slate-800">Select {groupLabel}</h2>
+                  <p className="text-sm text-slate-500">View and manage {peopleLabel.toLowerCase()} by their assigned {groupsLabel.toLowerCase()}.</p>
                 </div>
               </div>
               
@@ -871,7 +929,7 @@ const People = () => {
                       </div>
                       
                       <div className="mt-4 pt-4 border-t border-slate-100 flex items-center justify-between text-xs font-bold text-slate-400">
-                        <span>{studentsInClass} STUDENTS</span>
+                        <span>{studentsInClass} {peopleLabel.toUpperCase()}</span>
                         <span className="text-blue-500 group-hover:translate-x-1 transition-transform">VIEW ALL →</span>
                       </div>
                     </button>
@@ -880,21 +938,21 @@ const People = () => {
                 
                 {/* Direct Access for unassigned students */}
                 <button
-                   onClick={() => setSelectedClassForView({ id: 'unassigned', class_year: 'Unassigned', branch: 'No Class' })}
+                   onClick={() => setSelectedClassForView({ id: 'unassigned', class_year: 'Unassigned', branch: `No ${groupLabel}` })}
                    className="flex flex-col p-5 bg-slate-50 border border-slate-200 border-dashed rounded-xl hover:bg-slate-100 transition-all text-left"
                 >
                    <div className="w-10 h-10 bg-slate-200 rounded-lg flex items-center justify-center text-slate-500 mb-3">
                      <User size={20} />
                    </div>
                    <h3 className="font-bold text-slate-600">Unassigned</h3>
-                   <p className="text-sm text-slate-400 mt-1">Students not in any class</p>
+                   <p className="text-sm text-slate-400 mt-1">{peopleLabel} not assigned to a {groupLabel.toLowerCase()}</p>
                    <div className="mt-auto pt-4 text-[10px] font-bold text-slate-400">VIEW REMAINING</div>
                 </button>
               </div>
             </div>
           ) : (
             <>
-              {isBulkAttendanceEnabled && selectedClassForView && (
+              {terminology.groupedPeople && isBulkAttendanceEnabled && selectedClassForView && (
                 <div className="flex items-center justify-between mb-8">
                   <div className="flex items-center gap-4">
                     <button
@@ -907,10 +965,10 @@ const People = () => {
                       <h2 className="text-3xl font-black text-slate-800 tracking-tight flex items-center gap-3">
                         {selectedClassForView.class_year} - {selectedClassForView.branch}
                         <span className="text-sm font-bold bg-blue-100 text-blue-700 px-3 py-1 rounded-full uppercase tracking-wider">
-                          Division {selectedClassForView.division || selectedClassForView.Section}
+                          {terminology.section} {selectedClassForView.division || selectedClassForView.Section}
                         </span>
                       </h2>
-                      <p className="text-slate-500 font-medium mt-1">Manage students and registration records for this class</p>
+                      <p className="text-slate-500 font-medium mt-1">Manage {peopleLabel.toLowerCase()} and registration records for this {groupLabel.toLowerCase()}</p>
                     </div>
                   </div>
                   <button 
@@ -918,7 +976,7 @@ const People = () => {
                     className="flex items-center gap-2 px-5 py-2.5 bg-white border border-rose-200 text-rose-600 font-bold rounded-xl hover:bg-rose-50 transition-all shadow-sm group"
                   >
                     <Trash2 size={18} className="group-hover:scale-110 transition-transform" />
-                    Clear All Students
+                    Clear All {peopleLabel}
                   </button>
                 </div>
               )}
@@ -940,7 +998,7 @@ const People = () => {
                     <tbody className="divide-y divide-slate-100">
                       {loading ? (
                         <tr>
-                          <td colSpan={tableColumns.length + 2} className="px-6 py-8 text-center text-slate-400 italic">Loading students...</td>
+                          <td colSpan={tableColumns.length + 2} className="px-6 py-8 text-center text-slate-400 italic">Loading {peopleLabel.toLowerCase()}...</td>
                         </tr>
                       ) : filteredUsers.length === 0 ? (
                         <tr>
@@ -1150,7 +1208,7 @@ const People = () => {
                 {classField && (
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-slate-700">
-                      {classField.label || 'Select Class'}
+                      {classField.label || `Select ${groupLabel}`}
                       {(schoolFlow || classField.required) && <span className="text-red-500 ml-1">*</span>}
                     </label>
                     <div className="relative">
@@ -1180,7 +1238,7 @@ const People = () => {
                         className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
                         required={schoolFlow || classField.required}
                       >
-                        <option value="">-- Choose Class --</option>
+                        <option value="">-- Choose {groupLabel} --</option>
                         {vendorClasses.map(c => (
                           <option key={c.id} value={c.id}>
                             {c.class_year} - {c.branch} ({c.division})
@@ -1217,12 +1275,13 @@ const People = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
           <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden border border-slate-200">
             <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-              <h2 className="text-xl font-bold text-slate-800">Bulk Import {personLabel}s</h2>
+              <h2 className="text-xl font-bold text-slate-800">Bulk Import {peopleLabel}</h2>
               <button 
                 onClick={() => {
                   setIsBulkImportModalOpen(false);
                   setBulkImportError(null);
                   setBulkImportProgress(null);
+                  setBulkMappingRequest(null);
                   setBulkImportPhase('cards');
                   setSelectedBulkClass(null);
                 }} 
@@ -1236,8 +1295,8 @@ const People = () => {
               {bulkImportPhase === 'cards' ? (
                 <>
                   <BookOpen size={48} className="mx-auto text-blue-500 mb-4 opacity-80" />
-                  <h3 className="text-lg font-bold text-slate-800 mb-2">Select Target Class</h3>
-                  <p className="text-sm text-slate-500 mb-6">Which class are these students from? Their records will be auto-assigned to this class.</p>
+                  <h3 className="text-lg font-bold text-slate-800 mb-2">Select Target {groupLabel}</h3>
+                  <p className="text-sm text-slate-500 mb-6">Which {groupLabel.toLowerCase()} are these {peopleLabel.toLowerCase()} from? Their records will be auto-assigned to this {groupLabel.toLowerCase()}.</p>
                   
                   <div className="grid grid-cols-1 gap-3">
                     {vendorClasses.map((cls) => (
@@ -1266,18 +1325,18 @@ const People = () => {
                       }}
                       className="flex items-center justify-center p-4 border border-dashed border-slate-300 rounded-xl hover:border-slate-400 hover:bg-slate-50 transition-all text-slate-500 text-sm font-medium"
                     >
-                      Skip Class Assignment
+                      Skip {groupLabel} Assignment
                     </button>}
                   </div>
                 </>
               ) : !bulkImportProgress ? (
                 <>
-                  <button 
+                  {terminology.groupedPeople && <button
                     onClick={() => setBulkImportPhase('cards')}
                     className="flex items-center gap-1.5 text-xs font-bold text-blue-600 hover:text-blue-700 mb-6 transition-colors"
                   >
-                    <ChevronLeft size={14} /> Back to Class Selection
-                  </button>
+                    <ChevronLeft size={14} /> Back to {groupLabel} Selection
+                  </button>}
                   
                   <div className="w-20 h-20 bg-blue-50 rounded-3xl flex items-center justify-center mx-auto mb-6 text-blue-600 ring-4 ring-blue-50/50">
                     <Upload size={32} />
@@ -1285,8 +1344,8 @@ const People = () => {
                   <h3 className="text-lg font-semibold text-slate-800 mb-2">Upload {selectedBulkClass ? `${selectedBulkClass.class_year} - ${selectedBulkClass.branch}` : 'Registration'} File</h3>
                   <p className="text-slate-500 text-sm mb-6 leading-relaxed">
                     {selectedBulkClass 
-                      ? `Select the Excel/CSV file for students of ${selectedBulkClass.class_year} ${selectedBulkClass.division}.`
-                      : `Upload a CSV or Excel file containing your ${personLabel.toLowerCase()} data. Headers will be used as registration fields.`
+                      ? `Select the Excel/CSV file for ${peopleLabel.toLowerCase()} of ${selectedBulkClass.class_year} ${selectedBulkClass.division}.`
+                      : `Upload a CSV or Excel file containing your ${peopleLabel.toLowerCase()} data. Headers will be used as registration fields.`
                     }
                   </p>
                   
@@ -1299,43 +1358,7 @@ const People = () => {
                         onChange={async (e) => {
                           const file = e.target.files[0];
                           if (!file) return;
-                          
-                          const formData = new FormData();
-                          formData.append('file', file);
-                          
-                          if (selectedBulkClass) {
-                            formData.append('class_id', selectedBulkClass.id);
-                            formData.append('class_year', selectedBulkClass.class_year);
-                            formData.append('division', selectedBulkClass.division);
-                            formData.append('branch', selectedBulkClass.branch);
-                          }
-                          
-                          setBulkImportProgress('uploading');
-                          setBulkImportError(null);
-                          
-                          try {
-                            const res = await axios.post(`${API_URL}/bulk-registration/upload`, formData, {
-                              headers: { 'Content-Type': 'multipart/form-data' }
-                            });
-                            
-                            if (res.data.success) {
-                              setBulkImportProgress('success');
-                              setTimeout(() => {
-                                setIsBulkImportModalOpen(false);
-                                setBulkImportProgress(null);
-                                setBulkImportPhase('cards');
-                                setSelectedBulkClass(null);
-                                fetchUsers();
-                                fetchConfig(); // Re-fetch config so new Excel headers become table columns
-                              }, 2000);
-                            } else {
-                              setBulkImportError(res.data.error || "Import failed");
-                              setBulkImportProgress(null);
-                            }
-                          } catch (err) {
-                            setBulkImportError(err.response?.data?.error || "Connection error");
-                            setBulkImportProgress(null);
-                          }
+                          await uploadPeopleSpreadsheet(file);
                         }} 
                       />
                       <Upload size={18} />
@@ -1343,6 +1366,44 @@ const People = () => {
                     </label>
                   </div>
                 </>
+              ) : bulkImportProgress === 'mapping' && bulkMappingRequest ? (
+                <div className="space-y-4 text-left">
+                  <div>
+                    <h3 className="font-bold text-slate-800">Confirm spreadsheet columns</h3>
+                    <p className="mt-1 text-xs text-slate-500">The name column was ambiguous. Confirm the mapping before any rows are imported.</p>
+                  </div>
+                  <div className="max-h-72 space-y-3 overflow-y-auto pr-1">
+                    {[
+                      ['name', 'Person Name', true], ['phone', 'Phone', false], ['person_id', 'Student / Employee ID', false],
+                      ['email', 'Email', false], ['department', 'Department', false], ['designation', 'Designation', false], ['shift', 'Shift', false]
+                    ].map(([field, label, required]) => (
+                      <label key={field} className="block text-xs font-semibold text-slate-600">
+                        {label}{required ? ' *' : ''}
+                        <select
+                          value={bulkMappingRequest.mapping[field] || ''}
+                          onChange={(event) => setBulkMappingRequest(current => ({
+                            ...current, mapping: { ...current.mapping, [field]: event.target.value }
+                          }))}
+                          className="mt-1 w-full rounded-lg border border-slate-200 bg-white p-2 text-sm font-normal"
+                        >
+                          <option value="">Not mapped</option>
+                          {bulkMappingRequest.headers.map(header => <option key={header} value={header}>{header}</option>)}
+                        </select>
+                      </label>
+                    ))}
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <button type="button" onClick={() => { setBulkMappingRequest(null); setBulkImportProgress(null); }} className="rounded-lg border px-3 py-2 text-sm text-slate-600">Choose another file</button>
+                    <button
+                      type="button"
+                      disabled={!bulkMappingRequest.mapping.name}
+                      onClick={() => uploadPeopleSpreadsheet(bulkMappingRequest.file, bulkMappingRequest.mapping)}
+                      className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white disabled:opacity-40"
+                    >
+                      Confirm and Import
+                    </button>
+                  </div>
+                </div>
               ) : bulkImportProgress === 'uploading' ? (
                 <div className="py-12 flex flex-col items-center">
                   <div className="relative w-16 h-16 mb-6">
@@ -1358,7 +1419,7 @@ const People = () => {
                     <Shield size={32} />
                   </div>
                   <h3 className="text-xl font-bold text-slate-800 mb-2">Import Successful!</h3>
-                  <p className="text-slate-500">The {personLabel.toLowerCase()} list is being updated.</p>
+                  <p className="text-slate-500">The {peopleLabel.toLowerCase()} list is being updated.</p>
                 </div>
               )}
 
@@ -1389,8 +1450,8 @@ const People = () => {
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
             <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
               <div>
-                <h2 className="text-lg font-bold text-slate-800">Upload Faculty Logins</h2>
-                <p className="text-xs text-slate-500 mt-0.5">Extracts emails from any column and creates faculty accounts with password 1234</p>
+                <h2 className="text-lg font-bold text-slate-800">Upload {staffLabel} Logins</h2>
+                <p className="text-xs text-slate-500 mt-0.5">Extracts emails from any column and creates {staffLabel.toLowerCase()} accounts with password 1234</p>
               </div>
               <button onClick={() => { setIsFacultyUploadModalOpen(false); setFacultyUploadProgress(null); setFacultyUploadResult(null); setFacultyUploadError(null); }} className="p-2 rounded-lg hover:bg-slate-100 transition-colors">
                 <X size={20} className="text-slate-500" />
@@ -1401,9 +1462,9 @@ const People = () => {
               {!facultyUploadProgress && (
                 <>
                   <p className="text-slate-500 text-sm mb-6 leading-relaxed">
-                    Upload a CSV or Excel file containing teacher data. Any cell with an <strong>@ symbol</strong> will be treated as an email and a faculty login will be created for it.
+                    Upload a CSV or Excel file containing {staffLabel.toLowerCase()} data. Any cell with an <strong>@ symbol</strong> will be treated as an email and a {staffLabel.toLowerCase()} login will be created for it.
                     <br /><br />
-                    Default password: <code className="bg-amber-50 text-amber-700 px-2 py-0.5 rounded font-mono font-bold">1234</code> — faculty will be forced to change it on first login.
+                    Default password: <code className="bg-amber-50 text-amber-700 px-2 py-0.5 rounded font-mono font-bold">1234</code> — the {staffLabel.toLowerCase()} will be forced to change it on first login.
                   </p>
                   <label className="flex items-center justify-center gap-2 w-full py-3 px-4 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-all cursor-pointer font-medium shadow-lg shadow-indigo-500/30">
                     <input
@@ -1458,7 +1519,7 @@ const People = () => {
                   </div>
                   <h3 className="text-lg font-bold text-slate-800 mb-1">Logins Created!</h3>
                   <p className="text-slate-500 text-sm">{facultyUploadResult.message}</p>
-                  <p className="text-xs text-slate-400 mt-2">Faculty can now log in with their email and password <code className="bg-amber-50 text-amber-700 px-1.5 rounded font-mono font-bold">1234</code></p>
+                  <p className="text-xs text-slate-400 mt-2">{staffPluralLabel} can now log in with their email and password <code className="bg-amber-50 text-amber-700 px-1.5 rounded font-mono font-bold">1234</code></p>
                   <button
                     onClick={() => { setIsFacultyUploadModalOpen(false); setFacultyUploadProgress(null); setFacultyUploadResult(null); }}
                     className="mt-6 px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-all font-medium text-sm"
@@ -1485,7 +1546,7 @@ const People = () => {
           </div>
         </div>
       )}
-      {/* Add Faculty (Single) Modal */}
+      {/* Add staff (single) modal. The API retains the legacy faculty role. */}
       {isAddFacultyModalOpen && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
           <motion.div
@@ -1495,8 +1556,8 @@ const People = () => {
           >
             <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
               <div>
-                <h2 className="text-xl font-bold text-slate-800">Add Faculty</h2>
-                <p className="text-xs text-slate-500 mt-0.5 uppercase font-bold tracking-tight">Create a new faculty login account</p>
+                <h2 className="text-xl font-bold text-slate-800">Add {staffLabel}</h2>
+                <p className="text-xs text-slate-500 mt-0.5 uppercase font-bold tracking-tight">Create a new {staffLabel.toLowerCase()} login account</p>
               </div>
               <button onClick={() => setIsAddFacultyModalOpen(false)} className="p-2 hover:bg-slate-200 rounded-lg transition-colors">
                 <X size={20} className="text-slate-500" />
@@ -1535,7 +1596,7 @@ const People = () => {
                   value={addFacultyFormData.email}
                   onChange={(e) => setAddFacultyFormData({ ...addFacultyFormData, email: e.target.value })}
                   className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:outline-none font-medium"
-                  placeholder="faculty@example.com"
+                  placeholder={`${staffLabel.toLowerCase()}@example.com`}
                 />
               </div>
 
@@ -1562,7 +1623,7 @@ const People = () => {
                   className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none font-mono"
                   placeholder="1234"
                 />
-                <p className="text-[10px] text-slate-400 italic">Faculty will be prompted to change this on first login.</p>
+                <p className="text-[10px] text-slate-400 italic">The {staffLabel.toLowerCase()} will be prompted to change this on first login.</p>
               </div>
 
               <div className="flex gap-3 pt-4">
@@ -1578,7 +1639,7 @@ const People = () => {
                   disabled={submitting || !addFacultyFormData.email}
                   className="flex-1 px-4 py-3 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 font-bold shadow-lg shadow-indigo-500/30 disabled:opacity-50"
                 >
-                  {submitting ? 'Creating...' : 'Create Faculty'}
+                  {submitting ? 'Creating...' : `Create ${staffLabel}`}
                 </button>
               </div>
             </form>
@@ -1586,7 +1647,7 @@ const People = () => {
         </div>
       )}
 
-      {/* Faculty Edit Modal */}
+      {/* Staff edit modal. */}
       {isFacultyEditModalOpen && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
           <motion.div 
@@ -1596,7 +1657,7 @@ const People = () => {
           >
             <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
               <div>
-                <h2 className="text-xl font-bold text-slate-800">Edit Faculty Profile</h2>
+                <h2 className="text-xl font-bold text-slate-800">Edit {staffLabel} Profile</h2>
                 <p className="text-xs text-slate-500 mt-0.5 tracking-tight uppercase font-bold">Updating {selectedFaculty?.email}</p>
               </div>
               <button onClick={() => setIsFacultyEditModalOpen(false)} className="p-2 hover:bg-slate-200 rounded-lg transition-colors">
@@ -1635,7 +1696,7 @@ const People = () => {
                   value={facultyFormData.email}
                   onChange={(e) => setFacultyFormData({ ...facultyFormData, email: e.target.value })}
                   className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:outline-none font-medium"
-                  placeholder="faculty@example.com"
+                  placeholder={`${staffLabel.toLowerCase()}@example.com`}
                 />
               </div>
 
@@ -1662,7 +1723,7 @@ const People = () => {
                   className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none font-mono"
                   placeholder="New password"
                 />
-                <p className="text-[10px] text-slate-400 italic">Leave empty to keep current password. Faculty will be notified of change.</p>
+                <p className="text-[10px] text-slate-400 italic">Leave empty to keep current password. The {staffLabel.toLowerCase()} will be notified of the change.</p>
               </div>
 
               <div className="flex gap-3 pt-4">

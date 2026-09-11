@@ -31,6 +31,7 @@ from services.person_scope_service import (
     requested_person_type,
     vendor_vertical,
 )
+from services.person_delete_service import delete_person_dependencies
 
 def _get_faculty_identifiers(c, username):
     """Fetch all possible strings that identify this faculty member (username, name, email)."""
@@ -1426,6 +1427,11 @@ def delete_face(name):
                 if getattr(conn, "_is_pg", False): c.execute("ROLLBACK TO SAVEPOINT sp_fac")
                 pass
 
+            # Remove every FK dependency before deleting the faces row. This
+            # includes payroll advances, which previously blocked PostgreSQL
+            # deletions with advances_person_id_fkey.
+            delete_person_dependencies(_safe_execute, p_id, v_id)
+
         if vendor_id:
             c.execute("DELETE FROM faces WHERE name = ? AND vendor_id = ?", (name, vendor_id))
         else:
@@ -1558,8 +1564,10 @@ def delete_face(name):
             return jsonify({"status": "success", "message": f"Face for {name} deleted."})
         else:
             return jsonify({"error": "User not found"}), 404
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        conn.rollback()
+        logger.exception("Unable to delete face(s) by name")
+        return jsonify({"error": "Unable to delete employee and related records safely"}), 500
     finally:
         conn.close()
 
@@ -1613,8 +1621,6 @@ def delete_face_by_id(person_id):
         deleted_display_id = del_row[0] if del_row else None
         target_vendor_id = del_row[1] if del_row else None
 
-        import logging
-        logger = logging.getLogger(__name__)
         logger.info(f"Cleaning up associated records for person_id={person_id}")
 
         def _safe_execute(_sql, _args=()):
@@ -1643,17 +1649,7 @@ def delete_face_by_id(person_id):
             if getattr(conn, "_is_pg", False): c.execute("ROLLBACK TO SAVEPOINT sp_fac")
             logger.warning(f"Faculty class unassign skipped for person_id={person_id}: {_e}")
 
-        for _sql, _args in [
-            ("DELETE FROM attendance WHERE person_id = ?",                          (person_id,)),
-            ("DELETE FROM student_parents WHERE person_id = ?",                     (person_id,)),
-            ("UPDATE parent_users SET selected_person_id = NULL WHERE selected_person_id = ?", (person_id,)),
-            ("DELETE FROM leave_requests WHERE student_id = ?",                     (person_id,)),
-            ("DELETE FROM lecture_attendance WHERE person_id = ?",                  (person_id,)),
-            ("DELETE FROM person_embeddings WHERE person_id = ?",                   (person_id,)),
-            # system_users MUST be deleted before faces due to FK constraint
-            ("DELETE FROM system_users WHERE person_id = ?",                        (person_id,)),
-        ]:
-            _safe_execute(_sql, _args)
+        delete_person_dependencies(_safe_execute, person_id, target_vendor_id)
 
         if sn:
             for _sql, _args in [
@@ -1729,8 +1725,10 @@ def delete_face_by_id(person_id):
             return jsonify({"status": "success", "message": f"Face for {name} deleted.", "person_id": person_id})
         else:
             return jsonify({"error": "User not found"}), 404
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        conn.rollback()
+        logger.exception("Unable to delete employee person_id=%s", person_id)
+        return jsonify({"error": "Unable to delete employee and related records safely"}), 500
     finally:
         conn.close()
 
@@ -1971,24 +1969,33 @@ def record_advance():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
 
-    data = request.json
+    data = request.get_json(silent=True) or {}
     person_id = data.get("person_id")
-    amount_cash = data.get("amount_cash", 0)
-    amount_online = data.get("amount_online", 0)
-    amount = data.get("amount") or (float(amount_cash) + float(amount_online))
+    try:
+        amount_cash = float(data.get("amount_cash", 0) or 0)
+        amount_online = float(data.get("amount_online", 0) or 0)
+        amount = float(data.get("amount") or (amount_cash + amount_online))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Advance amounts must be numeric"}), 400
     date_str = data.get("date") or datetime.now().strftime('%Y-%m-%d')
     deduction_month = data.get("deduction_month") # e.g. "2023-10"
 
-    if not person_id or (not amount and amount != 0):
-        return jsonify({"error": "person_id and amount required"}), 400
+    if not person_id or amount <= 0 or amount_cash < 0 or amount_online < 0:
+        return jsonify({"error": "person_id and a positive advance amount are required"}), 400
 
     conn = get_db_connection()
     c = conn.cursor()
     try:
+        c.execute("SELECT id FROM faces WHERE id = ? AND vendor_id = ?", (person_id, vendor_id))
+        if not c.fetchone():
+            return jsonify({"error": "Employee not found"}), 404
         c.execute("INSERT INTO advances (vendor_id, person_id, amount, amount_cash, amount_online, date, status, deduction_month) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)",
                   (vendor_id, person_id, amount, amount_cash, amount_online, date_str, deduction_month))
+        advance_id = c.lastrowid
         conn.commit()
-        return jsonify({"success": True, "id": c.lastrowid})
+        from services.employee_email_reports_service import queue_advance_notification
+        email_queued = queue_advance_notification(advance_id, "requested")
+        return jsonify({"success": True, "id": advance_id, "status": "pending", "email_queued": email_queued})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:

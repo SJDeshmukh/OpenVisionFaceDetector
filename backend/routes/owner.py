@@ -26,7 +26,7 @@ def get_owner_advances():
             query = """
                 SELECT a.*, f.name as employee_name, f.display_id
                 FROM advances a
-                JOIN faces f ON a.person_id = f.id
+                JOIN faces f ON a.person_id = f.id AND a.vendor_id = f.vendor_id
                 WHERE a.vendor_id = ?
                 ORDER BY a.created_at DESC
             """
@@ -35,7 +35,7 @@ def get_owner_advances():
             query = """
                 SELECT a.*, f.name as employee_name, f.display_id
                 FROM advances a
-                JOIN faces f ON a.person_id = f.id
+                JOIN faces f ON a.person_id = f.id AND a.vendor_id = f.vendor_id
                 WHERE a.vendor_id = ? AND a.status = ?
                 ORDER BY a.created_at DESC
             """
@@ -45,6 +45,7 @@ def get_owner_advances():
         advances = []
         for r in rows:
             d = dict(r)
+            d['name'] = d.get('employee_name')
             advances.append(d)
         
         return jsonify({"status": "success", "advances": advances})
@@ -66,7 +67,7 @@ def approve_advance():
         return jsonify({"error": "Only owners can approve advances"}), 403
     
     owner_username = token_data.get('username')
-    data = request.json
+    data = request.get_json(silent=True) or {}
     advance_id = data.get('advance_id')
     
     if not advance_id:
@@ -90,8 +91,10 @@ def approve_advance():
             WHERE id = ? AND vendor_id = ?
         """, (owner_username, datetime.now(), advance_id, vendor_id))
         conn.commit()
+        from services.employee_email_reports_service import queue_advance_notification
+        email_queued = queue_advance_notification(advance_id, "approved")
         
-        return jsonify({"status": "success", "message": "Advance approved"})
+        return jsonify({"status": "success", "message": "Advance approved", "email_queued": email_queued})
     except Exception as e:
         logger.error(f"Error approving advance: {e}")
         return jsonify({"error": str(e)}), 500
@@ -110,9 +113,9 @@ def reject_advance():
         return jsonify({"error": "Only owners can reject advances"}), 403
     
     owner_username = token_data.get('username')
-    data = request.json
+    data = request.get_json(silent=True) or {}
     advance_id = data.get('advance_id')
-    reason = data.get('reason', '')
+    reason = data.get('reason', data.get('rejection_reason', ''))
     
     if not advance_id:
         return jsonify({"error": "advance_id is required"}), 400
@@ -134,8 +137,10 @@ def reject_advance():
             WHERE id = ? AND vendor_id = ?
         """, (owner_username, datetime.now(), reason, advance_id, vendor_id))
         conn.commit()
+        from services.employee_email_reports_service import queue_advance_notification
+        email_queued = queue_advance_notification(advance_id, "rejected")
         
-        return jsonify({"status": "success", "message": "Advance rejected"})
+        return jsonify({"status": "success", "message": "Advance rejected", "email_queued": email_queued})
     except Exception as e:
         logger.error(f"Error rejecting advance: {e}")
         return jsonify({"error": str(e)}), 500
@@ -162,26 +167,61 @@ def get_owner_insights():
         
         # Approved Advances (This Month)
         current_month = datetime.now().strftime('%Y-%m')
-        c.execute("SELECT COUNT(*), SUM(amount) FROM advances WHERE vendor_id = ? AND status = 'approved' AND date LIKE ?", (vendor_id, f"{current_month}%"))
+        c.execute("SELECT COUNT(*), SUM(amount) FROM advances WHERE vendor_id = ? AND status = 'approved' AND deduction_month = ?", (vendor_id, current_month))
         approved_row = c.fetchone()
         approved_advances_count = approved_row[0] or 0
         approved_advances_amount = approved_row[1] or 0
         
         # Attendance Summary (Today)
         today = datetime.now().strftime('%Y-%m-%d')
-        c.execute("SELECT COUNT(DISTINCT person_id) FROM attendance WHERE vendor_id = ? AND timestamp LIKE ?", (vendor_id, f"{today}%"))
+        c.execute("SELECT COUNT(DISTINCT person_id) FROM attendance WHERE vendor_id = ? AND date(timestamp) = ?", (vendor_id, today))
         present_today = c.fetchone()[0] or 0
+
+        active_shifts_count = 0
+        c.execute("SELECT live_timetable FROM companies WHERE vendor_id = ? LIMIT 1", (vendor_id,))
+        timetable_row = c.fetchone()
+        if timetable_row and timetable_row[0]:
+            try:
+                timetable = json.loads(timetable_row[0]) if isinstance(timetable_row[0], str) else timetable_row[0]
+                active_shifts_count = sum(1 for item in (timetable or []) if item.get('enabled', True))
+            except (TypeError, ValueError, AttributeError):
+                logger.warning("Could not parse owner timetable for vendor %s", vendor_id)
+
+        c.execute("""
+            SELECT a.status, a.amount, a.created_at, a.approved_at, f.name
+            FROM advances a
+            JOIN faces f ON f.id = a.person_id AND f.vendor_id = a.vendor_id
+            WHERE a.vendor_id = ?
+            ORDER BY COALESCE(a.approved_at, a.created_at) DESC
+            LIMIT 8
+        """, (vendor_id,))
+        recent_activity = []
+        for row in c.fetchall() or []:
+            item = dict(row)
+            state = str(item.get('status') or 'pending').title()
+            recent_activity.append({
+                "action": f"Advance {state}",
+                "timestamp": item.get('approved_at') or item.get('created_at'),
+                "details": f"{item.get('name') or 'Employee'} · ₹{float(item.get('amount') or 0):.2f}",
+            })
         
+        insights = {
+            "total_employees": total_employees,
+            "present_today": present_today,
+            "pending_advances_count": pending_advances_count,
+            "pending_advances_amount": pending_advances_amount,
+            "approved_advances_this_month_count": approved_advances_count,
+            "approved_advances_this_month_amount": approved_advances_amount,
+            # Android owner dashboard compatibility: this is deliberately the
+            # approved amount, never the still-pending claim amount.
+            "total_advances_month": approved_advances_amount,
+            "active_shifts_count": active_shifts_count,
+        }
         return jsonify({
             "status": "success",
-            "insights": {
-                "total_employees": total_employees,
-                "present_today": present_today,
-                "pending_advances_count": pending_advances_count,
-                "pending_advances_amount": pending_advances_amount,
-                "approved_advances_this_month_count": approved_advances_count,
-                "approved_advances_this_month_amount": approved_advances_amount
-            }
+            "insights": insights,
+            "stats": insights,
+            "recent_activity": recent_activity,
         })
     except Exception as e:
         logger.error(f"Error fetching owner insights: {e}")
