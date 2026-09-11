@@ -31,6 +31,9 @@ const LeaveManagement = () => {
   const [pin, setPin] = useState('');
   
   const currentRole = staffSession?.role || user?.role;
+  const staffRequestConfig = staffSession?.access_token
+    ? { headers: { 'X-Leave-Staff-Token': staffSession.access_token } }
+    : {};
 
   // Set default tab based on role once user is available
   useEffect(() => {
@@ -70,7 +73,7 @@ const LeaveManagement = () => {
         if (staffSession?.department) {
           url += `&department=${encodeURIComponent(staffSession.department)}`;
         }
-        const res = await axios.get(url);
+        const res = await axios.get(url, staffRequestConfig);
         setRequests(res.data.requests || []);
       } else if (activeTab === 'history') {
         let url;
@@ -82,14 +85,14 @@ const LeaveManagement = () => {
             url += `&department=${encodeURIComponent(staffSession.department)}`;
           }
         }
-        const res = await axios.get(url);
+        const res = await axios.get(url, user?.role === 'user' && !staffSession ? {} : staffRequestConfig);
         setRequests(res.data.history || res.data.requests || []);
       } else if (activeTab === 'tracking') {
         let url = `${API_URL}/leave/admin/tracking?role=${currentRole}`;
         if (staffSession?.department) {
           url += `&department=${encodeURIComponent(staffSession.department)}`;
         }
-        const res = await axios.get(url);
+        const res = await axios.get(url, staffRequestConfig);
         setTrackingData(res.data.tracking || []);
       } else if (activeTab === 'parents') {
         const res = await axios.get(`${API_URL}/leave/parent-faces`);
@@ -112,7 +115,7 @@ const LeaveManagement = () => {
         request_id: requestId,
         role: currentRole,
         action: action
-      });
+      }, staffRequestConfig);
       fetchData(); // Refresh list
     } catch (err) {
       alert("Error processing request: " + (err.response?.data?.error || err.message));
@@ -139,7 +142,7 @@ const LeaveManagement = () => {
       }
 
       await axios.post(`${API_URL}/leave/request`, payload);
-      alert("Leave request submitted successfully! Pending parent approval.");
+      alert("Leave request submitted successfully! Pending Rector approval.");
       setFormData({
         leave_type: 'home',
         reason: '',
@@ -500,9 +503,9 @@ const LeaveManagement = () => {
                       
                       {/* Logic for steps */}
                       {[
-                        { label: 'Parent', status: req.parent_status },
                         { label: 'Rector', status: req.rector_status },
-                        { label: 'HOD', status: req.hod_status }
+                        { label: 'HOD', status: req.hod_status },
+                        { label: 'Parent', status: req.parent_status }
                       ].map((step, idx) => {
                         const isDone = step.status === 'approved';
                         const isRejected = step.status === 'rejected';

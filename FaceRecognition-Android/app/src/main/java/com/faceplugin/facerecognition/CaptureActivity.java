@@ -9,7 +9,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
-import android.graphics.RectF;
 import android.media.Image;
 import android.os.Bundle;
 import android.util.Log;
@@ -34,10 +33,11 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
 import com.google.common.util.concurrent.ListenableFuture;
-import com.ocp.facesdk.FaceBox;
-import com.ocp.facesdk.FaceDetectionParam;
+import com.faceplugin.faceengine.FaceBox;
+import com.faceplugin.faceengine.FaceDetectionParam;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.ExecutionException;
@@ -84,7 +84,11 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
     private Bitmap capturedBitmap = null;
 
     private FaceBox capturedFace = null;
+    private byte[] capturedTemplate = null;
+    private final List<byte[]> enrollmentTemplates = new ArrayList<>();
     private boolean isCapturing = false;
+    private int consecutiveValidFrames = 0;
+    private static final int REQUIRED_VALID_FRAMES = 7;
 
     private boolean isCaptureOnly = false;
     private long lastStreamTime = 0;
@@ -147,9 +151,9 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
              tv.setText("USE PHOTO");
         }
 
-        int sdkResult = FaceSDKWrapper.INSTANCE.ensureInitialized(getApplicationContext());
-        if (sdkResult != com.ocp.facesdk.FaceSDK.SDK_SUCCESS) {
-            Toast.makeText(this, "Face detection unavailable (SDK error " + sdkResult + ")", Toast.LENGTH_LONG).show();
+        int initResult = LocalFaceEngineFacade.INSTANCE.ensureInitialized(getApplicationContext());
+        if (initResult != LocalFaceEngineFacade.SUCCESS) {
+            Toast.makeText(this, "Local face models could not be loaded (error " + initResult + ")", Toast.LENGTH_LONG).show();
             return;
         }
 
@@ -175,9 +179,18 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
                      return;
                 }
 
+                if (capturedBitmap == null || capturedFace == null
+                        || capturedTemplate == null
+                        || consecutiveValidFrames < REQUIRED_VALID_FRAMES
+                        || !FacePipeline.isLive(context, capturedFace)) {
+                    Toast.makeText(context, "Hold still until the live-face check completes", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+
                 new Thread(() -> {
                     Bitmap faceImage = Utils.cropFace(capturedBitmap, capturedFace);
-                    byte[] templates = FaceSDKWrapper.INSTANCE.templateExtraction(capturedBitmap, capturedFace);
+                    byte[] templates = capturedTemplate;
+                    if (templates == null || templates.length == 0) return;
 
                     DBManager dbManager = new DBManager(context);
                     final int min = 10000;
@@ -239,7 +252,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
 
     private void setUpCamera()
     {
-        if (isFinishing() || !FaceSDKWrapper.INSTANCE.isInitialized()) return;
+        if (isFinishing() || !LocalFaceEngineFacade.INSTANCE.isInitialized()) return;
         ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(CaptureActivity.this);
         cameraProviderFuture.addListener(() -> {
 
@@ -317,13 +330,12 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
     @Override
     public void view5_finished() {
 
-        FaceDetectionParam param = new FaceDetectionParam();
-        param.check_liveness = true;
-        param.check_liveness_level = SettingsActivity.getLivenessLevel(this);
+        if (capturedBitmap == null || capturedFace == null) return;
+        FaceDetectionParam param = FacePipeline.secureDetectionParams(this);
 
-        List<FaceBox> faceBoxes = FaceSDKWrapper.INSTANCE.faceDetection(capturedBitmap, param);
+        List<FaceBox> faceBoxes = LocalFaceEngineFacade.INSTANCE.faceDetection(capturedBitmap, param);
         if(faceBoxes != null && faceBoxes.size() > 0) {
-            if(faceBoxes.get(0).liveness > SettingsActivity.getLivenessThreshold(context)) {
+            if(FacePipeline.isLive(context, faceBoxes.get(0))) {
                 String msg = String.format("Liveness: Real, score = %.03f", faceBoxes.get(0).liveness);
                 livenessTxt.setText(msg);
             }
@@ -387,7 +399,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
                     ", rot: " + rotationDegrees + ", mode: " + cameraMode + ", buffer: " + nv21.length);
             }
 
-            Bitmap bitmap = FaceSDKWrapper.INSTANCE.yuv2Bitmap(nv21, image.getWidth(), image.getHeight(), cameraMode);
+            Bitmap bitmap = LocalFaceEngineFacade.INSTANCE.yuv2Bitmap(nv21, image.getWidth(), image.getHeight(), cameraMode);
 
             if (bitmap == null) {
                 return;
@@ -402,13 +414,21 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
             }
             // -----------------------
 
-            FaceDetectionParam param = new FaceDetectionParam();
-            param.check_face_occlusion = true;
-            param.check_eye_closeness = true;
-            param.check_mouth_opened = true;
+            FaceDetectionParam param = FacePipeline.secureDetectionParams(this);
 
-            List<FaceBox> faceBoxes = FaceSDKWrapper.INSTANCE.faceDetection(bitmap, param);
-            FACE_CAPTURE_STATE faceCaptureState = checkFace(faceBoxes, this, bitmap.getWidth(), bitmap.getHeight());
+            List<FaceBox> faceBoxes = LocalFaceEngineFacade.INSTANCE.faceDetection(bitmap, param);
+            FACE_CAPTURE_STATE evaluatedState = checkFace(faceBoxes, this, bitmap.getWidth(), bitmap.getHeight());
+            boolean collectingEnrollmentFrames = captureView.viewMode == CaptureView.VIEW_MODE.FACE_CIRCLE;
+            byte[] candidateTemplate = null;
+            if (collectingEnrollmentFrames && evaluatedState == FACE_CAPTURE_STATE.CAPTURE_OK) {
+                candidateTemplate = LocalFaceEngineFacade.INSTANCE.templateExtraction(bitmap, faceBoxes.get(0));
+            }
+            final FACE_CAPTURE_STATE faceCaptureState =
+                    collectingEnrollmentFrames
+                            && evaluatedState == FACE_CAPTURE_STATE.CAPTURE_OK
+                            && candidateTemplate == null
+                            ? FACE_CAPTURE_STATE.LOW_QUALITY : evaluatedState;
+            final byte[] validCandidateTemplate = candidateTemplate;
 
             if(captureView.viewMode == CaptureView.VIEW_MODE.REPEAT_NO_FACE_PREPARE) {
                 if(faceCaptureState.compareTo(FACE_CAPTURE_STATE.NO_FACE) > 0) {
@@ -425,6 +445,10 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
                     public void run() {
                         captureView.setFrameSize(new Size(bitmap.getWidth(), bitmap.getHeight()));
                         captureView.setFaceBoxes(faceBoxes);
+
+                        if (faceCaptureState != FACE_CAPTURE_STATE.CAPTURE_OK) {
+                            resetEnrollmentSequence();
+                        }
 
                         if(faceCaptureState == FACE_CAPTURE_STATE.NO_FACE) {
                             warningTxt.setText("");
@@ -445,29 +469,45 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
                             warningTxt.setText("Eye closed!");
                         else if(faceCaptureState == FACE_CAPTURE_STATE.MOUTH_OPENED)
                             warningTxt.setText("Mouth opened!");
+                        else if(faceCaptureState == FACE_CAPTURE_STATE.LOW_QUALITY)
+                            warningTxt.setText("Hold still for a clearer image");
+                        else if(faceCaptureState == FACE_CAPTURE_STATE.BAD_LIGHTING)
+                            warningTxt.setText("Improve face lighting");
                         else if(faceCaptureState == FACE_CAPTURE_STATE.SPOOFED_FACE)
                             warningTxt.setText("Spoof face");
                         else {
-                            warningTxt.setText("");
-                            captureView.setViewMode(CaptureView.VIEW_MODE.FACE_CAPTURE_PREPARE);
-
-                            capturedBitmap = bitmap;
-                            capturedFace = faceBoxes.get(0);
+                            enrollmentTemplates.add(validCandidateTemplate);
+                            consecutiveValidFrames = enrollmentTemplates.size();
+                            FaceBox candidate = faceBoxes.get(0);
+                            if (capturedFace == null || candidate.face_quality > capturedFace.face_quality) {
+                                capturedBitmap = bitmap;
+                                capturedFace = candidate;
+                            }
                             captureView.setCapturedBitmap(capturedBitmap);
+                            if (consecutiveValidFrames >= REQUIRED_VALID_FRAMES) {
+                                capturedTemplate = LocalFaceEngineFacade.INSTANCE.aggregateTemplates(enrollmentTemplates);
+                                if (capturedTemplate != null) {
+                                    warningTxt.setText("");
+                                    captureView.setViewMode(CaptureView.VIEW_MODE.FACE_CAPTURE_PREPARE);
+                                } else {
+                                    resetEnrollmentSequence();
+                                    warningTxt.setText("Unable to build face template; try again");
+                                }
+                            } else {
+                                warningTxt.setText("Hold still " + consecutiveValidFrames
+                                        + "/" + REQUIRED_VALID_FRAMES);
+                            }
                         }
                     }
                 });
             } else if(captureView.viewMode == CaptureView.VIEW_MODE.FACE_CAPTURE_PREPARE) {
                 if(faceCaptureState == FACE_CAPTURE_STATE.CAPTURE_OK) {
-                    if(faceBoxes.get(0).face_quality > capturedFace.face_quality) {
-                        capturedBitmap = bitmap;
-                        capturedFace = faceBoxes.get(0);
-                        captureView.setCapturedBitmap(capturedBitmap);
-                    }
-
-                    if (isCaptureOnly) {
+                    if (isCaptureOnly && consecutiveValidFrames >= REQUIRED_VALID_FRAMES) {
                         runOnUiThread(() -> performCapture());
                     }
+                } else {
+                    resetEnrollmentSequence();
+                    runOnUiThread(() -> captureView.setViewMode(CaptureView.VIEW_MODE.FACE_CIRCLE));
                 }
             } else if(captureView.viewMode == CaptureView.VIEW_MODE.FACE_CAPTURE_DONE) {
                 runOnUiThread(new Runnable() {
@@ -490,6 +530,13 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
 
     private void performCapture() {
         if (isCapturing) return;
+        if (capturedBitmap == null || capturedFace == null
+                || capturedTemplate == null
+                || consecutiveValidFrames < REQUIRED_VALID_FRAMES
+                || !FacePipeline.isLive(context, capturedFace)) {
+            Toast.makeText(context, "Hold still until the live-face check completes", Toast.LENGTH_SHORT).show();
+            return;
+        }
         isCapturing = true;
 
         // Stop camera updates to prevent race conditions and free resources
@@ -504,6 +551,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
         });
 
         final Bitmap bitmapToSave = capturedBitmap; // Capture local reference
+        final byte[] templateToSave = capturedTemplate;
 
         if (bitmapToSave != null) {
             Toast.makeText(context, "Face Captured!", Toast.LENGTH_SHORT).show();
@@ -511,10 +559,15 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
             new Thread(() -> {
                 try {
                     android.net.Uri fileUri = Utils.saveBitmapToCache(context, bitmapToSave);
+                    byte[] faceTemplate = templateToSave;
                     runOnUiThread(() -> {
                         if (fileUri != null) {
                             Intent resultIntent = new Intent();
                             resultIntent.putExtra("image_uri", fileUri.toString());
+                            if (faceTemplate != null && faceTemplate.length > 0) {
+                                resultIntent.putExtra("face_template", faceTemplate);
+                                resultIntent.putExtra("face_verified", true);
+                            }
                             setResult(RESULT_OK, resultIntent);
                             finish();
                         } else {
@@ -536,59 +589,15 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
     }
 
     public static FACE_CAPTURE_STATE checkFace(List<FaceBox> faceBoxes, Context context, int width, int height) {
-        if(faceBoxes == null || faceBoxes.size() == 0)
-            return FACE_CAPTURE_STATE.NO_FACE;
+        return FacePipeline.enrollmentState(faceBoxes, context, width, height);
+    }
 
-        if(faceBoxes.size() > 1) {
-            return FACE_CAPTURE_STATE.MULTIPLE_FACES;
-        }
-
-        FaceBox faceBox = faceBoxes.get(0);
-        float faceLeft = Float.MAX_VALUE;
-        float faceRight = 0f;
-        float faceBottom = 0f;
-        for(int i = 0; i < 68; i ++) {
-            faceLeft = Math.min(faceLeft, faceBox.landmarks_68[i * 2]);
-            faceRight = Math.max(faceRight, faceBox.landmarks_68[i * 2]);
-            faceBottom = Math.max(faceBottom, faceBox.landmarks_68[i * 2 + 1]);
-        }
-
-        float sizeRate = 0.25f;
-        float interRate = 0.10f;
-        Size frameSize = new Size(width, height);
-        RectF roiRect = CaptureView.getROIRect(frameSize);
-        float centerY = (faceBox.y2 + faceBox.y1) / 2;
-        float topY = centerY - (faceBox.y2 - faceBox.y1) * 2 / 3;
-        float interX = Math.max(0f, roiRect.left - faceLeft) + Math.max(0f, faceRight - roiRect.right);
-        float interY = Math.max(0f, roiRect.top - topY) + Math.max(0f, faceBottom - roiRect.bottom);
-        if(interX / roiRect.width() > interRate || interY / roiRect.height() > interRate) {
-            return FACE_CAPTURE_STATE.FIT_IN_CIRCLE;
-        }
-
-        if((faceBox.y2 - faceBox.y1) * (faceBox.x2 - faceBox.x1) <  roiRect.width() * roiRect.height() * sizeRate) {
-            return FACE_CAPTURE_STATE.MOVE_CLOSER;
-        }
-
-        if(Math.abs(faceBox.yaw) > SettingsActivity.getYawThreshold(context) ||
-                Math.abs(faceBox.roll) > SettingsActivity.getRollThreshold(context) ||
-                Math.abs(faceBox.pitch) > SettingsActivity.getPitchThreshold(context)) {
-            return FACE_CAPTURE_STATE.NO_FRONT;
-        }
-
-        if(faceBox.face_occlusion > SettingsActivity.getOcclusionThreshold(context)) {
-            return FACE_CAPTURE_STATE.FACE_OCCLUDED;
-        }
-
-        if(faceBox.left_eye_closed > SettingsActivity.getEyecloseThreshold(context) ||
-                faceBox.right_eye_closed > SettingsActivity.getEyecloseThreshold(context)) {
-            return FACE_CAPTURE_STATE.EYE_CLOSED;
-        }
-
-        if(faceBox.mouth_opened > SettingsActivity.getMouthopenThreshold(context)) {
-            return FACE_CAPTURE_STATE.MOUTH_OPENED;
-        }
-
-        return FACE_CAPTURE_STATE.CAPTURE_OK;
+    private void resetEnrollmentSequence() {
+        consecutiveValidFrames = 0;
+        enrollmentTemplates.clear();
+        capturedTemplate = null;
+        capturedBitmap = null;
+        capturedFace = null;
     }
 
     private void sendStreamFrame(Bitmap originalBitmap) {

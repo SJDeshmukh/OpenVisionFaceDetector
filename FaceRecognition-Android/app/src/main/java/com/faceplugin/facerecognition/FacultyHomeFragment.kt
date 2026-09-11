@@ -104,7 +104,7 @@ class FacultyHomeFragment : Fragment() {
         val studentCount = DBManager.personList.size
         tvStudentCount.text = "Students loaded: $studentCount"
 
-        tvModelStatus.text = if (BuildConfig.IS_ATTENDX) "Detection: Server-side ✓" else if (FaceSDKWrapper.isInitialized) "Model: Ready ✓" else "Model: Loading…"
+        tvModelStatus.text = if (BuildConfig.IS_ATTENDX) "Detection: Server-side ✓" else if (LocalFaceEngineFacade.isInitialized) "Model: Ready ✓" else "Model: Loading…"
 
         val unsyncedCount = db.unsyncedFacultyCount
         if (unsyncedCount > 0) {

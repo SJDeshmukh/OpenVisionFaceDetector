@@ -96,9 +96,6 @@ public interface GreetingService {
     @POST("api/leave/request")
     Call<com.google.gson.JsonObject> createLeaveRequest(@Body LeaveRequest request);
 
-    @POST("api/leave/parent/reject")
-    Call<com.google.gson.JsonObject> parentRejectLeave(@Body com.google.gson.JsonObject request);
-
     @GET("api/public/attendance-by-student")
     Call<com.google.gson.JsonObject> attendanceByStudent(@Query("student_number") String studentNumber);
     @GET("api/public/attendance-by-student")

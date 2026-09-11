@@ -78,7 +78,14 @@ export const AuthProvider = ({ children }) => {
         refreshUserData().catch(() => {});
       }
       const storedStaff = localStorage.getItem('staffSession');
-      if (storedStaff) setStaffSession(JSON.parse(storedStaff));
+      if (storedStaff) {
+        const parsedStaff = JSON.parse(storedStaff);
+        if (parsedStaff?.access_token) {
+          setStaffSession(parsedStaff);
+        } else {
+          localStorage.removeItem('staffSession');
+        }
+      }
     } catch {
       localStorage.removeItem('user');
       localStorage.removeItem('staffSession');

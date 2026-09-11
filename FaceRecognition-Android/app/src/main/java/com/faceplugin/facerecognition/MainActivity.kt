@@ -17,7 +17,6 @@ import com.faceplugin.facerecognition.api.RetrofitClient
 import com.faceplugin.facerecognition.api.SyncResponse
 import com.google.gson.JsonObject
 import com.google.android.material.bottomnavigation.BottomNavigationView
-import com.ocp.facesdk.FaceSDK
 import retrofit2.Call
 import retrofit2.Callback
 import retrofit2.Response

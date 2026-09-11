@@ -102,6 +102,7 @@ class SystemUser(Base):
     vendor_id = Column(Integer, ForeignKey('vendors.id'))
     person_id = Column(Integer, ForeignKey('faces.id'))
     has_set_password = Column(Integer, default=0)
+    force_password_change = Column(Integer, default=0)
     last_active_at = Column(DateTime)
 
     vendor = relationship("Vendor", back_populates="system_users")

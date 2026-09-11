@@ -33,8 +33,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import com.ocp.facesdk.FaceBox;
-import com.ocp.facesdk.FaceSDK;
+import com.faceplugin.faceengine.FaceBox;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -120,6 +119,8 @@ public class EnrollFragment extends Fragment {
                 result -> {
                     if (result.getResultCode() == Activity.RESULT_OK && result.getData() != null) {
                         String imageUriString = result.getData().getStringExtra("image_uri");
+                        byte[] capturedTemplate = result.getData().getByteArrayExtra("face_template");
+                        boolean capturedVerified = result.getData().getBooleanExtra("face_verified", false);
                         if (imageUriString != null) {
                             Uri imageUri = Uri.parse(imageUriString);
                             // Process in background to avoid UI blocking/ANR
@@ -127,7 +128,7 @@ public class EnrollFragment extends Fragment {
                                 try {
                                     Bitmap bitmap = Utils.getCorrectlyOrientedImage(requireContext(), imageUri);
                                     if (bitmap != null) {
-                                        getActivity().runOnUiThread(() -> processImage(bitmap));
+                                        getActivity().runOnUiThread(() -> processImage(bitmap, capturedTemplate, capturedVerified));
                                     } else {
                                         getActivity().runOnUiThread(() -> Toast.makeText(getContext(), "Failed to load image bitmap", Toast.LENGTH_SHORT).show());
                                     }
@@ -141,7 +142,7 @@ public class EnrollFragment extends Fragment {
                             if (extras != null) {
                                 Bitmap imageBitmap = (Bitmap) extras.get("data");
                                 if (imageBitmap != null) {
-                                    processImage(imageBitmap);
+                                    processImage(imageBitmap, capturedTemplate, capturedVerified);
                                 }
                             }
                         }
@@ -156,7 +157,7 @@ public class EnrollFragment extends Fragment {
                         Uri selectedImage = result.getData().getData();
                         try {
                             Bitmap bitmap = Utils.getCorrectlyOrientedImage(requireContext(), selectedImage);
-                            processImage(bitmap);
+                            processImage(bitmap, null, false);
                         } catch (IOException e) {
                             e.printStackTrace();
                         }
@@ -208,7 +209,6 @@ public class EnrollFragment extends Fragment {
                     return;
                 }
             }
-
             // Launch Camera (or Dialog to choose Camera/Gallery)
             // For now, let's just launch Camera for "Screen 2" requirement
             Intent intent = new Intent(requireContext(), CaptureActivity.class);
@@ -265,18 +265,34 @@ public class EnrollFragment extends Fragment {
         if (llShift != null) llShift.setVisibility(View.VISIBLE);
     }
 
-    private void processImage(Bitmap bitmap) {
+    private void processImage(Bitmap bitmap, byte[] capturedTemplate, boolean capturedVerified) {
         // Run Face Detection
-        List<FaceBox> faceBoxes = FaceSDKWrapper.INSTANCE.faceDetection(bitmap, null);
+        List<FaceBox> faceBoxes = LocalFaceEngineFacade.INSTANCE.faceDetection(
+                bitmap, FacePipeline.secureDetectionParams(requireContext()));
 
-        if (faceBoxes == null || faceBoxes.isEmpty()) {
+        // CaptureActivity already validated that exactly one face was present and
+        // extracted its template. Do not discard that successful scan merely because
+        // a second detection pass on the cached JPEG produces no box.
+        boolean hasCapturedTemplate = capturedVerified
+                && capturedTemplate != null && capturedTemplate.length > 0;
+
+        if ((faceBoxes == null || faceBoxes.isEmpty()) && !hasCapturedTemplate) {
             Toast.makeText(getContext(), getString(R.string.no_face_detected), Toast.LENGTH_SHORT).show();
-        } else if (faceBoxes.size() > 1) {
+        } else if (faceBoxes != null && faceBoxes.size() > 1 && !hasCapturedTemplate) {
             Toast.makeText(getContext(), getString(R.string.multiple_face_detected), Toast.LENGTH_SHORT).show();
         } else {
-            FaceBox faceBox = faceBoxes.get(0);
-            Bitmap faceImage = Utils.cropFace(bitmap, faceBox);
-            byte[] templates = FaceSDKWrapper.INSTANCE.templateExtraction(bitmap, faceBox);
+            FaceBox faceBox = faceBoxes != null && !faceBoxes.isEmpty() ? faceBoxes.get(0) : null;
+            if (!hasCapturedTemplate && !FacePipeline.recognitionReady(
+                    requireContext(), faceBox, bitmap.getWidth(), bitmap.getHeight())) {
+                Toast.makeText(getContext(), "A clear, live face is required", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            Bitmap faceImage = faceBox != null
+                    ? Utils.cropFace(bitmap, faceBox)
+                    : bitmap.copy(Bitmap.Config.ARGB_8888, false);
+            byte[] templates = hasCapturedTemplate
+                    ? capturedTemplate
+                    : LocalFaceEngineFacade.INSTANCE.templateExtraction(bitmap, faceBox);
             
             if (templates == null) {
                 Toast.makeText(getContext(), "Failed to extract face template", Toast.LENGTH_SHORT).show();
@@ -294,9 +310,14 @@ public class EnrollFragment extends Fragment {
             if (shift.equals("No Shift")) shift = "";
 
             float maxSimilarity = 0f;
-            for (Person p : DBManager.personList) {
+            Person[] people;
+            synchronized (DBManager.personList) {
+                people = DBManager.personList.toArray(new Person[0]);
+            }
+            for (Person p : people) {
                 try {
-                    float s = FaceSDKWrapper.INSTANCE.similarityCalculation(templates, p.templates);
+                    if (p == null || p.templates == null || p.templates.length == 0) continue;
+                    float s = LocalFaceEngineFacade.INSTANCE.similarityCalculation(templates, p.templates);
                     if (s > maxSimilarity) maxSimilarity = s;
                 } catch (Exception ignored) {}
             }
@@ -348,13 +369,14 @@ public class EnrollFragment extends Fragment {
                  if (key.equalsIgnoreCase("designation")) designation = value;
                  if (key.equalsIgnoreCase("shift")) shift = value;
             }
-            
+
             // NEW: Always save locally first with synced=false
             String localUid = dbManager.insertLocalPerson(name, bitmap, templates, phone, department, designation, shift, dynamicData.toString());
             dbManager.loadPerson(); // Refresh to make recognizable immediately
 
             if (NetworkUtils.INSTANCE.isOnline(requireContext().getApplicationContext()) &&
                     "true".equalsIgnoreCase(requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE).getString("cloud_sync", "true"))) {
+                Toast.makeText(getContext(), "Registered locally; syncing to cloud", Toast.LENGTH_SHORT).show();
                 syncToBackend(name, templates, faceImage, phone, department, designation, shift, dynamicData, localUid);
             } else {
                 Toast.makeText(getContext(), "Registered locally (offline)", Toast.LENGTH_SHORT).show();
@@ -650,7 +672,6 @@ public class EnrollFragment extends Fragment {
                         : key;
                 boolean enabled = !field.has("enabled") || field.get("enabled").isJsonNull() || field.get("enabled").getAsBoolean();
                 if (!enabled) continue;
-
                 String typeRaw = (field.has("type") && !field.get("type").isJsonNull())
                         ? field.get("type").getAsString()
                         : "text";

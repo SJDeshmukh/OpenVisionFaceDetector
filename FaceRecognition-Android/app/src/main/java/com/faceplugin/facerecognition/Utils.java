@@ -8,7 +8,7 @@ import android.graphics.Matrix;
 import android.net.Uri;
 import android.provider.MediaStore;
 
-import com.ocp.facesdk.FaceBox;
+import com.faceplugin.faceengine.FaceBox;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -73,7 +73,7 @@ public class Utils {
         boolean isFront = lensFacing == CameraSelector.LENS_FACING_FRONT;
         
         // standard CameraX rotationDegrees is the clockwise rotation needed to make the image upright.
-        // FaceSDK modes:
+        // Camera transform modes used by the local NV21 converter:
         // 0-3: Back Camera (no mirror), rotations 0, 90, 180, 270
         // 4-7: Front Camera (mirrored), rotations 0, 90, 180, 270
         

@@ -491,7 +491,7 @@ def _init_pg_schema_on_conn(conn):
         "CREATE TABLE IF NOT EXISTS advances (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id), amount REAL, amount_cash REAL DEFAULT 0, amount_online REAL DEFAULT 0, date DATE, status TEXT DEFAULT 'pending', approved_by TEXT, approved_at TIMESTAMP, rejection_reason TEXT, deduction_month TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS advance_revisions (id SERIAL PRIMARY KEY, advance_id INTEGER NOT NULL, vendor_id INTEGER NOT NULL, person_id INTEGER NOT NULL, old_amount REAL, new_amount REAL, old_amount_cash REAL, new_amount_cash REAL, old_amount_online REAL, new_amount_online REAL, old_date DATE, new_date DATE, old_deduction_month TEXT, new_deduction_month TEXT, edited_by TEXT, edited_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS attendance (id SERIAL PRIMARY KEY, name TEXT, timestamp TIMESTAMP, status TEXT, captured_image TEXT, activity TEXT, is_late INTEGER DEFAULT 0, device_id TEXT, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id), attendance_date DATE, class_year TEXT, division TEXT, branch TEXT, subject TEXT, lecture_id INTEGER)",
-        "CREATE TABLE IF NOT EXISTS system_users (username TEXT PRIMARY KEY, password TEXT, password_plain TEXT, role TEXT, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id), has_set_password INTEGER DEFAULT 0, last_active_at TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS system_users (username TEXT PRIMARY KEY, password TEXT, password_plain TEXT, role TEXT, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id), has_set_password INTEGER DEFAULT 0, force_password_change INTEGER DEFAULT 0, last_active_at TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS subscriptions (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id) UNIQUE, plan_type TEXT, start_date TIMESTAMP, end_date TIMESTAMP, status TEXT DEFAULT 'active', max_users INTEGER, max_employees INTEGER, cost_per_user REAL, setup_fee REAL, setup_fee_paid INTEGER, features TEXT, max_mobile_devices INTEGER DEFAULT 1, cost_per_employee REAL DEFAULT 0, grace_period_days INTEGER DEFAULT 0, max_web_sessions INTEGER DEFAULT 1)",
         "CREATE TABLE IF NOT EXISTS vendor_devices (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), device_id TEXT, device_name TEXT, registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, last_login_at TIMESTAMP, last_active_at TIMESTAMP, battery_level REAL, geofence_lat REAL, geofence_lng REAL, geofence_radius REAL DEFAULT 0, last_lat REAL, last_lng REAL, UNIQUE(vendor_id, device_id))",
         "CREATE TABLE IF NOT EXISTS vendor_device_slots (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), slot_name TEXT, assigned_device_id TEXT, assigned_at TIMESTAMP, UNIQUE(vendor_id, slot_name))",
@@ -588,6 +588,7 @@ def _init_pg_schema_on_conn(conn):
         ("system_users", "person_id", "INTEGER"),
         ("system_users", "password_plain", "TEXT"),
         ("system_users", "has_set_password", "INTEGER DEFAULT 0"),
+        ("system_users", "force_password_change", "INTEGER DEFAULT 0"),
         ("system_users", "last_active_at", "TIMESTAMP"),
         ("subscriptions", "max_web_sessions", "INTEGER DEFAULT 1"),
         ("subscriptions", "grace_period_days", "INTEGER DEFAULT 0"),
@@ -686,7 +687,7 @@ def init_sqlite_schema(conn):
         "CREATE TABLE IF NOT EXISTS advances (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, person_id INTEGER, amount REAL, amount_cash REAL DEFAULT 0, amount_online REAL DEFAULT 0, date DATE, status TEXT DEFAULT 'pending', approved_by TEXT, approved_at DATETIME, rejection_reason TEXT, deduction_month TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS advance_revisions (id INTEGER PRIMARY KEY AUTOINCREMENT, advance_id INTEGER NOT NULL, vendor_id INTEGER NOT NULL, person_id INTEGER NOT NULL, old_amount REAL, new_amount REAL, old_amount_cash REAL, new_amount_cash REAL, old_amount_online REAL, new_amount_online REAL, old_date DATE, new_date DATE, old_deduction_month TEXT, new_deduction_month TEXT, edited_by TEXT, edited_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS attendance (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, timestamp DATETIME, status TEXT, captured_image TEXT, activity TEXT, is_late INTEGER DEFAULT 0, device_id TEXT, vendor_id INTEGER, person_id INTEGER, attendance_date DATE, class_year TEXT, division TEXT, branch TEXT, subject TEXT, lecture_id INTEGER)",
-        "CREATE TABLE IF NOT EXISTS system_users (username TEXT PRIMARY KEY, password TEXT, password_plain TEXT, role TEXT, vendor_id INTEGER, person_id INTEGER, has_set_password INTEGER DEFAULT 0)",
+        "CREATE TABLE IF NOT EXISTS system_users (username TEXT PRIMARY KEY, password TEXT, password_plain TEXT, role TEXT, vendor_id INTEGER, person_id INTEGER, has_set_password INTEGER DEFAULT 0, force_password_change INTEGER DEFAULT 0)",
         "CREATE TABLE IF NOT EXISTS subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER UNIQUE, plan_type TEXT, start_date DATETIME, end_date DATETIME, status TEXT DEFAULT 'active', max_users INTEGER, max_employees INTEGER, cost_per_user REAL, setup_fee REAL, setup_fee_paid INTEGER, features TEXT, max_mobile_devices INTEGER DEFAULT 1, cost_per_employee REAL DEFAULT 0, grace_period_days INTEGER DEFAULT 0, max_web_sessions INTEGER DEFAULT 1)",
         "CREATE TABLE IF NOT EXISTS vendor_devices (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, device_id TEXT, device_name TEXT, registered_at DATETIME DEFAULT CURRENT_TIMESTAMP, last_login_at DATETIME, last_active_at DATETIME, battery_level REAL, geofence_lat REAL, geofence_lng REAL, geofence_radius REAL DEFAULT 0, last_lat REAL, last_lng REAL, UNIQUE(vendor_id, device_id))",
         "CREATE TABLE IF NOT EXISTS vendor_device_slots (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, slot_name TEXT, assigned_device_id TEXT, assigned_at DATETIME, UNIQUE(vendor_id, slot_name))",
@@ -752,6 +753,10 @@ def init_sqlite_schema(conn):
         pass
     try:
         cur.execute("ALTER TABLE system_users ADD COLUMN has_set_password INTEGER DEFAULT 0")
+    except Exception:
+        pass
+    try:
+        cur.execute("ALTER TABLE system_users ADD COLUMN force_password_change INTEGER DEFAULT 0")
     except Exception:
         pass
     try:

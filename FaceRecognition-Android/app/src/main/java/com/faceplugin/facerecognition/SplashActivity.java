@@ -15,7 +15,6 @@ import android.view.animation.AnimationUtils;
 import android.widget.ImageView;
 import android.widget.TextView;
 import com.faceplugin.facerecognition.api.RetrofitClient;
-import com.ocp.facesdk.FaceSDK;
 
 import java.io.IOException;
 import java.net.HttpURLConnection;
@@ -44,24 +43,19 @@ public class SplashActivity extends AppCompatActivity {
         MyGlobal.context = getApplicationContext();
         tvStatus = findViewById(R.id.tvStatus);
 
-        // FaceSDK only needed for TapInX kiosk mode; AttendX uses server-side detection
+        // Local ONNX models are needed only for TapInX; AttendX uses server-side detection.
         if (!BuildConfig.IS_ATTENDX) {
-            tvStatus.setText("Initializing Face SDK...");
+            tvStatus.setText("Initializing local face models...");
             new Thread(() -> {
-                int ret = FaceSDKWrapper.INSTANCE.ensureInitialized(getApplicationContext());
+                int ret = LocalFaceEngineFacade.INSTANCE.ensureInitialized(getApplicationContext());
                 runOnUiThread(() -> {
-                    if (ret != FaceSDK.SDK_SUCCESS) {
-                        String msg = "SDK Init Failed";
-                        if (ret == FaceSDK.SDK_LICENSE_KEY_ERROR) msg = "Invalid license!";
-                        else if (ret == FaceSDK.SDK_LICENSE_APPID_ERROR) msg = "License app ID mismatch!";
-                        else if (ret == FaceSDK.SDK_LICENSE_EXPIRED) msg = "License expired!";
-                        else if (ret == FaceSDK.SDK_NO_ACTIVATED) msg = "SDK is not activated!";
-                        else if (ret == FaceSDK.SDK_INIT_ERROR) msg = "SDK model initialization failed!";
+                    if (ret != LocalFaceEngineFacade.SUCCESS) {
+                        String msg = "Local face model initialization failed";
                         android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_LONG).show();
                     }
                     connectToBackend();
                 });
-            }, "face-sdk-init").start();
+            }, "local-face-model-init").start();
             return;
         }
 

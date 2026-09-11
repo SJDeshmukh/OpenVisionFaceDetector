@@ -31,7 +31,7 @@ import android.net.Uri;
 import android.util.Base64;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
-import com.ocp.facesdk.FaceBox;
+import com.faceplugin.faceengine.FaceBox;
 import com.faceplugin.facerecognition.api.UploadFaceResponse;
 import com.google.gson.JsonObject;
 import java.io.ByteArrayOutputStream;
@@ -53,13 +53,16 @@ public class UsersFragment extends Fragment {
                 result -> {
                     if (result.getResultCode() == Activity.RESULT_OK && result.getData() != null) {
                         String imageUriString = result.getData().getStringExtra("image_uri");
+                        byte[] capturedTemplate = result.getData().getByteArrayExtra("face_template");
+                        boolean capturedVerified = result.getData().getBooleanExtra("face_verified", false);
                         if (imageUriString != null) {
                             Uri imageUri = Uri.parse(imageUriString);
                             new Thread(() -> {
                                 try {
                                     Bitmap bitmap = Utils.getCorrectlyOrientedImage(requireContext(), imageUri);
                                     if (bitmap != null) {
-                                        if (getActivity() != null) getActivity().runOnUiThread(() -> processCameraResult(bitmap));
+                                        if (getActivity() != null) getActivity().runOnUiThread(() ->
+                                                processCameraResult(bitmap, capturedTemplate, capturedVerified));
                                     } else {
                                         if (getActivity() != null) getActivity().runOnUiThread(() -> Toast.makeText(getContext(), "Failed to load image", Toast.LENGTH_SHORT).show());
                                     }
@@ -72,7 +75,7 @@ public class UsersFragment extends Fragment {
                             if (extras != null) {
                                 Bitmap imageBitmap = (Bitmap) extras.get("data");
                                 if (imageBitmap != null) {
-                                    processCameraResult(imageBitmap);
+                                    processCameraResult(imageBitmap, capturedTemplate, capturedVerified);
                                 }
                             }
                         }
@@ -234,21 +237,30 @@ public class UsersFragment extends Fragment {
                 .show();
     }
 
-    private void processCameraResult(Bitmap bitmap) {
+    private void processCameraResult(Bitmap bitmap, byte[] capturedTemplate, boolean capturedVerified) {
         if (pendingPersonForRegistration == null) return;
-        List<FaceBox> faceBoxes = FaceSDKWrapper.INSTANCE.faceDetection(bitmap, null);
+        List<FaceBox> faceBoxes = LocalFaceEngineFacade.INSTANCE.faceDetection(
+                bitmap, FacePipeline.secureDetectionParams(requireContext()));
+        boolean hasCapturedTemplate = capturedVerified
+                && capturedTemplate != null && capturedTemplate.length > 0;
 
-        if (faceBoxes == null || faceBoxes.isEmpty()) {
+        if ((faceBoxes == null || faceBoxes.isEmpty()) && !hasCapturedTemplate) {
             Toast.makeText(getContext(), getString(R.string.no_face_detected), Toast.LENGTH_SHORT).show();
             return;
-        } else if (faceBoxes.size() > 1) {
+        } else if (faceBoxes.size() > 1 && !hasCapturedTemplate) {
             Toast.makeText(getContext(), getString(R.string.multiple_face_detected), Toast.LENGTH_SHORT).show();
             return;
         }
         
-        FaceBox faceBox = faceBoxes.get(0);
-        Bitmap faceImage = Utils.cropFace(bitmap, faceBox);
-        byte[] templates = FaceSDKWrapper.INSTANCE.templateExtraction(bitmap, faceBox);
+        FaceBox faceBox = faceBoxes == null || faceBoxes.isEmpty() ? null : faceBoxes.get(0);
+        if (!hasCapturedTemplate && !FacePipeline.recognitionReady(
+                requireContext(), faceBox, bitmap.getWidth(), bitmap.getHeight())) {
+            Toast.makeText(getContext(), "A clear, live face is required", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Bitmap faceImage = faceBox == null ? bitmap : Utils.cropFace(bitmap, faceBox);
+        byte[] templates = hasCapturedTemplate ? capturedTemplate
+                : LocalFaceEngineFacade.INSTANCE.templateExtraction(bitmap, faceBox);
         
         if (templates == null) {
             Toast.makeText(getContext(), "Failed to extract face template", Toast.LENGTH_SHORT).show();
@@ -257,12 +269,17 @@ public class UsersFragment extends Fragment {
 
         // Duplication check
         float maxSimilarity = 0f;
-        for (Person p : DBManager.personList) {
+        Person[] people;
+        synchronized (DBManager.personList) {
+            people = DBManager.personList.toArray(new Person[0]);
+        }
+        for (Person p : people) {
+            if (p == null) continue;
             if (p.localUid != null && p.localUid.equals(pendingPersonForRegistration.localUid)) continue;
             if (p.id != null && pendingPersonForRegistration.id != null && p.id.equals(pendingPersonForRegistration.id)) continue;
             try {
                 if (p.templates != null && p.templates.length > 0) {
-                    float s = FaceSDKWrapper.INSTANCE.similarityCalculation(templates, p.templates);
+                    float s = LocalFaceEngineFacade.INSTANCE.similarityCalculation(templates, p.templates);
                     if (s > maxSimilarity) maxSimilarity = s;
                 }
             } catch (Exception ignored) {}

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import axios from 'axios';
-import { Lock, User, Eye, EyeOff, Zap } from 'lucide-react';
+import { Lock, User, Eye, EyeOff, Zap, Mail } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { API_URL } from '../config';
 import BrandLogo from '../components/BrandLogo';
@@ -79,6 +79,10 @@ const Login = () => {
   const [showStudentPasswordModal, setShowStudentPasswordModal] = useState(false);
   const [studentPassword, setStudentPassword] = useState('');
   const [changing, setChanging] = useState(false);
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetStatus, setResetStatus] = useState({ type: '', message: '' });
+  const [resetting, setResetting] = useState(false);
   const { login, logout, loginAsStaff } = useAuth();
   const navigate = useNavigate();
 
@@ -114,10 +118,10 @@ const Login = () => {
   const handlePasswordChange = async (e) => {
     e.preventDefault();
     if (newPassword !== confirmPassword) { setError('Passwords do not match'); return; }
-    if (newPassword.length < 4) { setError('Password must be at least 4 characters'); return; }
+    if (newPassword.length < 8) { setError('Password must be at least 8 characters'); return; }
     setChanging(true);
     try {
-      const res = await axios.post(`${API_URL}/leave/student/change-password`, { password: newPassword });
+      const res = await axios.post(`${API_URL}/auth/change-password`, { password: newPassword });
       if (res.data.status === 'success') {
         setShowPasswordChange(false);
         alert('Password changed! Please login with your new password.');
@@ -127,6 +131,23 @@ const Login = () => {
       setError(err.response?.data?.error || 'Failed to change password');
     } finally {
       setChanging(false);
+    }
+  };
+
+  const handleForgotPassword = async (e) => {
+    e.preventDefault();
+    setResetting(true);
+    setResetStatus({ type: '', message: '' });
+    try {
+      const { data } = await axios.post(`${API_URL}/auth/forgot-password`, { email: resetEmail.trim() });
+      setResetStatus({ type: 'success', message: data.message || 'Temporary password sent.' });
+    } catch (err) {
+      setResetStatus({
+        type: 'error',
+        message: err.response?.data?.error || 'Unable to reset password. Please try again.',
+      });
+    } finally {
+      setResetting(false);
     }
   };
 
@@ -287,6 +308,21 @@ const Login = () => {
                   }
                 />
 
+                <div className="flex justify-end -mt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setResetEmail(username.includes('@') ? username : '');
+                      setResetStatus({ type: '', message: '' });
+                      setShowForgotPassword(true);
+                    }}
+                    className="text-xs font-semibold transition-colors"
+                    style={{ color: '#9B6AFF' }}
+                  >
+                    Forgot password?
+                  </button>
+                </div>
+
                 <motion.button
                   custom={2} variants={itemVariants} initial="hidden" animate="visible"
                   type="submit"
@@ -384,6 +420,82 @@ const Login = () => {
         </div>
       </motion.div>
 
+      {/* ── Forgot Password Modal ── */}
+      <AnimatePresence>
+        {showForgotPassword && (
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4"
+            style={{ background: 'rgba(4,4,20,0.88)', backdropFilter: 'blur(8px)' }}
+          >
+            <motion.div
+              initial={{ scale: 0.93, y: 16 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.93, y: 16 }}
+              transition={{ type: 'spring', stiffness: 280, damping: 28 }}
+              className="w-full max-w-sm rounded-2xl overflow-hidden"
+              style={{
+                background: 'rgba(13,12,42,0.97)',
+                border: '1px solid rgba(124,58,255,0.25)',
+                boxShadow: '0 24px 80px rgba(0,0,0,0.7)',
+              }}
+            >
+              <div className="px-7 pt-7 pb-5" style={{ background: 'linear-gradient(135deg, rgba(124,58,255,0.28) 0%, rgba(6,214,255,0.1) 100%)' }}>
+                <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                  <Mail size={18} style={{ color: '#9B6AFF' }} /> Reset Password
+                </h2>
+                <p className="text-xs mt-1.5" style={{ color: 'rgba(196,196,224,0.65)' }}>
+                  Enter your registered email to receive a five-character temporary password.
+                </p>
+              </div>
+              <form onSubmit={handleForgotPassword} className="px-7 py-6 space-y-4">
+                {resetStatus.message && (
+                  <div
+                    className="text-xs p-3 rounded-xl"
+                    style={resetStatus.type === 'success'
+                      ? { background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.25)', color: '#86EFAC' }
+                      : { background: 'rgba(255,59,59,0.1)', border: '1px solid rgba(255,59,59,0.22)', color: '#FF7070' }}
+                  >
+                    {resetStatus.message}
+                  </div>
+                )}
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-semibold uppercase tracking-[0.14em]" style={{ color: '#5050A0' }}>
+                    Registered Email
+                  </label>
+                  <div className="relative">
+                    <Mail size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2" style={{ color: '#505080' }} />
+                    <input
+                      type="email"
+                      required
+                      autoFocus
+                      value={resetEmail}
+                      onChange={e => setResetEmail(e.target.value)}
+                      placeholder="name@example.com"
+                      className="w-full pl-10 pr-4 py-3 rounded-xl text-sm font-medium input-glow"
+                      style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(124,58,255,0.18)', color: '#fff', outline: 'none' }}
+                    />
+                  </div>
+                </div>
+                <button
+                  type="submit"
+                  disabled={resetting || !resetEmail.trim()}
+                  className="btn-primary w-full py-3.5 rounded-xl text-sm font-semibold"
+                >
+                  {resetting ? 'Sending…' : 'Email Temporary Password'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowForgotPassword(false)}
+                  className="w-full py-2.5 text-sm font-medium rounded-xl"
+                  style={{ color: '#7070A8' }}
+                >
+                  Back to Sign In
+                </button>
+              </form>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* ── Change Password Modal ── */}
       <AnimatePresence>
         {showPasswordChange && (
@@ -426,7 +538,7 @@ const Login = () => {
                       type="password" required value={value} onChange={onChange}
                       className="w-full px-4 py-3 rounded-xl text-sm font-medium transition-all duration-200 input-glow"
                       style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(124,58,255,0.18)', color: '#fff', outline: 'none' }}
-                      placeholder="At least 4 characters"
+                      placeholder="At least 8 characters"
                     />
                   </div>
                 ))}

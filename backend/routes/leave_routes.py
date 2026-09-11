@@ -1,13 +1,16 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, g
 import json
 import base64
 import numpy as np
 from datetime import datetime, timedelta
-from services.auth_service import authenticate_vendor_access, hash_password, verify_token, require_auth
+from services.auth_service import authenticate_vendor_access, generate_token_with_claims, hash_password, verify_token, require_auth
 from services.face_service import _normalize_vec, _decode_data_uri_to_rgb
+from services.mobile_face_template import decode_face_template as _decode_face_template
 from utils import get_db_connection, require_feature
 
 leave_bp = Blueprint('leave_bp', __name__)
+
+ALLOWED_LEAVE_ACTIONS = {"approved", "rejected"}
 
 def get_row_dict(row):
     if row is None: return None
@@ -18,11 +21,69 @@ def get_row_dict(row):
         # Fallback for other row types if necessary
         return row
 
+
+def _require_role(*allowed_roles):
+    """Return a 403 response unless the authenticated principal has an allowed role."""
+    if getattr(g, "user_role", None) not in allowed_roles:
+        return jsonify({"error": "Forbidden", "code": "FORBIDDEN"}), 403
+    return None
+
+
+def _authenticated_parent(cursor, vendor_id):
+    """Resolve the parent and linked student from the signed parent username."""
+    if getattr(g, "user_role", None) != "parent" or not getattr(g, "username", None):
+        return None
+    cursor.execute(
+        """SELECT id, student_number, selected_person_id, face_template
+           FROM parent_users WHERE vendor_id = ? AND username = ?""",
+        (vendor_id, g.username),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        return None
+    mapped = get_row_dict(row)
+    if isinstance(mapped, dict):
+        return mapped
+    return {
+        "id": row[0],
+        "student_number": row[1],
+        "selected_person_id": row[2],
+        "face_template": row[3],
+    }
+
+
+def _authenticated_leave_staff(vendor_id, required_role=None):
+    """Validate the short-lived, signed staff session issued after PIN verification."""
+    token = request.headers.get("X-Leave-Staff-Token")
+    data = verify_token(token) if token else None
+    if not data or data.get("role") != "leave_staff" or str(data.get("vendor_id")) != str(vendor_id):
+        return None
+    if required_role and data.get("staff_role") != required_role:
+        return None
+
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT id, role, department FROM leave_staff WHERE id = ? AND vendor_id = ?", (data.get("staff_id"), vendor_id))
+        row = c.fetchone()
+        if not row:
+            return None
+        role = row["role"] if hasattr(row, "keys") else row[1]
+        department = row["department"] if hasattr(row, "keys") else row[2]
+        if role != data.get("staff_role") or (required_role and role != required_role):
+            return None
+        return {"id": data.get("staff_id"), "role": role, "department": department}
+    finally:
+        conn.close()
+
 @leave_bp.route("/request", methods=["POST"])
 @require_feature("leave_management")
 def create_leave_request():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
+
+    role_error = _require_role("user")
+    if role_error: return role_error
     
     data = request.json
     student_id = data.get("student_id")
@@ -44,7 +105,29 @@ def create_leave_request():
         logger = logging.getLogger(__name__)
         logger.info(f"Creating leave request for student_id={student_id}, vendor_id={vendor_id}")
 
-        # Resolve student_id to faces.id if it's a string (student number/username/ID)
+        # Never trust a body-supplied student ID. Resolve the student from the
+        # authenticated account and only use the body field as a consistency check.
+        if is_pg:
+            c.execute(
+                "SELECT person_id FROM system_users WHERE vendor_id = %s AND username = %s AND role = 'user'",
+                (vendor_id, g.username),
+            )
+        else:
+            c.execute(
+                "SELECT person_id FROM system_users WHERE vendor_id = ? AND username = ? AND role = 'user'",
+                (vendor_id, g.username),
+            )
+        authenticated_student = c.fetchone()
+        authenticated_person_id = authenticated_student[0] if authenticated_student else None
+        if authenticated_person_id is not None:
+            student_id = authenticated_person_id
+        elif isinstance(student_id, str) and student_id.strip().lower() == str(g.username).strip().lower():
+            # Compatibility fallback for older student accounts without person_id.
+            student_id = g.username
+        else:
+            return jsonify({"error": "Student account is not linked to a face record"}), 409
+
+        # Resolve the authenticated username to faces.id for legacy accounts.
         if isinstance(student_id, str):
             if is_pg:
                 c.execute("""
@@ -86,10 +169,7 @@ def create_leave_request():
                 if not student_id.isdigit():
                     logger.error(f"Student {student_id} not found in faces table")
                     return jsonify({"error": f"Student with ID {student_id} not found in face records"}), 404
-                # If it IS numeric, it might already be the faces.id (person_id) passed from frontend
-                # We'll allow it to proceed as an integer
-                student_id = int(student_id)
-                logger.info(f"Using numeric student_id={student_id} directly")
+                return jsonify({"error": "Student account is not linked to a face record"}), 409
 
         if is_pg:
             c.execute("""
@@ -118,52 +198,43 @@ def get_parent_pending_requests():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
 
-    student_number = request.args.get("student_number")
-    if not student_number:
-        return jsonify({"error": "student_number required"}), 400
-
     conn = get_db_connection()
     c = conn.cursor()
     try:
         is_pg = getattr(conn, "_is_pg", False)
-        # 1. Resolve student_id efficiently using JSON extraction
-        if is_pg:
-            c.execute("""
-                SELECT id FROM faces 
-                WHERE vendor_id = %s AND (
-                    LOWER(TRIM(custom_data::jsonb->>'student_id')) = LOWER(TRIM(%s)) OR
-                    LOWER(TRIM(custom_data::jsonb->>'id_number')) = LOWER(TRIM(%s))
-                )
-            """, (vendor_id, student_number, student_number, student_number))
-        else:
-            c.execute("""
-                SELECT id FROM faces 
-                WHERE vendor_id = ? AND (
-                    LOWER(TRIM(json_extract(custom_data, '$.student_id'))) = LOWER(TRIM(?)) OR
-                    LOWER(TRIM(json_extract(custom_data, '$.id_number'))) = LOWER(TRIM(?))
-                )
-            """, (vendor_id, student_number, student_number, student_number))
-        
-        row = c.fetchone()
-        
-        # --- Robust Fallback: Check system_users table ---
-        if not row:
+        parent = _authenticated_parent(c, vendor_id)
+        if not parent:
+            return jsonify({"error": "Parent access required"}), 403
+
+        requested_student = request.args.get("student_number")
+        if requested_student and requested_student.strip().lower() != str(parent["student_number"]).strip().lower():
+            return jsonify({"error": "This parent account is not linked to that student"}), 403
+
+        student_id = parent.get("selected_person_id")
+        if student_id is None:
+            # Compatibility for old parent rows created before selected_person_id.
             if is_pg:
-                c.execute("SELECT person_id FROM system_users WHERE vendor_id = %s AND username = %s AND person_id IS NOT NULL", (vendor_id, student_number))
+                c.execute("SELECT person_id FROM system_users WHERE vendor_id = %s AND username = %s", (vendor_id, parent["student_number"]))
             else:
-                c.execute("SELECT person_id FROM system_users WHERE vendor_id = ? AND username = ? AND person_id IS NOT NULL", (vendor_id, student_number))
+                c.execute("SELECT person_id FROM system_users WHERE vendor_id = ? AND username = ?", (vendor_id, parent["student_number"]))
             row = c.fetchone()
-
-        if not row:
+            student_id = row[0] if row else None
+        if student_id is None:
             return jsonify({"requests": []})
-        
-        student_id = row[0]
 
-        # 2. Get pending requests
+        # Parents only receive the request after Rector and HOD approval.
         if is_pg:
-            c.execute("SELECT * FROM leave_requests WHERE student_id = %s AND vendor_id = %s AND parent_status = 'pending' ORDER BY created_at DESC", (student_id, vendor_id))
+            c.execute("""SELECT * FROM leave_requests
+                         WHERE student_id = %s AND vendor_id = %s
+                           AND rector_status = 'approved' AND hod_status = 'approved'
+                           AND parent_status = 'pending' AND final_status = 'pending'
+                         ORDER BY created_at DESC""", (student_id, vendor_id))
         else:
-            c.execute("SELECT * FROM leave_requests WHERE student_id = ? AND vendor_id = ? AND parent_status = 'pending' ORDER BY created_at DESC", (student_id, vendor_id))
+            c.execute("""SELECT * FROM leave_requests
+                         WHERE student_id = ? AND vendor_id = ?
+                           AND rector_status = 'approved' AND hod_status = 'approved'
+                           AND parent_status = 'pending' AND final_status = 'pending'
+                         ORDER BY created_at DESC""", (student_id, vendor_id))
         
         rows = c.fetchall()
         return jsonify({"requests": [get_row_dict(r) for r in rows]})
@@ -180,18 +251,26 @@ def parent_register_face():
     data = request.json
     student_number = data.get("student_number")
     face_image = data.get("face_image")
-    face_template = data.get("face_template") # Base64 from Android FaceSDK
+    face_template = data.get("face_template")  # Versioned Base64 from the Android local engine
     
     if not student_number or not face_image:
         return jsonify({"error": "student_number and face_image required"}), 400
 
     conn = get_db_connection()
     c = conn.cursor()
+
+    parent = _authenticated_parent(c, vendor_id)
+    if not parent:
+        conn.close()
+        return jsonify({"error": "Parent access required"}), 403
+    if student_number.strip().lower() != str(parent["student_number"]).strip().lower():
+        conn.close()
+        return jsonify({"error": "This parent account is not linked to that student"}), 403
     
     # 1. Unique Registration Rule: Check if this face already exists as a student/employee
     if face_template:
         try:
-            new_emb = np.frombuffer(base64.b64decode(face_template), dtype=np.float32)
+            new_emb, new_family = _decode_face_template(face_template)
             
             # Get all faces for this vendor to compare
             c.execute("SELECT id, templates, name FROM faces WHERE vendor_id = ?", (vendor_id,))
@@ -200,12 +279,16 @@ def parent_register_face():
             for row in rows:
                 r = get_row_dict(row)
                 if not r.get('templates'): continue
-                
-                stored_emb = np.frombuffer(base64.b64decode(r['templates']), dtype=np.float32)
-                # Simple dot product for normalized embeddings
+                try:
+                    stored_emb, stored_family = _decode_face_template(r['templates'])
+                except (ValueError, TypeError):
+                    continue
+                # Embeddings from different recognition models are incomparable.
+                if stored_family != new_family:
+                    continue
                 similarity = float(np.dot(new_emb, stored_emb))
                 
-                if similarity > 0.8: # Use same threshold as mobile
+                if similarity > 0.62:
                     conn.close()
                     return jsonify({"error": f"Violation: Face already registered as student '{r['name']}'"}), 409
         except Exception as e:
@@ -215,22 +298,12 @@ def parent_register_face():
     try:
         is_pg = getattr(conn, "_is_pg", False)
         if face_template:
-            # Use robust LOWER(TRIM()) matching for student_number
             if is_pg:
-                c.execute("UPDATE parent_users SET face_image = %s, face_template = %s WHERE LOWER(TRIM(student_number)) = LOWER(TRIM(%s)) AND vendor_id = %s", 
-                          (face_image, face_template, student_number, vendor_id))
+                c.execute("UPDATE parent_users SET face_image = %s, face_template = %s WHERE id = %s AND vendor_id = %s",
+                          (face_image, face_template, parent["id"], vendor_id))
             else:
-                c.execute("UPDATE parent_users SET face_image = ?, face_template = ? WHERE LOWER(TRIM(student_number)) = LOWER(TRIM(?)) AND vendor_id = ?", 
-                          (face_image, face_template, student_number, vendor_id))
-            
-            if c.rowcount == 0:
-                # Try without vendor_id check as a fallback (using the resolved vendor_id if possible)
-                if is_pg:
-                    c.execute("UPDATE parent_users SET face_image = %s, face_template = %s, vendor_id = %s WHERE LOWER(TRIM(student_number)) = LOWER(TRIM(%s))", 
-                              (face_image, face_template, vendor_id, student_number))
-                else:
-                    c.execute("UPDATE parent_users SET face_image = ?, face_template = ?, vendor_id = ? WHERE LOWER(TRIM(student_number)) = LOWER(TRIM(?))", 
-                              (face_image, face_template, vendor_id, student_number))
+                c.execute("UPDATE parent_users SET face_image = ?, face_template = ? WHERE id = ? AND vendor_id = ?",
+                          (face_image, face_template, parent["id"], vendor_id))
             
             if c.rowcount == 0:
                 conn.close()
@@ -258,8 +331,12 @@ def parent_register_face():
             conn.close()
             return jsonify({"error": f"Inference failed or timed out: {str(e)}"}), 500
 
-        c.execute("UPDATE parent_users SET face_image = ?, face_template = ? WHERE student_number = ? AND vendor_id = ?", 
-                  (face_image, face_template, student_number, vendor_id))
+        if is_pg:
+            c.execute("UPDATE parent_users SET face_image = %s, face_template = %s WHERE id = %s AND vendor_id = %s",
+                      (face_image, face_template, parent["id"], vendor_id))
+        else:
+            c.execute("UPDATE parent_users SET face_image = ?, face_template = ? WHERE id = ? AND vendor_id = ?",
+                      (face_image, face_template, parent["id"], vendor_id))
         conn.commit()
         conn.close()
         return jsonify({"status": "success"})
@@ -281,22 +358,59 @@ def parent_approve_request():
     
     if not all([request_id, student_number, action]):
         return jsonify({"error": "Missing fields"}), 400
+    if action not in ALLOWED_LEAVE_ACTIONS:
+        return jsonify({"error": "Action must be approved or rejected"}), 400
+    if not captured_face:
+        return jsonify({"error": "Missing captured_face"}), 400
 
     conn = get_db_connection()
     c = conn.cursor()
     try:
-        # If locally verified via Android FaceSDK, just update the status
+        is_pg = getattr(conn, "_is_pg", False)
+        parent = _authenticated_parent(c, vendor_id)
+        if not parent:
+            return jsonify({"error": "Parent access required"}), 403
+        if student_number.strip().lower() != str(parent["student_number"]).strip().lower():
+            return jsonify({"error": "This parent account is not linked to that student"}), 403
+        student_id = parent.get("selected_person_id")
+        if student_id is None:
+            return jsonify({"error": "Parent account is not linked to a student record"}), 409
+
+        if is_pg:
+            c.execute("""SELECT id FROM leave_requests
+                         WHERE id = %s AND vendor_id = %s AND student_id = %s
+                           AND rector_status = 'approved' AND hod_status = 'approved'
+                           AND parent_status = 'pending' AND final_status = 'pending'""",
+                      (request_id, vendor_id, student_id))
+        else:
+            c.execute("""SELECT id FROM leave_requests
+                         WHERE id = ? AND vendor_id = ? AND student_id = ?
+                           AND rector_status = 'approved' AND hod_status = 'approved'
+                           AND parent_status = 'pending' AND final_status = 'pending'""",
+                      (request_id, vendor_id, student_id))
+        if not c.fetchone():
+            return jsonify({"error": "Leave request is not awaiting this parent's decision"}), 409
+
+        # The FaceIDApp engine performs multi-frame liveness and face matching
+        # before setting this flag; the API still requires the capture payload.
         if local_verified:
-             c.execute("UPDATE leave_requests SET parent_status = ? WHERE id = ? AND vendor_id = ?", 
-                       (action, request_id, vendor_id))
+             if is_pg:
+                 c.execute("""UPDATE leave_requests SET parent_status = %s, final_status = %s
+                              WHERE id = %s AND vendor_id = %s AND student_id = %s
+                                AND rector_status = 'approved' AND hod_status = 'approved'
+                                AND parent_status = 'pending' AND final_status = 'pending'""",
+                           (action, action, request_id, vendor_id, student_id))
+             else:
+                 c.execute("""UPDATE leave_requests SET parent_status = ?, final_status = ?
+                              WHERE id = ? AND vendor_id = ? AND student_id = ?
+                                AND rector_status = 'approved' AND hod_status = 'approved'
+                                AND parent_status = 'pending' AND final_status = 'pending'""",
+                           (action, action, request_id, vendor_id, student_id))
+             if c.rowcount == 0:
+                 return jsonify({"error": "Leave request is no longer awaiting the parent's decision"}), 409
              conn.commit()
              return jsonify({"status": "success", "similarity": 1.0})
 
-        if not captured_face:
-             return jsonify({"error": "Missing captured_face for backend verification"}), 400
-
-        c.execute("SELECT face_template FROM parent_users WHERE student_number = ? AND vendor_id = ?", (student_number, vendor_id))
-        parent = get_row_dict(c.fetchone())
         if not parent or not parent.get('face_template'):
             return jsonify({"error": "Parent face not registered"}), 400
         
@@ -312,8 +426,12 @@ def parent_approve_request():
             if not emb_vec_b64:
                 return jsonify({"error": "Failed to extract embeddings"}), 500
                 
-            emb = np.frombuffer(base64.b64decode(emb_vec_b64), dtype=np.float32)
-            stored_template = np.frombuffer(base64.b64decode(parent['face_template']), dtype=np.float32)
+            emb, live_family = _decode_face_template(emb_vec_b64)
+            stored_template, stored_family = _decode_face_template(parent['face_template'])
+            if live_family != stored_family:
+                return jsonify({
+                    "error": "Registered and captured faces use different recognition models; re-register on this device"
+                }), 409
             similarity = float(np.dot(emb, stored_template))
         except Exception as e:
             return jsonify({"error": f"Inference failed or timed out: {str(e)}"}), 500
@@ -321,8 +439,20 @@ def parent_approve_request():
         if similarity < 0.6:
              return jsonify({"error": "Face verification failed", "similarity": similarity}), 401
 
-        c.execute("UPDATE leave_requests SET parent_status = ? WHERE id = ? AND vendor_id = ?", 
-                  (action, request_id, vendor_id))
+        if is_pg:
+            c.execute("""UPDATE leave_requests SET parent_status = %s, final_status = %s
+                         WHERE id = %s AND vendor_id = %s AND student_id = %s
+                           AND rector_status = 'approved' AND hod_status = 'approved'
+                           AND parent_status = 'pending' AND final_status = 'pending'""",
+                      (action, action, request_id, vendor_id, student_id))
+        else:
+            c.execute("""UPDATE leave_requests SET parent_status = ?, final_status = ?
+                         WHERE id = ? AND vendor_id = ? AND student_id = ?
+                           AND rector_status = 'approved' AND hod_status = 'approved'
+                           AND parent_status = 'pending' AND final_status = 'pending'""",
+                      (action, action, request_id, vendor_id, student_id))
+        if c.rowcount == 0:
+            return jsonify({"error": "Leave request is no longer awaiting the parent's decision"}), 409
         conn.commit()
         return jsonify({"status": "success", "similarity": similarity})
     finally:
@@ -335,7 +465,12 @@ def get_leave_tracking():
     if error: return error
     
     role = request.args.get("role", "rector")
-    dept = request.args.get("department")
+    if role not in {"rector", "hod"}:
+        return jsonify({"error": "Invalid role"}), 400
+    staff = _authenticated_leave_staff(vendor_id, role)
+    if not staff:
+        return jsonify({"error": "A valid staff PIN session is required"}), 403
+    dept = staff.get("department")
     
     conn = get_db_connection()
     c = conn.cursor()
@@ -349,7 +484,7 @@ def get_leave_tracking():
             FROM leave_requests lr
             JOIN faces f ON lr.student_id = f.id
             WHERE lr.vendor_id = ? AND lr.final_status = 'approved'
-            AND lr.end_date >= ? OR lr.end_date < ? -- Show upcoming and past due
+            AND (lr.end_date >= ? OR lr.end_date < ?) -- Show upcoming and past due
         """
         params = [vendor_id, today - timedelta(days=1), today]
         
@@ -433,7 +568,12 @@ def get_admin_pending_requests():
     if error: return error
     
     role = request.args.get("role", "rector")
-    dept = request.args.get("department") # Provided by PIN verification
+    if role not in {"rector", "hod"}:
+        return jsonify({"error": "Invalid role"}), 400
+    staff = _authenticated_leave_staff(vendor_id, role)
+    if not staff:
+        return jsonify({"error": "A valid staff PIN session is required"}), 403
+    dept = staff.get("department")
     
     conn = get_db_connection()
     c = conn.cursor()
@@ -449,14 +589,14 @@ def get_admin_pending_requests():
                     SELECT lr.*, f.name as student_name 
                     FROM leave_requests lr
                     JOIN faces f ON lr.student_id = f.id
-                    WHERE lr.vendor_id = %s AND lr.parent_status = 'approved' AND lr.rector_status = 'pending'
+                    WHERE lr.vendor_id = %s AND lr.rector_status = 'pending' AND lr.final_status = 'pending'
                 """, (vendor_id,))
             else:
                 c.execute("""
                     SELECT lr.*, f.name as student_name 
                     FROM leave_requests lr
                     JOIN faces f ON lr.student_id = f.id
-                    WHERE lr.vendor_id = ? AND lr.parent_status = 'approved' AND lr.rector_status = 'pending'
+                    WHERE lr.vendor_id = ? AND lr.rector_status = 'pending' AND lr.final_status = 'pending'
                 """, (vendor_id,))
         elif role == 'hod':
             if not dept:
@@ -471,6 +611,7 @@ def get_admin_pending_requests():
                     WHERE lr.vendor_id = %s 
                     AND lr.rector_status = 'approved' 
                     AND lr.hod_status = 'pending'
+                    AND lr.final_status = 'pending'
                     AND (
                         LOWER(TRIM(f.department)) = LOWER(TRIM(%s)) OR
                         LOWER(TRIM(f.custom_data::jsonb->>'department')) = LOWER(TRIM(%s))
@@ -484,6 +625,7 @@ def get_admin_pending_requests():
                     WHERE lr.vendor_id = ? 
                     AND lr.rector_status = 'approved' 
                     AND lr.hod_status = 'pending'
+                    AND lr.final_status = 'pending'
                     AND (
                         LOWER(TRIM(f.department)) = LOWER(TRIM(?)) OR
                         LOWER(TRIM(json_extract(f.custom_data, '$.department'))) = LOWER(TRIM(?))
@@ -506,11 +648,16 @@ def get_admin_leave_history():
     if error: return error
     
     role = request.args.get("role")
-    dept = request.args.get("department")
     status = request.args.get("status", "all")
     
     if not role:
         return jsonify({"error": "Role required"}), 400
+    if role not in {"rector", "hod"}:
+        return jsonify({"error": "Invalid role"}), 400
+    staff = _authenticated_leave_staff(vendor_id, role)
+    if not staff:
+        return jsonify({"error": "A valid staff PIN session is required"}), 403
+    dept = staff.get("department")
         
     conn = get_db_connection()
     c = conn.cursor()
@@ -575,49 +722,90 @@ def admin_approve_request():
     
     if not all([request_id, role, action]):
         return jsonify({"error": "Missing fields"}), 400
+    if role not in {"rector", "hod"}:
+        return jsonify({"error": "Invalid role"}), 400
+    if action not in ALLOWED_LEAVE_ACTIONS:
+        return jsonify({"error": "Action must be approved or rejected"}), 400
+    staff = _authenticated_leave_staff(vendor_id, role)
+    if not staff:
+        return jsonify({"error": "A valid staff PIN session is required"}), 403
 
     conn = get_db_connection()
     c = conn.cursor()
     try:
         is_pg = getattr(conn, "_is_pg", False)
         if role == 'hod':
-            # Verify Rector already approved
+            # HOD can only decide after Rector approval.
             if is_pg:
-                c.execute("SELECT rector_status FROM leave_requests WHERE id = %s", (request_id,))
+                c.execute("""SELECT lr.rector_status, lr.hod_status, lr.final_status
+                             FROM leave_requests lr
+                             JOIN faces f ON lr.student_id = f.id
+                             WHERE lr.id = %s AND lr.vendor_id = %s
+                               AND (
+                                   LOWER(TRIM(f.department)) = LOWER(TRIM(%s)) OR
+                                   LOWER(TRIM(f.custom_data::jsonb->>'department')) = LOWER(TRIM(%s))
+                               )""", (request_id, vendor_id, staff.get("department"), staff.get("department")))
             else:
-                c.execute("SELECT rector_status FROM leave_requests WHERE id = ?", (request_id,))
+                c.execute("""SELECT lr.rector_status, lr.hod_status, lr.final_status
+                             FROM leave_requests lr
+                             JOIN faces f ON lr.student_id = f.id
+                             WHERE lr.id = ? AND lr.vendor_id = ?
+                               AND (
+                                   LOWER(TRIM(f.department)) = LOWER(TRIM(?)) OR
+                                   LOWER(TRIM(json_extract(f.custom_data, '$.department'))) = LOWER(TRIM(?))
+                               )""", (request_id, vendor_id, staff.get("department"), staff.get("department")))
             res = c.fetchone()
-            if not res or get_row_dict(res).get('rector_status') != 'approved':
+            res_dict = get_row_dict(res) if res else None
+            rector_status = res_dict.get('rector_status') if isinstance(res_dict, dict) else (res[0] if res else None)
+            hod_status = res_dict.get('hod_status') if isinstance(res_dict, dict) else (res[1] if res else None)
+            final_status = res_dict.get('final_status') if isinstance(res_dict, dict) else (res[2] if res else None)
+            if rector_status != 'approved':
                 return jsonify({"error": "Wait for Rector's approval first"}), 400
+            if hod_status != 'pending' or final_status != 'pending':
+                return jsonify({"error": "Leave request is no longer awaiting HOD approval"}), 409
             
-            column = "hod_status"
+            # Reset parent_status when HOD approves so legacy in-flight requests
+            # from the old Parent -> Rector -> HOD order enter the new final queue.
+            action_placeholder = "%s" if is_pg else "?"
+            assignments = f"hod_status = {action_placeholder}"
+            if action == 'approved':
+                assignments += ", parent_status = 'pending'"
             if is_pg:
-                c.execute(f"UPDATE leave_requests SET {column} = %s WHERE id = %s AND vendor_id = %s", 
+                c.execute(f"""UPDATE leave_requests SET {assignments}
+                              WHERE id = %s AND vendor_id = %s
+                                AND rector_status = 'approved' AND hod_status = 'pending'
+                                AND final_status = 'pending'""",
                           (action, request_id, vendor_id))
             else:
-                c.execute(f"UPDATE leave_requests SET {column} = ? WHERE id = ? AND vendor_id = ?", 
+                c.execute(f"""UPDATE leave_requests SET {assignments}
+                              WHERE id = ? AND vendor_id = ?
+                                AND rector_status = 'approved' AND hod_status = 'pending'
+                                AND final_status = 'pending'""",
                           (action, request_id, vendor_id))
+            if c.rowcount == 0:
+                return jsonify({"error": "Leave request is no longer awaiting HOD approval"}), 409
                 
-            if action == 'approved':
-                if is_pg:
-                    c.execute("UPDATE leave_requests SET final_status = 'approved' WHERE id = %s", (request_id,))
-                else:
-                    c.execute("UPDATE leave_requests SET final_status = 'approved' WHERE id = ?", (request_id,))
         else:
-            # Rector approval
+            # Rector is the first approver after student submission.
             column = "rector_status"
             if is_pg:
-                c.execute(f"UPDATE leave_requests SET {column} = %s WHERE id = %s AND vendor_id = %s", 
+                c.execute(f"""UPDATE leave_requests SET {column} = %s
+                              WHERE id = %s AND vendor_id = %s
+                                AND rector_status = 'pending' AND final_status = 'pending'""",
                           (action, request_id, vendor_id))
             else:
-                c.execute(f"UPDATE leave_requests SET {column} = ? WHERE id = ? AND vendor_id = ?", 
+                c.execute(f"""UPDATE leave_requests SET {column} = ?
+                              WHERE id = ? AND vendor_id = ?
+                                AND rector_status = 'pending' AND final_status = 'pending'""",
                           (action, request_id, vendor_id))
+            if c.rowcount == 0:
+                return jsonify({"error": "Leave request is no longer awaiting Rector approval"}), 409
             
         if action == 'rejected':
             if is_pg:
-                c.execute("UPDATE leave_requests SET final_status = 'rejected' WHERE id = %s", (request_id,))
+                c.execute("UPDATE leave_requests SET final_status = 'rejected' WHERE id = %s AND vendor_id = %s", (request_id, vendor_id))
             else:
-                c.execute("UPDATE leave_requests SET final_status = 'rejected' WHERE id = ?", (request_id,))
+                c.execute("UPDATE leave_requests SET final_status = 'rejected' WHERE id = ? AND vendor_id = ?", (request_id, vendor_id))
             
         conn.commit()
         return jsonify({"status": "success"})
@@ -715,6 +903,19 @@ def verify_staff_pin():
         staff = c.fetchone()
         if staff:
             res = get_row_dict(staff)
+            if not isinstance(res, dict):
+                res = {"id": staff[0], "name": staff[1], "role": staff[2], "department": staff[3]}
+            res["access_token"] = generate_token_with_claims(
+                f"leave_staff_{res['id']}",
+                "leave_staff",
+                {
+                    "vendor_id": vendor_id,
+                    "staff_id": res["id"],
+                    "staff_role": res["role"],
+                    "department": res.get("department"),
+                },
+                platform="web",
+            )
             return jsonify({"status": "success", "staff": res})
         return jsonify({"error": "Invalid PIN"}), 401
     except Exception as e:

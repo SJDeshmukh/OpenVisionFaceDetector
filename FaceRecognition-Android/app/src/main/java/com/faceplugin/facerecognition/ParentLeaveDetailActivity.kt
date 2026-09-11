@@ -85,33 +85,54 @@ class ParentLeaveDetailActivity : AppCompatActivity() {
     private val cameraLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK && result.data != null) {
             val imageUriString = result.data?.getStringExtra("image_uri")
+            val capturedTemplate = result.data?.getByteArrayExtra("face_template")
+            val capturedVerified = result.data?.getBooleanExtra("face_verified", false) == true
             if (imageUriString != null) {
                 val imageUri = android.net.Uri.parse(imageUriString)
-                processCapturedImage(imageUri)
+                processCapturedImage(imageUri, capturedTemplate, capturedVerified)
             }
         }
     }
 
-    private fun processCapturedImage(imageUri: android.net.Uri) {
+    private fun processCapturedImage(
+        imageUri: android.net.Uri,
+        capturedTemplate: ByteArray?,
+        capturedVerified: Boolean
+    ) {
         progressBar.visibility = View.VISIBLE
         Thread {
             try {
                 val bitmap = Utils.getCorrectlyOrientedImage(this, imageUri)
                 if (bitmap != null) {
-                    runOnUiThread {
-                        val faces = FaceSDKWrapper.faceDetection(bitmap, null)
-                        if (faces.isNotEmpty()) {
-                            val faceBox = faces[0]
-                            val liveEmbedding = FaceSDKWrapper.templateExtraction(bitmap, faceBox)
-                            if (liveEmbedding != null) {
-                                verifyAndSubmit(liveEmbedding, bitmap)
-                            } else {
+                    val faces = LocalFaceEngineFacade.faceDetection(
+                        bitmap, FacePipeline.secureDetectionParams(this))
+                    val hasCapturedTemplate = capturedVerified
+                        && capturedTemplate != null && capturedTemplate.isNotEmpty()
+                    if (faces.size == 1 || hasCapturedTemplate) {
+                        val face = faces.firstOrNull()
+                        if (!hasCapturedTemplate && !FacePipeline.recognitionReady(
+                                this, face, bitmap.width, bitmap.height)) {
+                            runOnUiThread {
+                                progressBar.visibility = View.GONE
+                                Toast.makeText(this, "A clear, live face is required", Toast.LENGTH_SHORT).show()
+                            }
+                            return@Thread
+                        }
+                        val liveEmbedding = capturedTemplate?.takeIf { hasCapturedTemplate }
+                            ?: LocalFaceEngineFacade.templateExtraction(bitmap, face)
+                        if (liveEmbedding != null) {
+                            verifyAndSubmit(liveEmbedding, bitmap)
+                        } else {
+                            runOnUiThread {
                                 progressBar.visibility = View.GONE
                                 Toast.makeText(this, "Failed to extract features", Toast.LENGTH_SHORT).show()
                             }
-                        } else {
+                        }
+                    } else {
+                        runOnUiThread {
                             progressBar.visibility = View.GONE
-                            Toast.makeText(this, "No face detected in captured image", Toast.LENGTH_SHORT).show()
+                            val message = if (faces.isEmpty()) "No face detected in captured image" else "Multiple faces detected"
+                            Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
                         }
                     }
                 } else {
@@ -138,10 +159,11 @@ class ParentLeaveDetailActivity : AppCompatActivity() {
 
         try {
             val savedEmbedding = Base64.decode(savedTemplateB64, Base64.NO_WRAP)
-            val similarity = FaceSDKWrapper.similarityCalculation(liveEmbedding, savedEmbedding)
+            val similarity = LocalFaceEngineFacade.similarityCalculation(liveEmbedding, savedEmbedding)
 
-            if (similarity >= 0.82f) {
-                runOnUiThread { Toast.makeText(this, "Verified! Approving...", Toast.LENGTH_SHORT).show() }
+            if (similarity >= SettingsActivity.getIdentifyThreshold(this)) {
+                val decision = if (pendingAction == "approved") "approval" else "rejection"
+                runOnUiThread { Toast.makeText(this, "Face verified. Submitting $decision...", Toast.LENGTH_SHORT).show() }
                 val encodedImage = encodeBitmapToBase64(bitmap)
                 submitApproval(encodedImage)
             } else {

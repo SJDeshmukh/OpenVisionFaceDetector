@@ -16,7 +16,7 @@ import android.view.View;
 import androidx.annotation.Nullable;
 import androidx.core.content.ContextCompat;
 
-import com.ocp.facesdk.FaceBox;
+import com.faceplugin.faceengine.FaceBox;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -214,7 +214,7 @@ public class FaceView extends View {
             for (int i = 0; i < faceBoxes.size(); i++) {
                 FaceBox faceBox = faceBoxes.get(i);
 
-                if (faceBox.liveness < SettingsActivity.getLivenessThreshold(context))
+                if (!FacePipeline.isLive(context, faceBox))
                 {
                     spoofPaint.setStrokeWidth(3);
                     spoofPaint.setStyle(Paint.Style.FILL_AND_STROKE);

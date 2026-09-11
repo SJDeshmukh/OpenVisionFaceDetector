@@ -21,7 +21,7 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.core.content.ContextCompat;
 
-import com.ocp.facesdk.FaceBox;
+import com.faceplugin.faceengine.FaceBox;
 
 import java.util.List;
 

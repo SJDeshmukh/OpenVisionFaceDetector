@@ -20,7 +20,7 @@
         app:title="@string/thresholds">
 
         <EditTextPreference
-            app:defaultValue="0.7"
+            app:defaultValue="0.9"
             app:key="liveness_threshold"
             app:title="@string/liveness_threshold"
             app:useSimpleSummaryProvider="true"
@@ -35,25 +35,25 @@
             app:useSimpleSummaryProvider="true" />
 
         <EditTextPreference
-            app:defaultValue="0.8"
+            app:defaultValue="0.62"
             app:key="identify_threshold"
             app:title="@string/identify_threshold"
             app:useSimpleSummaryProvider="true" />
 
         <EditTextPreference
-            app:defaultValue="10.0"
+            app:defaultValue="40.0"
             app:key="yaw_threshold"
             app:title="@string/yaw_threshold"
             app:useSimpleSummaryProvider="true" />
 
         <EditTextPreference
-            app:defaultValue="10.0"
+            app:defaultValue="40.0"
             app:key="roll_threshold"
             app:title="@string/roll_threshold"
             app:useSimpleSummaryProvider="true" />
 
         <EditTextPreference
-            app:defaultValue="10.0"
+            app:defaultValue="40.0"
             app:key="pitch_threshold"
             app:title="@string/pitch_threshold"
             app:useSimpleSummaryProvider="true" />
@@ -65,7 +65,7 @@
             app:useSimpleSummaryProvider="true" />
 
         <EditTextPreference
-            app:defaultValue="0.8"
+            app:defaultValue="0.5"
             app:key="eyeclose_threshold"
             app:title="@string/eyeclose_threshold"
             app:useSimpleSummaryProvider="true" />
@@ -74,6 +74,24 @@
             app:defaultValue="0.5"
             app:key="mouthopen_threshold"
             app:title="@string/mouthopen_threshold"
+            app:useSimpleSummaryProvider="true" />
+
+        <EditTextPreference
+            app:defaultValue="0.5"
+            app:key="face_quality_threshold"
+            app:title="Minimum face quality"
+            app:useSimpleSummaryProvider="true" />
+
+        <EditTextPreference
+            app:defaultValue="0.15"
+            app:key="min_luminance"
+            app:title="Minimum face luminance"
+            app:useSimpleSummaryProvider="true" />
+
+        <EditTextPreference
+            app:defaultValue="0.90"
+            app:key="max_luminance"
+            app:title="Maximum face luminance"
             app:useSimpleSummaryProvider="true" />
     </PreferenceCategory>
 

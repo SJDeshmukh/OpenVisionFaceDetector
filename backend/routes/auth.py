@@ -1,4 +1,7 @@
 import os
+import re
+import secrets
+import string
 from flask import Blueprint, request, jsonify, make_response, g
 from datetime import datetime, date, timedelta
 from services.auth_service import authenticate_vendor_access, verify_password, generate_token, check_vendor_status, verify_token, hash_password, generate_token_with_claims, extract_token
@@ -17,6 +20,186 @@ logger = logging.getLogger(__name__)
 
 
 auth_bp = Blueprint('auth_bp', __name__)
+
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+TEMPORARY_PASSWORD_ALPHABET = string.ascii_uppercase + string.digits
+
+
+def _temporary_password(length=5):
+    if length < 2:
+        raise ValueError("Temporary password length must be at least two")
+    characters = [secrets.choice(string.ascii_uppercase), secrets.choice(string.digits)]
+    characters.extend(secrets.choice(TEMPORARY_PASSWORD_ALPHABET) for _ in range(length - 2))
+    secrets.SystemRandom().shuffle(characters)
+    return "".join(characters)
+
+
+@auth_bp.route("/auth/forgot-password", methods=["POST"])
+@rate_limit(limit=3, window=900)
+@error_logger
+def forgot_password():
+    """Email a five-character temporary password to a registered web user."""
+    from app import get_db_connection
+    from services.email_service import send_email
+
+    data = request.json or {}
+    email = str(data.get("email") or "").strip().lower()
+    if not EMAIL_PATTERN.fullmatch(email):
+        return jsonify({"error": "Enter a valid registered email address"}), 400
+
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        is_pg = getattr(conn, "_is_pg", False)
+        placeholder = "%s" if is_pg else "?"
+
+        # Most faculty/admin accounts use the email directly as their username.
+        c.execute(
+            f"""SELECT username, role, vendor_id FROM system_users
+                WHERE LOWER(TRIM(username)) = LOWER(TRIM({placeholder}))
+                  AND role IN ('user', 'faculty', 'vendor_admin', 'owner')
+                LIMIT 1""",
+            (email,),
+        )
+        account = c.fetchone()
+
+        # Student usernames are IDs, so resolve their registered email through
+        # the linked face record's configurable JSON fields.
+        if not account:
+            c.execute(
+                f"""SELECT su.username, su.role, su.vendor_id, f.custom_data
+                    FROM system_users su
+                    JOIN faces f ON f.id = su.person_id AND f.vendor_id = su.vendor_id
+                    WHERE su.role IN ('user', 'faculty')
+                      AND LOWER(f.custom_data) LIKE LOWER({placeholder})
+                    LIMIT 20""",
+                (f"%{email}%",),
+            )
+            profile_matches = []
+            for candidate in c.fetchall() or []:
+                custom_raw = candidate["custom_data"] if hasattr(candidate, "keys") else candidate[3]
+                try:
+                    custom_data = json.loads(custom_raw) if isinstance(custom_raw, str) else (custom_raw or {})
+                except (TypeError, ValueError):
+                    continue
+                registered_email = next(
+                    (custom_data.get(key) for key in ("email", "Email", "student_email", "faculty_email") if custom_data.get(key)),
+                    None,
+                )
+                if str(registered_email or "").strip().lower() == email:
+                    profile_matches.append(candidate)
+            if len(profile_matches) > 1:
+                return jsonify({"error": "Multiple accounts use this email. Please contact your administrator."}), 409
+            account = profile_matches[0] if profile_matches else None
+
+        # Vendor administrators may use a non-email username while the email is
+        # stored on the vendor record.
+        if not account:
+            c.execute(
+                f"""SELECT su.username, su.role, su.vendor_id
+                    FROM system_users su
+                    JOIN vendors v ON v.id = su.vendor_id
+                    WHERE LOWER(TRIM(v.email)) = LOWER(TRIM({placeholder}))
+                      AND su.role IN ('vendor_admin', 'owner')
+                    ORDER BY CASE WHEN su.role = 'vendor_admin' THEN 0 ELSE 1 END
+                    LIMIT 1""",
+                (email,),
+            )
+            account = c.fetchone()
+
+        if not account:
+            return jsonify({"error": "No web-login account is registered with this email"}), 404
+
+        username = account["username"] if hasattr(account, "keys") else account[0]
+        temporary_password = _temporary_password()
+        c.execute(
+            f"""UPDATE system_users
+                SET password = {placeholder}, password_plain = NULL,
+                    has_set_password = 0, force_password_change = 1
+                WHERE username = {placeholder}""",
+            (hash_password(temporary_password), username),
+        )
+        if c.rowcount != 1:
+            conn.rollback()
+            return jsonify({"error": "Unable to reset this account"}), 409
+
+        # Revoke database-backed mobile/kiosk sessions for the account.
+        c.execute(f"DELETE FROM active_sessions WHERE username = {placeholder}", (username,))
+
+        subject = "Your TapInX temporary password"
+        body = (
+            "A password reset was requested for your TapInX account.\n\n"
+            f"Username: {username}\n"
+            f"Temporary password: {temporary_password}\n\n"
+            "Sign in using this temporary password. You will be required to create "
+            "a new password immediately. If you did not request this reset, contact "
+            "your administrator."
+        )
+        try:
+            send_email(subject, body, email)
+        except Exception:
+            conn.rollback()
+            logger.exception("Unable to deliver forgot-password email")
+            return jsonify({"error": "Password reset email could not be delivered. Please try again later."}), 503
+
+        conn.commit()
+        return jsonify({"status": "success", "message": "A temporary password was sent to your registered email."})
+    finally:
+        conn.close()
+
+
+@auth_bp.route("/auth/change-password", methods=["POST"])
+@error_logger
+def change_password():
+    """Replace a temporary/current password for the authenticated web account."""
+    from app import get_db_connection
+
+    token = extract_token(request.headers.get("Authorization")) or request.cookies.get("token")
+    token_data = verify_token(token) if token else None
+    if not token_data or not token_data.get("username"):
+        return jsonify({"error": "Authentication required"}), 401
+
+    new_password = str((request.json or {}).get("password") or "")
+    if len(new_password) < 8:
+        return jsonify({"error": "Password must be at least 8 characters"}), 400
+    if len(new_password) > 128:
+        return jsonify({"error": "Password must be 128 characters or fewer"}), 400
+
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute(
+            "SELECT password, role, has_set_password, force_password_change FROM system_users WHERE username = ?",
+            (token_data["username"],),
+        )
+        account = c.fetchone()
+        if not account:
+            return jsonify({"error": "Account not found"}), 404
+        stored_password = account["password"] if hasattr(account, "keys") else account[0]
+        role = account["role"] if hasattr(account, "keys") else account[1]
+        has_set_password = account["has_set_password"] if hasattr(account, "keys") else account[2]
+        force_change = account["force_password_change"] if hasattr(account, "keys") else account[3]
+        is_required_change = force_change == 1 or (role in {"user", "faculty"} and has_set_password != 1)
+        current_password = str((request.json or {}).get("current_password") or "")
+        if not is_required_change and not verify_password(current_password, stored_password):
+            return jsonify({"error": "Current password is required"}), 403
+
+        c.execute(
+            """UPDATE system_users
+               SET password = ?, password_plain = NULL,
+                   has_set_password = 1, force_password_change = 0
+               WHERE username = ?""",
+            (hash_password(new_password), token_data["username"]),
+        )
+        if c.rowcount != 1:
+            conn.rollback()
+            return jsonify({"error": "Account not found"}), 404
+        conn.commit()
+        return jsonify({"status": "success"})
+    finally:
+        conn.close()
+
+
 @auth_bp.route("/auth/me", methods=["GET"])
 def get_current_user():
     from app import get_db_connection
@@ -320,9 +503,11 @@ def login():
             pass_condition = verify_password(password, stored_pw)
         
     if pass_condition:
-        # Force password change for students and faculty on first login
+        # Force a change after email recovery for every supported web role, and
+        # retain the existing first-login behavior for students and faculty.
         is_faculty = user.get('role') == 'faculty'
-        if (is_student or is_faculty) and not has_set_password:
+        reset_requires_change = user.get('force_password_change') == 1
+        if reset_requires_change or ((is_student or is_faculty) and not has_set_password):
             user['force_password_change'] = True
             logger.info(f"Forcing password set for {username} role={user.get('role')} (first login or reset)")
 

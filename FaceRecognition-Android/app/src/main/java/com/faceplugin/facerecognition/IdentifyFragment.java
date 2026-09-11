@@ -42,9 +42,8 @@ import com.faceplugin.facerecognition.api.GreetingService;
 import com.faceplugin.facerecognition.api.PersonEventRequest;
 import com.faceplugin.facerecognition.api.RetrofitClient;
 import com.google.common.util.concurrent.ListenableFuture;
-import com.ocp.facesdk.FaceBox;
-import com.ocp.facesdk.FaceDetectionParam;
-import com.ocp.facesdk.FaceSDK;
+import com.faceplugin.faceengine.FaceBox;
+import com.faceplugin.faceengine.FaceDetectionParam;
 
 import java.nio.ByteBuffer;
 import java.util.List;
@@ -144,8 +143,11 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     private String stickyPersonId = null;
     private float stickyConfidence = 0f;
     private int recognitionSkipCount = 0;
-    private static final int MAX_RECOGNITION_SKIP = 10; // Recognition every 10 frames if face is stable
+    // Recognition remains enabled on every analyzed frame so temporal confirmation
+    // is based on fresh SDK results, never a cached identity.
+    private static final int MAX_RECOGNITION_SKIP = 0;
     private android.graphics.Rect lastFaceRect = null;
+    private final ConsecutiveMatchGate matchGate = new ConsecutiveMatchGate(3, 2000L);
 
     @Nullable
     @Override
@@ -227,14 +229,14 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             faceView.setMeshEnabled(false);
         }
 
-        // Ensure FaceSDK is initialised — retry here in case Application.onCreate failed
-        boolean sdkReady = FaceSDKWrapper.INSTANCE.isInitialized();
-        if (!sdkReady) {
-            int sdkRet = FaceSDKWrapper.INSTANCE.ensureInitialized(requireContext().getApplicationContext());
-            sdkReady = sdkRet == com.ocp.facesdk.FaceSDK.SDK_SUCCESS;
-            if (sdkRet != com.ocp.facesdk.FaceSDK.SDK_SUCCESS) {
-                String errMsg = getSdkErrorMessage(sdkRet);
-                Log.e(TAG, "FaceSDK init failed in fragment: " + sdkRet + " — " + errMsg);
+        // Retry local model initialization here in case the splash flow did not load it.
+        boolean modelsReady = LocalFaceEngineFacade.INSTANCE.isInitialized();
+        if (!modelsReady) {
+            int initResult = LocalFaceEngineFacade.INSTANCE.ensureInitialized(requireContext().getApplicationContext());
+            modelsReady = initResult == LocalFaceEngineFacade.SUCCESS;
+            if (initResult != LocalFaceEngineFacade.SUCCESS) {
+                String errMsg = getModelErrorMessage(initResult);
+                Log.e(TAG, "Local face model initialization failed: " + initResult + " — " + errMsg);
                 if (statusText != null) {
                     statusText.setText("⚠ Face detection unavailable\n" + errMsg);
                     statusText.setTextColor(android.graphics.Color.parseColor("#FF5555"));
@@ -242,7 +244,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             }
         }
 
-        if (sdkReady) {
+        if (modelsReady) {
             if (ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.CAMERA)
                     != PackageManager.PERMISSION_GRANTED) {
                 requestPermissions(new String[]{Manifest.permission.CAMERA}, 1);
@@ -254,15 +256,11 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         return view;
     }
 
-    private static String getSdkErrorMessage(int code) {
-        switch (code) {
-            case -1: return "License key invalid (contact support)";
-            case -2: return "App ID mismatch — reinstall the app";
-            case -3: return "License expired";
-            case -4: return "SDK not activated";
-            case -5: return "SDK init error (device not supported)";
-            default: return "Unknown error (" + code + ")";
+    private static String getModelErrorMessage(int code) {
+        if (code == LocalFaceEngineFacade.INIT_FAILED) {
+            return "Local ONNX models could not be loaded";
         }
+        return "Unknown model error (" + code + ")";
     }
 
     @Override
@@ -338,19 +336,10 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         try {
             android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
             String role = prefs.getString("role", null);
-            
-            // If role is null, we check if we have a vendor_id but no company_id? 
-            // Or just default to attendance. 
-            // Most reliable: if role is explicitly "user", enable attendance.
-            // For anything else (admin, vendor, superadmin, null), disable attendance.
-            if (role == null) {
-                // If we don't know the role, let's see if we have a token.
-                // If we have a token but no role, it might be an old session.
-                // To be safe, if it's NOT "user", it's verify only.
-                return true; 
-            }
-            
-            return !"user".equalsIgnoreCase(role);
+
+            // Attendance is an explicit kiosk/user capability. Vendor and admin
+            // Identify tabs verify enrollment only and must never create an event.
+            return !RecognitionModePolicy.canMarkAttendance(role);
         } catch (Exception ignored) {
             return true; // Default to verify only on error
         }
@@ -402,7 +391,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     }
 
     private void setUpCamera() {
-        if (!isAdded() || viewFinder == null || !FaceSDKWrapper.INSTANCE.isInitialized()) return;
+        if (!isAdded() || viewFinder == null || !LocalFaceEngineFacade.INSTANCE.isInitialized()) return;
         ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(requireContext());
         cameraProviderFuture.addListener(() -> {
             try {
@@ -524,7 +513,10 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         }
 
 
-        PersonEventRequest request = new PersonEventRequest(detected, recognized, finalPersonId, name, confidence, imageBase64, isAttendance, timestamp);
+        // Online attendance must use the server clock. A device clock can be wrong
+        // or deliberately adjusted for an unrelated SDK/license check; forwarding
+        // it would save today's attendance under the wrong calendar date.
+        PersonEventRequest request = new PersonEventRequest(detected, recognized, finalPersonId, name, confidence, imageBase64, isAttendance, null);
         try {
             String deviceId = Settings.Secure.getString(requireContext().getContentResolver(), Settings.Secure.ANDROID_ID);
             android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
@@ -952,7 +944,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                     ", rot: " + rotationDegrees + ", mode: " + cameraMode + ", buffer: " + nv21.length);
             }
 
-            processedFrameBitmap = FaceSDKWrapper.INSTANCE.yuv2Bitmap(nv21, inputMediaImage.getWidth(), inputMediaImage.getHeight(), cameraMode);
+            processedFrameBitmap = LocalFaceEngineFacade.INSTANCE.yuv2Bitmap(nv21, inputMediaImage.getWidth(), inputMediaImage.getHeight(), cameraMode);
 
             if (processedFrameBitmap == null) {
                 return;
@@ -973,12 +965,8 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                  return;
             }
 
-            FaceDetectionParam faceDetectionParam = new FaceDetectionParam();
-            faceDetectionParam.check_liveness = true;
-            try {
-                faceDetectionParam.check_liveness_level = SettingsActivity.getLivenessLevel(requireContext());
-            } catch (Exception ignored) {}
-            List<FaceBox> faceBoxes = FaceSDKWrapper.INSTANCE.faceDetection(finalProcessed, faceDetectionParam);
+            FaceDetectionParam faceDetectionParam = FacePipeline.secureDetectionParams(requireContext());
+            List<FaceBox> faceBoxes = LocalFaceEngineFacade.INSTANCE.faceDetection(finalProcessed, faceDetectionParam);
 
             if (getActivity() != null) {
                 getActivity().runOnUiThread(() -> {
@@ -996,6 +984,10 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                     } else {
                         // No Face Detected
                         if (faceBoxes.isEmpty()) {
+                            matchGate.reset();
+                            stickyPersonName = null;
+                            stickyPersonId = null;
+                            recognitionSkipCount = 0;
                             // Reset if no face detected (existing logic)
                             if (lastProcessedPersonId != null) {
                                 lastProcessedPersonId = null;
@@ -1023,13 +1015,10 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             // ------------------------------------------------
 
             if (faceBoxes.size() > 0) {
-                float livenessThreshold = 0.8f;
                 float identifyThreshold = 0.8f;
                 try {
-                    livenessThreshold = SettingsActivity.getLivenessThreshold(requireContext());
                     identifyThreshold = SettingsActivity.getIdentifyThreshold(requireContext());
                 } catch (Exception ignored) {}
-                final float finalIdentifyThreshold = identifyThreshold;
                 List<String> namesForBoxes = new java.util.ArrayList<>();
                 float bestSimilarity = 0f;
                 Person bestPerson = null;
@@ -1055,7 +1044,8 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                     }
                     lastFaceRect = currentRect;
 
-                    if (!forceRecognition && recognitionSkipCount < MAX_RECOGNITION_SKIP && stickyPersonName != null) {
+                    if (!forceRecognition && recognitionSkipCount < MAX_RECOGNITION_SKIP
+                            && stickyPersonName != null && lastProcessedPersonId != null) {
                         recognitionSkipCount++;
                         nameForBox = stickyPersonName;
                         // Use sticky values for "best" calculation
@@ -1069,21 +1059,21 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                     }
                     // ------------------------------------------------------------
 
-                    if (faceBox.liveness > livenessThreshold) {
-                        byte[] templates = FaceSDKWrapper.INSTANCE.templateExtraction(finalProcessed, faceBox);
+                    if (FacePipeline.recognitionReady(requireContext(), faceBox,
+                            finalProcessed.getWidth(), finalProcessed.getHeight())) {
+                        byte[] templates = LocalFaceEngineFacade.INSTANCE.templateExtraction(finalProcessed, faceBox);
 
                         float maxSimilarityForBox = 0f;
                         Person bestForBox = null;
                         if (templates != null) {
-                            // Keep calls into the native SDK on the analyzer thread. Some vendor builds
-                            // are not re-entrant and parallelStream caused intermittent native failures.
+                            // Keep ONNX inference and gallery matching serialized on the analyzer thread.
                             Person[] people;
                             synchronized (DBManager.personList) {
                                 people = DBManager.personList.toArray(new Person[0]);
                             }
                             for (Person person : people) {
                                 if (person == null || person.templates == null || person.templates.length == 0) continue;
-                                float similarity = FaceSDKWrapper.INSTANCE.similarityCalculation(templates, person.templates);
+                                float similarity = LocalFaceEngineFacade.INSTANCE.similarityCalculation(templates, person.templates);
                                 if (similarity > maxSimilarityForBox) {
                                     maxSimilarityForBox = similarity;
                                     bestForBox = person;
@@ -1146,7 +1136,24 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                         } catch (Exception ignored) {}
                     }
 
-                    if (vendorVerifyOnlyMode) {
+                    String confirmationKey = personId;
+                    if (confirmationKey == null || confirmationKey.isEmpty()) {
+                        confirmationKey = "local:" + (localUid == null ? "" : localUid);
+                    }
+                    if (confirmationKey.equals("local:")) confirmationKey = "name:" + bestPerson.name;
+                    if (!matchGate.accept(confirmationKey, currentTime)) {
+                        stickyPersonName = null;
+                        stickyPersonId = null;
+                        recognitionSkipCount = 0;
+                        if (getActivity() != null) {
+                            getActivity().runOnUiThread(() -> statusText.setText("Verifying face..."));
+                        }
+                        return;
+                    }
+
+                    // Re-read the role at the side-effect boundary so a stale fragment
+                    // flag cannot authorize attendance after an account/session change.
+                    if (vendorVerifyOnlyMode || isVendorVerifyOnlyMode()) {
                         String key = personId;
                         if (key == null) key = "";
                         if (key.isEmpty()) {
@@ -1292,6 +1299,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                     }
 
                 } else {
+                    matchGate.reset();
                     consecutiveUnknownFrames++;
 
                     if (getActivity() != null) {

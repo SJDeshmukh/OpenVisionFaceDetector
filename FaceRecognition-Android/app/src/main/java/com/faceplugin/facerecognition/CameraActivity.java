@@ -28,8 +28,8 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
 import com.google.common.util.concurrent.ListenableFuture;
-import com.ocp.facesdk.FaceBox;
-import com.ocp.facesdk.FaceDetectionParam;
+import com.faceplugin.faceengine.FaceBox;
+import com.faceplugin.faceengine.FaceDetectionParam;
 
 import java.nio.ByteBuffer;
 import java.util.List;
@@ -107,6 +107,7 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
     private Boolean recognized = false;
     private ToneGenerator toneGen; // Reuse ToneGenerator
     private WebRTCManager webrtcManager; // WebRTC integration
+    private final ConsecutiveMatchGate matchGate = new ConsecutiveMatchGate(3, 2000L);
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -169,9 +170,9 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
 
         tts = new TextToSpeech(this, this);
 
-        int sdkResult = FaceSDKWrapper.INSTANCE.ensureInitialized(getApplicationContext());
-        if (sdkResult != com.ocp.facesdk.FaceSDK.SDK_SUCCESS) {
-            Toast.makeText(this, "Face detection unavailable (SDK error " + sdkResult + ")", Toast.LENGTH_LONG).show();
+        int initResult = LocalFaceEngineFacade.INSTANCE.ensureInitialized(getApplicationContext());
+        if (initResult != LocalFaceEngineFacade.SUCCESS) {
+            Toast.makeText(this, "Local face models could not be loaded (error " + initResult + ")", Toast.LENGTH_LONG).show();
             return;
         }
 
@@ -246,7 +247,7 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
 
     private void setUpCamera()
     {
-        if (isFinishing() || !FaceSDKWrapper.INSTANCE.isInitialized()) return;
+        if (isFinishing() || !LocalFaceEngineFacade.INSTANCE.isInitialized()) return;
         ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(CameraActivity.this);
         cameraProviderFuture.addListener(() -> {
 
@@ -480,7 +481,7 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
 
             int rotationDegrees = imageProxy.getImageInfo().getRotationDegrees();
             int cameraMode = Utils.getCameraMode(rotationDegrees, activeLensFacing);
-            bitmap = FaceSDKWrapper.INSTANCE.yuv2Bitmap(nv21, image.getWidth(), image.getHeight(), cameraMode);
+            bitmap = LocalFaceEngineFacade.INSTANCE.yuv2Bitmap(nv21, image.getWidth(), image.getHeight(), cameraMode);
 
 
             if (bitmap == null) {
@@ -495,10 +496,8 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
             }
             // -----------------------
 
-            FaceDetectionParam faceDetectionParam = new FaceDetectionParam();
-            faceDetectionParam.check_liveness = true;
-            faceDetectionParam.check_liveness_level = SettingsActivity.getLivenessLevel(this);
-            List<FaceBox> faceBoxes = FaceSDKWrapper.INSTANCE.faceDetection(bitmap, faceDetectionParam);
+            FaceDetectionParam faceDetectionParam = FacePipeline.secureDetectionParams(this);
+            List<FaceBox> faceBoxes = LocalFaceEngineFacade.INSTANCE.faceDetection(bitmap, faceDetectionParam);
 
             final Bitmap finalBitmap = bitmap;
             runOnUiThread(new Runnable() {
@@ -511,19 +510,23 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
 
             if(faceBoxes.size() > 0) {
                 FaceBox faceBox = faceBoxes.get(0);
-                if(faceBox.liveness > SettingsActivity.getLivenessThreshold(context)) {
-                    byte[] templates = FaceSDKWrapper.INSTANCE.templateExtraction(bitmap, faceBox);
+                if(FacePipeline.recognitionReady(context, faceBox,
+                        bitmap.getWidth(), bitmap.getHeight())) {
+                    byte[] templates = LocalFaceEngineFacade.INSTANCE.templateExtraction(bitmap, faceBox);
                     if (templates == null || templates.length == 0) return;
 
                     float maxSimiarlity = 0;
                     Person maximiarlityPerson = null;
                     
                     // Use a local copy of personList to avoid ConcurrentModificationException
-                    List<Person> currentPersonList = DBManager.personList;
-                    if (currentPersonList != null) {
-                        for(Person person : currentPersonList) {
+                    Person[] currentPeople;
+                    synchronized (DBManager.personList) {
+                        currentPeople = DBManager.personList.toArray(new Person[0]);
+                    }
+                    if (currentPeople != null) {
+                        for(Person person : currentPeople) {
                             if (person == null || person.templates == null) continue;
-                            float similarity = FaceSDKWrapper.INSTANCE.similarityCalculation(templates, person.templates);
+                            float similarity = LocalFaceEngineFacade.INSTANCE.similarityCalculation(templates, person.templates);
                             if(similarity > maxSimiarlity) {
                                 maxSimiarlity = similarity;
                                 maximiarlityPerson = person;
@@ -546,6 +549,13 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
                     });
                     
                     long currentTime = System.currentTimeMillis();
+                    if (isRecognized) {
+                        String confirmationKey = personId == null || personId.isEmpty()
+                                ? "name:" + personName : personId;
+                        if (!matchGate.accept(confirmationKey, currentTime)) return;
+                    } else {
+                        matchGate.reset();
+                    }
                     boolean isSamePerson = (personName != null && personName.equals(lastPersonName)) || (personName == null && lastPersonName == null);
                     
                     if (!isSamePerson || (currentTime - lastApiCallTime > 5000)) {
@@ -553,7 +563,11 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
                         lastApiCallTime = currentTime;
                         lastPersonName = personName;
                     }
+                } else {
+                    matchGate.reset();
                 }
+            } else {
+                matchGate.reset();
             }
         }
         catch (Exception e)

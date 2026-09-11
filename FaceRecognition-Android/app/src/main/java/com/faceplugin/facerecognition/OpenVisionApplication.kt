@@ -18,12 +18,13 @@ class OpenVisionApplication : Application() {
         super.onCreate()
         instance = this
         MyGlobal.context = applicationContext
+        SettingsActivity.applyEngineDefaults(applicationContext)
 
-        // FaceSDK is initialized lazily:
+        // Local ONNX models are initialized lazily:
         // - MainActivity (kiosk/user role) → IdentifyFragment calls ensureInitialized on first frame
         // - FacultyActivity (faculty role)  → ensureInitialized called in onStart
         // - ParentActivity                  → models never loaded (saves ~50 MB RAM)
-        Log.i("OpenVision", "Application started — FaceSDK will init on demand")
+        Log.i("OpenVision", "Application started — local face models will init on demand")
 
         // Register Global Crash Handler
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
@@ -44,7 +45,7 @@ class OpenVisionApplication : Application() {
         super.onTrimMemory(level)
         Log.i("OpenVision", "onTrimMemory level: $level")
         // Do not recursively remove app cache files or clear DBManager.personList here.
-        // Camera/SDK resources are released by their lifecycle owners.
+        // Camera/model resources are released by their lifecycle owners.
     }
 
     private fun clearAppCache() {

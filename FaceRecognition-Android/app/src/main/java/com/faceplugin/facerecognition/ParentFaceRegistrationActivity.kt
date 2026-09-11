@@ -15,8 +15,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import com.faceplugin.facerecognition.api.ParentRegisterFaceRequest
 import com.faceplugin.facerecognition.api.RetrofitClient
-import com.ocp.facesdk.FaceDetectionParam
-import com.ocp.facesdk.FaceSDK
 import retrofit2.Call
 import retrofit2.Callback
 import retrofit2.Response
@@ -46,10 +44,12 @@ class ParentFaceRegistrationActivity : AppCompatActivity() {
         }
     }
 
-    // Launcher for CaptureActivity (the existing FaceSDK camera flow)
+    // Launcher for CaptureActivity (the shared local-model camera flow)
     private val cameraLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK && result.data != null) {
             val imageUriString = result.data?.getStringExtra("image_uri")
+            val capturedTemplate = result.data?.getByteArrayExtra("face_template")
+            val capturedVerified = result.data?.getBooleanExtra("face_verified", false) == true
             if (imageUriString != null) {
                 val imageUri = Uri.parse(imageUriString)
                 showLoading(true)
@@ -57,7 +57,7 @@ class ParentFaceRegistrationActivity : AppCompatActivity() {
                     try {
                         val bitmap = Utils.getCorrectlyOrientedImage(this, imageUri)
                         if (bitmap != null) {
-                            runOnUiThread { processImage(bitmap) }
+                            processImage(bitmap, capturedTemplate, capturedVerified)
                         } else {
                             runOnUiThread {
                                 showLoading(false)
@@ -76,56 +76,87 @@ class ParentFaceRegistrationActivity : AppCompatActivity() {
         }
     }
 
-    private fun processImage(bitmap: Bitmap) {
-        val param = FaceDetectionParam()
-        param.check_liveness = true
-        param.check_liveness_level = SettingsActivity.getLivenessLevel(this)
-        
-        val faces = FaceSDKWrapper.faceDetection(bitmap, param)
+    private fun processImage(bitmap: Bitmap, capturedTemplate: ByteArray?, capturedVerified: Boolean) {
+        val faces = LocalFaceEngineFacade.faceDetection(bitmap, FacePipeline.secureDetectionParams(this))
+        val hasCapturedTemplate = capturedVerified
+            && capturedTemplate != null && capturedTemplate.isNotEmpty()
 
-        if (faces.isEmpty()) {
-            showLoading(false)
-            Toast.makeText(this, getString(R.string.no_face_detected), Toast.LENGTH_SHORT).show()
-        } else if (faces.size > 1) {
-            showLoading(false)
-            Toast.makeText(this, getString(R.string.multiple_face_detected), Toast.LENGTH_SHORT).show()
+        if (faces.isEmpty() && !hasCapturedTemplate) {
+            runOnUiThread {
+                showLoading(false)
+                Toast.makeText(this, getString(R.string.no_face_detected), Toast.LENGTH_SHORT).show()
+            }
+        } else if (faces.size > 1 && !hasCapturedTemplate) {
+            runOnUiThread {
+                showLoading(false)
+                Toast.makeText(this, getString(R.string.multiple_face_detected), Toast.LENGTH_SHORT).show()
+            }
         } else {
-            val faceBox = faces[0]
+            val faceBox = faces.firstOrNull()
             
             // Liveness check
-            if (faceBox.liveness < SettingsActivity.getLivenessThreshold(this)) {
-                showLoading(false)
-                Toast.makeText(this, "Real face required (Spoof detected)", Toast.LENGTH_SHORT).show()
+            if (!hasCapturedTemplate && !FacePipeline.recognitionReady(
+                    this, faceBox, bitmap.width, bitmap.height)) {
+                runOnUiThread {
+                    showLoading(false)
+                    Toast.makeText(this, "Real face required (Spoof detected)", Toast.LENGTH_SHORT).show()
+                }
                 return
             }
 
-            val template = FaceSDKWrapper.templateExtraction(bitmap, faceBox)
+            val template = capturedTemplate?.takeIf { hasCapturedTemplate }
+                ?: LocalFaceEngineFacade.templateExtraction(bitmap, faceBox)
             
             if (template != null) {
                 // Similarity check against local DB
                 var maxSimilarity = 0f
-                for (p in DBManager.personList) {
+                val people = synchronized(DBManager.personList) { DBManager.personList.toTypedArray() }
+                for (p in people) {
                     try {
-                        val s = FaceSDKWrapper.similarityCalculation(template, p.templates)
+                        val storedTemplate = p?.templates?.takeIf { it.isNotEmpty() } ?: continue
+                        val s = LocalFaceEngineFacade.similarityCalculation(template, storedTemplate)
                         if (s > maxSimilarity) maxSimilarity = s
                     } catch (e: Exception) {}
                 }
                 
                 if (maxSimilarity > SettingsActivity.getIdentifyThreshold(this)) {
-                    showLoading(false)
-                    Toast.makeText(this, "Face already registered on this device", Toast.LENGTH_SHORT).show()
+                    runOnUiThread {
+                        showLoading(false)
+                        Toast.makeText(this, "Face already registered on this device", Toast.LENGTH_SHORT).show()
+                    }
                     return
                 }
 
-                val faceImage = Utils.cropFace(bitmap, faceBox)
+                val faceImage = if (faceBox != null) Utils.cropFace(bitmap, faceBox) else bitmap
                 val encodedImage = encodeBitmapToBase64(faceImage)
                 val encodedTemplate = Base64.encodeToString(template, Base64.NO_WRAP)
-                registerFace(encodedImage, encodedTemplate)
+                saveFaceLocally(encodedTemplate)
+                if (NetworkUtils.isOnline(applicationContext)) {
+                    registerFace(encodedImage, encodedTemplate)
+                } else {
+                    runOnUiThread { finishLocalRegistration("Face saved on this device") }
+                }
             } else {
-                showLoading(false)
-                Toast.makeText(this, "Failed to extract features", Toast.LENGTH_SHORT).show()
+                runOnUiThread {
+                    showLoading(false)
+                    Toast.makeText(this, "Failed to extract features", Toast.LENGTH_SHORT).show()
+                }
             }
         }
+    }
+
+    private fun saveFaceLocally(faceTemplate: String) {
+        getSharedPreferences("app_prefs", Context.MODE_PRIVATE).edit()
+            .putBoolean("face_registered", true)
+            .putString("parent_face_template", faceTemplate)
+            .apply()
+    }
+
+    private fun finishLocalRegistration(message: String) {
+        showLoading(false)
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+        startActivity(Intent(this, ParentActivity::class.java))
+        finish()
     }
 
     private fun registerFace(faceImage: String, faceTemplate: String) {
@@ -138,12 +169,7 @@ class ParentFaceRegistrationActivity : AppCompatActivity() {
             override fun onResponse(call: Call<com.google.gson.JsonObject>, response: Response<com.google.gson.JsonObject>) {
                 runOnUiThread { showLoading(false) }
                 if (response.isSuccessful && response.body()?.get("status")?.asString == "success") {
-                    val editor = prefs.edit()
-                    editor.putBoolean("face_registered", true)
-                    editor.putString("parent_face_template", faceTemplate)
-                    editor.apply()
-                    startActivity(Intent(this@ParentFaceRegistrationActivity, ParentActivity::class.java))
-                    finish()
+                    finishLocalRegistration("Face saved and synced")
                 } else {
                     var errorMsg = "Registration failed"
                     try {
@@ -161,14 +187,14 @@ class ParentFaceRegistrationActivity : AppCompatActivity() {
                     } catch (e: Exception) {
                         e.printStackTrace()
                     }
-                    runOnUiThread { Toast.makeText(this@ParentFaceRegistrationActivity, errorMsg, Toast.LENGTH_LONG).show() }
+                    val syncMessage = "Face saved locally; cloud sync failed: $errorMsg"
+                    runOnUiThread { finishLocalRegistration(syncMessage) }
                 }
             }
 
             override fun onFailure(call: Call<com.google.gson.JsonObject>, t: Throwable) {
                 runOnUiThread {
-                    showLoading(false)
-                    Toast.makeText(this@ParentFaceRegistrationActivity, "Network error: ${t.message}", Toast.LENGTH_SHORT).show()
+                    finishLocalRegistration("Face saved locally; cloud sync will need retrying")
                 }
             }
         })

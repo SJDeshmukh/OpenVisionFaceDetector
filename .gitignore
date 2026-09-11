@@ -55,6 +55,10 @@ multiple_face_detection/backend/*.sqlite*
 # Specific models to include
 !backend/standalone_live_mesh/3DDFA-V3/assets/net_recon.pth
 !backend/standalone_live_mesh/3DDFA-V3/assets/net_recon_mbnet.pth
+!FaceRecognition-Android/app/src/main/assets/models/scrfd_500m.onnx
+!FaceRecognition-Android/app/src/main/assets/models/mobilefacenet_arcface.onnx
+!FaceRecognition-Android/app/src/main/assets/models/minifasnet_v1se.onnx
+!FaceRecognition-Android/app/src/main/assets/models/minifasnet_v2.onnx
 
 # Multi-face detection (Local Package)
 # Allow the wrapper and our sdk improvements

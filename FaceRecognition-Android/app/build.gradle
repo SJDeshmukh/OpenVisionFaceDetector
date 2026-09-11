@@ -13,7 +13,7 @@ android {
         buildConfig true
     }
     defaultConfig {
-        applicationId "com.faceplugin.facerecognition"
+        applicationId "com.faceplugin.facerecognitionsdk"
         minSdk 24
         targetSdk 34
         versionCode 2
@@ -32,13 +32,13 @@ android {
     productFlavors {
         tapinx {
             dimension "brand"
-            applicationId "com.faceplugin.facerecognition"
+            applicationId "com.faceplugin.facerecognitionsdk"
             resValue "string", "app_name", "TapInX"
             buildConfigField "Boolean", "IS_ATTENDX", "false"
         }
         attendx {
             dimension "brand"
-            applicationId "attendx.com"
+            applicationId "com.faceplugin.facerecognitionsdk"
             resValue "string", "app_name", "AttendX"
             buildConfigField "Boolean", "IS_ATTENDX", "true"
         }
@@ -70,11 +70,19 @@ android {
         }
     }
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
     }
     kotlinOptions {
-        jvmTarget = '1.8'
+        jvmTarget = '17'
+    }
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+    androidResources {
+        noCompress 'onnx'
     }
 }
 
@@ -95,7 +103,8 @@ dependencies {
     implementation "androidx.camera:camera-lifecycle:$camerax_version"
     implementation "androidx.camera:camera-view:$camerax_version"
 
-    implementation files('libs/facesdk.aar')
+    // Fully on-device FaceIDApp model stack (SCRFD, MiniFASNet and MobileFaceNet).
+    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.18.0'
 
     testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.test.ext:junit:1.1.5'
