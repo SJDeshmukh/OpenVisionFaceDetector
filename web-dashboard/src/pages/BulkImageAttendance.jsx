@@ -11,6 +11,9 @@ const BulkImageAttendance = () => {
   const [faces, setFaces] = useState([]);
   const [people, setPeople] = useState([]);
   const [assign, setAssign] = useState({});
+  const [assignmentSources, setAssignmentSources] = useState({});
+  const assignmentSourcesRef = useRef({});
+  assignmentSourcesRef.current = assignmentSources;
   const [loading, setLoading] = useState(false);
   const [marking, setMarking] = useState({});
   const [isMarkingAll, setIsMarkingAll] = useState(false);
@@ -38,6 +41,8 @@ const BulkImageAttendance = () => {
   const pinchStartDist = useRef(null);
   const pinchStartZoom = useRef(1);
   const [simThreshold, setSimThreshold] = useState(0.72);
+  const simThresholdRef = useRef(0.72);
+  simThresholdRef.current = simThreshold;
   const peopleById = useRef(null);
   const [pendingFiles, setPendingFiles] = useState([]); // queued File objects to be scanned together
   const [regenerating, setRegenerating] = useState({});
@@ -67,17 +72,47 @@ const BulkImageAttendance = () => {
     }
   }, [batchLsKey]);
 
+  const eligibleAutoSuggestion = (face, threshold) => {
+    const top = Array.isArray(face.suggestions) && face.suggestions.length ? face.suggestions[0] : null;
+    const margin = typeof top?.score_margin === 'number' ? top.score_margin : null;
+    const hasSafeMargin = margin === null || margin >= 0.05;
+    const qualityAccepted = face.recognition_decision !== 'rejected_quality'
+      && !(typeof face.sharpness === 'number' && face.sharpness < 80)
+      && !(typeof face.pose_yaw === 'number' && face.pose_yaw > 0.45);
+    const decisionAccepted = !face.recognition_decision || face.recognition_decision === 'matched';
+    return top && top.person_id && !top.is_ambiguous && hasSafeMargin
+      && qualityAccepted && decisionAccepted
+      && typeof top.similarity === 'number' && top.similarity >= threshold
+      ? top
+      : null;
+  };
+
   const applyThresholdToFaces = (threshold) => {
+    const computedAssignments = {};
+    const computedSources = {};
+    faces.forEach(face => {
+      const top = eligibleAutoSuggestion(face, threshold);
+      computedAssignments[face.globalIndex] = top ? String(top.person_id) : '';
+      computedSources[face.globalIndex] = top ? 'auto_match' : 'unknown';
+    });
     setAssign(prevAssign => {
       const nextAssign = { ...prevAssign };
       faces.forEach(f => {
-        const top = Array.isArray(f.suggestions) && f.suggestions.length ? f.suggestions[0] : null;
-        const ok = top && typeof top.similarity === 'number' ? top.similarity >= threshold : !!top?.person_id;
-        if (!nextAssign[f.globalIndex] || !ok) {
-          nextAssign[f.globalIndex] = ok && top?.person_id ? String(top.person_id) : (nextAssign[f.globalIndex] || '');
+        const source = assignmentSourcesRef.current[f.globalIndex];
+        if (!source || ['auto_match', 'unknown'].includes(source)) {
+          nextAssign[f.globalIndex] = computedAssignments[f.globalIndex];
         }
       });
       return nextAssign;
+    });
+    setAssignmentSources(prevSources => {
+      const nextSources = { ...prevSources };
+      faces.forEach(f => {
+        if (!nextSources[f.globalIndex] || ['auto_match', 'unknown'].includes(nextSources[f.globalIndex])) {
+          nextSources[f.globalIndex] = computedSources[f.globalIndex];
+        }
+      });
+      return nextSources;
     });
   };
 
@@ -278,7 +313,7 @@ const BulkImageAttendance = () => {
         const qs = new URLSearchParams({ class_year: y, division: d, branch: b });
         const r = await axios.get(`${API_URL}/class-threshold?${qs.toString()}`);
         if (r.data && typeof r.data.threshold === 'number') {
-          const thr = Math.max(0, Math.min(1, r.data.threshold));
+          const thr = Math.max(0.40, Math.min(0.95, r.data.threshold));
           setSimThreshold(thr);
           applyThresholdToFaces(thr);
         }
@@ -349,26 +384,36 @@ const BulkImageAttendance = () => {
     // Now set all state together — React will batch these
     setBatchItems(enrichedItems);
     setFaces(allFaces);
+    const inferredAssignments = {};
+    const inferredSources = {};
+    allFaces.forEach(f => {
+      if (f.assigned_person_id) {
+        inferredAssignments[f.globalIndex] = String(f.assigned_person_id);
+        inferredSources[f.globalIndex] = f.assignment_source || 'auto_match';
+      } else {
+        const top = eligibleAutoSuggestion(f, simThresholdRef.current);
+        inferredAssignments[f.globalIndex] = top ? String(top.person_id) : '';
+        inferredSources[f.globalIndex] = top ? 'auto_match' : 'unknown';
+      }
+    });
     setAssign(prevAssign => {
       const nextAssign = { ...prevAssign };
       allFaces.forEach(f => {
-        if (nextAssign[f.globalIndex] === undefined) {
-          // If backend already persisted an assignment, prefer it
-          if (f.assigned_person_id) {
-            nextAssign[f.globalIndex] = String(f.assigned_person_id);
-          } else {
-            const top = Array.isArray(f.suggestions) && f.suggestions.length ? f.suggestions[0] : null;
-            const isBlurryFace = typeof f.sharpness === 'number' && f.sharpness < 80;
-            const isExtremePose = typeof f.pose_yaw === 'number' && f.pose_yaw > 0.45;
-            const isAmbiguous = top?.is_ambiguous === true;
-            // Don't auto-assign blurry+ambiguous or extreme-pose faces — require manual review
-            const skipAutoAssign = (isBlurryFace && isAmbiguous) || isExtremePose;
-            const ok = !skipAutoAssign && top && typeof top.similarity === 'number' ? top.similarity >= simThreshold : false;
-            nextAssign[f.globalIndex] = ok && top?.person_id ? String(top.person_id) : '';
-          }
+        const source = assignmentSourcesRef.current[f.globalIndex];
+        if (!source || ['auto_match', 'unknown'].includes(source)) {
+          nextAssign[f.globalIndex] = inferredAssignments[f.globalIndex];
         }
       });
       return nextAssign;
+    });
+    setAssignmentSources(prevSources => {
+      const nextSources = { ...prevSources };
+      allFaces.forEach(f => {
+        if (!nextSources[f.globalIndex] || ['auto_match', 'unknown'].includes(nextSources[f.globalIndex])) {
+          nextSources[f.globalIndex] = inferredSources[f.globalIndex];
+        }
+      });
+      return nextSources;
     });
 
     return { isPending, items: enrichedItems, doneCount: enrichedItems.filter(i => i.status === 'done').length };
@@ -521,14 +566,24 @@ const BulkImageAttendance = () => {
       .map(f => ({
         item_id: f.itemId,
         face_index: f.faceIndex,
-        person_id: assign[f.globalIndex]
+        person_id: assign[f.globalIndex],
+        assignment_source: assignmentSources[f.globalIndex] || 'auto_match'
       }));
     if (assigns.length === 0) {
       alert('Nothing to save');
       return;
     }
+    const seenPerImage = new Set();
+    for (const assignment of assigns) {
+      const key = `${assignment.item_id}:${assignment.person_id}`;
+      if (seenPerImage.has(key)) {
+        alert('The same student is assigned to two faces in one image. Correct the duplicate before saving.');
+        return;
+      }
+      seenPerImage.add(key);
+    }
     try {
-      await axios.post(`${API_URL}/class-batch/commit`, {
+      const response = await axios.post(`${API_URL}/class-batch/commit`, {
         batch_id: id,
         assignments: assigns,
         class_year: selectedClass.class_year || '',
@@ -536,7 +591,8 @@ const BulkImageAttendance = () => {
         branch: selectedClass.branch || '',
         threshold: simThreshold
       });
-      alert('Saved embeddings successfully');
+      const result = response.data || {};
+      alert(`Assignments saved. Trusted templates added: ${result.saved || 0}; automatic matches not learned: ${result.skipped_automatic || 0}; pending outlier review: ${result.pending_review || 0}; quality skips: ${result.skipped_quality || 0}.`);
     } catch (e) {
       alert(e.response?.data?.error || e.message || 'Save failed');
     }
@@ -840,15 +896,15 @@ const BulkImageAttendance = () => {
           </button>
           <button
             onClick={saveMappings}
-            disabled={faces.length === 0}
+            disabled={faces.length === 0 || isProcessing}
             className="px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 inline-flex items-center gap-2"
           >
-            Save Embeddings
+            Save Assignments
           </button>
 
           <button
             onClick={markAll}
-            disabled={faces.length === 0 || isMarkingAll}
+            disabled={faces.length === 0 || isProcessing || isMarkingAll}
             className="px-4 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 inline-flex items-center gap-2"
           >
             {isMarkingAll ? (
@@ -874,6 +930,7 @@ const BulkImageAttendance = () => {
               setBatchItems([]);
               setFaces([]);
               setAssign({});
+              setAssignmentSources({});
               setPendingFiles([]);
               setShowMeshFaces({});
               setRegenerating({});
@@ -947,11 +1004,11 @@ const BulkImageAttendance = () => {
                       <span className="text-xs text-slate-600">Similarity threshold</span>
                       <input
                         type="number"
-                        min={0}
-                        max={100}
+                        min={40}
+                        max={95}
                         step={1}
                         value={Math.round(simThreshold * 100)}
-                        onChange={e => setSimThreshold(Math.max(0, Math.min(100, parseInt(e.target.value || '0', 10))) / 100)}
+                        onChange={e => setSimThreshold(Math.max(40, Math.min(95, parseInt(e.target.value || '40', 10))) / 100)}
                         className="w-16 p-1.5 border rounded"
                       />
                       <span className="text-xs text-slate-600">%</span>
@@ -966,8 +1023,9 @@ const BulkImageAttendance = () => {
                         const isMarginal = sharpness !== null && sharpness >= 80 && sharpness < 150;
                         const isExtremePose = typeof f.pose_yaw === 'number' && f.pose_yaw > 0.45;
                         const hasNoMatch = !Array.isArray(f.suggestions) || f.suggestions.length === 0;
+                        const needsReview = f.recognition_decision === 'review_required' || f.duplicate_identity_conflict;
                         return (
-                        <div key={f.globalIndex} className={`border rounded-xl p-2 bg-white shadow-sm flex flex-col ${isExtremePose ? 'border-red-300 bg-red-50/30' : isBlurry ? 'border-orange-300' : hasNoMatch ? 'border-slate-300 opacity-80' : ''}`}>
+                        <div key={f.globalIndex} className={`border rounded-xl p-2 bg-white shadow-sm flex flex-col ${needsReview ? 'border-amber-400 bg-amber-50/30' : isExtremePose ? 'border-red-300 bg-red-50/30' : isBlurry ? 'border-orange-300' : hasNoMatch ? 'border-slate-300 opacity-80' : ''}`}>
                           <div className="w-full aspect-square mb-2 bg-slate-100 rounded-lg overflow-hidden border relative group">
                             <img
                               src={showMeshFaces[f.globalIndex] && f.thumbs?.lmk ? f.thumbs.lmk : (f.thumbs?.face || f.thumb)}
@@ -1008,6 +1066,12 @@ const BulkImageAttendance = () => {
                               </div>
                             )}
 
+                            {needsReview && (
+                              <div className="absolute bottom-1 left-1 bg-amber-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded shadow" title={f.duplicate_identity_conflict ? 'Another face in this image has the same predicted identity' : 'The top candidates are too close for automatic attendance'}>
+                                REVIEW
+                              </div>
+                            )}
+
                             {/* Enhance button — only for blurry/soft faces that have an assignment */}
                             {assign[f.globalIndex] && (isBlurry || isMarginal) && (
                               <button
@@ -1028,12 +1092,27 @@ const BulkImageAttendance = () => {
                                   return p ? `${p.name} (#${p.display_id})` : 'Assigned';
                                 })()}
                               </span>
+                              <span className={`ml-1 inline-block px-1.5 py-0.5 text-[9px] rounded ${assignmentSources[f.globalIndex] === 'auto_match' ? 'bg-blue-100 text-blue-700' : 'bg-violet-100 text-violet-700'}`}>
+                                {assignmentSources[f.globalIndex] === 'auto_match' ? 'AUTO' : 'HUMAN'}
+                              </span>
                             </div>
                           ) : null}
                           <select
                             className="w-full p-1.5 border rounded-md bg-slate-50 text-xs mb-2"
                             value={assign[f.globalIndex] || ''}
-                            onChange={(e) => setAssign(prev => ({ ...prev, [f.globalIndex]: e.target.value }))}
+                            onChange={(e) => {
+                              const selected = e.target.value;
+                              const top = Array.isArray(f.suggestions) && f.suggestions.length ? f.suggestions[0] : null;
+                              setAssign(prev => ({ ...prev, [f.globalIndex]: selected }));
+                              setAssignmentSources(prev => ({
+                                ...prev,
+                                [f.globalIndex]: !selected
+                                  ? 'unknown'
+                                  : String(top?.person_id) === String(selected)
+                                    ? 'manual_confirm'
+                                    : 'manual_correction'
+                              }));
+                            }}
                           >
                             <option value="">Assign person…</option>
                             {availablePeople.map(p => (
@@ -1049,8 +1128,13 @@ const BulkImageAttendance = () => {
                                   </span>
                                   {" "}
                                   {(f.suggestions[0].similarity * 100).toFixed(1)}%
+                                  {typeof f.suggestions[0].score_margin === 'number' && (
+                                    <span className="ml-1 text-slate-400" title="Difference between the best and second-best candidates">
+                                      Δ{(f.suggestions[0].score_margin * 100).toFixed(1)}
+                                    </span>
+                                  )}
                                   {f.suggestions[0].is_ambiguous && (
-                                    <span className="ml-1 text-[9px] px-1 bg-amber-500 text-white rounded font-bold animate-pulse" title="Model collapse detected: Top 2 matches are too close. Please verify.">
+                                    <span className="ml-1 text-[9px] px-1 bg-amber-500 text-white rounded font-bold animate-pulse" title="Top two candidates are too close. Please verify this face manually.">
                                       AMBIGUOUS
                                     </span>
                                   )}

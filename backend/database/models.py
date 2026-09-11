@@ -303,6 +303,12 @@ class PersonEmbedding(Base):
     dim = Column(Integer)
     struct_vec = Column(LargeBinary)
     landmarks_3d = Column(Text)
+    model_version = Column(String(100), default='faceplugin-onnx-v1')
+    quality_score = Column(Float)
+    source = Column(String(50), default='registration')
+    status = Column(String(30), default='trusted')
+    confirmed_by = Column(String(255))
+    confirmed_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     person = relationship("Face", back_populates="embeddings")

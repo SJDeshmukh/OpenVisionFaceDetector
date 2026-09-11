@@ -52,6 +52,28 @@ class ClassBatchAssignment(BaseModel):
     item_id: str
     face_index: int
     person_id: Any
+    # Old clients omit this field.  Defaulting to auto_match is deliberately
+    # conservative: an unlabelled assignment may mark attendance, but it must
+    # never be learned as a trusted gallery template.
+    assignment_source: str = "auto_match"
+
+    @validator('person_id')
+    def validate_person_id(cls, value):
+        try:
+            normalized = int(value)
+        except (TypeError, ValueError):
+            raise ValueError('person_id must be a positive integer')
+        if normalized <= 0:
+            raise ValueError('person_id must be a positive integer')
+        return normalized
+
+    @validator('assignment_source')
+    def validate_assignment_source(cls, value):
+        normalized = str(value or '').strip().lower()
+        allowed = {'auto_match', 'manual_confirm', 'manual_correction'}
+        if normalized not in allowed:
+            raise ValueError('assignment_source must be auto_match, manual_confirm, or manual_correction')
+        return normalized
 
 class ClassBatchCommitSchema(BaseModel):
     batch_id: str
@@ -60,6 +82,15 @@ class ClassBatchCommitSchema(BaseModel):
     division: Optional[str] = ""
     branch: Optional[str] = ""
     threshold: Optional[float] = None
+
+    @validator('threshold')
+    def validate_threshold(cls, value):
+        if value is None:
+            return value
+        normalized = float(value)
+        if not 0.40 <= normalized <= 0.95:
+            raise ValueError('threshold must be between 0.40 and 0.95')
+        return normalized
 
 class ClassBatchStatusSchema(BaseModel):
     batch_id: str

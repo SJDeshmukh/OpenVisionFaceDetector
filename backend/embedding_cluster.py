@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 # an outlier (still saved because the user explicitly chose the label, but
 # logged for diagnostics).
 MIN_CLUSTER_SIMILARITY = 0.50
+MAX_TRUSTED_TEMPLATES = 8
 
 
 def _l2_normalize(v: np.ndarray) -> np.ndarray:
@@ -64,6 +65,35 @@ def compute_centroid(vecs: list[np.ndarray] | np.ndarray) -> np.ndarray:
     return _l2_normalize(mean)
 
 
+def compute_weighted_centroid(
+    vecs: list[np.ndarray],
+    quality_scores: list[float | None] | None = None,
+    max_templates: int = MAX_TRUSTED_TEMPLATES,
+) -> np.ndarray:
+    """Build a bounded, quality-weighted centroid from trusted templates."""
+    if (not quality_scores or all(score is None for score in quality_scores)) and len(vecs) <= max_templates:
+        # Preserve bit-for-bit legacy behaviour for galleries that predate
+        # quality metadata; their calibrated thresholds depend on this path.
+        return compute_centroid(vecs)
+    pairs = []
+    for index, vector in enumerate(vecs):
+        if vector is None or vector.size == 0:
+            continue
+        quality = quality_scores[index] if quality_scores and index < len(quality_scores) else None
+        # Existing registration embeddings predate quality metadata.  Treat
+        # them as normal-quality trusted captures rather than discarding them.
+        weight = 1.0 if quality is None else min(1.25, max(0.25, float(quality) / 150.0))
+        pairs.append((_l2_normalize(vector), weight))
+    if not pairs:
+        return np.zeros(0, dtype=np.float32)
+
+    pairs.sort(key=lambda pair: pair[1], reverse=True)
+    pairs = pairs[:max(1, int(max_templates))]
+    matrix = np.vstack([pair[0] for pair in pairs])
+    weights = np.asarray([pair[1] for pair in pairs], dtype=np.float32)
+    return _l2_normalize(np.average(matrix, axis=0, weights=weights))
+
+
 def build_person_centroids(items: list[dict]) -> dict[int, dict]:
     """
     Group cache items by person_id and compute a centroid for each person.
@@ -77,6 +107,7 @@ def build_person_centroids(items: list[dict]) -> dict[int, dict]:
     {person_id: {'centroid': np.ndarray(dim,), 'name': str, 'count': int}}
     """
     buckets: dict[int, list[np.ndarray]] = defaultdict(list)
+    qualities: dict[int, list[float | None]] = defaultdict(list)
     names: dict[int, str] = {}
 
     for it in items:
@@ -84,12 +115,13 @@ def build_person_centroids(items: list[dict]) -> dict[int, dict]:
         v = it.get("vec")
         if v is not None and v.size > 0:
             buckets[pid].append(v)
+            qualities[pid].append(it.get("quality_score"))
         if pid not in names:
             names[pid] = str(it.get("name", ""))
 
     centroids: dict[int, dict] = {}
     for pid, vecs in buckets.items():
-        c = compute_centroid(vecs)
+        c = compute_weighted_centroid(vecs, qualities.get(pid))
         if c.size > 0:
             centroids[pid] = {
                 "centroid": c,

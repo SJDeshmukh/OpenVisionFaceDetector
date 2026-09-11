@@ -503,7 +503,7 @@ def _init_pg_schema_on_conn(conn):
         "CREATE TABLE IF NOT EXISTS leave_requests (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), student_id INTEGER REFERENCES faces(id), leave_type TEXT, reason TEXT, start_date DATE, end_date DATE, start_time TEXT, end_time TEXT, parent_status TEXT DEFAULT 'pending', rector_status TEXT DEFAULT 'pending', hod_status TEXT DEFAULT 'pending', final_status TEXT DEFAULT 'pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS student_parents (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id), parent_id INTEGER REFERENCES parent_users(id), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(person_id, parent_id))",
         "CREATE TABLE IF NOT EXISTS parent_tokens (token TEXT PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), student_number TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
-        "CREATE TABLE IF NOT EXISTS person_embeddings (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id), class_year TEXT, division TEXT, branch TEXT, vec BYTEA, dim INTEGER, struct_vec BYTEA, landmarks_3d TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS person_embeddings (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id), class_year TEXT, division TEXT, branch TEXT, vec BYTEA, dim INTEGER, struct_vec BYTEA, landmarks_3d TEXT, model_version TEXT DEFAULT 'faceplugin-onnx-v1', quality_score REAL, source TEXT DEFAULT 'registration', status TEXT DEFAULT 'trusted', confirmed_by TEXT, confirmed_at TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS class_batches (id TEXT PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), class_year TEXT, division TEXT, branch TEXT, status TEXT DEFAULT 'active', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS class_batch_items (id TEXT PRIMARY KEY, batch_id TEXT REFERENCES class_batches(id), seq INTEGER, image_b64 TEXT, annotated_b64 TEXT, faces_json TEXT, status TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS leave_staff (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), name TEXT, role TEXT, pin TEXT, department TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
@@ -618,6 +618,12 @@ def _init_pg_schema_on_conn(conn):
         ("attendance", "attendance_date", "DATE"),
         ("person_embeddings", "struct_vec", "BYTEA"),
         ("person_embeddings", "landmarks_3d", "TEXT"),
+        ("person_embeddings", "model_version", "TEXT DEFAULT 'faceplugin-onnx-v1'"),
+        ("person_embeddings", "quality_score", "REAL"),
+        ("person_embeddings", "source", "TEXT DEFAULT 'registration'"),
+        ("person_embeddings", "status", "TEXT DEFAULT 'trusted'"),
+        ("person_embeddings", "confirmed_by", "TEXT"),
+        ("person_embeddings", "confirmed_at", "TIMESTAMP"),
     ]
     
     for table, col, col_type in cols:
@@ -625,6 +631,12 @@ def _init_pg_schema_on_conn(conn):
             run_migration(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {col_type}", f"Add {col} to {table}")
         else:
             run_migration(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}", f"Add {col} to {table}")
+
+    run_migration(
+        "CREATE INDEX IF NOT EXISTS idx_person_embeddings_gallery "
+        "ON person_embeddings(vendor_id, status, model_version, person_id)",
+        "Index trusted embedding gallery",
+    )
 
     # 1b. PostgreSQL specific unique constraints
     if is_pg:
@@ -699,7 +711,7 @@ def init_sqlite_schema(conn):
         "CREATE TABLE IF NOT EXISTS leave_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, student_id INTEGER, leave_type TEXT, reason TEXT, start_date DATE, end_date DATE, start_time TEXT, end_time TEXT, parent_status TEXT DEFAULT 'pending', rector_status TEXT DEFAULT 'pending', hod_status TEXT DEFAULT 'pending', final_status TEXT DEFAULT 'pending', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS student_parents (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, person_id INTEGER, parent_id INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(person_id, parent_id))",
         "CREATE TABLE IF NOT EXISTS parent_tokens (token TEXT PRIMARY KEY, vendor_id INTEGER, student_number TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
-        "CREATE TABLE IF NOT EXISTS person_embeddings (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, person_id INTEGER, class_year TEXT, division TEXT, branch TEXT, vec BLOB, dim INTEGER, struct_vec BLOB, landmarks_3d TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS person_embeddings (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, person_id INTEGER, class_year TEXT, division TEXT, branch TEXT, vec BLOB, dim INTEGER, struct_vec BLOB, landmarks_3d TEXT, model_version TEXT DEFAULT 'faceplugin-onnx-v1', quality_score REAL, source TEXT DEFAULT 'registration', status TEXT DEFAULT 'trusted', confirmed_by TEXT, confirmed_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS class_batches (id TEXT PRIMARY KEY, vendor_id INTEGER, class_year TEXT, division TEXT, branch TEXT, status TEXT DEFAULT 'active', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS class_batch_items (id TEXT PRIMARY KEY, batch_id TEXT, seq INTEGER, image_b64 TEXT, annotated_b64 TEXT, faces_json TEXT, status TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS leave_staff (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, name TEXT, role TEXT, pin TEXT, department TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
@@ -799,11 +811,28 @@ def init_sqlite_schema(conn):
         except Exception:
             pass
 
-    for col in ["struct_vec BLOB", "landmarks_3d TEXT"]:
+    for col in [
+        "struct_vec BLOB",
+        "landmarks_3d TEXT",
+        "model_version TEXT DEFAULT 'faceplugin-onnx-v1'",
+        "quality_score REAL",
+        "source TEXT DEFAULT 'registration'",
+        "status TEXT DEFAULT 'trusted'",
+        "confirmed_by TEXT",
+        "confirmed_at DATETIME",
+    ]:
         try:
             cur.execute(f"ALTER TABLE person_embeddings ADD COLUMN {col}")
         except Exception:
             pass
+
+    try:
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_person_embeddings_gallery "
+            "ON person_embeddings(vendor_id, status, model_version, person_id)"
+        )
+    except Exception:
+        pass
 
     conn.commit()
     cur.close()

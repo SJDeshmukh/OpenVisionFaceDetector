@@ -21,6 +21,7 @@ from services.person_scope_service import (
     requested_person_type,
     vendor_vertical,
 )
+from services.batch_recognition import EMBEDDING_MODEL_VERSION
 
 def get_realtime_engine():
     from app import get_realtime_engine as _get
@@ -167,39 +168,15 @@ def _quality_min_sim(sharpness: float, pose_yaw: float, face_score: float) -> fl
 
 def _apply_contrastive_refinement(sims: list, penalty_scale: float = 0.2) -> list:
     """
-    Pushes dissimilar identities apart if they are too close (Embedding Separation).
+    Annotate an open-set recognition result without changing model scores.
+
+    Similarity values are used for threshold calibration and auditing, so they
+    must remain the raw cosine-derived scores.  Ambiguity is represented by a
+    separate top-1/top-2 margin instead of artificially boosting the winner and
+    penalising the runner-up.
     """
-    if len(sims) < 2:
-        return sims
-
-    top1 = sims[0]
-    top2 = sims[1]
-
-    # Only refine if they are different identities and both have significant similarity
-    if top1['person_id'] != top2['person_id'] and top1['similarity'] > 0.4:
-        s1 = top1['similarity']
-        s2 = top2['similarity']
-
-        gap = s1 - s2
-
-        # AMBIGUITY DETECTION: flag when top-2 scores are too close (gap < 5%)
-        # or when the winner itself is below the reliable-match zone (< 0.78).
-        is_ambiguous = (s1 > 0.65 and gap < 0.05) or (s1 < 0.78 and gap < 0.04)
-        if is_ambiguous:
-            top1['is_ambiguous'] = True
-            top2['is_ambiguous'] = True
-            # Suppress ambiguous suggestions when top-1 is below reliable zone
-            # — returning a wrong label is worse than returning nothing
-            if s1 < 0.72:
-                return []
-
-        # Accentuate the winner, penalize the runner-up if they are too close
-        overlap = max(0.0, 1.0 - gap)
-        penalty = overlap * penalty_scale
-        top1['similarity'] = min(1.0, float(s1 + (gap * 0.1)))
-        top2['similarity'] = max(0.0, float(s2 - penalty))
-
-    return sorted(sims, key=lambda x: x['similarity'], reverse=True)
+    from services.batch_recognition import annotate_candidate_margin
+    return annotate_candidate_margin(sims)
 
 def _cluster_batch_embeddings(embeddings_map: dict, threshold: float = 0.75) -> list:
     """
@@ -288,7 +265,12 @@ def _ensure_vendor_emb_cache(
         
         # Fast multi-process staleness check
         try:
-            c.execute("SELECT MAX(id), COUNT(id) FROM person_embeddings WHERE vendor_id = ?", (int(vendor_id or 0),))
+            c.execute(
+                """SELECT MAX(id), COUNT(id) FROM person_embeddings
+                   WHERE vendor_id = ? AND COALESCE(status, 'trusted') = 'trusted'
+                     AND COALESCE(model_version, ?) = ?""",
+                (int(vendor_id or 0), EMBEDDING_MODEL_VERSION, EMBEDDING_MODEL_VERSION),
+            )
             sig_row = c.fetchone()
             current_sig = f"{sig_row[0]}_{sig_row[1]}" if sig_row and sig_row[0] is not None else "0_0"
         except Exception:
@@ -308,8 +290,11 @@ def _ensure_vendor_emb_cache(
         from multiple_face_detection import app as mfd_app
         items = []
         try:
-            q = "SELECT person_id, vec, dim, struct_vec, class_year, division, branch FROM person_embeddings WHERE vendor_id = ?"
-            args = [int(vendor_id or 0)]
+            q = """SELECT person_id, vec, dim, struct_vec, class_year, division, branch, quality_score
+                   FROM person_embeddings
+                   WHERE vendor_id = ? AND COALESCE(status, 'trusted') = 'trusted'
+                     AND COALESCE(model_version, ?) = ?"""
+            args = [int(vendor_id or 0), EMBEDDING_MODEL_VERSION, EMBEDDING_MODEL_VERSION]
             
             c.execute(q, args)
             rows_emb = c.fetchall() or []
@@ -327,6 +312,7 @@ def _ensure_vendor_emb_cache(
                     class_y = r['class_year'] if isinstance(r, sqlite3.Row) else r[4]
                     div = r['division'] if isinstance(r, sqlite3.Row) else r[5]
                     br = r['branch'] if isinstance(r, sqlite3.Row) else r[6]
+                    quality_score = r['quality_score'] if isinstance(r, sqlite3.Row) else r[7]
                     
                     s_vec = None
                     if sb:
@@ -348,6 +334,7 @@ def _ensure_vendor_emb_cache(
                                 'division': scope.get('division', div),
                                 'branch': scope.get('branch', br),
                                 'person_type': meta.get('person_type'),
+                                'quality_score': quality_score,
                             })
                             id_set.add(pid)
                 except Exception:
@@ -482,6 +469,7 @@ def _ensure_vendor_emb_cache(
                             'division': scope.get('division', ''),
                             'branch': scope.get('branch', ''),
                             'person_type': meta.get('person_type'),
+                            'quality_score': None,
                         })
                 except Exception:
                     continue
@@ -1163,11 +1151,15 @@ def _detect_faces_from_bytes(image_bytes: bytes, params: dict, vendor_id):
                 if pose_yaw > 0.55:
                     f['suggestions'] = []
                     f['min_sim'] = 1.0
+                    f['recognition_decision'] = 'rejected_quality'
                     continue
                 min_sim      = _quality_min_sim(f_sharpness, pose_yaw, f_det_score)
                 f['min_sim']   = round(min_sim, 3)
                 if f.get('suggestions'):
                     f['suggestions'] = [s for s in f['suggestions'] if s['similarity'] >= min_sim]
+
+                from services.batch_recognition import classify_face_decision
+                f['recognition_decision'] = classify_face_decision(f)
 
             # Second-stage filter: only keep faces the 3D engine confirmed as real.
             # A face with no landmarks_3d is almost certainly a detector false positive

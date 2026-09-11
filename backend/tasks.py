@@ -455,6 +455,106 @@ def _on_task_retry(request=None, reason=None, einfo=None, **kwargs):
         pass
 
 
+def _reconcile_class_batch_identities(batch_id, vendor_id, params):
+    """Aggregate repeated faces across every completed image in a class batch."""
+    import base64
+    import os
+    import numpy as np
+    from services.batch_recognition import (
+        classify_face_decision,
+        complete_linkage_clusters,
+        enforce_unique_predictions,
+    )
+    from services.face_service import _ensure_vendor_emb_cache, _suggest_from_cache
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT id, faces_json FROM class_batch_items WHERE batch_id = ? AND status = 'done' ORDER BY seq ASC",
+        (batch_id,),
+    )
+    rows = c.fetchall() or []
+    item_faces = []
+    records = []
+    for row in rows:
+        item_id = str(row[0])
+        try:
+            faces = json.loads(row[1] or "[]")
+        except Exception:
+            faces = []
+        item_faces.append((item_id, faces))
+        for face in faces:
+            try:
+                encoded = face.get("emb_vec") or ""
+                raw = base64.b64decode(encoded, validate=True)
+                embedding = np.frombuffer(raw, dtype=np.float32).copy()
+                if embedding.size == 0:
+                    continue
+                records.append({
+                    "item_id": item_id,
+                    "face_index": int(face.get("index", 0)),
+                    "embedding": embedding,
+                    "sharpness": face.get("sharpness"),
+                    "score": face.get("score"),
+                    "pose_yaw": face.get("pose_yaw"),
+                    "face": face,
+                })
+            except Exception:
+                continue
+
+    if not records:
+        conn.close()
+        return
+
+    try:
+        cluster_threshold = float(os.environ.get("BATCH_CLUSTER_THRESHOLD", "0.86"))
+    except (TypeError, ValueError):
+        cluster_threshold = 0.86
+    cluster_threshold = min(0.99, max(0.50, cluster_threshold))
+    clusters = complete_linkage_clusters(records, threshold=cluster_threshold)
+
+    class_year = params.get("class_year")
+    division = params.get("division")
+    branch = params.get("branch")
+    cache = _ensure_vendor_emb_cache(
+        vendor_id,
+        class_year=class_year,
+        division=division,
+        branch=branch,
+        person_type="student",
+    )
+
+    all_faces = []
+    for cluster in clusters:
+        suggestions = _suggest_from_cache(
+            cluster["centroid"], cache, topk=3,
+            class_year=class_year, division=division, branch=branch,
+        )
+        for member in cluster["members"]:
+            face = member["face"]
+            min_sim = float(face.get("min_sim") or 0.0)
+            face_suggestions = [dict(candidate) for candidate in suggestions
+                                if float(candidate.get("similarity", 0.0)) >= min_sim]
+            face["suggestions"] = face_suggestions
+            face["cluster_id"] = cluster["cluster_id"]
+            face["cluster_observations"] = cluster["observations"]
+            face["recognition_decision"] = classify_face_decision(face, face_suggestions)
+            face["item_id"] = member["item_id"]
+            all_faces.append(face)
+
+    enforce_unique_predictions(all_faces)
+    for face in all_faces:
+        face.pop("item_id", None)
+
+    for item_id, faces in item_faces:
+        c.execute(
+            "UPDATE class_batch_items SET faces_json = ? WHERE id = ? AND batch_id = ?",
+            (json.dumps(faces), item_id, batch_id),
+        )
+    conn.commit()
+    conn.close()
+
+
 def process_class_batch_items(batch_id, vendor_id, params):
     from services.face_service import _detect_faces_from_bytes
     from utils import get_db_connection
@@ -524,6 +624,14 @@ def process_class_batch_items(batch_id, vendor_id, params):
     else:
         for item in items:
             _process_item(item)
+
+    # Recognition is deliberately reconciled after all image workers finish.
+    # This lets repeated appearances contribute one quality-weighted identity
+    # decision instead of treating each uploaded photograph in isolation.
+    try:
+        _reconcile_class_batch_identities(batch_id, vendor_id, params)
+    except Exception as exc:
+        print(f"[BATCH_RECOGNITION] batch {batch_id} reconciliation failed: {exc}", flush=True)
 
     # Mark batch completed if nothing is left pending/processing
     _conn2 = get_db_connection()

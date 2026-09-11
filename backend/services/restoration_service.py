@@ -19,6 +19,11 @@ def migrate_table_idempotent(src_conn, dst_conn, table_name, columns, conflict_c
     # 1. Read from Source (SQLite backup)
     sc = src_conn.cursor()
     try:
+        sc.execute(f"PRAGMA table_info({table_name})")
+        source_columns = {str(row[1]) for row in (sc.fetchall() or [])}
+        columns = [column for column in columns if column in source_columns]
+        if not columns:
+            return 0
         sc.execute(f"SELECT {', '.join(columns)} FROM {table_name}")
         rows = sc.fetchall()
     except sqlite3.OperationalError as e:
@@ -115,7 +120,7 @@ def run_restore(sqlite_backup_path):
         ('parent_users', ['id', 'vendor_id', 'username', 'password', 'contact_email', 'contact_phone', 'student_number', 'selected_person_id', 'device_id', 'fcm_token', 'session_version', 'created_at']),
         ('student_parents', ['id', 'vendor_id', 'person_id', 'parent_id', 'created_at']),
         ('parent_tokens', ['token', 'vendor_id', 'student_number', 'created_at'], 'token'),
-        ('person_embeddings', ['id', 'vendor_id', 'person_id', 'class_year', 'division', 'branch', 'vec', 'dim', 'struct_vec', 'landmarks_3d', 'created_at']),
+        ('person_embeddings', ['id', 'vendor_id', 'person_id', 'class_year', 'division', 'branch', 'vec', 'dim', 'struct_vec', 'landmarks_3d', 'model_version', 'quality_score', 'source', 'status', 'confirmed_by', 'confirmed_at', 'created_at']),
         ('class_batches', ['id', 'vendor_id', 'class_year', 'division', 'branch', 'status', 'created_at']),
         ('class_batch_items', ['id', 'batch_id', 'seq', 'image_b64', 'annotated_b64', 'faces_json', 'status', 'created_at'])
     ]
@@ -173,7 +178,7 @@ def run_backup(dest_path):
             ('parent_users', ['id', 'vendor_id', 'username', 'password', 'contact_email', 'contact_phone', 'student_number', 'selected_person_id', 'device_id', 'fcm_token', 'session_version', 'created_at']),
             ('student_parents', ['id', 'vendor_id', 'person_id', 'parent_id', 'created_at']),
             ('parent_tokens', ['token', 'vendor_id', 'student_number', 'created_at'], 'token'),
-            ('person_embeddings', ['id', 'vendor_id', 'person_id', 'class_year', 'division', 'branch', 'vec', 'dim', 'struct_vec', 'landmarks_3d', 'created_at']),
+            ('person_embeddings', ['id', 'vendor_id', 'person_id', 'class_year', 'division', 'branch', 'vec', 'dim', 'struct_vec', 'landmarks_3d', 'model_version', 'quality_score', 'source', 'status', 'confirmed_by', 'confirmed_at', 'created_at']),
             ('class_batches', ['id', 'vendor_id', 'class_year', 'division', 'branch', 'status', 'created_at']),
             ('class_batch_items', ['id', 'batch_id', 'seq', 'image_b64', 'annotated_b64', 'faces_json', 'status', 'created_at'])
         ]

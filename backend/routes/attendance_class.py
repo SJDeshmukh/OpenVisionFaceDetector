@@ -4,6 +4,7 @@ import json
 import base64
 import numpy as np
 import threading
+import logging
 from flask import Blueprint, request, jsonify
 from utils import (
     get_db_connection, _ensure_class_batch_tables, 
@@ -11,7 +12,8 @@ from utils import (
 )
 import cv2
 from services.face_service import (
-    _normalize_vec, _decode_data_uri_to_rgb, _ensure_vendor_emb_cache, _suggest_from_cache
+    EMBEDDING_MODEL_VERSION, _normalize_vec, _decode_data_uri_to_rgb,
+    _ensure_vendor_emb_cache, _suggest_from_cache
 )
 from services.auth_service import require_auth
 from services.person_scope_service import class_scope_matches, person_type_for, vendor_vertical
@@ -23,6 +25,7 @@ from schemas import (
 from flask import Blueprint, request, jsonify, g
 
 attendance_class_bp = Blueprint('attendance_class_bp', __name__)
+logger = logging.getLogger(__name__)
 
 @attendance_class_bp.route("/class-batch/start", methods=["POST"])
 @require_auth()
@@ -65,9 +68,25 @@ def class_batch_add(valid_data: ClassBatchAddSchema):
     conn = get_db_connection()
     _ensure_class_batch_tables(conn)
     c = conn.cursor()
-    c.execute("SELECT id FROM class_batches WHERE id = ? AND vendor_id = ?", (bid, vendor_id))
-    if not c.fetchone():
+    c.execute(
+        "SELECT class_year, division, branch FROM class_batches WHERE id = ? AND vendor_id = ?",
+        (bid, vendor_id),
+    )
+    batch_row = c.fetchone()
+    if not batch_row:
         conn.close(); return jsonify({"error": "batch not found"}), 404
+    stored_scope = tuple(str(value or '').strip().lower() for value in batch_row)
+    requested_scope = tuple(str(value or '').strip().lower() for value in (
+        valid_data.class_year, valid_data.division, valid_data.branch,
+    ))
+    if stored_scope != requested_scope:
+        conn.close()
+        return jsonify({"error": "Selected class changed. End the current scan session before uploading another class."}), 409
+    params.update({
+        "class_year": batch_row[0] or '',
+        "division": batch_row[1] or '',
+        "branch": batch_row[2] or '',
+    })
     files = request.files.getlist('images')
     if not files and 'image' in request.files: files = [request.files['image']]
     if not files: conn.close(); return jsonify({"error": "no images"}), 400
@@ -196,42 +215,67 @@ def class_batch_commit(valid_data: ClassBatchCommitSchema):
     assigns = valid_data.assignments
     class_year, division, branch = valid_data.class_year, valid_data.division, valid_data.branch
     threshold = valid_data.threshold
+
+    # One physical face in an image may map to only one student, and one
+    # student may map to only one physical face in that same image.  Repeated
+    # appearances across different uploaded images remain valid.
+    seen_faces = set()
+    seen_item_people = set()
+    for assignment in assigns:
+        face_key = (assignment.item_id, int(assignment.face_index))
+        person_key = (assignment.item_id, str(assignment.person_id))
+        if face_key in seen_faces:
+            return jsonify({"error": "A detected face was assigned more than once"}), 409
+        if person_key in seen_item_people:
+            return jsonify({"error": "The same student cannot be assigned to two faces in one image"}), 409
+        seen_faces.add(face_key)
+        seen_item_people.add(person_key)
     
     conn = get_db_connection()
     import sqlite3
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
+    c.execute(
+        "SELECT class_year, division, branch FROM class_batches WHERE id = ? AND vendor_id = ?",
+        (bid, vendor_id),
+    )
+    batch_row = c.fetchone()
+    if not batch_row:
+        conn.close()
+        return jsonify({"error": "batch not found"}), 404
+    # The persisted batch is authoritative; browser-supplied scope must never
+    # be able to broaden the gallery or relabel somebody across classes.
+    class_year = batch_row['class_year'] if isinstance(batch_row, sqlite3.Row) else batch_row[0]
+    division = batch_row['division'] if isinstance(batch_row, sqlite3.Row) else batch_row[1]
+    branch = batch_row['branch'] if isinstance(batch_row, sqlite3.Row) else batch_row[2]
     vertical = vendor_vertical(c, vendor_id)
     if threshold is not None:
         try:
             c.execute("INSERT INTO class_thresholds (vendor_id, class_year, division, branch, threshold) VALUES (?, ?, ?, ?, ?) ON CONFLICT(vendor_id, class_year, division, branch) DO UPDATE SET threshold=excluded.threshold, updated_at=CURRENT_TIMESTAMP", (vendor_id, str(class_year), str(division), str(branch), float(threshold)))
             conn.commit()
         except Exception: pass
-    try: from multiple_face_detection import app as mfd_app
-    except Exception: return jsonify({"error": "embedder unavailable"}), 500
+    mfd_app = None
     saved = 0
+    skipped_automatic = 0
+    skipped_quality = 0
+    skipped_outlier = 0
+    pending_review = 0
     person_name_cache = {}
     for a in assigns:
         try:
             item_id, face_index, person_id = a.item_id, a.face_index, a.person_id
-            if not item_id or person_id in (None, '', 0) or face_index is None: continue
+            assignment_source = a.assignment_source
+            if not item_id or person_id in (None, '', 0) or face_index is None:
+                raise ValueError('Invalid assignment')
             c.execute("SELECT faces_json FROM class_batch_items WHERE id = ? AND batch_id = ?", (item_id, bid))
             row = c.fetchone()
-            if not row: continue
+            if not row:
+                raise ValueError('Assignment references a face outside this batch')
             faces = json.loads(row['faces_json'] if isinstance(row, sqlite3.Row) else row[0] or '[]')
             face = next((f for f in faces if int(f.get('index', -1)) == int(face_index)), None)
-            if not face: continue
+            if not face:
+                raise ValueError('Detected face was not found in this batch item')
             uri = (face['thumbs'].get('face') if isinstance(face.get('thumbs'), dict) else None) or face.get('thumb')
-            if not uri: continue
-            # Always re-extract embedding for OCP/FacePlugin compatibility on commit
-            img_rgb = _decode_data_uri_to_rgb(uri)
-            if img_rgb is not None:
-                emb = mfd_app.get_embedder().embed(img_rgb)
-                emb = _normalize_vec(emb)
-            else:
-                emb = None
-            if emb is None or emb.size == 0: continue
-            vec_blob, dim = emb.astype(np.float32).tobytes(), int(emb.size)
             pid_key = int(person_id)
             if pid_key not in person_name_cache:
                 c.execute("""SELECT f.name, f.custom_data,
@@ -254,17 +298,91 @@ def class_batch_commit(valid_data: ClassBatchCommitSchema):
                         person_name_cache[pid_key] = rname['name'] if isinstance(rname, sqlite3.Row) else rname[0]
             assigned_name = person_name_cache.get(pid_key, '')
             if not assigned_name:
-                continue
+                raise ValueError('Assigned student is not in this class')
             
-            # Capture the original AI guess (or None if it was Unknown)
-            original_pid = face.get('person_id')
-            is_relabel_or_new = (original_pid is None) or (str(original_pid) != str(person_id))
+            suggestions = face.get('suggestions') or []
+            suggested_pid = suggestions[0].get('person_id') if suggestions else None
+            suggested_matches = suggested_pid is not None and str(suggested_pid) == str(person_id)
+            if assignment_source == 'auto_match':
+                from services.batch_recognition import classify_face_decision
+                stored_decision = face.get('recognition_decision') or classify_face_decision(face)
+                if not suggested_matches:
+                    conn.close()
+                    return jsonify({"error": "Automatic assignment does not match the stored recognition result"}), 400
+                if stored_decision != 'matched':
+                    conn.close()
+                    return jsonify({"error": "Ambiguous or low-quality faces require manual confirmation"}), 409
+            if assignment_source == 'manual_confirm' and not suggested_matches:
+                conn.close()
+                return jsonify({"error": "Manual confirmation must confirm the top recognition result"}), 400
 
             face['assigned_person_id'], face['assigned_name'] = int(person_id), assigned_name
+            face['assignment_source'] = assignment_source
             c.execute("UPDATE class_batch_items SET faces_json = ? WHERE id = ? AND batch_id = ?", (json.dumps(faces), item_id, bid))
             
-            # TARGETED SAVING: Only save embedding if it was an explicit relabel or new registration
-            if is_relabel_or_new:
+            # Only an explicit human action may teach the gallery.  Auto matches
+            # are inference results, not verified training data.
+            should_learn = assignment_source in {'manual_confirm', 'manual_correction'}
+            if not should_learn:
+                skipped_automatic += 1
+            else:
+                sharpness = float(face.get('sharpness') or 0.0)
+                pose_yaw = float(face.get('pose_yaw') or 0.0)
+                detector_score = float(face.get('score') or 0.0)
+                if sharpness < 80.0 or pose_yaw > 0.45 or detector_score < 0.65:
+                    skipped_quality += 1
+                    continue
+                if not uri:
+                    skipped_quality += 1
+                    continue
+
+                # Re-extract only human-confirmed samples. Automatic matches
+                # never need the embedder and can therefore never train the
+                # gallery accidentally.
+                if mfd_app is None:
+                    try:
+                        from multiple_face_detection import app as mfd_app
+                    except Exception:
+                        conn.rollback()
+                        conn.close()
+                        return jsonify({"error": "embedder unavailable"}), 500
+                img_rgb = _decode_data_uri_to_rgb(uri)
+                emb = mfd_app.get_embedder().embed(img_rgb) if img_rgb is not None else None
+                emb = _normalize_vec(emb) if emb is not None else None
+                if emb is None or emb.size == 0:
+                    skipped_quality += 1
+                    continue
+                vec_blob, dim = emb.astype(np.float32).tobytes(), int(emb.size)
+
+                # Do not allow one mistaken correction to poison a person's
+                # centroid. Outliers are retained as pending audit evidence,
+                # but excluded from recognition until reviewed.
+                c.execute(
+                    """SELECT vec, dim FROM person_embeddings
+                       WHERE vendor_id = ? AND person_id = ?
+                         AND COALESCE(status, 'trusted') = 'trusted'
+                         AND COALESCE(model_version, ?) = ?""",
+                    (vendor_id, int(person_id), EMBEDDING_MODEL_VERSION, EMBEDDING_MODEL_VERSION),
+                )
+                existing_vecs = []
+                for existing_row in c.fetchall() or []:
+                    try:
+                        raw_vec = existing_row['vec'] if isinstance(existing_row, sqlite3.Row) else existing_row[0]
+                        raw_dim = int(existing_row['dim'] if isinstance(existing_row, sqlite3.Row) else existing_row[1])
+                        existing_vec = np.frombuffer(raw_vec, dtype=np.float32).copy()
+                        if existing_vec.size == raw_dim:
+                            existing_vecs.append(_normalize_vec(existing_vec))
+                    except Exception:
+                        continue
+                embedding_status = 'trusted'
+                if existing_vecs:
+                    from embedding_cluster import validate_embedding
+                    is_valid, _ = validate_embedding(emb, existing_vecs, min_sim=0.68)
+                    if not is_valid:
+                        skipped_outlier += 1
+                        pending_review += 1
+                        embedding_status = 'pending'
+
                 struct_vec_b64, landmarks_3d = face.get('struct_vec') or '', face.get('landmarks_3d') or []
                 struct_blob = None
                 if struct_vec_b64:
@@ -273,22 +391,90 @@ def class_batch_commit(valid_data: ClassBatchCommitSchema):
                         if s_emb.size > 0: struct_blob = s_emb.astype(np.float32).tobytes()
                     except Exception: pass
                 lmks_json = json.dumps(landmarks_3d) if landmarks_3d else None
-                c.execute("INSERT INTO person_embeddings (vendor_id, person_id, class_year, division, branch, vec, dim, struct_vec, landmarks_3d) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (vendor_id, int(person_id), str(class_year), str(division), str(branch), vec_blob, dim, struct_blob, lmks_json))
+                c.execute(
+                    """INSERT INTO person_embeddings
+                       (vendor_id, person_id, class_year, division, branch, vec, dim,
+                        struct_vec, landmarks_3d, model_version, quality_score,
+                        source, status, confirmed_by, confirmed_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+                    (
+                        vendor_id, int(person_id), str(class_year), str(division), str(branch),
+                        vec_blob, dim, struct_blob, lmks_json, EMBEDDING_MODEL_VERSION,
+                        sharpness, assignment_source, embedding_status,
+                        str(getattr(g, 'username', '') or ''),
+                    ),
+                )
                 
-                # Update the main student profile image with this "labeling" crop if they don't have one,
-                # or to ensure the People Management UI shows the image used for this session.
-                if uri:
-                    c.execute("UPDATE faces SET face_image = ? WHERE id = ? AND vendor_id = ?", (uri, pid_key, vendor_id))
-
-                saved += 1
-        except Exception: continue
+                if embedding_status == 'trusted':
+                    saved += 1
+                    # A pending outlier must not replace the profile image used
+                    # as a recognition fallback.
+                    if uri:
+                        c.execute(
+                            "UPDATE faces SET face_image = ? WHERE id = ? AND vendor_id = ?",
+                            (uri, pid_key, vendor_id),
+                        )
+                    # Keep the trusted gallery bounded. Legacy registration
+                    # captures (quality NULL) are retained ahead of learned
+                    # attendance samples, then only the strongest recent
+                    # confirmations remain.
+                    c.execute(
+                        """SELECT id FROM person_embeddings
+                           WHERE vendor_id = ? AND person_id = ?
+                             AND COALESCE(status, 'trusted') = 'trusted'
+                             AND COALESCE(model_version, ?) = ?
+                           ORDER BY CASE WHEN quality_score IS NULL THEN 1 ELSE 0 END DESC,
+                                    quality_score DESC, created_at DESC, id DESC""",
+                        (vendor_id, int(person_id), EMBEDDING_MODEL_VERSION, EMBEDDING_MODEL_VERSION),
+                    )
+                    trusted_ids = [int(row[0]) for row in (c.fetchall() or [])]
+                    for obsolete_id in trusted_ids[8:]:
+                        c.execute(
+                            "DELETE FROM person_embeddings WHERE id = ? AND vendor_id = ? AND person_id = ?",
+                            (obsolete_id, vendor_id, int(person_id)),
+                        )
+                else:
+                    c.execute(
+                        """SELECT id FROM person_embeddings
+                           WHERE vendor_id = ? AND person_id = ? AND status = 'pending'
+                           ORDER BY created_at DESC, id DESC""",
+                        (vendor_id, int(person_id)),
+                    )
+                    pending_ids = [int(row[0]) for row in (c.fetchall() or [])]
+                    for obsolete_id in pending_ids[20:]:
+                        c.execute(
+                            "DELETE FROM person_embeddings WHERE id = ? AND vendor_id = ? AND person_id = ? AND status = 'pending'",
+                            (obsolete_id, vendor_id, int(person_id)),
+                        )
+        except ValueError as exc:
+            conn.rollback()
+            conn.close()
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            logger.exception("Failed to commit class batch assignment")
+            conn.rollback()
+            conn.close()
+            return jsonify({"error": "Failed to save class batch assignments"}), 500
     conn.commit()
+    if saved:
+        try:
+            from metric_learning import schedule_retrain
+            schedule_retrain(int(vendor_id or 0))
+        except Exception:
+            logger.exception("Could not schedule metric projection retraining")
     try:
         prefix = f"{int(vendor_id or 0)}_"
         keys_to_delete = [k for k in _VENDOR_EMB_CACHE.keys() if str(k).startswith(prefix)]
         for k in keys_to_delete: del _VENDOR_EMB_CACHE[k]
     except Exception: pass
-    return jsonify({"ok": True, "saved": saved})
+    return jsonify({
+        "ok": True,
+        "saved": saved,
+        "skipped_automatic": skipped_automatic,
+        "skipped_quality": skipped_quality,
+        "skipped_outlier": skipped_outlier,
+        "pending_review": pending_review,
+    })
 
 @attendance_class_bp.route("/class-batch/status", methods=["GET"])
 @require_auth()

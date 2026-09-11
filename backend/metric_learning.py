@@ -469,11 +469,14 @@ def _load_embeddings_from_db(vendor_id: int) -> dict[int, list[np.ndarray]] | No
     """
     try:
         from utils import get_db_connection
+        from services.batch_recognition import EMBEDDING_MODEL_VERSION
         conn = get_db_connection()
         c = conn.cursor()
         c.execute(
-            "SELECT person_id, vec, dim FROM person_embeddings WHERE vendor_id = ?",
-            (int(vendor_id),),
+            """SELECT person_id, vec, dim FROM person_embeddings
+               WHERE vendor_id = ? AND COALESCE(status, 'trusted') = 'trusted'
+                 AND COALESCE(model_version, ?) = ?""",
+            (int(vendor_id), EMBEDDING_MODEL_VERSION, EMBEDDING_MODEL_VERSION),
         )
         rows = c.fetchall() or []
         conn.close()
