@@ -3767,10 +3767,10 @@ const SuperAdminDashboard = () => {
                 </div>
               </div>
 
-              {/* Section 4: Owner Access — only shown when wages feature is enabled */}
-              {(newVendor.features || []).includes('wages') && <div className="mb-6">
+              {/* Section 4: Owner Access — shown for every payroll feature alias */}
+              {(newVendor.features || []).some((feature) => ['wages', 'payroll', 'report_payroll'].includes(feature)) && <div className="mb-6">
                 <h3 className="text-sm uppercase tracking-wide text-slate-500 font-bold mb-3 flex items-center gap-2">
-                  <Shield size={16} /> Owner Mobile Access (Multiple)
+                  <Shield size={16} /> Owner Approval Access (Web &amp; Mobile)
                 </h3>
                 <div className="space-y-3">
                   {(newVendor.owners || []).map((owner, idx) => (

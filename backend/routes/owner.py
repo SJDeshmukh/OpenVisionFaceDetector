@@ -1,9 +1,8 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, g
 from datetime import datetime
-from services.auth_service import authenticate_vendor_access, verify_token, extract_token
+from services.auth_service import require_auth
 import json
 import logging
-from db_factory import get_table_columns
 
 logger = logging.getLogger(__name__)
 owner_bp = Blueprint('owner_bp', __name__)
@@ -13,10 +12,9 @@ def get_db_connection():
     return _get_db()
 
 @owner_bp.route("/owner/advances", methods=["GET"])
+@require_auth(roles=["owner"])
 def get_owner_advances():
-    vendor_id, error = authenticate_vendor_access()
-    if error: return error
-    
+    vendor_id = g.vendor_id
     status = request.args.get('status', 'pending')
     
     conn = get_db_connection()
@@ -56,17 +54,10 @@ def get_owner_advances():
         conn.close()
 
 @owner_bp.route("/owner/advances/approve", methods=["POST"])
+@require_auth(roles=["owner"])
 def approve_advance():
-    vendor_id, error = authenticate_vendor_access()
-    if error: return error
-    
-    auth_header = request.headers.get('Authorization')
-    token_str = extract_token(auth_header)
-    token_data = verify_token(token_str)
-    if not token_data or token_data.get('role') != 'owner':
-        return jsonify({"error": "Only owners can approve advances"}), 403
-    
-    owner_username = token_data.get('username')
+    vendor_id = g.vendor_id
+    owner_username = g.username
     data = request.get_json(silent=True) or {}
     advance_id = data.get('advance_id')
     
@@ -88,8 +79,11 @@ def approve_advance():
         c.execute("""
             UPDATE advances 
             SET status = 'approved', approved_by = ?, approved_at = ?
-            WHERE id = ? AND vendor_id = ?
+            WHERE id = ? AND vendor_id = ? AND status = 'pending'
         """, (owner_username, datetime.now(), advance_id, vendor_id))
+        if c.rowcount != 1:
+            conn.rollback()
+            return jsonify({"error": "Advance is no longer pending"}), 409
         conn.commit()
         from services.employee_email_reports_service import queue_advance_notification
         email_queued = queue_advance_notification(advance_id, "approved")
@@ -102,17 +96,10 @@ def approve_advance():
         conn.close()
 
 @owner_bp.route("/owner/advances/reject", methods=["POST"])
+@require_auth(roles=["owner"])
 def reject_advance():
-    vendor_id, error = authenticate_vendor_access()
-    if error: return error
-    
-    auth_header = request.headers.get('Authorization')
-    token_str = extract_token(auth_header)
-    token_data = verify_token(token_str)
-    if not token_data or token_data.get('role') != 'owner':
-        return jsonify({"error": "Only owners can reject advances"}), 403
-    
-    owner_username = token_data.get('username')
+    vendor_id = g.vendor_id
+    owner_username = g.username
     data = request.get_json(silent=True) or {}
     advance_id = data.get('advance_id')
     reason = data.get('reason', data.get('rejection_reason', ''))
@@ -134,8 +121,11 @@ def reject_advance():
         c.execute("""
             UPDATE advances 
             SET status = 'rejected', approved_by = ?, approved_at = ?, rejection_reason = ?
-            WHERE id = ? AND vendor_id = ?
+            WHERE id = ? AND vendor_id = ? AND status = 'pending'
         """, (owner_username, datetime.now(), reason, advance_id, vendor_id))
+        if c.rowcount != 1:
+            conn.rollback()
+            return jsonify({"error": "Advance is no longer pending"}), 409
         conn.commit()
         from services.employee_email_reports_service import queue_advance_notification
         email_queued = queue_advance_notification(advance_id, "rejected")
@@ -148,10 +138,9 @@ def reject_advance():
         conn.close()
 
 @owner_bp.route("/owner/insights", methods=["GET"])
+@require_auth(roles=["owner"])
 def get_owner_insights():
-    vendor_id, error = authenticate_vendor_access()
-    if error: return error
-    
+    vendor_id = g.vendor_id
     conn = get_db_connection()
     c = conn.cursor()
     try:

@@ -24,6 +24,7 @@ import { SocketProvider } from './context/SocketContext';
 import Faces from './pages/Faces';
 import LeaveManagement from './pages/LeaveManagement';
 import FaceResetRequests from './pages/FaceResetRequests';
+import OwnerAdvances from './pages/OwnerAdvances';
 
 // Protected Route Component
 const ProtectedRoute = ({ allowedRoles }) => {
@@ -74,6 +75,10 @@ function App() {
                 <Route path="/admin/live-feed" element={<LiveFeed />} />
                 <Route path="/admin/system-health" element={<SystemHealth />} />
                 <Route path="/admin/jobs" element={<JobsDashboard />} />
+              </Route>
+
+              <Route element={<ProtectedRoute allowedRoles={['owner']} />}>
+                <Route path="/owner/advances" element={<OwnerAdvances />} />
               </Route>
 
               {/* Admin/Rector/HOD/Faculty Routes */}

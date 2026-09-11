@@ -43,6 +43,11 @@ const userNavItems = [
   { name: 'Leave Management',path: '/leave-management',icon: FileCheck },
 ];
 
+const ownerNavItems = [
+  { name: 'Advance Approvals', path: '/owner/advances', icon: DollarSign },
+  { name: 'Attendance',        path: '/attendance',     icon: ClipboardList },
+];
+
 const facultyNavItems = [
   { name: 'Classes',          path: '/classes',              icon: Users },
   { name: 'People',           path: '/people',               icon: Users },
@@ -98,6 +103,8 @@ export const Sidebar = ({ isOpen, onClose }) => {
     navItems = superAdminNavItems.filter(item => item.path !== '/admin/live-feed' || liveFeedUnlocked);
   } else if (user?.role === 'faculty') {
     navItems = facultyNavItems;
+  } else if (user?.role === 'owner') {
+    navItems = ownerNavItems;
   } else if (user?.role === 'admin' || user?.role === 'vendor_admin') {
     if (staffSession) {
       navItems = staffSession.role === 'hod'
@@ -118,6 +125,7 @@ export const Sidebar = ({ isOpen, onClose }) => {
     if (user?.features && Array.isArray(user.features)) {
       const allowedNames = new Set(ALWAYS_VISIBLE_ITEMS);
       user.features.forEach(fk => { const sn = FEATURE_TO_SIDEBAR_MAP[fk]; if (sn) allowedNames.add(sn); });
+      if (user?.role === 'owner') allowedNames.add('Advance Approvals');
       if (faceResetSupported) allowedNames.add('Face Reset Requests');
       if (bundleId === 'class_attendance_ui' || user.features.includes('classes')) allowedNames.add('Faces');
       navItems = navItems.filter(item => allowedNames.has(item.name));

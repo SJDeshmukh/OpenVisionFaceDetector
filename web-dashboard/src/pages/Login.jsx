@@ -98,6 +98,7 @@ const Login = () => {
       if (result.status === 'success' && result.needs_student_password) { setShowStudentPasswordModal(true); return; }
       if (result.role === 'faculty') { navigate('/classes'); return; }
       if (result.role === 'user') { navigate('/leave-management'); return; }
+      if (result.role === 'owner') { navigate('/owner/advances'); return; }
       const storedUser = JSON.parse(localStorage.getItem('user'));
       if (storedUser?.role === 'vendor_admin' && storedUser?.features?.includes('leave_management')) { setStep(1); return; }
       if (result.redirect_url) { navigate(result.redirect_url); return; }

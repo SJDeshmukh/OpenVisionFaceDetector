@@ -617,7 +617,7 @@ def login():
                         sub_features = json.loads(sub_row[0]) if sub_row and sub_row[0] else []
                     except Exception:
                         pass
-                    if 'wages' not in sub_features:
+                    if not ({'wages', 'payroll', 'report_payroll'} & set(sub_features)):
                         conn.close()
                         return jsonify({"error": "Owner mobile access requires the Wages feature to be enabled."}), 403
 

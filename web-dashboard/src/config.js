@@ -33,6 +33,7 @@ export const FEATURE_TO_SIDEBAR_MAP = {
   'report_detailed': 'Reports',
   'report_payroll': 'Reports',
   'payroll': 'Wages',
+  'wages': 'Wages',
   'shifts': 'Timetable',
   'live_attendance': 'Live Attendance',
   'bulk_image_attendance': 'Bulk Image Attendance',
