@@ -16,7 +16,10 @@ from services.person_scope_service import person_type_for, requested_person_type
 
 logger = logging.getLogger(__name__)
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-EMAIL_FIELDS = ("email", "Email", "employee_email", "work_email", "student_email", "faculty_email")
+EMAIL_FIELDS = frozenset({
+    "email", "email_address", "email_id", "employee_email", "employee_email_address",
+    "official_email", "work_email", "student_email", "faculty_email",
+})
 
 
 def _db():
@@ -40,7 +43,11 @@ def _custom_data(value):
 
 def employee_email(person):
     custom = _custom_data(person.get("custom_data"))
-    candidates = [person.get("email"), *(custom.get(field) for field in EMAIL_FIELDS)]
+    normalized_custom = {
+        re.sub(r"[^a-z0-9]+", "_", str(key or "").strip().lower()).strip("_"): value
+        for key, value in custom.items()
+    }
+    candidates = [person.get("email"), *(normalized_custom.get(field) for field in EMAIL_FIELDS)]
     for candidate in candidates:
         value = str(candidate or "").strip().lower()
         if EMAIL_RE.match(value):
@@ -58,6 +65,9 @@ def month_period(month):
 
 
 def _load_people(cursor, vendor_id, person_type=None):
+    # Resolve scope first. Executing this query after the faces query on the
+    # same cursor would replace the pending employee result set.
+    vertical = vendor_vertical(cursor, vendor_id)
     cursor.execute("""
         SELECT f.*,
                (SELECT su.role FROM system_users su
@@ -66,10 +76,10 @@ def _load_people(cursor, vendor_id, person_type=None):
                 LIMIT 1) AS system_role
         FROM faces f WHERE f.vendor_id = ? ORDER BY f.name
     """, (vendor_id,))
-    vertical = vendor_vertical(cursor, vendor_id)
+    rows = cursor.fetchall() or []
     wanted_type = requested_person_type(person_type, vertical)
     people = []
-    for raw in cursor.fetchall() or []:
+    for raw in rows:
         person = _row_dict(raw)
         resolved_type = person_type_for(person.get("custom_data"), person.get("system_role"), vertical)
         if wanted_type and resolved_type != wanted_type:
