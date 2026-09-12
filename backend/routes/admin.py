@@ -294,15 +294,38 @@ def update_vendor_device_name(vendor_id, device_id):
 def update_device_geofence(vendor_id, device_id):
     data = request.json or {}
     radius = data.get("radius_meters")
-    reset_anchor = data.get("reset_anchor", False)
+    lat = data.get("latitude")
+    lng = data.get("longitude")
+    reset_anchor = bool(data.get("reset_anchor", False))
     
-    # Validation
-    if radius is not None:
+    # Validation for radius
+    if radius is not None and str(radius).strip() != "":
         try:
             radius = float(radius)
             if radius <= 0: radius = None
         except ValueError:
             return jsonify({"error": "Invalid radius"}), 400
+    else:
+        radius = None
+
+    # Validation for coordinates if provided
+    latitude = None
+    longitude = None
+    if lat is not None and str(lat).strip() != "":
+        try:
+            latitude = float(lat)
+            if not (-90.0 <= latitude <= 90.0):
+                return jsonify({"error": "Latitude must be between -90 and 90"}), 400
+        except ValueError:
+            return jsonify({"error": "Invalid latitude"}), 400
+
+    if lng is not None and str(lng).strip() != "":
+        try:
+            longitude = float(lng)
+            if not (-180.0 <= longitude <= 180.0):
+                return jsonify({"error": "Longitude must be between -180 and 180"}), 400
+        except ValueError:
+            return jsonify({"error": "Invalid longitude"}), 400
 
     try:
         conn = get_db_connection()
@@ -314,14 +337,29 @@ def update_device_geofence(vendor_id, device_id):
             conn.close()
             return jsonify({"error": "Device not found"}), 404
             
-        if reset_anchor:
-            # Clear anchor coordinates if requested (they will be recaptured on next heartbeat)
+        if radius is None:
+            # Completely disable geofencing
+            c.execute("""
+                UPDATE vendor_devices 
+                SET geofence_radius = NULL, geofence_lat = NULL, geofence_lng = NULL 
+                WHERE vendor_id = ? AND device_id = ?
+            """, (vendor_id, device_id))
+        elif latitude is not None and longitude is not None:
+            # Set explicit coordinates and radius
+            c.execute("""
+                UPDATE vendor_devices 
+                SET geofence_radius = ?, geofence_lat = ?, geofence_lng = ? 
+                WHERE vendor_id = ? AND device_id = ?
+            """, (radius, latitude, longitude, vendor_id, device_id))
+        elif reset_anchor:
+            # Clear anchor coordinates (to be recaptured on next mobile heartbeat)
             c.execute("""
                 UPDATE vendor_devices 
                 SET geofence_radius = ?, geofence_lat = NULL, geofence_lng = NULL 
                 WHERE vendor_id = ? AND device_id = ?
             """, (radius, vendor_id, device_id))
         else:
+            # Update radius only, retaining existing anchor
             c.execute("""
                 UPDATE vendor_devices 
                 SET geofence_radius = ? 
@@ -330,7 +368,7 @@ def update_device_geofence(vendor_id, device_id):
             
         conn.commit()
         conn.close()
-        return jsonify({"success": True})
+        return jsonify({"success": True, "geofence_radius": radius, "geofence_lat": latitude, "geofence_lng": longitude})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

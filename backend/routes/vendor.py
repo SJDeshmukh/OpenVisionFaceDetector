@@ -1475,37 +1475,73 @@ def mobile_heartbeat():
             logger.error(f"Error fetching device info in heartbeat: {e}")
             device_row = None
         
-        geofence_status = "inside"
+        geofence_status = "disabled"
+        distance_meters = None
+        has_geofence = False
+        radius = None
+
         if device_row:
             row_dict = dict(device_row) if hasattr(device_row, 'keys') or isinstance(device_row, dict) else {'geofence_lat': device_row[0], 'geofence_lng': device_row[1], 'geofence_radius': device_row[2]}
             anchor_lat = row_dict.get('geofence_lat')
             anchor_lng = row_dict.get('geofence_lng')
             radius = row_dict.get('geofence_radius')
-            
+            has_geofence = radius is not None and float(radius or 0) > 0
+
+            # Safe float conversion for lat/lng
+            parsed_lat = None
+            parsed_lng = None
             if lat is not None and lng is not None:
-                lat = float(lat)
-                lng = float(lng)
-                # If no anchor yet, this becomes the anchor
-                if anchor_lat is None or anchor_lng is None:
-                    c.execute("""
-                        UPDATE vendor_devices 
-                        SET last_active_at = ?, battery_level = ?, last_lat = ?, last_lng = ?, geofence_lat = ?, geofence_lng = ? 
-                        WHERE vendor_id = ? AND device_id = ?
-                    """, (now, battery_level, lat, lng, lat, lng, vendor_id, device_id))
-                else:
-                    # Anchor exists, check distance
-                    if radius is not None and radius > 0:
-                        dist = haversine_distance(anchor_lat, anchor_lng, lat, lng)
+                try:
+                    parsed_lat = float(lat)
+                    parsed_lng = float(lng)
+                except (ValueError, TypeError):
+                    parsed_lat = None
+                    parsed_lng = None
+
+            if parsed_lat is not None and parsed_lng is not None:
+                if has_geofence:
+                    radius = float(radius)
+                    # If geofence is active but anchor not set yet, lock current position as anchor
+                    if anchor_lat is None or anchor_lng is None:
+                        anchor_lat = parsed_lat
+                        anchor_lng = parsed_lng
+                        c.execute("""
+                            UPDATE vendor_devices 
+                            SET last_active_at = ?, battery_level = ?, last_lat = ?, last_lng = ?, geofence_lat = ?, geofence_lng = ? 
+                            WHERE vendor_id = ? AND device_id = ?
+                        """, (now, battery_level, parsed_lat, parsed_lng, parsed_lat, parsed_lng, vendor_id, device_id))
+                        geofence_status = "inside"
+                        distance_meters = 0.0
+                    else:
+                        anchor_lat = float(anchor_lat)
+                        anchor_lng = float(anchor_lng)
+                        dist = haversine_distance(anchor_lat, anchor_lng, parsed_lat, parsed_lng)
+                        distance_meters = round(dist, 1)
                         if dist > radius:
                             geofence_status = "outside"
-                    
+                        else:
+                            geofence_status = "inside"
+                        
+                        c.execute("""
+                            UPDATE vendor_devices 
+                            SET last_active_at = ?, battery_level = ?, last_lat = ?, last_lng = ? 
+                            WHERE vendor_id = ? AND device_id = ?
+                        """, (now, battery_level, parsed_lat, parsed_lng, vendor_id, device_id))
+                else:
+                    # Geofence disabled
+                    geofence_status = "disabled"
                     c.execute("""
                         UPDATE vendor_devices 
                         SET last_active_at = ?, battery_level = ?, last_lat = ?, last_lng = ? 
                         WHERE vendor_id = ? AND device_id = ?
-                    """, (now, battery_level, lat, lng, vendor_id, device_id))
+                    """, (now, battery_level, parsed_lat, parsed_lng, vendor_id, device_id))
             else:
-                # No GPS provided
+                # No GPS provided by mobile
+                if has_geofence:
+                    geofence_status = "gps_required"
+                else:
+                    geofence_status = "disabled"
+
                 c.execute("""
                     UPDATE vendor_devices 
                     SET last_active_at = ?, battery_level = ? 
@@ -1517,9 +1553,9 @@ def mobile_heartbeat():
                  # INSERT OR IGNORE is translated by our PostgresCursorWrapper
                  c.execute("""
                     INSERT OR IGNORE INTO vendor_devices 
-                    (vendor_id, device_id, device_name, registered_at, last_active_at, battery_level, last_lat, last_lng, geofence_lat, geofence_lng) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                 """, (vendor_id, device_id, f"Mobile {device_id[:6]}", now, now, battery_level, lat, lng, lat, lng))
+                    (vendor_id, device_id, device_name, registered_at, last_active_at, battery_level, last_lat, last_lng) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 """, (vendor_id, device_id, f"Mobile {device_id[:6]}", now, now, battery_level, lat, lng))
                  
                  # Immediately update in case it was IGNORED above but needs fields updated
                  c.execute("""
@@ -1538,13 +1574,22 @@ def mobile_heartbeat():
             "device_id": device_id,
             "last_active_at": now.isoformat(),
             "battery_level": battery_level,
+            "last_lat": lat,
+            "last_lng": lng,
+            "geofence_status": geofence_status,
+            "distance_meters": distance_meters,
             "online": True
         }
         socketio.emit("device_health_update", payload, room=f"vendor_{vendor_id}")
         socketio.emit("device_health_update", payload, room="super_admin")
         
         conn.close()
-        return jsonify({"status": "success", "geofence_status": geofence_status})
+        return jsonify({
+            "status": "success", 
+            "geofence_status": geofence_status,
+            "distance_meters": distance_meters,
+            "radius_meters": radius if has_geofence else None
+        })
     except Exception as e:
         logger.error(f"Global error in mobile_heartbeat: {e}")
         return jsonify({"error": str(e)}), 500

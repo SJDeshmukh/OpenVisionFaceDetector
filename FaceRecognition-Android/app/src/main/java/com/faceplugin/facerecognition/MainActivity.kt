@@ -37,6 +37,7 @@ import android.content.pm.PackageManager
 import androidx.core.app.ActivityCompat
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
 
 class MainActivity : AppCompatActivity() {
 
@@ -662,6 +663,8 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private var consecutiveOutsideCount = 0
+
     private fun sendHeartbeat() {
         try {
             val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
@@ -679,10 +682,28 @@ class MainActivity : AppCompatActivity() {
                 RetrofitClient.getService().sendHeartbeat(finalBody).enqueue(object : Callback<JsonObject> {
                     override fun onResponse(call: Call<JsonObject>, response: Response<JsonObject>) {
                         if (response.isSuccessful) {
-                            android.util.Log.d("Heartbeat", "Sent successfully: $battery%")
                             val resBody = response.body()
-                            if (resBody != null && resBody.has("geofence_status") && resBody.get("geofence_status").asString == "outside") {
-                                performLogout("Device moved outside allowed geofence area.")
+                            val geofenceStatus = resBody?.get("geofence_status")?.asString
+                            android.util.Log.d("Heartbeat", "Sent successfully: $battery%, geofence=$geofenceStatus")
+                            if (resBody != null && resBody.has("geofence_status")) {
+                                val distance = if (resBody.has("distance_meters") && !resBody.get("distance_meters").isJsonNull) {
+                                    resBody.get("distance_meters").asDouble
+                                } else null
+
+                                if (geofenceStatus == "outside") {
+                                    consecutiveOutsideCount++
+                                    android.util.Log.w("Heartbeat", "Device reported OUTSIDE geofence (dist=$distance m, count=$consecutiveOutsideCount)")
+                                    val isFarOutside = distance != null && distance > 1000.0
+                                    // If device is very far (>1km), logout immediately; otherwise require 2 consecutive readings to avoid indoor GPS jitter false alarms
+                                    if (isFarOutside || consecutiveOutsideCount >= 2) {
+                                        performLogout("Device moved outside allowed geofence area.")
+                                    }
+                                } else {
+                                    consecutiveOutsideCount = 0
+                                    if (geofenceStatus == "gps_required") {
+                                        android.util.Log.w("Heartbeat", "Server geofencing active but no GPS coordinates provided by device")
+                                    }
+                                }
                             }
                         }
                     }
@@ -693,15 +714,41 @@ class MainActivity : AppCompatActivity() {
             }
 
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-                fusedLocationClient.lastLocation.addOnSuccessListener { location ->
-                    if (location != null) {
-                        body.addProperty("latitude", location.latitude)
-                        body.addProperty("longitude", location.longitude)
+                // First attempt fresh location fix with high accuracy
+                fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
+                    .addOnSuccessListener { location ->
+                        if (location != null) {
+                            body.addProperty("latitude", location.latitude)
+                            body.addProperty("longitude", location.longitude)
+                            body.addProperty("accuracy", location.accuracy)
+                            apiCall(body)
+                        } else {
+                            // Fallback to cached lastLocation if fresh location returns null
+                            fusedLocationClient.lastLocation.addOnSuccessListener { fallbackLoc ->
+                                if (fallbackLoc != null) {
+                                    body.addProperty("latitude", fallbackLoc.latitude)
+                                    body.addProperty("longitude", fallbackLoc.longitude)
+                                    body.addProperty("accuracy", fallbackLoc.accuracy)
+                                }
+                                apiCall(body)
+                            }.addOnFailureListener {
+                                apiCall(body)
+                            }
+                        }
                     }
-                    apiCall(body)
-                }.addOnFailureListener {
-                    apiCall(body)
-                }
+                    .addOnFailureListener {
+                        // Fallback on getCurrentLocation failure
+                        fusedLocationClient.lastLocation.addOnSuccessListener { fallbackLoc ->
+                            if (fallbackLoc != null) {
+                                body.addProperty("latitude", fallbackLoc.latitude)
+                                body.addProperty("longitude", fallbackLoc.longitude)
+                                body.addProperty("accuracy", fallbackLoc.accuracy)
+                            }
+                            apiCall(body)
+                        }.addOnFailureListener {
+                            apiCall(body)
+                        }
+                    }
             } else {
                 apiCall(body)
             }

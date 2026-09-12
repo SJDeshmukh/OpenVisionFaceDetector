@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { Plus, Check, X, Shield, User, Users, Lock, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight, Search, Filter, ArrowLeft, ArrowRight, Eye, Settings, Trash2, Database, Download, RefreshCw, Layers, Upload, Activity, Battery, WifiOff, UploadCloud, Box, Mail, Send, Clock, AlertCircle } from 'lucide-react';
+import { Plus, Check, X, Shield, User, Users, Lock, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight, Search, Filter, ArrowLeft, ArrowRight, Eye, Settings, Trash2, Database, Download, RefreshCw, Layers, Upload, Activity, Battery, WifiOff, UploadCloud, Box, Mail, Send, Clock, AlertCircle, MapPin } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { API_URL, FRONTEND_BUNDLES, BASE_URL } from '../config';
 import { useSocket } from '../context/SocketContext';
@@ -379,6 +379,15 @@ const SuperAdminDashboard = () => {
    const [deviceEdits, setDeviceEdits] = useState({});
    const [deviceSlots, setDeviceSlots] = useState([]);
    const [newSlotName, setNewSlotName] = useState('');
+   const [geofenceModal, setGeofenceModal] = useState({
+     show: false,
+     device: null,
+     vendorId: null,
+     radius: '',
+     lat: '',
+     lng: '',
+     resetAnchor: false
+   });
 
    // --- Bulk Attendance Configuration State ---
    const [showBulkAttendanceConfigModal, setShowBulkAttendanceConfigModal] = useState(false);
@@ -737,13 +746,23 @@ const SuperAdminDashboard = () => {
     }
   };
 
-  const updateDeviceGeofence = async (vendorId, deviceId, radius, resetAnchor = false) => {
+  const updateDeviceGeofence = async (vendorId, deviceId, params, resetAnchor = false) => {
     try {
+      const payload = (typeof params === 'object' && params !== null) 
+        ? params 
+        : { radius_meters: params, reset_anchor: resetAnchor };
       await axios.put(`${API_URL}/admin/vendors/${vendorId}/devices/${encodeURIComponent(deviceId)}/geofence`,
-        { radius_meters: radius, reset_anchor: resetAnchor },
+        payload,
         { headers: { Authorization: `Bearer ${user?.token}` } }
       );
-      alert(resetAnchor ? "Geofence anchor cleared." : "Geofence updated.");
+      if (payload.reset_anchor) {
+        alert("Geofence anchor cleared. The next heartbeat from this device will auto-calibrate its anchor.");
+      } else if (!payload.radius_meters) {
+        alert("Geofence disabled for this device.");
+      } else {
+        alert("Geofence saved successfully.");
+      }
+      setGeofenceModal(prev => ({ ...prev, show: false }));
       await fetchVendorDevices(vendorId);
     } catch (e) {
       const msg = e?.response?.data?.error || e.message || "Failed to update geofence";
@@ -2282,33 +2301,32 @@ const SuperAdminDashboard = () => {
                                 ) : '-'}
                               </td>
                               <td className="p-2">
-                                <div className="flex items-center gap-1">
-                                  <input 
-                                    id={`geo-${d.device_id}`}
-                                    type="number" 
-                                    defaultValue={d.geofence_radius || ''} 
-                                    placeholder="Disabled"
-                                    className="w-20 text-xs px-2 py-1.5 border border-slate-300 rounded bg-white"
-                                  />
-                                  <button 
-                                    onClick={() => {
-                                      const val = document.getElementById(`geo-${d.device_id}`).value;
-                                      updateDeviceGeofence(selectedVendorForDetail.id, d.device_id, val);
-                                    }}
-                                    className="text-xs px-2 py-1.5 rounded border bg-white text-blue-600 border-blue-200 hover:bg-blue-50"
-                                  >
-                                    Set
-                                  </button>
-                                  {(d.geofence_lat && d.geofence_lng) && (
-                                    <button 
-                                      onClick={() => updateDeviceGeofence(selectedVendorForDetail.id, d.device_id, d.geofence_radius, true)}
-                                      title={`Anchor: ${d.geofence_lat.toFixed(4)}, ${d.geofence_lng.toFixed(4)}\nClick to clear`}
-                                      className="text-xs px-2 py-1.5 rounded border bg-white text-slate-600 border-slate-300 hover:bg-slate-50"
-                                    >
-                                      Reset Anchor
-                                    </button>
+                                <button 
+                                  onClick={() => {
+                                    setGeofenceModal({
+                                      show: true,
+                                      device: d,
+                                      vendorId: selectedVendorForDetail.id,
+                                      radius: d.geofence_radius || '',
+                                      lat: d.geofence_lat != null ? d.geofence_lat : '',
+                                      lng: d.geofence_lng != null ? d.geofence_lng : '',
+                                      resetAnchor: false
+                                    });
+                                  }}
+                                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+                                    d.geofence_radius && d.geofence_radius > 0
+                                      ? 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100 hover:border-blue-300'
+                                      : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                                  }`}
+                                  title="Click to configure geofencing for this device"
+                                >
+                                  <MapPin size={13} className={d.geofence_radius && d.geofence_radius > 0 ? 'text-blue-600' : 'text-slate-400'} />
+                                  {d.geofence_radius && d.geofence_radius > 0 ? (
+                                    <span>{d.geofence_radius}m {d.geofence_lat != null ? `(${Number(d.geofence_lat).toFixed(3)}, ${Number(d.geofence_lng).toFixed(3)})` : '(Auto)'}</span>
+                                  ) : (
+                                    <span>Configure</span>
                                   )}
-                                </div>
+                                </button>
                               </td>
                               <td className="p-2 text-slate-500">{d.registered_at || '-'}</td>
                               <td className="p-2 text-slate-500" title={d.last_active_at || d.last_login_at}>
@@ -4296,6 +4314,171 @@ const SuperAdminDashboard = () => {
               >
                 Close & Save
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Geofence Configuration Modal ── */}
+      {geofenceModal.show && geofenceModal.device && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-[70]">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-200 animate-in fade-in zoom-in duration-200">
+            <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-blue-50 text-blue-600 rounded-xl border border-blue-100">
+                  <MapPin size={20} />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-800 text-lg">Geofence Settings</h3>
+                  <p className="text-xs text-slate-500 font-mono">
+                    {geofenceModal.device.device_name || 'Device'} • {geofenceModal.device.device_id}
+                  </p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setGeofenceModal(prev => ({ ...prev, show: false }))}
+                className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              {/* Radius Input */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Allowed Boundary Radius (meters)
+                </label>
+                <input 
+                  type="number"
+                  placeholder="e.g. 100 (leave blank to disable)"
+                  value={geofenceModal.radius}
+                  onChange={e => setGeofenceModal(prev => ({ ...prev, radius: e.target.value }))}
+                  className="w-full text-sm px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                />
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Mobile app will log out if moved further than this distance from the anchor point.
+                </p>
+              </div>
+
+              {/* Coordinates Inputs */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Anchor Latitude</label>
+                  <input 
+                    type="text"
+                    placeholder="e.g. 18.5204"
+                    value={geofenceModal.lat}
+                    onChange={e => setGeofenceModal(prev => ({ ...prev, lat: e.target.value, resetAnchor: false }))}
+                    className="w-full text-sm px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Anchor Longitude</label>
+                  <input 
+                    type="text"
+                    placeholder="e.g. 73.8567"
+                    value={geofenceModal.lng}
+                    onChange={e => setGeofenceModal(prev => ({ ...prev, lng: e.target.value, resetAnchor: false }))}
+                    className="w-full text-sm px-3.5 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none font-mono"
+                  />
+                </div>
+              </div>
+
+              {/* Quick Calibration Buttons */}
+              <div className="flex flex-col gap-2 pt-1">
+                {geofenceModal.device.last_lat != null && geofenceModal.device.last_lng != null && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setGeofenceModal(prev => ({
+                        ...prev,
+                        lat: String(geofenceModal.device.last_lat),
+                        lng: String(geofenceModal.device.last_lng),
+                        resetAnchor: false
+                      }));
+                    }}
+                    className="text-xs px-3 py-2 rounded-xl border border-indigo-200 bg-indigo-50/70 text-indigo-700 hover:bg-indigo-100 flex items-center justify-center gap-1.5 font-medium transition-colors"
+                  >
+                    <MapPin size={14} />
+                    Set Anchor to Device's Last Location ({Number(geofenceModal.device.last_lat).toFixed(4)}, {Number(geofenceModal.device.last_lng).toFixed(4)})
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setGeofenceModal(prev => ({
+                      ...prev,
+                      lat: '',
+                      lng: '',
+                      resetAnchor: true
+                    }));
+                  }}
+                  className="text-xs px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 flex items-center justify-center gap-1.5 font-medium transition-colors"
+                >
+                  <RefreshCw size={13} />
+                  Auto-Capture Anchor on Next Mobile Heartbeat
+                </button>
+              </div>
+
+              {/* Location Status Card */}
+              <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 text-xs text-slate-600 space-y-1.5">
+                <div className="flex justify-between">
+                  <span className="font-medium text-slate-700">Saved Anchor:</span>
+                  <span className="font-mono text-slate-600">
+                    {geofenceModal.device.geofence_lat != null 
+                      ? `${Number(geofenceModal.device.geofence_lat).toFixed(5)}, ${Number(geofenceModal.device.geofence_lng).toFixed(5)}`
+                      : 'Not set (will auto-capture)'}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="font-medium text-slate-700">Last Reported GPS:</span>
+                  <span className="font-mono text-slate-600">
+                    {geofenceModal.device.last_lat != null 
+                      ? `${Number(geofenceModal.device.last_lat).toFixed(5)}, ${Number(geofenceModal.device.last_lng).toFixed(5)}`
+                      : 'None received yet'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="p-4 border-t border-slate-100 bg-slate-50/50 flex justify-between items-center">
+              <button
+                type="button"
+                onClick={() => {
+                  if (window.confirm("Disable geofencing for this device?")) {
+                    updateDeviceGeofence(geofenceModal.vendorId, geofenceModal.device.device_id, { radius_meters: null });
+                  }
+                }}
+                className="text-xs text-red-600 hover:text-red-700 font-medium px-2 py-1.5"
+              >
+                Disable Geofence
+              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setGeofenceModal(prev => ({ ...prev, show: false }))}
+                  className="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-100 text-xs font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    updateDeviceGeofence(geofenceModal.vendorId, geofenceModal.device.device_id, {
+                      radius_meters: geofenceModal.radius,
+                      latitude: geofenceModal.lat || null,
+                      longitude: geofenceModal.lng || null,
+                      reset_anchor: geofenceModal.resetAnchor
+                    });
+                  }}
+                  className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-md shadow-blue-200"
+                >
+                  Save Geofence
+                </button>
+              </div>
             </div>
           </div>
         </div>
