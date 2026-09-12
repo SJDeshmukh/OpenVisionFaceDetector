@@ -373,6 +373,84 @@ def update_device_geofence(vendor_id, device_id):
         return jsonify({"error": str(e)}), 500
 
 
+@admin_bp.route("/fleet/telemetry", methods=["GET"])
+@super_admin_required
+def get_fleet_telemetry():
+    try:
+        conn = get_db_connection()
+        try:
+            if not getattr(conn, "_is_pg", False):
+                conn.row_factory = sqlite3.Row
+        except Exception:
+            pass
+        c = conn.cursor()
+        
+        query = """
+            SELECT d.id, d.vendor_id, v.company_name, v.vertical,
+                   d.device_id, d.device_name, d.registered_at, 
+                   d.last_active_at, d.last_login_at, d.battery_level,
+                   d.geofence_lat, d.geofence_lng, d.geofence_radius,
+                   d.last_lat, d.last_lng
+            FROM vendor_devices d
+            LEFT JOIN vendors v ON d.vendor_id = v.id
+            ORDER BY d.last_active_at DESC
+        """
+        c.execute(query)
+        rows = [dict(r) if hasattr(r, 'keys') or isinstance(r, dict) else {
+            'id': r[0], 'vendor_id': r[1], 'company_name': r[2], 'vertical': r[3],
+            'device_id': r[4], 'device_name': r[5], 'registered_at': r[6],
+            'last_active_at': r[7], 'last_login_at': r[8], 'battery_level': r[9],
+            'geofence_lat': r[10], 'geofence_lng': r[11], 'geofence_radius': r[12],
+            'last_lat': r[13], 'last_lng': r[14]
+        } for r in c.fetchall() or []]
+        conn.close()
+        
+        now = datetime.now()
+        devices = []
+        from routes.vendor import haversine_distance
+
+        for r in rows:
+            last_active = r.get("last_active_at")
+            is_online = False
+            if last_active:
+                try:
+                    if isinstance(last_active, str):
+                        clean_str = last_active.replace('Z', '').split('.')[0]
+                        dt = datetime.fromisoformat(clean_str)
+                    else:
+                        dt = last_active
+                    is_online = (now - dt).total_seconds() < 300
+                except Exception:
+                    pass
+
+            anchor_lat = r.get("geofence_lat")
+            anchor_lng = r.get("geofence_lng")
+            radius = r.get("geofence_radius")
+            last_lat = r.get("last_lat")
+            last_lng = r.get("last_lng")
+            
+            distance = None
+            geofence_status = "disabled"
+            if radius and float(radius) > 0:
+                if last_lat is not None and last_lng is not None and anchor_lat is not None and anchor_lng is not None:
+                    dist = haversine_distance(float(anchor_lat), float(anchor_lng), float(last_lat), float(last_lng))
+                    distance = round(dist, 1)
+                    geofence_status = "outside" if dist > float(radius) else "inside"
+                elif last_lat is None or last_lng is None:
+                    geofence_status = "no_gps"
+                else:
+                    geofence_status = "inside"
+
+            r["is_online"] = is_online
+            r["distance_meters"] = distance
+            r["geofence_status"] = geofence_status
+            devices.append(r)
+
+        return jsonify({"status": "success", "devices": devices})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @admin_bp.route("/vendors/<int:vendor_id>/devices/<device_id>/assign-slot", methods=["POST"])
 @super_admin_required
 def admin_assign_device_slot(vendor_id, device_id):
@@ -1316,12 +1394,16 @@ def create_vendor():
             return jsonify({"error": "Admin and kiosk passwords must contain at least 8 characters"}), 400
         
         from services.auth_service import hash_password
-        c.execute("""INSERT INTO system_users (username, password, password_plain, role, vendor_id)
-                      VALUES (?, ?, NULL, 'vendor_admin', ?)""",
-                   (admin_username, hash_password(admin_password), vendor_id))
-        c.execute("""INSERT INTO system_users (username, password, password_plain, role, vendor_id)
-                      VALUES (?, ?, NULL, 'user', ?)""",
-                   (user_username, hash_password(user_password), vendor_id))
+        kiosk_pin = str(data.get("kiosk_pin") or "8888").strip()
+        if not kiosk_pin: kiosk_pin = "8888"
+
+        c.execute("""INSERT INTO system_users (username, password, password_plain, role, vendor_id, kiosk_pin)
+                      VALUES (?, ?, NULL, 'vendor_admin', ?, ?)""",
+                   (admin_username, hash_password(admin_password), vendor_id, kiosk_pin))
+        c.execute("""INSERT INTO system_users (username, password, password_plain, role, vendor_id, kiosk_pin)
+                      VALUES (?, ?, NULL, 'user', ?, ?)""",
+                   (user_username, hash_password(user_password), vendor_id, kiosk_pin))
+        c.execute("UPDATE vendors SET kiosk_pin = ? WHERE id = ?", (kiosk_pin, vendor_id))
         
         # 3b. Create Owner Accounts
         owners = data.get("owners", [])
@@ -1977,6 +2059,12 @@ def update_vendor_details(vendor_id):
                     return jsonify({"error": "A password of at least 8 characters is required for a new kiosk user"}), 400
                 c.execute("INSERT INTO system_users (username, password, password_plain, role, vendor_id) VALUES (?, ?, NULL, 'user', ?)",
                           (user_username or f"user_{vendor_id}", hash_password(user_password), vendor_id))
+
+        if 'kiosk_pin' in data and data.get('kiosk_pin') is not None:
+            kiosk_pin = str(data.get('kiosk_pin')).strip()
+            if kiosk_pin:
+                c.execute("UPDATE vendors SET kiosk_pin = ? WHERE id = ?", (kiosk_pin, vendor_id))
+                c.execute("UPDATE system_users SET kiosk_pin = ? WHERE vendor_id = ? AND role = 'user'", (kiosk_pin, vendor_id))
 
         # 4. Update Owner Accounts (Sync Logic)
         owners = data.get('owners', [])

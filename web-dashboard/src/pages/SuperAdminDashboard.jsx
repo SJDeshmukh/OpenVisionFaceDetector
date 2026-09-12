@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { API_URL, FRONTEND_BUNDLES, BASE_URL } from '../config';
 import { useSocket } from '../context/SocketContext';
 import RegistrationConfigEditor from '../components/RegistrationConfigEditor';
+import FleetMapTab from '../components/FleetMapTab';
 
 const REPORT_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const DEFAULT_REPORT_SCHEDULE = {
@@ -171,6 +172,7 @@ const SuperAdminDashboard = () => {
     vertical: '',
     attendance_type: 'total_time',
     retention_days: '90', // Default to 90 days
+    kiosk_pin: '8888',
     owners: []
   });
   const [businessTypes, setBusinessTypes] = useState([
@@ -1104,6 +1106,7 @@ const SuperAdminDashboard = () => {
           vertical: newVendor.vertical,
           attendance_type: newVendor.attendance_type,
           retention_days: normalizePositiveInt(newVendor.retention_days, 90),
+          kiosk_pin: newVendor.kiosk_pin || '8888',
           owners: newVendor.owners || []
         }, {
           headers: { Authorization: `Bearer ${user?.token}` }
@@ -1246,6 +1249,7 @@ const SuperAdminDashboard = () => {
         backend_service_id: 'default_api',
         attendance_type: 'total_time',
         retention_days: '90',
+        kiosk_pin: '8888',
         owners: []
       });
       setRegistrationConfig([]);
@@ -1299,6 +1303,7 @@ const SuperAdminDashboard = () => {
         vertical: vendor.vertical || '',
         attendance_type: vendor.attendance_type || 'total_time',
         retention_days: String(vendor.retention_days || 90),
+        kiosk_pin: vendor.kiosk_pin || '8888',
         owners: vendor.owners || []
       });
     } catch (e) {
@@ -1332,6 +1337,7 @@ const SuperAdminDashboard = () => {
         vertical: vendor.vertical || '',
         attendance_type: vendor.attendance_type || 'total_time',
         retention_days: String(vendor.retention_days || 90),
+        kiosk_pin: vendor.kiosk_pin || '8888',
         owners: vendor.owners || []
       });
     }
@@ -1799,6 +1805,12 @@ const SuperAdminDashboard = () => {
           onClick={() => setActiveTab('maintenance')}
         >
           System Maintenance
+        </button>
+        <button
+          className={`pb-3 px-2 font-medium transition-colors ${activeTab === 'fleet_map' ? 'border-b-2 border-indigo-600 text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+          onClick={() => setActiveTab('fleet_map')}
+        >
+          Live Fleet Map
         </button>
       </div>
 
@@ -3050,6 +3062,10 @@ const SuperAdminDashboard = () => {
         </div>
       )}
 
+      {activeTab === 'fleet_map' && (
+        <FleetMapTab userToken={user?.token} />
+      )}
+
       {/* Password Reset Modal */}
       {passwordModal.show && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
@@ -3780,6 +3796,20 @@ const SuperAdminDashboard = () => {
                         value={newVendor.user_password}
                         onChange={e => setNewVendor({ ...newVendor, user_password: e.target.value })}
                       />
+                      <div className="pt-1">
+                        <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                          Kiosk Exit PIN (4-8 digits)
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="Default: 8888"
+                          maxLength={8}
+                          className="w-full p-2 border rounded text-sm bg-white font-mono tracking-widest text-indigo-700 font-bold"
+                          value={newVendor.kiosk_pin || ''}
+                          onChange={e => setNewVendor({ ...newVendor, kiosk_pin: e.target.value })}
+                        />
+                        <p className="text-[10px] text-slate-400 mt-0.5 italic">PIN required on tablet to exit Kiosk Lockdown Mode.</p>
+                      </div>
                     </div>
                   </div>
                 </div>

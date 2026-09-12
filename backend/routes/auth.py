@@ -890,6 +890,7 @@ def login():
             "available_slots": locals().get('available_slots', []),
             "force_password_change": user.get('force_password_change', False),
             "faculty_display_name": faculty_display_name,
+            "kiosk_pin": str(user.get("kiosk_pin") or "8888"),
         }))
 
         # For web logins: set an httpOnly cookie so the token is not accessible

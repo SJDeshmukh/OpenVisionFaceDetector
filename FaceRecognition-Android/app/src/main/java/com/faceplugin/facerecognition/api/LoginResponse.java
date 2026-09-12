@@ -60,9 +60,13 @@ public class LoginResponse {
     @SerializedName("faculty_display_name")
     private String facultyDisplayName;
 
+    @SerializedName("kiosk_pin")
+    private String kioskPin;
+
     public Boolean getFaceRegistered() { return faceRegistered; }
     public String getFaceTemplate() { return faceTemplate; }
     public String getVertical() { return vertical; }
     public Boolean getHasBulkAttendance() { return hasBulkAttendance; }
     public String getFacultyDisplayName() { return facultyDisplayName; }
+    public String getKioskPin() { return (kioskPin != null && !kioskPin.isEmpty()) ? kioskPin : "8888"; }
 }

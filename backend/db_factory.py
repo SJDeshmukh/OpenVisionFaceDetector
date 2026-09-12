@@ -592,11 +592,13 @@ def _init_pg_schema_on_conn(conn):
         ("vendors", "num_rectors", "INTEGER DEFAULT 0"),
         ("vendors", "num_hods", "INTEGER DEFAULT 0"),
         ("vendors", "departments", "TEXT"),
+        ("vendors", "kiosk_pin", "TEXT DEFAULT '8888'"),
         ("system_users", "person_id", "INTEGER"),
         ("system_users", "password_plain", "TEXT"),
         ("system_users", "has_set_password", "INTEGER DEFAULT 0"),
         ("system_users", "force_password_change", "INTEGER DEFAULT 0"),
         ("system_users", "last_active_at", "TIMESTAMP"),
+        ("system_users", "kiosk_pin", "TEXT DEFAULT '8888'"),
         ("subscriptions", "max_web_sessions", "INTEGER DEFAULT 1"),
         ("subscriptions", "grace_period_days", "INTEGER DEFAULT 0"),
         ("subscriptions", "cost_per_employee", "REAL DEFAULT 0"),
@@ -842,6 +844,14 @@ def init_sqlite_schema(conn):
         pass
     try:
         cur.execute("ALTER TABLE system_users ADD COLUMN person_id INTEGER")
+    except Exception:
+        pass
+    try:
+        cur.execute("ALTER TABLE system_users ADD COLUMN kiosk_pin TEXT DEFAULT '8888'")
+    except Exception:
+        pass
+    try:
+        cur.execute("ALTER TABLE vendors ADD COLUMN kiosk_pin TEXT DEFAULT '8888'")
     except Exception:
         pass
 

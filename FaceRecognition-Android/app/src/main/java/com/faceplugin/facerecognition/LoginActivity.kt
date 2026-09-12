@@ -297,6 +297,8 @@ class LoginActivity : AppCompatActivity() {
                         editor.putString("offline_login_hash", offlineLoginHash(username, password))
                         val facultyName = body?.facultyDisplayName
                         if (!facultyName.isNullOrBlank()) editor.putString("faculty_display_name", facultyName)
+                        val kioskPin = body?.kioskPin ?: "8888"
+                        editor.putString("kiosk_pin", kioskPin)
                         editor.apply()
 
                         // Set token in RetrofitClient

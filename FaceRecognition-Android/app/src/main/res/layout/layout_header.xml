@@ -52,7 +52,7 @@
         android:paddingVertical="4dp"
         android:gravity="center"
         app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toStartOf="@+id/btn_logout"
+        app:layout_constraintEnd_toStartOf="@+id/btn_kiosk"
         app:layout_constraintTop_toTopOf="parent"
         android:layout_marginEnd="12dp">
 
@@ -72,6 +72,19 @@
             style="@style/Typography.Micro"
             android:textColor="@color/text_primary" />
     </LinearLayout>
+
+    <ImageButton
+        android:id="@+id/btn_kiosk"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:background="@drawable/bg_glass_card"
+        android:src="@android:drawable/ic_secure"
+        android:padding="8dp"
+        app:tint="@color/vision_cyan"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toStartOf="@+id/btn_logout"
+        app:layout_constraintTop_toTopOf="parent"
+        android:layout_marginEnd="8dp" />
 
     <ImageButton
         android:id="@+id/btn_logout"

@@ -150,6 +150,22 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     // Set to 1 so attendance is marked instantly on first recognized frame instead of waiting 3 consecutive frames
     private final ConsecutiveMatchGate matchGate = new ConsecutiveMatchGate(1, 2000L);
 
+    private static class RecognizedFaceMatch {
+        final Person person;
+        final FaceBox faceBox;
+        final String personId;
+        final String localUid;
+        final float similarity;
+
+        RecognizedFaceMatch(Person person, FaceBox faceBox, String personId, String localUid, float similarity) {
+            this.person = person;
+            this.faceBox = faceBox;
+            this.personId = personId;
+            this.localUid = localUid;
+            this.similarity = similarity;
+        }
+    }
+
     @Nullable
     @Override
     public View onCreateView(@NonNull LayoutInflater inflater, @Nullable ViewGroup container, @Nullable Bundle savedInstanceState) {
@@ -456,6 +472,10 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     }
 
     private void sendPersonEvent(boolean detected, boolean recognized, String personId, String localUid, String name, float confidence, Bitmap bitmap) {
+        sendPersonEvent(detected, recognized, personId, localUid, name, confidence, bitmap, true);
+    }
+
+    private void sendPersonEvent(boolean detected, boolean recognized, String personId, String localUid, String name, float confidence, Bitmap bitmap, boolean triggerUiEffects) {
         GreetingService service = RetrofitClient.getService();
         // Downscale to 320px width to cut encoding time (~300ms -> ~25ms) and payload (~800KB -> ~25KB)
         Bitmap resized = Utils.resizeBitmap(bitmap, 320);
@@ -550,7 +570,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
 
         // Optimistic UI: predict and show result immediately without waiting for the API
         final String optimisticStatus = dbManager.predictNextAttendanceStatus(finalPersonId, localUid, name);
-        if (getActivity() != null) {
+        if (triggerUiEffects && getActivity() != null) {
             getActivity().runOnUiThread(() -> {
                 playAttendanceSound(optimisticStatus);
                 speakAttendanceGreeting(name, optimisticStatus);
@@ -574,7 +594,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                                 }
                             } catch (Exception ignored) {}
                             // Correct UI only if server disagrees with our prediction
-                            if (!status.equalsIgnoreCase(optimisticStatus)) {
+                            if (triggerUiEffects && !status.equalsIgnoreCase(optimisticStatus)) {
                                 if (getActivity() != null) {
                                     getActivity().runOnUiThread(() -> {
                                         playAttendanceSound(status);
@@ -588,7 +608,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                     }
                 } else {
                     // Handle API Errors (e.g., 403 Suspended)
-                    if (getActivity() != null) {
+                    if (triggerUiEffects && getActivity() != null) {
                         getActivity().runOnUiThread(() -> {
                             String errorMsg = "Attendance Failed";
                             try {
@@ -1026,54 +1046,25 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 try {
                     identifyThreshold = SettingsActivity.getIdentifyThreshold(requireContext());
                 } catch (Exception ignored) {}
+
                 List<String> namesForBoxes = new java.util.ArrayList<>();
-                float bestSimilarity = 0f;
-                Person bestPerson = null;
-                FaceBox bestFaceBox = null;
-                String bestPersonId = "";
-                String bestLocalUid = "";
+                List<RecognizedFaceMatch> batchMatches = new java.util.ArrayList<>();
+                java.util.Set<String> matchedPersonKeysInFrame = new java.util.HashSet<>();
+                float highestSimilarityInFrame = 0f;
+
+                // Multi-Face Batch Scanning: Process up to 5 faces simultaneously in a single frame
+                int maxFacesToProcess = Math.min(faceBoxes.size(), 5);
                 for (int i = 0; i < faceBoxes.size(); i++) {
                     FaceBox faceBox = faceBoxes.get(i);
                     String nameForBox = "Unknown";
 
-                    // --- Optimization: Motion Detection & Sticky Recognition ---
-                    boolean forceRecognition = false;
-                    android.graphics.Rect currentRect = new android.graphics.Rect((int)faceBox.x1, (int)faceBox.y1, (int)faceBox.x2, (int)faceBox.y2);
-                    if (lastFaceRect != null) {
-                        int dx = Math.abs(currentRect.centerX() - lastFaceRect.centerX());
-                        int dy = Math.abs(currentRect.centerY() - lastFaceRect.centerY());
-                        // If moved more than 5% of width/height, force re-recognition
-                        if (dx > finalProcessed.getWidth() * 0.05 || dy > finalProcessed.getHeight() * 0.05) {
-                            forceRecognition = true;
-                        }
-                    } else {
-                        forceRecognition = true;
-                    }
-                    lastFaceRect = currentRect;
-
-                    if (!forceRecognition && recognitionSkipCount < MAX_RECOGNITION_SKIP
-                            && stickyPersonName != null && lastProcessedPersonId != null) {
-                        recognitionSkipCount++;
-                        nameForBox = stickyPersonName;
-                        // Use sticky values for "best" calculation
-                        if (stickyConfidence > bestSimilarity) {
-                            bestSimilarity = stickyConfidence;
-                            bestPersonId = stickyPersonId;
-                            bestFaceBox = faceBox;
-                        }
-                        namesForBoxes.add(nameForBox);
-                        continue; 
-                    }
-                    // ------------------------------------------------------------
-
-                    if (FacePipeline.recognitionReady(requireContext(), faceBox,
+                    if (i < maxFacesToProcess && FacePipeline.recognitionReady(requireContext(), faceBox,
                             finalProcessed.getWidth(), finalProcessed.getHeight())) {
                         byte[] templates = LocalFaceEngineFacade.INSTANCE.templateExtraction(finalProcessed, faceBox);
 
                         float maxSimilarityForBox = 0f;
                         Person bestForBox = null;
                         if (templates != null) {
-                            // Keep ONNX inference and gallery matching serialized on the analyzer thread.
                             Person[] people;
                             synchronized (DBManager.personList) {
                                 people = DBManager.personList.toArray(new Person[0]);
@@ -1090,32 +1081,32 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
 
                         if (bestForBox != null && maxSimilarityForBox > identifyThreshold) {
                             nameForBox = bestForBox.name;
-                            
-                            // Update Sticky State
-                            stickyPersonName = nameForBox;
-                            stickyPersonId = (bestForBox.id != null) ? bestForBox.id : "";
-                            stickyConfidence = maxSimilarityForBox;
-                            recognitionSkipCount = 0;
-
-                            if (maxSimilarityForBox > bestSimilarity) {
-                                bestSimilarity = maxSimilarityForBox;
-                                bestPerson = bestForBox;
-                                bestFaceBox = faceBox;
-                                bestPersonId = bestForBox.id != null ? bestForBox.id : "";
-                                bestLocalUid = bestForBox.localUid != null ? bestForBox.localUid : "";
+                            if (maxSimilarityForBox > highestSimilarityInFrame) {
+                                highestSimilarityInFrame = maxSimilarityForBox;
                             }
-                        } else {
-                            // Reset sticky if we lost the match despite liveness passing
-                            stickyPersonName = null;
-                            stickyPersonId = null;
-                            stickyConfidence = 0f;
-                            recognitionSkipCount = 0;
+
+                            String pid = bestForBox.id != null ? bestForBox.id : "";
+                            String luid = bestForBox.localUid != null ? bestForBox.localUid : "";
+                            if ((pid.isEmpty() || pid.startsWith("local:")) && !luid.isEmpty()) {
+                                try {
+                                    String resolved = dbManager.resolvePersonId(luid, bestForBox.name);
+                                    if (resolved != null && !resolved.isEmpty() && !resolved.startsWith("local:")) {
+                                        pid = resolved;
+                                    }
+                                } catch (Exception ignored) {}
+                            }
+                            if (pid.startsWith("local:")) {
+                                pid = "";
+                            }
+
+                            String personKey = (!pid.isEmpty()) ? pid : (!luid.isEmpty() ? luid : bestForBox.name);
+                            if (!matchedPersonKeysInFrame.contains(personKey)) {
+                                matchedPersonKeysInFrame.add(personKey);
+                                batchMatches.add(new RecognizedFaceMatch(bestForBox, faceBox, pid, luid, maxSimilarityForBox));
+                            }
                         }
-                    } else {
-                         // Liveness failed
-                         Log.w(TAG, "Liveness failed: " + faceBox.liveness);
-                         stickyPersonName = null;
-                         recognitionSkipCount = 0;
+                    } else if (faceBox.liveness < 0.8f) {
+                        Log.w(TAG, "Liveness failed: " + faceBox.liveness);
                     }
 
                     namesForBoxes.add(nameForBox);
@@ -1128,57 +1119,81 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                     });
                 }
 
-                updateSimilarityHud(bestSimilarity);
+                updateSimilarityHud(highestSimilarityInFrame);
 
-                if (bestPerson != null && bestSimilarity > identifyThreshold) {
+                if (!batchMatches.isEmpty()) {
                     consecutiveUnknownFrames = 0;
-                    String personId = bestPersonId;
-                    String localUid = bestLocalUid;
-                    if ((personId == null || personId.isEmpty() || personId.startsWith("local:")) && localUid != null && !localUid.isEmpty()) {
-                        try {
-                            String resolved = dbManager.resolvePersonId(localUid, bestPerson.name);
-                            if (resolved != null && !resolved.isEmpty() && !resolved.startsWith("local:")) {
-                                personId = resolved;
-                            }
-                        } catch (Exception ignored) {}
-                    }
-                    if (personId != null && personId.startsWith("local:")) {
-                        personId = "";
-                    }
+                    List<RecognizedFaceMatch> readyToMark = new java.util.ArrayList<>();
+                    int cooldown = 30;
+                    try {
+                        android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
+                        cooldown = prefs.getInt("cooldown_seconds", 30);
+                    } catch (Exception ignored) {}
 
-                    String confirmationKey = personId;
-                    if (confirmationKey == null || confirmationKey.isEmpty()) {
-                        confirmationKey = "local:" + (localUid == null ? "" : localUid);
-                    }
-                    if (confirmationKey.equals("local:")) confirmationKey = "name:" + bestPerson.name;
-                    if (!matchGate.accept(confirmationKey, currentTime)) {
-                        stickyPersonName = null;
-                        stickyPersonId = null;
-                        recognitionSkipCount = 0;
-                        if (getActivity() != null) {
-                            getActivity().runOnUiThread(() -> statusText.setText("Verifying face..."));
+                    for (RecognizedFaceMatch match : batchMatches) {
+                        String confirmationKey = match.personId;
+                        if (confirmationKey == null || confirmationKey.isEmpty()) {
+                            confirmationKey = "local:" + (match.localUid == null ? "" : match.localUid);
                         }
-                        return;
+                        if (confirmationKey.equals("local:")) confirmationKey = "name:" + match.person.name;
+
+                        if (!matchGate.accept(confirmationKey, currentTime)) {
+                            continue;
+                        }
+
+                        String trackKey = match.personId;
+                        if (trackKey == null || trackKey.isEmpty()) {
+                            trackKey = "local:" + (match.localUid != null && !match.localUid.isEmpty() ? match.localUid : match.person.name);
+                        }
+
+                        boolean allow = false;
+                        String lastTs = dbManager.getLastAttendanceTimestamp(match.personId, match.localUid, match.person.name);
+                        if (lastTs == null || lastTs.isEmpty()) {
+                            allow = true;
+                        } else {
+                            long lastMs = -1;
+                            for (String fmt : new String[]{"yyyy-MM-dd'T'HH:mm:ss.SSS", "yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd HH:mm:ss"}) {
+                                try {
+                                    lastMs = new SimpleDateFormat(fmt, Locale.US).parse(lastTs).getTime();
+                                    break;
+                                } catch (Exception ignored2) {}
+                            }
+                            if (lastMs >= 0) {
+                                long deltaSec = (System.currentTimeMillis() - lastMs) / 1000;
+                                allow = (deltaSec >= cooldown || deltaSec < 0);
+                            } else {
+                                allow = true;
+                            }
+                        }
+
+                        Long lastLocal = lastEventSentAtMs.get(trackKey);
+                        if (lastLocal != null) {
+                            long nowMs = System.currentTimeMillis();
+                            long deltaSec = (nowMs - lastLocal) / 1000;
+                            if (deltaSec >= 0 && deltaSec < cooldown) {
+                                allow = false;
+                            }
+                        }
+
+                        if (allow) {
+                            readyToMark.add(match);
+                        }
                     }
 
-                    // Re-read the role at the side-effect boundary so a stale fragment
-                    // flag cannot authorize attendance after an account/session change.
                     if (vendorVerifyOnlyMode || isVendorVerifyOnlyMode()) {
-                        String key = personId;
-                        if (key == null) key = "";
-                        if (key.isEmpty()) {
-                            key = "local:" + (localUid != null && !localUid.isEmpty() ? localUid : "unknown");
-                        }
-                        if (!key.equals(lastProcessedPersonId)) {
-                            lastProcessedPersonId = key;
-                            String finalName = bestPerson.name;
-                            if (getActivity() != null) {
-                                getActivity().runOnUiThread(() -> {
-                                    if (statusText != null) statusText.setText("Verified " + finalName);
-                                });
+                        for (RecognizedFaceMatch match : readyToMark) {
+                            String key = !match.personId.isEmpty() ? match.personId : ("local:" + match.localUid);
+                            if (!key.equals(lastProcessedPersonId)) {
+                                lastProcessedPersonId = key;
+                                String finalName = match.person.name;
+                                if (getActivity() != null) {
+                                    getActivity().runOnUiThread(() -> {
+                                        if (statusText != null) statusText.setText("Verified " + finalName);
+                                    });
+                                }
+                                showVerifyOverlay();
+                                showVerifyToast(finalName);
                             }
-                            showVerifyOverlay();
-                            showVerifyToast(finalName);
                         }
                         return;
                     }
@@ -1191,120 +1206,81 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                     if (!online) {
                         SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US);
                         String timestamp = sdf.format(new Date());
-                        int cooldown = 30;
-                        try {
-                            android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
-                            cooldown = prefs.getInt("cooldown_seconds", 30);
-                        } catch (Exception ignored) {}
-                        boolean withinCooldown = false;
-                        try {
-                            String lastTs = dbManager.getLastAttendanceTimestamp(personId, localUid, bestPerson.name);
-                            if (lastTs != null && !lastTs.isEmpty()) {
-                                SimpleDateFormat sdf2 = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US);
-                                long lastMs = sdf2.parse(lastTs).getTime();
-                                long nowMs = sdf2.parse(timestamp).getTime();
-                                long deltaSec = (nowMs - lastMs) / 1000;
-                                if (deltaSec >= 0 && deltaSec < cooldown) {
-                                    withinCooldown = true;
-                                }
-                            }
-                        } catch (Exception ignored) {}
-                        String k = personId;
-                        if (k == null || k.isEmpty()) {
-                            k = "local:" + (localUid != null && !localUid.isEmpty() ? localUid : "unknown");
+
+                        List<String> markedNames = new java.util.ArrayList<>();
+                        for (RecognizedFaceMatch match : readyToMark) {
+                            String predicted = dbManager.predictNextAttendanceStatus(match.personId, match.localUid, match.person.name);
+                            dbManager.insertAttendanceQueue(match.personId, match.localUid, match.person.name, timestamp, predicted, finalProcessed, false);
+                            String trackKey = !match.personId.isEmpty() ? match.personId : ("local:" + match.localUid);
+                            try { lastEventSentAtMs.put(trackKey, System.currentTimeMillis()); } catch (Exception ignored) {}
+                            markedNames.add(match.person.name);
                         }
-                        try {
-                            Long lastLocal = lastEventSentAtMs.get(k);
-                            if (lastLocal != null) {
-                                long nowMs = System.currentTimeMillis();
-                                long deltaSec = (nowMs - lastLocal) / 1000;
-                                if (deltaSec >= 0 && deltaSec < cooldown) {
-                                    withinCooldown = true;
+
+                        if (!markedNames.isEmpty()) {
+                            if (markedNames.size() == 1) {
+                                String singleName = markedNames.get(0);
+                                String predicted = dbManager.predictNextAttendanceStatus(readyToMark.get(0).personId, readyToMark.get(0).localUid, singleName);
+                                playAttendanceSound(predicted);
+                                speakAttendanceGreeting(singleName, predicted);
+                                showStatusOverlay(predicted);
+                                if (getActivity() != null) {
+                                    getActivity().runOnUiThread(() -> {
+                                        if (statusText != null) statusText.setText(singleName + " " + predicted);
+                                    });
+                                }
+                            } else {
+                                StringBuilder sb = new StringBuilder();
+                                for (int k = 0; k < markedNames.size(); k++) {
+                                    if (k > 0) sb.append(k == markedNames.size() - 1 ? " & " : ", ");
+                                    sb.append(markedNames.get(k));
+                                }
+                                String batchNamesStr = sb.toString();
+                                playAttendanceSound("CHECK_IN");
+                                speakAttendanceGreeting(batchNamesStr, "CHECK_IN");
+                                showStatusOverlay("CHECK_IN");
+                                if (getActivity() != null) {
+                                    getActivity().runOnUiThread(() -> {
+                                        if (statusText != null) statusText.setText("Marked: " + batchNamesStr);
+                                    });
                                 }
                             }
-                        } catch (Exception ignored) {}
-                        if (!withinCooldown) {
-                            String predicted = dbManager.predictNextAttendanceStatus(personId, localUid, bestPerson.name);
-                            dbManager.insertAttendanceQueue(personId, localUid, bestPerson.name, timestamp, predicted, finalProcessed, false);
-                            playAttendanceSound(predicted);
-                            speakAttendanceGreeting(bestPerson.name, predicted);
-                            showStatusOverlay(predicted);
-                            if (getActivity() != null) {
-                                String finalPredicted = predicted;
-                                String finalName = bestPerson.name;
-                                getActivity().runOnUiThread(() -> {
-                                    if (statusText != null) statusText.setText(finalName + " " + finalPredicted);
-                                });
-                            }
-                            try { lastEventSentAtMs.put(k, System.currentTimeMillis()); } catch (Exception ignored) {}
                             try {
                                 SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
-                            } catch (Exception e) {
-                                e.printStackTrace();
-                            }
+                            } catch (Exception ignored) {}
                         }
                         return;
                     }
 
-                    String key = personId;
-                    if (key.isEmpty()) {
-                        key = "local:" + (!localUid.isEmpty() ? localUid : "unknown");
-                    }
-
-                    boolean allowByCooldown = false;
-                    try {
-                        android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
-                        int cooldown = prefs.getInt("cooldown_seconds", 30);
-                        String lastTs = dbManager.getLastAttendanceTimestamp(personId, localUid, bestPerson.name);
-                        if (lastTs == null || lastTs.isEmpty()) {
-                            allowByCooldown = true;
+                    // Online Batch Attendance
+                    if (!readyToMark.isEmpty()) {
+                        if (readyToMark.size() == 1) {
+                            RecognizedFaceMatch single = readyToMark.get(0);
+                            String trackKey = !single.personId.isEmpty() ? single.personId : ("local:" + single.localUid);
+                            lastProcessedPersonId = trackKey;
+                            try { lastEventSentAtMs.put(trackKey, System.currentTimeMillis()); } catch (Exception ignored) {}
+                            sendPersonEvent(true, true, single.personId, single.localUid, single.person.name, single.similarity, finalProcessed, true);
                         } else {
-                            long lastMs = -1;
-                            for (String fmt : new String[]{"yyyy-MM-dd'T'HH:mm:ss.SSS", "yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd HH:mm:ss"}) {
-                                try {
-                                    lastMs = new SimpleDateFormat(fmt, Locale.US).parse(lastTs).getTime();
-                                    break;
-                                } catch (Exception ignored2) {}
+                            List<String> names = new java.util.ArrayList<>();
+                            for (RecognizedFaceMatch match : readyToMark) {
+                                String trackKey = !match.personId.isEmpty() ? match.personId : ("local:" + match.localUid);
+                                try { lastEventSentAtMs.put(trackKey, System.currentTimeMillis()); } catch (Exception ignored) {}
+                                names.add(match.person.name);
+                                sendPersonEvent(true, true, match.personId, match.localUid, match.person.name, match.similarity, finalProcessed, false);
                             }
-                            if (lastMs >= 0) {
-                                long deltaSec = (System.currentTimeMillis() - lastMs) / 1000;
-                                allowByCooldown = (deltaSec >= cooldown || deltaSec < 0);
-                            } else {
-                                allowByCooldown = true; // can't parse → don't block
+                            StringBuilder sb = new StringBuilder();
+                            for (int k = 0; k < names.size(); k++) {
+                                if (k > 0) sb.append(k == names.size() - 1 ? " & " : ", ");
+                                sb.append(names.get(k));
                             }
-                        }
-                    } catch (Exception ignored) {}
-
-                    try {
-                        Long lastLocal = lastEventSentAtMs.get(key);
-                        if (lastLocal != null) {
-                            long nowMs = System.currentTimeMillis();
-                            int cooldown = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE).getInt("cooldown_seconds", 30);
-                            long deltaSec = (nowMs - lastLocal) / 1000;
-                            if (!(deltaSec >= cooldown || deltaSec < 0)) {
-                                allowByCooldown = false;
+                            String batchNamesStr = sb.toString();
+                            playAttendanceSound("CHECK_IN");
+                            speakAttendanceGreeting(batchNamesStr, "CHECK_IN");
+                            showStatusOverlay("CHECK_IN");
+                            if (getActivity() != null) {
+                                getActivity().runOnUiThread(() -> {
+                                    if (statusText != null) statusText.setText("Marked: " + batchNamesStr);
+                                });
                             }
-                        }
-                    } catch (Exception ignored) {}
-
-                    if (allowByCooldown) {
-                        lastProcessedPersonId = key;
-
-                        if (getActivity() != null) {
-                            String finalName = bestPerson.name;
-                            getActivity().runOnUiThread(() -> {
-                                statusText.setText("Verifying " + finalName + "...");
-                            });
-                        }
-
-                        sendPersonEvent(true, true, personId, localUid, bestPerson.name, bestSimilarity, finalProcessed);
-                        try { lastEventSentAtMs.put(key, System.currentTimeMillis()); } catch (Exception ignored) {}
-                    } else {
-                        if (getActivity() != null) {
-                            String finalName = bestPerson.name;
-                            getActivity().runOnUiThread(() -> {
-                                statusText.setText(finalName + " — please wait (cooldown)");
-                            });
                         }
                     }
 

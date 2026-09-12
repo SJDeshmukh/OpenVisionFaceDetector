@@ -174,10 +174,28 @@ class MainActivity : AppCompatActivity() {
             bottomNav.visibility = android.view.View.GONE
         }
 
-        // Logout
+        // Kiosk Mode & Logout
+        val btnKiosk = findViewById<ImageButton>(R.id.btn_kiosk)
+        btnKiosk?.setOnClickListener {
+            if (isKioskModeActive) {
+                promptKioskPin {
+                    stopKioskLockdown()
+                    Toast.makeText(this, "Exited Kiosk Mode", Toast.LENGTH_SHORT).show()
+                }
+            } else {
+                startKioskLockdown()
+            }
+        }
 
         btnLogout.setOnClickListener {
-            performLogout("Logged out.")
+            if (isKioskModeActive) {
+                promptKioskPin {
+                    stopKioskLockdown()
+                    performLogout("Logged out.")
+                }
+            } else {
+                performLogout("Logged out.")
+            }
         }
         tvNetworkStatus = findViewById(R.id.tv_network_status)
         try {
@@ -851,5 +869,97 @@ class MainActivity : AppCompatActivity() {
         }
         builder.setCancelable(false)
         builder.show()
+    }
+
+    private var isKioskModeActive = false
+
+    private fun startKioskLockdown() {
+        try {
+            applyImmersiveMode()
+            startLockTask()
+            isKioskModeActive = true
+            val btnKiosk = findViewById<ImageButton>(R.id.btn_kiosk)
+            btnKiosk?.setColorFilter(ContextCompat.getColor(this, R.color.status_success))
+            Toast.makeText(this, "Kiosk Lockdown Mode Activated", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            applyImmersiveMode()
+            isKioskModeActive = true
+            val btnKiosk = findViewById<ImageButton>(R.id.btn_kiosk)
+            btnKiosk?.setColorFilter(ContextCompat.getColor(this, R.color.status_success))
+            Toast.makeText(this, "Kiosk Mode Activated", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun stopKioskLockdown() {
+        try {
+            stopLockTask()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        isKioskModeActive = false
+        clearImmersiveMode()
+        val btnKiosk = findViewById<ImageButton>(R.id.btn_kiosk)
+        btnKiosk?.setColorFilter(ContextCompat.getColor(this, R.color.vision_cyan))
+    }
+
+    private fun applyImmersiveMode() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.insetsController?.let {
+                it.hide(android.view.WindowInsets.Type.statusBars() or android.view.WindowInsets.Type.navigationBars())
+                it.systemBarsBehavior = android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = (
+                android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                or android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                or android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                or android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                or android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                or android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
+            )
+        }
+    }
+
+    private fun clearImmersiveMode() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.insetsController?.show(android.view.WindowInsets.Type.statusBars() or android.view.WindowInsets.Type.navigationBars())
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = android.view.View.SYSTEM_UI_FLAG_VISIBLE
+        }
+    }
+
+    private fun promptKioskPin(onSuccess: () -> Unit) {
+        val input = android.widget.EditText(this)
+        input.inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD
+        input.hint = "Enter PIN (Default: 8888)"
+        input.setPadding(48, 32, 48, 32)
+
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Kiosk Lockdown Mode")
+            .setMessage("Enter the Master SuperAdmin PIN to unlock this tablet:")
+            .setView(input)
+            .setPositiveButton("Unlock") { dialog, _ ->
+                val entered = input.text.toString().trim()
+                val masterPin = getSharedPreferences("app_prefs", MODE_PRIVATE).getString("kiosk_pin", "8888") ?: "8888"
+                if (entered == masterPin) {
+                    dialog.dismiss()
+                    onSuccess.invoke()
+                } else {
+                    Toast.makeText(this, "Incorrect PIN. Contact SuperAdmin.", Toast.LENGTH_LONG).show()
+                }
+            }
+            .setNegativeButton("Cancel") { dialog, _ -> dialog.dismiss() }
+            .setCancelable(false)
+            .show()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && isKioskModeActive) {
+            applyImmersiveMode()
+        }
     }
 }
