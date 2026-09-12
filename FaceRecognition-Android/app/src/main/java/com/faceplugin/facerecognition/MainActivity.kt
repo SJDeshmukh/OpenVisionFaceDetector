@@ -37,7 +37,14 @@ import org.json.JSONObject
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.core.app.ActivityCompat
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
+import android.provider.Settings
 import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 
@@ -65,6 +72,10 @@ class MainActivity : AppCompatActivity() {
     private var lastKnownDistance: Double? = null
     private var lastKnownLat: Double? = null
     private var lastKnownLng: Double? = null
+    private var locationManager: LocationManager? = null
+    private var latestDeviceLocation: Location? = null
+    private var locationCallback: LocationCallback? = null
+    private var nativeLocationListener: LocationListener? = null
     private val networkStatusInterval: Long = 1500
     private val settingsInterval: Long = 60000
     private val heartbeatInterval: Long = 30000 // 30 seconds for responsive geofencing
@@ -143,6 +154,8 @@ class MainActivity : AppCompatActivity() {
         }
         if (ungranted.isNotEmpty()) {
             ActivityCompat.requestPermissions(this, ungranted.toTypedArray(), 100)
+        } else {
+            startLocationTracking()
         }
 
         try {
@@ -384,6 +397,20 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         mSocket?.disconnect()
         mSocket?.off()
+        stopLocationTracking()
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 100) {
+            val fineGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+            val coarseGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+            if (fineGranted || coarseGranted) {
+                startLocationTracking()
+                handler.removeCallbacks(heartbeatRunnable)
+                handler.post(heartbeatRunnable)
+            }
+        }
     }
 
     private fun switchFragment(fragment: Fragment) {
@@ -442,6 +469,7 @@ class MainActivity : AppCompatActivity() {
         handler.post(networkStatusRunnable)
         handler.removeCallbacks(settingsRunnable)
         handler.post(settingsRunnable)
+        startLocationTracking()
         handler.removeCallbacks(heartbeatRunnable)
         handler.post(heartbeatRunnable)
         try {
@@ -761,50 +789,60 @@ class MainActivity : AppCompatActivity() {
                 })
             }
 
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-                // First attempt fresh location fix with high accuracy
-                fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
-                    .addOnSuccessListener { location ->
-                        if (location != null) {
-                            body.addProperty("latitude", location.latitude)
-                            body.addProperty("longitude", location.longitude)
-                            body.addProperty("accuracy", location.accuracy)
-                            runOnUiThread {
-                                if (lastKnownGeofenceStatus == null) {
-                                    tvGeofenceStatus?.text = "GPS LOCKED"
-                                    val green = ContextCompat.getColor(this@MainActivity, R.color.status_success)
-                                    tvGeofenceStatus?.setTextColor(green)
-                                    ivGeoIcon?.setColorFilter(green)
-                                }
-                            }
-                            apiCall(body)
-                        } else {
-                            // Fallback to cached lastLocation if fresh location returns null
-                            fusedLocationClient.lastLocation.addOnSuccessListener { fallbackLoc ->
-                                if (fallbackLoc != null) {
-                                    body.addProperty("latitude", fallbackLoc.latitude)
-                                    body.addProperty("longitude", fallbackLoc.longitude)
-                                    body.addProperty("accuracy", fallbackLoc.accuracy)
-                                }
-                                apiCall(body)
-                            }.addOnFailureListener {
-                                apiCall(body)
-                            }
+            val hasLocationPerm = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                || ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+            if (hasLocationPerm) {
+                // 1. Resolve best available cached or continuous location
+                var bestLoc = latestDeviceLocation
+                if (bestLoc == null) {
+                    try {
+                        val candidates = mutableListOf<Location>()
+                        locationManager?.getLastKnownLocation(LocationManager.GPS_PROVIDER)?.let { candidates.add(it) }
+                        locationManager?.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)?.let { candidates.add(it) }
+                        locationManager?.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER)?.let { candidates.add(it) }
+                        bestLoc = candidates.maxByOrNull { it.time }
+                    } catch (_: Exception) {}
+                }
+
+                // If still null, check persisted prefs
+                if (bestLoc == null) {
+                    val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+                    val sLat = prefs.getString("last_valid_lat", null)?.toDoubleOrNull()
+                    val sLng = prefs.getString("last_valid_lng", null)?.toDoubleOrNull()
+                    if (sLat != null && sLng != null) {
+                        bestLoc = Location("prefs").apply {
+                            latitude = sLat
+                            longitude = sLng
                         }
                     }
-                    .addOnFailureListener {
-                        // Fallback on getCurrentLocation failure
-                        fusedLocationClient.lastLocation.addOnSuccessListener { fallbackLoc ->
-                            if (fallbackLoc != null) {
-                                body.addProperty("latitude", fallbackLoc.latitude)
-                                body.addProperty("longitude", fallbackLoc.longitude)
-                                body.addProperty("accuracy", fallbackLoc.accuracy)
+                }
+
+                if (bestLoc != null) {
+                    updateBestLocation(bestLoc)
+                    body.addProperty("latitude", bestLoc.latitude)
+                    body.addProperty("longitude", bestLoc.longitude)
+                    body.addProperty("accuracy", bestLoc.accuracy)
+                }
+
+                // 2. Also attempt fresh high-accuracy fix from Google Fused Location
+                try {
+                    fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
+                        .addOnSuccessListener { freshLoc ->
+                            if (freshLoc != null) {
+                                updateBestLocation(freshLoc)
+                                body.addProperty("latitude", freshLoc.latitude)
+                                body.addProperty("longitude", freshLoc.longitude)
+                                body.addProperty("accuracy", freshLoc.accuracy)
                             }
                             apiCall(body)
-                        }.addOnFailureListener {
+                        }
+                        .addOnFailureListener {
                             apiCall(body)
                         }
-                    }
+                } catch (e: Exception) {
+                    apiCall(body)
+                }
             } else {
                 apiCall(body)
             }
@@ -1001,6 +1039,142 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun startLocationTracking() {
+        val hasFine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val hasCoarse = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!hasFine && !hasCoarse) return
+
+        try {
+            if (locationManager == null) {
+                locationManager = getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+            }
+
+            val isGpsEnabled = locationManager?.isProviderEnabled(LocationManager.GPS_PROVIDER) ?: false
+            val isNetworkEnabled = locationManager?.isProviderEnabled(LocationManager.NETWORK_PROVIDER) ?: false
+
+            if (!isGpsEnabled && !isNetworkEnabled) {
+                runOnUiThread {
+                    tvGeofenceStatus?.text = "LOCATION OFF"
+                    val amber = ContextCompat.getColor(this, R.color.status_warning)
+                    tvGeofenceStatus?.setTextColor(amber)
+                    ivGeoIcon?.setColorFilter(amber)
+                }
+            }
+
+            // 1. Check all cached providers immediately
+            val candidates = mutableListOf<Location>()
+            try {
+                locationManager?.getLastKnownLocation(LocationManager.GPS_PROVIDER)?.let { candidates.add(it) }
+                locationManager?.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)?.let { candidates.add(it) }
+                locationManager?.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER)?.let { candidates.add(it) }
+            } catch (_: Exception) {}
+
+            fusedLocationClient.lastLocation.addOnSuccessListener { fusedLoc ->
+                if (fusedLoc != null) {
+                    candidates.add(fusedLoc)
+                }
+                candidates.maxByOrNull { it.time }?.let { best ->
+                    updateBestLocation(best)
+                }
+            }
+
+            candidates.maxByOrNull { it.time }?.let { best ->
+                updateBestLocation(best)
+            }
+
+            // Fallback to persisted location in app_prefs if available
+            if (latestDeviceLocation == null) {
+                val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+                val sLat = prefs.getString("last_valid_lat", null)?.toDoubleOrNull()
+                val sLng = prefs.getString("last_valid_lng", null)?.toDoubleOrNull()
+                if (sLat != null && sLng != null) {
+                    val fallback = Location("prefs").apply {
+                        latitude = sLat
+                        longitude = sLng
+                    }
+                    updateBestLocation(fallback)
+                }
+            }
+
+            // 2. Register FusedLocationProvider continuous updates
+            try {
+                val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 15000L)
+                    .setMinUpdateIntervalMillis(5000L)
+                    .build()
+
+                if (locationCallback == null) {
+                    locationCallback = object : LocationCallback() {
+                        override fun onLocationResult(result: LocationResult) {
+                            result.lastLocation?.let { loc ->
+                                updateBestLocation(loc)
+                            }
+                        }
+                    }
+                }
+                fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback!!, Looper.getMainLooper())
+            } catch (e: Exception) {
+                android.util.Log.w("Location", "FusedLocationProvider updates error", e)
+            }
+
+            // 3. Register native LocationManager listeners as fallback
+            if (nativeLocationListener == null) {
+                nativeLocationListener = object : LocationListener {
+                    override fun onLocationChanged(loc: Location) {
+                        updateBestLocation(loc)
+                    }
+                    @Deprecated("Deprecated in Java")
+                    override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+                    override fun onProviderEnabled(provider: String) {}
+                    override fun onProviderDisabled(provider: String) {}
+                }
+            }
+
+            try {
+                if (isGpsEnabled) {
+                    locationManager?.requestLocationUpdates(LocationManager.GPS_PROVIDER, 10000L, 1f, nativeLocationListener!!)
+                }
+            } catch (_: Exception) {}
+
+            try {
+                if (isNetworkEnabled) {
+                    locationManager?.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 10000L, 1f, nativeLocationListener!!)
+                }
+            } catch (_: Exception) {}
+
+        } catch (e: Exception) {
+            android.util.Log.e("Location", "Error in startLocationTracking", e)
+        }
+    }
+
+    private fun updateBestLocation(loc: Location) {
+        latestDeviceLocation = loc
+        lastKnownLat = loc.latitude
+        lastKnownLng = loc.longitude
+
+        try {
+            getSharedPreferences("app_prefs", MODE_PRIVATE).edit()
+                .putString("last_valid_lat", loc.latitude.toString())
+                .putString("last_valid_lng", loc.longitude.toString())
+                .apply()
+        } catch (_: Exception) {}
+
+        runOnUiThread {
+            if (lastKnownGeofenceStatus == null || lastKnownGeofenceStatus == "no_gps" || lastKnownGeofenceStatus == "gps_required") {
+                tvGeofenceStatus?.text = "GPS LOCKED"
+                val green = ContextCompat.getColor(this, R.color.status_success)
+                tvGeofenceStatus?.setTextColor(green)
+                ivGeoIcon?.setColorFilter(green)
+            }
+        }
+    }
+
+    private fun stopLocationTracking() {
+        try {
+            locationCallback?.let { fusedLocationClient.removeLocationUpdates(it) }
+            nativeLocationListener?.let { locationManager?.removeUpdates(it) }
+        } catch (_: Exception) {}
+    }
+
     private fun updateGeofenceBadge(status: String?, distance: Double?, lat: Double?, lng: Double?) {
         lastKnownGeofenceStatus = status
         lastKnownDistance = distance
@@ -1026,10 +1200,17 @@ class MainActivity : AppCompatActivity() {
                 iv.setColorFilter(red)
             }
             "no_gps", "gps_required" -> {
-                tv.text = "NO GPS FIX"
-                val amber = ContextCompat.getColor(this, R.color.status_warning)
-                tv.setTextColor(amber)
-                iv.setColorFilter(amber)
+                if (lastKnownLat != null && lastKnownLng != null) {
+                    tv.text = "GPS LOCKED"
+                    val green = ContextCompat.getColor(this, R.color.status_success)
+                    tv.setTextColor(green)
+                    iv.setColorFilter(green)
+                } else {
+                    tv.text = "NO GPS FIX"
+                    val amber = ContextCompat.getColor(this, R.color.status_warning)
+                    tv.setTextColor(amber)
+                    iv.setColorFilter(amber)
+                }
             }
             "disabled" -> {
                 tv.text = "NO GEOFENCE"
@@ -1054,21 +1235,47 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showGeofenceDetailsDialog() {
-        val latStr = if (lastKnownLat != null) "%.5f".format(lastKnownLat) else "Searching for GPS satellites..."
-        val lngStr = if (lastKnownLng != null) "%.5f".format(lastKnownLng) else "Searching for GPS satellites..."
+        val isGpsEnabled = locationManager?.isProviderEnabled(LocationManager.GPS_PROVIDER) ?: false
+        val isNetworkEnabled = locationManager?.isProviderEnabled(LocationManager.NETWORK_PROVIDER) ?: false
+        val isLocationOff = !isGpsEnabled && !isNetworkEnabled
+
+        val hasFine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val hasCoarse = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+        val latStr = if (lastKnownLat != null) "%.5f".format(lastKnownLat) else "Waiting for GPS / WiFi signal..."
+        val lngStr = if (lastKnownLng != null) "%.5f".format(lastKnownLng) else "Waiting for GPS / WiFi signal..."
         val distStr = if (lastKnownDistance != null) "${lastKnownDistance!!.toInt()} meters from anchor" else "N/A"
-        val statusStr = when (lastKnownGeofenceStatus) {
-            "inside" -> "🟢 Inside Authorized Geofence"
-            "outside" -> "🔴 Outside Geofence (Violation)"
-            "disabled" -> "⚪ Geofence Not Configured"
-            "no_gps", "gps_required" -> "🟡 No GPS Fix Received"
-            else -> if (lastKnownLat != null) "🟢 GPS Signal Locked" else "🟡 Acquiring GPS Satellite Signal..."
+
+        val statusStr = when {
+            isLocationOff -> "⚠️ Location is turned OFF in tablet Android Settings."
+            !hasFine && !hasCoarse -> "⚠️ Location permission has not been granted."
+            lastKnownGeofenceStatus == "inside" -> "🟢 Inside Authorized Geofence"
+            lastKnownGeofenceStatus == "outside" -> "🔴 Outside Geofence (Violation)"
+            lastKnownGeofenceStatus == "disabled" -> "⚪ Geofence Not Configured"
+            lastKnownGeofenceStatus == "no_gps" || lastKnownGeofenceStatus == "gps_required" -> "🟡 Server waiting for GPS lock"
+            lastKnownLat != null -> "🟢 GPS Signal Locked"
+            else -> "🟡 Acquiring GPS / WiFi Satellite Signal..."
         }
 
-        androidx.appcompat.app.AlertDialog.Builder(this)
+        val providerInfo = "Providers: GPS=${if (isGpsEnabled) "ON" else "OFF"}, Network=${if (isNetworkEnabled) "ON" else "OFF"}"
+
+        val builder = androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("Kiosk Location & Geofence")
-            .setMessage("Status:\n$statusStr\n\nCoordinates:\nLatitude: $latStr\nLongitude: $lngStr\n\nDistance to Anchor:\n$distStr")
+            .setMessage("Status:\n$statusStr\n\nCoordinates:\nLatitude: $latStr\nLongitude: $lngStr\n\nDistance to Anchor:\n$distStr\n\n$providerInfo")
             .setPositiveButton("Close") { dialog, _ -> dialog.dismiss() }
-            .show()
+
+        if (isLocationOff) {
+            builder.setNeutralButton("Open Settings") { _, _ ->
+                try {
+                    startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                } catch (_: Exception) {}
+            }
+        } else if (!hasFine && !hasCoarse) {
+            builder.setNeutralButton("Grant Permission") { _, _ ->
+                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), 100)
+            }
+        }
+
+        builder.show()
     }
 }
