@@ -43,6 +43,39 @@
     </LinearLayout>
 
     <LinearLayout
+        android:id="@+id/header_geofence"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@drawable/bg_glass_card"
+        android:orientation="horizontal"
+        android:paddingHorizontal="10dp"
+        android:paddingVertical="4dp"
+        android:gravity="center"
+        android:clickable="true"
+        android:focusable="true"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toStartOf="@+id/header_status"
+        app:layout_constraintTop_toTopOf="parent"
+        android:layout_marginEnd="8dp">
+
+        <ImageView
+            android:id="@+id/iv_geo_icon"
+            android:layout_width="12dp"
+            android:layout_height="12dp"
+            android:src="@android:drawable/ic_menu_mylocation"
+            app:tint="@color/status_warning" />
+
+        <TextView
+            android:id="@+id/tv_geofence_status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="5dp"
+            android:text="GPS: CHECKING"
+            style="@style/Typography.Micro"
+            android:textColor="@color/text_primary" />
+    </LinearLayout>
+
+    <LinearLayout
         android:id="@+id/header_status"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"

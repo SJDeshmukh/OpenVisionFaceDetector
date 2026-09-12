@@ -8,8 +8,10 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Base64
 import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
+import android.view.View
 import java.security.MessageDigest
 import androidx.appcompat.app.AppCompatActivity
 import androidx.fragment.app.Fragment
@@ -57,9 +59,15 @@ class MainActivity : AppCompatActivity() {
     private val handler = Handler(Looper.getMainLooper())
     private val syncInterval: Long = 30000
     private var tvNetworkStatus: TextView? = null
+    private var tvGeofenceStatus: TextView? = null
+    private var ivGeoIcon: ImageView? = null
+    private var lastKnownGeofenceStatus: String? = null
+    private var lastKnownDistance: Double? = null
+    private var lastKnownLat: Double? = null
+    private var lastKnownLng: Double? = null
     private val networkStatusInterval: Long = 1500
     private val settingsInterval: Long = 60000
-    private val heartbeatInterval: Long = 120000 // 2 minutes
+    private val heartbeatInterval: Long = 30000 // 30 seconds for responsive geofencing
 
     private val heartbeatRunnable = object : Runnable {
         override fun run() {
@@ -202,7 +210,13 @@ class MainActivity : AppCompatActivity() {
                 performLogout("Logged out.")
             }
         }
-        tvNetworkStatus = findViewById(R.id.tv_network_status)
+        tvNetworkStatus = findViewById<TextView>(R.id.tv_network_status)
+        tvGeofenceStatus = findViewById<TextView>(R.id.tv_geofence_status)
+        ivGeoIcon = findViewById<ImageView>(R.id.iv_geo_icon)
+        val headerGeofence = findViewById<View>(R.id.header_geofence)
+        headerGeofence?.setOnClickListener {
+            showGeofenceDetailsDialog()
+        }
         try {
             val dn = getSharedPreferences("app_prefs", MODE_PRIVATE).getString("device_name", null)
             val tvPlace = findViewById<TextView>(R.id.tv_device_name)
@@ -708,11 +722,17 @@ class MainActivity : AppCompatActivity() {
                             val resBody = response.body()
                             val geofenceStatus = resBody?.get("geofence_status")?.asString
                             android.util.Log.d("Heartbeat", "Sent successfully: $battery%, geofence=$geofenceStatus")
-                            if (resBody != null && resBody.has("geofence_status")) {
-                                val distance = if (resBody.has("distance_meters") && !resBody.get("distance_meters").isJsonNull) {
-                                    resBody.get("distance_meters").asDouble
-                                } else null
+                            val distance = if (resBody != null && resBody.has("distance_meters") && !resBody.get("distance_meters").isJsonNull) {
+                                resBody.get("distance_meters").asDouble
+                            } else null
 
+                            val lat = if (finalBody.has("latitude")) finalBody.get("latitude").asDouble else null
+                            val lng = if (finalBody.has("longitude")) finalBody.get("longitude").asDouble else null
+                            runOnUiThread {
+                                updateGeofenceBadge(geofenceStatus, distance, lat, lng)
+                            }
+
+                            if (resBody != null && resBody.has("geofence_status")) {
                                 if (geofenceStatus == "outside") {
                                     consecutiveOutsideCount++
                                     android.util.Log.w("Heartbeat", "Device reported OUTSIDE geofence (dist=$distance m, count=$consecutiveOutsideCount)")
@@ -732,6 +752,11 @@ class MainActivity : AppCompatActivity() {
                     }
                     override fun onFailure(call: Call<JsonObject>, t: Throwable) {
                         android.util.Log.e("Heartbeat", "Failed to send heartbeat", t)
+                        val lat = if (finalBody.has("latitude")) finalBody.get("latitude").asDouble else null
+                        val lng = if (finalBody.has("longitude")) finalBody.get("longitude").asDouble else null
+                        runOnUiThread {
+                            updateGeofenceBadge(null, null, lat, lng)
+                        }
                     }
                 })
             }
@@ -744,6 +769,14 @@ class MainActivity : AppCompatActivity() {
                             body.addProperty("latitude", location.latitude)
                             body.addProperty("longitude", location.longitude)
                             body.addProperty("accuracy", location.accuracy)
+                            runOnUiThread {
+                                if (lastKnownGeofenceStatus == null) {
+                                    tvGeofenceStatus?.text = "GPS LOCKED"
+                                    val green = ContextCompat.getColor(this@MainActivity, R.color.status_success)
+                                    tvGeofenceStatus?.setTextColor(green)
+                                    ivGeoIcon?.setColorFilter(green)
+                                }
+                            }
                             apiCall(body)
                         } else {
                             // Fallback to cached lastLocation if fresh location returns null
@@ -966,5 +999,76 @@ class MainActivity : AppCompatActivity() {
         if (hasFocus && isKioskModeActive) {
             applyImmersiveMode()
         }
+    }
+
+    private fun updateGeofenceBadge(status: String?, distance: Double?, lat: Double?, lng: Double?) {
+        lastKnownGeofenceStatus = status
+        lastKnownDistance = distance
+        if (lat != null) lastKnownLat = lat
+        if (lng != null) lastKnownLng = lng
+
+        val tv = tvGeofenceStatus ?: return
+        val iv = ivGeoIcon ?: return
+
+        when (status) {
+            "inside" -> {
+                val distText = if (distance != null) "${distance.toInt()}m" else "OK"
+                tv.text = "INSIDE ($distText)"
+                val green = ContextCompat.getColor(this, R.color.status_success)
+                tv.setTextColor(green)
+                iv.setColorFilter(green)
+            }
+            "outside" -> {
+                val distText = if (distance != null) "${distance.toInt()}m" else "ALERT"
+                tv.text = "OUTSIDE ($distText)"
+                val red = ContextCompat.getColor(this, R.color.status_error)
+                tv.setTextColor(red)
+                iv.setColorFilter(red)
+            }
+            "no_gps", "gps_required" -> {
+                tv.text = "NO GPS FIX"
+                val amber = ContextCompat.getColor(this, R.color.status_warning)
+                tv.setTextColor(amber)
+                iv.setColorFilter(amber)
+            }
+            "disabled" -> {
+                tv.text = "NO GEOFENCE"
+                val gray = ContextCompat.getColor(this, R.color.vision_text_secondary)
+                tv.setTextColor(gray)
+                iv.setColorFilter(gray)
+            }
+            else -> {
+                if (lastKnownLat != null && lastKnownLng != null) {
+                    tv.text = "GPS LOCKED"
+                    val green = ContextCompat.getColor(this, R.color.status_success)
+                    tv.setTextColor(green)
+                    iv.setColorFilter(green)
+                } else {
+                    tv.text = "GPS: ACQUIRING"
+                    val amber = ContextCompat.getColor(this, R.color.status_warning)
+                    tv.setTextColor(amber)
+                    iv.setColorFilter(amber)
+                }
+            }
+        }
+    }
+
+    private fun showGeofenceDetailsDialog() {
+        val latStr = if (lastKnownLat != null) "%.5f".format(lastKnownLat) else "Searching for GPS satellites..."
+        val lngStr = if (lastKnownLng != null) "%.5f".format(lastKnownLng) else "Searching for GPS satellites..."
+        val distStr = if (lastKnownDistance != null) "${lastKnownDistance!!.toInt()} meters from anchor" else "N/A"
+        val statusStr = when (lastKnownGeofenceStatus) {
+            "inside" -> "🟢 Inside Authorized Geofence"
+            "outside" -> "🔴 Outside Geofence (Violation)"
+            "disabled" -> "⚪ Geofence Not Configured"
+            "no_gps", "gps_required" -> "🟡 No GPS Fix Received"
+            else -> if (lastKnownLat != null) "🟢 GPS Signal Locked" else "🟡 Acquiring GPS Satellite Signal..."
+        }
+
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Kiosk Location & Geofence")
+            .setMessage("Status:\n$statusStr\n\nCoordinates:\nLatitude: $latStr\nLongitude: $lngStr\n\nDistance to Anchor:\n$distStr")
+            .setPositiveButton("Close") { dialog, _ -> dialog.dismiss() }
+            .show()
     }
 }
