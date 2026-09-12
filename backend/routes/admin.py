@@ -2047,27 +2047,31 @@ def delete_vendor(vendor_id):
                     if not c.fetchone():
                         return
 
-                sql_target = f"SELECT * FROM {table} WHERE {key} = %s" if is_pg else f"SELECT * FROM {table} WHERE {key} = ?"
-                c.execute(sql_target, (vendor_id,))
-                cols = [d[0] for d in c.description] if hasattr(c, "description") and c.description else []
-                
-                sql_insert = "INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES (%s, %s, %s)" if is_pg else "INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES (?, ?, ?)"
-                
-                while True:
-                    rows = c.fetchmany(100) # Process in batches of 100 to save memory
-                    if not rows:
-                        break
+                c_read = conn.cursor()
+                sql_target = f"SELECT * FROM {table} WHERE {key} = {placeholder}"
+                c_read.execute(sql_target, (vendor_id,))
+                cols = [d[0] for d in c_read.description] if hasattr(c_read, "description") and c_read.description else []
+                rows = c_read.fetchall()
+                c_read.close()
+
+                if rows:
+                    c_write = conn.cursor()
+                    sql_insert = f"INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES ({placeholder}, {placeholder}, {placeholder})"
                     for r in rows:
                         row = r if isinstance(r, dict) else {cols[i]: r[i] for i in range(len(cols))}
-                        c.execute(sql_insert, (vendor_id, table, json.dumps(row, default=_json_default)))
+                        c_write.execute(sql_insert, (vendor_id, table, json.dumps(row, default=_json_default)))
+                    c_write.close()
+
                 if is_pg:
                     c.execute(f"RELEASE SAVEPOINT {sp_name}")
-            except Exception:
+            except Exception as arch_err:
+                logger.warning(f"Could not archive {table} for vendor {vendor_id}: {arch_err}")
                 if is_pg:
                     try:
                         c.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
                     except Exception:
                         pass
+
         tables = [
             # Child tables first (they reference faces/parent_users/lectures/schedules which reference vendors)
             "lecture_attendance", "face_reset_requests", "student_parents",
@@ -2086,96 +2090,141 @@ def delete_vendor(vendor_id):
         for t in tables:
             key = "target_vendor_id" if t == "audit_logs" else "vendor_id"
             archive_table(t, key=key)
-        
-        # Manual handle for class_batch_items (referenced by class_batches)
-        try:
-            sql_batches = "SELECT id FROM class_batches WHERE vendor_id = %s" if is_pg else "SELECT id FROM class_batches WHERE vendor_id = ?"
-            c.execute(sql_batches, (vendor_id,))
-            batch_ids = [r[0] if not isinstance(r, dict) else r['id'] for r in c.fetchall()]
-            
-            if batch_ids:
-                placeholders = ', '.join(['%s' if is_pg else '?'] * len(batch_ids))
-                sql_items = f"SELECT * FROM class_batch_items WHERE batch_id IN ({placeholders})"
-                c.execute(sql_items, tuple(batch_ids))
-                cols = [d[0] for d in c.description] if hasattr(c, "description") and c.description else []
-                
-                sql_insert_items = "INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES (%s, %s, %s)" if is_pg else "INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES (?, ?, ?)"
-                
-                while True:
-                    rows = c.fetchmany(100)
-                    if not rows:
-                        break
-                    for r in rows:
-                        row = r if isinstance(r, dict) else {cols[i]: r[i] for i in range(len(cols))}
-                        c.execute(sql_insert_items, (vendor_id, "class_batch_items", json.dumps(row, default=_json_default)))
-                
-                sql_delete_items = f"DELETE FROM class_batch_items WHERE batch_id IN ({', '.join(['%s' if is_pg else '?' for _ in batch_ids])})"
-                c.execute(sql_delete_items, tuple(batch_ids))
-        except Exception:
-            pass
 
-        # Manual handle for registration_batch_items (referenced by registration_batches)
+        # Archive class_batch_items
+        sp_cbi = "sp_arch_class_batch_items"
+        if is_pg: c.execute(f"SAVEPOINT {sp_cbi}")
         try:
-            sql_reg_batches = "SELECT id FROM registration_batches WHERE vendor_id = %s" if is_pg else "SELECT id FROM registration_batches WHERE vendor_id = ?"
-            c.execute(sql_reg_batches, (vendor_id,))
-            reg_batch_ids = [r[0] if not isinstance(r, dict) else r['id'] for r in c.fetchall()]
-            
-            if reg_batch_ids:
-                placeholders = ', '.join(['%s' if is_pg else '?'] * len(reg_batch_ids))
-                sql_items = f"SELECT * FROM registration_batch_items WHERE batch_id IN ({placeholders})"
-                c.execute(sql_items, tuple(reg_batch_ids))
-                cols = [d[0] for d in c.description] if hasattr(c, "description") and c.description else []
-                
-                sql_insert_items = "INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES (%s, %s, %s)" if is_pg else "INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES (?, ?, ?)"
-                
-                while True:
-                    rows = c.fetchmany(100)
-                    if not rows:
-                        break
-                    for r in rows:
-                        row = r if isinstance(r, dict) else {cols[i]: r[i] for i in range(len(cols))}
-                        c.execute(sql_insert_items, (vendor_id, "registration_batch_items", json.dumps(row, default=_json_default)))
-                
-                sql_delete_items = f"DELETE FROM registration_batch_items WHERE batch_id IN ({', '.join(['%s' if is_pg else '?' for _ in reg_batch_ids])})"
-                c.execute(sql_delete_items, tuple(reg_batch_ids))
-        except Exception:
-            pass
+            c_read = conn.cursor()
+            sql_items = f"SELECT * FROM class_batch_items WHERE batch_id IN (SELECT id FROM class_batches WHERE vendor_id = {placeholder})"
+            c_read.execute(sql_items, (vendor_id,))
+            cols = [d[0] for d in c_read.description] if hasattr(c_read, "description") and c_read.description else []
+            rows = c_read.fetchall()
+            c_read.close()
+            if rows:
+                c_write = conn.cursor()
+                sql_insert_items = f"INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES ({placeholder}, {placeholder}, {placeholder})"
+                for r in rows:
+                    row = r if isinstance(r, dict) else {cols[i]: r[i] for i in range(len(cols))}
+                    c_write.execute(sql_insert_items, (vendor_id, "class_batch_items", json.dumps(row, default=_json_default)))
+                c_write.close()
+            if is_pg: c.execute(f"RELEASE SAVEPOINT {sp_cbi}")
+        except Exception as e:
+            logger.warning(f"Could not archive class_batch_items for vendor {vendor_id}: {e}")
+            if is_pg:
+                try: c.execute(f"ROLLBACK TO SAVEPOINT {sp_cbi}")
+                except Exception: pass
 
-        sql_insert_vendor = "INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES (%s, %s, %s)" if is_pg else "INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES (?, ?, ?)"
+        # Archive registration_batch_items
+        sp_rbi = "sp_arch_reg_batch_items"
+        if is_pg: c.execute(f"SAVEPOINT {sp_rbi}")
+        try:
+            c_read = conn.cursor()
+            sql_items = f"SELECT * FROM registration_batch_items WHERE batch_id IN (SELECT id FROM registration_batches WHERE vendor_id = {placeholder})"
+            c_read.execute(sql_items, (vendor_id,))
+            cols = [d[0] for d in c_read.description] if hasattr(c_read, "description") and c_read.description else []
+            rows = c_read.fetchall()
+            c_read.close()
+            if rows:
+                c_write = conn.cursor()
+                sql_insert_items = f"INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES ({placeholder}, {placeholder}, {placeholder})"
+                for r in rows:
+                    row = r if isinstance(r, dict) else {cols[i]: r[i] for i in range(len(cols))}
+                    c_write.execute(sql_insert_items, (vendor_id, "registration_batch_items", json.dumps(row, default=_json_default)))
+                c_write.close()
+            if is_pg: c.execute(f"RELEASE SAVEPOINT {sp_rbi}")
+        except Exception as e:
+            logger.warning(f"Could not archive registration_batch_items for vendor {vendor_id}: {e}")
+            if is_pg:
+                try: c.execute(f"ROLLBACK TO SAVEPOINT {sp_rbi}")
+                except Exception: pass
+
+        sql_insert_vendor = f"INSERT INTO archive_objects (vendor_id, table_name, row_json) VALUES ({placeholder}, {placeholder}, {placeholder})"
         c.execute(sql_insert_vendor, (vendor_id, "vendors", json.dumps(vdict, default=_json_default)))
-        
-        # Delete in reverse order of foreign key dependency
-        for t in tables:
-            sp_del = f"sp_del_{t}"
+
+        # Explicit reverse-dependency deletions to guarantee clean foreign key cascades
+        delete_steps = [
+            # 1. Sub-child items
+            ("class_batch_items", f"DELETE FROM class_batch_items WHERE batch_id IN (SELECT id FROM class_batches WHERE vendor_id = {placeholder})", (vendor_id,)),
+            ("registration_batch_items", f"DELETE FROM registration_batch_items WHERE batch_id IN (SELECT id FROM registration_batches WHERE vendor_id = {placeholder})", (vendor_id,)),
+            ("lecture_attendance", f"DELETE FROM lecture_attendance WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("automated_report_deliveries", f"DELETE FROM automated_report_deliveries WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("xchat_messages", f"DELETE FROM xchat_messages WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("xchat_token_usage", f"DELETE FROM xchat_token_usage WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("advance_revisions", f"DELETE FROM advance_revisions WHERE vendor_id = {placeholder}", (vendor_id,)),
+
+            # 2. Tables referencing faces or parent_users
+            ("advances", f"DELETE FROM advances WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("leave_requests", f"DELETE FROM leave_requests WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("person_embeddings", f"DELETE FROM person_embeddings WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("attendance", f"DELETE FROM attendance WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("student_parents", f"DELETE FROM student_parents WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("face_reset_requests", f"DELETE FROM face_reset_requests WHERE vendor_id = {placeholder}", (vendor_id,)),
+
+            # 3. Parent user tokens & users
+            ("parent_tokens", f"DELETE FROM parent_tokens WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("parent_users", f"DELETE FROM parent_users WHERE vendor_id = {placeholder}", (vendor_id,)),
+
+            # 4. System users
+            ("system_users", f"DELETE FROM system_users WHERE vendor_id = {placeholder}", (vendor_id,)),
+
+            # 5. Faces (all tables referencing faces are deleted!)
+            ("faces", f"DELETE FROM faces WHERE vendor_id = {placeholder}", (vendor_id,)),
+
+            # 6. Intermediate parent tables
+            ("class_batches", f"DELETE FROM class_batches WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("registration_batches", f"DELETE FROM registration_batches WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("lectures", f"DELETE FROM lectures WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("automated_report_schedules", f"DELETE FROM automated_report_schedules WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("xchat_conversations", f"DELETE FROM xchat_conversations WHERE vendor_id = {placeholder}", (vendor_id,)),
+
+            # 7. Remaining vendor-direct tables
+            ("classes", f"DELETE FROM classes WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("subject_master", f"DELETE FROM subject_master WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("class_thresholds", f"DELETE FROM class_thresholds WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("bulk_attendance_config", f"DELETE FROM bulk_attendance_config WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("leave_staff", f"DELETE FROM leave_staff WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("vendor_device_slots", f"DELETE FROM vendor_device_slots WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("vendor_devices", f"DELETE FROM vendor_devices WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("active_sessions", f"DELETE FROM active_sessions WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("invoices", f"DELETE FROM invoices WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("subscriptions", f"DELETE FROM subscriptions WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("companies", f"DELETE FROM companies WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("audit_logs", f"DELETE FROM audit_logs WHERE target_vendor_id = {placeholder}", (vendor_id,)),
+            ("archive_objects", f"DELETE FROM archive_objects WHERE vendor_id = {placeholder}", (vendor_id,)),
+
+            # 8. Finally, the vendor itself
+            ("vendors", f"DELETE FROM vendors WHERE id = {placeholder}", (vendor_id,)),
+        ]
+
+        for table_name, sql, params in delete_steps:
+            sp = f"sp_del_{table_name}"
             try:
                 # Check if table exists
                 if is_pg:
-                    c.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = %s)", (t,))
+                    c.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = %s)", (table_name,))
                     row = c.fetchone()
                     if not row or not row[0]:
                         continue
                 else:
-                    c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (t,))
+                    c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
                     if not c.fetchone():
                         continue
 
-                key = "target_vendor_id" if t == "audit_logs" else "vendor_id"
                 if is_pg:
-                    c.execute(f"SAVEPOINT {sp_del}")
-                sql_delete = f"DELETE FROM {t} WHERE {key} = %s" if is_pg else f"DELETE FROM {t} WHERE {key} = ?"
-                c.execute(sql_delete, (vendor_id,))
+                    c.execute(f"SAVEPOINT {sp}")
+                c.execute(sql, params)
                 if is_pg:
-                    c.execute(f"RELEASE SAVEPOINT {sp_del}")
+                    c.execute(f"RELEASE SAVEPOINT {sp}")
             except Exception as del_err:
                 if is_pg:
                     try:
-                        c.execute(f"ROLLBACK TO SAVEPOINT {sp_del}")
+                        c.execute(f"ROLLBACK TO SAVEPOINT {sp}")
                     except Exception:
                         pass
-                logger.warning(f"Could not delete from {t} for vendor {vendor_id}: {del_err}")
-        
-        sql_delete_vendor = "DELETE FROM vendors WHERE id = %s" if is_pg else "DELETE FROM vendors WHERE id = ?"
-        c.execute(sql_delete_vendor, (vendor_id,))
+                logger.warning(f"Could not delete {table_name} for vendor {vendor_id}: {del_err}")
+                if table_name == "vendors":
+                    raise del_err
         
         # 1. Commit the deletion FIRST so it's permanent and doesn't roll back if sequence reset fails
         conn.commit()
@@ -2187,7 +2236,7 @@ def delete_vendor(vendor_id):
         # We do this in a separate try-except block to prevent it from affecting the deletion result
         try:
             is_pg = getattr(conn, "_is_pg", False)
-            reset_tables = tables + ["vendors"]
+            reset_tables = [s[0] for s in delete_steps]
             for t in reset_tables:
                 try:
                     if is_pg:
@@ -2216,6 +2265,7 @@ def delete_vendor(vendor_id):
             socketio.emit('force_logout', {'vendor_id': vendor_id, 'reason': 'Vendor account deleted'}, room=f"vendor_{vendor_id}")
             # Notify super admin dashboard to refresh stats
             socketio.emit('admin_stats_updated', room='super_admin')
+            socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
         except Exception:
             pass
         return jsonify({"success": True, "message": "Vendor archived and deleted"})

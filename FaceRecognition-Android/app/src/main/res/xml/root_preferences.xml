@@ -20,9 +20,16 @@
         app:title="@string/thresholds">
 
         <EditTextPreference
-            app:defaultValue="0.9"
+            app:defaultValue="0.82"
             app:key="liveness_threshold"
             app:title="@string/liveness_threshold"
+            app:useSimpleSummaryProvider="true"
+            />
+
+        <EditTextPreference
+            app:defaultValue="0.72"
+            app:key="enroll_liveness_threshold"
+            app:title="@string/enroll_liveness_threshold"
             app:useSimpleSummaryProvider="true"
             />
 

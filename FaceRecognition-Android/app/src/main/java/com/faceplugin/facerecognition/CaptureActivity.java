@@ -182,7 +182,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
                 if (capturedBitmap == null || capturedFace == null
                         || capturedTemplate == null
                         || consecutiveValidFrames < REQUIRED_VALID_FRAMES
-                        || !FacePipeline.isLive(context, capturedFace)) {
+                        || !FacePipeline.isLive(context, capturedFace, true)) {
                     Toast.makeText(context, "Hold still until the live-face check completes", Toast.LENGTH_SHORT).show();
                     return;
                 }
@@ -335,7 +335,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
 
         List<FaceBox> faceBoxes = LocalFaceEngineFacade.INSTANCE.faceDetection(capturedBitmap, param);
         if(faceBoxes != null && faceBoxes.size() > 0) {
-            if(FacePipeline.isLive(context, faceBoxes.get(0))) {
+            if(FacePipeline.isLive(context, faceBoxes.get(0), true)) {
                 String msg = String.format("Liveness: Real, score = %.03f", faceBoxes.get(0).liveness);
                 livenessTxt.setText(msg);
             }
@@ -533,7 +533,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
         if (capturedBitmap == null || capturedFace == null
                 || capturedTemplate == null
                 || consecutiveValidFrames < REQUIRED_VALID_FRAMES
-                || !FacePipeline.isLive(context, capturedFace)) {
+                || !FacePipeline.isLive(context, capturedFace, true)) {
             Toast.makeText(context, "Hold still until the live-face check completes", Toast.LENGTH_SHORT).show();
             return;
         }

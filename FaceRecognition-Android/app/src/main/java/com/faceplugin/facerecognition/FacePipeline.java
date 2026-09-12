@@ -32,14 +32,23 @@ public final class FacePipeline {
     }
 
     public static boolean isLive(Context context, FaceBox face) {
+        return isLive(context, face, false);
+    }
+
+    public static boolean isLive(Context context, FaceBox face, boolean isEnrollment) {
         return face != null && SettingsActivity.livenessPassed(
-                context, face.liveness, face.livenessLabel);
+                context, face.liveness, face.livenessLabel, isEnrollment);
     }
 
     /** Less restrictive than enrollment, but still blocks poor/spoof inputs before extraction. */
     public static boolean recognitionReady(
             Context context, FaceBox face, int frameWidth, int frameHeight) {
-        if (!hasValidBounds(face, frameWidth, frameHeight) || !isLive(context, face)) return false;
+        return recognitionReady(context, face, frameWidth, frameHeight, false);
+    }
+
+    public static boolean recognitionReady(
+            Context context, FaceBox face, int frameWidth, int frameHeight, boolean isEnrollment) {
+        if (!hasValidBounds(face, frameWidth, frameHeight) || !isLive(context, face, isEnrollment)) return false;
         int shorterFrameSide = Math.min(frameWidth, frameHeight);
         int shorterFaceSide = Math.min(face.width(), face.height());
         if (shorterFrameSide <= 0 || shorterFaceSide < shorterFrameSide * 0.12f) return false;
@@ -136,7 +145,7 @@ public final class FacePipeline {
                 || face.face_luminance > SettingsActivity.getMaxLuminance(context)) {
             return FACE_CAPTURE_STATE.BAD_LIGHTING;
         }
-        if (!isLive(context, face)) return FACE_CAPTURE_STATE.SPOOFED_FACE;
+        if (!isLive(context, face, true)) return FACE_CAPTURE_STATE.SPOOFED_FACE;
         return FACE_CAPTURE_STATE.CAPTURE_OK;
     }
 

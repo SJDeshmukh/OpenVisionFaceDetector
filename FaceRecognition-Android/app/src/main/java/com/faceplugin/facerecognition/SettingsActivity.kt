@@ -13,7 +13,8 @@ class SettingsActivity : AppCompatActivity() {
     companion object {
         const val DEFAULT_CAMERA_LENS = "front"
         // Defaults from the in-repository FaceIDApp model contracts.
-        const val DEFAULT_LIVENESS_THRESHOLD = "0.9"
+        const val DEFAULT_LIVENESS_THRESHOLD = "0.82"
+        const val DEFAULT_ENROLL_LIVENESS_THRESHOLD = "0.72"
         const val DEFAULT_IDENTIFY_THRESHOLD = "0.62"
         const val DEFAULT_LIVENESS_LEVEL = "0"
         const val DEFAULT_YAW_THRESHOLD = "40.0"
@@ -27,7 +28,7 @@ class SettingsActivity : AppCompatActivity() {
         const val DEFAULT_MAX_LUMINANCE = "0.90"
 
         private const val PREFS_SCHEMA = "facesdk_prefs_schema"
-        private const val PREFS_SCHEMA_CURRENT = 3
+        private const val PREFS_SCHEMA_CURRENT = 4
 
         /** Migrates thresholds that belonged to the earlier SDK generation. */
         @JvmStatic
@@ -38,6 +39,7 @@ class SettingsActivity : AppCompatActivity() {
             val editor = preferences.edit()
             if (currentSchema < 1) {
                 editor.putString("liveness_threshold", DEFAULT_LIVENESS_THRESHOLD)
+                    .putString("enroll_liveness_threshold", DEFAULT_ENROLL_LIVENESS_THRESHOLD)
                     .putString("identify_threshold", DEFAULT_IDENTIFY_THRESHOLD)
                     .putString("yaw_threshold", DEFAULT_YAW_THRESHOLD)
                     .putString("roll_threshold", DEFAULT_ROLL_THRESHOLD)
@@ -58,15 +60,21 @@ class SettingsActivity : AppCompatActivity() {
                 editor.putString("liveness_threshold", DEFAULT_LIVENESS_THRESHOLD)
                     .putString("identify_threshold", DEFAULT_IDENTIFY_THRESHOLD)
             }
+            if (currentSchema < 4) {
+                editor.putString("liveness_threshold", DEFAULT_LIVENESS_THRESHOLD)
+                editor.putString("enroll_liveness_threshold", DEFAULT_ENROLL_LIVENESS_THRESHOLD)
+            }
             editor.putInt(PREFS_SCHEMA, PREFS_SCHEMA_CURRENT).apply()
         }
 
         @JvmStatic
-        fun livenessPassed(context: Context, score: Float, label: String?): Boolean {
+        @JvmOverloads
+        fun livenessPassed(context: Context, score: Float, label: String?, isEnrollment: Boolean = false): Boolean {
             val normalizedLabel = label.orEmpty().lowercase()
             if (!score.isFinite()) return false
             if (listOf("spoof", "fake", "print", "replay", "attack").any(normalizedLabel::contains)) return false
-            return score >= getLivenessThreshold(context)
+            val threshold = if (isEnrollment) getEnrollLivenessThreshold(context) else getLivenessThreshold(context)
+            return score >= threshold
         }
 
         private fun boundedPreference(context: Context, key: String, default: String, min: Float, max: Float): Float {
@@ -78,6 +86,11 @@ class SettingsActivity : AppCompatActivity() {
         @JvmStatic
         fun getLivenessThreshold(context: Context): Float {
             return boundedPreference(context, "liveness_threshold", DEFAULT_LIVENESS_THRESHOLD, 0f, 1f)
+        }
+
+        @JvmStatic
+        fun getEnrollLivenessThreshold(context: Context): Float {
+            return boundedPreference(context, "enroll_liveness_threshold", DEFAULT_ENROLL_LIVENESS_THRESHOLD, 0f, 1f)
         }
 
         @JvmStatic
@@ -188,6 +201,7 @@ class SettingsActivity : AppCompatActivity() {
 
             val cameraLensPref = findPreference<ListPreference>("camera_lens")
             val livenessThresholdPref = findPreference<EditTextPreference>("liveness_threshold")
+            val enrollLivenessThresholdPref = findPreference<EditTextPreference>("enroll_liveness_threshold")
             val livenessLevelPref = findPreference<ListPreference>("liveness_level")
             val identifyThresholdPref = findPreference<EditTextPreference>("identify_threshold")
             val yawThresholdPref = findPreference<EditTextPreference>("yaw_threshold")
@@ -207,6 +221,7 @@ class SettingsActivity : AppCompatActivity() {
                 if (!valid) Toast.makeText(context, getString(R.string.invalid_value), Toast.LENGTH_SHORT).show()
                 valid
             }
+            enrollLivenessThresholdPref?.onPreferenceChangeListener = unitIntervalValidator
             faceQualityThresholdPref?.onPreferenceChangeListener = unitIntervalValidator
             minLuminancePref?.onPreferenceChangeListener = unitIntervalValidator
             maxLuminancePref?.onPreferenceChangeListener = unitIntervalValidator
@@ -336,6 +351,7 @@ class SettingsActivity : AppCompatActivity() {
                 cameraLensPref?.value = SettingsActivity.DEFAULT_CAMERA_LENS
                 livenessLevelPref?.value = SettingsActivity.DEFAULT_LIVENESS_LEVEL
                 livenessThresholdPref?.text = SettingsActivity.DEFAULT_LIVENESS_THRESHOLD
+                enrollLivenessThresholdPref?.text = SettingsActivity.DEFAULT_ENROLL_LIVENESS_THRESHOLD
                 identifyThresholdPref?.text = SettingsActivity.DEFAULT_IDENTIFY_THRESHOLD
                 yawThresholdPref?.text = SettingsActivity.DEFAULT_YAW_THRESHOLD
                 rollThresholdPref?.text = SettingsActivity.DEFAULT_ROLL_THRESHOLD

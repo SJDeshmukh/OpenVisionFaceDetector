@@ -111,51 +111,78 @@ def process_delete_vendor_task(vendor_id):
             except Exception as e:
                 print(f"Error deleting from {table}: {e}")
 
-        # 1. Clear class batches and items
-        try:
-            sql_batches = f"SELECT id FROM class_batches WHERE vendor_id = {placeholder}"
-            c.execute(sql_batches, (vendor_id,))
-            batch_ids = [r[0] for r in c.fetchall()]
-            if batch_ids:
-                item_placeholders = ', '.join([placeholder] * len(batch_ids))
-                c.execute(f"DELETE FROM class_batch_items WHERE batch_id IN ({item_placeholders})", tuple(batch_ids))
-        except Exception: pass
-        
-        safe_delete("class_batches")
-        safe_delete("attendance")
-        safe_delete("leave_requests")
-        safe_delete("person_embeddings")
-        
-        # 2. Users and Parents
-        safe_delete("system_users")
-        safe_delete("student_parents")
-        
-        # 3. Devices
-        safe_delete("vendor_device_slots")
-        safe_delete("vendor_devices")
-        
-        # 4. Parent Tokens and Users
-        safe_delete("parent_tokens")
-        safe_delete("parent_users")
-        
-        # 5. Faces (now that all references are gone)
-        safe_delete("faces")
-        
-        # 6. Other vendor-specific data
-        safe_delete("leave_staff")
-        safe_delete("xchat_messages")
-        safe_delete("xchat_conversations")
-        safe_delete("automated_report_deliveries")
-        safe_delete("automated_report_schedules")
-        safe_delete("companies")
-        safe_delete("subscriptions")
-        safe_delete("active_sessions")
-        safe_delete("invoices")
-        safe_delete("audit_logs", key="target_vendor_id")
-        
-        # 7. Finally the vendor itself
-        c.execute(f"DELETE FROM vendors WHERE id = {placeholder}", (vendor_id,))
-        
+        delete_steps = [
+            # 1. Sub-child items
+            ("class_batch_items", f"DELETE FROM class_batch_items WHERE batch_id IN (SELECT id FROM class_batches WHERE vendor_id = {placeholder})", (vendor_id,)),
+            ("registration_batch_items", f"DELETE FROM registration_batch_items WHERE batch_id IN (SELECT id FROM registration_batches WHERE vendor_id = {placeholder})", (vendor_id,)),
+            ("lecture_attendance", f"DELETE FROM lecture_attendance WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("automated_report_deliveries", f"DELETE FROM automated_report_deliveries WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("xchat_messages", f"DELETE FROM xchat_messages WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("xchat_token_usage", f"DELETE FROM xchat_token_usage WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("advance_revisions", f"DELETE FROM advance_revisions WHERE vendor_id = {placeholder}", (vendor_id,)),
+
+            # 2. Tables referencing faces or parent_users
+            ("advances", f"DELETE FROM advances WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("leave_requests", f"DELETE FROM leave_requests WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("person_embeddings", f"DELETE FROM person_embeddings WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("attendance", f"DELETE FROM attendance WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("student_parents", f"DELETE FROM student_parents WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("face_reset_requests", f"DELETE FROM face_reset_requests WHERE vendor_id = {placeholder}", (vendor_id,)),
+
+            # 3. Parent user tokens & users
+            ("parent_tokens", f"DELETE FROM parent_tokens WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("parent_users", f"DELETE FROM parent_users WHERE vendor_id = {placeholder}", (vendor_id,)),
+
+            # 4. System users
+            ("system_users", f"DELETE FROM system_users WHERE vendor_id = {placeholder}", (vendor_id,)),
+
+            # 5. Faces (all tables referencing faces are deleted!)
+            ("faces", f"DELETE FROM faces WHERE vendor_id = {placeholder}", (vendor_id,)),
+
+            # 6. Intermediate parent tables
+            ("class_batches", f"DELETE FROM class_batches WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("registration_batches", f"DELETE FROM registration_batches WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("lectures", f"DELETE FROM lectures WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("automated_report_schedules", f"DELETE FROM automated_report_schedules WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("xchat_conversations", f"DELETE FROM xchat_conversations WHERE vendor_id = {placeholder}", (vendor_id,)),
+
+            # 7. Remaining vendor-direct tables
+            ("classes", f"DELETE FROM classes WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("subject_master", f"DELETE FROM subject_master WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("class_thresholds", f"DELETE FROM class_thresholds WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("bulk_attendance_config", f"DELETE FROM bulk_attendance_config WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("leave_staff", f"DELETE FROM leave_staff WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("vendor_device_slots", f"DELETE FROM vendor_device_slots WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("vendor_devices", f"DELETE FROM vendor_devices WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("active_sessions", f"DELETE FROM active_sessions WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("invoices", f"DELETE FROM invoices WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("subscriptions", f"DELETE FROM subscriptions WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("companies", f"DELETE FROM companies WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("audit_logs", f"DELETE FROM audit_logs WHERE target_vendor_id = {placeholder}", (vendor_id,)),
+            ("archive_objects", f"DELETE FROM archive_objects WHERE vendor_id = {placeholder}", (vendor_id,)),
+
+            # 8. Finally, the vendor itself
+            ("vendors", f"DELETE FROM vendors WHERE id = {placeholder}", (vendor_id,)),
+        ]
+
+        for table_name, sql, params in delete_steps:
+            try:
+                if is_pg:
+                    c.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = %s)", (table_name,))
+                    row = c.fetchone()
+                    if not row or not row[0]:
+                        continue
+                else:
+                    c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
+                    if not c.fetchone():
+                        continue
+
+                c.execute(sql, params)
+            except Exception as e:
+                print(f"Error deleting from {table_name}: {e}")
+                if table_name == "vendors":
+                    raise e
+
         # 8. Commit the deletion FIRST so it's permanent
         conn.commit()
         

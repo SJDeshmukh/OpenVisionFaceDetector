@@ -96,7 +96,7 @@ class ParentFaceRegistrationActivity : AppCompatActivity() {
             
             // Liveness check
             if (!hasCapturedTemplate && !FacePipeline.recognitionReady(
-                    this, faceBox, bitmap.width, bitmap.height)) {
+                    this, faceBox, bitmap.width, bitmap.height, true)) {
                 runOnUiThread {
                     showLoading(false)
                     Toast.makeText(this, "Real face required (Spoof detected)", Toast.LENGTH_SHORT).show()

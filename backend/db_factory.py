@@ -222,6 +222,11 @@ class PostgresCursorWrapper:
     def fetchone(self):
         return self.cursor.fetchone()
 
+    def fetchmany(self, size=None):
+        if size is None:
+            return self.cursor.fetchmany()
+        return self.cursor.fetchmany(size)
+
     def fetchall(self):
         return self.cursor.fetchall()
 
@@ -695,6 +700,58 @@ def _init_pg_schema_on_conn(conn):
         WHERE role = 'user' AND password != password_plain AND password_plain IS NOT NULL
     """, "Initialize has_set_password")
     run_migration("UPDATE system_users SET password_plain = NULL WHERE password_plain IS NOT NULL", "Remove legacy plaintext passwords")
+
+    # 4. Ensure ON DELETE CASCADE on foreign keys so vendor and batch deletions cascade cleanly
+    if is_pg:
+        try:
+            cur.execute("""
+                SELECT
+                    tc.table_name,
+                    kcu.column_name,
+                    tc.constraint_name,
+                    ccu.table_name AS foreign_table_name,
+                    ccu.column_name AS foreign_column_name,
+                    rc.delete_rule
+                FROM information_schema.table_constraints AS tc
+                JOIN information_schema.key_column_usage AS kcu
+                    ON tc.constraint_name = kcu.constraint_name
+                    AND tc.table_schema = kcu.table_schema
+                JOIN information_schema.constraint_column_usage AS ccu
+                    ON ccu.constraint_name = tc.constraint_name
+                    AND ccu.table_schema = tc.table_schema
+                JOIN information_schema.referential_constraints AS rc
+                    ON tc.constraint_name = rc.constraint_name
+                    AND tc.table_schema = rc.constraint_schema
+                WHERE tc.constraint_type = 'FOREIGN KEY'
+                    AND tc.table_schema = 'public'
+                    AND (
+                        ccu.table_name = 'vendors'
+                        OR ccu.table_name IN (
+                            'class_batches', 'registration_batches', 'lectures',
+                            'faces', 'parent_users', 'automated_report_schedules',
+                            'xchat_conversations', 'advances'
+                        )
+                    )
+                    AND rc.delete_rule != 'CASCADE';
+            """)
+            non_cascade_fks = cur.fetchall()
+            for row in non_cascade_fks:
+                tbl = row['table_name'] if isinstance(row, dict) else row[0]
+                col = row['column_name'] if isinstance(row, dict) else row[1]
+                cname = row['constraint_name'] if isinstance(row, dict) else row[2]
+                ftbl = row['foreign_table_name'] if isinstance(row, dict) else row[3]
+                fcol = row['foreign_column_name'] if isinstance(row, dict) else row[4]
+                try:
+                    cur.execute(f'ALTER TABLE "{tbl}" DROP CONSTRAINT IF EXISTS "{cname}"')
+                    cur.execute(f'ALTER TABLE "{tbl}" ADD CONSTRAINT "{cname}" FOREIGN KEY ("{col}") REFERENCES "{ftbl}"("{fcol}") ON DELETE CASCADE')
+                    conn.commit()
+                    logger.info(f"Updated FK constraint {cname} on {tbl}({col}) -> {ftbl}({fcol}) to ON DELETE CASCADE")
+                except Exception as fk_err:
+                    conn.rollback()
+                    logger.warning(f"Could not update FK {cname} on {tbl}: {fk_err}")
+        except Exception as e:
+            logger.warning(f"Error checking FK cascade rules: {e}")
+            if getattr(conn, "_is_pg", False): conn.rollback()
 
     conn.commit()
     cur.close()
