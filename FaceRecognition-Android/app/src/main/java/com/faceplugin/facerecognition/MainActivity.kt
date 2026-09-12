@@ -172,6 +172,11 @@ class MainActivity : AppCompatActivity() {
             bottomNav.menu.findItem(R.id.nav_users).isVisible = false
             // Hide the bottom navigation bar entirely for users since they only have one tab
             bottomNav.visibility = android.view.View.GONE
+
+            // Auto-engage Kiosk Lockdown Mode for kiosk user
+            window.decorView.post {
+                startKioskLockdown()
+            }
         }
 
         // Kiosk Mode & Logout
