@@ -2011,7 +2011,8 @@ def delete_vendor(vendor_id):
     # ... keep existing fallback ...
     try:
         is_pg = getattr(conn, "_is_pg", False)
-        sql_vendor = "SELECT * FROM vendors WHERE id = %s" if is_pg else "SELECT * FROM vendors WHERE id = ?"
+        placeholder = "%s" if is_pg else "?"
+        sql_vendor = f"SELECT * FROM vendors WHERE id = {placeholder}"
         c.execute(sql_vendor, (vendor_id,))
         vendor_row = c.fetchone()
         if not vendor_row:
