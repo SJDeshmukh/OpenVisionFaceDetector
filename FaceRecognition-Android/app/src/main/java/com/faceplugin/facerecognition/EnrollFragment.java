@@ -371,7 +371,7 @@ public class EnrollFragment extends Fragment {
             }
 
             // NEW: Always save locally first with synced=false
-            String localUid = dbManager.insertLocalPerson(name, bitmap, templates, phone, department, designation, shift, dynamicData.toString());
+            String localUid = dbManager.insertLocalPerson(name, faceImage, templates, phone, department, designation, shift, dynamicData.toString());
             dbManager.loadPerson(); // Refresh to make recognizable immediately
 
             if (NetworkUtils.INSTANCE.isOnline(requireContext().getApplicationContext()) &&
@@ -380,6 +380,9 @@ public class EnrollFragment extends Fragment {
                 syncToBackend(name, templates, faceImage, phone, department, designation, shift, dynamicData, localUid);
             } else {
                 Toast.makeText(getContext(), "Registered locally (offline)", Toast.LENGTH_SHORT).show();
+                try {
+                    SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
+                } catch (Exception ignored) {}
             }
             
             if (faceImage != null && !faceImage.isRecycled()) faceImage.recycle();
@@ -489,15 +492,12 @@ public class EnrollFragment extends Fragment {
         }
 
         try {
-            String role = prefs.getString("role", "");
             String cached = prefs.getString("cached_registration_config", null);
-            if (role == null) role = "";
-            if (!role.equalsIgnoreCase("vendor_admin") && cached != null && !cached.isEmpty()) {
+            if (cached != null && !cached.isEmpty()) {
                 JsonArray config = new JsonParser().parse(cached).getAsJsonArray();
-                if (getActivity() != null && isAdded()) {
+                if (config != null && config.size() > 0 && getActivity() != null && isAdded()) {
                     getActivity().runOnUiThread(() -> renderDynamicFields(config));
                 }
-                return;
             }
         } catch (Exception ignored) {}
 
@@ -509,23 +509,27 @@ public class EnrollFragment extends Fragment {
                         JsonObject body = response.body();
                         if (body.has("config") && !body.get("config").isJsonNull()) {
                             JsonArray config = body.getAsJsonArray("config");
-                            try {
-                                prefs.edit().putString("cached_registration_config", config.toString()).apply();
-                            } catch (Exception ignored) {}
-                            if (getActivity() != null && isAdded()) {
-                                getActivity().runOnUiThread(() -> renderDynamicFields(config));
+                            if (config != null && config.size() > 0) {
+                                try {
+                                    prefs.edit().putString("cached_registration_config", config.toString()).apply();
+                                } catch (Exception ignored) {}
+                                if (getActivity() != null && isAdded()) {
+                                    getActivity().runOnUiThread(() -> renderDynamicFields(config));
+                                }
+                                return;
                             }
-                            return;
                         }
                     }
                     try {
                         String cached = prefs.getString("cached_registration_config", null);
                         if (cached != null && !cached.isEmpty()) {
                             JsonArray config = new JsonParser().parse(cached).getAsJsonArray();
-                            if (getActivity() != null && isAdded()) {
-                                getActivity().runOnUiThread(() -> renderDynamicFields(config));
+                            if (config != null && config.size() > 0) {
+                                if (getActivity() != null && isAdded()) {
+                                    getActivity().runOnUiThread(() -> renderDynamicFields(config));
+                                }
+                                return;
                             }
-                            return;
                         }
                     } catch (Exception ignored) {}
                     if (getActivity() != null && isAdded()) {
@@ -542,10 +546,12 @@ public class EnrollFragment extends Fragment {
                     String cached = prefs.getString("cached_registration_config", null);
                     if (cached != null && !cached.isEmpty()) {
                         JsonArray config = new JsonParser().parse(cached).getAsJsonArray();
-                        if (getActivity() != null && isAdded()) {
-                            getActivity().runOnUiThread(() -> renderDynamicFields(config));
+                        if (config != null && config.size() > 0) {
+                            if (getActivity() != null && isAdded()) {
+                                getActivity().runOnUiThread(() -> renderDynamicFields(config));
+                            }
+                            return;
                         }
-                        return;
                     }
                 } catch (Exception ignored) {}
                 if (getActivity() != null && isAdded()) {
@@ -634,8 +640,9 @@ public class EnrollFragment extends Fragment {
 
     private void renderDynamicFields(JsonArray config) {
         this.currentRegistrationConfig = config;
-        if (config == null) {
-            android.util.Log.e("AppCrash", "renderDynamicFields called with null config");
+        if (config == null || config.size() == 0) {
+            android.util.Log.e("AppCrash", "renderDynamicFields called with empty or null config");
+            showDefaultProfileFields();
             return;
         }
         android.util.Log.e("AppCrash", "renderDynamicFields started with " + config.size() + " items");
@@ -663,13 +670,23 @@ public class EnrollFragment extends Fragment {
             for (JsonElement el : config) {
                 if (!el.isJsonObject()) continue;
                 JsonObject field = el.getAsJsonObject();
-                if (!field.has("field")) continue;
                 
-                String key = field.get("field").getAsString();
+                String key = null;
+                if (field.has("field") && !field.get("field").isJsonNull()) {
+                    key = field.get("field").getAsString();
+                } else if (field.has("name") && !field.get("name").isJsonNull()) {
+                    key = field.get("name").getAsString();
+                }
                 if (key == null || key.trim().isEmpty()) continue;
-                String label = field.has("label") && !field.get("label").isJsonNull()
-                        ? field.get("label").getAsString()
-                        : key;
+
+                String resolvedLabel = key;
+                if (field.has("label") && !field.get("label").isJsonNull()) {
+                    resolvedLabel = field.get("label").getAsString();
+                } else if (field.has("name") && !field.get("name").isJsonNull()) {
+                    resolvedLabel = field.get("name").getAsString();
+                }
+                final String label = resolvedLabel;
+
                 boolean enabled = !field.has("enabled") || field.get("enabled").isJsonNull() || field.get("enabled").getAsBoolean();
                 if (!enabled) continue;
                 String typeRaw = (field.has("type") && !field.get("type").isJsonNull())
@@ -918,7 +935,13 @@ public class EnrollFragment extends Fragment {
             @Override
             public void onFailure(Call<UploadFaceResponse> call, Throwable t) {
                 t.printStackTrace();
-                Toast.makeText(getContext(), "Internet required for registration", Toast.LENGTH_LONG).show();
+                Toast.makeText(getContext(), "Registered locally; will sync when online", Toast.LENGTH_LONG).show();
+                try {
+                    Context ctx = getContext();
+                    if (ctx != null) {
+                        SyncScheduler.scheduleImmediate(ctx.getApplicationContext());
+                    }
+                } catch (Exception ignored) {}
             }
         });
     }

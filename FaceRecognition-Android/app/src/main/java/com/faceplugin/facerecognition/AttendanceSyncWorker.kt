@@ -29,10 +29,13 @@ class AttendanceSyncWorker(appContext: Context, params: WorkerParameters) : Work
         for (item in queue) {
             try {
                 var pid = item.personId
-                if (pid.isNullOrBlank()) {
-                    pid = db.resolvePersonId(item.localUid)
+                if (pid.isNullOrBlank() || pid.startsWith("local:")) {
+                    val resolved = db.resolvePersonId(item.localUid, item.name)
+                    if (!resolved.isNullOrBlank() && !resolved.startsWith("local:")) {
+                        pid = resolved
+                    }
                 }
-                if (pid.isNullOrBlank()) {
+                if (pid.isNullOrBlank() || pid.startsWith("local:")) {
                     needsRetry = true
                     continue
                 }

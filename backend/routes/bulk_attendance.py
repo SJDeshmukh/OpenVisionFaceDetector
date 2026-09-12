@@ -224,6 +224,28 @@ def get_bulk_attendance_config():
         except Exception:
             configured_fields = []
 
+    if not configured_fields and vendor_id:
+        try:
+            conn2 = get_db_connection()
+            c2 = conn2.cursor()
+            c2.execute("SELECT registration_config FROM vendors WHERE id = ?", (vendor_id,))
+            v_row = c2.fetchone()
+            conn2.close()
+            if v_row and v_row[0]:
+                v_cfg = json.loads(v_row[0])
+                for f in v_cfg:
+                    fname = f.get('field') or f.get('name')
+                    if fname:
+                        configured_fields.append({
+                            "name": fname,
+                            "label": f.get('label', fname),
+                            "type": f.get('type', 'text'),
+                            "required": bool(f.get('required', False)),
+                            "options": f.get('options', [])
+                        })
+        except Exception:
+            pass
+
     return jsonify({"fields": configured_fields, "custom_fields": configured_fields})
 
 
@@ -253,7 +275,7 @@ def save_bulk_attendance_config():
     seen = set()
     valid = []
     for f in raw_fields:
-        name = str(f.get('name', '')).strip().replace(' ', '_').lower()
+        name = str(f.get('name', '') or f.get('field', '')).strip().replace(' ', '_').lower()
         if not name or name in seen:
             continue
         field_type = f.get('type', 'text')
@@ -270,25 +292,36 @@ def save_bulk_attendance_config():
 
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT id FROM vendors WHERE id = ?", (vendor_id,))
-    if not c.fetchone():
+    c.execute("SELECT id, registration_config FROM vendors WHERE id = ?", (vendor_id,))
+    v_row = c.fetchone()
+    if not v_row:
         conn.close()
         return jsonify({"error": "Vendor not found"}), 404
+    old_reg_config = []
+    try:
+        old_reg_raw = v_row[1] if isinstance(v_row, (list, tuple)) else v_row['registration_config']
+        old_reg_config = json.loads(old_reg_raw) if old_reg_raw else []
+    except Exception:
+        old_reg_config = []
+
     _upsert_config(c, vendor_id, json.dumps(valid), datetime.utcnow().isoformat())
     registration_config = []
     for field in valid:
         identity = field['name'].lower()
-        registration_config.append({
+        existing_reg = next((reg for reg in old_reg_config if str(reg.get('field') or reg.get('name') or '').strip().lower() == identity), None)
+        item = {
             "field": field['name'],
+            "name": field['name'],
             "label": field['label'],
-            "type": field.get('type') or 'text',
+            "type": field.get('type') or (existing_reg.get('type') if existing_reg else 'text'),
             "required": field.get('required', False),
             "enabled": True,
-            "options": field.get('options', []),
+            "options": field.get('options', []) or (existing_reg.get('options', []) if existing_reg else []),
             "is_name": identity in {'name', 'full_name', 'student_name', 'employee_name'},
             "is_phone": identity in {'phone', 'mobile', 'mobile_number', 'phone_number', 'contact_number'},
             "is_id": identity in {'student_id', 'student_number', 'employee_id', 'roll_number'},
-        })
+        }
+        registration_config.append(item)
     c.execute(
         "UPDATE vendors SET registration_config = ? WHERE id = ?",
         (json.dumps(registration_config, separators=(',', ':')), vendor_id),

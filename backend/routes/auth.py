@@ -245,8 +245,34 @@ def get_current_user():
         if v_row:
             web_login_enabled = v_row[0]
             frontend_bundle_id = v_row[1] or 'default_attendance'
-            backend_service_id = v_row[2] or 'default_api'
+            backend_service_id = (v_row[2] if len(v_row) > 2 and v_row[2] else None) or 'default_api'
             config_raw = json.loads(v_row[3]) if v_row[3] else []
+            if not config_raw:
+                try:
+                    c.execute("SELECT fields FROM bulk_attendance_config WHERE vendor_id = ?", (vendor_id,))
+                    b_row = c.fetchone()
+                    if b_row and b_row[0]:
+                        b_fields = json.loads(b_row[0])
+                        for f in b_fields:
+                            fname = f.get('name') or f.get('field')
+                            if fname:
+                                config_raw.append({
+                                    "field": fname,
+                                    "name": fname,
+                                    "label": f.get('label', fname),
+                                    "type": f.get('type', 'text'),
+                                    "required": bool(f.get('required', False)),
+                                    "options": f.get('options', []),
+                                    "enabled": True
+                                })
+                except Exception:
+                    pass
+            for item in config_raw:
+                if isinstance(item, dict):
+                    f_val = item.get('field') or item.get('name')
+                    if f_val:
+                        item['field'] = f_val
+                        item['name'] = f_val
             from services.config_utils import hydrate_registration_config
             vendor_config = hydrate_registration_config(vendor_id, config_raw, conn=conn)
             vendor_vertical = v_row[4]
@@ -513,6 +539,10 @@ def login():
 
         vendor_vertical = None
         user_vendor_id = user.get('vendor_id')
+        frontend_bundle_id = 'default_attendance'
+        backend_service_id = 'default_api'
+        vendor_config = []
+        features = []
         
         if user_vendor_id:
             is_allowed, reason = check_vendor_status(user_vendor_id)
@@ -532,6 +562,32 @@ def login():
             frontend_bundle_id = row[1] if row and len(row) > 1 and row[1] else 'default_attendance'
             backend_service_id = row[2] if row and len(row) > 2 and row[2] else 'default_api'
             config_raw = json.loads(row[3]) if row and len(row) > 3 and row[3] else []
+            if not config_raw:
+                try:
+                    c.execute("SELECT fields FROM bulk_attendance_config WHERE vendor_id = ?", (user_vendor_id,))
+                    b_row = c.fetchone()
+                    if b_row and b_row[0]:
+                        b_fields = json.loads(b_row[0])
+                        for f in b_fields:
+                            fname = f.get('name') or f.get('field')
+                            if fname:
+                                config_raw.append({
+                                    "field": fname,
+                                    "name": fname,
+                                    "label": f.get('label', fname),
+                                    "type": f.get('type', 'text'),
+                                    "required": bool(f.get('required', False)),
+                                    "options": f.get('options', []),
+                                    "enabled": True
+                                })
+                except Exception:
+                    pass
+            for item in config_raw:
+                if isinstance(item, dict):
+                    f_val = item.get('field') or item.get('name')
+                    if f_val:
+                        item['field'] = f_val
+                        item['name'] = f_val
             from services.config_utils import hydrate_registration_config
             vendor_config = hydrate_registration_config(user_vendor_id, config_raw, conn=conn)
             

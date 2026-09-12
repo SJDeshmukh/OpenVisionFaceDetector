@@ -1693,8 +1693,44 @@ def get_vendor_registration_config(vendor_id):
                 vertical_val = row["vertical"]
             except Exception:
                 pass
+        config_data = []
         if config:
-            config_data = json.loads(config)
+            try:
+                config_data = json.loads(config)
+            except Exception:
+                config_data = []
+
+        # If vendors.registration_config is empty, fallback to bulk_attendance_config!
+        if not config_data:
+            try:
+                c.execute("SELECT fields FROM bulk_attendance_config WHERE vendor_id = ?", (vendor_id,))
+                b_row = c.fetchone()
+                if b_row and b_row[0]:
+                    b_fields = json.loads(b_row[0])
+                    for f in b_fields:
+                        fname = f.get('name') or f.get('field')
+                        if fname:
+                            config_data.append({
+                                "field": fname,
+                                "name": fname,
+                                "label": f.get('label', fname),
+                                "type": f.get('type', 'text'),
+                                "required": bool(f.get('required', False)),
+                                "options": f.get('options', []),
+                                "enabled": True
+                            })
+            except Exception as ex:
+                logger.warning(f"Error reading bulk_attendance_config fallback: {ex}")
+
+        # Ensure all fields have both field and name populated
+        for item in config_data:
+            if isinstance(item, dict):
+                f_val = item.get('field') or item.get('name')
+                if f_val:
+                    item['field'] = f_val
+                    item['name'] = f_val
+
+        if config_data:
             # Hydrate dynamic fields (e.g. Leave Departments)
             hydrated = hydrate_registration_config(vendor_id, config_data, conn=conn)
             return jsonify({"config": hydrated})
@@ -1724,6 +1760,35 @@ def update_vendor_registration_config(vendor_id):
     c = conn.cursor()
     try:
         c.execute("UPDATE vendors SET registration_config = ? WHERE id = ?", (json.dumps(config), vendor_id))
+        
+        # Also synchronize bulk_attendance_config
+        try:
+            bulk_fields = []
+            for f in config:
+                fname = f.get('field') or f.get('name')
+                if fname:
+                    bulk_fields.append({
+                        "name": fname,
+                        "label": f.get('label', fname),
+                        "type": f.get('type', 'text'),
+                        "required": bool(f.get('required', False)),
+                        "options": f.get('options', [])
+                    })
+            now_iso = datetime.utcnow().isoformat()
+            c.execute("SELECT id FROM bulk_attendance_config WHERE vendor_id = ?", (vendor_id,))
+            if c.fetchone():
+                c.execute(
+                    "UPDATE bulk_attendance_config SET fields = ?, updated_at = ? WHERE vendor_id = ?",
+                    (json.dumps(bulk_fields), now_iso, vendor_id)
+                )
+            else:
+                c.execute(
+                    "INSERT INTO bulk_attendance_config (vendor_id, fields, updated_at) VALUES (?, ?, ?)",
+                    (vendor_id, json.dumps(bulk_fields), now_iso)
+                )
+        except Exception as e_bulk:
+            logger.warning(f"Could not sync bulk_attendance_config: {e_bulk}")
+
         conn.commit()
         
         # Log Audit
@@ -1965,6 +2030,9 @@ def delete_vendor(vendor_id):
             return str(obj)
 
         def archive_table(table, key="vendor_id"):
+            sp_name = f"sp_arch_{table}"
+            if is_pg:
+                c.execute(f"SAVEPOINT {sp_name}")
             try:
                 # Check if table exists first to avoid error
                 if is_pg:
@@ -1972,6 +2040,7 @@ def delete_vendor(vendor_id):
                     c.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = %s)", (table,))
                     row = c.fetchone()
                     if not row or not row[0]:
+                        if is_pg: c.execute(f"RELEASE SAVEPOINT {sp_name}")
                         return
                 else:
                     c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,))
@@ -1991,14 +2060,22 @@ def delete_vendor(vendor_id):
                     for r in rows:
                         row = r if isinstance(r, dict) else {cols[i]: r[i] for i in range(len(cols))}
                         c.execute(sql_insert, (vendor_id, table, json.dumps(row, default=_json_default)))
+                if is_pg:
+                    c.execute(f"RELEASE SAVEPOINT {sp_name}")
             except Exception:
-                pass
+                if is_pg:
+                    try:
+                        c.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
+                    except Exception:
+                        pass
         tables = [
-            # Child tables first (they reference faces/parent_users/lectures which reference vendors)
-            "lecture_attendance", "face_reset_requests", "student_parents", "xchat_messages",
-            "advances", "leave_requests", "person_embeddings",
+            # Child tables first (they reference faces/parent_users/lectures/schedules which reference vendors)
+            "lecture_attendance", "face_reset_requests", "student_parents",
+            "advance_revisions", "advances", "leave_requests", "person_embeddings",
+            "automated_report_deliveries", "automated_report_schedules",
+            "xchat_messages", "xchat_token_usage", "xchat_conversations", "class_thresholds",
             # Tables that reference vendors directly
-            "class_batches", "attendance", "lectures", "xchat_token_usage", "xchat_conversations",
+            "class_batches", "attendance", "lectures",
             "system_users", "parent_tokens", "parent_users",
             "faces", "leave_staff", "vendor_device_slots", "vendor_devices",
             "active_sessions", "invoices", "subscriptions", "companies",
@@ -2069,6 +2146,7 @@ def delete_vendor(vendor_id):
         
         # Delete in reverse order of foreign key dependency
         for t in tables:
+            sp_del = f"sp_del_{t}"
             try:
                 # Check if table exists
                 if is_pg:
@@ -2082,10 +2160,19 @@ def delete_vendor(vendor_id):
                         continue
 
                 key = "target_vendor_id" if t == "audit_logs" else "vendor_id"
+                if is_pg:
+                    c.execute(f"SAVEPOINT {sp_del}")
                 sql_delete = f"DELETE FROM {t} WHERE {key} = %s" if is_pg else f"DELETE FROM {t} WHERE {key} = ?"
                 c.execute(sql_delete, (vendor_id,))
-            except Exception:
-                pass
+                if is_pg:
+                    c.execute(f"RELEASE SAVEPOINT {sp_del}")
+            except Exception as del_err:
+                if is_pg:
+                    try:
+                        c.execute(f"ROLLBACK TO SAVEPOINT {sp_del}")
+                    except Exception:
+                        pass
+                logger.warning(f"Could not delete from {t} for vendor {vendor_id}: {del_err}")
         
         sql_delete_vendor = "DELETE FROM vendors WHERE id = %s" if is_pg else "DELETE FROM vendors WHERE id = ?"
         c.execute(sql_delete_vendor, (vendor_id,))

@@ -186,8 +186,8 @@ export const Sidebar = ({ isOpen, onClose }) => {
               <BrandLogo className="h-8 w-8" />
             </div>
             <div>
-              <p className="text-[15px] font-bold text-white leading-tight tracking-tight">TapInX</p>
-              <p className="text-[9px] font-semibold tracking-[0.2em] uppercase" style={{ color: 'rgba(124,58,255,0.7)' }}>
+              <p className="text-[15px] font-bold leading-tight tracking-tight" style={{ color: 'var(--text-main)' }}>TapInX</p>
+              <p className="text-[9px] font-semibold tracking-[0.2em] uppercase" style={{ color: 'var(--brand-subtitle)' }}>
                 AttendX
               </p>
             </div>
@@ -196,7 +196,7 @@ export const Sidebar = ({ isOpen, onClose }) => {
             onClick={onClose}
             className="lg:hidden p-1.5 rounded-lg transition-colors"
             style={{ color: 'var(--text-muted)' }}
-            onMouseEnter={e => e.currentTarget.style.color = '#fff'}
+            onMouseEnter={e => e.currentTarget.style.color = 'var(--text-muted-hover)'}
             onMouseLeave={e => e.currentTarget.style.color = 'var(--text-muted)'}
           >
             <X size={18} />
@@ -219,7 +219,8 @@ export const Sidebar = ({ isOpen, onClose }) => {
                       background: isActive
                 ? 'var(--bg-nav-active)'
                         : 'transparent',
-                      color: isActive ? '#fff' : 'var(--text-muted)',
+                      color: isActive ? 'var(--text-nav-active)' : 'var(--text-muted)',
+                      fontWeight: isActive ? 600 : 500,
                     }}
                     onMouseEnter={e => { if (!isActive) { e.currentTarget.style.background = 'var(--bg-nav-hover)'; e.currentTarget.style.color = 'var(--text-nav-hover)'; } }}
                     onMouseLeave={e => { if (!isActive) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; } }}
@@ -231,15 +232,15 @@ export const Sidebar = ({ isOpen, onClose }) => {
                       size={17}
                       className="relative z-10 flex-shrink-0 transition-all duration-200"
                       style={{
-                        color: isActive ? '#FFFFFF' : 'inherit',
+                        color: isActive ? 'var(--text-nav-icon-active)' : 'inherit',
                         filter: 'none',
                       }}
                     />
-                    <span className="relative z-10 text-[13px] font-medium leading-none truncate flex-1">
+                    <span className="relative z-10 text-[13px] leading-none truncate flex-1">
                       {navLabel(item)}
                     </span>
                     {isActive && (
-                      <ChevronRight size={13} className="relative z-10 flex-shrink-0" style={{ color: '#FFFFFF' }} />
+                      <ChevronRight size={13} className="relative z-10 flex-shrink-0" style={{ color: 'var(--text-nav-icon-active)' }} />
                     )}
                   </div>
                 )}
@@ -262,7 +263,7 @@ export const Sidebar = ({ isOpen, onClose }) => {
                 {(staffSession?.name || user?.username || 'U').charAt(0).toUpperCase()}
               </div>
               <div className="min-w-0 flex-1">
-                <p className="text-[12px] font-semibold text-white truncate leading-tight">
+                <p className="text-[12px] font-semibold truncate leading-tight" style={{ color: 'var(--text-primary)' }}>
                   {staffSession ? staffSession.name : (user?.username || 'Guest')}
                 </p>
                 <p className="text-[10px] truncate capitalize" style={{ color: 'var(--user-chip-text)' }}>
@@ -320,7 +321,7 @@ export const Topbar = ({ onToggleSidebar }) => {
           onClick={onToggleSidebar}
           className="lg:hidden p-2 rounded-xl transition-all duration-200"
           style={{ color: 'var(--text-muted)', background: 'var(--bg-btn-ghost)' }}
-          onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-btn-ghost-hover)'; e.currentTarget.style.color = '#fff'; }}
+          onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-btn-ghost-hover)'; e.currentTarget.style.color = 'var(--text-muted-hover)'; }}
           onMouseLeave={e => { e.currentTarget.style.background = 'var(--bg-btn-ghost)'; e.currentTarget.style.color = 'var(--text-muted)'; }}
         >
           <Menu size={20} />
@@ -328,14 +329,14 @@ export const Topbar = ({ onToggleSidebar }) => {
 
         <div className="flex items-center gap-2 lg:hidden">
           <BrandLogo className="h-8 w-8" />
-          <span className="text-sm font-bold text-white">TapInX</span>
+          <span className="text-sm font-bold" style={{ color: 'var(--text-main)' }}>TapInX</span>
         </div>
 
         <div className="relative flex-1 hidden sm:block">
           <Search
             className="absolute left-3.5 top-1/2 -translate-y-1/2 transition-colors duration-200"
             size={16}
-            style={{ color: searchFocused ? '#FFFFFF' : 'var(--text-muted)' }}
+            style={{ color: searchFocused ? 'var(--text-primary)' : 'var(--text-muted)' }}
           />
           <input
             type="text"
@@ -344,7 +345,7 @@ export const Topbar = ({ onToggleSidebar }) => {
             onBlur={() => setSearchFocused(false)}
             className="input-glow w-full pl-10 pr-4 py-2.5 rounded-xl text-sm transition-all duration-200"
             style={{
-              background: 'rgba(255,255,255,0.04)',
+              background: 'var(--bg-search)',
               border: `1px solid ${searchFocused ? 'var(--border-search-focus)' : 'var(--border-search)'}`,
               color: 'var(--text-primary)',
               outline: 'none',
@@ -364,7 +365,7 @@ export const Topbar = ({ onToggleSidebar }) => {
         <button
           className="relative p-2.5 rounded-xl transition-all duration-200"
           style={{ color: 'var(--text-muted)', background: 'var(--bg-btn-ghost)' }}
-          onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-btn-ghost-hover)'; e.currentTarget.style.color = '#fff'; }}
+          onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-btn-ghost-hover)'; e.currentTarget.style.color = 'var(--text-muted-hover)'; }}
           onMouseLeave={e => { e.currentTarget.style.background = 'var(--bg-btn-ghost)'; e.currentTarget.style.color = 'var(--text-muted)'; }}
         >
           <Bell size={18} />
@@ -379,7 +380,7 @@ export const Topbar = ({ onToggleSidebar }) => {
           onClick={toggleTheme}
           className="relative p-2.5 rounded-xl transition-all duration-200"
           style={{ color: 'var(--text-muted)', background: 'var(--bg-btn-ghost)' }}
-          onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-btn-ghost-hover)'; e.currentTarget.style.color = '#fff'; }}
+          onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-btn-ghost-hover)'; e.currentTarget.style.color = 'var(--text-muted-hover)'; }}
           onMouseLeave={e => { e.currentTarget.style.background = 'var(--bg-btn-ghost)'; e.currentTarget.style.color = 'var(--text-muted)'; }}
         >
           {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
@@ -400,7 +401,7 @@ export const Topbar = ({ onToggleSidebar }) => {
             {(staffSession?.name || user?.username || 'U').charAt(0).toUpperCase()}
           </div>
           <div className="hidden md:block">
-            <p className="text-[12px] font-semibold text-white leading-tight">
+            <p className="text-[12px] font-semibold leading-tight" style={{ color: 'var(--text-primary)' }}>
               {staffSession ? staffSession.name : (user?.username || 'Guest')}
             </p>
             <p className="text-[10px] capitalize" style={{ color: 'var(--user-chip-text)' }}>
@@ -413,9 +414,9 @@ export const Topbar = ({ onToggleSidebar }) => {
         <div className="flex items-center gap-1.5 hidden sm:flex">
           <span
             className="w-2 h-2 rounded-full animate-pulse"
-            style={{ background: '#00E87A', boxShadow: '0 0 8px rgba(0,232,122,0.8)' }}
+            style={{ background: 'var(--status-live)', boxShadow: '0 0 8px var(--status-live)' }}
           />
-          <span className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: '#00E87A' }}>Live</span>
+          <span className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--status-live)' }}>Live</span>
         </div>
       </div>
     </header>

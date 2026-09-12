@@ -467,6 +467,17 @@ import java.util.concurrent.CopyOnWriteArrayList;
         contentValues.put("synced", 1);
         db.update("person", contentValues, "local_uid = ?", new String[]{localUid});
 
+        // Immediately backfill the official backend ID into pending attendance punches and state
+        try {
+            ContentValues qCv = new ContentValues();
+            qCv.put("person_id", id);
+            db.update("attendance_queue", qCv, "local_uid = ? AND (person_id IS NULL OR person_id = '' OR person_id LIKE 'local:%')", new String[]{localUid});
+
+            ContentValues sCv = new ContentValues();
+            sCv.put("person_id", id);
+            db.update("attendance_state", sCv, "local_uid = ? AND (person_id IS NULL OR person_id = '' OR person_id LIKE 'local:%')", new String[]{localUid});
+        } catch (Exception ignored) {}
+
         synchronized (personList) {
             for (Person p : personList) {
                 if (p.localUid != null && p.localUid.equals(localUid)) {
@@ -724,8 +735,11 @@ import java.util.concurrent.CopyOnWriteArrayList;
     public void insertAttendanceQueue(String personId, String localUid, String name, String timestamp, String status, Bitmap image, boolean isLate) {
         SQLiteDatabase db = this.getWritableDatabase();
         String effectivePersonId = personId;
-        if ((effectivePersonId == null || effectivePersonId.isEmpty()) && localUid != null && !localUid.isEmpty()) {
-            effectivePersonId = resolvePersonId(localUid);
+        if ((effectivePersonId == null || effectivePersonId.isEmpty() || effectivePersonId.startsWith("local:")) && localUid != null && !localUid.isEmpty()) {
+            effectivePersonId = resolvePersonId(localUid, name);
+        }
+        if (effectivePersonId != null && effectivePersonId.startsWith("local:")) {
+            effectivePersonId = null;
         }
         ContentValues contentValues = new ContentValues();
         contentValues.put("person_id", effectivePersonId);
@@ -906,18 +920,34 @@ import java.util.concurrent.CopyOnWriteArrayList;
     }
 
     public String resolvePersonId(String localUid, String name) {
-        return resolvePersonId(localUid);
+        String id = resolvePersonId(localUid);
+        if (id != null && !id.isEmpty() && !id.startsWith("local:")) return id;
+        if (name != null && !name.isEmpty()) {
+            try {
+                SQLiteDatabase db = this.getReadableDatabase();
+                Cursor c = db.rawQuery("select id from person where name = ? and id is not null and id != '' and id not like 'local:%' limit 1", new String[]{name});
+                try {
+                    if (c.moveToFirst()) {
+                        String resolved = c.getString(0);
+                        if (resolved != null && !resolved.isEmpty() && !resolved.startsWith("local:")) return resolved;
+                    }
+                } finally {
+                    c.close();
+                }
+            } catch (Exception ignored) {}
+        }
+        return null;
     }
 
     public String resolvePersonId(String localUid) {
         try {
             SQLiteDatabase db = this.getReadableDatabase();
             if (localUid != null && !localUid.isEmpty()) {
-                Cursor c = db.rawQuery("select id from person where local_uid = ? limit 1", new String[]{localUid});
+                Cursor c = db.rawQuery("select id from person where local_uid = ? and id is not null and id != '' and id not like 'local:%' limit 1", new String[]{localUid});
                 try {
                     if (c.moveToFirst()) {
                         String id = c.getString(0);
-                        if (id != null && !id.isEmpty()) return id;
+                        if (id != null && !id.isEmpty() && !id.startsWith("local:")) return id;
                     }
                 } finally {
                     c.close();

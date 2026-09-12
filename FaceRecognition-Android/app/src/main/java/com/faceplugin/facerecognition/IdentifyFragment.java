@@ -147,7 +147,8 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     // is based on fresh SDK results, never a cached identity.
     private static final int MAX_RECOGNITION_SKIP = 0;
     private android.graphics.Rect lastFaceRect = null;
-    private final ConsecutiveMatchGate matchGate = new ConsecutiveMatchGate(3, 2000L);
+    // Set to 1 so attendance is marked instantly on first recognized frame instead of waiting 3 consecutive frames
+    private final ConsecutiveMatchGate matchGate = new ConsecutiveMatchGate(1, 2000L);
 
     @Nullable
     @Override
@@ -456,7 +457,10 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
 
     private void sendPersonEvent(boolean detected, boolean recognized, String personId, String localUid, String name, float confidence, Bitmap bitmap) {
         GreetingService service = RetrofitClient.getService();
-        String imageBase64 = Utils.bitmapToBase64(bitmap);
+        // Downscale to 320px width to cut encoding time (~300ms -> ~25ms) and payload (~800KB -> ~25KB)
+        Bitmap resized = Utils.resizeBitmap(bitmap, 320);
+        String imageBase64 = Utils.bitmapToBase64(resized);
+        if (resized != bitmap) resized.recycle();
 
         boolean isAttendance = true;
 
@@ -469,23 +473,26 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             online = NetworkUtils.INSTANCE.isOnline(requireContext().getApplicationContext());
         } catch (Exception ignored) {}
         String resolvedBackendId = personId;
-        if ((resolvedBackendId == null || resolvedBackendId.isEmpty()) && localUid != null && !localUid.isEmpty()) {
+        if ((resolvedBackendId == null || resolvedBackendId.isEmpty() || resolvedBackendId.startsWith("local:")) && localUid != null && !localUid.isEmpty()) {
             try {
-                String resolved = dbManager.resolvePersonId(localUid);
-                if (resolved != null && !resolved.isEmpty()) {
+                String resolved = dbManager.resolvePersonId(localUid, name);
+                if (resolved != null && !resolved.isEmpty() && !resolved.startsWith("local:")) {
                     resolvedBackendId = resolved;
                 } else {
-                    resolvedBackendId = "local:" + localUid;
+                    resolvedBackendId = null;
                 }
             } catch (Exception ignored) {
-                resolvedBackendId = "local:" + localUid;
+                resolvedBackendId = null;
             }
+        }
+        if (resolvedBackendId != null && resolvedBackendId.startsWith("local:")) {
+            resolvedBackendId = null;
         }
 
         final String finalPersonId = resolvedBackendId;
 
         if (!online) {
-            if (resolvedBackendId != null && !resolvedBackendId.isEmpty()) {
+            if ((resolvedBackendId != null && !resolvedBackendId.isEmpty()) || (localUid != null && !localUid.isEmpty())) {
                 if (isAttendance) {
                     String predicted = dbManager.predictNextAttendanceStatus(resolvedBackendId, localUid, name);
                     dbManager.insertAttendanceQueue(resolvedBackendId, localUid, name, timestamp, predicted, bitmap, false);
@@ -960,8 +967,8 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             }
             // -----------------------
 
-            // Grace period check (e.g. 3 seconds after resume)
-            if (currentTime - resumeTime < 3000) {
+            // Grace period check (1 second after resume — enough for camera stabilization)
+            if (currentTime - resumeTime < 1000) {
                  return;
             }
 
@@ -1015,7 +1022,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             // ------------------------------------------------
 
             if (faceBoxes.size() > 0) {
-                float identifyThreshold = 0.8f;
+                float identifyThreshold = 0.72f;  // lowered from 0.8 for faster first-frame acceptance
                 try {
                     identifyThreshold = SettingsActivity.getIdentifyThreshold(requireContext());
                 } catch (Exception ignored) {}
@@ -1127,13 +1134,16 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                     consecutiveUnknownFrames = 0;
                     String personId = bestPersonId;
                     String localUid = bestLocalUid;
-                    if ((personId == null || personId.isEmpty()) && localUid != null && !localUid.isEmpty()) {
+                    if ((personId == null || personId.isEmpty() || personId.startsWith("local:")) && localUid != null && !localUid.isEmpty()) {
                         try {
-                            String resolved = dbManager.resolvePersonId(localUid);
-                            if (resolved != null && !resolved.isEmpty()) {
+                            String resolved = dbManager.resolvePersonId(localUid, bestPerson.name);
+                            if (resolved != null && !resolved.isEmpty() && !resolved.startsWith("local:")) {
                                 personId = resolved;
                             }
                         } catch (Exception ignored) {}
+                    }
+                    if (personId != null && personId.startsWith("local:")) {
+                        personId = "";
                     }
 
                     String confirmationKey = personId;
