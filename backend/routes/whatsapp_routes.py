@@ -1,6 +1,6 @@
 import logging
 from flask import Blueprint, jsonify, request, g
-from utils import _require_role, get_db_connection
+from utils import get_db_connection
 from services.auth_service import extract_token, verify_token
 from services.evolution_whatsapp_service import (
     get_or_create_settings,
