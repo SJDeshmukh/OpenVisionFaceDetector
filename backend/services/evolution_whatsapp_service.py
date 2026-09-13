@@ -142,12 +142,14 @@ def ensure_instance(vendor_id):
 
 
 def fetch_qr_code(vendor_id):
-    """Requests connection QR code from Evolution API."""
+    """Requests connection QR code from WhatsApp Gateway."""
     ensure_instance(vendor_id)
     instance_name = get_instance_name(vendor_id)
     url = f"{EVOLUTION_API_URL}/instance/connect/{instance_name}"
     try:
-        res = requests.get(url, headers=_headers(), timeout=10)
+        res = requests.get(url, headers=_headers(), timeout=12)
+        if res.status_code != 200:
+            return {"success": False, "error": f"WhatsApp gateway returned HTTP {res.status_code}: {res.text}"}
         data = res.json()
         qr_b64 = data.get("base64")
         pairing_code = data.get("pairingCode") or data.get("code")
@@ -156,14 +158,15 @@ def fetch_qr_code(vendor_id):
         update_settings(vendor_id, {"status": "connecting"})
         
         return {
-            "success": True,
+            "success": bool(qr_b64),
             "qr_code": qr_b64,
             "pairing_code": pairing_code,
-            "instance_name": instance_name
+            "instance_name": instance_name,
+            "error": None if qr_b64 else (data.get("message") or "QR code is initializing. Please click Scan QR Code again in a few seconds.")
         }
     except Exception as e:
-        logger.error(f"Error fetching QR code from Evolution API: {e}")
-        return {"success": False, "error": str(e)}
+        logger.error(f"Error fetching QR code from WhatsApp Gateway: {e}")
+        return {"success": False, "error": f"Cannot reach WhatsApp gateway at {EVOLUTION_API_URL} ({str(e)}). Please ensure pm2 start server.js is running in whatsapp-service."}
 
 
 def sync_connection_state(vendor_id):

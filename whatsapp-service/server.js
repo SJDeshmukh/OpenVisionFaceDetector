@@ -1,4 +1,4 @@
-﻿const express = require('express');
+const express = require('express');
 const qrcode = require('qrcode');
 const pino = require('pino');
 const fs = require('fs');
@@ -153,6 +153,11 @@ app.get('/instance/connect/:instanceName', async (req, res) => {
   const { instanceName } = req.params;
   const inst = await getOrCreateInstance(instanceName);
 
+  // If disconnected or socket dead, restart connection
+  if (inst.state === 'close' || !inst.sock) {
+    connectSocket(instanceName);
+  }
+
   // If already open, return connected status
   if (inst.state === 'open') {
     return res.json({
@@ -171,19 +176,21 @@ app.get('/instance/connect/:instanceName', async (req, res) => {
     });
   }
 
-  // Otherwise wait up to 4 seconds for QR event
+  // Otherwise wait up to 7 seconds for QR event
   let elapsed = 0;
   const interval = setInterval(() => {
-    elapsed += 200;
-    if (inst.qrBase64 || inst.state === 'open' || elapsed >= 4000) {
+    elapsed += 250;
+    if (inst.qrBase64 || inst.state === 'open' || elapsed >= 7000) {
       clearInterval(interval);
-      return res.json({
-        base64: inst.qrBase64,
-        code: inst.qrRaw,
-        pairingCode: null
-      });
+      if (!res.headersSent) {
+        return res.json({
+          base64: inst.qrBase64,
+          code: inst.qrRaw,
+          pairingCode: null
+        });
+      }
     }
-  }, 200);
+  }, 250);
 });
 
 // 3. Connection state
