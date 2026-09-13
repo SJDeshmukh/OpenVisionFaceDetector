@@ -444,6 +444,38 @@ def get_fleet_telemetry():
             r["is_online"] = is_online
             r["distance_meters"] = distance
             r["geofence_status"] = geofence_status
+
+            # Standardize coordinates and vendor fields for map components
+            lat_f = None
+            lng_f = None
+            if last_lat is not None and str(last_lat).strip() != "":
+                try: lat_f = float(last_lat)
+                except Exception: lat_f = None
+
+            if last_lng is not None and str(last_lng).strip() != "":
+                try: lng_f = float(last_lng)
+                except Exception: lng_f = None
+
+            g_lat_f = None
+            g_lng_f = None
+            if anchor_lat is not None and str(anchor_lat).strip() != "":
+                try: g_lat_f = float(anchor_lat)
+                except Exception: g_lat_f = None
+
+            if anchor_lng is not None and str(anchor_lng).strip() != "":
+                try: g_lng_f = float(anchor_lng)
+                except Exception: g_lng_f = None
+
+            r["latitude"] = lat_f
+            r["longitude"] = lng_f
+            r["last_lat"] = lat_f
+            r["last_lng"] = lng_f
+            r["geofence_latitude"] = g_lat_f
+            r["geofence_longitude"] = g_lng_f
+            r["geofence_lat"] = g_lat_f
+            r["geofence_lng"] = g_lng_f
+            r["vendor_name"] = r.get("company_name") or f"Vendor {r.get('vendor_id')}"
+
             devices.append(r)
 
         return jsonify({"status": "success", "devices": devices})

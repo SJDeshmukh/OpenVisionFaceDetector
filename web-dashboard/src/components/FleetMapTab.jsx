@@ -21,7 +21,11 @@ const loadLeaflet = () => {
 
     const existingScript = document.getElementById('leaflet-js');
     if (existingScript) {
-      existingScript.addEventListener('load', () => resolve(window.L));
+      if (window.L) {
+        resolve(window.L);
+      } else {
+        existingScript.addEventListener('load', () => resolve(window.L));
+      }
       return;
     }
 
@@ -46,13 +50,40 @@ const FleetMapTab = ({ userToken }) => {
   const circlesRef = useRef({});
   const { socket } = useSocket() || {};
 
+  const parseNum = (val) => {
+    if (val === null || val === undefined || val === '') return null;
+    const n = Number(val);
+    return isNaN(n) ? null : n;
+  };
+
   const fetchTelemetry = async () => {
     setLoading(true);
     try {
       const res = await axios.get(`${API_URL}/admin/fleet/telemetry`, {
         headers: { Authorization: `Bearer ${userToken}` }
       });
-      setDevices(res.data.devices || []);
+      const rawDevices = res.data.devices || [];
+      const normalized = rawDevices.map(dev => {
+        const lat = parseNum(dev.latitude ?? dev.last_lat);
+        const lng = parseNum(dev.longitude ?? dev.last_lng);
+        const gLat = parseNum(dev.geofence_latitude ?? dev.geofence_lat);
+        const gLng = parseNum(dev.geofence_longitude ?? dev.geofence_lng);
+        const gRadius = parseNum(dev.geofence_radius);
+        return {
+          ...dev,
+          latitude: lat,
+          longitude: lng,
+          last_lat: lat,
+          last_lng: lng,
+          geofence_latitude: gLat,
+          geofence_longitude: gLng,
+          geofence_lat: gLat,
+          geofence_lng: gLng,
+          geofence_radius: gRadius,
+          vendor_name: dev.vendor_name || dev.company_name || `Vendor ${dev.vendor_id || ''}`
+        };
+      });
+      setDevices(normalized);
     } catch (e) {
       console.error("Failed to fetch fleet telemetry:", e);
     } finally {
@@ -70,13 +101,17 @@ const FleetMapTab = ({ userToken }) => {
     const handleHealthUpdate = (data) => {
       setDevices(prev => prev.map(d => {
         if (d.device_id === data.device_id) {
+          const lat = parseNum(data.latitude ?? data.last_lat ?? d.latitude);
+          const lng = parseNum(data.longitude ?? data.last_lng ?? d.longitude);
           return {
             ...d,
             battery_level: data.battery_level ?? d.battery_level,
             last_active_at: data.last_active_at || new Date().toISOString(),
             is_online: true,
-            latitude: data.latitude ?? d.latitude,
-            longitude: data.longitude ?? d.longitude,
+            latitude: lat,
+            longitude: lng,
+            last_lat: lat,
+            last_lng: lng,
             geofence_status: data.geofence_status ?? d.geofence_status,
             distance_meters: data.distance_meters ?? d.distance_meters
           };
@@ -110,6 +145,15 @@ const FleetMapTab = ({ userToken }) => {
 
       const map = mapInstanceRef.current;
 
+      // Invalidate size in case tab or flex layout changed
+      setTimeout(() => {
+        if (isMounted && mapInstanceRef.current) {
+          try {
+            mapInstanceRef.current.invalidateSize();
+          } catch (_) {}
+        }
+      }, 250);
+
       // Clear existing markers & circles
       Object.values(markersRef.current).forEach(m => m.remove());
       Object.values(circlesRef.current).forEach(c => c.remove());
@@ -119,26 +163,34 @@ const FleetMapTab = ({ userToken }) => {
       const bounds = [];
 
       devices.forEach(dev => {
+        const lat = dev.latitude != null ? Number(dev.latitude) : null;
+        const lng = dev.longitude != null ? Number(dev.longitude) : null;
+        const gLat = dev.geofence_latitude != null ? Number(dev.geofence_latitude) : null;
+        const gLng = dev.geofence_longitude != null ? Number(dev.geofence_longitude) : null;
+        const gRadius = dev.geofence_radius != null ? Number(dev.geofence_radius) : null;
+        const vendorName = dev.vendor_name || dev.company_name || `Vendor ${dev.vendor_id || ''}`;
+
         // Render geofence anchor circle if available
-        if (dev.geofence_latitude && dev.geofence_longitude && dev.geofence_radius) {
-          const circleKey = `${dev.vendor_id}_${dev.geofence_latitude}_${dev.geofence_longitude}`;
+        if (gLat != null && gLng != null && gRadius != null && !isNaN(gLat) && !isNaN(gLng) && gRadius > 0) {
+          const circleKey = `${dev.vendor_id}_${gLat}_${gLng}`;
           if (!circlesRef.current[circleKey]) {
-            const circle = L.circle([dev.geofence_latitude, dev.geofence_longitude], {
-              radius: dev.geofence_radius,
+            const circle = L.circle([gLat, gLng], {
+              radius: gRadius,
               color: '#6366f1',
               fillColor: '#818cf8',
               fillOpacity: 0.12,
               weight: 2,
               dashArray: '4, 4'
             }).addTo(map);
-            circle.bindTooltip(`Geofence: ${dev.vendor_name} (${dev.geofence_radius}m)`, { permanent: false });
+            circle.bindTooltip(`Geofence: ${vendorName} (${gRadius}m)`, { permanent: false });
             circlesRef.current[circleKey] = circle;
+            bounds.push([gLat, gLng]);
           }
         }
 
         // Render device marker if coordinates exist
-        if (dev.latitude && dev.longitude) {
-          bounds.push([dev.latitude, dev.longitude]);
+        if (lat != null && lng != null && !isNaN(lat) && !isNaN(lng)) {
+          bounds.push([lat, lng]);
 
           let pulseColor = '#94a3b8'; // gray offline
           let statusText = 'Offline';
@@ -156,25 +208,26 @@ const FleetMapTab = ({ userToken }) => {
           }
 
           const pulseHtml = `
-            <div style="position: relative; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;">
-              ${dev.is_online ? `<div style="position: absolute; width: 26px; height: 26px; border-radius: 50%; background: ${pulseColor}; opacity: 0.35; animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;"></div>` : ''}
-              <div style="width: 16px; height: 16px; border-radius: 50%; background: ${pulseColor}; border: 2px solid white; box-shadow: 0 2px 6px rgba(0,0,0,0.3);"></div>
+            <div style="position: relative; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;">
+              ${dev.is_online ? `<div style="position: absolute; width: 30px; height: 30px; border-radius: 50%; background: ${pulseColor}; opacity: 0.4; animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;"></div>` : ''}
+              <div style="width: 18px; height: 18px; border-radius: 50%; background: ${pulseColor}; border: 2.5px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.35);"></div>
             </div>
           `;
 
           const customIcon = L.divIcon({
             html: pulseHtml,
             className: 'custom-fleet-marker',
-            iconSize: [28, 28],
-            iconAnchor: [14, 14]
+            iconSize: [32, 32],
+            iconAnchor: [16, 16],
+            popupAnchor: [0, -16]
           });
 
-          const marker = L.marker([dev.latitude, dev.longitude], { icon: customIcon }).addTo(map);
+          const marker = L.marker([lat, lng], { icon: customIcon }).addTo(map);
 
           const popupContent = `
-            <div style="font-family: sans-serif; min-width: 180px; padding: 4px;">
+            <div style="font-family: sans-serif; min-width: 190px; padding: 4px;">
               <div style="font-weight: bold; font-size: 14px; color: #1e293b; margin-bottom: 2px;">${dev.device_name || 'Kiosk'}</div>
-              <div style="font-size: 11px; color: #64748b; margin-bottom: 8px;">Vendor: <b>${dev.vendor_name}</b></div>
+              <div style="font-size: 11px; color: #64748b; margin-bottom: 8px;">Vendor: <b>${vendorName}</b></div>
               <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; margin-bottom: 4px;">
                 <span style="color: #64748b;">Status:</span>
                 <span style="font-weight: bold; color: ${pulseColor};">${statusText}</span>
@@ -182,6 +235,10 @@ const FleetMapTab = ({ userToken }) => {
               <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; margin-bottom: 4px;">
                 <span style="color: #64748b;">Battery:</span>
                 <span style="font-weight: bold; color: ${(dev.battery_level ?? 100) < 20 ? '#ef4444' : '#22c55e'};">${dev.battery_level != null ? dev.battery_level : '--'}%</span>
+              </div>
+              <div style="display: flex; align-items: center; justify-content: space-between; font-size: 11px; margin-bottom: 4px; color: #475569;">
+                <span>Coords:</span>
+                <span style="font-family: monospace; font-weight: bold;">${lat.toFixed(5)}, ${lng.toFixed(5)}</span>
               </div>
               ${dev.distance_meters != null ? `
                 <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12px; margin-bottom: 4px;">
@@ -199,7 +256,11 @@ const FleetMapTab = ({ userToken }) => {
       });
 
       if (bounds.length > 0 && !selectedDevice) {
-        map.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
+        if (bounds.length === 1) {
+          map.setView(bounds[0], 16);
+        } else {
+          map.fitBounds(bounds, { padding: [60, 60], maxZoom: 16 });
+        }
       }
     });
 
@@ -210,11 +271,13 @@ const FleetMapTab = ({ userToken }) => {
 
   const handleLocateDevice = (dev) => {
     setSelectedDevice(dev);
-    if (!mapInstanceRef.current || !dev.latitude || !dev.longitude) return;
-    mapInstanceRef.current.flyTo([dev.latitude, dev.longitude], 17, { duration: 1.2 });
+    const lat = dev.latitude != null ? Number(dev.latitude) : null;
+    const lng = dev.longitude != null ? Number(dev.longitude) : null;
+    if (!mapInstanceRef.current || lat == null || lng == null || isNaN(lat) || isNaN(lng)) return;
+    mapInstanceRef.current.setView([lat, lng], 17, { animate: true });
     const marker = markersRef.current[dev.device_id];
     if (marker) {
-      setTimeout(() => marker.openPopup(), 1300);
+      setTimeout(() => marker.openPopup(), 300);
     }
   };
 
@@ -246,6 +309,10 @@ const FleetMapTab = ({ userToken }) => {
               transform: scale(2);
               opacity: 0;
             }
+          }
+          .custom-fleet-marker {
+            background: transparent !important;
+            border: none !important;
           }
         `}
       </style>
@@ -384,7 +451,7 @@ const FleetMapTab = ({ userToken }) => {
                     </div>
 
                     <div className="mt-3 flex items-center justify-between text-xs">
-                      <div>
+                      <div className="flex flex-wrap items-center gap-1.5">
                         {dev.geofence_status === 'outside' && (
                           <span className="px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-semibold text-[10px]">
                             OUTSIDE ({Math.round(dev.distance_meters || 0)}m)
@@ -405,16 +472,25 @@ const FleetMapTab = ({ userToken }) => {
                             NO GEOFENCE
                           </span>
                         )}
+                        {dev.latitude != null && dev.longitude != null ? (
+                          <span className="text-[10px] text-slate-400 font-mono">
+                            {Number(dev.latitude).toFixed(3)}, {Number(dev.longitude).toFixed(3)}
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded italic">
+                            No GPS coords
+                          </span>
+                        )}
                       </div>
 
-                      {dev.latitude && dev.longitude && (
+                      {dev.latitude != null && dev.longitude != null && (
                         <button
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
                             handleLocateDevice(dev);
                           }}
-                          className="flex items-center gap-1 text-indigo-600 hover:text-indigo-800 font-semibold text-xs"
+                          className="flex items-center gap-1 text-indigo-600 hover:text-indigo-800 font-semibold text-xs ml-2 shrink-0 bg-indigo-50 hover:bg-indigo-100 px-2 py-1 rounded transition-colors"
                         >
                           <Navigation size={12} /> Locate
                         </button>

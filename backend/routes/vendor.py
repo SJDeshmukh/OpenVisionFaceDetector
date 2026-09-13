@@ -1616,8 +1616,10 @@ def mobile_heartbeat():
             "device_id": device_id,
             "last_active_at": now.isoformat(),
             "battery_level": battery_level,
-            "last_lat": lat,
-            "last_lng": lng,
+            "last_lat": parsed_lat,
+            "last_lng": parsed_lng,
+            "latitude": parsed_lat,
+            "longitude": parsed_lng,
             "geofence_status": geofence_status,
             "distance_meters": distance_meters,
             "online": True
