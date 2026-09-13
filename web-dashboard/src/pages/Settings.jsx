@@ -24,6 +24,21 @@ import {
 import { API_URL } from '../config';
 import { useSocket } from '../context/SocketContext';
 
+const Section = ({ title, icon: Icon, children, action }) => (
+  <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden mb-6">
+    <div className="p-6 border-b border-slate-200 flex items-center justify-between bg-slate-50/50">
+      <div className="flex items-center space-x-3">
+        <Icon size={20} className="text-slate-500" />
+        <h3 className="text-lg font-bold text-slate-800">{title}</h3>
+      </div>
+      {action}
+    </div>
+    <div className="p-6 space-y-6">
+      {children}
+    </div>
+  </div>
+);
+
 const Settings = () => {
   const { user } = useAuth();
   const { socket } = useSocket();
@@ -322,20 +337,6 @@ const Settings = () => {
     setShowUserModal(true);
   };
 
-  const Section = ({ title, icon: Icon, children, action }) => (
-    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden mb-6">
-      <div className="p-6 border-b border-slate-200 flex items-center justify-between bg-slate-50/50">
-        <div className="flex items-center space-x-3">
-          <Icon size={20} className="text-slate-500" />
-          <h3 className="text-lg font-bold text-slate-800">{title}</h3>
-        </div>
-        {action}
-      </div>
-      <div className="p-6 space-y-6">
-        {children}
-      </div>
-    </div>
-  );
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -596,11 +597,17 @@ const Settings = () => {
                   <label className="block text-xs font-semibold text-slate-700 mb-1">Verify Delivery (Test WhatsApp)</label>
                   <div className="flex items-center gap-2 max-w-sm">
                     <input
-                      type="text"
-                      placeholder="e.g. 919876543210"
+                      type="tel"
+                      placeholder="e.g. +919876543210"
                       value={testPhone}
-                      onChange={(e) => setTestPhone(e.target.value)}
-                      className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        const formatted = raw.startsWith('+')
+                          ? '+' + raw.slice(1).replace(/\D/g, '')
+                          : raw.replace(/[^\d+]/g, '');
+                        setTestPhone(formatted);
+                      }}
+                      className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs outline-none focus:ring-2 focus:ring-blue-500 bg-white font-mono"
                     />
                     <button
                       type="button"
