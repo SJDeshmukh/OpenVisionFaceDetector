@@ -5,7 +5,7 @@ import string
 from flask import Blueprint, request, jsonify, make_response, g
 from datetime import datetime, date, timedelta
 from services.auth_service import authenticate_vendor_access, verify_password, generate_token, check_vendor_status, verify_token, hash_password, generate_token_with_claims, extract_token
-from middleware.handlers import rate_limit
+from middleware.handlers import rate_limit, get_client_ip
 import json
 import base64
 import sqlite3
@@ -306,7 +306,7 @@ def get_current_user():
 
 
 @auth_bp.route("/auth/login", methods=["POST"])
-@rate_limit(limit=10, window=60)  # 10 attempts per minute per IP
+@rate_limit(key_func=lambda: f"login:{get_client_ip()}:{str((request.json or {}).get('username', '')).strip().lower()}", limit=60, window=60)
 @error_logger
 def login():
     from app import get_db_connection, socketio, is_testing, ALL_FEATURES

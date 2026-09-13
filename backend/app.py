@@ -146,7 +146,9 @@ from middleware.handlers import setup_middleware, track_metrics, rate_limit
 # from config import BASE_URL, FRONTEND_URL # Removed config.py per user request
 
 from db_factory import init_db_sqlalchemy
+from werkzeug.middleware.proxy_fix import ProxyFix
 app = Flask(__name__) 
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 init_db_sqlalchemy(app)
 app.secret_key = os.environ.get('SECRET_KEY')
 if not app.secret_key:

@@ -74,11 +74,28 @@ def _local_rate_check(key, limit, window):
         bucket.append(now)
         return True
 
-def rate_limit(key_func=lambda: request.remote_addr, limit=100, window=60):
+def get_client_ip():
+    """Extract real client IP considering Nginx reverse proxy headers."""
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    real_ip = request.headers.get("X-Real-IP")
+    if real_ip:
+        return real_ip.strip()
+    return request.remote_addr or "127.0.0.1"
+
+def rate_limit(key_func=None, limit=100, window=60):
     def decorator(fn):
         @wraps(fn)
         def inner(*args, **kwargs):
-            key = f"rl:{key_func()}"
+            if callable(key_func):
+                try:
+                    key_val = key_func()
+                except Exception:
+                    key_val = get_client_ip()
+            else:
+                key_val = get_client_ip()
+            key = f"rl:{key_val}"
             if redis_client:
                 try:
                     pipe = redis_client.pipeline()
@@ -86,13 +103,13 @@ def rate_limit(key_func=lambda: request.remote_addr, limit=100, window=60):
                     pipe.expire(key, window)
                     count, _ = pipe.execute()
                     if count and int(count) > limit:
-                        return jsonify({"error": "Too Many Requests"}), 429
+                        return jsonify({"error": "Too Many Requests. Please wait a moment."}), 429
                     return fn(*args, **kwargs)
                 except Exception:
                     pass  # Redis unavailable — fall through to in-memory
             # In-memory fallback
             if not _local_rate_check(key, limit, window):
-                return jsonify({"error": "Too Many Requests"}), 429
+                return jsonify({"error": "Too Many Requests. Please wait a moment."}), 429
             return fn(*args, **kwargs)
         return inner
     return decorator
