@@ -28,9 +28,19 @@ def set_row_factory(conn):
             pass
     return conn
 
-def get_table_columns(conn, table_name):
-    """Returns a list of column names for a given table."""
+_TABLE_COLUMNS_CACHE = {}
+
+def clear_table_columns_cache():
+    global _TABLE_COLUMNS_CACHE
+    _TABLE_COLUMNS_CACHE.clear()
+
+def get_table_columns(conn, table_name, force_refresh=False):
+    """Returns a list of column names for a given table, cached in memory."""
     is_pg = getattr(conn, "_is_pg", False)
+    cache_key = (bool(is_pg), str(table_name).strip().lower())
+    if not force_refresh and cache_key in _TABLE_COLUMNS_CACHE:
+        return list(_TABLE_COLUMNS_CACHE[cache_key])
+
     c = conn.cursor()
     try:
         if is_pg:
@@ -41,6 +51,8 @@ def get_table_columns(conn, table_name):
                 c.execute("SELECT column_name FROM information_schema.columns WHERE table_name = %s", (table_name,))
                 cols = [str(r[0]) for r in c.fetchall()]
                 c.execute("RELEASE SAVEPOINT get_cols_sp")
+                if cols:
+                    _TABLE_COLUMNS_CACHE[cache_key] = cols
                 return cols
             except Exception:
                 # Rollback only the column check, keeping the main transaction alive
@@ -53,7 +65,10 @@ def get_table_columns(conn, table_name):
             # SQLite PRAGMA doesn't support ? for table names
             # table_name is trusted here since it's used internally
             c.execute(f"PRAGMA table_info({table_name})")
-            return [str(r[1]) for r in c.fetchall()]
+            cols = [str(r[1]) for r in c.fetchall()]
+            if cols:
+                _TABLE_COLUMNS_CACHE[cache_key] = cols
+            return cols
     except Exception:
         return []
     finally:

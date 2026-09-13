@@ -982,8 +982,26 @@ def get_vendors():
     """
     c.execute(query)
     
+    rows = c.fetchall()
+    
+    # Pre-fetch system_settings for threshold and cooldown in a single query to eliminate N+1 queries
+    settings_cache = {}
+    need_settings = any(r.get("threshold") is None or r.get("cooldown") is None for r in rows)
+    if need_settings:
+        try:
+            c.execute("SELECT key, value FROM system_settings WHERE key LIKE 'threshold_vendor_%' OR key LIKE 'cooldown_vendor_%'")
+            for s_row in (c.fetchall() or []):
+                try:
+                    sk = s_row['key'] if hasattr(s_row, 'keys') else s_row[0]
+                    sv = s_row['value'] if hasattr(s_row, 'keys') else s_row[1]
+                    settings_cache[sk] = sv
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     vendors = []
-    for row in c.fetchall():
+    for row in rows:
         v = dict(row)
         def _coerce_int(x):
             try:
@@ -1005,20 +1023,18 @@ def get_vendors():
         if me is not None and me < 0:
             v["max_employees"] = abs(me)
 
-        # Ensure threshold and cooldown are populated for SuperAdmin
+        # Ensure threshold and cooldown are populated for SuperAdmin without N+1 queries
         if v.get("threshold") is None:
-            c.execute("SELECT value FROM system_settings WHERE key = ?", (f"threshold_vendor_{v['id']}",))
-            st = c.fetchone()
-            try: v["threshold"] = float(st[0]) if (st and st[0]) else 0.60
+            raw_t = settings_cache.get(f"threshold_vendor_{v['id']}")
+            try: v["threshold"] = float(raw_t) if raw_t else 0.60
             except: v["threshold"] = 0.60
         else:
             try: v["threshold"] = float(v["threshold"])
             except: v["threshold"] = 0.60
 
         if v.get("cooldown") is None:
-            c.execute("SELECT value FROM system_settings WHERE key = ?", (f"cooldown_vendor_{v['id']}",))
-            sc = c.fetchone()
-            try: v["cooldown"] = int(sc[0]) if (sc and sc[0]) else 30
+            raw_c = settings_cache.get(f"cooldown_vendor_{v['id']}")
+            try: v["cooldown"] = int(raw_c) if raw_c else 30
             except: v["cooldown"] = 30
         else:
             try: v["cooldown"] = int(v["cooldown"])
@@ -1138,6 +1154,97 @@ def get_automated_report_deliveries(vendor_id):
             ORDER BY created_at DESC LIMIT ?
         """, (vendor_id, limit))
         return jsonify({"deliveries": [dict(row) for row in (c.fetchall() or [])]})
+    finally:
+        conn.close()
+
+
+@admin_bp.route("/vendors/<int:vendor_id>/edit-details", methods=["GET"])
+@super_admin_required
+def get_vendor_edit_details(vendor_id):
+    from services.automated_reports_service import serialize_schedule
+    from services.email_service import smtp_is_configured
+    from services.config_utils import hydrate_registration_config
+
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    try:
+        # 1. Fetch vendor email, vertical, registration_config
+        c.execute("SELECT email, vertical, registration_config FROM vendors WHERE id = ?", (vendor_id,))
+        v_row = c.fetchone()
+        if not v_row:
+            return jsonify({"error": "Vendor not found"}), 404
+
+        v_dict = dict(v_row)
+        vendor_email = v_dict.get("email") or ""
+        config_raw = v_dict.get("registration_config")
+        config_data = []
+        if config_raw:
+            try:
+                config_data = json.loads(config_raw) if isinstance(config_raw, str) else config_raw
+            except Exception:
+                config_data = []
+
+        if not config_data:
+            try:
+                c.execute("SELECT fields FROM bulk_attendance_config WHERE vendor_id = ?", (vendor_id,))
+                b_row = c.fetchone()
+                if b_row and b_row[0]:
+                    b_fields = json.loads(b_row[0])
+                    for f in b_fields:
+                        fname = f.get('name') or f.get('field')
+                        if fname:
+                            config_data.append({
+                                "field": fname,
+                                "name": fname,
+                                "label": f.get('label', fname),
+                                "type": f.get('type', 'text'),
+                                "required": bool(f.get('required', False)),
+                                "options": f.get('options', []),
+                                "enabled": True
+                            })
+            except Exception as ex:
+                logger.warning(f"Error reading bulk_attendance_config fallback: {ex}")
+
+        for item in config_data:
+            if isinstance(item, dict):
+                f_val = item.get('field') or item.get('name')
+                if f_val:
+                    item['field'] = f_val
+                    item['name'] = f_val
+
+        hydrated_config = hydrate_registration_config(vendor_id, config_data, conn=conn) if config_data else []
+
+        # 2. Fetch automated report schedule
+        c.execute("SELECT * FROM automated_report_schedules WHERE vendor_id = ?", (vendor_id,))
+        sched_row = c.fetchone()
+        schedule = serialize_schedule(sched_row, vendor_email)
+        smtp_conf = smtp_is_configured()
+
+        # 3. Fetch automated report deliveries (limit 10)
+        c.execute("""
+            SELECT id, frequency, period_start, period_end, status, attempts,
+                   recipient_email, message_id, error, created_at, sent_at
+            FROM automated_report_deliveries WHERE vendor_id = ?
+            ORDER BY created_at DESC LIMIT 10
+        """, (vendor_id,))
+        deliveries = [dict(row) for row in (c.fetchall() or [])]
+
+        # 4. Fetch subscription (for latest echo)
+        c.execute("SELECT * FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+        sub_row = c.fetchone()
+        sub_dict = dict(sub_row) if sub_row else None
+
+        return jsonify({
+            "registration_config": hydrated_config,
+            "report_schedule": schedule,
+            "smtp_configured": smtp_conf,
+            "report_deliveries": deliveries,
+            "subscription": sub_dict
+        })
+    except Exception as e:
+        logger.error(f"Error in get_vendor_edit_details: {e}")
+        return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
 

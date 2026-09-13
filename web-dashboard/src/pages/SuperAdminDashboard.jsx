@@ -1267,104 +1267,119 @@ const SuperAdminDashboard = () => {
     }
   };
 
-  const handleEditClick = async (vendor) => {
+  const handleEditClick = (vendor) => {
     setEditingVendor(vendor);
-    try {
-      let sub = null;
-      try {
-        const resp = await axios.get(`${API_URL}/admin/vendors/${vendor.id}/subscription`, {
-          headers: { Authorization: `Bearer ${user?.token}` }
-        });
-        sub = resp.data || null;
-      } catch (e) {
-        sub = null;
-      }
-      setNewVendor({
-        company_name: vendor.company_name || '',
-        contact_person: vendor.contact_person || '',
-        phone: vendor.phone || '',
-        email: vendor.email || '',
-        start_date: (sub && sub.start_date) ? new Date(sub.start_date).toISOString().split('T')[0] : (vendor.start_date ? new Date(vendor.start_date).toISOString().split('T')[0] : ''),
-        end_date: (sub && sub.end_date) ? new Date(sub.end_date).toISOString().split('T')[0] : (vendor.end_date ? new Date(vendor.end_date).toISOString().split('T')[0] : ''),
-        cost_per_user: (sub && sub.cost_per_user != null) ? sub.cost_per_user : (vendor.cost_per_user || ''),
-        cost_per_employee: (sub && sub.cost_per_employee != null) ? sub.cost_per_employee : (vendor.cost_per_employee || ''),
-        max_users: (sub && sub.max_users != null) ? String(sub.max_users) : (vendor.max_users || ''),
-        max_employees: (sub && sub.max_employees != null) ? String(sub.max_employees) : (vendor.max_employees || ''),
-        max_web_sessions: (sub && sub.max_web_sessions != null) ? String(sub.max_web_sessions) : String(normalizePositiveInt(vendor.max_web_sessions, 1)),
-        xchat_billing_mode: (sub && sub.xchat_billing_mode) || vendor.xchat_billing_mode || 'payg',
-        xchat_token_limit: String((sub && sub.xchat_token_limit != null) ? sub.xchat_token_limit : (vendor.xchat_token_limit || 0)),
-        xchat_tokens_used: (sub && sub.xchat_tokens_used != null) ? sub.xchat_tokens_used : (vendor.xchat_tokens_used || 0),
-        xchat_input_tokens: (sub && sub.xchat_input_tokens != null) ? sub.xchat_input_tokens : (vendor.xchat_input_tokens || 0),
-        xchat_output_tokens: (sub && sub.xchat_output_tokens != null) ? sub.xchat_output_tokens : (vendor.xchat_output_tokens || 0),
-        xchat_tokens_billed: (sub && sub.xchat_tokens_billed != null) ? sub.xchat_tokens_billed : (vendor.xchat_tokens_billed || 0),
-        xchat_price_per_1k_tokens: String((sub && sub.xchat_price_per_1k_tokens != null) ? sub.xchat_price_per_1k_tokens : (vendor.xchat_price_per_1k_tokens || 0)),
-        xchat_reset_usage: false,
-        admin_username: vendor.admin_username || '',
-        admin_password: '',
-        user_username: vendor.user_username || '',
-        user_password: '',
-        frontend_bundle_id: vendor.frontend_bundle_id || 'default_attendance',
-        backend_service_id: vendor.backend_service_id || 'default_api',
-        features: vendor.features || [],
-        vertical: vendor.vertical || '',
-        attendance_type: vendor.attendance_type || 'total_time',
-        retention_days: String(vendor.retention_days || 90),
-        threshold: vendor.threshold != null ? parseFloat(vendor.threshold) : 0.60,
-        cooldown: vendor.cooldown != null ? parseInt(vendor.cooldown, 10) : 30,
-        kiosk_pin: vendor.kiosk_pin || '8888',
-        owners: vendor.owners || []
-      });
-    } catch (e) {
-      setNewVendor({
-        company_name: vendor.company_name || '',
-        contact_person: vendor.contact_person || '',
-        phone: vendor.phone || '',
-        email: vendor.email || '',
-        start_date: vendor.start_date ? new Date(vendor.start_date).toISOString().split('T')[0] : '',
-        end_date: vendor.end_date ? new Date(vendor.end_date).toISOString().split('T')[0] : '',
-        cost_per_user: vendor.cost_per_user || '',
-        cost_per_employee: vendor.cost_per_employee || '',
-        max_users: vendor.max_users || '',
-        max_employees: vendor.max_employees || '',
-        max_web_sessions: normalizePositiveInt(vendor.max_web_sessions, 1),
-        xchat_billing_mode: vendor.xchat_billing_mode || 'payg',
-        xchat_token_limit: String(vendor.xchat_token_limit || 0),
-        xchat_tokens_used: vendor.xchat_tokens_used || 0,
-        xchat_input_tokens: vendor.xchat_input_tokens || 0,
-        xchat_output_tokens: vendor.xchat_output_tokens || 0,
-        xchat_tokens_billed: vendor.xchat_tokens_billed || 0,
-        xchat_price_per_1k_tokens: String(vendor.xchat_price_per_1k_tokens || 0),
-        xchat_reset_usage: false,
-        admin_username: vendor.admin_username || '',
-        admin_password: '',
-        user_username: vendor.user_username || '',
-        user_password: '',
-        frontend_bundle_id: vendor.frontend_bundle_id || 'default_attendance',
-        backend_service_id: vendor.backend_service_id || 'default_api',
-        features: vendor.features || [],
-        vertical: vendor.vertical || '',
-        attendance_type: vendor.attendance_type || 'total_time',
-        retention_days: String(vendor.retention_days || 90),
-        threshold: vendor.threshold != null ? parseFloat(vendor.threshold) : 0.60,
-        cooldown: vendor.cooldown != null ? parseInt(vendor.cooldown, 10) : 30,
-        kiosk_pin: vendor.kiosk_pin || '8888',
-        owners: vendor.owners || []
-      });
-    }
 
-    try {
-      const response = await axios.get(`${API_URL}/admin/vendors/${vendor.id}/registration-config`, {
-        headers: { Authorization: `Bearer ${user?.token}` }
-      });
-      setRegistrationConfig(response.data.config || []);
-    } catch (error) {
-      console.error("Error fetching registration config:", error);
-      setRegistrationConfig([]);
-    }
+    // 1. Immediately populate newVendor from vendor object (already loaded in memory)
+    const initialFormState = {
+      company_name: vendor.company_name || '',
+      contact_person: vendor.contact_person || '',
+      phone: vendor.phone || '',
+      email: vendor.email || '',
+      start_date: vendor.start_date ? new Date(vendor.start_date).toISOString().split('T')[0] : '',
+      end_date: vendor.end_date ? new Date(vendor.end_date).toISOString().split('T')[0] : '',
+      cost_per_user: vendor.cost_per_user != null ? vendor.cost_per_user : '',
+      cost_per_employee: vendor.cost_per_employee != null ? vendor.cost_per_employee : '',
+      max_users: vendor.max_users != null ? String(vendor.max_users) : '',
+      max_employees: vendor.max_employees != null ? String(vendor.max_employees) : '',
+      max_web_sessions: String(normalizePositiveInt(vendor.max_web_sessions, 1)),
+      xchat_billing_mode: vendor.xchat_billing_mode || 'payg',
+      xchat_token_limit: String(vendor.xchat_token_limit != null ? vendor.xchat_token_limit : 0),
+      xchat_tokens_used: vendor.xchat_tokens_used != null ? vendor.xchat_tokens_used : 0,
+      xchat_input_tokens: vendor.xchat_input_tokens != null ? vendor.xchat_input_tokens : 0,
+      xchat_output_tokens: vendor.xchat_output_tokens != null ? vendor.xchat_output_tokens : 0,
+      xchat_tokens_billed: vendor.xchat_tokens_billed != null ? vendor.xchat_tokens_billed : 0,
+      xchat_price_per_1k_tokens: String(vendor.xchat_price_per_1k_tokens != null ? vendor.xchat_price_per_1k_tokens : 0),
+      xchat_reset_usage: false,
+      admin_username: vendor.admin_username || '',
+      admin_password: '',
+      user_username: vendor.user_username || '',
+      user_password: '',
+      frontend_bundle_id: vendor.frontend_bundle_id || 'default_attendance',
+      backend_service_id: vendor.backend_service_id || 'default_api',
+      features: vendor.features || [],
+      vertical: vendor.vertical || '',
+      attendance_type: vendor.attendance_type || 'total_time',
+      retention_days: String(vendor.retention_days || 90),
+      threshold: vendor.threshold != null ? parseFloat(vendor.threshold) : 0.60,
+      cooldown: vendor.cooldown != null ? parseInt(vendor.cooldown, 10) : 30,
+      kiosk_pin: vendor.kiosk_pin || '8888',
+      owners: vendor.owners || []
+    };
 
-    await fetchReportSchedule(vendor.id, vendor.email || '');
+    setNewVendor(initialFormState);
+    setRegistrationConfig([]);
+    setReportSchedule({ ...DEFAULT_REPORT_SCHEDULE, recipient_email: vendor.email || '' });
+    setReportDeliveries([]);
 
+    // 2. Open modal INSTANTLY (0 ms latency)
     setShowModal(true);
+
+    // 3. Fetch secondary details in the background (consolidated endpoint with parallel fallback)
+    const token = user?.token;
+    axios.get(`${API_URL}/admin/vendors/${vendor.id}/edit-details`, {
+      headers: { Authorization: `Bearer ${token}` }
+    }).then(res => {
+      const data = res.data || {};
+      if (data.registration_config) setRegistrationConfig(data.registration_config);
+      if (data.report_schedule) setReportSchedule({ ...DEFAULT_REPORT_SCHEDULE, ...data.report_schedule });
+      if (data.smtp_configured != null) setSmtpConfigured(!!data.smtp_configured);
+      if (data.report_deliveries) setReportDeliveries(data.report_deliveries);
+      if (data.subscription) {
+        const sub = data.subscription;
+        setNewVendor(prev => ({
+          ...prev,
+          start_date: sub.start_date ? new Date(sub.start_date).toISOString().split('T')[0] : prev.start_date,
+          end_date: sub.end_date ? new Date(sub.end_date).toISOString().split('T')[0] : prev.end_date,
+          cost_per_user: sub.cost_per_user != null ? sub.cost_per_user : prev.cost_per_user,
+          cost_per_employee: sub.cost_per_employee != null ? sub.cost_per_employee : prev.cost_per_employee,
+          max_users: sub.max_users != null ? String(sub.max_users) : prev.max_users,
+          max_employees: sub.max_employees != null ? String(sub.max_employees) : prev.max_employees,
+          max_web_sessions: sub.max_web_sessions != null ? String(sub.max_web_sessions) : prev.max_web_sessions,
+          xchat_billing_mode: sub.xchat_billing_mode || prev.xchat_billing_mode,
+          xchat_token_limit: String(sub.xchat_token_limit != null ? sub.xchat_token_limit : prev.xchat_token_limit),
+          xchat_tokens_used: sub.xchat_tokens_used != null ? sub.xchat_tokens_used : prev.xchat_tokens_used,
+          xchat_input_tokens: sub.xchat_input_tokens != null ? sub.xchat_input_tokens : prev.xchat_input_tokens,
+          xchat_output_tokens: sub.xchat_output_tokens != null ? sub.xchat_output_tokens : prev.xchat_output_tokens,
+          xchat_tokens_billed: sub.xchat_tokens_billed != null ? sub.xchat_tokens_billed : prev.xchat_tokens_billed,
+          xchat_price_per_1k_tokens: String(sub.xchat_price_per_1k_tokens != null ? sub.xchat_price_per_1k_tokens : prev.xchat_price_per_1k_tokens)
+        }));
+      }
+    }).catch(() => {
+      // Fallback: Parallel requests if edit-details is unavailable
+      Promise.allSettled([
+        axios.get(`${API_URL}/admin/vendors/${vendor.id}/registration-config`, { headers: { Authorization: `Bearer ${token}` } }),
+        axios.get(`${API_URL}/admin/vendors/${vendor.id}/automated-report-schedule`, { headers: { Authorization: `Bearer ${token}` } }),
+        axios.get(`${API_URL}/admin/vendors/${vendor.id}/subscription`, { headers: { Authorization: `Bearer ${token}` } })
+      ]).then(([regRes, schedRes, subRes]) => {
+        if (regRes.status === 'fulfilled') setRegistrationConfig(regRes.value.data?.config || []);
+        if (schedRes.status === 'fulfilled') {
+          setReportSchedule(prev => ({ ...prev, ...(schedRes.value.data?.schedule || {}) }));
+          setSmtpConfigured(!!schedRes.value.data?.smtp_configured);
+          fetchReportDeliveries(vendor.id);
+        }
+        if (subRes.status === 'fulfilled' && subRes.value.data) {
+          const sub = subRes.value.data;
+          setNewVendor(prev => ({
+            ...prev,
+            start_date: sub.start_date ? new Date(sub.start_date).toISOString().split('T')[0] : prev.start_date,
+            end_date: sub.end_date ? new Date(sub.end_date).toISOString().split('T')[0] : prev.end_date,
+            cost_per_user: sub.cost_per_user != null ? sub.cost_per_user : prev.cost_per_user,
+            cost_per_employee: sub.cost_per_employee != null ? sub.cost_per_employee : prev.cost_per_employee,
+            max_users: sub.max_users != null ? String(sub.max_users) : prev.max_users,
+            max_employees: sub.max_employees != null ? String(sub.max_employees) : prev.max_employees,
+            max_web_sessions: sub.max_web_sessions != null ? String(sub.max_web_sessions) : prev.max_web_sessions,
+            xchat_billing_mode: sub.xchat_billing_mode || prev.xchat_billing_mode,
+            xchat_token_limit: String(sub.xchat_token_limit != null ? sub.xchat_token_limit : prev.xchat_token_limit),
+            xchat_tokens_used: sub.xchat_tokens_used != null ? sub.xchat_tokens_used : prev.xchat_tokens_used,
+            xchat_input_tokens: sub.xchat_input_tokens != null ? sub.xchat_input_tokens : prev.xchat_input_tokens,
+            xchat_output_tokens: sub.xchat_output_tokens != null ? sub.xchat_output_tokens : prev.xchat_output_tokens,
+            xchat_tokens_billed: sub.xchat_tokens_billed != null ? sub.xchat_tokens_billed : prev.xchat_tokens_billed,
+            xchat_price_per_1k_tokens: String(sub.xchat_price_per_1k_tokens != null ? sub.xchat_price_per_1k_tokens : prev.xchat_price_per_1k_tokens)
+          }));
+        }
+      });
+    });
   };
 
   const handleRestoreDatabase = async (file) => {

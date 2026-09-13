@@ -3,9 +3,13 @@ import time
 import sqlite3
 import base64
 import json
-import psycopg2
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+except ImportError:
+    psycopg2 = None
+    RealDictCursor = None
 import traceback
-from psycopg2.extras import RealDictCursor
 from datetime import date, timedelta, datetime
 from threading import Lock
 import cachetools
@@ -295,22 +299,10 @@ def prepare_augmented_embeddings(img_rgb: np.ndarray, mfd_app) -> list:
         return []
 
 # --- Database Utilities ---
-def get_table_columns(conn, table_name):
-    """Returns a list of column names for a given table."""
-    c = conn.cursor()
-    is_pg = getattr(conn, "_is_pg", False)
-    try:
-        if is_pg:
-            c.execute("SELECT column_name FROM information_schema.columns WHERE table_name = %s", (table_name,))
-            return [str(r[0]) for r in c.fetchall()]
-        else:
-            c.execute(f"PRAGMA table_info({table_name})")
-            return [str(r[1]) for r in c.fetchall()]
-    except Exception:
-        if is_pg and hasattr(conn, "rollback"): conn.rollback()
-        return []
-    finally:
-        c.close()
+def get_table_columns(conn, table_name, force_refresh=False):
+    """Proxy to db_factory.get_table_columns with caching."""
+    from db_factory import get_table_columns as _get_cols
+    return _get_cols(conn, table_name, force_refresh)
 
 def get_db_connection(timeout=30):
     """Proxy to db_factory.get_db_connection to avoid circular imports."""
