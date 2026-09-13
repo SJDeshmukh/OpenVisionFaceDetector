@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import { Image as ImageIcon } from 'lucide-react';
 import BrandLogo from './BrandLogo';
-import { getBusinessTerminology } from '../lib/businessTerminology';
+import { getBusinessTerminology, usesStudentRecords } from '../lib/businessTerminology';
 
 const adminNavItems = [
   { name: 'Dashboard',            path: '/dashboard',            icon: LayoutDashboard },
@@ -114,7 +114,16 @@ export const Sidebar = ({ isOpen, onClose }) => {
       navItems = adminNavItems;
     }
   } else {
-    navItems = userNavItems;
+    const isStudent = usesStudentRecords(user?.vertical);
+    navItems = isStudent
+      ? [
+          { name: 'Leave Management', path: '/leave-management', icon: FileCheck },
+          { name: 'Attendance',       path: '/attendance',       icon: ClipboardList },
+        ]
+      : [
+          { name: 'Attendance',       path: '/attendance',       icon: ClipboardList },
+          ...(user?.features?.includes('leave_management') ? [{ name: 'Leave Management', path: '/leave-management', icon: FileCheck }] : []),
+        ];
   }
 
   if (user?.role !== 'super_admin' && user?.role !== 'faculty') {
@@ -269,7 +278,7 @@ export const Sidebar = ({ isOpen, onClose }) => {
                 <p className="text-[10px] truncate capitalize" style={{ color: 'var(--user-chip-text)' }}>
                   {staffSession
                     ? `${staffSession.role.toUpperCase()}${staffSession.department ? ` · ${staffSession.department}` : ''}`
-                    : (user?.role === 'admin' ? 'Administrator' : 'TapInX User')}
+                    : (user?.role === 'admin' ? 'Administrator' : (usesStudentRecords(user?.vertical) ? 'Student' : 'Employee'))}
                 </p>
               </div>
             </div>
@@ -405,7 +414,7 @@ export const Topbar = ({ onToggleSidebar }) => {
               {staffSession ? staffSession.name : (user?.username || 'Guest')}
             </p>
             <p className="text-[10px] capitalize" style={{ color: 'var(--user-chip-text)' }}>
-              {staffSession ? staffSession.role : (user?.role === 'admin' ? 'Admin' : 'User')}
+              {staffSession ? staffSession.role : (user?.role === 'admin' ? 'Admin' : (usesStudentRecords(user?.vertical) ? 'Student' : 'Employee'))}
             </p>
           </div>
         </div>

@@ -141,7 +141,8 @@ export const AuthProvider = ({ children }) => {
       setUser(userData);
       localStorage.setItem('user', JSON.stringify(userData));
       return {
-        success: true, role: userData.role, redirect_url: response.data.redirect_url,
+        success: true, role: userData.role, vertical: userData.vertical, person_id: userData.person_id,
+        redirect_url: response.data.redirect_url,
         force_password_change: response.data.force_password_change || false,
       };
     } catch (error) {

@@ -6,6 +6,7 @@ import { Lock, User, Eye, EyeOff, Zap, Mail } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { API_URL } from '../config';
 import BrandLogo from '../components/BrandLogo';
+import { usesStudentRecords } from '../lib/businessTerminology';
 
 const cardVariants = {
   hidden:  { opacity: 0, y: 28, scale: 0.96 },
@@ -97,7 +98,17 @@ const Login = () => {
       if (result.force_password_change) { setShowPasswordChange(true); return; }
       if (result.status === 'success' && result.needs_student_password) { setShowStudentPasswordModal(true); return; }
       if (result.role === 'faculty') { navigate('/classes'); return; }
-      if (result.role === 'user') { navigate('/leave-management'); return; }
+      if (result.role === 'user' || result.role === 'student') {
+        const storedUser = JSON.parse(localStorage.getItem('user')) || {};
+        const vertical = storedUser.vertical || result.vertical;
+        const isStudent = usesStudentRecords(vertical);
+        if (isStudent) {
+          navigate('/leave-management');
+        } else {
+          navigate('/attendance');
+        }
+        return;
+      }
       if (result.role === 'owner') { navigate('/owner/advances'); return; }
       const storedUser = JSON.parse(localStorage.getItem('user'));
       if (storedUser?.role === 'vendor_admin' && storedUser?.features?.includes('leave_management')) { setStep(1); return; }

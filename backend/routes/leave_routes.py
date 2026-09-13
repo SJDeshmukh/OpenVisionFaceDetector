@@ -82,7 +82,7 @@ def create_leave_request():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
 
-    role_error = _require_role("user")
+    role_error = _require_role("user", "student")
     if role_error: return role_error
     
     data = request.json
@@ -109,12 +109,12 @@ def create_leave_request():
         # authenticated account and only use the body field as a consistency check.
         if is_pg:
             c.execute(
-                "SELECT person_id FROM system_users WHERE vendor_id = %s AND username = %s AND role = 'user'",
+                "SELECT person_id FROM system_users WHERE vendor_id = %s AND username = %s AND role IN ('user', 'student')",
                 (vendor_id, g.username),
             )
         else:
             c.execute(
-                "SELECT person_id FROM system_users WHERE vendor_id = ? AND username = ? AND role = 'user'",
+                "SELECT person_id FROM system_users WHERE vendor_id = ? AND username = ? AND role IN ('user', 'student')",
                 (vendor_id, g.username),
             )
         authenticated_student = c.fetchone()
@@ -135,7 +135,8 @@ def create_leave_request():
                     WHERE vendor_id = %s AND (
                         id::text = %s OR
                         LOWER(TRIM(custom_data::jsonb->>'student_id')) = LOWER(TRIM(%s)) OR
-                        LOWER(TRIM(custom_data::jsonb->>'id_number')) = LOWER(TRIM(%s))
+                        LOWER(TRIM(custom_data::jsonb->>'id_number')) = LOWER(TRIM(%s)) OR
+                        LOWER(TRIM(custom_data::jsonb->>'employee_id')) = LOWER(TRIM(%s))
                     )
                 """, (vendor_id, student_id, student_id, student_id, student_id))
             else:
@@ -144,7 +145,8 @@ def create_leave_request():
                     WHERE vendor_id = ? AND (
                         CAST(id AS TEXT) = ? OR
                         LOWER(TRIM(json_extract(custom_data, '$.student_id'))) = LOWER(TRIM(?)) OR
-                        LOWER(TRIM(json_extract(custom_data, '$.id_number'))) = LOWER(TRIM(?))
+                        LOWER(TRIM(json_extract(custom_data, '$.id_number'))) = LOWER(TRIM(?)) OR
+                        LOWER(TRIM(json_extract(custom_data, '$.employee_id'))) = LOWER(TRIM(?))
                     )
                 """, (vendor_id, student_id, student_id, student_id, student_id))
             
@@ -1253,8 +1255,8 @@ def get_student_history():
     if not auth_header: return jsonify({"error": "Missing token"}), 401
     token = auth_header.split(" ")[1]
     user_data = verify_token(token)
-    if not user_data or user_data['role'] != 'user':
-        return jsonify({"error": "Student access required"}), 403
+    if not user_data or user_data.get('role') not in ('user', 'student'):
+        return jsonify({"error": "User access required"}), 403
     
     student_number = user_data.get('username')
     vendor_id = user_data.get('vendor_id')
@@ -1276,7 +1278,8 @@ def get_student_history():
                 WHERE vendor_id = %s AND (
                     id::text = %s OR
                     LOWER(TRIM(custom_data::jsonb->>'student_id')) = LOWER(TRIM(%s)) OR
-                    LOWER(TRIM(custom_data::jsonb->>'id_number')) = LOWER(TRIM(%s))
+                    LOWER(TRIM(custom_data::jsonb->>'id_number')) = LOWER(TRIM(%s)) OR
+                    LOWER(TRIM(custom_data::jsonb->>'employee_id')) = LOWER(TRIM(%s))
                 )
             """, (vendor_id, student_number, student_number, student_number, student_number))
         else:
@@ -1285,7 +1288,8 @@ def get_student_history():
                 WHERE vendor_id = ? AND (
                     CAST(id AS TEXT) = ? OR
                     LOWER(TRIM(json_extract(custom_data, '$.student_id'))) = LOWER(TRIM(?)) OR
-                    LOWER(TRIM(json_extract(custom_data, '$.id_number'))) = LOWER(TRIM(?))
+                    LOWER(TRIM(json_extract(custom_data, '$.id_number'))) = LOWER(TRIM(?)) OR
+                    LOWER(TRIM(json_extract(custom_data, '$.employee_id'))) = LOWER(TRIM(?))
                 )
             """, (vendor_id, student_number, student_number, student_number, student_number))
         

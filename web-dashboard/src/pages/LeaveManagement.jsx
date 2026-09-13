@@ -15,10 +15,15 @@ import {
   Users,
   RotateCcw
 } from 'lucide-react';
+import { getBusinessTerminology, usesStudentRecords } from '../lib/businessTerminology';
 
 const LeaveManagement = () => {
   const { user, staffSession, loginAsStaff, logout, logoutStaff } = useAuth();
-  const [activeTab, setActiveTab] = useState('pending');
+  const terminology = getBusinessTerminology(user?.vertical);
+  const isStudentFlow = usesStudentRecords(user?.vertical);
+  const isRegularUser = (user?.role === 'user' || user?.role === 'student') && !staffSession;
+
+  const [activeTab, setActiveTab] = useState(isRegularUser ? 'new_request' : 'pending');
   const [requests, setRequests] = useState([]);
   const [trackingData, setTrackingData] = useState([]);
   const [parents, setParents] = useState([]);
@@ -37,20 +42,45 @@ const LeaveManagement = () => {
 
   // Set default tab based on role once user is available
   useEffect(() => {
-    if (user?.role === 'user' && !staffSession) {
+    if (isRegularUser) {
       setActiveTab('new_request');
     } else {
       setActiveTab('pending');
     }
-  }, [user, staffSession]);
+  }, [isRegularUser]);
+
   const [formData, setFormData] = useState({
-    leave_type: 'home',
+    leave_type: isStudentFlow ? 'home' : 'casual',
     reason: '',
     start_date: '',
     end_date: '',
     start_time: '10:00',
     end_time: '18:00'
   });
+
+  useEffect(() => {
+    setFormData(prev => ({
+      ...prev,
+      leave_type: isStudentFlow ? 'home' : 'casual'
+    }));
+  }, [isStudentFlow]);
+
+  const formatLeaveType = (type) => {
+    const map = {
+      home: 'Home Visit',
+      night_out: 'Night Out',
+      outing: 'Day Outing',
+      medical: 'Medical Leave',
+      casual: 'Casual Leave (CL)',
+      sick: 'Sick Leave (SL)',
+      privilege: 'Privilege Leave (PL)',
+      half_day: 'Half Day Leave',
+      comp_off: 'Comp Off',
+      unpaid: 'Leave Without Pay',
+      other: 'Leave',
+    };
+    return map[String(type || '').toLowerCase()] || String(type || 'Leave').replace('_', ' ');
+  };
 
   const handleVerifyPin = async (e) => {
     e.preventDefault();
@@ -65,7 +95,7 @@ const LeaveManagement = () => {
   };
 
   const fetchData = async () => {
-    if (user?.role === 'user' && activeTab !== 'history') return;
+    if (isRegularUser && activeTab !== 'history') return;
     setLoading(true);
     try {
       if (activeTab === 'pending') {
@@ -77,7 +107,7 @@ const LeaveManagement = () => {
         setRequests(res.data.requests || []);
       } else if (activeTab === 'history') {
         let url;
-        if (user?.role === 'user' && !staffSession) {
+        if (isRegularUser) {
           url = `${API_URL}/leave/student/history`;
         } else {
           url = `${API_URL}/leave/admin/history?role=${currentRole}&status=${statusFilter}`;
@@ -85,7 +115,7 @@ const LeaveManagement = () => {
             url += `&department=${encodeURIComponent(staffSession.department)}`;
           }
         }
-        const res = await axios.get(url, user?.role === 'user' && !staffSession ? {} : staffRequestConfig);
+        const res = await axios.get(url, isRegularUser ? {} : staffRequestConfig);
         setRequests(res.data.history || res.data.requests || []);
       } else if (activeTab === 'tracking') {
         let url = `${API_URL}/leave/admin/tracking?role=${currentRole}`;
@@ -128,30 +158,30 @@ const LeaveManagement = () => {
     try {
       const payload = { ...formData };
       
-      // Force student_id if logged in as student
-      const studentId = user?.person_id || user?.id || user?.username;
+      // Force student_id / employee_id if logged in as user
+      const personId = user?.person_id || user?.id || user?.username;
       
-      if (user?.role === 'user' && studentId) {
-        payload.student_id = studentId;
+      if (isRegularUser && personId) {
+        payload.student_id = personId;
       }
       
       if (!payload.student_id) {
-        alert("Error: Student ID is missing. Please re-login.");
+        alert(`Error: ${terminology.person} ID is missing. Please re-login.`);
         setLoading(false);
         return;
       }
 
       await axios.post(`${API_URL}/leave/request`, payload);
-      alert("Leave request submitted successfully! Pending Rector approval.");
+      alert("Leave request submitted successfully! Pending approval.");
       setFormData({
-        leave_type: 'home',
+        leave_type: isStudentFlow ? 'home' : 'casual',
         reason: '',
         start_date: '',
         end_date: '',
         start_time: '10:00',
         end_time: '18:00'
       });
-      if (user?.role === 'user') setActiveTab('history');
+      if (isRegularUser) setActiveTab('history');
     } catch (err) {
       alert("Error submitting request: " + (err.response?.data?.error || err.message));
     } finally {
@@ -188,7 +218,7 @@ const LeaveManagement = () => {
   };
 
   const filteredRequests = requests.filter(req => 
-    (req.student_name || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
+    (req.student_name || req.name || req.employee_name || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
     (req.reason || "").toLowerCase().includes(searchTerm.toLowerCase())
   );
 
@@ -206,11 +236,15 @@ const LeaveManagement = () => {
             <ShieldCheck className="text-blue-600" />
             Leave Management
           </h1>
-          <p className="text-slate-500">Review and approve student leave permissions.</p>
+          <p className="text-slate-500">
+            {isRegularUser
+              ? (isStudentFlow ? "Apply for campus leave and view your status." : "Submit and track employee leave requests.")
+              : (isStudentFlow ? "Review and approve student leave permissions." : "Review and approve employee leave requests.")}
+          </p>
         </div>
 
         <div className="flex bg-slate-100 p-1 rounded-lg">
-          {user?.role === 'user' && !staffSession ? (
+          {isRegularUser ? (
             <>
               <button
                 onClick={() => setActiveTab('new_request')}
@@ -239,12 +273,14 @@ const LeaveManagement = () => {
               >
                 Leave Tracking
               </button>
-              <button
-                onClick={() => setActiveTab('parents')}
-                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === 'parents' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}
-              >
-                Parent Validation
-              </button>
+              {isStudentFlow && (
+                <button
+                  onClick={() => setActiveTab('parents')}
+                  className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === 'parents' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}
+                >
+                  Parent Validation
+                </button>
+              )}
               <button
                 onClick={() => setActiveTab('history')}
                 className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === 'history' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}
@@ -265,14 +301,14 @@ const LeaveManagement = () => {
           </span>
           <input
             type="text"
-            placeholder={activeTab === 'parents' ? "Search parent or student ID..." : "Search student or reason..."}
+            placeholder={activeTab === 'parents' ? "Search parent or student ID..." : `Search ${terminology.person.toLowerCase()} or reason...`}
             className="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
           />
         </div>
         
-        {activeTab === 'history' && user?.role !== 'user' && (
+        {activeTab === 'history' && !isRegularUser && (
           <div className="flex items-center gap-2">
             <label className="text-sm font-medium text-slate-700">Status:</label>
             <select
@@ -322,12 +358,28 @@ const LeaveManagement = () => {
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">Leave Type</label>
                     <select
-                      className="w-full p-2 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
+                      className="w-full p-2 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 bg-white text-slate-800"
                       value={formData.leave_type}
                       onChange={(e) => setFormData({...formData, leave_type: e.target.value})}
                     >
-                      <option value="home">Home Visit</option>
-                      <option value="night_out">Night Out</option>
+                      {isStudentFlow ? (
+                        <>
+                          <option value="home">Home Visit</option>
+                          <option value="night_out">Night Out</option>
+                          <option value="outing">Day Outing</option>
+                          <option value="medical">Medical Leave</option>
+                        </>
+                      ) : (
+                        <>
+                          <option value="casual">Casual Leave (CL)</option>
+                          <option value="sick">Sick Leave (SL)</option>
+                          <option value="privilege">Privilege / Earned Leave (PL)</option>
+                          <option value="half_day">Half Day Leave</option>
+                          <option value="comp_off">Compensatory Off (Comp Off)</option>
+                          <option value="unpaid">Leave Without Pay (LWP)</option>
+                          <option value="other">Other</option>
+                        </>
+                      )}
                     </select>
                   </div>
                   <div>
@@ -336,7 +388,7 @@ const LeaveManagement = () => {
                       type="text"
                       required
                       className="w-full p-2 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
-                      placeholder="e.g. Family Function / Medical"
+                      placeholder={isStudentFlow ? "e.g. Family Function / Medical" : "e.g. Personal work / Medical / Urgent matter"}
                       value={formData.reason}
                       onChange={(e) => setFormData({...formData, reason: e.target.value})}
                     />
@@ -368,7 +420,7 @@ const LeaveManagement = () => {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Reporting Time (Start)</label>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">{isStudentFlow ? "Reporting Time (Start)" : "Start Time (Optional)"}</label>
                     <input
                       type="time"
                       className="w-full p-2 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
@@ -377,7 +429,7 @@ const LeaveManagement = () => {
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Expected Return Time</label>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">{isStudentFlow ? "Expected Return Time" : "End Time (Optional)"}</label>
                     <input
                       type="time"
                       className="w-full p-2 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
@@ -424,10 +476,10 @@ const LeaveManagement = () => {
                         <User size={24} />
                       </div>
                       <div className="space-y-1">
-                        <h3 className="font-bold text-slate-800 text-lg">{req.student_name}</h3>
+                        <h3 className="font-bold text-slate-800 text-lg">{req.student_name || req.name || req.employee_name}</h3>
                         <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-500 items-center">
                           <span className="flex items-center gap-1">
-                            <FileText size={14} /> {req.leave_type === 'home' ? 'Home Visit' : 'Night Out'}
+                            <FileText size={14} /> {formatLeaveType(req.leave_type)}
                           </span>
                           <span className="flex items-center gap-1">
                             <Calendar size={14} /> {req.start_date} to {req.end_date}
@@ -472,19 +524,19 @@ const LeaveManagement = () => {
                   <div key={req.id} className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
                     <div className="flex justify-between items-start mb-4">
                       <div className="flex items-center gap-3">
-                        {user?.role !== 'user' && (
+                        {!isRegularUser && (
                           <div className="p-2 bg-blue-50 text-blue-600 rounded-full shrink-0">
                             <User size={20} />
                           </div>
                         )}
                         <div>
                           <h3 className="font-bold text-slate-800">
-                            {user?.role !== 'user' ? req.student_name : (req.leave_type === 'home' ? 'Home Visit' : 'Night Out')}
+                            {!isRegularUser ? (req.student_name || req.name || req.employee_name) : formatLeaveType(req.leave_type)}
                           </h3>
                           <div className="flex items-center gap-3 text-sm text-slate-500">
-                            {user?.role !== 'user' && (
+                            {!isRegularUser && (
                               <span className="font-mono bg-slate-100 px-1.5 py-0.5 rounded text-[11px] uppercase tracking-tighter">
-                                {req.leave_type === 'home' ? 'Home Visit' : 'Night Out'}
+                                {formatLeaveType(req.leave_type)}
                               </span>
                             )}
                             <p className="text-sm text-slate-500">{req.start_date} to {req.end_date}</p>
@@ -502,11 +554,14 @@ const LeaveManagement = () => {
                       <div className="absolute top-1/2 left-10 right-10 h-0.5 bg-slate-100 -translate-y-1/2 z-0"></div>
                       
                       {/* Logic for steps */}
-                      {[
+                      {(isStudentFlow ? [
                         { label: 'Rector', status: req.rector_status },
                         { label: 'HOD', status: req.hod_status },
                         { label: 'Parent', status: req.parent_status }
-                      ].map((step, idx) => {
+                      ] : [
+                        { label: 'Supervisor', status: req.rector_status || req.status },
+                        { label: 'HR / Admin', status: req.hod_status || (req.rector_status === 'approved' ? 'approved' : req.status) }
+                      ]).map((step, idx) => {
                         const isDone = step.status === 'approved';
                         const isRejected = step.status === 'rejected';
                         return (
@@ -528,7 +583,7 @@ const LeaveManagement = () => {
               ) : (
                 <div className="text-center py-12 bg-slate-50 rounded-xl border border-dashed border-slate-300">
                   <Clock size={48} className="mx-auto text-slate-300 mb-2" />
-                  <p className="text-slate-500">{user?.role === 'user' ? "Your leave request history will appear here." : "No leave history records match your filters."}</p>
+                  <p className="text-slate-500">{isRegularUser ? "Your leave request history will appear here." : "No leave history records match your filters."}</p>
                 </div>
               )}
             </div>
@@ -537,7 +592,7 @@ const LeaveManagement = () => {
               <table className="w-full text-left border-collapse">
                 <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-bold tracking-wider">
                   <tr>
-                    <th className="p-4 border-b">Student</th>
+                    <th className="p-4 border-b">{terminology.person}</th>
                     <th className="p-4 border-b">Leave Period</th>
                     <th className="p-4 border-b">Status</th>
                     <th className="p-4 border-b">Arrival</th>
@@ -553,8 +608,8 @@ const LeaveManagement = () => {
                               <User size={16} />
                             </div>
                             <div>
-                              <p className="font-bold text-slate-800">{item.student_name}</p>
-                              <p className="text-[10px] text-slate-400 uppercase font-mono">{item.student_dept || 'No Dept'}</p>
+                              <p className="font-bold text-slate-800">{item.student_name || item.name || item.employee_name}</p>
+                              <p className="text-[10px] text-slate-400 uppercase font-mono">{item.student_dept || item.department || 'General'}</p>
                             </div>
                           </div>
                         </td>

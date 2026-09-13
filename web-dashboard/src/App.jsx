@@ -26,6 +26,8 @@ import LeaveManagement from './pages/LeaveManagement';
 import FaceResetRequests from './pages/FaceResetRequests';
 import OwnerAdvances from './pages/OwnerAdvances';
 
+import { usesStudentRecords } from './lib/businessTerminology';
+
 // Protected Route Component
 const ProtectedRoute = ({ allowedRoles }) => {
   const { user } = useAuth();
@@ -39,6 +41,10 @@ const ProtectedRoute = ({ allowedRoles }) => {
   if (allowedRoles && !allowedRoles.includes(user.role)) {
     // If role not allowed, redirect to home or authorized page
     if (user.role === 'super_admin') return <Navigate to="/admin/vendors" replace />;
+    if (user.role === 'user' || user.role === 'student') {
+      const isStudent = usesStudentRecords(user?.vertical);
+      return <Navigate to={isStudent ? "/leave-management" : "/attendance"} replace />;
+    }
     return <Navigate to="/attendance" replace />;
   }
 
@@ -82,7 +88,7 @@ function App() {
               </Route>
 
               {/* Admin/Rector/HOD/Faculty Routes */}
-              <Route element={<ProtectedRoute allowedRoles={['admin', 'vendor_admin', 'owner', 'rector', 'hod', 'user', 'faculty']} />}>
+              <Route element={<ProtectedRoute allowedRoles={['admin', 'vendor_admin', 'owner', 'rector', 'hod', 'user', 'student', 'faculty']} />}>
                 <Route path="/" element={<Navigate to="/dashboard" replace />} />
                 <Route path="/dashboard" element={<Dashboard />} />
                 <Route path="/people" element={<People />} />
@@ -100,7 +106,7 @@ function App() {
               </Route>
 
               {/* Shared/User Routes */}
-              <Route element={<ProtectedRoute allowedRoles={['admin', 'user', 'vendor_admin', 'owner', 'faculty']} />}>
+              <Route element={<ProtectedRoute allowedRoles={['admin', 'user', 'student', 'vendor_admin', 'owner', 'faculty']} />}>
                 {/* User lands on Attendance/Identify page */}
                 <Route path="/attendance" element={<Attendance />} />
                 {/* Allow users to access People page? Maybe restrict based on role if needed, but for now keeping as is */}

@@ -535,6 +535,16 @@ def get_attendance(valid_data: AttendanceFilterSchema):
         WHERE a.vendor_id = ?
     """
     params = [vendor_id]
+    if getattr(g, "user_role", None) in ('user', 'student'):
+        c.execute("SELECT person_id FROM system_users WHERE vendor_id = ? AND username = ?", (vendor_id, getattr(g, "username", "")))
+        u_row = c.fetchone()
+        scoped_pid = u_row[0] if u_row and u_row[0] else None
+        if scoped_pid:
+            query += " AND (a.person_id = ? OR f.id = ?)"
+            params.extend([scoped_pid, scoped_pid])
+        elif getattr(g, "username", None):
+            query += " AND a.name = ?"
+            params.append(g.username)
     if s_date: query += " AND date(a.timestamp) >= ?"; params.append(s_date)
     if e_date: query += " AND date(a.timestamp) <= ?"; params.append(e_date)
     if name: query += " AND a.name LIKE ?"; params.append(f"%{name}%")

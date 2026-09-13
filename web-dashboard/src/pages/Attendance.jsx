@@ -48,6 +48,7 @@ const Attendance = () => {
   const { user } = useAuth();
   const terminology = getBusinessTerminology(user?.vertical);
   const schoolFlow = usesStudentRecords(user?.vertical);
+  const isRegularUser = user?.role === 'user' || user?.role === 'student';
   const [personType, setPersonType] = useState('student');
   const filtersRef = useRef(filters);
   useEffect(() => {
@@ -242,11 +243,11 @@ const Attendance = () => {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">Attendance Logs</h1>
-          <p className="text-slate-500">Track {personLabel.toLowerCase()} check-ins and movements.</p>
+          <h1 className="text-2xl font-bold text-slate-800">{isRegularUser ? "My Attendance" : "Attendance Logs"}</h1>
+          <p className="text-slate-500">{isRegularUser ? "View your personal punch logs and attendance history." : `Track ${personLabel.toLowerCase()} check-ins and movements.`}</p>
         </div>
         <div className="flex space-x-3">
-          {schoolFlow && (
+          {schoolFlow && !isRegularUser && (
             <select
               value={personType}
               onChange={(event) => setPersonType(event.target.value)}
@@ -269,11 +270,6 @@ const Attendance = () => {
                   phone: '',
                   name: ''
                 });
-                // Need to wait for state update or call fetch directly with new params. 
-                // Since setState is async, we'll just set it and let user click refresh or add a useEffect dependency if we wanted auto-refresh.
-                // For better UX, let's trigger a fetch with today's date directly or just update state and let user search.
-                // Or better, just set state and call fetchLogs() logic manually or use a separate effect.
-                // Let's keep it simple: Reset state.
               }}
               className="flex items-center space-x-2 px-4 py-2 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 font-medium transition-colors"
             >
@@ -288,13 +284,15 @@ const Attendance = () => {
             <RefreshCw size={18} className={isRefreshing ? "animate-spin" : ""} />
             <span>Refresh</span>
           </button>
-          <button
-            onClick={handleExport}
-            className="flex items-center space-x-2 px-4 py-2 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 font-medium transition-colors"
-          >
-            <Download size={18} />
-            <span>Export</span>
-          </button>
+          {!isRegularUser && (
+            <button
+              onClick={handleExport}
+              className="flex items-center space-x-2 px-4 py-2 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 font-medium transition-colors"
+            >
+              <Download size={18} />
+              <span>Export</span>
+            </button>
+          )}
         </div>
       </div>
 
