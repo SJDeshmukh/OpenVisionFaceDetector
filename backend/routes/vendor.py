@@ -1584,11 +1584,24 @@ def mobile_heartbeat():
         socketio.emit("device_health_update", payload, room="super_admin")
         
         conn.close()
+
+        safe_anchor_lat = None
+        safe_anchor_lng = None
+        if has_geofence and anchor_lat is not None and anchor_lng is not None:
+            try:
+                safe_anchor_lat = float(anchor_lat)
+                safe_anchor_lng = float(anchor_lng)
+            except (ValueError, TypeError):
+                safe_anchor_lat = None
+                safe_anchor_lng = None
+
         return jsonify({
             "status": "success", 
             "geofence_status": geofence_status,
             "distance_meters": distance_meters,
-            "radius_meters": radius if has_geofence else None
+            "radius_meters": float(radius) if (has_geofence and radius is not None) else None,
+            "anchor_lat": safe_anchor_lat,
+            "anchor_lng": safe_anchor_lng
         })
     except Exception as e:
         logger.error(f"Global error in mobile_heartbeat: {e}")

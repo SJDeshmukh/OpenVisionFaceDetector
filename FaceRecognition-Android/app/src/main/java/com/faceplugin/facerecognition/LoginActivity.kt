@@ -26,12 +26,27 @@ import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.LocationSettingsRequest
+import com.google.android.gms.location.Priority
+import com.google.android.gms.common.api.ResolvableApiException
+import android.content.IntentSender
 
 class LoginActivity : AppCompatActivity() {
+
+    private val REQUEST_CHECK_SETTINGS = 1001
+    private val REQUEST_PERMISSIONS = 100
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_login)
+
+        checkAndPromptPermissionsAndLocation()
 
         // Show connected server (Debug info)
         Toast.makeText(this, "Connected to: " + RetrofitClient.getBaseUrl(), Toast.LENGTH_LONG).show()
@@ -610,5 +625,79 @@ class LoginActivity : AppCompatActivity() {
         if (savedUser.isNullOrBlank() || savedHash.isNullOrBlank()) return false
         if (savedUser != username) return false
         return savedHash == offlineLoginHash(username, password)
+    }
+
+    private fun checkAndPromptPermissionsAndLocation() {
+        val permissions = mutableListOf(
+            Manifest.permission.CAMERA,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+
+        val ungranted = permissions.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (ungranted.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, ungranted.toTypedArray(), REQUEST_PERMISSIONS)
+        } else {
+            promptEnableLocationSettings()
+        }
+    }
+
+    private fun promptEnableLocationSettings() {
+        val hasFine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val hasCoarse = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!hasFine && !hasCoarse) return
+
+        try {
+            val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 10000L)
+                .setMinUpdateIntervalMillis(5000L)
+                .build()
+
+            val builder = LocationSettingsRequest.Builder()
+                .addLocationRequest(locationRequest)
+                .setAlwaysShow(true)
+
+            val client = LocationServices.getSettingsClient(this)
+            val task = client.checkLocationSettings(builder.build())
+
+            task.addOnFailureListener { exception ->
+                if (exception is ResolvableApiException) {
+                    try {
+                        exception.startResolutionForResult(this@LoginActivity, REQUEST_CHECK_SETTINGS)
+                    } catch (e: IntentSender.SendIntentException) {
+                        e.printStackTrace()
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_CHECK_SETTINGS) {
+            if (resultCode != RESULT_OK) {
+                Toast.makeText(this, "Device location is recommended for geofenced attendance kiosk.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_PERMISSIONS) {
+            val fineIdx = permissions.indexOf(Manifest.permission.ACCESS_FINE_LOCATION)
+            val coarseIdx = permissions.indexOf(Manifest.permission.ACCESS_COARSE_LOCATION)
+            val fineGranted = fineIdx != -1 && grantResults.getOrNull(fineIdx) == PackageManager.PERMISSION_GRANTED
+            val coarseGranted = coarseIdx != -1 && grantResults.getOrNull(coarseIdx) == PackageManager.PERMISSION_GRANTED
+
+            if (fineGranted || coarseGranted) {
+                promptEnableLocationSettings()
+            }
+        }
     }
 }

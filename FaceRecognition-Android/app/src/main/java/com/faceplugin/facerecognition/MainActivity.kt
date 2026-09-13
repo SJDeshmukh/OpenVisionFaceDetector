@@ -47,6 +47,10 @@ import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
+import com.google.android.gms.location.LocationSettingsRequest
+import com.google.android.gms.location.LocationSettingsResponse
+import com.google.android.gms.common.api.ResolvableApiException
+import android.content.IntentSender
 
 class MainActivity : AppCompatActivity() {
 
@@ -72,6 +76,10 @@ class MainActivity : AppCompatActivity() {
     private var lastKnownDistance: Double? = null
     private var lastKnownLat: Double? = null
     private var lastKnownLng: Double? = null
+    private var anchorLat: Double? = null
+    private var anchorLng: Double? = null
+    private var anchorRadius: Double? = null
+    private val REQUEST_CHECK_SETTINGS = 1001
     private var locationManager: LocationManager? = null
     private var latestDeviceLocation: Location? = null
     private var locationCallback: LocationCallback? = null
@@ -155,8 +163,21 @@ class MainActivity : AppCompatActivity() {
         if (ungranted.isNotEmpty()) {
             ActivityCompat.requestPermissions(this, ungranted.toTypedArray(), 100)
         } else {
+            promptEnableLocationSettings()
             startLocationTracking()
         }
+
+        try {
+            val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+            val sAnchorLat = prefs.getString("anchor_lat", null)?.toDoubleOrNull()
+            val sAnchorLng = prefs.getString("anchor_lng", null)?.toDoubleOrNull()
+            val sAnchorRad = prefs.getString("anchor_radius", null)?.toDoubleOrNull()
+            if (sAnchorLat != null && sAnchorLng != null && sAnchorRad != null && sAnchorRad > 0.0) {
+                anchorLat = sAnchorLat
+                anchorLng = sAnchorLng
+                anchorRadius = sAnchorRad
+            }
+        } catch (_: Exception) {}
 
         try {
             val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
@@ -406,6 +427,7 @@ class MainActivity : AppCompatActivity() {
             val fineGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
             val coarseGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
             if (fineGranted || coarseGranted) {
+                promptEnableLocationSettings()
                 startLocationTracking()
                 handler.removeCallbacks(heartbeatRunnable)
                 handler.post(heartbeatRunnable)
@@ -469,6 +491,7 @@ class MainActivity : AppCompatActivity() {
         handler.post(networkStatusRunnable)
         handler.removeCallbacks(settingsRunnable)
         handler.post(settingsRunnable)
+        promptEnableLocationSettings()
         startLocationTracking()
         handler.removeCallbacks(heartbeatRunnable)
         handler.post(heartbeatRunnable)
@@ -754,6 +777,37 @@ class MainActivity : AppCompatActivity() {
                                 resBody.get("distance_meters").asDouble
                             } else null
 
+                            if (resBody != null && resBody.has("anchor_lat") && !resBody.get("anchor_lat").isJsonNull) {
+                                anchorLat = resBody.get("anchor_lat").asDouble
+                            } else {
+                                anchorLat = null
+                            }
+                            if (resBody != null && resBody.has("anchor_lng") && !resBody.get("anchor_lng").isJsonNull) {
+                                anchorLng = resBody.get("anchor_lng").asDouble
+                            } else {
+                                anchorLng = null
+                            }
+                            if (resBody != null && resBody.has("radius_meters") && !resBody.get("radius_meters").isJsonNull) {
+                                anchorRadius = resBody.get("radius_meters").asDouble
+                            } else {
+                                anchorRadius = null
+                            }
+
+                            // Cache anchor locally for zero-latency local geofence checking
+                            try {
+                                val prefsEdit = getSharedPreferences("app_prefs", MODE_PRIVATE).edit()
+                                if (anchorLat != null && anchorLng != null && anchorRadius != null && anchorRadius!! > 0.0) {
+                                    prefsEdit.putString("anchor_lat", anchorLat.toString())
+                                    prefsEdit.putString("anchor_lng", anchorLng.toString())
+                                    prefsEdit.putString("anchor_radius", anchorRadius.toString())
+                                } else {
+                                    prefsEdit.remove("anchor_lat")
+                                    prefsEdit.remove("anchor_lng")
+                                    prefsEdit.remove("anchor_radius")
+                                }
+                                prefsEdit.apply()
+                            } catch (_: Exception) {}
+
                             val lat = if (finalBody.has("latitude")) finalBody.get("latitude").asDouble else null
                             val lng = if (finalBody.has("longitude")) finalBody.get("longitude").asDouble else null
                             runOnUiThread {
@@ -762,18 +816,10 @@ class MainActivity : AppCompatActivity() {
 
                             if (resBody != null && resBody.has("geofence_status")) {
                                 if (geofenceStatus == "outside") {
-                                    consecutiveOutsideCount++
-                                    android.util.Log.w("Heartbeat", "Device reported OUTSIDE geofence (dist=$distance m, count=$consecutiveOutsideCount)")
-                                    val isFarOutside = distance != null && distance > 1000.0
-                                    // If device is very far (>1km), logout immediately; otherwise require 2 consecutive readings to avoid indoor GPS jitter false alarms
-                                    if (isFarOutside || consecutiveOutsideCount >= 2) {
-                                        performLogout("Device moved outside allowed geofence area.")
-                                    }
-                                } else {
-                                    consecutiveOutsideCount = 0
-                                    if (geofenceStatus == "gps_required") {
-                                        android.util.Log.w("Heartbeat", "Server geofencing active but no GPS coordinates provided by device")
-                                    }
+                                    android.util.Log.w("Heartbeat", "Device reported OUTSIDE geofence (dist=$distance m) -> INSTANT LOGOUT")
+                                    performLogout("Device moved outside allowed geofence area.")
+                                } else if (geofenceStatus == "gps_required") {
+                                    android.util.Log.w("Heartbeat", "Server geofencing active but no GPS coordinates provided by device")
                                 }
                             }
                         }
@@ -1059,6 +1105,7 @@ class MainActivity : AppCompatActivity() {
                     tvGeofenceStatus?.setTextColor(amber)
                     ivGeoIcon?.setColorFilter(amber)
                 }
+                promptEnableLocationSettings()
             }
 
             // 1. Check all cached providers immediately
@@ -1157,6 +1204,31 @@ class MainActivity : AppCompatActivity() {
                 .putString("last_valid_lng", loc.longitude.toString())
                 .apply()
         } catch (_: Exception) {}
+
+        // Instant local geofence check against anchor coordinates
+        val aLat = anchorLat
+        val aLng = anchorLng
+        val aRadius = anchorRadius
+        if (aLat != null && aLng != null && aRadius != null && aRadius > 0.0) {
+            val distResults = FloatArray(1)
+            Location.distanceBetween(loc.latitude, loc.longitude, aLat, aLng, distResults)
+            val currentDist = distResults[0].toDouble()
+            lastKnownDistance = currentDist
+
+            if (currentDist > aRadius) {
+                android.util.Log.w("Geofence", "INSTANT LOGOUT: Current distance $currentDist m exceeds radius $aRadius m")
+                runOnUiThread {
+                    updateGeofenceBadge("outside", currentDist, loc.latitude, loc.longitude)
+                    performLogout("Device moved outside allowed geofence radius (${currentDist.toInt()}m > ${aRadius.toInt()}m).")
+                }
+                return
+            } else {
+                runOnUiThread {
+                    updateGeofenceBadge("inside", currentDist, loc.latitude, loc.longitude)
+                }
+                return
+            }
+        }
 
         runOnUiThread {
             if (lastKnownGeofenceStatus == null || lastKnownGeofenceStatus == "no_gps" || lastKnownGeofenceStatus == "gps_required") {
@@ -1265,10 +1337,8 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton("Close") { dialog, _ -> dialog.dismiss() }
 
         if (isLocationOff) {
-            builder.setNeutralButton("Open Settings") { _, _ ->
-                try {
-                    startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
-                } catch (_: Exception) {}
+            builder.setNeutralButton("Turn On Location") { _, _ ->
+                promptEnableLocationSettings()
             }
         } else if (!hasFine && !hasCoarse) {
             builder.setNeutralButton("Grant Permission") { _, _ ->
@@ -1277,5 +1347,51 @@ class MainActivity : AppCompatActivity() {
         }
 
         builder.show()
+    }
+
+    private fun promptEnableLocationSettings() {
+        val hasFine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val hasCoarse = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!hasFine && !hasCoarse) return
+
+        try {
+            val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 10000L)
+                .setMinUpdateIntervalMillis(5000L)
+                .build()
+
+            val builder = LocationSettingsRequest.Builder()
+                .addLocationRequest(locationRequest)
+                .setAlwaysShow(true)
+
+            val client = LocationServices.getSettingsClient(this)
+            val task = client.checkLocationSettings(builder.build())
+
+            task.addOnSuccessListener {
+                startLocationTracking()
+            }
+
+            task.addOnFailureListener { exception ->
+                if (exception is ResolvableApiException) {
+                    try {
+                        exception.startResolutionForResult(this@MainActivity, REQUEST_CHECK_SETTINGS)
+                    } catch (e: IntentSender.SendIntentException) {
+                        e.printStackTrace()
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_CHECK_SETTINGS) {
+            if (resultCode == RESULT_OK) {
+                startLocationTracking()
+            } else {
+                Toast.makeText(this, "Device location must be turned on for geofencing.", Toast.LENGTH_LONG).show()
+            }
+        }
     }
 }
