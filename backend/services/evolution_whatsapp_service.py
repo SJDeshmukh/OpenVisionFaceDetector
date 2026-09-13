@@ -255,6 +255,10 @@ def notify_punch_event_async(vendor_id, person_id, punch_type, timestamp, is_lat
     """Background thread worker to send attendance punch alert."""
     def worker():
         try:
+            from utils import vendor_has_feature
+            if not vendor_has_feature(vendor_id, "whatsapp_alerts"):
+                return
+
             settings = get_or_create_settings(vendor_id)
             if not settings or not settings.get('auto_punch_alerts') or settings.get('status') != 'connected':
                 return
@@ -324,6 +328,10 @@ def notify_leave_event_async(vendor_id, leave_request_id, status_update):
     """Background thread worker for leave & gate-pass updates."""
     def worker():
         try:
+            from utils import vendor_has_feature
+            if not vendor_has_feature(vendor_id, "whatsapp_alerts"):
+                return
+
             settings = get_or_create_settings(vendor_id)
             if not settings or not settings.get('auto_leave_alerts') or settings.get('status') != 'connected':
                 return
@@ -374,6 +382,10 @@ def notify_advance_event_async(vendor_id, advance_id, status_update):
     """Background thread worker for Owner Advance updates."""
     def worker():
         try:
+            from utils import vendor_has_feature
+            if not vendor_has_feature(vendor_id, "whatsapp_alerts"):
+                return
+
             settings = get_or_create_settings(vendor_id)
             if not settings or not settings.get('auto_advance_alerts') or settings.get('status') != 'connected':
                 return

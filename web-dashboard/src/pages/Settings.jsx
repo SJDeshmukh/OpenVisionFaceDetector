@@ -80,15 +80,18 @@ const Settings = () => {
   const [savingWhatsapp, setSavingWhatsapp] = useState(false);
 
   const getAuthHeaders = () => (user?.token ? { Authorization: `Bearer ${user.token}` } : {});
+  const hasWhatsappFeature = (Array.isArray(user?.features) && user.features.includes('whatsapp_alerts')) || user?.role === 'super_admin';
 
   useEffect(() => {
     fetchSettings();
     if (['vendor_admin', 'admin', 'owner'].includes(user?.role)) {
       fetchSystemUsers();
       fetchSubscription();
-      fetchWhatsappSettings();
+      if (hasWhatsappFeature) {
+        fetchWhatsappSettings();
+      }
     }
-  }, [user]);
+  }, [user, hasWhatsappFeature]);
 
   const fetchWhatsappSettings = async () => {
     try {
@@ -449,7 +452,7 @@ const Settings = () => {
         </Section>
       )}
 
-      {['vendor_admin', 'admin', 'owner'].includes(user?.role) && (
+      {['vendor_admin', 'admin', 'owner'].includes(user?.role) && hasWhatsappFeature && (
         <Section title="WhatsApp Gateway (Evolution API)" icon={MessageSquare}>
           <div className="space-y-6">
             {/* Status & Connection Banner */}

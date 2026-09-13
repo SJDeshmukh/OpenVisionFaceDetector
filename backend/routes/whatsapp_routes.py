@@ -1,6 +1,6 @@
 import logging
 from flask import Blueprint, jsonify, request, g
-from utils import get_db_connection
+from utils import get_db_connection, vendor_has_feature
 from services.auth_service import authenticate_vendor_access
 from services.evolution_whatsapp_service import (
     get_or_create_settings,
@@ -18,11 +18,19 @@ whatsapp_bp = Blueprint("whatsapp_bp", __name__)
 
 
 def _authenticate_whatsapp_access():
-    """Validates user access via standard authenticate_vendor_access() and resolves vendor_id."""
+    """Validates user access via standard authenticate_vendor_access() and enforces whatsapp_alerts feature."""
     vendor_id, err = authenticate_vendor_access()
     if err:
         return None, None, err
     role = getattr(g, "user_role", None)
+
+    # Enforce feature check unless super_admin
+    if role != "super_admin" and not vendor_has_feature(vendor_id, "whatsapp_alerts"):
+        return None, None, (jsonify({
+            "error": "WhatsApp Alerts feature is not enabled for your company. Please contact support/administrator to activate it.",
+            "code": "FEATURE_NOT_ENABLED"
+        }), 403)
+
     return vendor_id, role, None
 
 
