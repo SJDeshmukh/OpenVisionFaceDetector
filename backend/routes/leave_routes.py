@@ -810,6 +810,11 @@ def admin_approve_request():
                 c.execute("UPDATE leave_requests SET final_status = 'rejected' WHERE id = ? AND vendor_id = ?", (request_id, vendor_id))
             
         conn.commit()
+        try:
+            from services.evolution_whatsapp_service import notify_leave_event_async
+            notify_leave_event_async(vendor_id, request_id, action)
+        except Exception:
+            pass
         return jsonify({"status": "success"})
     except Exception as e:
         if is_pg: conn.rollback()

@@ -494,6 +494,19 @@ def person_event(valid_data: PersonEventSchema):
             except Exception:
                 pass
 
+            # Trigger WhatsApp Real-Time Punch Alert (fire-and-forget async thread)
+            try:
+                from services.evolution_whatsapp_service import notify_punch_event_async
+                notify_punch_event_async(
+                    vendor_id=vendor_id_to_check,
+                    person_id=person_id,
+                    punch_type=new_status,
+                    timestamp=current_time_obj,
+                    is_late=is_late
+                )
+            except Exception:
+                pass
+
         conn.close()
         return jsonify({"speak": True, "text": f"{name}: {new_status.title()}", "status": new_status, "is_late": is_late, "activity": activity_name, "person_id": person_id})
     except Exception as e:

@@ -37,6 +37,7 @@ class Vendor(Base):
     parent_users = relationship("ParentUser", back_populates="vendor")
     leave_requests = relationship("LeaveRequest", back_populates="vendor")
     leave_staff = relationship("LeaveStaff", back_populates="vendor")
+    whatsapp_setting = relationship("VendorWhatsAppSetting", back_populates="vendor", uselist=False)
 
 class Company(Base):
     __tablename__ = 'companies'
@@ -345,3 +346,20 @@ class LeaveStaff(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     vendor = relationship("Vendor", back_populates="leave_staff")
+
+class VendorWhatsAppSetting(Base):
+    __tablename__ = 'vendor_whatsapp_settings'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    vendor_id = Column(Integer, ForeignKey('vendors.id'), unique=True, nullable=False)
+    instance_name = Column(String(100))
+    phone_number = Column(String(50))
+    status = Column(String(50), default='disconnected')
+    auto_punch_alerts = Column(Integer, default=1)
+    auto_leave_alerts = Column(Integer, default=1)
+    auto_advance_alerts = Column(Integer, default=1)
+    auto_late_alerts = Column(Integer, default=0)
+    last_connected_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    vendor = relationship("Vendor", back_populates="whatsapp_setting")

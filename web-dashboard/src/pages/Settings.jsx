@@ -15,7 +15,11 @@ import {
   X,
   CreditCard,
   FileText,
-  RefreshCw
+  RefreshCw,
+  MessageSquare,
+  QrCode,
+  Smartphone,
+  Send
 } from 'lucide-react';
 import { API_URL } from '../config';
 import { useSocket } from '../context/SocketContext';
@@ -43,13 +47,149 @@ const Settings = () => {
   const [invoices, setInvoices] = useState([]);
   const [refreshingBilling, setRefreshingBilling] = useState(false);
 
+  // WhatsApp Integration State
+  const [whatsappSettings, setWhatsappSettings] = useState({
+    status: 'disconnected',
+    phone_number: '',
+    auto_punch_alerts: 1,
+    auto_leave_alerts: 1,
+    auto_advance_alerts: 1,
+    auto_late_alerts: 0
+  });
+  const [whatsappLoading, setWhatsappLoading] = useState(false);
+  const [showQrModal, setShowQrModal] = useState(false);
+  const [qrCodeData, setQrCodeData] = useState(null);
+  const [qrPolling, setQrPolling] = useState(false);
+  const [testPhone, setTestPhone] = useState('');
+  const [sendingTest, setSendingTest] = useState(false);
+  const [savingWhatsapp, setSavingWhatsapp] = useState(false);
+
   useEffect(() => {
     fetchSettings();
     if (['vendor_admin', 'admin', 'owner'].includes(user?.role)) {
       fetchSystemUsers();
       fetchSubscription();
+      fetchWhatsappSettings();
     }
   }, [user]);
+
+  const fetchWhatsappSettings = async () => {
+    try {
+      const res = await axios.get(`${API_URL}/whatsapp/settings`, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      if (res.data?.settings) {
+        setWhatsappSettings(res.data.settings);
+        if (res.data.settings.phone_number) {
+          setTestPhone(res.data.settings.phone_number);
+        }
+      }
+    } catch (e) {
+      console.error("Error fetching whatsapp settings:", e);
+    }
+  };
+
+  const handleOpenQrModal = async () => {
+    setWhatsappLoading(true);
+    setShowQrModal(true);
+    setQrCodeData(null);
+    try {
+      const res = await axios.get(`${API_URL}/whatsapp/qr`, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      if (res.data?.qr_code) {
+        setQrCodeData(res.data.qr_code);
+        setQrPolling(true);
+      } else {
+        alert(res.data?.error || "Failed to generate WhatsApp QR code. Make sure Evolution API is running.");
+      }
+    } catch (err) {
+      alert("Error contacting Evolution API: " + (err.response?.data?.error || err.message));
+    } finally {
+      setWhatsappLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    let interval = null;
+    if (showQrModal && qrPolling) {
+      interval = setInterval(async () => {
+        try {
+          const res = await axios.post(`${API_URL}/whatsapp/sync`, {}, {
+            headers: { Authorization: `Bearer ${user?.token}` }
+          });
+          if (res.data?.settings?.status === 'connected') {
+            setWhatsappSettings(res.data.settings);
+            if (res.data.settings.phone_number) {
+              setTestPhone(res.data.settings.phone_number);
+            }
+            setQrPolling(false);
+            setShowQrModal(false);
+            alert(`WhatsApp successfully connected with +${res.data.settings.phone_number || ''}!`);
+          }
+        } catch (e) {
+          console.error("Polling whatsapp sync error:", e);
+        }
+      }, 3000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [showQrModal, qrPolling, user?.token]);
+
+  const handleDisconnectWhatsapp = async () => {
+    if (!window.confirm("Are you sure you want to disconnect WhatsApp? Automated alerts will stop.")) return;
+    try {
+      const res = await axios.post(`${API_URL}/whatsapp/disconnect`, {}, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      if (res.data?.settings) {
+        setWhatsappSettings(res.data.settings);
+      }
+      alert("WhatsApp instance disconnected.");
+    } catch (err) {
+      alert("Error disconnecting: " + (err.response?.data?.error || err.message));
+    }
+  };
+
+  const handleSaveWhatsappToggles = async (updatedFields) => {
+    setSavingWhatsapp(true);
+    try {
+      const payload = { ...whatsappSettings, ...updatedFields };
+      const res = await axios.post(`${API_URL}/whatsapp/settings`, payload, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      if (res.data?.settings) {
+        setWhatsappSettings(res.data.settings);
+      }
+    } catch (err) {
+      alert("Failed to save WhatsApp preferences: " + (err.response?.data?.error || err.message));
+    } finally {
+      setSavingWhatsapp(false);
+    }
+  };
+
+  const handleSendTestMessage = async () => {
+    if (!testPhone) {
+      alert("Please enter a phone number to test.");
+      return;
+    }
+    setSendingTest(true);
+    try {
+      const res = await axios.post(`${API_URL}/whatsapp/send-test`, { phone: testPhone }, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      if (res.data?.success) {
+        alert("Test message sent successfully to " + testPhone + "!");
+      } else {
+        alert("Failed to send: " + (res.data?.error || "Unknown error"));
+      }
+    } catch (err) {
+      alert("Error sending test message: " + (err.response?.data?.error || err.message));
+    } finally {
+      setSendingTest(false);
+    }
+  };
 
   const fetchSubscription = async () => {
     setRefreshingBilling(true);
@@ -306,6 +446,178 @@ const Settings = () => {
         </Section>
       )}
 
+      {['vendor_admin', 'admin', 'owner'].includes(user?.role) && (
+        <Section title="WhatsApp Gateway (Evolution API)" icon={MessageSquare}>
+          <div className="space-y-6">
+            {/* Status & Connection Banner */}
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center p-4 rounded-xl border border-slate-200 bg-slate-50 gap-4">
+              <div className="flex items-center gap-3">
+                <div className={`p-3 rounded-xl ${whatsappSettings.status === 'connected' ? 'bg-emerald-100 text-emerald-600' : 'bg-slate-200 text-slate-600'}`}>
+                  <Smartphone size={24} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h4 className="font-bold text-slate-800">
+                      {whatsappSettings.status === 'connected'
+                        ? `Connected: +${whatsappSettings.phone_number || 'Business Account'}`
+                        : 'WhatsApp Not Connected'}
+                    </h4>
+                    <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold ${
+                      whatsappSettings.status === 'connected'
+                        ? 'bg-emerald-100 text-emerald-700'
+                        : whatsappSettings.status === 'connecting'
+                        ? 'bg-amber-100 text-amber-700'
+                        : 'bg-slate-200 text-slate-600'
+                    }`}>
+                      {whatsappSettings.status === 'connected' ? '● Active' : whatsappSettings.status === 'connecting' ? '○ Pairing...' : '○ Disconnected'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    {whatsappSettings.status === 'connected'
+                      ? 'Automated alerts for biometric punches, leaves, and advances are actively running.'
+                      : 'Scan QR code with your business phone to enable automated WhatsApp notifications.'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 self-end sm:self-auto">
+                {whatsappSettings.status === 'connected' ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={fetchWhatsappSettings}
+                      className="p-2 border border-slate-200 hover:bg-slate-100 rounded-lg text-slate-600 transition-colors"
+                      title="Refresh Status"
+                    >
+                      <RefreshCw size={16} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleDisconnectWhatsapp}
+                      className="px-4 py-2 border border-red-200 text-red-600 hover:bg-red-50 rounded-lg text-xs font-bold transition-colors"
+                    >
+                      Disconnect
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleOpenQrModal}
+                    disabled={whatsappLoading}
+                    className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-sm transition-all"
+                  >
+                    <QrCode size={16} />
+                    <span>{whatsappLoading ? 'Generating QR...' : 'Link WhatsApp via QR'}</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Notification Toggles */}
+            <div className="space-y-3">
+              <h5 className="text-sm font-semibold text-slate-700">Automated Notification Rules</h5>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <label className="flex items-start gap-3 p-3 rounded-xl border border-slate-200 hover:bg-slate-50 cursor-pointer transition-colors">
+                  <input
+                    type="checkbox"
+                    className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                    checked={Boolean(whatsappSettings.auto_punch_alerts)}
+                    onChange={(e) => {
+                      const val = e.target.checked ? 1 : 0;
+                      setWhatsappSettings(prev => ({ ...prev, auto_punch_alerts: val }));
+                      handleSaveWhatsappToggles({ auto_punch_alerts: val });
+                    }}
+                  />
+                  <div>
+                    <span className="text-sm font-medium text-slate-800">Real-Time Attendance Punch Alerts</span>
+                    <p className="text-xs text-slate-500">Sends instant WhatsApp confirmation to employee (and parent in campus mode) on kiosk punch.</p>
+                  </div>
+                </label>
+
+                <label className="flex items-start gap-3 p-3 rounded-xl border border-slate-200 hover:bg-slate-50 cursor-pointer transition-colors">
+                  <input
+                    type="checkbox"
+                    className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                    checked={Boolean(whatsappSettings.auto_leave_alerts)}
+                    onChange={(e) => {
+                      const val = e.target.checked ? 1 : 0;
+                      setWhatsappSettings(prev => ({ ...prev, auto_leave_alerts: val }));
+                      handleSaveWhatsappToggles({ auto_leave_alerts: val });
+                    }}
+                  />
+                  <div>
+                    <span className="text-sm font-medium text-slate-800">Leave & Gate-Pass Alerts</span>
+                    <p className="text-xs text-slate-500">Notifies employees or students when leaves or gate-passes are approved or rejected.</p>
+                  </div>
+                </label>
+
+                <label className="flex items-start gap-3 p-3 rounded-xl border border-slate-200 hover:bg-slate-50 cursor-pointer transition-colors">
+                  <input
+                    type="checkbox"
+                    className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                    checked={Boolean(whatsappSettings.auto_advance_alerts)}
+                    onChange={(e) => {
+                      const val = e.target.checked ? 1 : 0;
+                      setWhatsappSettings(prev => ({ ...prev, auto_advance_alerts: val }));
+                      handleSaveWhatsappToggles({ auto_advance_alerts: val });
+                    }}
+                  />
+                  <div>
+                    <span className="text-sm font-medium text-slate-800">Owner Advance Approvals</span>
+                    <p className="text-xs text-slate-500">Sends instant WhatsApp notification when salary advances are requested and approved.</p>
+                  </div>
+                </label>
+
+                <label className="flex items-start gap-3 p-3 rounded-xl border border-slate-200 hover:bg-slate-50 cursor-pointer transition-colors">
+                  <input
+                    type="checkbox"
+                    className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                    checked={Boolean(whatsappSettings.auto_late_alerts)}
+                    onChange={(e) => {
+                      const val = e.target.checked ? 1 : 0;
+                      setWhatsappSettings(prev => ({ ...prev, auto_late_alerts: val }));
+                      handleSaveWhatsappToggles({ auto_late_alerts: val });
+                    }}
+                  />
+                  <div>
+                    <span className="text-sm font-medium text-slate-800">Late Arrival Warning</span>
+                    <p className="text-xs text-slate-500">Alerts employee when they clock in past the configured grace period.</p>
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            {/* Test Message Panel (when connected) */}
+            {whatsappSettings.status === 'connected' && (
+              <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                <div className="flex-1">
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Verify Delivery (Test WhatsApp)</label>
+                  <div className="flex items-center gap-2 max-w-sm">
+                    <input
+                      type="text"
+                      placeholder="e.g. 919876543210"
+                      value={testPhone}
+                      onChange={(e) => setTestPhone(e.target.value)}
+                      className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleSendTestMessage}
+                      disabled={sendingTest}
+                      className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium shrink-0 flex items-center gap-1 shadow-sm"
+                    >
+                      <Send size={12} />
+                      <span>{sendingTest ? 'Sending...' : 'Send Test'}</span>
+                    </button>
+                  </div>
+                </div>
+                <span className="text-[11px] text-slate-400">Powered by Evolution API Gateway</span>
+              </div>
+            )}
+          </div>
+        </Section>
+      )}
+
       {['vendor_admin', 'admin'].includes(user?.role) && (
         <Section
           title="System Access"
@@ -525,6 +837,64 @@ const Settings = () => {
                 {editingUser ? 'Update User' : 'Create User'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* WhatsApp QR Modal */}
+      {showQrModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-6 max-w-md w-full text-center space-y-4 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+              <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                <MessageSquare className="text-emerald-600" />
+                Link Company WhatsApp
+              </h3>
+              <button
+                onClick={() => { setShowQrModal(false); setQrPolling(false); }}
+                className="text-slate-400 hover:text-slate-600 p-1"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed text-left">
+              1. Open WhatsApp on your business phone.<br />
+              2. Tap <strong>Settings</strong> &gt; <strong>Linked Devices</strong> &gt; <strong>Link a Device</strong>.<br />
+              3. Point your camera at the QR code below:
+            </p>
+
+            <div className="flex justify-center p-4 bg-slate-50 rounded-2xl border border-slate-100 min-h-[250px] items-center">
+              {whatsappLoading ? (
+                <div className="flex flex-col items-center gap-2 text-slate-400">
+                  <RefreshCw className="animate-spin text-emerald-600" size={32} />
+                  <span className="text-xs font-medium">Requesting QR Code from Evolution API...</span>
+                </div>
+              ) : qrCodeData ? (
+                <div className="flex flex-col items-center gap-2">
+                  <img
+                    src={qrCodeData.startsWith('data:') ? qrCodeData : `data:image/png;base64,${qrCodeData}`}
+                    alt="WhatsApp QR Code"
+                    className="w-56 h-56 rounded-lg shadow-sm"
+                  />
+                  <span className="text-[11px] text-slate-500 font-mono flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
+                    Waiting for scan... (Auto-refreshing)
+                  </span>
+                </div>
+              ) : (
+                <div className="text-xs text-red-500">
+                  Unable to load QR Code. Please ensure Evolution API container is running on your server.
+                </div>
+              )}
+            </div>
+
+            <button
+              onClick={() => { setShowQrModal(false); setQrPolling(false); fetchWhatsappSettings(); }}
+              className="w-full py-2.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-sm font-semibold transition-all shadow-md"
+            >
+              Done Scanning
+            </button>
           </div>
         </div>
       )}

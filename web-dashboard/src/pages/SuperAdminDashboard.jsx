@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { Plus, Check, X, Shield, User, Users, Lock, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight, Search, Filter, ArrowLeft, ArrowRight, Eye, Settings, Trash2, Database, Download, RefreshCw, Layers, Upload, Activity, Battery, WifiOff, UploadCloud, Box, Mail, Send, Clock, AlertCircle, MapPin } from 'lucide-react';
+import { Plus, Check, X, Shield, User, Users, Lock, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight, Search, Filter, ArrowLeft, ArrowRight, Eye, Settings, Trash2, Database, Download, RefreshCw, Layers, Upload, Activity, Battery, WifiOff, UploadCloud, Box, Mail, Send, Clock, AlertCircle, MapPin, MessageSquare } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { API_URL, FRONTEND_BUNDLES, BASE_URL } from '../config';
 import { useSocket } from '../context/SocketContext';
@@ -1942,6 +1942,17 @@ const SuperAdminDashboard = () => {
                       <td className="p-4 text-slate-600">
                         <div>{vendor.contact_person}</div>
                         <div className="text-xs text-slate-400">{vendor.phone}</div>
+                        {vendor.whatsapp_status === 'connected' ? (
+                          <div className="mt-1.5 inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200" title="Evolution WhatsApp Connected">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                            WA: +{vendor.whatsapp_phone || vendor.phone}
+                          </div>
+                        ) : (
+                          <div className="mt-1 text-[10px] text-slate-400 flex items-center gap-1">
+                            <span className="w-1.5 h-1.5 rounded-full bg-slate-300"></span>
+                            WA: Disconnected
+                          </div>
+                        )}
                       </td>
                       <td className="p-4">
                         <StatusBadge status={vendor.status} />
@@ -2149,8 +2160,21 @@ const SuperAdminDashboard = () => {
                   <h2 className="text-2xl font-bold text-slate-800">{selectedVendorForDetail.company_name}</h2>
                   <p className="text-slate-500">Employee Directory</p>
                 </div>
-                <div className="bg-indigo-50 text-indigo-700 px-4 py-2 rounded-lg font-mono text-sm">
-                  Vendor ID: {selectedVendorForDetail.id}
+                <div className="flex items-center gap-2">
+                  <div className="bg-indigo-50 text-indigo-700 px-4 py-2 rounded-lg font-mono text-sm">
+                    Vendor ID: {selectedVendorForDetail.id}
+                  </div>
+                  {selectedVendorForDetail.whatsapp_status === 'connected' ? (
+                    <div className="bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-sm">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                      WhatsApp: +{selectedVendorForDetail.whatsapp_phone || selectedVendorForDetail.phone}
+                    </div>
+                  ) : (
+                    <div className="bg-slate-50 text-slate-500 border border-slate-200 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-slate-300"></span>
+                      WhatsApp: Disconnected
+                    </div>
+                  )}
                 </div>
               </div>
 

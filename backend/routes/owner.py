@@ -87,6 +87,11 @@ def approve_advance():
         conn.commit()
         from services.employee_email_reports_service import queue_advance_notification
         email_queued = queue_advance_notification(advance_id, "approved")
+        try:
+            from services.evolution_whatsapp_service import notify_advance_event_async
+            notify_advance_event_async(vendor_id, advance_id, "approved")
+        except Exception:
+            pass
         
         return jsonify({"status": "success", "message": "Advance approved", "email_queued": email_queued})
     except Exception as e:
@@ -129,6 +134,11 @@ def reject_advance():
         conn.commit()
         from services.employee_email_reports_service import queue_advance_notification
         email_queued = queue_advance_notification(advance_id, "rejected")
+        try:
+            from services.evolution_whatsapp_service import notify_advance_event_async
+            notify_advance_event_async(vendor_id, advance_id, "rejected")
+        except Exception:
+            pass
         
         return jsonify({"status": "success", "message": "Advance rejected", "email_queued": email_queued})
     except Exception as e:

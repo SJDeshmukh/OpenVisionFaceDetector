@@ -918,6 +918,7 @@ def get_vendors():
     query = f"""
         SELECT v.*, 
                s.plan_type, s.start_date, s.end_date, s.max_users, s.max_employees, s.max_mobile_devices, {max_web_select}, s.cost_per_user, s.cost_per_employee, s.setup_fee, s.setup_fee_paid, s.features, {xchat_select},
+               ws.status AS whatsapp_status, ws.phone_number AS whatsapp_phone,
                (SELECT username FROM system_users WHERE vendor_id = v.id AND role = 'vendor_admin' LIMIT 1) as admin_username,
                NULL as admin_password,
                (SELECT username FROM system_users WHERE vendor_id = v.id AND role = 'user' LIMIT 1) as user_username,
@@ -927,6 +928,7 @@ def get_vendors():
                (SELECT COUNT(*) FROM faces WHERE vendor_id = v.id) as employee_count
         FROM vendors v
         LEFT JOIN subscriptions s ON v.id = s.vendor_id
+        LEFT JOIN vendor_whatsapp_settings ws ON v.id = ws.vendor_id
         ORDER BY v.created_at DESC
     """
     c.execute(query)
