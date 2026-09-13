@@ -10,6 +10,7 @@ from utils import get_db_connection, log_audit, vendor_has_feature
 from services.auth_service import require_auth, hash_password
 from services.person_scope_service import is_school_hostel, parse_custom_data
 from services.spreadsheet_mapping_service import map_spreadsheet_headers
+from services.spreadsheet_type_inference import inspect_spreadsheet_fields, clean_cell_value
 
 bulk_registration_bp = Blueprint('bulk_registration_bp', __name__)
 
@@ -26,6 +27,86 @@ def _requested_header_mapping():
     except (TypeError, ValueError):
         return None
     return value if isinstance(value, dict) else None
+
+def _requested_json_dict(key):
+    raw = request.form.get(key)
+    if not raw:
+        return {}
+    try:
+        val = json.loads(raw)
+        return val if isinstance(val, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+@bulk_registration_bp.route("/bulk-registration/inspect-file", methods=["POST"])
+@require_auth(roles=['super_admin', 'vendor_admin', 'owner'])
+def bulk_registration_inspect_file():
+    vendor_id = g.vendor_id
+    if not vendor_id:
+        return jsonify({"error": "Select a business before inspecting file"}), 400
+    if 'file' not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+
+    file = request.files['file']
+    filename = file.filename
+    if not filename:
+        return jsonify({"error": "No file selected"}), 400
+
+    ext = filename.split('.')[-1].lower()
+    try:
+        data = []
+        if ext == 'csv':
+            content = file.read().decode('utf-8-sig')
+            reader = csv.DictReader(io.StringIO(content))
+            data = [row for row in reader]
+        elif ext in ['xls', 'xlsx']:
+            df = pd.read_excel(file)
+            df = df.where(pd.notnull(df), None)
+            data = df.to_dict(orient='records')
+        else:
+            return jsonify({"error": f"Unsupported file extension: {ext}"}), 400
+
+        if not data or not isinstance(data, list):
+            return jsonify({"error": "File is empty or invalid format"}), 400
+
+        headers = [str(k).strip() for k in data[0].keys() if str(k).strip()]
+        if not headers:
+            return jsonify({"error": "No columns found in file"}), 400
+
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT vertical, registration_config FROM vendors WHERE id = ?", (vendor_id,))
+        vendor_row = c.fetchone()
+        conn.close()
+
+        vendor_vertical = (
+            (vendor_row['vertical'] if hasattr(vendor_row, 'keys') else vendor_row[0])
+            if vendor_row else ''
+        ) or ''
+        school_student_flow = is_school_hostel(vendor_vertical)
+        employee_record_flow = (
+            not school_student_flow and vendor_vertical != 'bulk_attendance_attendx'
+        )
+
+        mapping_result = map_spreadsheet_headers(
+            headers, data, context="employee" if employee_record_flow else "student",
+            vendor_id=vendor_id, username=getattr(g, 'username', '')
+        )
+        header_mapping = mapping_result.get('mapping', {})
+
+        field_specs = inspect_spreadsheet_fields(headers, data, canonical_mapping=header_mapping)
+
+        return jsonify({
+            "success": True,
+            "filename": filename,
+            "total_rows": len(data),
+            "headers": headers,
+            "fields": field_specs,
+            "suggested_mapping": header_mapping,
+            "flow": "employee" if employee_record_flow else "student"
+        })
+    except Exception as e:
+        return jsonify({"error": f"Failed to inspect file: {str(e)}"}), 500
 
 @bulk_registration_bp.route("/bulk-registration/upload", methods=["POST"])
 @require_auth(roles=['super_admin', 'vendor_admin', 'owner'])
@@ -66,6 +147,11 @@ def bulk_registration_upload():
         req_class_year = None
         req_division = None
         req_branch = None
+
+        # Field types, options, and requirement mappings from user review
+        requested_field_types = _requested_json_dict('field_types')
+        requested_field_options = _requested_json_dict('field_options')
+        requested_field_required = _requested_json_dict('field_required')
 
         conn = get_db_connection()
         c = conn.cursor()
@@ -253,7 +339,20 @@ def bulk_registration_upload():
                     if k in core_keys:
                         continue
                     if v is not None:
-                        custom_dict[canonical_by_header.get(k, str(k).strip())] = str(v).strip()
+                        cell_str = clean_cell_value(v)
+                        if cell_str != "":
+                            col_type = requested_field_types.get(k) or requested_field_types.get(str(k).strip())
+                            target_key = canonical_by_header.get(k, str(k).strip())
+                            if col_type == 'number':
+                                try:
+                                    if '.' in cell_str:
+                                        custom_dict[target_key] = float(cell_str)
+                                    else:
+                                        custom_dict[target_key] = int(cell_str)
+                                except ValueError:
+                                    custom_dict[target_key] = cell_str
+                            else:
+                                custom_dict[target_key] = cell_str
 
                 # Always store student ID in custom_data under the normalised key so
                 # the parent login lookup (_extract_student_number_from_custom_data)
@@ -347,12 +446,48 @@ def bulk_registration_upload():
             canonical_name = person_id_custom_key if mapped_name == 'person_id' else (mapped_name or field_name)
             existing_f = next((f for f in existing_fields if str(f.get('label') or '').strip().lower() == field_name.lower() or str(f.get('name') or '').strip().lower() == canonical_name.lower()), None)
 
+            # Determine type from requested_field_types or fallback
+            chosen_type = (
+                requested_field_types.get(h) or 
+                requested_field_types.get(field_name) or 
+                (existing_f or {}).get("type") or 
+                "text"
+            )
+            if chosen_type == 'dropdown':
+                chosen_type = 'select'
+
+            # Determine options from requested_field_options or fallback
+            chosen_options = (
+                requested_field_options.get(h) or 
+                requested_field_options.get(field_name) or 
+                (existing_f or {}).get("options") or 
+                []
+            )
+            if not isinstance(chosen_options, list):
+                chosen_options = []
+
+            # If chosen_type is select but options is empty, populate from spreadsheet unique values
+            if chosen_type == 'select' and not chosen_options:
+                col_vals = [clean_cell_value(r.get(h)) for r in data if clean_cell_value(r.get(h))]
+                chosen_options = sorted(list(set(col_vals)))
+
+            # Determine required
+            if h in requested_field_required:
+                is_req = bool(requested_field_required[h])
+            elif field_name in requested_field_required:
+                is_req = bool(requested_field_required[field_name])
+            elif existing_f and 'required' in existing_f:
+                is_req = bool(existing_f.get('required'))
+            else:
+                is_req = (h == name_key)
+
             field_config = {
                 **(existing_f or {}),
                 "name": canonical_name,
                 "label": field_name, # Use EXACT label from Excel
-                "type": (existing_f or {}).get("type") or "text",
-                "required": bool((existing_f or {}).get("required", h == name_key)),
+                "type": chosen_type,
+                "options": chosen_options,
+                "required": is_req,
                 "default": False,
                 "is_name": canonical_name == 'name',
                 "is_phone": canonical_name == 'phone',
@@ -376,6 +511,7 @@ def bulk_registration_upload():
                     'name': scope_name,
                     'label': scope_labels[scope_name],
                     'type': 'text',
+                    'options': [],
                     'required': False,
                     'default': False,
                     'is_name': False,
@@ -398,6 +534,7 @@ def bulk_registration_upload():
                     'name': 'class_id',
                     'label': 'Class / Section',
                     'type': 'class_select',
+                    'options': [],
                     'required': True,
                     'default': False,
                     'is_name': False,
@@ -422,31 +559,33 @@ def bulk_registration_upload():
         for f in new_sync_fields:
             # Preserve existing manual tweaks if available
             existing_reg = next((reg for reg in old_reg_config if str(reg.get('field') or '').strip().lower() == str(f['name']).strip().lower() or str(reg.get('label') or '').strip().lower() == str(f['label']).strip().lower()), None)
-            if existing_reg:
-                new_reg_config.append({
-                    **existing_reg,
-                    "field": f['name'],
-                    "label": f['label'],
-                    "type": 'class_select' if f['name'] == 'class_id' else (existing_reg.get('type') or f.get('type') or 'text'),
-                    "enabled": True,
-                    "required": True if f['name'] == 'class_id' else bool(f.get('required', existing_reg.get('required', False))),
-                    "is_name": f.get('is_name', False),
-                    "is_phone": f.get('is_phone', False),
-                    "is_id": f.get('is_id', False),
-                })
-            else:
-                new_reg_config.append({
-                    "field": f['name'],
-                    "label": f['label'],
-                    "type": f.get('type') or "text",
-                    "enabled": True,
-                    "required": bool(f.get('required', False)),
-                    "is_name": f.get('is_name', False),
-                    "is_phone": f.get('is_phone', False),
-                    "is_id": f.get('is_id', False)
-                })
+            
+            field_type = 'class_select' if f['name'] == 'class_id' else (f.get('type') or (existing_reg or {}).get('type') or 'text')
+            field_options = f.get('options') if f.get('options') is not None else ((existing_reg or {}).get('options') or [])
+            field_required = True if f['name'] == 'class_id' else bool(f.get('required', (existing_reg or {}).get('required', False)))
+
+            reg_item = {
+                **(existing_reg or {}),
+                "field": f['name'],
+                "label": f['label'],
+                "type": field_type,
+                "options": field_options,
+                "enabled": True,
+                "required": field_required,
+                "is_name": f.get('is_name', False),
+                "is_phone": f.get('is_phone', False),
+                "is_id": f.get('is_id', False),
+            }
+            new_reg_config.append(reg_item)
         
         c.execute("UPDATE vendors SET registration_config = ? WHERE id = ?", (json.dumps(new_reg_config, separators=(',', ':')), vendor_id))
+
+        try:
+            from app import socketio
+            if socketio:
+                socketio.emit('registration_config_updated', {'vendor_id': vendor_id, 'config': new_reg_config})
+        except Exception:
+            pass
 
         conn.commit()
         log_audit('bulk_registration', details={"success_count": success_count, "skipped_count": skipped_count, "filename": filename, "mapping_method": mapping_result['method']}, target_vendor_id=vendor_id)

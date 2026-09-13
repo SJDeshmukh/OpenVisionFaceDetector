@@ -15,7 +15,11 @@ import {
   User,
   Camera,
   ChevronLeft,
-  BookOpen
+  BookOpen,
+  Check,
+  Hash,
+  Type,
+  HelpCircle
 } from 'lucide-react';
 import { useSocket } from '../context/SocketContext';
 import { API_URL, BASE_URL } from '../config';
@@ -520,11 +524,184 @@ const People = () => {
     }
   };
 
-  const uploadPeopleSpreadsheet = async (file, headerMapping = null) => {
+  const handleSpreadsheetFileSelected = async (file) => {
+    if (!file) return;
+    setBulkImportProgress('inspecting');
+    setBulkImportError(null);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      if (selectedBulkClass) {
+        formData.append('class_id', selectedBulkClass.id);
+      }
+      const res = await axios.post(`${API_URL}/bulk-registration/inspect-file`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      });
+      if (!res.data.success) throw new Error(res.data.error || 'Inspection failed');
+
+      const fields = (res.data.fields || []).map(f => ({
+        header: f.header,
+        role: f.role || 'custom',
+        type: f.type || 'text',
+        required: !!f.required,
+        options: Array.isArray(f.options) ? f.options : [],
+        sample_values: Array.isArray(f.sample_values) ? f.sample_values : [],
+      }));
+
+      setBulkMappingRequest({
+        file,
+        filename: res.data.filename || file.name,
+        totalRows: res.data.total_rows || 0,
+        headers: res.data.headers || [],
+        fields,
+        mapping: res.data.suggested_mapping || {},
+      });
+      setBulkImportProgress('mapping');
+    } catch (err) {
+      console.error("Spreadsheet inspection error:", err);
+      setBulkImportError(err.response?.data?.error || err.message || 'Failed to inspect file');
+      setBulkImportProgress(null);
+    }
+  };
+
+  const updateFieldType = (header, newType) => {
+    setBulkMappingRequest(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        fields: prev.fields.map(f => {
+          if (f.header === header) {
+            return { ...f, type: newType };
+          }
+          return f;
+        })
+      };
+    });
+  };
+
+  const updateFieldRole = (header, newRole) => {
+    setBulkMappingRequest(prev => {
+      if (!prev) return prev;
+      const newFields = prev.fields.map(f => {
+        if (f.header === header) {
+          return {
+            ...f,
+            role: newRole,
+            required: newRole === 'name' ? true : f.required,
+            type: newRole === 'name' ? 'text' : f.type,
+          };
+        }
+        if (newRole === 'name' && f.role === 'name' && f.header !== header) {
+          return { ...f, role: 'custom' };
+        }
+        return f;
+      });
+
+      const newMapping = { ...prev.mapping };
+      Object.keys(newMapping).forEach(key => {
+        if (newMapping[key] === header) delete newMapping[key];
+      });
+      if (['name', 'phone', 'person_id', 'department', 'designation', 'shift'].includes(newRole)) {
+        newMapping[newRole] = header;
+      }
+
+      return {
+        ...prev,
+        fields: newFields,
+        mapping: newMapping,
+      };
+    });
+  };
+
+  const updateFieldRequired = (header, isRequired) => {
+    setBulkMappingRequest(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        fields: prev.fields.map(f => {
+          if (f.header === header) {
+            return { ...f, required: isRequired };
+          }
+          return f;
+        })
+      };
+    });
+  };
+
+  const addOptionToField = (header, optionVal) => {
+    const cleanOpt = String(optionVal || '').trim();
+    if (!cleanOpt) return;
+    setBulkMappingRequest(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        fields: prev.fields.map(f => {
+          if (f.header === header) {
+            const currentOpts = Array.isArray(f.options) ? f.options : [];
+            if (!currentOpts.includes(cleanOpt)) {
+              return { ...f, options: [...currentOpts, cleanOpt] };
+            }
+          }
+          return f;
+        })
+      };
+    });
+  };
+
+  const removeOptionFromField = (header, optionToRemove) => {
+    setBulkMappingRequest(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        fields: prev.fields.map(f => {
+          if (f.header === header) {
+            const currentOpts = Array.isArray(f.options) ? f.options : [];
+            return { ...f, options: currentOpts.filter(o => o !== optionToRemove) };
+          }
+          return f;
+        })
+      };
+    });
+  };
+
+  const handleConfirmImport = async () => {
+    if (!bulkMappingRequest) return;
+    const { file, fields, mapping } = bulkMappingRequest;
+
+    const hasName = fields.some(f => f.role === 'name') || mapping.name;
+    if (!hasName) {
+      alert("Please designate one column as 'Person Name'.");
+      return;
+    }
+
+    const fieldTypes = {};
+    const fieldOptions = {};
+    const fieldRequired = {};
+    const headerMapping = { ...mapping };
+
+    fields.forEach(f => {
+      fieldTypes[f.header] = f.type;
+      if (f.type === 'select') {
+        fieldOptions[f.header] = f.options || [];
+      }
+      fieldRequired[f.header] = !!f.required;
+      if (f.role && f.role !== 'custom') {
+        headerMapping[f.role] = f.header;
+      }
+    });
+
+    await uploadPeopleSpreadsheet(file, headerMapping, fieldTypes, fieldOptions, fieldRequired);
+  };
+
+  const uploadPeopleSpreadsheet = async (file, headerMapping = null, fieldTypes = null, fieldOptions = null, fieldRequired = null) => {
     if (!file) return;
     const formData = new FormData();
     formData.append('file', file);
     if (headerMapping) formData.append('header_mapping', JSON.stringify(headerMapping));
+    if (fieldTypes) formData.append('field_types', JSON.stringify(fieldTypes));
+    if (fieldOptions) formData.append('field_options', JSON.stringify(fieldOptions));
+    if (fieldRequired) formData.append('field_required', JSON.stringify(fieldRequired));
+
     if (selectedBulkClass) {
       formData.append('class_id', selectedBulkClass.id);
       formData.append('class_year', selectedBulkClass.class_year);
@@ -557,15 +734,6 @@ const People = () => {
       }, 2000);
     } catch (err) {
       const payload = err.response?.data;
-      if (payload?.code === 'HEADER_MAPPING_REQUIRED' && Array.isArray(payload.headers)) {
-        setBulkMappingRequest({
-          file,
-          headers: payload.headers,
-          mapping: payload.suggested_mapping || {},
-        });
-        setBulkImportProgress('mapping');
-        return;
-      }
       setBulkImportError(payload?.error || err.message || 'Connection error');
       setBulkImportProgress(null);
     }
@@ -1279,9 +1447,11 @@ const People = () => {
       {/* Bulk Import Modal */}
       {isBulkImportModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden border border-slate-200">
+          <div className={`bg-white rounded-2xl w-full ${bulkImportProgress === 'mapping' ? 'max-w-2xl' : 'max-w-md'} shadow-2xl overflow-hidden border border-slate-200 transition-all`}>
             <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-              <h2 className="text-xl font-bold text-slate-800">Bulk Import {peopleLabel}</h2>
+              <h2 className="text-xl font-bold text-slate-800">
+                {bulkImportProgress === 'mapping' ? 'Map Spreadsheet Headers & Types' : `Bulk Import ${peopleLabel}`}
+              </h2>
               <button 
                 onClick={() => {
                   setIsBulkImportModalOpen(false);
@@ -1297,7 +1467,7 @@ const People = () => {
               </button>
             </div>
             
-            <div className={`p-8 text-center ${bulkImportPhase === 'cards' ? 'max-h-[70vh] overflow-y-auto' : ''}`}>
+            <div className={`p-8 text-center ${bulkImportPhase === 'cards' || bulkImportProgress === 'mapping' ? 'max-h-[75vh] overflow-y-auto' : ''}`}>
               {bulkImportPhase === 'cards' ? (
                 <>
                   <BookOpen size={48} className="mx-auto text-blue-500 mb-4 opacity-80" />
@@ -1351,7 +1521,7 @@ const People = () => {
                   <p className="text-slate-500 text-sm mb-6 leading-relaxed">
                     {selectedBulkClass 
                       ? `Select the Excel/CSV file for ${peopleLabel.toLowerCase()} of ${selectedBulkClass.class_year} ${selectedBulkClass.division}.`
-                      : `Upload a CSV or Excel file containing your ${peopleLabel.toLowerCase()} data. Headers will be used as registration fields.`
+                      : `Upload a CSV or Excel file containing your ${peopleLabel.toLowerCase()} data. Headers will be reviewed and mapped before importing.`
                     }
                   </p>
                   
@@ -1364,7 +1534,8 @@ const People = () => {
                         onChange={async (e) => {
                           const file = e.target.files[0];
                           if (!file) return;
-                          await uploadPeopleSpreadsheet(file);
+                          await handleSpreadsheetFileSelected(file);
+                          e.target.value = '';
                         }} 
                       />
                       <Upload size={18} />
@@ -1372,41 +1543,202 @@ const People = () => {
                     </label>
                   </div>
                 </>
+              ) : bulkImportProgress === 'inspecting' ? (
+                <div className="py-12 flex flex-col items-center">
+                  <div className="relative w-16 h-16 mb-6">
+                    <div className="absolute inset-0 border-4 border-slate-100 rounded-full"></div>
+                    <div className="absolute inset-0 border-4 border-blue-600 rounded-full border-t-transparent animate-spin"></div>
+                  </div>
+                  <p className="text-slate-700 font-medium">Inspecting Spreadsheet...</p>
+                  <p className="text-slate-400 text-sm mt-1">Detecting columns, formats, and sample values</p>
+                </div>
               ) : bulkImportProgress === 'mapping' && bulkMappingRequest ? (
                 <div className="space-y-4 text-left">
-                  <div>
-                    <h3 className="font-bold text-slate-800">Confirm spreadsheet columns</h3>
-                    <p className="mt-1 text-xs text-slate-500">The name column was ambiguous. Confirm the mapping before any rows are imported.</p>
+                  <div className="bg-blue-50/70 border border-blue-100 rounded-xl p-3.5 flex items-start gap-3">
+                    <div className="p-1.5 bg-blue-100/80 rounded-lg text-blue-600 shrink-0 mt-0.5">
+                      <Upload size={16} />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-bold text-blue-900">
+                        File: <span className="font-mono">{bulkMappingRequest.filename}</span> ({bulkMappingRequest.totalRows} records detected)
+                      </h4>
+                      <p className="text-[11px] text-blue-700 mt-0.5 leading-relaxed">
+                        Review each column’s type (<strong>Text</strong>, <strong>Numerical</strong>, or <strong>Dropdown</strong>). This configuration is automatically synchronized with the mobile app and web registration forms.
+                      </p>
+                    </div>
                   </div>
-                  <div className="max-h-72 space-y-3 overflow-y-auto pr-1">
-                    {[
-                      ['name', 'Person Name', true], ['phone', 'Phone', false], ['person_id', 'Student / Employee ID', false],
-                      ['email', 'Email', false], ['department', 'Department', false], ['designation', 'Designation', false], ['shift', 'Shift', false]
-                    ].map(([field, label, required]) => (
-                      <label key={field} className="block text-xs font-semibold text-slate-600">
-                        {label}{required ? ' *' : ''}
-                        <select
-                          value={bulkMappingRequest.mapping[field] || ''}
-                          onChange={(event) => setBulkMappingRequest(current => ({
-                            ...current, mapping: { ...current.mapping, [field]: event.target.value }
-                          }))}
-                          className="mt-1 w-full rounded-lg border border-slate-200 bg-white p-2 text-sm font-normal"
-                        >
-                          <option value="">Not mapped</option>
-                          {bulkMappingRequest.headers.map(header => <option key={header} value={header}>{header}</option>)}
-                        </select>
-                      </label>
+
+                  <div className="max-h-[50vh] space-y-3 overflow-y-auto pr-1">
+                    {(bulkMappingRequest.fields || []).map((field) => (
+                      <div key={field.header} className="p-3.5 bg-slate-50 hover:bg-slate-50/90 border border-slate-200/90 rounded-xl space-y-2.5 transition-colors">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-slate-800 text-sm">{field.header}</span>
+                              {field.required && (
+                                <span className="px-1.5 py-0.5 text-[10px] font-bold bg-rose-100 text-rose-700 rounded-full">Required</span>
+                              )}
+                              <span className="px-1.5 py-0.5 text-[10px] font-medium bg-slate-200 text-slate-700 rounded-full uppercase">
+                                {field.type === 'select' ? 'Dropdown' : field.type === 'number' ? 'Numerical' : 'Text'}
+                              </span>
+                            </div>
+                            {field.sample_values && field.sample_values.length > 0 && (
+                              <div className="flex items-center gap-1.5 mt-1 text-xs text-slate-500 flex-wrap">
+                                <span className="text-slate-400 font-medium text-[11px]">Preview:</span>
+                                {field.sample_values.slice(0, 4).map((sample, sIdx) => (
+                                  <span key={sIdx} className="px-1.5 py-0.5 bg-white border border-slate-200 rounded text-slate-600 font-mono text-[11px]">
+                                    {String(sample)}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Type Selector Pills */}
+                          <div className="flex items-center gap-1 bg-slate-200/80 p-1 rounded-lg self-start sm:self-center shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => updateFieldType(field.header, 'text')}
+                              className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all ${
+                                field.type === 'text' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600 hover:text-slate-800'
+                              }`}
+                            >
+                              Text
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => updateFieldType(field.header, 'number')}
+                              className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all ${
+                                field.type === 'number' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600 hover:text-slate-800'
+                              }`}
+                            >
+                              Numerical
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => updateFieldType(field.header, 'select')}
+                              className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all ${
+                                field.type === 'select' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600 hover:text-slate-800'
+                              }`}
+                            >
+                              Dropdown
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2 border-t border-slate-200/60">
+                          <div>
+                            <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                              System Role Mapping
+                            </label>
+                            <select
+                              value={field.role || 'custom'}
+                              onChange={(e) => updateFieldRole(field.header, e.target.value)}
+                              className="w-full text-xs bg-white border border-slate-200 rounded-lg p-1.5 font-normal text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                            >
+                              <option value="name">Person Name *</option>
+                              <option value="phone">Phone / Mobile</option>
+                              <option value="person_id">Student / Employee ID</option>
+                              <option value="department">Department</option>
+                              <option value="designation">Designation</option>
+                              <option value="shift">Shift</option>
+                              <option value="custom">Custom Field</option>
+                            </select>
+                          </div>
+
+                          <div className="flex items-center sm:justify-end gap-2 pt-2 sm:pt-4">
+                            <label className="flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={field.required}
+                                disabled={field.role === 'name'}
+                                onChange={(e) => updateFieldRequired(field.header, e.target.checked)}
+                                className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 h-4 w-4"
+                              />
+                              Required in Registration
+                            </label>
+                          </div>
+                        </div>
+
+                        {/* Options tag editor for Dropdown */}
+                        {field.type === 'select' && (
+                          <div className="pt-2 border-t border-slate-200/60">
+                            <div className="flex items-center justify-between mb-1">
+                              <label className="text-[11px] font-semibold text-slate-600">
+                                Dropdown Options ({field.options?.length || 0})
+                              </label>
+                              <span className="text-[10px] text-slate-400">Detected from Excel + custom additions</span>
+                            </div>
+                            
+                            <div className="flex flex-wrap gap-1.5 mb-2 max-h-24 overflow-y-auto">
+                              {(field.options || []).map((opt, optIdx) => (
+                                <span key={optIdx} className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-200/70 rounded-full text-xs font-medium">
+                                  {opt}
+                                  <button
+                                    type="button"
+                                    onClick={() => removeOptionFromField(field.header, opt)}
+                                    className="text-blue-400 hover:text-blue-800 ml-0.5 focus:outline-none"
+                                  >
+                                    ×
+                                  </button>
+                                </span>
+                              ))}
+                              {(!field.options || field.options.length === 0) && (
+                                <span className="text-xs text-slate-400 italic">No options defined yet. Add some below.</span>
+                              )}
+                            </div>
+
+                            <div className="flex gap-2">
+                              <input
+                                type="text"
+                                placeholder="Type option and press Enter..."
+                                id={`new-opt-${field.header}`}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    addOptionToField(field.header, e.target.value);
+                                    e.target.value = '';
+                                  }
+                                }}
+                                className="text-xs flex-1 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const input = document.getElementById(`new-opt-${field.header}`);
+                                  if (input && input.value) {
+                                    addOptionToField(field.header, input.value);
+                                    input.value = '';
+                                  }
+                                }}
+                                className="px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium rounded-lg transition-colors"
+                              >
+                                + Add
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     ))}
                   </div>
-                  <div className="flex justify-end gap-2">
-                    <button type="button" onClick={() => { setBulkMappingRequest(null); setBulkImportProgress(null); }} className="rounded-lg border px-3 py-2 text-sm text-slate-600">Choose another file</button>
+
+                  <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-3 border-t border-slate-100">
                     <button
                       type="button"
-                      disabled={!bulkMappingRequest.mapping.name}
-                      onClick={() => uploadPeopleSpreadsheet(bulkMappingRequest.file, bulkMappingRequest.mapping)}
-                      className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white disabled:opacity-40"
+                      onClick={() => {
+                        setBulkMappingRequest(null);
+                        setBulkImportProgress(null);
+                      }}
+                      className="w-full sm:w-auto px-4 py-2 text-sm text-slate-600 hover:text-slate-800 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors font-medium"
                     >
-                      Confirm and Import
+                      Choose Another File
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleConfirmImport}
+                      className="w-full sm:w-auto px-6 py-2.5 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-xl shadow-lg shadow-blue-500/20 transition-all flex items-center justify-center gap-2"
+                    >
+                      Confirm & Import ({bulkMappingRequest.totalRows} Records)
                     </button>
                   </div>
                 </div>

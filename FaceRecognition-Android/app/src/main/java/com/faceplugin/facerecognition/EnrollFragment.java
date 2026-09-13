@@ -774,7 +774,7 @@ public class EnrollFragment extends Fragment {
                     til.addView(et);
                     if (dynamicContainer != null) dynamicContainer.addView(til);
                     dynamicViews.put(key, et);
-                } else if (type.equals("select") || type.equals("multiselect")) {
+                } else if (type.equals("select") || type.equals("multiselect") || type.equals("dropdown")) {
                     android.widget.TextView tv = new android.widget.TextView(context);
                     tv.setText(label + (required ? " *" : ""));
                     tv.setTextSize(14);
