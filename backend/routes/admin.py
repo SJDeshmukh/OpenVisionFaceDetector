@@ -915,13 +915,30 @@ def get_vendors():
         "s.xchat_tokens_billed" if "xchat_tokens_billed" in subs_cols else "0 AS xchat_tokens_billed",
         "s.xchat_price_per_1k_tokens" if "xchat_price_per_1k_tokens" in subs_cols else "0 AS xchat_price_per_1k_tokens",
     ])
+
+    vendor_cols = get_table_columns(conn, "vendors")
+    sys_user_cols = get_table_columns(conn, "system_users")
+    has_kiosk_username_col = "kiosk_username" in vendor_cols
+    has_is_kiosk_col = "is_kiosk" in sys_user_cols
+
+    kiosk_filter = "(is_kiosk = 1 OR person_id IS NULL)" if has_is_kiosk_col else "(person_id IS NULL)"
+    kiosk_order = "CASE WHEN is_kiosk = 1 THEN 0 WHEN person_id IS NULL THEN 1 ELSE 2 END, " if has_is_kiosk_col else ""
+
+    if has_kiosk_username_col:
+        user_user_select = f"""COALESCE(
+            NULLIF(v.kiosk_username, ''),
+            (SELECT username FROM system_users WHERE vendor_id = v.id AND role = 'user' AND {kiosk_filter} ORDER BY {kiosk_order}username ASC LIMIT 1)
+        ) as user_username"""
+    else:
+        user_user_select = f"""(SELECT username FROM system_users WHERE vendor_id = v.id AND role = 'user' AND {kiosk_filter} ORDER BY {kiosk_order}username ASC LIMIT 1) as user_username"""
+
     query = f"""
         SELECT v.*, 
                s.plan_type, s.start_date, s.end_date, s.max_users, s.max_employees, s.max_mobile_devices, {max_web_select}, s.cost_per_user, s.cost_per_employee, s.setup_fee, s.setup_fee_paid, s.features, {xchat_select},
                ws.status AS whatsapp_status, ws.phone_number AS whatsapp_phone,
                (SELECT username FROM system_users WHERE vendor_id = v.id AND role = 'vendor_admin' LIMIT 1) as admin_username,
                NULL as admin_password,
-               (SELECT username FROM system_users WHERE vendor_id = v.id AND role = 'user' LIMIT 1) as user_username,
+               {user_user_select},
                NULL as user_password,
                (SELECT COUNT(*) FROM system_users WHERE vendor_id = v.id AND role = 'vendor_admin') as admin_count,
                (SELECT COUNT(*) FROM vendor_devices WHERE vendor_id = v.id) as device_count,
@@ -1404,13 +1421,22 @@ def create_vendor():
         kiosk_pin = str(data.get("kiosk_pin") or "8888").strip()
         if not kiosk_pin: kiosk_pin = "8888"
 
+        sys_user_cols = get_table_columns(conn, "system_users")
+        is_kiosk_field = ", is_kiosk" if "is_kiosk" in sys_user_cols else ""
+        is_kiosk_val = ", 1" if "is_kiosk" in sys_user_cols else ""
+
         c.execute("""INSERT INTO system_users (username, password, password_plain, role, vendor_id, kiosk_pin)
                       VALUES (?, ?, NULL, 'vendor_admin', ?, ?)""",
                    (admin_username, hash_password(admin_password), vendor_id, kiosk_pin))
-        c.execute("""INSERT INTO system_users (username, password, password_plain, role, vendor_id, kiosk_pin)
-                      VALUES (?, ?, NULL, 'user', ?, ?)""",
+        c.execute(f"""INSERT INTO system_users (username, password, password_plain, role, vendor_id, kiosk_pin{is_kiosk_field})
+                      VALUES (?, ?, NULL, 'user', ?, ?{is_kiosk_val})""",
                    (user_username, hash_password(user_password), vendor_id, kiosk_pin))
-        c.execute("UPDATE vendors SET kiosk_pin = ? WHERE id = ?", (kiosk_pin, vendor_id))
+
+        vendor_cols = get_table_columns(conn, "vendors")
+        if "kiosk_username" in vendor_cols:
+            c.execute("UPDATE vendors SET kiosk_pin = ?, kiosk_username = ? WHERE id = ?", (kiosk_pin, user_username, vendor_id))
+        else:
+            c.execute("UPDATE vendors SET kiosk_pin = ? WHERE id = ?", (kiosk_pin, vendor_id))
         
         # 3b. Create Owner Accounts
         owners = data.get("owners", [])
@@ -2044,38 +2070,83 @@ def update_vendor_details(vendor_id):
                           (admin_username or f"admin_{vendor_id}", hash_password(admin_password), vendor_id))
 
         # 3. Update User/Kiosk Credentials
-        user_username = data.get('user_username')
+        user_username = (data.get('user_username') or '').strip()
         user_password = data.get('user_password')
-        if user_username or user_password:
-            # Check if kiosk user exists for this vendor
-            c.execute("SELECT username FROM system_users WHERE vendor_id = ? AND role = 'user' LIMIT 1", (vendor_id,))
+
+        vendor_cols = get_table_columns(conn, "vendors")
+        has_kiosk_username_col = "kiosk_username" in vendor_cols
+        sys_user_cols = get_table_columns(conn, "system_users")
+        has_is_kiosk_col = "is_kiosk" in sys_user_cols
+
+        # 1. First check if vendor has an assigned kiosk_username
+        existing_kiosk_username = None
+        if has_kiosk_username_col:
+            c.execute("SELECT kiosk_username FROM vendors WHERE id = ?", (vendor_id,))
+            v_row = c.fetchone()
+            if v_row:
+                raw_ku = v_row[0] if not hasattr(v_row, "keys") else v_row.get("kiosk_username")
+                if raw_ku and str(raw_ku).strip():
+                    existing_kiosk_username = str(raw_ku).strip()
+
+        # 2. Look up the designated kiosk user in system_users
+        kiosk_user = None
+        if existing_kiosk_username:
+            c.execute("SELECT username FROM system_users WHERE vendor_id = ? AND username = ?", (vendor_id, existing_kiosk_username))
             kiosk_user = c.fetchone()
-            
+
+        if not kiosk_user:
+            kiosk_filter = "(is_kiosk = 1 OR person_id IS NULL)" if has_is_kiosk_col else "(person_id IS NULL)"
+            kiosk_order = "ORDER BY CASE WHEN is_kiosk = 1 THEN 0 WHEN person_id IS NULL THEN 1 ELSE 2 END, username ASC" if has_is_kiosk_col else "ORDER BY username ASC"
+            c.execute(f"SELECT username FROM system_users WHERE vendor_id = ? AND role = 'user' AND {kiosk_filter} {kiosk_order} LIMIT 1", (vendor_id,))
+            kiosk_user = c.fetchone()
+
+        current_kiosk_username = (kiosk_user[0] if not hasattr(kiosk_user, "keys") else kiosk_user.get("username")) if kiosk_user else None
+
+        if user_username or user_password:
+            target_username = user_username or current_kiosk_username or f"user_{vendor_id}"
+
             if kiosk_user:
                 update_query = "UPDATE system_users SET "
                 update_params = []
-                if user_username:
+                if has_is_kiosk_col:
+                    update_query += "is_kiosk = 1, "
+                update_query += "person_id = NULL, "
+                if user_username and user_username != current_kiosk_username:
                     update_query += "username = ?, "
                     update_params.append(user_username)
                 if user_password:
                     update_query += "password = ?, password_plain = NULL, "
                     update_params.append(hash_password(user_password))
-                
-                update_query = update_query.rstrip(", ") + " WHERE username = ?"
-                update_params.append(kiosk_user[0] if not hasattr(kiosk_user, "keys") else kiosk_user["username"])
+
+                update_query = update_query.rstrip(", ") + " WHERE username = ? AND vendor_id = ?"
+                update_params.extend([current_kiosk_username, vendor_id])
                 c.execute(update_query, update_params)
             else:
-                # Create if missing
+                # Create if missing (Self-healing)
                 if not user_password or len(str(user_password)) < 8:
                     return jsonify({"error": "A password of at least 8 characters is required for a new kiosk user"}), 400
-                c.execute("INSERT INTO system_users (username, password, password_plain, role, vendor_id) VALUES (?, ?, NULL, 'user', ?)",
-                          (user_username or f"user_{vendor_id}", hash_password(user_password), vendor_id))
+
+                is_kiosk_field = ", is_kiosk" if has_is_kiosk_col else ""
+                is_kiosk_val = ", 1" if has_is_kiosk_col else ""
+                kiosk_pin_init = str(data.get('kiosk_pin') or '8888').strip()
+                c.execute(f"""
+                    INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id, kiosk_pin{is_kiosk_field})
+                    VALUES (?, ?, NULL, 'user', ?, NULL, ?{is_kiosk_val})
+                """, (target_username, hash_password(user_password), vendor_id, kiosk_pin_init))
+
+            if has_kiosk_username_col:
+                c.execute("UPDATE vendors SET kiosk_username = ? WHERE id = ?", (target_username, vendor_id))
 
         if 'kiosk_pin' in data and data.get('kiosk_pin') is not None:
             kiosk_pin = str(data.get('kiosk_pin')).strip()
             if kiosk_pin:
                 c.execute("UPDATE vendors SET kiosk_pin = ? WHERE id = ?", (kiosk_pin, vendor_id))
-                c.execute("UPDATE system_users SET kiosk_pin = ? WHERE vendor_id = ? AND role = 'user'", (kiosk_pin, vendor_id))
+                target_user = user_username or current_kiosk_username
+                if target_user:
+                    c.execute("UPDATE system_users SET kiosk_pin = ? WHERE vendor_id = ? AND username = ?", (kiosk_pin, vendor_id, target_user))
+                else:
+                    kiosk_filter = "(is_kiosk = 1 OR person_id IS NULL)" if has_is_kiosk_col else "(person_id IS NULL)"
+                    c.execute(f"UPDATE system_users SET kiosk_pin = ? WHERE vendor_id = ? AND role = 'user' AND {kiosk_filter}", (kiosk_pin, vendor_id))
 
         # 4. Update Owner Accounts (Sync Logic)
         owners = data.get('owners', [])

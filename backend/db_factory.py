@@ -594,12 +594,14 @@ def _init_pg_schema_on_conn(conn):
         ("vendors", "num_hods", "INTEGER DEFAULT 0"),
         ("vendors", "departments", "TEXT"),
         ("vendors", "kiosk_pin", "TEXT DEFAULT '8888'"),
+        ("vendors", "kiosk_username", "TEXT"),
         ("system_users", "person_id", "INTEGER"),
         ("system_users", "password_plain", "TEXT"),
         ("system_users", "has_set_password", "INTEGER DEFAULT 0"),
         ("system_users", "force_password_change", "INTEGER DEFAULT 0"),
         ("system_users", "last_active_at", "TIMESTAMP"),
         ("system_users", "kiosk_pin", "TEXT DEFAULT '8888'"),
+        ("system_users", "is_kiosk", "INTEGER DEFAULT 0"),
         ("subscriptions", "max_web_sessions", "INTEGER DEFAULT 1"),
         ("subscriptions", "grace_period_days", "INTEGER DEFAULT 0"),
         ("subscriptions", "cost_per_employee", "REAL DEFAULT 0"),
@@ -697,6 +699,34 @@ def _init_pg_schema_on_conn(conn):
             WHERE role = 'user' AND person_id IS NULL
         """, "Link student logins (SQLite)")
         
+    # 2b. Explicitly classify system_users into kiosk accounts vs employee accounts
+    run_migration("UPDATE system_users SET is_kiosk = 0 WHERE person_id IS NOT NULL", "Mark employee users as non-kiosk")
+    run_migration("UPDATE system_users SET is_kiosk = 1 WHERE role = 'user' AND (person_id IS NULL OR person_id = 0)", "Mark vendor kiosk users")
+
+    # Backfill vendors.kiosk_username if empty
+    if is_pg:
+        run_migration("""
+            UPDATE vendors v
+            SET kiosk_username = (
+                SELECT username FROM system_users 
+                WHERE vendor_id = v.id AND role = 'user' AND (is_kiosk = 1 OR person_id IS NULL)
+                ORDER BY CASE WHEN is_kiosk = 1 THEN 0 ELSE 1 END, username ASC
+                LIMIT 1
+            )
+            WHERE (v.kiosk_username IS NULL OR v.kiosk_username = '')
+        """, "Backfill vendors.kiosk_username (PG)")
+    else:
+        run_migration("""
+            UPDATE vendors
+            SET kiosk_username = (
+                SELECT username FROM system_users 
+                WHERE vendor_id = vendors.id AND role = 'user' AND (is_kiosk = 1 OR person_id IS NULL)
+                ORDER BY CASE WHEN is_kiosk = 1 THEN 0 ELSE 1 END, username ASC
+                LIMIT 1
+            )
+            WHERE (kiosk_username IS NULL OR kiosk_username = '')
+        """, "Backfill vendors.kiosk_username (SQLite)")
+
     # 3. Preserve the legacy default/custom marker, then scrub recoverable passwords.
     run_migration("""
         UPDATE system_users SET has_set_password = 1 

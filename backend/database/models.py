@@ -26,6 +26,8 @@ class Vendor(Base):
     num_rectors = Column(Integer, default=0)
     num_hods = Column(Integer, default=0)
     departments = Column(Text)
+    kiosk_pin = Column(String(50), default='8888')
+    kiosk_username = Column(String(255))
 
     # Relationships
     companies = relationship("Company", back_populates="vendor")
@@ -105,6 +107,8 @@ class SystemUser(Base):
     has_set_password = Column(Integer, default=0)
     force_password_change = Column(Integer, default=0)
     last_active_at = Column(DateTime)
+    kiosk_pin = Column(String(50), default='8888')
+    is_kiosk = Column(Integer, default=0)
 
     vendor = relationship("Vendor", back_populates="system_users")
     person = relationship("Face", back_populates="system_user")

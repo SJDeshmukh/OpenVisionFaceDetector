@@ -14,7 +14,7 @@ import cv2
 logger = logging.getLogger(__name__)
 from services.auth_service import authenticate_vendor_access, extract_token, verify_token, check_vendor_status, hash_password
 import db_factory
-from db_factory import set_row_factory
+from db_factory import set_row_factory, get_table_columns
 from utils import get_db_connection, LOW_RAM_MODE, _VENDOR_EMB_CACHE, reset_sequence, ALL_FEATURES, cache_delete_vendor_prefix, cache_delete, require_feature, cache_get, cache_set, decode_image_to_bgr, decode_image_to_rgb, get_face_augmentations
 from services.face_service import _ensure_vendor_emb_cache, _normalize_vec, _suggest_from_cache
 from storage import upload_base64_image, presigned_url_for_key, OBJECT_STORAGE_ENABLED, compress_image
@@ -1133,8 +1133,11 @@ def upload_face():
                             # Create system user
                             # Using phone as initial password
                             login_role = 'student' if is_school_hostel(vertical) else 'user'
+                            sys_cols = get_table_columns(conn, "system_users")
+                            is_kiosk_field = ", is_kiosk" if "is_kiosk" in sys_cols else ""
+                            is_kiosk_val = ", 0" if "is_kiosk" in sys_cols else ""
                             c.execute(
-                                "INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (?, ?, NULL, ?, ?, ?)",
+                                f"INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id{is_kiosk_field}) VALUES (?, ?, NULL, ?, ?, ?{is_kiosk_val})",
                                 (student_id, hash_password(student_phone), login_role, vendor_id, new_id)
                             )
                             # We don't need to commit here if the outer transaction commits

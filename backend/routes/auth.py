@@ -427,14 +427,17 @@ def login():
 
                 if student_phone and (str(password) == str(student_phone) or normalize_phone(password) == normalize_phone(student_phone)):
                     # SECURE HASHING: Hash the password being stored
+                    sys_cols = get_table_columns(conn, "system_users")
+                    is_kiosk_field = ", is_kiosk" if "is_kiosk" in sys_cols else ""
+                    is_kiosk_val = ", 0" if "is_kiosk" in sys_cols else ""
                     if is_pg:
                         c.execute(
-                            "INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (%s, %s, NULL, 'user', %s, %s)",
+                            f"INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id{is_kiosk_field}) VALUES (%s, %s, NULL, 'user', %s, %s{is_kiosk_val})",
                             (username, hash_password(password), face_row['vendor_id'], face_row['id'])
                         )
                     else:
                         c.execute(
-                            "INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (?, ?, NULL, 'user', ?, ?)",
+                            f"INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id{is_kiosk_field}) VALUES (?, ?, NULL, 'user', ?, ?{is_kiosk_val})",
                             (username, hash_password(password), face_row['vendor_id'], face_row['id'])
                         )
                     conn.commit()

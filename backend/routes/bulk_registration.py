@@ -7,6 +7,7 @@ import secrets
 import pandas as pd
 from flask import Blueprint, request, jsonify, g
 from utils import get_db_connection, log_audit, vendor_has_feature
+from db_factory import get_table_columns
 from services.auth_service import require_auth, hash_password
 from services.person_scope_service import is_school_hostel, parse_custom_data
 from services.spreadsheet_mapping_service import map_spreadsheet_headers
@@ -396,9 +397,12 @@ def bulk_registration_upload():
                     c.execute("SELECT username FROM system_users WHERE username = ?", (student_id_val,))
                     if not c.fetchone():
                         login_role = 'student' if school_student_flow else 'user'
-                        c.execute("""
-                            INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id)
-                            VALUES (?, ?, NULL, ?, ?, ?)
+                        sys_cols = get_table_columns(conn, "system_users")
+                        is_kiosk_field = ", is_kiosk" if "is_kiosk" in sys_cols else ""
+                        is_kiosk_val = ", 0" if "is_kiosk" in sys_cols else ""
+                        c.execute(f"""
+                            INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id{is_kiosk_field})
+                            VALUES (?, ?, NULL, ?, ?, ?{is_kiosk_val})
                         """, (student_id_val, hash_password(phone), login_role, vendor_id, person_id))
 
                 success_count += 1
