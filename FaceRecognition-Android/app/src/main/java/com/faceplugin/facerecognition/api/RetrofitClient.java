@@ -70,7 +70,8 @@ public class RetrofitClient {
                 
                 // A 403 is a valid authorization/feature response and must not log the
                 // user out. Only an actual authentication failure invalidates a session.
-                if (response.code() == 401) {
+                if (response.code() == 401 && authToken != null && !authToken.isEmpty()) {
+                     authToken = null;
                      if (MyGlobal.context != null) {
                          String errorMessage = null;
                          try {

@@ -80,6 +80,7 @@ class MainActivity : AppCompatActivity() {
     private var anchorLng: Double? = null
     private var anchorRadius: Double? = null
     private val REQUEST_CHECK_SETTINGS = 1001
+    private var isLoggingOut = false
     private var locationManager: LocationManager? = null
     private var latestDeviceLocation: Location? = null
     private var locationCallback: LocationCallback? = null
@@ -416,6 +417,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        try {
+            stopLockTask()
+        } catch (_: Exception) {}
         mSocket?.disconnect()
         mSocket?.off()
         stopLocationTracking()
@@ -588,38 +592,88 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun performLogout(message: String) {
-        // Prevent multiple calls
-        if (isFinishing) return
+        if (isFinishing || isLoggingOut) return
+        isLoggingOut = true
 
-        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+        runOnUiThread {
+            try {
+                // 1. Unregister authFailureReceiver immediately to avoid repeated triggers
+                try {
+                    unregisterReceiver(authFailureReceiver)
+                } catch (_: Exception) {}
 
-        clearAuthState()
+                // 2. Stop all background runners and location tracking immediately
+                handler.removeCallbacks(syncRunnable)
+                handler.removeCallbacks(networkStatusRunnable)
+                handler.removeCallbacks(settingsRunnable)
+                handler.removeCallbacks(heartbeatRunnable)
+                stopLocationTracking()
 
-        val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
-        var selectedCode = prefs.getString("selected_business_type_code", null)
-        if (selectedCode.isNullOrBlank()) {
-            selectedCode = prefs.getString("selected_business_type", null)
-            if (!selectedCode.isNullOrBlank()) {
-                prefs.edit().putString("selected_business_type_code", selectedCode).apply()
+                // 3. Disconnect real-time socket
+                try {
+                    mSocket?.disconnect()
+                    mSocket?.off()
+                } catch (_: Exception) {}
+
+                // 4. CRITICAL: Stop LockTask mode (screen pinning) and clear immersive mode
+                // Without calling stopLockTask(), Android OS blocks the activity from finishing
+                // and traps the device on MainActivity while repeatedly displaying authentication errors.
+                try {
+                    stopLockTask()
+                } catch (e: Exception) {
+                    android.util.Log.w("Kiosk", "stopLockTask: ${e.message}")
+                }
+                isKioskModeActive = false
+                clearImmersiveMode()
+
+                // 5. Clear authentication credentials & tokens
+                clearAuthState()
+
+                // 6. User-friendly message
+                val displayMsg = if (message.equals("Authentication required", ignoreCase = true)
+                    || message.equals("Authentication Required", ignoreCase = true)
+                    || message.contains("unauthorized", ignoreCase = true)
+                    || message.contains("token", ignoreCase = true)) {
+                    "Session expired or password changed. Please log in again."
+                } else {
+                    message
+                }
+                Toast.makeText(applicationContext, displayMsg, Toast.LENGTH_LONG).show()
+
+                // 7. Route to LoginActivity
+                val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+                var selectedCode = prefs.getString("selected_business_type_code", null)
+                if (selectedCode.isNullOrBlank()) {
+                    selectedCode = prefs.getString("selected_business_type", null)
+                    if (!selectedCode.isNullOrBlank()) {
+                        prefs.edit().putString("selected_business_type_code", selectedCode).apply()
+                    }
+                }
+                if (selectedCode.isNullOrBlank()) {
+                    selectedCode = prefs.getString("selected_vendor_vertical", null)
+                    if (!selectedCode.isNullOrBlank()) {
+                        prefs.edit()
+                            .putString("selected_business_type_code", selectedCode)
+                            .putString("selected_business_type", selectedCode)
+                            .apply()
+                    }
+                }
+                val intent = if (selectedCode.isNullOrBlank()) {
+                    Intent(this, BusinessSelectActivity::class.java)
+                } else {
+                    Intent(this, LoginActivity::class.java)
+                }
+                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+                startActivity(intent)
+                finish()
+            } catch (e: Exception) {
+                android.util.Log.e("Logout", "Error during performLogout", e)
+                try {
+                    stopLockTask()
+                } catch (_: Exception) {}
+                finish()
             }
         }
-        if (selectedCode.isNullOrBlank()) {
-            selectedCode = prefs.getString("selected_vendor_vertical", null)
-            if (!selectedCode.isNullOrBlank()) {
-                prefs.edit()
-                    .putString("selected_business_type_code", selectedCode)
-                    .putString("selected_business_type", selectedCode)
-                    .apply()
-            }
-        }
-        val intent = if (selectedCode.isNullOrBlank()) {
-            Intent(this, BusinessSelectActivity::class.java)
-        } else {
-            Intent(this, LoginActivity::class.java)
-        }
-        intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
-        startActivity(intent)
-        finish()
     }
 
     private fun syncFacesFromBackend() {
