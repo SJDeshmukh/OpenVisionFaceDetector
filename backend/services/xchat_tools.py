@@ -52,10 +52,48 @@ def _dict(row):
     return dict(row) if row is not None else None
 
 
+def _parse_date(value, default=None):
+    if not value:
+        return default or date.today()
+    clean = str(value).strip().lower()
+    if clean in ("today", "now"):
+        return date.today()
+    if clean == "yesterday":
+        return date.today() - timedelta(days=1)
+    if clean == "tomorrow":
+        return date.today() + timedelta(days=1)
+    try:
+        if "t" in clean or " " in clean:
+            return datetime.fromisoformat(clean.replace("z", "").split(".")[0]).date()
+        return datetime.strptime(clean[:10], "%Y-%m-%d").date()
+    except Exception:
+        return default or date.today()
+
+
+def _safe_period(start_date=None, end_date=None, default_days=7):
+    if start_date and end_date:
+        start = _parse_date(start_date)
+        end = _parse_date(end_date)
+    elif start_date and not end_date:
+        start = _parse_date(start_date)
+        end = start
+    elif end_date and not start_date:
+        end = _parse_date(end_date)
+        start = end - timedelta(days=default_days)
+    else:
+        end = date.today()
+        start = end - timedelta(days=default_days)
+    if end < start:
+        start, end = end, start
+    if (end - start).days + 1 > MAX_RANGE_DAYS:
+        start = end - timedelta(days=MAX_RANGE_DAYS - 1)
+    return start, end
+
+
 def _period(start_date, end_date):
     try:
-        start = datetime.strptime(str(start_date), "%Y-%m-%d").date()
-        end = datetime.strptime(str(end_date), "%Y-%m-%d").date()
+        start = _parse_date(start_date)
+        end = _parse_date(end_date)
     except (TypeError, ValueError):
         raise ValueError("Dates must use YYYY-MM-DD format")
     if end < start:
@@ -147,7 +185,7 @@ def _employee_metrics(vendor_id, start, end, department=None):
     return metrics
 
 
-def get_attendance_summary(vendor_id, start_date, end_date, department=None):
+def get_attendance_summary(vendor_id, start_date=None, end_date=None, department=None):
     start, end = _period(start_date, end_date)
     conn = _db()
     c = conn.cursor()
@@ -201,10 +239,504 @@ def get_attendance_summary(vendor_id, start_date, end_date, department=None):
     }
 
 
-def get_present_people(vendor_id, attendance_date=None, department=None, limit=25):
+def get_company_profile(vendor_id):
+    """Return organization profile, business vertical, headcount, working hours, and devices."""
+    conn = _db()
+    c = conn.cursor()
+    try:
+        c.execute("""
+            SELECT v.company_name, v.vertical, v.departments, v.attendance_type,
+                   c.working_hours, c.shifts, c.live_timetable
+            FROM vendors v
+            LEFT JOIN companies c ON c.vendor_id = v.id
+            WHERE v.id = ? LIMIT 1
+        """, (vendor_id,))
+        row = _dict(c.fetchone())
+
+        c.execute("SELECT COUNT(*) FROM faces WHERE vendor_id = ?", (vendor_id,))
+        total_people = (c.fetchone() or [0])[0]
+
+        c.execute("SELECT COUNT(*) FROM vendor_devices WHERE vendor_id = ?", (vendor_id,))
+        total_devices = (c.fetchone() or [0])[0]
+
+        c.execute("""
+            SELECT DISTINCT department FROM faces
+            WHERE vendor_id = ? AND department IS NOT NULL AND department <> ''
+            ORDER BY department LIMIT 20
+        """, (vendor_id,))
+        departments = [r[0] for r in (c.fetchall() or [])]
+    finally:
+        conn.close()
+
+    working_hours = 8.0
+    shifts = []
+    if row:
+        try:
+            working_hours = float(row.get("working_hours") or 8.0)
+        except (TypeError, ValueError):
+            working_hours = 8.0
+        try:
+            raw_shifts = json.loads(row.get("shifts") or "[]") if isinstance(row.get("shifts"), str) else row.get("shifts")
+            if isinstance(raw_shifts, list):
+                shifts = [s.get("name") for s in raw_shifts if isinstance(s, dict) and s.get("name")]
+        except Exception:
+            shifts = []
+
+    return {
+        "company_name": (row.get("company_name") if row else None) or "OpenVision Business",
+        "vendor_id": vendor_id,
+        "vertical": (row.get("vertical") if row else None) or "general",
+        "total_registered_people": total_people,
+        "standard_working_hours": working_hours,
+        "departments": departments,
+        "shifts": shifts,
+        "registered_devices": total_devices,
+        "source_path": "/settings",
+    }
+
+
+def get_today_attendance_summary(vendor_id, attendance_date=None, department=None, class_year=None, division=None):
+    """Real-time comprehensive attendance dashboard: total registered, present, absent, late, and on-leave."""
+    target_date = _parse_date(attendance_date, default=date.today())
+    target_str = target_date.isoformat()
+    conn = _db()
+    c = conn.cursor()
+    try:
+        faces_sql = "SELECT id, display_id, name, department, designation, shift FROM faces WHERE vendor_id = ?"
+        faces_params = [vendor_id]
+        if department:
+            faces_sql += " AND department = ?"
+            faces_params.append(str(department))
+        c.execute(faces_sql, faces_params)
+        all_people = [_dict(row) for row in (c.fetchall() or [])]
+        person_ids = {p["id"] for p in all_people}
+
+        att_sql = """
+            SELECT a.person_id, a.timestamp, a.status, a.is_late, a.activity, f.name, f.department, f.display_id
+            FROM attendance a
+            JOIN faces f ON f.id = a.person_id AND f.vendor_id = a.vendor_id
+            WHERE a.vendor_id = ? AND date(a.timestamp) = ?
+        """
+        att_params = [vendor_id, target_str]
+        if department:
+            att_sql += " AND f.department = ?"
+            att_params.append(str(department))
+        att_sql += " ORDER BY a.timestamp DESC"
+        c.execute(att_sql, att_params)
+        raw_punches = [_dict(row) for row in (c.fetchall() or [])]
+
+        leave_sql = """
+            SELECT lr.student_id, lr.leave_type, lr.reason, f.name, f.department
+            FROM leave_requests lr
+            JOIN faces f ON f.id = lr.student_id AND f.vendor_id = lr.vendor_id
+            WHERE lr.vendor_id = ? AND ? BETWEEN lr.start_date AND lr.end_date
+              AND LOWER(lr.final_status) = 'approved'
+        """
+        c.execute(leave_sql, (vendor_id, target_str))
+        leaves = [_dict(row) for row in (c.fetchall() or [])]
+    finally:
+        conn.close()
+
+    present_person_ids = {p["person_id"] for p in raw_punches if p["person_id"] in person_ids}
+    late_person_ids = {p["person_id"] for p in raw_punches if p.get("is_late") and p["person_id"] in person_ids}
+    leave_person_ids = {l["student_id"] for l in leaves if l["student_id"] in person_ids}
+    absent_person_ids = person_ids - present_person_ids - leave_person_ids
+
+    total_count = len(person_ids)
+    present_count = len(present_person_ids)
+    absent_count = len(absent_person_ids)
+    late_count = len(late_person_ids)
+    on_leave_count = len(leave_person_ids)
+    rate = round(present_count * 100.0 / total_count, 1) if total_count else 0.0
+
+    dept_totals = defaultdict(int)
+    dept_present = defaultdict(int)
+    dept_absent = defaultdict(int)
+    dept_late = defaultdict(int)
+
+    for p in all_people:
+        dept = p.get("department") or "Unassigned"
+        dept_totals[dept] += 1
+        if p["id"] in present_person_ids:
+            dept_present[dept] += 1
+        elif p["id"] in leave_person_ids:
+            pass
+        else:
+            dept_absent[dept] += 1
+        if p["id"] in late_person_ids:
+            dept_late[dept] += 1
+
+    dept_summary = []
+    for dept in sorted(dept_totals.keys()):
+        dept_summary.append({
+            "department": dept,
+            "total": dept_totals[dept],
+            "present": dept_present[dept],
+            "absent": dept_absent[dept],
+            "late": dept_late[dept],
+            "rate_percent": round(dept_present[dept] * 100.0 / dept_totals[dept], 1) if dept_totals[dept] else 0.0,
+        })
+
+    seen = set()
+    recent_arrivals = []
+    for p in raw_punches:
+        if p["person_id"] not in seen:
+            seen.add(p["person_id"])
+            recent_arrivals.append({
+                "name": p.get("name"),
+                "display_id": p.get("display_id"),
+                "department": p.get("department"),
+                "time": str(p.get("timestamp") or ""),
+                "status": p.get("status") or "CHECK_IN",
+                "is_late": bool(p.get("is_late")),
+            })
+            if len(recent_arrivals) >= 15:
+                break
+
+    return {
+        "date": target_str,
+        "department": department or "All",
+        "total_registered": total_count,
+        "present_count": present_count,
+        "absent_count": absent_count,
+        "late_count": late_count,
+        "on_leave_count": on_leave_count,
+        "attendance_rate_percent": rate,
+        "recent_arrivals": recent_arrivals,
+        "department_summary": dept_summary,
+        "source_path": "/attendance",
+    }
+
+
+def get_employee_attendance(vendor_id, query, start_date=None, end_date=None, limit=25):
+    """Return entry/exit punch logs, working hours, and late marks for an individual."""
+    search = str(query or "").strip()
+    if not search:
+        raise ValueError("Person name or ID is required")
+    start, end = _safe_period(start_date, end_date, default_days=30)
+    row_limit = _limit(limit)
+    conn = _db()
+    c = conn.cursor()
+    try:
+        c.execute("""
+            SELECT id, display_id, name, department, designation, shift, custom_data
+            FROM faces
+            WHERE vendor_id = ? AND (
+                LOWER(name) LIKE LOWER(?) OR 
+                CAST(display_id AS TEXT) = ? OR 
+                LOWER(custom_data) LIKE LOWER(?)
+            )
+            ORDER BY CASE WHEN LOWER(name) = LOWER(?) THEN 0 ELSE 1 END, name
+            LIMIT 5
+        """, (vendor_id, f"%{search}%", search, f"%{search}%", search))
+        matches = [_dict(row) for row in (c.fetchall() or [])]
+        if not matches:
+            return {
+                "found": False,
+                "query": search,
+                "period": {"start": start.isoformat(), "end": end.isoformat()},
+                "message": f"No person found matching '{search}'.",
+                "source_path": "/attendance",
+            }
+
+        person = matches[0]
+        person_id = person["id"]
+
+        roll_no = None
+        if person.get("custom_data"):
+            try:
+                cd = json.loads(person["custom_data"]) if isinstance(person["custom_data"], str) else person["custom_data"]
+                if isinstance(cd, dict):
+                    roll_no = cd.get("student_number") or cd.get("admission_number") or cd.get("employee_id") or cd.get("roll_number")
+            except Exception:
+                pass
+
+        c.execute("""
+            SELECT id, timestamp, status, activity, is_late, device_id
+            FROM attendance
+            WHERE vendor_id = ? AND person_id = ? AND date(timestamp) BETWEEN ? AND ?
+            ORDER BY timestamp ASC
+        """, (vendor_id, person_id, start.isoformat(), end.isoformat()))
+        punches = [_dict(row) for row in (c.fetchall() or [])]
+
+        c.execute("""
+            SELECT id, leave_type, reason, start_date, end_date, start_time, end_time, final_status
+            FROM leave_requests
+            WHERE vendor_id = ? AND student_id = ? AND start_date <= ? AND end_date >= ?
+        """, (vendor_id, person_id, end.isoformat(), start.isoformat()))
+        leaves = [_dict(row) for row in (c.fetchall() or [])]
+    finally:
+        conn.close()
+
+    day_groups = defaultdict(list)
+    for p in punches:
+        try:
+            day = str(p.get("timestamp"))[:10]
+            day_groups[day].append(p)
+        except Exception:
+            continue
+
+    timeline = []
+    total_punches = len(punches)
+    total_present_days = len(day_groups)
+    late_days = 0
+
+    for day_str, day_punches in sorted(day_groups.items(), reverse=True)[:row_limit]:
+        first_in = next((p for p in day_punches if p.get("status") in ("CHECK_IN", "IN")), day_punches[0])
+        last_out = next((p for p in reversed(day_punches) if p.get("status") in ("CHECK_OUT", "OUT")), None)
+        is_late = any(bool(p.get("is_late")) for p in day_punches)
+        if is_late:
+            late_days += 1
+
+        duration_hours = None
+        if first_in and last_out and first_in.get("id") != last_out.get("id"):
+            try:
+                t1 = datetime.fromisoformat(str(first_in["timestamp"]).replace("Z", ""))
+                t2 = datetime.fromisoformat(str(last_out["timestamp"]).replace("Z", ""))
+                duration_hours = round(max(0.0, (t2 - t1).total_seconds() / 3600.0), 2)
+            except Exception:
+                pass
+
+        timeline.append({
+            "date": day_str,
+            "first_in": str(first_in.get("timestamp") or "") if first_in else None,
+            "last_out": str(last_out.get("timestamp") or "") if last_out else None,
+            "punch_count": len(day_punches),
+            "is_late": is_late,
+            "duration_hours": duration_hours,
+            "punches": [{
+                "time": str(p.get("timestamp") or ""),
+                "type": p.get("status") or "PUNCH",
+                "is_late": bool(p.get("is_late")),
+            } for p in day_punches],
+        })
+
+    leave_records = [{
+        "leave_type": lr.get("leave_type") or "Leave",
+        "reason": lr.get("reason"),
+        "start_date": str(lr.get("start_date")),
+        "end_date": str(lr.get("end_date")),
+        "status": lr.get("final_status"),
+    } for lr in leaves]
+
+    return {
+        "found": True,
+        "query": search,
+        "person": {
+            "id": person["id"],
+            "name": person.get("name"),
+            "display_id": person.get("display_id"),
+            "roll_no": roll_no,
+            "department": person.get("department"),
+            "designation": person.get("designation"),
+            "shift": person.get("shift"),
+        },
+        "period": {"start": start.isoformat(), "end": end.isoformat()},
+        "total_present_days": total_present_days,
+        "late_days_count": late_days,
+        "total_punches": total_punches,
+        "attendance_timeline": timeline,
+        "leave_records": leave_records,
+        "source_path": "/attendance",
+    }
+
+
+def get_live_punches(vendor_id, limit=20, department=None, class_year=None, division=None, attendance_date=None):
+    """Return real-time stream of latest punch events across the organization."""
+    target_date = _parse_date(attendance_date, default=date.today())
+    target_str = target_date.isoformat()
+    row_limit = _limit(limit)
+    conn = _db()
+    c = conn.cursor()
+    try:
+        sql = """
+            SELECT a.id, a.timestamp, a.status, a.activity, a.is_late, a.device_id,
+                   f.id AS person_id, f.display_id, f.name, f.department, f.designation
+            FROM attendance a
+            JOIN faces f ON f.id = a.person_id AND f.vendor_id = a.vendor_id
+            WHERE a.vendor_id = ? AND date(a.timestamp) = ?
+        """
+        params = [vendor_id, target_str]
+        if department:
+            sql += " AND f.department = ?"
+            params.append(str(department))
+        sql += " ORDER BY a.timestamp DESC LIMIT ?"
+        params.append(row_limit)
+        c.execute(sql, params)
+        rows = [_dict(row) for row in (c.fetchall() or [])]
+    finally:
+        conn.close()
+
+    punches = [{
+        "id": r["id"],
+        "name": r.get("name"),
+        "display_id": r.get("display_id") or r.get("person_id"),
+        "department": r.get("department") or "Unassigned",
+        "timestamp": str(r.get("timestamp") or ""),
+        "punch_type": r.get("status") or "CHECK_IN",
+        "is_late": bool(r.get("is_late")),
+        "device_id": r.get("device_id") or "Kiosk",
+    } for r in rows]
+
+    return {
+        "date": target_str,
+        "count": len(punches),
+        "department": department or "All",
+        "punches": punches,
+        "source_path": "/live-attendance",
+    }
+
+
+def get_employee_details(vendor_id, query):
+    """Look up an individual's full profile, shift, wage config, and live today status."""
+    search = str(query or "").strip()
+    if not search:
+        raise ValueError("Person name or ID is required")
+    today_str = date.today().isoformat()
+    conn = _db()
+    c = conn.cursor()
+    try:
+        c.execute("""
+            SELECT id, display_id, name, department, designation, phone, shift,
+                   daily_wage, basic_salary, joining_date, custom_data
+            FROM faces
+            WHERE vendor_id = ? AND (
+                LOWER(name) LIKE LOWER(?) OR 
+                CAST(display_id AS TEXT) = ? OR 
+                LOWER(custom_data) LIKE LOWER(?)
+            )
+            ORDER BY CASE WHEN LOWER(name) = LOWER(?) THEN 0 ELSE 1 END, name
+            LIMIT 5
+        """, (vendor_id, f"%{search}%", search, f"%{search}%", search))
+        matches = [_dict(row) for row in (c.fetchall() or [])]
+        if not matches:
+            return {"found": False, "query": search, "message": f"No person found matching '{search}'"}
+
+        person = matches[0]
+        person_id = person["id"]
+
+        c.execute("""
+            SELECT timestamp, status, is_late
+            FROM attendance
+            WHERE vendor_id = ? AND person_id = ? AND date(timestamp) = ?
+            ORDER BY timestamp ASC
+        """, (vendor_id, person_id, today_str))
+        today_punches = [_dict(row) for row in (c.fetchall() or [])]
+
+        c.execute("""
+            SELECT leave_type, reason, start_date, end_date, final_status
+            FROM leave_requests
+            WHERE vendor_id = ? AND student_id = ? AND ? BETWEEN start_date AND end_date
+              AND LOWER(final_status) = 'approved'
+            LIMIT 1
+        """, (vendor_id, person_id, today_str))
+        leave_row = _dict(c.fetchone())
+    finally:
+        conn.close()
+
+    roll_no = None
+    if person.get("custom_data"):
+        try:
+            cd = json.loads(person["custom_data"]) if isinstance(person["custom_data"], str) else person["custom_data"]
+            if isinstance(cd, dict):
+                roll_no = cd.get("student_number") or cd.get("admission_number") or cd.get("roll_number") or cd.get("employee_id")
+        except Exception:
+            pass
+
+    if today_punches:
+        live_status = "PRESENT"
+        first_in = str(today_punches[0].get("timestamp") or "")
+        last_out = str(today_punches[-1].get("timestamp") or "") if len(today_punches) > 1 else None
+        is_late = any(bool(p.get("is_late")) for p in today_punches)
+    elif leave_row:
+        live_status = "ON LEAVE"
+        first_in = None
+        last_out = None
+        is_late = False
+    else:
+        live_status = "ABSENT"
+        first_in = None
+        last_out = None
+        is_late = False
+
+    return {
+        "found": True,
+        "query": search,
+        "id": person["id"],
+        "name": person.get("name"),
+        "display_id": person.get("display_id"),
+        "roll_no": roll_no,
+        "department": person.get("department") or "Unassigned",
+        "designation": person.get("designation") or "Unassigned",
+        "shift": person.get("shift") or "General",
+        "wage_configured": bool(person.get("daily_wage")),
+        "today_status": {
+            "date": today_str,
+            "status": live_status,
+            "first_punch": first_in,
+            "last_punch": last_out,
+            "is_late": is_late,
+            "leave_info": leave_row,
+        },
+        "source_path": "/people",
+    }
+
+
+def get_class_attendance_summary(vendor_id, class_year=None, division=None, branch=None, attendance_date=None):
+    """Summarize class/section/division attendance for academic institutions (Schools/Colleges)."""
+    target_date = _parse_date(attendance_date, default=date.today())
+    target_str = target_date.isoformat()
+    conn = _db()
+    c = conn.cursor()
+    try:
+        c.execute("SELECT id, class_year, division, branch, label FROM classes WHERE vendor_id = ?", (vendor_id,))
+        class_rows = [_dict(row) for row in (c.fetchall() or [])]
+
+        c.execute("""
+            SELECT a.person_id, a.class_year, a.division, a.branch, a.status, a.is_late, f.name
+            FROM attendance a
+            JOIN faces f ON f.id = a.person_id AND f.vendor_id = a.vendor_id
+            WHERE a.vendor_id = ? AND date(a.timestamp) = ?
+        """, (vendor_id, target_str))
+        att_rows = [_dict(row) for row in (c.fetchall() or [])]
+
+        c.execute("SELECT id, department, designation, custom_data FROM faces WHERE vendor_id = ?", (vendor_id,))
+        faces = [_dict(row) for row in (c.fetchall() or [])]
+    finally:
+        conn.close()
+
+    by_class = defaultdict(lambda: {"present": set(), "events": 0, "late": set()})
+    for a in att_rows:
+        cy = a.get("class_year") or "Unassigned"
+        div = a.get("division") or ""
+        key = f"{cy} {div}".strip()
+        by_class[key]["present"].add(a["person_id"])
+        by_class[key]["events"] += 1
+        if a.get("is_late"):
+            by_class[key]["late"].add(a["person_id"])
+
+    breakdown = []
+    for cls_name, data in sorted(by_class.items()):
+        breakdown.append({
+            "class_group": cls_name,
+            "present_students": len(data["present"]),
+            "late_students": len(data["late"]),
+            "attendance_events": data["events"],
+        })
+
+    return {
+        "date": target_str,
+        "configured_classes_count": len(class_rows),
+        "total_registered_students": len(faces),
+        "total_present_today": len({a["person_id"] for a in att_rows}),
+        "class_breakdown": breakdown,
+        "source_path": "/classes",
+    }
+
+
+def get_present_people(vendor_id, attendance_date=None, department=None, name=None, limit=25):
     """List registered people with at least one attendance event on a day."""
-    requested_date = attendance_date or date.today().isoformat()
-    day, _ = _period(requested_date, requested_date)
+    day = _parse_date(attendance_date, default=date.today())
     row_limit = _limit(limit)
     conn = _db()
     c = conn.cursor()
@@ -223,6 +755,9 @@ def get_present_people(vendor_id, attendance_date=None, department=None, limit=2
         if department:
             query += " AND f.department = ?"
             params.append(str(department))
+        if name:
+            query += " AND LOWER(f.name) LIKE LOWER(?)"
+            params.append(f"%{str(name).strip()}%")
         query += " ORDER BY f.name"
         c.execute(query, params)
         rows = [_dict(row) for row in (c.fetchall() or [])]
@@ -240,10 +775,9 @@ def get_present_people(vendor_id, attendance_date=None, department=None, limit=2
     }
 
 
-def get_absent_people(vendor_id, attendance_date=None, department=None, limit=25):
+def get_absent_people(vendor_id, attendance_date=None, department=None, name=None, limit=25):
     """List registered people with no attendance event on the requested day."""
-    requested_date = attendance_date or date.today().isoformat()
-    day, _ = _period(requested_date, requested_date)
+    day = _parse_date(attendance_date, default=date.today())
     row_limit = _limit(limit)
     conn = _db()
     c = conn.cursor()
@@ -262,6 +796,9 @@ def get_absent_people(vendor_id, attendance_date=None, department=None, limit=25
         if department:
             query += " AND f.department = ?"
             params.append(str(department))
+        if name:
+            query += " AND LOWER(f.name) LIKE LOWER(?)"
+            params.append(f"%{str(name).strip()}%")
         query += " ORDER BY f.name"
         c.execute(query, params)
         rows = [_dict(row) for row in (c.fetchall() or [])]
@@ -705,13 +1242,13 @@ def get_shift_configuration(vendor_id):
     }
 
 
-def get_leave_summary(vendor_id, start_date, end_date, status=None, limit=20):
-    start, end = _period(start_date, end_date)
+def get_leave_summary(vendor_id, start_date=None, end_date=None, status=None, limit=20):
+    start, end = _safe_period(start_date, end_date, default_days=30)
     conn = _db()
     c = conn.cursor()
     try:
         query = """
-            SELECT lr.id, f.name, lr.leave_type, lr.start_date, lr.end_date, lr.final_status, lr.created_at
+            SELECT lr.*, f.name, f.display_id
             FROM leave_requests lr LEFT JOIN faces f ON f.id = lr.student_id AND f.vendor_id = lr.vendor_id
             WHERE lr.vendor_id = ? AND lr.start_date <= ? AND lr.end_date >= ?
         """
@@ -729,9 +1266,19 @@ def get_leave_summary(vendor_id, start_date, end_date, status=None, limit=20):
         by_status[row.get("final_status") or "unknown"] += 1
         by_type[row.get("leave_type") or "Unspecified"] += 1
     records = [{
-        "name": row.get("name"), "leave_type": row.get("leave_type"),
-        "start_date": str(row.get("start_date")), "end_date": str(row.get("end_date")),
+        "id": row.get("id"),
+        "name": row.get("name"),
+        "display_id": row.get("display_id"),
+        "leave_type": row.get("leave_type"),
+        "reason": row.get("reason"),
+        "start_date": str(row.get("start_date")),
+        "end_date": str(row.get("end_date")),
+        "start_time": row.get("start_time"),
+        "end_time": row.get("end_time"),
         "status": row.get("final_status"),
+        "parent_status": row.get("parent_status"),
+        "rector_status": row.get("rector_status"),
+        "hod_status": row.get("hod_status"),
     } for row in rows[:_limit(limit)]]
     return {
         "period": {"start": start.isoformat(), "end": end.isoformat()}, "total_requests": len(rows),
@@ -823,6 +1370,12 @@ def get_parent_access_summary(vendor_id):
 
 
 TOOL_REGISTRY = {
+    "get_company_profile": get_company_profile,
+    "get_today_attendance_summary": get_today_attendance_summary,
+    "get_employee_attendance": get_employee_attendance,
+    "get_live_punches": get_live_punches,
+    "get_employee_details": get_employee_details,
+    "get_class_attendance_summary": get_class_attendance_summary,
     "get_attendance_summary": get_attendance_summary,
     "get_present_people": get_present_people,
     "get_absent_people": get_absent_people,
@@ -849,21 +1402,27 @@ def _date_properties(*names):
 
 
 TOOL_SCHEMAS = [
-    {"type": "function", "function": {"name": "get_attendance_summary", "description": "Summarize attendance, presence, late days, and attendance rate for a period.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "department": {"type": "string"}}, "required": ["start_date", "end_date"]}}},
-    {"type": "function", "function": {"name": "get_present_people", "description": "List the registered people who have an attendance event on a date. Use this for questions asking who is present, which employees are present, or for the names of people present today/on a specific day. Never use the absent-people tool for those questions. The date is optional and defaults to today.", "parameters": {"type": "object", "properties": {"attendance_date": {"type": "string", "description": "Date in YYYY-MM-DD format; omit for today"}, "department": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}}}},
-    {"type": "function", "function": {"name": "get_absent_people", "description": "List the registered people who have no attendance event on a date. Use this for questions asking who is absent or missing today/on a specific day. The date is optional and defaults to today.", "parameters": {"type": "object", "properties": {"attendance_date": {"type": "string", "description": "Date in YYYY-MM-DD format; omit for today"}, "department": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}}}},
+    {"type": "function", "function": {"name": "get_company_profile", "description": "Look up the authenticated company/organization profile, business vertical (e.g. School, Hostel, Factory, Corporate, Kiosk), total staff/students count, configured departments/classes, standard working hours, and active devices. Use this whenever the user asks about the company name, who they are, their organization details, or general headcount.", "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {"name": "get_today_attendance_summary", "description": "Real-time comprehensive attendance dashboard for today (or a specific date). Returns total registered personnel, present count, absent count, late count, on-leave count, attendance percentage, department/class breakdown, and recent check-in arrivals with timestamps. Always use this first when asked for today's attendance summary, counts, or how many people are in today.", "parameters": {"type": "object", "properties": {"attendance_date": {"type": "string", "description": "Date in YYYY-MM-DD format or 'today'/'yesterday'; omit for today"}, "department": {"type": "string", "description": "Optional department name"}, "class_year": {"type": "string", "description": "Optional class or academic year for schools/colleges"}, "division": {"type": "string", "description": "Optional division/section"}}}}},
+    {"type": "function", "function": {"name": "get_employee_attendance", "description": "Look up the entry/exit punch timeline, working hours, and late marks for an individual employee, student, or resident by name or ID. Use this whenever the user asks about a specific person's punch times (e.g., 'What time did Rahul punch in today?', 'Show attendance of Priya for last week', 'Was Amit late?').", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Name, Employee ID, Display ID, or Student/Roll Number of the person"}, "start_date": {"type": "string", "description": "Start date in YYYY-MM-DD format; defaults to 30 days ago"}, "end_date": {"type": "string", "description": "End date in YYYY-MM-DD format; defaults to today"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "required": ["query"]}}},
+    {"type": "function", "function": {"name": "get_live_punches", "description": "Real-time stream of the latest punch events across the organization sorted newest first. Shows who punched, timestamp, punch type (IN/OUT), department, and device. Use this for questions like 'Who just punched in?', 'Show recent attendance events', or 'Live punches'.", "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Number of recent punches to retrieve (default 20)"}, "department": {"type": "string"}, "attendance_date": {"type": "string", "description": "Date in YYYY-MM-DD format; omit for today"}}}}},
+    {"type": "function", "function": {"name": "get_employee_details", "description": "Search the directory for an individual (employee, student, or resident) by name or ID. Returns their profile details, shift, wage setup, and their live attendance status for today (PRESENT with punch-in time, ON LEAVE with reason, or ABSENT). Use this for queries like 'Is John here today?', 'Find student EMP101', or 'Who is Priya?'.", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Name, Employee ID, Display ID, or Student/Roll Number of the person"}}, "required": ["query"]}}},
+    {"type": "function", "function": {"name": "get_class_attendance_summary", "description": "Summarize student attendance grouped by class, division, or section for academic institutions (Schools, Colleges). Returns present and late counts per class. Use this when the user asks about class-wise attendance or student batches.", "parameters": {"type": "object", "properties": {"attendance_date": {"type": "string", "description": "Date in YYYY-MM-DD format; omit for today"}, "class_year": {"type": "string", "description": "Optional class or academic year"}, "division": {"type": "string", "description": "Optional division"}, "branch": {"type": "string", "description": "Optional branch"}}}}},
+    {"type": "function", "function": {"name": "get_attendance_summary", "description": "Summarize attendance, presence, late days, and attendance rate for a period.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "department": {"type": "string"}}}}},
+    {"type": "function", "function": {"name": "get_present_people", "description": "List the registered people who have an attendance event on a date. Use this for questions asking who is present, which employees are present, or for the names of people present today/on a specific day. Can filter by department or search by name. The date is optional and defaults to today.", "parameters": {"type": "object", "properties": {"attendance_date": {"type": "string", "description": "Date in YYYY-MM-DD format; omit for today"}, "department": {"type": "string"}, "name": {"type": "string", "description": "Optional name filter to search for a specific person"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}}}},
+    {"type": "function", "function": {"name": "get_absent_people", "description": "List the registered people who have no attendance event on a date. Use this for questions asking who is absent or missing today/on a specific day. Can filter by department or search by name. The date is optional and defaults to today.", "parameters": {"type": "object", "properties": {"attendance_date": {"type": "string", "description": "Date in YYYY-MM-DD format; omit for today"}, "department": {"type": "string"}, "name": {"type": "string", "description": "Optional name filter to search for a specific person"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}}}},
     {"type": "function", "function": {"name": "get_payroll_summary", "description": "Calculate total payable hours and estimated wages for a period.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "department": {"type": "string"}}, "required": ["start_date", "end_date"]}}},
     {"type": "function", "function": {"name": "get_person_payroll", "description": "Look up gross earnings, owner-approved advance deductions, net payable, and payable hours for a named individual. Use this whenever a user asks about one person's wage, salary, payroll, current amount to pay, or hours. Dates are optional and default to the current month through today.", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "Full or partial person name"}, **_date_properties("start_date", "end_date")}, "required": ["name"]}}},
     {"type": "function", "function": {"name": "get_person_advances", "description": "List advance payments taken by a named person and total them. Use this for questions about an individual's advances; do not use the payroll estimate tool. Optionally filter by deduction month.", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "Full or partial person name"}, "deduction_month": {"type": "string", "description": "Optional month in YYYY-MM format"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}, "required": ["name"]}}},
     {"type": "function", "function": {"name": "get_advance_approval_summary", "description": "Count, total, or list employee advance requests in the owner approval queue. Use this for pending, awaiting approval, approved, rejected, remaining, or vendor-wide advance questions. Defaults to pending requests.", "parameters": {"type": "object", "properties": {"status": {"type": "string", "enum": ["pending", "approved", "rejected", "deducted", "all"], "description": "Approval status; omit to show pending"}, "deduction_month": {"type": "string", "description": "Optional payroll deduction month in YYYY-MM format"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}}}},
     {"type": "function", "function": {"name": "compare_payroll_periods", "description": "Compare estimated wages between two date periods.", "parameters": {"type": "object", "properties": {**_date_properties("current_start", "current_end", "previous_start", "previous_end"), "department": {"type": "string"}}, "required": ["current_start", "current_end", "previous_start", "previous_end"]}}},
-    {"type": "function", "function": {"name": "get_employee_hours_ranking", "description": "Rank employees by payable hours in a period.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "department": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}, "order": {"type": "string", "enum": ["highest", "lowest"]}}, "required": ["start_date", "end_date"]}}},
+    {"type": "function", "function": {"name": "get_employee_hours_ranking", "description": "Rank employees by payable hours in a period.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "department": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25, "order": {"type": "string", "enum": ["highest", "lowest"]}}}, "required": ["start_date", "end_date"]}}},
     {"type": "function", "function": {"name": "get_incomplete_attendance", "description": "Find attendance days ending with a check-in but no later check-out.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "department": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}, "required": ["start_date", "end_date"]}}},
     {"type": "function", "function": {"name": "get_people_summary", "description": "Count or list registered people by department, designation, or shift.", "parameters": {"type": "object", "properties": {"department": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}}}},
     {"type": "function", "function": {"name": "get_person_images", "description": "Find a named person's registered photo and recent attendance capture images. Use this for requests to find, show, or view photos/images of an individual.", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "Full or partial person name"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}, "required": ["name"]}}},
     {"type": "function", "function": {"name": "get_device_status", "description": "List registered cameras/mobile devices and summarize activity, battery, and geofence configuration.", "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 25}}}}},
     {"type": "function", "function": {"name": "get_shift_configuration", "description": "Read the published work timetable, working hours, payable activities, and overnight shifts.", "parameters": {"type": "object", "properties": {}}}},
-    {"type": "function", "function": {"name": "get_leave_summary", "description": "Summarize or list leave requests for an overlapping date period.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "status": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}, "required": ["start_date", "end_date"]}}},
+    {"type": "function", "function": {"name": "get_leave_summary", "description": "Summarize or list leave requests and gate passes with multi-stage approval statuses (parent, rector/warden, HOD, final).", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "status": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}}}},
     {"type": "function", "function": {"name": "get_class_activity_summary", "description": "Summarize configured classes, lectures, subjects, teachers, and lecture attendance for a period.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "limit": {"type": "integer", "minimum": 1, "maximum": 25}}, "required": ["start_date", "end_date"]}}},
     {"type": "function", "function": {"name": "get_automated_report_status", "description": "Read the automated email report schedule and recent delivery statuses.", "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 25}}}}},
     {"type": "function", "function": {"name": "get_parent_access_summary", "description": "Summarize parent accounts, student links, and pending face-reset requests.", "parameters": {"type": "object", "properties": {}}}},
@@ -871,6 +1430,12 @@ TOOL_SCHEMAS = [
 
 
 TOOL_FEATURES = {
+    "get_company_profile": {"reports", "report_detailed", "payroll"},
+    "get_today_attendance_summary": {"reports", "report_detailed", "live_attendance", "enable_attendance", "checkin_checkout"},
+    "get_employee_attendance": {"reports", "report_detailed", "live_attendance", "enable_attendance", "checkin_checkout"},
+    "get_live_punches": {"live_attendance", "cameras", "mobile_app"},
+    "get_employee_details": {"reports", "report_detailed", "payroll", "shifts"},
+    "get_class_attendance_summary": {"classes", "bulk_image_attendance", "lecture_wise_reports"},
     "get_attendance_summary": {"reports", "report_detailed", "live_attendance", "enable_attendance", "checkin_checkout"},
     "get_present_people": {"reports", "report_detailed", "live_attendance", "enable_attendance", "checkin_checkout"},
     "get_absent_people": {"reports", "report_detailed", "live_attendance", "enable_attendance", "checkin_checkout"},

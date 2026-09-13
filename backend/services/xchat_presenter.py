@@ -70,7 +70,122 @@ def build_presentation(question, tool_results):
         period = result.get("period") or {}
         period_label = " to ".join(filter(None, [period.get("start"), period.get("end")]))
 
-        if name == "get_attendance_summary":
+        if name == "get_company_profile":
+            presentation["metrics"].extend([
+                {"label": "Organization", "value": result.get("company_name", ""), "format": "text"},
+                {"label": "Business Model", "value": str(result.get("vertical", "")).capitalize(), "format": "text"},
+                {"label": "Registered Personnel", "value": result.get("total_registered_people", 0), "format": "number"},
+                {"label": "Standard Hours", "value": result.get("standard_working_hours", 8.0), "format": "hours"},
+            ])
+
+        elif name == "get_today_attendance_summary":
+            presentation["metrics"].extend([
+                {"label": "Total Registered", "value": result.get("total_registered", 0), "format": "number"},
+                {"label": "Present Today", "value": result.get("present_count", 0), "format": "number"},
+                {"label": "Absent Today", "value": result.get("absent_count", 0), "format": "number"},
+                {"label": "Late Arrivals", "value": result.get("late_count", 0), "format": "number"},
+                {"label": "On Leave", "value": result.get("on_leave_count", 0), "format": "number"},
+                {"label": "Attendance Rate", "value": result.get("attendance_rate_percent", 0), "format": "percent"},
+            ])
+            recent = result.get("recent_arrivals") or []
+            if recent:
+                presentation["tables"].append(_table(
+                    "today-recent-arrivals", f"Recent arrivals · {result.get('date') or ''}",
+                    [
+                        {"key": "time", "label": "Time", "format": "datetime"},
+                        {"key": "name", "label": "Name"},
+                        {"key": "display_id", "label": "ID"},
+                        {"key": "department", "label": "Department"},
+                        {"key": "status", "label": "Status"},
+                    ], recent, "recent-arrivals.csv",
+                ))
+            dept_breakdown = result.get("department_summary") or []
+            if dept_breakdown and (wants_list or wants_chart):
+                presentation["tables"].append(_table(
+                    "today-dept-breakdown", f"Attendance by department · {result.get('date') or ''}",
+                    [
+                        {"key": "department", "label": "Department"},
+                        {"key": "total", "label": "Total", "format": "number"},
+                        {"key": "present", "label": "Present", "format": "number"},
+                        {"key": "absent", "label": "Absent", "format": "number"},
+                        {"key": "late", "label": "Late", "format": "number"},
+                        {"key": "rate_percent", "label": "Rate", "format": "percent"},
+                    ], dept_breakdown, "department-attendance.csv",
+                ))
+            if dept_breakdown and wants_chart:
+                presentation["charts"].append(_chart(
+                    "today-dept-chart", requested_chart_type, f"Department attendance · {result.get('date') or ''}", "Department",
+                    [
+                        {"key": "present", "label": "Present", "color": "#22d3ee"},
+                        {"key": "absent", "label": "Absent", "color": "#fb7185"},
+                    ], [{"label": r.get("department"), **r} for r in dept_breakdown], "department-attendance.png",
+                ))
+
+        elif name == "get_employee_attendance":
+            person = result.get("person") or {}
+            presentation["metrics"].extend([
+                {"label": "Person", "value": person.get("name", result.get("query", "")), "format": "text"},
+                {"label": "Present Days", "value": result.get("total_present_days", 0), "format": "number"},
+                {"label": "Late Days", "value": result.get("late_days_count", 0), "format": "number"},
+                {"label": "Total Punches", "value": result.get("total_punches", 0), "format": "number"},
+            ])
+            timeline = result.get("attendance_timeline") or []
+            if timeline:
+                presentation["tables"].append(_table(
+                    "employee-attendance-timeline", f"Attendance history · {person.get('name', '')}",
+                    [
+                        {"key": "date", "label": "Date", "format": "date"},
+                        {"key": "first_in", "label": "First In", "format": "datetime"},
+                        {"key": "last_out", "label": "Last Out", "format": "datetime"},
+                        {"key": "duration_hours", "label": "Hours", "format": "hours"},
+                        {"key": "punch_count", "label": "Punches", "format": "number"},
+                    ], timeline, "employee-attendance.csv",
+                ))
+
+        elif name == "get_live_punches":
+            presentation["metrics"].append({"label": "Recent Punches", "value": result.get("count", 0), "format": "number"})
+            punches = result.get("punches") or []
+            if punches:
+                presentation["tables"].append(_table(
+                    "live-punches-feed", f"Live punch stream · {result.get('date') or ''}",
+                    [
+                        {"key": "timestamp", "label": "Timestamp", "format": "datetime"},
+                        {"key": "name", "label": "Name"},
+                        {"key": "display_id", "label": "ID"},
+                        {"key": "punch_type", "label": "Punch Type"},
+                        {"key": "department", "label": "Department"},
+                        {"key": "device_id", "label": "Device"},
+                    ], punches, "live-punches.csv",
+                ))
+
+        elif name == "get_employee_details":
+            status_info = result.get("today_status") or {}
+            presentation["metrics"].extend([
+                {"label": "Person", "value": result.get("name", ""), "format": "text"},
+                {"label": "Status Today", "value": status_info.get("status", "Unknown"), "format": "text"},
+                {"label": "Department", "value": result.get("department", ""), "format": "text"},
+                {"label": "Shift", "value": result.get("shift", ""), "format": "text"},
+            ])
+
+        elif name == "get_class_attendance_summary":
+            presentation["metrics"].extend([
+                {"label": "Classes", "value": result.get("configured_classes_count", 0), "format": "number"},
+                {"label": "Total Students", "value": result.get("total_registered_students", 0), "format": "number"},
+                {"label": "Present Students", "value": result.get("total_present_today", 0), "format": "number"},
+            ])
+            classes_breakdown = result.get("class_breakdown") or []
+            if classes_breakdown:
+                presentation["tables"].append(_table(
+                    "class-attendance-summary", f"Class student attendance · {result.get('date') or ''}",
+                    [
+                        {"key": "class_group", "label": "Class/Division"},
+                        {"key": "present_students", "label": "Present", "format": "number"},
+                        {"key": "late_students", "label": "Late", "format": "number"},
+                        {"key": "attendance_events", "label": "Punches", "format": "number"},
+                    ], classes_breakdown, "class-attendance.csv",
+                ))
+
+        elif name == "get_attendance_summary":
             presentation["metrics"].extend([
                 {"label": "Employees", "value": result.get("employees", 0), "format": "number"},
                 {"label": "Present employee-days", "value": result.get("present_person_days", 0), "format": "number"},

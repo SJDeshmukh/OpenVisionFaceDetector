@@ -84,7 +84,7 @@ def xchat_db(tmp_path, monkeypatch):
 
 
 def test_tool_schemas_never_expose_tenant_identity():
-    assert len(xchat_tools.TOOL_SCHEMAS) == 18
+    assert len(xchat_tools.TOOL_SCHEMAS) == 24
     for tool in xchat_tools.TOOL_SCHEMAS:
         properties = tool["function"]["parameters"]["properties"]
         assert "vendor_id" not in properties
