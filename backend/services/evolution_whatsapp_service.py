@@ -9,7 +9,7 @@ from datetime import datetime
 logger = logging.getLogger("evolution_whatsapp")
 
 EVOLUTION_API_URL = os.environ.get("EVOLUTION_API_URL", "http://localhost:8080").rstrip("/")
-EVOLUTION_API_KEY = os.environ.get("EVOLUTION_API_KEY", "YOUR_SECURE_GLOBAL_API_KEY_2026")
+EVOLUTION_API_KEY = os.environ.get("EVOLUTION_API_KEY", "tapinx_evolution_secret_key")
 
 
 def _headers():
