@@ -122,7 +122,7 @@ def send_test_message():
         "🧪 *TapInX WhatsApp Gateway — Test Message*\n\n"
         "Congratulations! Your WhatsApp instance is successfully connected and verified.\n"
         "Automated operational alerts (attendance punches, leave signoffs, advance approvals) will be delivered seamlessly.\n\n"
-        "_Sent from TapInX Evolution API Gateway._"
+        "_Sent from TapInX WhatsApp Gateway._"
     )
     result = send_whatsapp_text(vendor_id, target_phone, msg)
     return jsonify({"success": True, "result": result})

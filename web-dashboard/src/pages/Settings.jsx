@@ -453,7 +453,7 @@ const Settings = () => {
       )}
 
       {['vendor_admin', 'admin', 'owner'].includes(user?.role) && hasWhatsappFeature && (
-        <Section title="WhatsApp Gateway (Evolution API)" icon={MessageSquare}>
+        <Section title="WhatsApp Gateway" icon={MessageSquare}>
           <div className="space-y-6">
             {/* Status & Connection Banner */}
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center p-4 rounded-xl border border-slate-200 bg-slate-50 gap-4">
@@ -623,7 +623,7 @@ const Settings = () => {
                     </button>
                   </div>
                 </div>
-                <span className="text-[11px] text-slate-400">Powered by Evolution API Gateway</span>
+                <span className="text-[11px] text-slate-400">TapInX Automated Alerts</span>
               </div>
             )}
           </div>
@@ -880,7 +880,7 @@ const Settings = () => {
               {whatsappLoading ? (
                 <div className="flex flex-col items-center gap-2 text-slate-400">
                   <RefreshCw className="animate-spin text-emerald-600" size={32} />
-                  <span className="text-xs font-medium">Requesting QR Code from Evolution API...</span>
+                  <span className="text-xs font-medium">Generating WhatsApp QR Code...</span>
                 </div>
               ) : qrCodeData ? (
                 <div className="flex flex-col items-center gap-2">
@@ -896,7 +896,7 @@ const Settings = () => {
                 </div>
               ) : (
                 <div className="text-xs text-red-500">
-                  Unable to load QR Code. Please ensure Evolution API container is running on your server.
+                  Unable to generate QR Code. Please check server gateway connection.
                 </div>
               )}
             </div>

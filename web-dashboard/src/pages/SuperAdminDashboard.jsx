@@ -1944,7 +1944,7 @@ const SuperAdminDashboard = () => {
                         <div className="text-xs text-slate-400">{vendor.phone}</div>
                         {vendor.features?.includes('whatsapp_alerts') ? (
                           vendor.whatsapp_status === 'connected' ? (
-                            <div className="mt-1.5 inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200" title="Evolution WhatsApp Connected">
+                            <div className="mt-1.5 inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200" title="WhatsApp Gateway Connected">
                               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
                               WA: +{vendor.whatsapp_phone || vendor.phone}
                             </div>
