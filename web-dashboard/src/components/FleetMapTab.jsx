@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { Shield, Battery, Wifi, WifiOff, MapPin, AlertTriangle, RefreshCw, Search, Filter, Navigation } from 'lucide-react';
 import { API_URL } from '../config';
@@ -44,7 +44,7 @@ const FleetMapTab = ({ userToken }) => {
   const mapInstanceRef = useRef(null);
   const markersRef = useRef({});
   const circlesRef = useRef({});
-  const socket = useSocket();
+  const { socket } = useSocket() || {};
 
   const fetchTelemetry = async () => {
     setLoading(true);
@@ -66,7 +66,7 @@ const FleetMapTab = ({ userToken }) => {
 
   // Real-time socket updates
   useEffect(() => {
-    if (!socket) return;
+    if (!socket || typeof socket.on !== 'function') return;
     const handleHealthUpdate = (data) => {
       setDevices(prev => prev.map(d => {
         if (d.device_id === data.device_id) {
@@ -87,7 +87,9 @@ const FleetMapTab = ({ userToken }) => {
 
     socket.on('device_health_update', handleHealthUpdate);
     return () => {
-      socket.off('device_health_update', handleHealthUpdate);
+      if (typeof socket.off === 'function') {
+        socket.off('device_health_update', handleHealthUpdate);
+      }
     };
   }, [socket]);
 

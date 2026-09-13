@@ -103,7 +103,10 @@ export const SocketProvider = ({ children }) => {
       if (!socket) return;
       socket.emit('join_super_admin');
     };
-    return { socket, joinVendor, joinSuperAdmin };
+    const on = (event, handler) => socket?.on?.(event, handler);
+    const off = (event, handler) => socket?.off?.(event, handler);
+    const emit = (event, ...args) => socket?.emit?.(event, ...args);
+    return { socket, joinVendor, joinSuperAdmin, on, off, emit };
   }, [socket]);
 
   return <SocketContext.Provider value={value}>
