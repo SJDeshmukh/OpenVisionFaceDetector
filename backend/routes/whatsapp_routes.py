@@ -1,7 +1,7 @@
 import logging
 from flask import Blueprint, jsonify, request, g
 from utils import get_db_connection
-from services.auth_service import extract_token, verify_token
+from services.auth_service import authenticate_vendor_access
 from services.evolution_whatsapp_service import (
     get_or_create_settings,
     update_settings,
@@ -18,25 +18,11 @@ whatsapp_bp = Blueprint("whatsapp_bp", __name__)
 
 
 def _authenticate_whatsapp_access():
-    """Validates user token and extracts vendor_id and role."""
-    auth_header = request.headers.get("Authorization")
-    token = extract_token(auth_header)
-    user_data = verify_token(token)
-    if not user_data:
-        return None, None, (jsonify({"error": "Unauthorized"}), 401)
-    
-    role = user_data.get("role")
-    vendor_id = user_data.get("vendor_id")
-
-    # If super_admin, allow target vendor_id from query parameter
-    if role == "super_admin":
-        target = request.args.get("vendor_id") or (request.json or {}).get("vendor_id")
-        if target:
-            vendor_id = int(target)
-
-    if not vendor_id and role != "super_admin":
-        return None, None, (jsonify({"error": "Vendor context required"}), 400)
-
+    """Validates user access via standard authenticate_vendor_access() and resolves vendor_id."""
+    vendor_id, err = authenticate_vendor_access()
+    if err:
+        return None, None, err
+    role = getattr(g, "user_role", None)
     return vendor_id, role, None
 
 
@@ -137,10 +123,10 @@ def send_test_message():
 @whatsapp_bp.route("/api/admin/whatsapp/overview", methods=["GET"])
 def get_superadmin_whatsapp_overview():
     """SuperAdmin overview of all companies and their WhatsApp connection status."""
-    auth_header = request.headers.get("Authorization")
-    token = extract_token(auth_header)
-    user_data = verify_token(token)
-    if not user_data or user_data.get("role") != "super_admin":
+    vendor_id, err = authenticate_vendor_access()
+    if err:
+        return err
+    if getattr(g, "user_role", None) != "super_admin":
         return jsonify({"error": "Super Admin access required"}), 403
 
     conn = get_db_connection()

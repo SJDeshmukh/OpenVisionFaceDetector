@@ -64,6 +64,8 @@ const Settings = () => {
   const [sendingTest, setSendingTest] = useState(false);
   const [savingWhatsapp, setSavingWhatsapp] = useState(false);
 
+  const getAuthHeaders = () => (user?.token ? { Authorization: `Bearer ${user.token}` } : {});
+
   useEffect(() => {
     fetchSettings();
     if (['vendor_admin', 'admin', 'owner'].includes(user?.role)) {
@@ -76,7 +78,7 @@ const Settings = () => {
   const fetchWhatsappSettings = async () => {
     try {
       const res = await axios.get(`${API_URL}/whatsapp/settings`, {
-        headers: { Authorization: `Bearer ${user?.token}` }
+        headers: getAuthHeaders()
       });
       if (res.data?.settings) {
         setWhatsappSettings(res.data.settings);
@@ -95,16 +97,16 @@ const Settings = () => {
     setQrCodeData(null);
     try {
       const res = await axios.get(`${API_URL}/whatsapp/qr`, {
-        headers: { Authorization: `Bearer ${user?.token}` }
+        headers: getAuthHeaders()
       });
       if (res.data?.qr_code) {
         setQrCodeData(res.data.qr_code);
         setQrPolling(true);
       } else {
-        alert(res.data?.error || "Failed to generate WhatsApp QR code. Make sure Evolution API is running.");
+        alert(res.data?.error || "Failed to generate WhatsApp QR code. Make sure WhatsApp service is running.");
       }
     } catch (err) {
-      alert("Error contacting Evolution API: " + (err.response?.data?.error || err.message));
+      alert("Error contacting WhatsApp service: " + (err.response?.data?.error || err.message));
     } finally {
       setWhatsappLoading(false);
     }
@@ -116,7 +118,7 @@ const Settings = () => {
       interval = setInterval(async () => {
         try {
           const res = await axios.post(`${API_URL}/whatsapp/sync`, {}, {
-            headers: { Authorization: `Bearer ${user?.token}` }
+            headers: getAuthHeaders()
           });
           if (res.data?.settings?.status === 'connected') {
             setWhatsappSettings(res.data.settings);
@@ -141,7 +143,7 @@ const Settings = () => {
     if (!window.confirm("Are you sure you want to disconnect WhatsApp? Automated alerts will stop.")) return;
     try {
       const res = await axios.post(`${API_URL}/whatsapp/disconnect`, {}, {
-        headers: { Authorization: `Bearer ${user?.token}` }
+        headers: getAuthHeaders()
       });
       if (res.data?.settings) {
         setWhatsappSettings(res.data.settings);
@@ -157,7 +159,7 @@ const Settings = () => {
     try {
       const payload = { ...whatsappSettings, ...updatedFields };
       const res = await axios.post(`${API_URL}/whatsapp/settings`, payload, {
-        headers: { Authorization: `Bearer ${user?.token}` }
+        headers: getAuthHeaders()
       });
       if (res.data?.settings) {
         setWhatsappSettings(res.data.settings);
@@ -177,7 +179,7 @@ const Settings = () => {
     setSendingTest(true);
     try {
       const res = await axios.post(`${API_URL}/whatsapp/send-test`, { phone: testPhone }, {
-        headers: { Authorization: `Bearer ${user?.token}` }
+        headers: getAuthHeaders()
       });
       if (res.data?.success) {
         alert("Test message sent successfully to " + testPhone + "!");
@@ -195,7 +197,7 @@ const Settings = () => {
     setRefreshingBilling(true);
     try {
       const requestConfig = {
-        headers: { Authorization: `Bearer ${user?.token}` },
+        headers: getAuthHeaders(),
         params: { _ts: Date.now() }
       };
       const [res, invoiceRes] = await Promise.all([
@@ -250,7 +252,7 @@ const Settings = () => {
         voice_greeting: voiceGreeting,
       };
       await axios.post(`${API_URL}/settings`, payload, {
-        headers: { Authorization: `Bearer ${user?.token}` }
+        headers: getAuthHeaders()
       });
       alert("Settings saved successfully!");
     } catch (error) {
@@ -263,7 +265,7 @@ const Settings = () => {
 
   const fetchSystemUsers = async () => {
     try {
-      const res = await axios.get(`${API_URL}/users`);
+      const res = await axios.get(`${API_URL}/users`, { headers: getAuthHeaders() });
       setSystemUsers(res.data.users);
     } catch (error) {
       console.error("Error fetching system users:", error);
@@ -279,12 +281,12 @@ const Settings = () => {
         payload.role = userForm.role;
 
         await axios.put(`${API_URL}/users/${editingUser.username}`, payload, {
-          headers: { Authorization: `Bearer ${user?.token}` }
+          headers: getAuthHeaders()
         });
       } else {
         // Create new user
         await axios.post(`${API_URL}/users`, userForm, {
-          headers: { Authorization: `Bearer ${user?.token}` }
+          headers: getAuthHeaders()
         });
       }
       setShowUserModal(false);
@@ -300,7 +302,7 @@ const Settings = () => {
     if (!confirm(`Are you sure you want to delete user ${username}?`)) return;
     try {
       await axios.delete(`${API_URL}/users/${username}`, {
-        headers: { Authorization: `Bearer ${user?.token}` }
+        headers: getAuthHeaders()
       });
       fetchSystemUsers();
     } catch (error) {
