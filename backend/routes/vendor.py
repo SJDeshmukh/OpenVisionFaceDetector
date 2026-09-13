@@ -1190,6 +1190,18 @@ def get_settings():
     c = conn.cursor()
     c.execute("SELECT key, value FROM system_settings")
     rows = c.fetchall()
+
+    v_thresh = None
+    v_cool = None
+    if vendor_id:
+        try:
+            c.execute("SELECT threshold, cooldown FROM vendors WHERE id = ?", (vendor_id,))
+            v_row = c.fetchone()
+            if v_row:
+                v_thresh = v_row['threshold'] if hasattr(v_row, '__getitem__') else v_row[0]
+                v_cool = v_row['cooldown'] if hasattr(v_row, '__getitem__') else v_row[1]
+        except Exception:
+            pass
     conn.close()
     
     all_settings = {row['key']: row['value'] for row in rows}
@@ -1201,6 +1213,19 @@ def get_settings():
         vkey = f"{k}_vendor_{vendor_id}"
         if vkey in all_settings and all_settings[vkey] is not None and str(all_settings[vkey]).strip() != "":
             effective[k] = all_settings[vkey]
+        elif k in all_settings and all_settings[k] is not None and str(all_settings[k]).strip() != "":
+            effective[k] = all_settings[k]
+
+    if v_thresh is not None:
+        effective['threshold'] = str(v_thresh)
+    elif 'threshold' not in effective:
+        effective['threshold'] = "0.60"
+
+    if v_cool is not None:
+        effective['cooldown'] = str(v_cool)
+    elif 'cooldown' not in effective:
+        effective['cooldown'] = "30"
+
     return jsonify(effective)
 
 
@@ -1213,12 +1238,17 @@ def update_settings():
         return error
 
     allowed_keys = {'threshold', 'cooldown', 'work_start_time', 'late_threshold', 'late_grace_period', 'auto_checkout', 'voice_greeting', 'admin_alerts'}
-    data = request.json or {}
+    data = dict(request.json or {})
     role = g.user_role
     if role not in {'super_admin', 'vendor_admin', 'admin', 'owner'}:
         return jsonify({"error": "Access Denied"}), 403
     if role != 'super_admin' and not vendor_id:
         return jsonify({"error": "Vendor Context Required"}), 400
+
+    # Only super_admin is allowed to change engine threshold and cooldown
+    if role != 'super_admin':
+        data.pop('threshold', None)
+        data.pop('cooldown', None)
 
     try:
         if 'threshold' in data and not 0.4 <= float(data['threshold']) <= 0.95:
@@ -1234,6 +1264,18 @@ def update_settings():
     conn = get_db_connection()
     c = conn.cursor()
     try:
+        if role == 'super_admin' and vendor_id:
+            if 'threshold' in data:
+                try:
+                    c.execute("UPDATE vendors SET threshold = ? WHERE id = ?", (float(data['threshold']), vendor_id))
+                except Exception:
+                    pass
+            if 'cooldown' in data:
+                try:
+                    c.execute("UPDATE vendors SET cooldown = ? WHERE id = ?", (int(data['cooldown']), vendor_id))
+                except Exception:
+                    pass
+
         for key, value in data.items():
             if key not in allowed_keys:
                 continue

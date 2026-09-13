@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { Plus, Check, X, Shield, User, Users, Lock, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight, Search, Filter, ArrowLeft, ArrowRight, Eye, Settings, Trash2, Database, Download, RefreshCw, Layers, Upload, Activity, Battery, WifiOff, UploadCloud, Box, Mail, Send, Clock, AlertCircle, MapPin, MessageSquare } from 'lucide-react';
+import { Plus, Check, X, Shield, User, Users, Lock, DollarSign, Calendar, Pencil, ToggleLeft, ToggleRight, Search, Filter, ArrowLeft, ArrowRight, Eye, Settings, Trash2, Database, Download, RefreshCw, Layers, Upload, Activity, Battery, WifiOff, UploadCloud, Box, Mail, Send, Clock, AlertCircle, MapPin, MessageSquare, Camera } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { API_URL, FRONTEND_BUNDLES, BASE_URL } from '../config';
 import { useSocket } from '../context/SocketContext';
@@ -172,6 +172,8 @@ const SuperAdminDashboard = () => {
     vertical: '',
     attendance_type: 'total_time',
     retention_days: '90', // Default to 90 days
+    threshold: 0.60,
+    cooldown: 30,
     kiosk_pin: '8888',
     owners: []
   });
@@ -1106,6 +1108,8 @@ const SuperAdminDashboard = () => {
           vertical: newVendor.vertical,
           attendance_type: newVendor.attendance_type,
           retention_days: normalizePositiveInt(newVendor.retention_days, 90),
+          threshold: newVendor.threshold != null ? parseFloat(newVendor.threshold) : 0.60,
+          cooldown: newVendor.cooldown != null ? parseInt(newVendor.cooldown, 10) : 30,
           kiosk_pin: newVendor.kiosk_pin || '8888',
           owners: newVendor.owners || []
         }, {
@@ -1249,6 +1253,8 @@ const SuperAdminDashboard = () => {
         backend_service_id: 'default_api',
         attendance_type: 'total_time',
         retention_days: '90',
+        threshold: 0.60,
+        cooldown: 30,
         kiosk_pin: '8888',
         owners: []
       });
@@ -1303,6 +1309,8 @@ const SuperAdminDashboard = () => {
         vertical: vendor.vertical || '',
         attendance_type: vendor.attendance_type || 'total_time',
         retention_days: String(vendor.retention_days || 90),
+        threshold: vendor.threshold != null ? parseFloat(vendor.threshold) : 0.60,
+        cooldown: vendor.cooldown != null ? parseInt(vendor.cooldown, 10) : 30,
         kiosk_pin: vendor.kiosk_pin || '8888',
         owners: vendor.owners || []
       });
@@ -1337,6 +1345,8 @@ const SuperAdminDashboard = () => {
         vertical: vendor.vertical || '',
         attendance_type: vendor.attendance_type || 'total_time',
         retention_days: String(vendor.retention_days || 90),
+        threshold: vendor.threshold != null ? parseFloat(vendor.threshold) : 0.60,
+        cooldown: vendor.cooldown != null ? parseInt(vendor.cooldown, 10) : 30,
         kiosk_pin: vendor.kiosk_pin || '8888',
         owners: vendor.owners || []
       });
@@ -1766,7 +1776,11 @@ const SuperAdminDashboard = () => {
                   frontend_bundle_id: 'default_attendance',
                   backend_service_id: 'default_api',
                   attendance_type: 'total_time',
-                  retention_days: '90'
+                  retention_days: '90',
+                  threshold: 0.60,
+                  cooldown: 30,
+                  kiosk_pin: '8888',
+                  owners: []
                 });
                 setRegistrationConfig([]);
                 setReportSchedule({ ...DEFAULT_REPORT_SCHEDULE });
@@ -2036,6 +2050,16 @@ const SuperAdminDashboard = () => {
                           <div className="flex items-center gap-2 mt-1 cursor-pointer hover:opacity-80" onClick={() => handleToggleWebLogin(vendor)} title="Toggle Web Dashboard Access">
                             <span className="text-xs text-slate-500">Web Access:</span>
                             {vendor.web_login_enabled !== 0 ? <ToggleRight className="text-green-500" size={20} /> : <ToggleLeft className="text-slate-400" size={20} />}
+                          </div>
+                          <div className="flex items-center gap-1.5 mt-1 text-[11px] text-slate-500" title="Face Engine: Confidence Threshold / Duplicate Cooldown">
+                            <Camera size={12} className="text-indigo-500" />
+                            <span className="font-mono font-semibold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                              {((vendor.threshold != null ? parseFloat(vendor.threshold) : 0.60) * 100).toFixed(0)}%
+                            </span>
+                            <span className="text-slate-300">/</span>
+                            <span className="font-mono font-semibold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                              {vendor.cooldown != null ? vendor.cooldown : 30}s
+                            </span>
                           </div>
                         </div>
                       </td>
@@ -3852,6 +3876,63 @@ const SuperAdminDashboard = () => {
                 </div>
               </div>
 
+              {/* Section: Face Recognition Engine */}
+              <div className="mb-6 bg-slate-50 p-4 rounded-xl border border-slate-200">
+                <h3 className="text-sm uppercase tracking-wide text-slate-700 font-bold mb-1 flex items-center gap-2">
+                  <Camera size={16} className="text-indigo-600" /> Face Recognition Engine
+                </h3>
+                <p className="text-xs text-slate-500 mb-4">
+                  SuperAdmin-managed biometric threshold and duplicate cooldown for mobile tablet kiosks and server attendance engine.
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                  <div className="bg-white p-3.5 rounded-lg border border-slate-200 shadow-sm">
+                    <div className="flex justify-between items-center mb-2">
+                      <label className="text-xs font-bold text-slate-700">
+                        Confidence Threshold
+                      </label>
+                      <span className="text-xs font-mono text-indigo-600 font-bold bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100">
+                        {((newVendor.threshold != null ? parseFloat(newVendor.threshold) : 0.60) * 100).toFixed(0)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.4"
+                      max="0.95"
+                      step="0.05"
+                      value={newVendor.threshold != null ? newVendor.threshold : 0.60}
+                      onChange={(e) => setNewVendor({ ...newVendor, threshold: parseFloat(e.target.value) })}
+                      className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                    />
+                    <p className="text-[11px] text-slate-500 mt-2 leading-relaxed">
+                      Minimum facial match score required to recognize an individual. Higher values reduce false matches. (Default: 60%)
+                    </p>
+                  </div>
+
+                  <div className="bg-white p-3.5 rounded-lg border border-slate-200 shadow-sm">
+                    <div className="flex justify-between items-center mb-2">
+                      <label className="text-xs font-bold text-slate-700">
+                        Duplicate Cooldown
+                      </label>
+                      <span className="text-xs font-mono text-indigo-600 font-bold bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100">
+                        {newVendor.cooldown != null ? newVendor.cooldown : 30}s
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="5"
+                      max="300"
+                      step="5"
+                      value={newVendor.cooldown != null ? newVendor.cooldown : 30}
+                      onChange={(e) => setNewVendor({ ...newVendor, cooldown: parseInt(e.target.value, 10) })}
+                      className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                    />
+                    <p className="text-[11px] text-slate-500 mt-2 leading-relaxed">
+                      Cooldown interval to prevent duplicate punch records for the same person in short succession. (Default: 30s)
+                    </p>
+                  </div>
+                </div>
+              </div>
+
               {/* Section 4: Owner Access — shown for every payroll feature alias */}
               {(newVendor.features || []).some((feature) => ['wages', 'payroll', 'report_payroll'].includes(feature)) && <div className="mb-6">
                 <h3 className="text-sm uppercase tracking-wide text-slate-500 font-bold mb-3 flex items-center gap-2">
@@ -3931,7 +4012,11 @@ const SuperAdminDashboard = () => {
                       backend_service_id: 'default_api',
                       features: [],
                       attendance_type: 'total_time',
-                      retention_days: '90'
+                      retention_days: '90',
+                      threshold: 0.60,
+                      cooldown: 30,
+                      kiosk_pin: '8888',
+                      owners: []
                     });
                   }}
                   className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded"

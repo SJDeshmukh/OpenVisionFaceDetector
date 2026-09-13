@@ -973,6 +973,25 @@ def get_vendors():
         if me is not None and me < 0:
             v["max_employees"] = abs(me)
 
+        # Ensure threshold and cooldown are populated for SuperAdmin
+        if v.get("threshold") is None:
+            c.execute("SELECT value FROM system_settings WHERE key = ?", (f"threshold_vendor_{v['id']}",))
+            st = c.fetchone()
+            try: v["threshold"] = float(st[0]) if (st and st[0]) else 0.60
+            except: v["threshold"] = 0.60
+        else:
+            try: v["threshold"] = float(v["threshold"])
+            except: v["threshold"] = 0.60
+
+        if v.get("cooldown") is None:
+            c.execute("SELECT value FROM system_settings WHERE key = ?", (f"cooldown_vendor_{v['id']}",))
+            sc = c.fetchone()
+            try: v["cooldown"] = int(sc[0]) if (sc and sc[0]) else 30
+            except: v["cooldown"] = 30
+        else:
+            try: v["cooldown"] = int(v["cooldown"])
+            except: v["cooldown"] = 30
+
         # Calculate status based on subscription
         if v.get('features'):
             try:
@@ -1433,10 +1452,23 @@ def create_vendor():
                    (user_username, hash_password(user_password), vendor_id, kiosk_pin))
 
         vendor_cols = get_table_columns(conn, "vendors")
+        threshold_val = float(data.get("threshold") or 0.60)
+        cooldown_val = int(data.get("cooldown") or 30)
+        update_v_fields = ["kiosk_pin = ?"]
+        update_v_params = [kiosk_pin]
         if "kiosk_username" in vendor_cols:
-            c.execute("UPDATE vendors SET kiosk_pin = ?, kiosk_username = ? WHERE id = ?", (kiosk_pin, user_username, vendor_id))
-        else:
-            c.execute("UPDATE vendors SET kiosk_pin = ? WHERE id = ?", (kiosk_pin, vendor_id))
+            update_v_fields.append("kiosk_username = ?")
+            update_v_params.append(user_username)
+        if "threshold" in vendor_cols:
+            update_v_fields.append("threshold = ?")
+            update_v_params.append(threshold_val)
+        if "cooldown" in vendor_cols:
+            update_v_fields.append("cooldown = ?")
+            update_v_params.append(cooldown_val)
+        update_v_params.append(vendor_id)
+        c.execute(f"UPDATE vendors SET {', '.join(update_v_fields)} WHERE id = ?", tuple(update_v_params))
+        c.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)", (f"threshold_vendor_{vendor_id}", str(threshold_val)))
+        c.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)", (f"cooldown_vendor_{vendor_id}", str(cooldown_val)))
         
         # 3b. Create Owner Accounts
         owners = data.get("owners", [])
@@ -2147,6 +2179,26 @@ def update_vendor_details(vendor_id):
                 else:
                     kiosk_filter = "(is_kiosk = 1 OR person_id IS NULL)" if has_is_kiosk_col else "(person_id IS NULL)"
                     c.execute(f"UPDATE system_users SET kiosk_pin = ? WHERE vendor_id = ? AND role = 'user' AND {kiosk_filter}", (kiosk_pin, vendor_id))
+
+        if 'threshold' in data and data.get('threshold') is not None:
+            try:
+                thresh_val = round(float(data['threshold']), 2)
+                if 0.40 <= thresh_val <= 0.95:
+                    if "threshold" in vendor_cols:
+                        c.execute("UPDATE vendors SET threshold = ? WHERE id = ?", (thresh_val, vendor_id))
+                    c.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)", (f"threshold_vendor_{vendor_id}", str(thresh_val)))
+            except Exception as ex:
+                logger.warning(f"Error updating threshold for vendor {vendor_id}: {ex}")
+
+        if 'cooldown' in data and data.get('cooldown') is not None:
+            try:
+                cool_val = int(data['cooldown'])
+                if 5 <= cool_val <= 3600:
+                    if "cooldown" in vendor_cols:
+                        c.execute("UPDATE vendors SET cooldown = ? WHERE id = ?", (cool_val, vendor_id))
+                    c.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)", (f"cooldown_vendor_{vendor_id}", str(cool_val)))
+            except Exception as ex:
+                logger.warning(f"Error updating cooldown for vendor {vendor_id}: {ex}")
 
         # 4. Update Owner Accounts (Sync Logic)
         owners = data.get('owners', [])

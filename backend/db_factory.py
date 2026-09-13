@@ -595,6 +595,8 @@ def _init_pg_schema_on_conn(conn):
         ("vendors", "departments", "TEXT"),
         ("vendors", "kiosk_pin", "TEXT DEFAULT '8888'"),
         ("vendors", "kiosk_username", "TEXT"),
+        ("vendors", "threshold", "REAL DEFAULT 0.60"),
+        ("vendors", "cooldown", "INTEGER DEFAULT 30"),
         ("system_users", "person_id", "INTEGER"),
         ("system_users", "password_plain", "TEXT"),
         ("system_users", "has_set_password", "INTEGER DEFAULT 0"),
@@ -726,6 +728,42 @@ def _init_pg_schema_on_conn(conn):
             )
             WHERE (kiosk_username IS NULL OR kiosk_username = '')
         """, "Backfill vendors.kiosk_username (SQLite)")
+
+    # 2c. Backfill vendors threshold and cooldown
+    if is_pg:
+        run_migration("""
+            UPDATE vendors v
+            SET threshold = COALESCE(
+                NULLIF((SELECT value FROM system_settings WHERE key = 'threshold_vendor_' || v.id LIMIT 1), '')::numeric,
+                0.60
+            )
+            WHERE v.threshold IS NULL
+        """, "Backfill vendors.threshold (PG)")
+        run_migration("""
+            UPDATE vendors v
+            SET cooldown = COALESCE(
+                NULLIF((SELECT value FROM system_settings WHERE key = 'cooldown_vendor_' || v.id LIMIT 1), '')::integer,
+                30
+            )
+            WHERE v.cooldown IS NULL
+        """, "Backfill vendors.cooldown (PG)")
+    else:
+        run_migration("""
+            UPDATE vendors
+            SET threshold = COALESCE(
+                CAST(NULLIF((SELECT value FROM system_settings WHERE key = 'threshold_vendor_' || vendors.id LIMIT 1), '') AS REAL),
+                0.60
+            )
+            WHERE threshold IS NULL
+        """, "Backfill vendors.threshold (SQLite)")
+        run_migration("""
+            UPDATE vendors
+            SET cooldown = COALESCE(
+                CAST(NULLIF((SELECT value FROM system_settings WHERE key = 'cooldown_vendor_' || vendors.id LIMIT 1), '') AS INTEGER),
+                30
+            )
+            WHERE cooldown IS NULL
+        """, "Backfill vendors.cooldown (SQLite)")
 
     # 3. Preserve the legacy default/custom marker, then scrub recoverable passwords.
     run_migration("""

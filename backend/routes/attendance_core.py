@@ -440,7 +440,18 @@ def person_event(valid_data: PersonEventSchema):
             lts = parse_db_datetime(last_record['timestamp'])
             cooldown_key = f"cooldown_vendor_{vendor_id_to_check}" if vendor_id_to_check else "cooldown"
             c.execute("SELECT value FROM system_settings WHERE key=?", (cooldown_key,))
-            sv = c.fetchone(); cd_sec = int(sv[0]) if sv else 30
+            sv = c.fetchone()
+            if sv and sv[0] is not None and str(sv[0]).strip() != "":
+                cd_sec = int(sv[0])
+            elif vendor_id_to_check:
+                try:
+                    c.execute("SELECT cooldown FROM vendors WHERE id = ?", (vendor_id_to_check,))
+                    v_row = c.fetchone()
+                    cd_sec = int(v_row[0]) if (v_row and v_row[0] is not None) else 30
+                except Exception:
+                    cd_sec = 30
+            else:
+                cd_sec = 30
             if 0 <= (datetime.now() - lts).total_seconds() < cd_sec:
                 conn.close(); return jsonify({"speak": False})
         except Exception:

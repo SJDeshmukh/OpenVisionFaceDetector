@@ -28,6 +28,8 @@ class Vendor(Base):
     departments = Column(Text)
     kiosk_pin = Column(String(50), default='8888')
     kiosk_username = Column(String(255))
+    threshold = Column(Float, default=0.60)
+    cooldown = Column(Integer, default=30)
 
     # Relationships
     companies = relationship("Company", back_populates="vendor")

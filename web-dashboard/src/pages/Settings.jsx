@@ -3,10 +3,8 @@ import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import {
   Save,
-  HelpCircle,
   Bell,
   Lock,
-  Camera,
   Database,
   Users as UsersIcon,
   Trash2,
@@ -44,8 +42,6 @@ const Settings = () => {
   const { socket } = useSocket();
 
   // System Settings State
-  const [threshold, setThreshold] = useState(0.6);
-  const [cooldown, setCooldown] = useState(30);
   const [workStartTime, setWorkStartTime] = useState("09:00");
   const [lateThreshold, setLateThreshold] = useState("09:30");
   const [voiceGreeting, setVoiceGreeting] = useState(true);
@@ -248,8 +244,6 @@ const Settings = () => {
       const res = await axios.get(`${API_URL}/settings`, user?.token ? { headers: { Authorization: `Bearer ${user?.token}` } } : undefined);
       const s = res.data;
       if (s) {
-        if (s.threshold !== undefined) setThreshold(parseFloat(s.threshold));
-        if (s.cooldown !== undefined) setCooldown(parseInt(s.cooldown, 10));
         if (s.work_start_time !== undefined) setWorkStartTime(s.work_start_time);
         if (s.late_threshold !== undefined) setLateThreshold(s.late_threshold);
         if (s.voice_greeting !== undefined) setVoiceGreeting(String(s.voice_greeting).toLowerCase() === 'true');
@@ -263,8 +257,6 @@ const Settings = () => {
     setSaving(true);
     try {
       const payload = {
-        threshold,
-        cooldown,
         work_start_time: workStartTime,
         late_threshold: lateThreshold,
         voice_greeting: voiceGreeting,
@@ -688,49 +680,6 @@ const Settings = () => {
           </div>
         </Section>
       )}
-
-      <Section title="Face Recognition Engine" icon={Camera}>
-        <div>
-          <div className="flex justify-between items-center mb-2">
-            <label className="text-sm font-semibold text-slate-700 flex items-center">
-              Confidence Threshold
-              <HelpCircle size={14} className="ml-2 text-slate-400 cursor-help" />
-            </label>
-            <span className="text-sm font-mono text-blue-600 font-bold">{(threshold * 100).toFixed(0)}%</span>
-          </div>
-          <input
-            type="range"
-            min="0.4"
-            max="0.9"
-            step="0.05"
-            value={threshold}
-            onChange={(e) => setThreshold(parseFloat(e.target.value))}
-            className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
-          />
-          <p className="text-xs text-slate-500 mt-2">
-            Minimum confidence score required to mark a face as recognized. Higher values reduce false positives but may miss legitimate faces.
-          </p>
-        </div>
-
-        <div>
-          <div className="flex justify-between items-center mb-2">
-            <label className="text-sm font-semibold text-slate-700">Duplicate Detection Cooldown</label>
-            <span className="text-sm font-mono text-blue-600 font-bold">{cooldown}s</span>
-          </div>
-          <input
-            type="range"
-            min="5"
-            max="300"
-            step="5"
-            value={cooldown}
-            onChange={(e) => setCooldown(parseInt(e.target.value))}
-            className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
-          />
-          <p className="text-xs text-slate-500 mt-2">
-            Time to wait before logging another entry for the same person. Prevents spamming logs.
-          </p>
-        </div>
-      </Section>
 
       <Section title="Attendance Rules" icon={Lock}>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
