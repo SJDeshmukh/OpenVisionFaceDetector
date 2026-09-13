@@ -1192,7 +1192,7 @@ const Wages = () => {
                         <div className="flex-1 space-y-2">
                           <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Owner Email / Username</label>
                           <input 
-                            type="password"
+                            type="text"
                             value={owner.username}
                             onChange={(e) => {
                               const newOwners = [...owners];
@@ -1206,7 +1206,7 @@ const Wages = () => {
                         <div className="flex-1 space-y-2">
                           <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Password (Update)</label>
                           <input 
-                            type="text"
+                            type="password"
                             value={owner.password || ''}
                             onChange={(e) => {
                               const newOwners = [...owners];
