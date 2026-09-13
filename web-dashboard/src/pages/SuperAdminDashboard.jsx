@@ -323,7 +323,7 @@ const SuperAdminDashboard = () => {
 
   // Features Config
   const [availableFeatures, setAvailableFeatures] = useState([
-    'reports', 'report_detailed', 'report_payroll', 'automated_email_reports', 'xchat_ai', 'mobile_app', 'payroll', 'shifts',
+    'reports', 'report_detailed', 'report_payroll', 'automated_email_reports', 'employee_reports', 'xchat_ai', 'mobile_app', 'payroll', 'shifts',
     'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 
     'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'api_access', 'white_labeling', 
     'late_mark', 'bulk_image_attendance', 'classes', 'leave_management'
@@ -3668,6 +3668,10 @@ const SuperAdminDashboard = () => {
                                 if (feature === 'whatsapp_alerts') {
                                   if (!newFeatures.includes('reports')) newFeatures.push('reports');
                                 }
+
+                                if (feature === 'employee_reports') {
+                                  if (!newFeatures.includes('reports')) newFeatures.push('reports');
+                                }
                               }
                               if (!checked && feature === 'automated_email_reports') {
                                 setReportSchedule(current => ({ ...current, enabled: false }));
@@ -3677,7 +3681,12 @@ const SuperAdminDashboard = () => {
                           }}
                           className="rounded text-indigo-600 focus:ring-indigo-500"
                         />
-                        <span className="text-sm capitalize flex-1">{feature.replace('_', ' ')}</span>
+                        <span className="text-sm capitalize flex-1">
+                          {feature === 'employee_reports' ? 'Report to Each Employee' : feature.replace(/_/g, ' ')}
+                        </span>
+                        {feature === 'employee_reports' && (
+                          <span className="text-[10px] uppercase font-bold bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded ml-auto">Add-on</span>
+                        )}
                         {(feature === 'bulk_image_attendance' || feature.includes('bulk_image')) && newVendor.features?.includes('bulk_image_attendance') && (
                           <button
                             type="button"

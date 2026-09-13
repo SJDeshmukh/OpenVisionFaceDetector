@@ -255,9 +255,9 @@ if celery:
 
 
     @celery.task(name="tasks.send_employee_monthly_reports")
-    def send_employee_monthly_reports_task(vendor_id, month, person_type=None):
+    def send_employee_monthly_reports_task(vendor_id, month, person_type=None, filters=None):
         from services.employee_email_reports_service import send_employee_monthly_reports
-        return send_employee_monthly_reports(vendor_id, month, person_type)
+        return send_employee_monthly_reports(vendor_id, month, person_type, filters=filters)
 
 
     @celery.task(name="tasks.send_advance_notification")

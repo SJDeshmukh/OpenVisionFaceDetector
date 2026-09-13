@@ -1180,6 +1180,9 @@ def bulk_vendor_action():
                     for dependency in ("reports", "report_detailed"):
                         if dependency not in feats:
                             feats.append(dependency)
+                if enabled and feature == "employee_reports":
+                    if "reports" not in feats:
+                        feats.append("reports")
                 if not enabled:
                     feats = [f for f in feats if f != feature]
                 c.execute("UPDATE subscriptions SET features = ? WHERE vendor_id = ?", (json.dumps(feats), vid))
@@ -1356,6 +1359,8 @@ def create_vendor():
             for dependency in ("reports", "report_detailed"):
                 if dependency not in features:
                     features.append(dependency)
+        if "employee_reports" in features and "reports" not in features:
+            features.append("reports")
         
         features_json = json.dumps(features)
         
@@ -1651,6 +1656,10 @@ def update_vendor_subscription(vendor_id):
                 for dependency in ('reports', 'report_detailed'):
                     if dependency not in features_val:
                         features_val.append(dependency)
+                data['features'] = features_val
+            if isinstance(features_val, list) and 'employee_reports' in features_val:
+                if 'reports' not in features_val:
+                    features_val.append('reports')
                 data['features'] = features_val
             if isinstance(features_val, list):
                 features_val = json.dumps(features_val)

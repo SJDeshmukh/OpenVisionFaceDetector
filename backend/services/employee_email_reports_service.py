@@ -64,7 +64,49 @@ def month_period(month):
     return start, end
 
 
-def _load_people(cursor, vendor_id, person_type=None):
+def _matches_filters(person, filters):
+    if not filters or not isinstance(filters, dict):
+        return True
+
+    # 1. Standard filters: department, designation, shift, phone
+    standard_keys = ("department", "designation", "shift", "phone")
+    for key in standard_keys:
+        expected = str(filters.get(key) or "").strip()
+        if expected and str(person.get(key) or "").strip().lower() != expected.lower():
+            return False
+
+    # 2. Dynamic / custom_data filters
+    dynamic_filters = {}
+    if isinstance(filters.get("dynamic"), dict):
+        dynamic_filters.update(filters["dynamic"])
+    if isinstance(filters.get("custom_filters"), dict):
+        dynamic_filters.update(filters["custom_filters"])
+
+    skip_keys = set(standard_keys) | {
+        "dynamic", "custom_filters", "month", "person_type",
+        "startDate", "endDate", "type", "start_date", "end_date",
+    }
+    for k, v in filters.items():
+        if k not in skip_keys and v:
+            dynamic_filters[k] = v
+
+    if dynamic_filters:
+        custom = _custom_data(person.get("custom_data"))
+        from services.report_filter_service import custom_value
+        for dyn_key, expected_val in dynamic_filters.items():
+            expected = str(expected_val or "").strip()
+            if not expected:
+                continue
+            actual = custom_value(custom, dyn_key)
+            if actual is None:
+                actual = custom.get(dyn_key)
+            if actual is None or str(actual).strip().lower() != expected.lower():
+                return False
+
+    return True
+
+
+def _load_people(cursor, vendor_id, person_type=None, filters=None):
     # Resolve scope first. Executing this query after the faces query on the
     # same cursor would replace the pending employee result set.
     vertical = vendor_vertical(cursor, vendor_id)
@@ -84,17 +126,45 @@ def _load_people(cursor, vendor_id, person_type=None):
         resolved_type = person_type_for(person.get("custom_data"), person.get("system_role"), vertical)
         if wanted_type and resolved_type != wanted_type:
             continue
+        if filters and not _matches_filters(person, filters):
+            continue
         person["person_type"] = resolved_type
         person["email"] = employee_email(person)
         people.append(person)
     return people
 
 
-def count_employee_report_recipients(vendor_id, person_type=None):
+def count_employee_report_recipients(vendor_id, person_type=None, filters=None):
     conn = _db()
     try:
-        people = _load_people(conn.cursor(), vendor_id, person_type)
+        people = _load_people(conn.cursor(), vendor_id, person_type, filters=filters)
         return sum(1 for person in people if person.get("email"))
+    finally:
+        conn.close()
+
+
+def preview_employee_report_recipients(vendor_id, person_type=None, filters=None):
+    conn = _db()
+    try:
+        people = _load_people(conn.cursor(), vendor_id, person_type, filters=filters)
+        matching_count = len(people)
+        eligible = [p for p in people if p.get("email")]
+        missing_email = [p for p in people if not p.get("email")]
+        return {
+            "total_matching": matching_count,
+            "eligible_count": len(eligible),
+            "missing_email_count": len(missing_email),
+            "sample_recipients": [
+                {
+                    "id": p.get("id"),
+                    "name": p.get("name"),
+                    "email": p.get("email"),
+                    "department": p.get("department"),
+                    "designation": p.get("designation"),
+                }
+                for p in people[:15]
+            ]
+        }
     finally:
         conn.close()
 
@@ -173,7 +243,7 @@ def _attachments(person, records, period, payroll):
     ]
 
 
-def build_employee_monthly_deliveries(vendor_id, month, person_type=None):
+def build_employee_monthly_deliveries(vendor_id, month, person_type=None, filters=None):
     from services.attendance_service import calculate_daily_hours
 
     start, end = month_period(month)
@@ -191,7 +261,7 @@ def build_employee_monthly_deliveries(vendor_id, month, person_type=None):
             timetable = []
         working_hours = max(0.25, _as_float(company[1] if company else 8, 8))
         settings = _settings(cursor, vendor_id)
-        people = _load_people(cursor, vendor_id, person_type)
+        people = _load_people(cursor, vendor_id, person_type, filters=filters)
         person_ids = {person["id"] for person in people}
 
         cursor.execute("""
@@ -283,8 +353,8 @@ def build_employee_monthly_deliveries(vendor_id, month, person_type=None):
         conn.close()
 
 
-def send_employee_monthly_reports(vendor_id, month, person_type=None):
-    vendor_name, deliveries, skipped_without_email = build_employee_monthly_deliveries(vendor_id, month, person_type)
+def send_employee_monthly_reports(vendor_id, month, person_type=None, filters=None):
+    vendor_name, deliveries, skipped_without_email = build_employee_monthly_deliveries(vendor_id, month, person_type, filters=filters)
     sent = 0
     failures = []
     for delivery in deliveries:

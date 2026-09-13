@@ -39,24 +39,30 @@ attendance_reports_bp = Blueprint('attendance_reports_bp', __name__)
 @require_auth(roles=["super_admin", "vendor_admin", "admin", "owner"])
 def email_employee_monthly_reports():
     """Queue one private monthly attendance/payroll email per registered employee."""
+    if g.user_role != "super_admin" and not vendor_has_feature(g.vendor_id, "employee_reports"):
+        return jsonify({
+            "error": "The 'Report to Each Employee' feature is not enabled for your company. Please contact Super Admin to activate this add-on."
+        }), 403
+
     payload = request.get_json(silent=True) or {}
     month = str(payload.get("month") or "").strip()
     person_type = payload.get("person_type")
+    filters = payload.get("filters") or {}
     from services.employee_email_reports_service import count_employee_report_recipients, month_period
     try:
         month_period(month)
-        recipient_count = count_employee_report_recipients(g.vendor_id, person_type)
+        recipient_count = count_employee_report_recipients(g.vendor_id, person_type, filters=filters)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception:
         logger.exception("Unable to prepare employee report email batch for vendor %s", g.vendor_id)
         return jsonify({"error": "Could not prepare employee report emails"}), 500
     if recipient_count == 0:
-        return jsonify({"error": "No employees in this report have a registered email address"}), 400
+        return jsonify({"error": "No employees matching the selected filters have a registered email address"}), 400
     try:
         from tasks import send_employee_monthly_reports_task
         task = send_employee_monthly_reports_task.apply_async(
-            args=[g.vendor_id, month, person_type], queue="normal_priority",
+            args=[g.vendor_id, month, person_type, filters], queue="normal_priority",
         )
     except (ImportError, AttributeError):
         return jsonify({"error": "Background email worker is not configured"}), 503
@@ -67,6 +73,33 @@ def email_employee_monthly_reports():
         "success": True, "status": "queued", "task_id": task.id,
         "recipient_count": recipient_count, "month": month,
     }), 202
+
+
+@attendance_reports_bp.route("/reports/email-employees/preview", methods=["POST"])
+@require_auth(roles=["super_admin", "vendor_admin", "admin", "owner"])
+def preview_employee_monthly_reports():
+    """Preview recipient counts and sample matching employees for the employee email report."""
+    if g.user_role != "super_admin" and not vendor_has_feature(g.vendor_id, "employee_reports"):
+        return jsonify({
+            "error": "The 'Report to Each Employee' feature is not enabled for your company. Please contact Super Admin to activate this add-on."
+        }), 403
+
+    payload = request.get_json(silent=True) or {}
+    month = str(payload.get("month") or "").strip()
+    person_type = payload.get("person_type")
+    filters = payload.get("filters") or {}
+
+    from services.employee_email_reports_service import preview_employee_report_recipients, month_period
+    try:
+        if month:
+            month_period(month)
+        preview_data = preview_employee_report_recipients(g.vendor_id, person_type, filters=filters)
+        return jsonify({"success": True, **preview_data}), 200
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception:
+        logger.exception("Unable to generate preview for employee report emails for vendor %s", g.vendor_id)
+        return jsonify({"error": "Could not generate recipient preview"}), 500
 
 
 def _scope_face_rows(cursor, vendor_id, rows, requested_type=None):

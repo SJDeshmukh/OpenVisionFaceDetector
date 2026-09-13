@@ -12,7 +12,12 @@ import {
   RefreshCw,
   Mail,
   Send,
-  X
+  X,
+  Lock,
+  Users,
+  CheckCircle2,
+  AlertCircle,
+  Loader2
 } from 'lucide-react';
 import {
   BarChart,
@@ -43,6 +48,16 @@ const Reports = () => {
   const [emailPromptOpen, setEmailPromptOpen] = useState(false);
   const [emailSending, setEmailSending] = useState(false);
   const [emailNotice, setEmailNotice] = useState(null);
+  const [employeeReportModalOpen, setEmployeeReportModalOpen] = useState(false);
+  const [employeeReportMonth, setEmployeeReportMonth] = useState('');
+  const [employeeReportFilters, setEmployeeReportFilters] = useState({
+    department: '',
+    designation: '',
+    shift: '',
+    dynamic: {}
+  });
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewData, setPreviewData] = useState(null);
   const [analytics, setAnalytics] = useState({
     pie_data: [],
     bar_data: [],
@@ -203,23 +218,56 @@ const Reports = () => {
   const selectedReportMonthLabel = new Date(`${selectedReportMonth}-01T00:00:00`).toLocaleDateString(undefined, {
     month: 'long', year: 'numeric'
   });
+  const hasEmployeeReportsFeature = user?.role === 'super_admin' || Boolean(user?.features?.includes('employee_reports'));
   const canSendEmployeeReports = ['super_admin', 'vendor_admin', 'admin', 'owner'].includes(user?.role);
+
+  const fetchRecipientPreview = async (targetMonth, activeFilters) => {
+    setPreviewLoading(true);
+    try {
+      const response = await axios.post(`${API_URL}/reports/email-employees/preview`, {
+        month: targetMonth || selectedReportMonth,
+        person_type: schoolFlow ? personType : undefined,
+        filters: activeFilters,
+      });
+      setPreviewData(response.data);
+    } catch (err) {
+      console.error('Failed to preview recipient count:', err);
+      setPreviewData(null);
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const handleOpenEmployeeReportsModal = () => {
+    setEmailNotice(null);
+    const initialMonth = selectedReportMonth;
+    const initialFilters = {
+      department: filters.department || '',
+      designation: filters.designation || '',
+      shift: filters.shift || '',
+      dynamic: { ...(filters.dynamic || {}) }
+    };
+    setEmployeeReportMonth(initialMonth);
+    setEmployeeReportFilters(initialFilters);
+    setEmployeeReportModalOpen(true);
+    fetchRecipientPreview(initialMonth, initialFilters);
+  };
 
   const sendEmployeeReports = async () => {
     setEmailSending(true);
     setEmailNotice(null);
     try {
       const response = await axios.post(`${API_URL}/reports/email-employees`, {
-        month: selectedReportMonth,
+        month: employeeReportMonth || selectedReportMonth,
         person_type: schoolFlow ? personType : undefined,
+        filters: employeeReportFilters,
       });
-      setEmailPromptOpen(false);
+      setEmployeeReportModalOpen(false);
       setEmailNotice({
         type: 'success',
         message: `${response.data.recipient_count} employee report${response.data.recipient_count === 1 ? '' : 's'} queued for email.`,
       });
     } catch (requestError) {
-      setEmailPromptOpen(false);
       setEmailNotice({
         type: 'error',
         message: requestError.response?.data?.error || 'Could not queue employee report emails.',
@@ -231,53 +279,281 @@ const Reports = () => {
 
   return (
     <div className="space-y-8">
-      {(emailPromptOpen || emailNotice) && (
+      {/* Notification Alert Toast */}
+      {emailNotice && (
         <div className="fixed top-5 right-5 z-50 w-[min(92vw,26rem)] rounded-xl border border-slate-200 bg-white p-4 shadow-2xl" role="status">
           <div className="flex items-start gap-3">
-            <div className={`mt-0.5 rounded-full p-2 ${emailNotice?.type === 'error' ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600'}`}>
-              <Mail size={18} />
+            <div className={`mt-0.5 rounded-full p-2 ${emailNotice?.type === 'error' ? 'bg-red-100 text-red-600' : 'bg-emerald-100 text-emerald-600'}`}>
+              {emailNotice?.type === 'error' ? <AlertCircle size={18} /> : <CheckCircle2 size={18} />}
             </div>
-            <div className="min-w-0 flex-1">
-              {emailPromptOpen ? (
-                <>
-                  <p className="font-bold text-slate-900">Send reports to employees?</p>
-                  <p className="mt-1 text-sm text-slate-600">
-                    Send each employee their attendance and wage report for {selectedReportMonthLabel}. Only employees with a registered email will receive it.
-                  </p>
-                  <div className="mt-4 flex justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setEmailPromptOpen(false)}
-                      disabled={emailSending}
-                      className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100 disabled:opacity-50"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="button"
-                      onClick={sendEmployeeReports}
-                      disabled={emailSending}
-                      className="flex items-center gap-2 rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
-                    >
-                      <Send size={15} />
-                      {emailSending ? 'Queueing…' : 'Yes, Send'}
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <p className={`pr-7 text-sm font-semibold ${emailNotice?.type === 'error' ? 'text-red-700' : 'text-emerald-700'}`}>
-                  {emailNotice?.message}
-                </p>
-              )}
+            <div className="min-w-0 flex-1 pr-6">
+              <p className="font-bold text-slate-900">{emailNotice?.type === 'error' ? 'Error' : 'Reports Queued'}</p>
+              <p className={`mt-1 text-sm font-medium ${emailNotice?.type === 'error' ? 'text-red-700' : 'text-slate-600'}`}>
+                {emailNotice?.message}
+              </p>
             </div>
             <button
               type="button"
-              onClick={() => { setEmailPromptOpen(false); setEmailNotice(null); }}
+              onClick={() => setEmailNotice(null)}
               className="absolute right-3 top-3 rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
               aria-label="Close notification"
             >
               <X size={16} />
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Interactive Employee Reports Filter Modal */}
+      {employeeReportModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 overflow-y-auto">
+          <div className="relative w-full max-w-2xl rounded-2xl bg-white shadow-2xl border border-slate-200 overflow-hidden my-8">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-gradient-to-r from-violet-50 to-indigo-50">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-violet-600 text-white rounded-xl shadow-md">
+                  <Mail size={22} />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-slate-800">Report to Each Employee</h3>
+                  <p className="text-xs text-slate-500">Send personalized monthly attendance &amp; wage reports via email</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEmployeeReportModalOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-white rounded-lg transition-colors"
+                aria-label="Close modal"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 space-y-6 max-h-[75vh] overflow-y-auto">
+              {/* Month Selector */}
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                  Select Report Month
+                </label>
+                <input
+                  type="month"
+                  value={employeeReportMonth}
+                  onChange={(e) => {
+                    const newMonth = e.target.value;
+                    setEmployeeReportMonth(newMonth);
+                    fetchRecipientPreview(newMonth, employeeReportFilters);
+                  }}
+                  className="w-full sm:w-64 rounded-xl border border-slate-200 px-3 py-2 text-sm font-medium text-slate-800 focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
+                />
+              </div>
+
+              {/* Filter Section */}
+              <div className="rounded-xl border border-slate-200/80 bg-slate-50/50 p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-sm font-bold text-slate-700">
+                    <Filter size={16} className="text-violet-600" />
+                    <span>Filter Recipients by Registry Fields</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const cleared = { department: '', designation: '', shift: '', dynamic: {} };
+                      setEmployeeReportFilters(cleared);
+                      fetchRecipientPreview(employeeReportMonth, cleared);
+                    }}
+                    className="text-xs text-violet-600 hover:text-violet-800 font-semibold"
+                  >
+                    Clear Filters (Target All)
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  {/* Department */}
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">
+                      {filterOptions.standard_filter_labels?.department || 'Department'}
+                    </label>
+                    <select
+                      value={employeeReportFilters.department}
+                      onChange={(e) => {
+                        const updated = { ...employeeReportFilters, department: e.target.value };
+                        setEmployeeReportFilters(updated);
+                        fetchRecipientPreview(employeeReportMonth, updated);
+                      }}
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
+                    >
+                      <option value="">All Departments</option>
+                      {(filterOptions.departments || []).map((dept) => (
+                        <option key={dept} value={dept}>{dept}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Designation */}
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">
+                      {filterOptions.standard_filter_labels?.designation || 'Designation'}
+                    </label>
+                    <select
+                      value={employeeReportFilters.designation}
+                      onChange={(e) => {
+                        const updated = { ...employeeReportFilters, designation: e.target.value };
+                        setEmployeeReportFilters(updated);
+                        fetchRecipientPreview(employeeReportMonth, updated);
+                      }}
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
+                    >
+                      <option value="">All Designations</option>
+                      {(filterOptions.designations || []).map((desig) => (
+                        <option key={desig} value={desig}>{desig}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Shift */}
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">
+                      {filterOptions.standard_filter_labels?.shift || 'Shift'}
+                    </label>
+                    <select
+                      value={employeeReportFilters.shift}
+                      onChange={(e) => {
+                        const updated = { ...employeeReportFilters, shift: e.target.value };
+                        setEmployeeReportFilters(updated);
+                        fetchRecipientPreview(employeeReportMonth, updated);
+                      }}
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
+                    >
+                      <option value="">All Shifts</option>
+                      {(filterOptions.shifts || []).map((s) => (
+                        <option key={s} value={s}>{s}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Dynamic Registry Fields */}
+                  {Object.entries(filterOptions.dynamic_filters || {}).map(([key, config]) => (
+                    <div key={key}>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">
+                        {config.label || key}
+                      </label>
+                      <select
+                        value={employeeReportFilters.dynamic?.[key] || ''}
+                        onChange={(e) => {
+                          const updated = {
+                            ...employeeReportFilters,
+                            dynamic: { ...employeeReportFilters.dynamic, [key]: e.target.value }
+                          };
+                          setEmployeeReportFilters(updated);
+                          fetchRecipientPreview(employeeReportMonth, updated);
+                        }}
+                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
+                      >
+                        <option value="">All ({config.label || key})</option>
+                        {(config.options || []).map((opt) => (
+                          <option key={opt} value={opt}>{opt}</option>
+                        ))}
+                      </select>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Live Recipient Preview Card */}
+              <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Users size={18} className="text-violet-600" />
+                    <span className="text-sm font-bold text-slate-800">Recipients Preview</span>
+                  </div>
+                  {previewLoading && (
+                    <div className="flex items-center gap-1.5 text-xs text-violet-600">
+                      <Loader2 size={14} className="animate-spin" />
+                      <span>Updating preview...</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="rounded-lg bg-white p-3 border border-slate-200/60 shadow-xs">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Matching</span>
+                    <p className="text-xl font-bold text-slate-800">{previewData?.total_matching ?? '-'}</p>
+                  </div>
+                  <div className="rounded-lg bg-white p-3 border border-emerald-200/60 shadow-xs">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-emerald-600">Will Receive</span>
+                    <p className="text-xl font-bold text-emerald-600">{previewData?.eligible_count ?? '-'}</p>
+                  </div>
+                  <div className="rounded-lg bg-white p-3 border border-amber-200/60 shadow-xs">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-amber-600">Missing Email</span>
+                    <p className="text-xl font-bold text-amber-600">{previewData?.missing_email_count ?? '-'}</p>
+                  </div>
+                </div>
+
+                {previewData?.missing_email_count > 0 && (
+                  <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 p-2.5 rounded-lg border border-amber-200/60">
+                    <AlertCircle size={15} className="mt-0.5 shrink-0" />
+                    <span>
+                      {previewData.missing_email_count} matching employee{previewData.missing_email_count === 1 ? '' : 's'} lack a registered email and will be skipped.
+                    </span>
+                  </div>
+                )}
+
+                {previewData?.sample_recipients?.length > 0 && (
+                  <div>
+                    <span className="text-xs text-slate-500 font-medium">Sample matching recipients:</span>
+                    <div className="flex flex-wrap gap-1.5 mt-1.5">
+                      {previewData.sample_recipients.slice(0, 8).map((p) => (
+                        <span
+                          key={p.id}
+                          className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-md ${
+                            p.email ? 'bg-white text-slate-700 border border-slate-200' : 'bg-amber-100 text-amber-800'
+                          }`}
+                        >
+                          {p.name}
+                          {!p.email && <span className="text-[9px] text-amber-600">(no email)</span>}
+                        </span>
+                      ))}
+                      {previewData.sample_recipients.length > 8 && (
+                        <span className="text-[11px] text-slate-400 self-center">
+                          +{previewData.sample_recipients.length - 8} more
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-slate-100 bg-slate-50">
+              <button
+                type="button"
+                onClick={() => setEmployeeReportModalOpen(false)}
+                disabled={emailSending}
+                className="px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-200/60 rounded-xl transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={sendEmployeeReports}
+                disabled={emailSending || !previewData || previewData.eligible_count === 0}
+                className="flex items-center gap-2 px-5 py-2 text-sm font-semibold text-white bg-violet-600 hover:bg-violet-700 rounded-xl shadow-md transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {emailSending ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    <span>Queueing Emails...</span>
+                  </>
+                ) : (
+                  <>
+                    <Send size={16} />
+                    <span>Send Reports ({previewData?.eligible_count || 0} Emails)</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -315,14 +591,27 @@ const Reports = () => {
         </div>
         <div className="flex flex-wrap gap-3">
           {canSendEmployeeReports && (
-            <button
-              onClick={() => { setEmailNotice(null); setEmailPromptOpen(true); }}
-              className="flex items-center space-x-2 px-4 py-2 bg-violet-600 text-white rounded-lg hover:bg-violet-700 font-medium transition-colors shadow-sm"
-              title={`Email attendance and wages for ${selectedReportMonthLabel}`}
-            >
-              <Mail size={18} />
-              <span>Send Reports to Employees</span>
-            </button>
+            hasEmployeeReportsFeature ? (
+              <button
+                onClick={handleOpenEmployeeReportsModal}
+                className="flex items-center space-x-2 px-4 py-2 bg-violet-600 text-white rounded-lg hover:bg-violet-700 font-medium transition-colors shadow-sm"
+                title={`Email attendance and wages to employees for ${selectedReportMonthLabel}`}
+              >
+                <Mail size={18} />
+                <span>Report to Each Employee</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled
+                className="flex items-center space-x-2 px-3.5 py-2 bg-slate-100 text-slate-400 border border-slate-200 rounded-lg cursor-not-allowed font-medium text-sm shadow-none"
+                title="Report to Each Employee is an optional add-on feature. Please contact Super Admin to enable."
+              >
+                <Lock size={15} className="text-slate-400" />
+                <span>Report to Each Employee</span>
+                <span className="text-[10px] uppercase font-bold bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded ml-1">Add-on</span>
+              </button>
+            )
           )}
           {schoolFlow && (
             <select
