@@ -1199,7 +1199,7 @@ class MainActivity : AppCompatActivity() {
 
             // 2. Register FusedLocationProvider continuous updates
             try {
-                val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 15000L)
+                val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 10000L)
                     .setMinUpdateIntervalMillis(5000L)
                     .build()
 
