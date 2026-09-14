@@ -159,7 +159,8 @@ object AppUpdateManager {
                     requestMethod = "GET"
                 }
 
-                val totalBytes = conn.contentLength.takeIf { it > 0 } ?: release.fileSize
+                val headerLen = conn.contentLength.toLong()
+                val totalBytes: Long = if (headerLen > 0L) headerLen else release.fileSize
                 inputStream = conn.inputStream
                 outputStream = FileOutputStream(tempFile)
 
@@ -172,8 +173,8 @@ object AppUpdateManager {
                     outputStream.write(buffer, 0, bytesRead)
                     totalRead += bytesRead
 
-                    if (totalBytes > 0) {
-                        val progress = ((totalRead * 100) / totalBytes).toInt()
+                    if (totalBytes > 0L) {
+                        val progress = ((totalRead * 100L) / totalBytes).toInt()
                         if (progress - lastProgressReport >= 5) {
                             lastProgressReport = progress
                             mainHandler.post { callback?.onDownloadProgress(progress) }
