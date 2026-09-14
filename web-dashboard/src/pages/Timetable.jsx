@@ -54,6 +54,16 @@ const Timetable = () => {
       greeting: 'normal'
     }
   });
+  const calculateLateTime = (startTime, graceMins = 15) => {
+    if (!startTime || typeof startTime !== 'string' || !startTime.includes(':')) return '—';
+    const [h, m] = startTime.split(':').map(Number);
+    if (isNaN(h) || isNaN(m)) return '—';
+    const totalMins = h * 60 + m + Math.max(0, Number(graceMins) || 0);
+    const lateH = Math.floor(totalMins / 60) % 24;
+    const lateM = totalMins % 60;
+    return `${String(lateH).padStart(2, '0')}:${String(lateM).padStart(2, '0')}`;
+  };
+
   const [newCompanyName, setNewCompanyName] = useState('');
   
   // Shift Management State
@@ -65,6 +75,7 @@ const Timetable = () => {
     name: '',
     start_time: '09:00',
     end_time: '17:00',
+    grace_period_mins: 15,
     active: true,
     description: ''
   });
@@ -339,6 +350,7 @@ const Timetable = () => {
       name: shift.name || '',
       start_time: shift.start_time || '09:00',
       end_time: shift.end_time || '17:00',
+      grace_period_mins: shift.grace_period_mins !== undefined ? shift.grace_period_mins : 15,
       active: shift.active !== false,
       description: shift.description || ''
     });
@@ -352,6 +364,7 @@ const Timetable = () => {
       name: '',
       start_time: '09:00',
       end_time: '17:00',
+      grace_period_mins: 15,
       active: true,
       description: ''
     });
@@ -696,9 +709,12 @@ const Timetable = () => {
                     <Clock size={14} />
                     <span>{shift.start_time} - {shift.end_time}</span>
                   </div>
-                  <div className="flex justify-between items-center">
+                  <div className="flex justify-between items-center gap-2">
                       <span className={`text-xs px-2 py-0.5 rounded-full border ${shift.active ? 'bg-green-50 text-green-700 border-green-200' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
                         {shift.active ? 'Active' : 'Inactive'}
+                      </span>
+                      <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md font-medium" title="Employees punching after this time are marked late">
+                        Late after: {calculateLateTime(shift.start_time, shift.grace_period_mins ?? 15)}
                       </span>
                   </div>
                 </div>
@@ -1163,6 +1179,24 @@ const Timetable = () => {
                       className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-2.5 text-slate-900 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
                     />
                   </div>
+               </div>
+               <div>
+                  <div className="flex justify-between items-center mb-1.5">
+                    <label className="block text-sm font-medium text-slate-800">Late Grace Period (Minutes)</label>
+                    <span className="text-xs text-blue-700 font-semibold bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200">
+                      Late after: {calculateLateTime(shiftForm.start_time, shiftForm.grace_period_mins ?? 15)}
+                    </span>
+                  </div>
+                  <input 
+                    type="number" 
+                    min="0"
+                    max="180"
+                    value={shiftForm.grace_period_mins ?? 15}
+                    onChange={(e) => setShiftForm({...shiftForm, grace_period_mins: parseInt(e.target.value, 10) || 0})}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-2.5 text-slate-900 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                    placeholder="15"
+                  />
+                  <p className="text-xs text-slate-500 mt-1">Check-ins beyond start time + grace period are automatically marked Late.</p>
                </div>
                <div className="flex items-center space-x-2">
                  <input 

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -17,7 +18,10 @@ import {
   MessageSquare,
   QrCode,
   Smartphone,
-  Send
+  Send,
+  CalendarClock,
+  Clock,
+  ArrowRight
 } from 'lucide-react';
 import { API_URL } from '../config';
 import { useSocket } from '../context/SocketContext';
@@ -46,6 +50,17 @@ const Settings = () => {
   const [lateThreshold, setLateThreshold] = useState("09:30");
   const [voiceGreeting, setVoiceGreeting] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [companyShifts, setCompanyShifts] = useState([]);
+
+  const calculateLateTime = (startTime, graceMins = 15) => {
+    if (!startTime || typeof startTime !== 'string' || !startTime.includes(':')) return '—';
+    const [h, m] = startTime.split(':').map(Number);
+    if (isNaN(h) || isNaN(m)) return '—';
+    const totalMins = h * 60 + m + Math.max(0, Number(graceMins) || 0);
+    const lateH = Math.floor(totalMins / 60) % 24;
+    const lateM = totalMins % 60;
+    return `${String(lateH).padStart(2, '0')}:${String(lateM).padStart(2, '0')}`;
+  };
 
   // User Management State
   const [systemUsers, setSystemUsers] = useState([]);
@@ -245,8 +260,32 @@ const Settings = () => {
       const s = res.data;
       if (s) {
         if (s.work_start_time !== undefined) setWorkStartTime(s.work_start_time);
-        if (s.late_threshold !== undefined) setLateThreshold(s.late_threshold);
+        if (s.late_threshold !== undefined) {
+          let lt = s.late_threshold;
+          // Auto-sanitize inverted threshold (e.g. 05:59 with 06:00 start)
+          if (s.work_start_time && lt < s.work_start_time) {
+            try {
+              const [h, m] = s.work_start_time.split(':').map(Number);
+              const total = h * 60 + m + 15;
+              lt = `${String(Math.floor(total / 60) % 24).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+            } catch (e) {}
+          }
+          setLateThreshold(lt);
+        }
         if (s.voice_greeting !== undefined) setVoiceGreeting(String(s.voice_greeting).toLowerCase() === 'true');
+      }
+
+      // Fetch active company shifts for Timetable integration preview
+      try {
+        const compRes = await axios.get(`${API_URL}/companies`, { headers: getAuthHeaders() });
+        const compList = compRes.data?.companies || [];
+        if (compList.length > 0) {
+          const detailRes = await axios.get(`${API_URL}/companies/${compList[0].id}`, { headers: getAuthHeaders() });
+          const rawShifts = detailRes.data?.shifts || [];
+          setCompanyShifts(Array.isArray(rawShifts) ? rawShifts : []);
+        }
+      } catch (e) {
+        // Silently continue if company shifts not configured
       }
     } catch (error) {
       console.error("Error fetching settings:", error);
@@ -254,6 +293,10 @@ const Settings = () => {
   };
 
   const handleSaveSettings = async () => {
+    if (workStartTime && lateThreshold && lateThreshold < workStartTime) {
+      alert("Late After time cannot be earlier than Work Start Time. Please adjust the timings.");
+      return;
+    }
     setSaving(true);
     try {
       const payload = {
@@ -681,30 +724,122 @@ const Settings = () => {
         </Section>
       )}
 
-      <Section title="Attendance Rules" icon={Lock}>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-          <div>
-            <label htmlFor="work-start-time" className="block text-sm font-semibold text-slate-700 mb-2">Work Start Time</label>
-            <input
-              id="work-start-time"
-              type="time"
-              value={workStartTime}
-              onChange={(e) => setWorkStartTime(e.target.value)}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg"
-            />
+      <Section 
+        title="Attendance & Shift Rules" 
+        icon={CalendarClock}
+        action={
+          <Link 
+            to="/timetable" 
+            className="flex items-center space-x-1.5 px-3 py-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-lg text-sm font-semibold transition-colors border border-blue-100 shadow-sm"
+          >
+            <CalendarClock size={16} />
+            <span>Manage in Timetable</span>
+          </Link>
+        }
+      >
+        {companyShifts && companyShifts.length > 0 ? (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-semibold text-slate-800">Active Timetable Shifts</p>
+                <p className="text-xs text-slate-500">Attendance and late marks are governed by the shifts configured in your Timetable.</p>
+              </div>
+              <span className="text-xs font-semibold px-2.5 py-1 bg-green-50 text-green-700 border border-green-200 rounded-full">
+                {companyShifts.filter(s => s.active !== false).length} Active Shifts
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+              {companyShifts.map((shift, idx) => (
+                <div key={shift.id || idx} className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
+                  <div className="flex justify-between items-start">
+                    <span className="font-semibold text-slate-800 text-sm">{shift.name}</span>
+                    <span className={`text-[10px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded ${shift.active !== false ? 'bg-green-100 text-green-800' : 'bg-slate-200 text-slate-600'}`}>
+                      {shift.active !== false ? 'Active' : 'Inactive'}
+                    </span>
+                  </div>
+                  <div className="flex items-center text-xs text-slate-600 space-x-1.5">
+                    <Clock size={13} className="text-slate-400" />
+                    <span>{shift.start_time} - {shift.end_time}</span>
+                  </div>
+                  <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1 rounded font-medium">
+                    Late after: <span className="font-bold">{calculateLateTime(shift.start_time, shift.grace_period_mins ?? 15)}</span> ({shift.grace_period_mins ?? 15}m grace)
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="pt-3 border-t border-slate-100">
+              <details className="group">
+                <summary className="text-xs font-medium text-slate-500 hover:text-slate-700 cursor-pointer select-none">
+                  Advanced: Fallback Rule (For staff without an assigned shift)
+                </summary>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-5 mt-3 pt-2">
+                  <div>
+                    <label htmlFor="work-start-time" className="block text-xs font-semibold text-slate-700 mb-1.5">Fallback Work Start</label>
+                    <input
+                      id="work-start-time"
+                      type="time"
+                      value={workStartTime}
+                      onChange={(e) => setWorkStartTime(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="late-threshold" className="block text-xs font-semibold text-slate-700 mb-1.5">Fallback Late After</label>
+                    <input
+                      id="late-threshold"
+                      type="time"
+                      value={lateThreshold}
+                      onChange={(e) => setLateThreshold(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"
+                    />
+                  </div>
+                </div>
+              </details>
+            </div>
           </div>
-          <div>
-            <label htmlFor="late-threshold" className="block text-sm font-semibold text-slate-700 mb-2">Late After</label>
-            <input
-              id="late-threshold"
-              type="time"
-              value={lateThreshold}
-              onChange={(e) => setLateThreshold(e.target.value)}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg"
-            />
+        ) : (
+          <div className="space-y-4">
+            <div className="p-4 bg-blue-50/70 border border-blue-100 rounded-xl flex items-center justify-between">
+              <div>
+                <p className="text-sm font-semibold text-blue-900">Want to use multi-shift schedules?</p>
+                <p className="text-xs text-blue-700 mt-0.5">Create shifts and assign staff in the Timetable tab for automatic shift-based late rules.</p>
+              </div>
+              <Link 
+                to="/timetable" 
+                className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors flex items-center space-x-1"
+              >
+                <span>Set Up Shifts</span>
+                <ArrowRight size={14} />
+              </Link>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+              <div>
+                <label htmlFor="work-start-time" className="block text-sm font-semibold text-slate-700 mb-2">Work Start Time</label>
+                <input
+                  id="work-start-time"
+                  type="time"
+                  value={workStartTime}
+                  onChange={(e) => setWorkStartTime(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg"
+                />
+              </div>
+              <div>
+                <label htmlFor="late-threshold" className="block text-sm font-semibold text-slate-700 mb-2">Late After</label>
+                <input
+                  id="late-threshold"
+                  type="time"
+                  value={lateThreshold}
+                  onChange={(e) => setLateThreshold(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg"
+                />
+              </div>
+            </div>
+            <p className="text-xs text-slate-500">A check-in after the configured late time is marked late for this business.</p>
           </div>
-        </div>
-        <p className="text-xs text-slate-500">A check-in after the configured late time is marked late for this business only.</p>
+        )}
       </Section>
 
 

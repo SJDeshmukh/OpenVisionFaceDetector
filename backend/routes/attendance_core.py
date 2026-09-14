@@ -376,9 +376,10 @@ def person_event(valid_data: PersonEventSchema):
             cr.execute("SELECT id FROM faces WHERE name = ? AND vendor_id = ? LIMIT 1", (name, vendor_id_to_check))
             rr = cr.fetchone()
             if rr: resolved_pid = rr[0]
+        assigned_shift = None
         if resolved_pid:
             cr.execute(
-                """SELECT name, vendor_id, custom_data FROM faces
+                """SELECT name, vendor_id, custom_data, shift FROM faces
                    WHERE id = ? AND (? IS NULL OR vendor_id = ?) LIMIT 1""",
                 (resolved_pid, vendor_id_to_check, vendor_id_to_check),
             )
@@ -387,6 +388,10 @@ def person_event(valid_data: PersonEventSchema):
                 name = rr[0] if not name else name
                 vendor_id_to_check = rr[1] if not vendor_id_to_check else vendor_id_to_check
                 resolved_scope = class_scope_for(rr[2])
+                try:
+                    assigned_shift = str(rr[3]).strip() if len(rr) > 3 and rr[3] else None
+                except Exception:
+                    assigned_shift = None
             else: resolved_pid = None
         conn_r.close()
 
@@ -460,20 +465,100 @@ def person_event(valid_data: PersonEventSchema):
     is_late = 0
     if new_status == 'CHECK_IN' and vendor_id_to_check:
         try:
-            setting_suffix = f'_vendor_{vendor_id_to_check}'
+            # 1. Look for matching Shift in Timetable (companies table)
+            matched_shift = None
             c.execute(
-                "SELECT key, value FROM system_settings WHERE key IN (?, ?)",
-                (f'late_threshold{setting_suffix}', f'work_start_time{setting_suffix}'),
+                "SELECT shifts, live_timetable FROM companies WHERE vendor_id = ? LIMIT 1",
+                (vendor_id_to_check,),
             )
-            time_settings = {
-                row[0].removesuffix(setting_suffix): row[1] for row in c.fetchall()
-            }
-            late_after = time_settings.get('late_threshold') or time_settings.get('work_start_time')
-            if late_after and current_time_obj.strftime('%H:%M') > str(late_after)[:5]:
-                is_late = 1
+            comp_row = c.fetchone()
+            if comp_row:
+                raw_shifts = comp_row[0] if not hasattr(comp_row, 'keys') else comp_row['shifts']
+                parsed_shifts = []
+                if raw_shifts:
+                    try:
+                        parsed_shifts = json.loads(raw_shifts) if isinstance(raw_shifts, str) else raw_shifts
+                    except Exception:
+                        parsed_shifts = []
+
+                active_shifts = [s for s in parsed_shifts if isinstance(s, dict) and s.get("active", True) is not False]
+
+                # Match assigned shift first (from employee face record)
+                if assigned_shift and active_shifts:
+                    for s in active_shifts:
+                        s_name = str(s.get("name", "")).strip()
+                        s_id = str(s.get("id", "")).strip()
+                        if s_name.lower() == assigned_shift.lower() or s_id == str(assigned_shift):
+                            matched_shift = s
+                            break
+
+                # If no assigned shift match, match active shift covering the punch time
+                if not matched_shift and active_shifts:
+                    curr_hm = current_time_obj.strftime('%H:%M')
+                    for s in active_shifts:
+                        s_start = str(s.get("start_time", ""))[:5]
+                        s_end = str(s.get("end_time", ""))[:5]
+                        if s_start and s_end:
+                            if s_start <= s_end:
+                                if s_start <= curr_hm <= s_end:
+                                    matched_shift = s
+                                    break
+                            else:  # Overnight shift (e.g. 22:00 to 06:00)
+                                if curr_hm >= s_start or curr_hm <= s_end:
+                                    matched_shift = s
+                                    break
+
+                    # If still not matched and only 1 shift exists, use that shift
+                    if not matched_shift and len(active_shifts) == 1:
+                        matched_shift = active_shifts[0]
+
+            if matched_shift and matched_shift.get("start_time"):
+                shift_start_str = str(matched_shift["start_time"])[:5]
+                grace_mins = 15
+                try:
+                    if matched_shift.get("grace_period_mins") is not None:
+                        grace_mins = int(matched_shift["grace_period_mins"])
+                except (ValueError, TypeError):
+                    grace_mins = 15
+
+                # Calculate late cutoff: shift_start + grace_mins
+                try:
+                    ws_h, ws_m = map(int, shift_start_str.split(':'))
+                    cutoff_total = ws_h * 60 + ws_m + max(0, grace_mins)
+                    cutoff_str = f"{(cutoff_total // 60) % 24:02d}:{cutoff_total % 60:02d}"
+                except Exception:
+                    cutoff_str = shift_start_str
+
+                curr_hm = current_time_obj.strftime('%H:%M')
+                if curr_hm > cutoff_str:
+                    is_late = 1
+
+                if matched_shift.get("name"):
+                    activity_name = str(matched_shift["name"]).strip()
+            else:
+                # 2. Fallback to system_settings (legacy mode)
+                setting_suffix = f'_vendor_{vendor_id_to_check}'
+                c.execute(
+                    "SELECT key, value FROM system_settings WHERE key IN (?, ?)",
+                    (f'late_threshold{setting_suffix}', f'work_start_time{setting_suffix}'),
+                )
+                time_settings = {
+                    row[0].removesuffix(setting_suffix): row[1] for row in c.fetchall()
+                }
+                work_start = time_settings.get('work_start_time')
+                late_after = time_settings.get('late_threshold') or work_start
+                # Auto-sanitize inverted threshold (e.g. 05:59 < 06:00)
+                if late_after and work_start and str(late_after)[:5] < str(work_start)[:5]:
+                    try:
+                        ws_h, ws_m = map(int, str(work_start)[:5].split(':'))
+                        late_after = f"{(ws_h * 60 + ws_m + 15) // 60 % 24:02d}:{(ws_h * 60 + ws_m + 15) % 60:02d}"
+                    except Exception:
+                        late_after = work_start
+
+                if late_after and current_time_obj.strftime('%H:%M') > str(late_after)[:5]:
+                    is_late = 1
         except Exception:
-            logger.debug("Late threshold evaluation failed", exc_info=True)
-    # Full late logic here...
+            logger.debug("Shift / Late threshold evaluation failed", exc_info=True)
 
     try:
         c.execute("""INSERT INTO attendance
