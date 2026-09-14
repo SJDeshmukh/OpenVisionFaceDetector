@@ -238,7 +238,7 @@ object AppUpdateManager {
             }
 
             Log.d(TAG, "Parsed archive pkg: ${info.packageName}, version: $archiveVersion")
-            archiveVersion >= expectedVersionCode
+            archiveVersion > com.faceplugin.facerecognition.BuildConfig.VERSION_CODE || archiveVersion >= expectedVersionCode
         } catch (e: Exception) {
             Log.e(TAG, "Error validating APK archive", e)
             false
@@ -260,6 +260,11 @@ object AppUpdateManager {
         }
 
         try {
+            if (context is android.app.Activity) {
+                try {
+                    context.stopLockTask()
+                } catch (_: Exception) {}
+            }
             val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
             val isDeviceOwner = dpm?.isDeviceOwnerApp(context.packageName) == true
 
@@ -277,6 +282,11 @@ object AppUpdateManager {
     }
 
     private fun launchSystemInstallIntent(context: Context, apkFile: File) {
+        if (context is android.app.Activity) {
+            try {
+                context.stopLockTask()
+            } catch (_: Exception) {}
+        }
         val authority = "${context.packageName}.provider"
         val contentUri: Uri = FileProvider.getUriForFile(context, authority, apkFile)
 

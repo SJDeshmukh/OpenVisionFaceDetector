@@ -550,6 +550,9 @@ class MainActivity : AppCompatActivity() {
 
         // If forceUpdate is true, install immediately
         if (release.forceUpdate) {
+            try {
+                stopLockTask()
+            } catch (_: Exception) {}
             AppUpdateManager.installApk(this, apkFile)
             return
         }
@@ -578,6 +581,9 @@ class MainActivity : AppCompatActivity() {
                 setBackgroundColor(android.graphics.Color.parseColor("#4F46E5")) // Indigo 600
                 setTextColor(android.graphics.Color.WHITE)
                 setOnClickListener {
+                    try {
+                        stopLockTask()
+                    } catch (_: Exception) {}
                     AppUpdateManager.installApk(this@MainActivity, apkFile)
                 }
             }
@@ -596,6 +602,9 @@ class MainActivity : AppCompatActivity() {
         // Auto-install after 60 seconds of idle if not touched
         handler.postDelayed({
             if (updateBannerView != null && !isFinishing && !isDestroyed) {
+                try {
+                    stopLockTask()
+                } catch (_: Exception) {}
                 AppUpdateManager.installApk(this, apkFile)
             }
         }, 60000)
