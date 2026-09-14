@@ -445,6 +445,109 @@ const SuperAdminDashboard = () => {
   });
   const [serverSubEcho, setServerSubEcho] = useState(null);
 
+  // --- APK OTA Updates State ---
+  const [apkReleases, setApkReleases] = useState([]);
+  const [latestApkRelease, setLatestApkRelease] = useState(null);
+  const [isLoadingApkReleases, setIsLoadingApkReleases] = useState(false);
+  const [isUploadingApk, setIsUploadingApk] = useState(false);
+  const [apkUploadProgress, setApkUploadProgress] = useState(0);
+  const [isBroadcastingUpdate, setIsBroadcastingUpdate] = useState(false);
+  const [broadcastStatus, setBroadcastStatus] = useState(null);
+  const [apkFormData, setApkFormData] = useState({
+    version_code: '',
+    version_name: '',
+    release_notes: '',
+    force_update: false,
+    file: null
+  });
+
+  const fetchApkReleases = async () => {
+    setIsLoadingApkReleases(true);
+    try {
+      const res = await axios.get(`${API_URL}/admin/app-releases`);
+      setApkReleases(res.data?.releases || []);
+      setLatestApkRelease(res.data?.latest_release || null);
+    } catch (err) {
+      console.error('Failed to fetch APK releases:', err);
+    } finally {
+      setIsLoadingApkReleases(false);
+    }
+  };
+
+  const handleUploadApk = async (e) => {
+    e.preventDefault();
+    if (!apkFormData.file) {
+      alert('Please select an .apk file to upload.');
+      return;
+    }
+    if (!apkFormData.version_code || !apkFormData.version_name) {
+      alert('Version code and version name are required.');
+      return;
+    }
+
+    setIsUploadingApk(true);
+    setApkUploadProgress(0);
+
+    const formData = new FormData();
+    formData.append('apk_file', apkFormData.file);
+    formData.append('version_code', apkFormData.version_code);
+    formData.append('version_name', apkFormData.version_name);
+    formData.append('release_notes', apkFormData.release_notes);
+    formData.append('force_update', apkFormData.force_update ? 'true' : 'false');
+
+    try {
+      await axios.post(`${API_URL}/admin/app-releases`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        onUploadProgress: (progressEvent) => {
+          if (progressEvent.total) {
+            const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+            setApkUploadProgress(percent);
+          }
+        }
+      });
+      alert('APK Release uploaded and activated successfully!');
+      setApkFormData({ version_code: '', version_name: '', release_notes: '', force_update: false, file: null });
+      fetchApkReleases();
+    } catch (err) {
+      alert(err.response?.data?.error || 'Failed to upload APK release.');
+    } finally {
+      setIsUploadingApk(false);
+      setApkUploadProgress(0);
+    }
+  };
+
+  const handleBroadcastUpdate = async () => {
+    if (!latestApkRelease) {
+      alert('No active APK release to broadcast. Upload a release first.');
+      return;
+    }
+    if (!window.confirm(`Broadcast update for v${latestApkRelease.version_name} (Code: ${latestApkRelease.version_code}) to all connected kiosk devices?`)) {
+      return;
+    }
+
+    setIsBroadcastingUpdate(true);
+    setBroadcastStatus(null);
+    try {
+      const res = await axios.post(`${API_URL}/admin/app-releases/broadcast`);
+      setBroadcastStatus({ type: 'success', message: res.data?.message || 'Update broadcasted to all connected kiosks!' });
+      setTimeout(() => setBroadcastStatus(null), 6000);
+    } catch (err) {
+      setBroadcastStatus({ type: 'error', message: err.response?.data?.error || 'Failed to broadcast update.' });
+    } finally {
+      setIsBroadcastingUpdate(false);
+    }
+  };
+
+  const handleActivateRelease = async (releaseId) => {
+    try {
+      await axios.post(`${API_URL}/admin/app-releases/${releaseId}/activate`);
+      fetchApkReleases();
+    } catch (err) {
+      alert(err.response?.data?.error || 'Failed to activate release.');
+    }
+  };
+
+
   const fetchBusinessTypes = async () => {
     try {
       const res = await axios.get(`${API_URL}/public/business-types`);
@@ -1841,6 +1944,15 @@ const SuperAdminDashboard = () => {
         >
           Live Fleet Map
         </button>
+        <button
+          className={`pb-3 px-2 font-medium transition-colors ${activeTab === 'app_updates' ? 'border-b-2 border-indigo-600 text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+          onClick={() => {
+            setActiveTab('app_updates');
+            fetchApkReleases();
+          }}
+        >
+          App Releases (OTA)
+        </button>
       </div>
 
       {activeTab === 'overview' && (
@@ -3132,6 +3244,356 @@ const SuperAdminDashboard = () => {
       {activeTab === 'fleet_map' && (
         <FleetMapTab userToken={user?.token} />
       )}
+
+      {activeTab === 'app_updates' && (
+        <div className="space-y-6">
+          {/* Header & Overview */}
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+            <div>
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-indigo-50 text-indigo-600 rounded-xl">
+                  <UploadCloud size={24} />
+                </div>
+                <div>
+                  <h2 className="text-xl font-bold text-slate-800">Over-The-Air (OTA) APK Releases</h2>
+                  <p className="text-sm text-slate-500">
+                    Remotely deploy and auto-update APK builds on all wall-mounted attendance kiosks and tablets in the background.
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={fetchApkReleases}
+                disabled={isLoadingApkReleases}
+                className="flex items-center gap-2 px-4 py-2 border border-slate-300 text-slate-700 rounded-xl hover:bg-slate-50 font-medium text-sm transition-all"
+              >
+                <RefreshCw size={16} className={isLoadingApkReleases ? "animate-spin" : ""} />
+                Refresh
+              </button>
+              {latestApkRelease && (
+                <button
+                  type="button"
+                  onClick={handleBroadcastUpdate}
+                  disabled={isBroadcastingUpdate}
+                  className="flex items-center gap-2 px-5 py-2 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white rounded-xl shadow-md font-semibold text-sm transition-all"
+                >
+                  <Send size={16} />
+                  {isBroadcastingUpdate ? "Broadcasting..." : "Broadcast Update to Kiosks"}
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Broadcast Status Banner */}
+          {broadcastStatus && (
+            <div className={`p-4 rounded-xl border flex items-center gap-3 text-sm font-medium ${
+              broadcastStatus.type === 'success' 
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-800' 
+                : 'bg-rose-50 border-rose-200 text-rose-800'
+            }`}>
+              {broadcastStatus.type === 'success' ? <Check size={18} /> : <AlertCircle size={18} />}
+              <span>{broadcastStatus.message}</span>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Live Active Release Card */}
+            <div className="lg:col-span-1 bg-gradient-to-br from-slate-900 to-indigo-950 text-white p-6 rounded-2xl shadow-md border border-slate-800 flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between mb-4">
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                    Live Production Release
+                  </span>
+                  <Box size={20} className="text-indigo-300" />
+                </div>
+
+                {latestApkRelease ? (
+                  <div className="space-y-4">
+                    <div>
+                      <div className="text-3xl font-extrabold tracking-tight text-white">
+                        v{latestApkRelease.version_name}
+                      </div>
+                      <div className="text-xs text-indigo-200 mt-1">
+                        Build Code: <span className="font-mono font-semibold text-white">{latestApkRelease.version_code}</span>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2 py-3 border-y border-slate-800 text-xs text-slate-300">
+                      <div className="flex justify-between">
+                        <span className="text-slate-400">File Name:</span>
+                        <span className="font-mono text-slate-200 truncate max-w-[180px]">{latestApkRelease.file_name}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-400">File Size:</span>
+                        <span className="font-semibold text-slate-200">{(latestApkRelease.file_size / (1024 * 1024)).toFixed(2)} MB</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-400">Published:</span>
+                        <span>{latestApkRelease.created_at ? new Date(latestApkRelease.created_at).toLocaleString() : 'N/A'}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-400">Force Update:</span>
+                        <span className={latestApkRelease.force_update ? "text-amber-400 font-semibold" : "text-slate-400"}>
+                          {latestApkRelease.force_update ? "Yes (Mandatory)" : "No (Normal)"}
+                        </span>
+                      </div>
+                    </div>
+
+                    {latestApkRelease.release_notes && (
+                      <div>
+                        <span className="text-xs font-semibold text-indigo-300 uppercase tracking-wider block mb-1">Release Notes:</span>
+                        <p className="text-xs text-slate-300 bg-slate-900/60 p-3 rounded-lg border border-slate-800/80 max-h-24 overflow-y-auto whitespace-pre-wrap">
+                          {latestApkRelease.release_notes}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-center py-12">
+                    <AlertCircle size={36} className="mx-auto text-slate-500 mb-2" />
+                    <p className="text-slate-400 text-sm">No APK releases published yet.</p>
+                    <p className="text-xs text-slate-500 mt-1">Upload your first APK to start OTA auto-updates.</p>
+                  </div>
+                )}
+              </div>
+
+              {latestApkRelease && (
+                <div className="mt-6 pt-4 border-t border-slate-800/80">
+                  <a
+                    href={`${API_URL}/public/app/download/latest`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="w-full flex items-center justify-center gap-2 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-semibold transition-all border border-white/10"
+                  >
+                    <Download size={14} />
+                    Direct Download Latest APK
+                  </a>
+                </div>
+              )}
+            </div>
+
+            {/* Upload New APK Release Form */}
+            <div className="lg:col-span-2 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+              <h3 className="text-lg font-bold text-slate-800 mb-1 flex items-center gap-2">
+                <Upload size={18} className="text-indigo-600" />
+                Upload New APK Release
+              </h3>
+              <p className="text-xs text-slate-500 mb-5">
+                Upload your compiled <code className="bg-slate-100 px-1 py-0.5 rounded text-indigo-600">.apk</code> file.
+                Once uploaded, connected kiosks will download it in the background and auto-apply when idle.
+              </p>
+
+              <form onSubmit={handleUploadApk} className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Version Code (Integer) *
+                    </label>
+                    <input
+                      type="number"
+                      required
+                      min="1"
+                      placeholder="e.g. 3"
+                      value={apkFormData.version_code}
+                      onChange={(e) => setApkFormData({ ...apkFormData, version_code: e.target.value })}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                    />
+                    <span className="text-[10px] text-slate-400 mt-0.5 block">
+                      Must be strictly higher than currently installed version ({latestApkRelease ? `Current: ${latestApkRelease.version_code}` : 'None'}).
+                    </span>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Version Name (Semantic) *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. 1.2.0"
+                      value={apkFormData.version_name}
+                      onChange={(e) => setApkFormData({ ...apkFormData, version_name: e.target.value })}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                    />
+                    <span className="text-[10px] text-slate-400 mt-0.5 block">
+                      User-visible version string (e.g. 1.2.0).
+                    </span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Select APK File (.apk) *
+                  </label>
+                  <div className="flex items-center justify-center w-full">
+                    <label className="flex flex-col items-center justify-center w-full h-28 border-2 border-slate-300 border-dashed rounded-2xl cursor-pointer bg-slate-50 hover:bg-slate-100 transition-colors">
+                      <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                        <UploadCloud className="w-8 h-8 mb-2 text-indigo-500" />
+                        <p className="text-xs text-slate-600">
+                          <span className="font-semibold text-indigo-600">Click to browse</span> or drag and drop
+                        </p>
+                        <p className="text-[11px] text-slate-400 mt-0.5">
+                          {apkFormData.file ? (
+                            <span className="font-semibold text-emerald-600">{apkFormData.file.name} ({(apkFormData.file.size / (1024 * 1024)).toFixed(2)} MB)</span>
+                          ) : (
+                            "Android Package (.apk) up to 150 MB"
+                          )}
+                        </p>
+                      </div>
+                      <input
+                        type="file"
+                        accept=".apk"
+                        required
+                        className="hidden"
+                        onChange={(e) => {
+                          if (e.target.files?.[0]) {
+                            setApkFormData({ ...apkFormData, file: e.target.files[0] });
+                          }
+                        }}
+                      />
+                    </label>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Release Notes / Changelog
+                  </label>
+                  <textarea
+                    rows={2}
+                    placeholder="Describe bug fixes, performance improvements, or new features in this release..."
+                    value={apkFormData.release_notes}
+                    onChange={(e) => setApkFormData({ ...apkFormData, release_notes: e.target.value })}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none resize-none"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between pt-2">
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={apkFormData.force_update}
+                      onChange={(e) => setApkFormData({ ...apkFormData, force_update: e.target.checked })}
+                      className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300"
+                    />
+                    <span className="text-xs text-slate-700 font-medium">
+                      Force Update immediately (Prompts right away instead of waiting for idle)
+                    </span>
+                  </label>
+
+                  <button
+                    type="submit"
+                    disabled={isUploadingApk}
+                    className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl shadow font-semibold text-sm transition-all disabled:opacity-50"
+                  >
+                    {isUploadingApk ? `Uploading (${apkUploadProgress}%)...` : "Publish & Activate Release"}
+                  </button>
+                </div>
+
+                {isUploadingApk && (
+                  <div className="w-full bg-slate-200 rounded-full h-2 mt-2 overflow-hidden">
+                    <div
+                      className="bg-indigo-600 h-2 rounded-full transition-all duration-300"
+                      style={{ width: `${apkUploadProgress}%` }}
+                    ></div>
+                  </div>
+                )}
+              </form>
+            </div>
+          </div>
+
+          {/* Releases History Table */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+            <div className="p-5 border-b border-slate-100 flex items-center justify-between">
+              <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
+                <Clock size={18} className="text-indigo-600" />
+                Release History ({apkReleases.length})
+              </h3>
+            </div>
+
+            {apkReleases.length === 0 ? (
+              <div className="p-8 text-center text-slate-400 text-sm">
+                No past releases found.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-100 text-xs">
+                    <tr>
+                      <th className="py-3 px-4">Version</th>
+                      <th className="py-3 px-4">Build Code</th>
+                      <th className="py-3 px-4">File Name</th>
+                      <th className="py-3 px-4">Size</th>
+                      <th className="py-3 px-4">Published At</th>
+                      <th className="py-3 px-4">Status</th>
+                      <th className="py-3 px-4 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {apkReleases.map((rel) => (
+                      <tr key={rel.id} className="hover:bg-slate-50/80 transition-colors">
+                        <td className="py-3 px-4 font-bold text-slate-800">
+                          v{rel.version_name}
+                        </td>
+                        <td className="py-3 px-4 font-mono text-xs text-slate-600">
+                          {rel.version_code}
+                        </td>
+                        <td className="py-3 px-4 text-xs font-mono text-slate-500">
+                          {rel.file_name}
+                        </td>
+                        <td className="py-3 px-4 text-xs text-slate-600">
+                          {(rel.file_size / (1024 * 1024)).toFixed(2)} MB
+                        </td>
+                        <td className="py-3 px-4 text-xs text-slate-500">
+                          {rel.created_at ? new Date(rel.created_at).toLocaleString() : '—'}
+                        </td>
+                        <td className="py-3 px-4">
+                          {rel.is_active ? (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800">
+                              <Check size={12} /> Active
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-500">
+                              Inactive
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            <a
+                              href={`${API_URL}/public/app/download/${rel.id}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="p-1.5 text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
+                              title="Download APK"
+                            >
+                              <Download size={16} />
+                            </a>
+                            {!rel.is_active && (
+                              <button
+                                type="button"
+                                onClick={() => handleActivateRelease(rel.id)}
+                                className="px-2.5 py-1 text-xs border border-indigo-200 text-indigo-600 hover:bg-indigo-50 rounded-lg font-medium transition-all"
+                                title="Make this the active production release"
+                              >
+                                Activate
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
 
       {/* Password Reset Modal */}
       {passwordModal.show && (

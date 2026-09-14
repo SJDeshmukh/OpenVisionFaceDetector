@@ -12,11 +12,16 @@ import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
 import android.view.View
+import android.view.ViewGroup
+import android.widget.Button
+import android.widget.LinearLayout
+import java.io.File
 import java.security.MessageDigest
 import androidx.appcompat.app.AppCompatActivity
 import androidx.fragment.app.Fragment
 import com.faceplugin.facerecognition.api.RetrofitClient
 import com.faceplugin.facerecognition.api.SyncResponse
+import com.faceplugin.facerecognition.update.AppUpdateManager
 import com.google.gson.JsonObject
 import com.google.android.material.bottomnavigation.BottomNavigationView
 import retrofit2.Call
@@ -386,6 +391,13 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
+            mSocket?.on("app_update_available") { args ->
+                android.util.Log.i("MainActivity", "Real-time OTA update broadcast received from SuperAdmin")
+                runOnUiThread {
+                    checkForOtaUpdate(forceImmediate = false)
+                }
+            }
+
             mSocket?.connect()
         } catch (e: Exception) {
             e.printStackTrace()
@@ -502,6 +514,91 @@ class MainActivity : AppCompatActivity() {
         try {
             fetchCooldownSettings()
         } catch (_: Exception) {}
+
+        try {
+            checkForOtaUpdate(forceImmediate = false)
+        } catch (_: Exception) {}
+    }
+
+    private var updateBannerView: View? = null
+
+    private fun checkForOtaUpdate(forceImmediate: Boolean) {
+        AppUpdateManager.checkAndUpdateInBackground(
+            context = applicationContext,
+            quiet = !forceImmediate,
+            callback = object : AppUpdateManager.UpdateCallback {
+                override fun onUpdateAvailable(release: AppUpdateManager.ReleaseInfo) {
+                    android.util.Log.i("MainActivity", "OTA Update Available: v${release.versionName} (${release.versionCode})")
+                }
+
+                override fun onUpdateReadyToInstall(release: AppUpdateManager.ReleaseInfo, apkFile: File) {
+                    android.util.Log.i("MainActivity", "OTA Update Ready to install: ${apkFile.name}")
+                    runOnUiThread {
+                        showUpdateBannerOrInstall(release, apkFile)
+                    }
+                }
+
+                override fun onError(error: String) {
+                    android.util.Log.w("MainActivity", "OTA Update check/download notice: $error")
+                }
+            }
+        )
+    }
+
+    private fun showUpdateBannerOrInstall(release: AppUpdateManager.ReleaseInfo, apkFile: File) {
+        if (isFinishing || isDestroyed) return
+
+        // If forceUpdate is true, install immediately
+        if (release.forceUpdate) {
+            AppUpdateManager.installApk(this, apkFile)
+            return
+        }
+
+        // If banner already shown, don't duplicate
+        if (updateBannerView != null) return
+
+        val root = findViewById<ViewGroup>(android.R.id.content) ?: return
+        val banner = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(32, 20, 32, 20)
+            setBackgroundColor(android.graphics.Color.parseColor("#F10F172A")) // Slate 900
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            elevation = 20f
+
+            val tv = TextView(context).apply {
+                text = "🚀 App Update v${release.versionName} Ready"
+                setTextColor(android.graphics.Color.WHITE)
+                textSize = 14f
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+
+            val btnInstall = Button(context).apply {
+                text = "Install"
+                setBackgroundColor(android.graphics.Color.parseColor("#4F46E5")) // Indigo 600
+                setTextColor(android.graphics.Color.WHITE)
+                setOnClickListener {
+                    AppUpdateManager.installApk(this@MainActivity, apkFile)
+                }
+            }
+
+            addView(tv)
+            addView(btnInstall)
+        }
+
+        val lp = ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        )
+        root.addView(banner, lp)
+        updateBannerView = banner
+
+        // Auto-install after 60 seconds of idle if not touched
+        handler.postDelayed({
+            if (updateBannerView != null && !isFinishing && !isDestroyed) {
+                AppUpdateManager.installApk(this, apkFile)
+            }
+        }, 60000)
     }
 
     private fun fetchCooldownSettings() {

@@ -3993,3 +3993,145 @@ def get_vendor_leave_students(vendor_id):
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OVER-THE-AIR (OTA) APK RELEASE MANAGEMENT
+# ─────────────────────────────────────────────────────────────────────────────
+
+@admin_bp.route("/app-releases", methods=["GET"])
+@super_admin_required
+def get_admin_app_releases():
+    from utils import get_db_connection
+    from services.apk_service import list_all_releases, get_latest_release
+    conn = get_db_connection()
+    try:
+        releases = list_all_releases(conn, limit=50)
+        latest = get_latest_release(conn)
+        return jsonify({
+            "releases": releases,
+            "latest_release": latest
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+@admin_bp.route("/app-releases", methods=["POST"])
+@super_admin_required
+def upload_admin_app_release():
+    from utils import get_db_connection, log_audit
+    from services.apk_service import save_apk_release
+    
+    if "apk_file" not in request.files:
+        return jsonify({"error": "No apk_file provided in request"}), 400
+    
+    apk_file = request.files["apk_file"]
+    if not apk_file.filename or not apk_file.filename.lower().endswith(".apk"):
+        return jsonify({"error": "Invalid file. Please upload an .apk file"}), 400
+
+    version_code = request.form.get("version_code")
+    version_name = request.form.get("version_name")
+    if not version_code or not version_name:
+        return jsonify({"error": "version_code and version_name are required"}), 400
+
+    try:
+        version_code = int(version_code)
+    except ValueError:
+        return jsonify({"error": "version_code must be an integer"}), 400
+
+    release_notes = request.form.get("release_notes", "")
+    force_update = str(request.form.get("force_update", "false")).lower() in ["true", "1", "yes"]
+    package_name = request.form.get("package_name", "com.faceplugin.facerecognitionsdk")
+
+    conn = get_db_connection()
+    try:
+        result = save_apk_release(
+            conn=conn,
+            file_storage=apk_file,
+            version_code=version_code,
+            version_name=version_name,
+            package_name=package_name,
+            release_notes=release_notes,
+            force_update=force_update
+        )
+        log_audit("UPLOAD_APP_RELEASE", f"Uploaded APK v{version_name} (code: {version_code})")
+        return jsonify({
+            "message": "APK release uploaded and activated successfully",
+            "release": result
+        }), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+@admin_bp.route("/app-releases/<int:release_id>/activate", methods=["POST"])
+@super_admin_required
+def activate_admin_app_release(release_id):
+    from utils import get_db_connection, log_audit
+    from services.apk_service import activate_release
+    conn = get_db_connection()
+    try:
+        ok = activate_release(conn, release_id)
+        if ok:
+            log_audit("ACTIVATE_APP_RELEASE", f"Activated APK release id {release_id}")
+            return jsonify({"message": f"Release {release_id} is now active"}), 200
+        else:
+            return jsonify({"error": "Failed to activate release"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+@admin_bp.route("/app-releases/broadcast", methods=["POST"])
+@super_admin_required
+def broadcast_app_update_to_kiosks():
+    """
+    Emits a Socket.IO event to all connected kiosks notifying them that an update is ready.
+    """
+    from utils import get_db_connection, log_audit
+    from services.apk_service import get_latest_release
+    from app import socketio
+    conn = get_db_connection()
+    try:
+        latest = get_latest_release(conn)
+        if not latest:
+            return jsonify({"error": "No active release to broadcast"}), 404
+
+        base_url = request.host_url.rstrip('/')
+        download_url = f"{base_url}/api/public/app/download/latest"
+
+        payload = {
+            "version_code": latest["version_code"],
+            "version_name": latest["version_name"],
+            "package_name": latest.get("package_name"),
+            "file_size": latest["file_size"],
+            "release_notes": latest.get("release_notes") or "",
+            "force_update": bool(latest.get("force_update")),
+            "download_url": download_url
+        }
+
+        # Broadcast to all connected sockets
+        socketio.emit("app_update_available", payload)
+        log_audit("BROADCAST_APP_UPDATE", f"Broadcasted v{latest['version_name']} (code {latest['version_code']}) to kiosks")
+
+        return jsonify({
+            "message": f"Update notification for v{latest['version_name']} broadcasted successfully to all kiosks",
+            "payload": payload
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+

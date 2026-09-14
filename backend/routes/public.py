@@ -1,4 +1,4 @@
-from flask import Blueprint, jsonify, current_app, request
+from flask import Blueprint, jsonify, current_app, request, send_file, abort
 import sqlite3
 import os
 import logging
@@ -135,3 +135,116 @@ def public_business_types():
 
     logger.info(f"Returning {len(final_list)} business types for brand='{app_brand}'.")
     return jsonify({"business_types": final_list})
+
+@public_bp.route('/app/latest-version', methods=['GET'])
+def get_latest_app_version():
+    """
+    Public endpoint for Android kiosks and mobile apps to check for OTA updates.
+    Returns latest active version info, checksum, file size, and download URL.
+    """
+    from utils import get_db_connection
+    from services.apk_service import get_latest_release
+    conn = get_db_connection()
+    try:
+        release = get_latest_release(conn)
+        if not release:
+            return jsonify({
+                "has_update": False,
+                "latest_release": None,
+                "message": "No active releases published"
+            }), 200
+
+        # Construct download URL (relative or absolute)
+        base_url = request.host_url.rstrip('/')
+        download_url = f"{base_url}/api/public/app/download/latest"
+
+        return jsonify({
+            "has_update": True,
+            "version_code": release["version_code"],
+            "version_name": release["version_name"],
+            "package_name": release.get("package_name") or "com.faceplugin.facerecognitionsdk",
+            "file_name": release["file_name"],
+            "file_size": release["file_size"],
+            "checksum_sha256": release.get("checksum_sha256"),
+            "release_notes": release.get("release_notes") or "",
+            "force_update": bool(release.get("force_update")),
+            "min_supported_version": release.get("min_supported_version") or 1,
+            "download_url": download_url,
+            "created_at": release.get("created_at")
+        }), 200
+    except Exception as e:
+        logger.error(f"Error checking latest app version: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+@public_bp.route('/app/download/latest', methods=['GET'])
+def download_latest_apk():
+    """
+    Public endpoint to download the latest active APK file.
+    Streams file with proper Android package mime-type.
+    """
+    from utils import get_db_connection
+    from services.apk_service import get_latest_release
+    conn = get_db_connection()
+    try:
+        release = get_latest_release(conn)
+        if not release:
+            return jsonify({"error": "No active release found"}), 404
+
+        file_path = release.get("file_path")
+        if not file_path or not os.path.exists(file_path):
+            logger.error(f"APK file missing on disk: {file_path}")
+            return jsonify({"error": "APK file not found on disk"}), 404
+
+        return send_file(
+            file_path,
+            mimetype="application/vnd.android.package-archive",
+            as_attachment=True,
+            download_name=release.get("file_name") or "tapinx-release.apk"
+        )
+    except Exception as e:
+        logger.error(f"Error downloading latest APK: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+@public_bp.route('/app/download/<int:release_id>', methods=['GET'])
+def download_release_apk_by_id(release_id):
+    """
+    Public endpoint to download a specific release by its ID.
+    """
+    from utils import get_db_connection
+    from services.apk_service import list_all_releases
+    conn = get_db_connection()
+    try:
+        releases = list_all_releases(conn, limit=100)
+        target = next((r for r in releases if r.get("id") == release_id), None)
+        if not target:
+            return jsonify({"error": "Release not found"}), 404
+
+        file_path = target.get("file_path")
+        if not file_path or not os.path.exists(file_path):
+            return jsonify({"error": "APK file not found on disk"}), 404
+
+        return send_file(
+            file_path,
+            mimetype="application/vnd.android.package-archive",
+            as_attachment=True,
+            download_name=target.get("file_name") or f"tapinx-v{target.get('version_code')}.apk"
+        )
+    except Exception as e:
+        logger.error(f"Error downloading APK {release_id}: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+

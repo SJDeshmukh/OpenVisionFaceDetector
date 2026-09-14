@@ -42,6 +42,15 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
 
     override fun onMessageReceived(message: RemoteMessage) {
         super.onMessageReceived(message)
+
+        // Check if message is an OTA update command from SuperAdmin
+        val action = message.data["action"]
+        if (action == "APP_UPDATE" || action == "INSTALL_UPDATE") {
+            android.util.Log.i("AppFCM", "FCM trigger for OTA update received")
+            com.faceplugin.facerecognition.update.AppUpdateManager.checkAndUpdateInBackground(applicationContext, quiet = false)
+            return
+        }
+
         // Only reached in foreground; background messages are auto-shown by the system.
         val title = message.notification?.title
             ?: message.data["title"]
