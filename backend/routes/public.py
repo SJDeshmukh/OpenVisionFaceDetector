@@ -136,7 +136,7 @@ def public_business_types():
     logger.info(f"Returning {len(final_list)} business types for brand='{app_brand}'.")
     return jsonify({"business_types": final_list})
 
-@public_bp.route('/app/latest-version', methods=['GET'])
+@public_bp.route('/app/latest-version', methods=['GET'], strict_slashes=False)
 def get_latest_app_version():
     """
     Public endpoint for Android kiosks and mobile apps to check for OTA updates.
@@ -181,7 +181,7 @@ def get_latest_app_version():
         except Exception:
             pass
 
-@public_bp.route('/app/download/latest', methods=['GET'])
+@public_bp.route('/app/download/latest', methods=['GET'], strict_slashes=False)
 def download_latest_apk():
     """
     Public endpoint to download the latest active APK file.
@@ -215,7 +215,7 @@ def download_latest_apk():
         except Exception:
             pass
 
-@public_bp.route('/app/download/<int:release_id>', methods=['GET'])
+@public_bp.route('/app/download/<int:release_id>', methods=['GET'], strict_slashes=False)
 def download_release_apk_by_id(release_id):
     """
     Public endpoint to download a specific release by its ID.

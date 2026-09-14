@@ -304,18 +304,27 @@ def notify_punch_event_async(vendor_id, person_id, punch_type, timestamp, is_lat
                 send_whatsapp_text(vendor_id, p_phone, msg)
 
             # 2. Check if Parent Alert is needed (Student/Campus vertical)
-            c.execute("SELECT parent_phone FROM student_parents WHERE student_id = ? AND vendor_id = ?", (person_id, vendor_id))
-            parent_row = c.fetchone()
-            if parent_row:
-                parent_phone = parent_row[0] if not hasattr(parent_row, 'keys') else parent_row['parent_phone']
-                if parent_phone:
-                    parent_msg = (
-                        f"🏫 *Campus Attendance Alert*\n\n"
-                        f"Dear Parent,\n"
-                        f"Your ward *{p_name}* has {action_label.lower()} at *{ts_label}*.\n\n"
-                        f"_TapInX Campus Safety Monitoring._"
-                    )
-                    send_whatsapp_text(vendor_id, parent_phone, parent_msg)
+            try:
+                c.execute("""
+                    SELECT pu.contact_phone 
+                    FROM student_parents sp
+                    JOIN parent_users pu ON sp.parent_id = pu.id
+                    WHERE sp.person_id = ? AND sp.vendor_id = ?
+                    LIMIT 1
+                """, (person_id, vendor_id))
+                parent_row = c.fetchone()
+                if parent_row:
+                    parent_phone = parent_row[0] if not hasattr(parent_row, 'keys') else parent_row['contact_phone']
+                    if parent_phone:
+                        parent_msg = (
+                            f"🏫 *Campus Attendance Alert*\n\n"
+                            f"Dear Parent,\n"
+                            f"Your ward *{p_name}* has {action_label.lower()} at *{ts_label}*.\n\n"
+                            f"_TapInX Campus Safety Monitoring._"
+                        )
+                        send_whatsapp_text(vendor_id, parent_phone, parent_msg)
+            except Exception as e:
+                logger.warning(f"Failed to query student_parents for WhatsApp: {e}")
 
             conn.close()
         except Exception as e:

@@ -386,11 +386,14 @@ app.register_blueprint(whatsapp_bp)
 register_error_handlers(app)
 
 # --- Serve Frontend (SPA) ---
-@app.route("/", defaults={'path': ''})
-@app.route("/<path:path>")
+@app.route("/", defaults={'path': ''}, methods=['GET'])
+@app.route("/<path:path>", methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'])
 def serve_frontend(path):
     # Prevent shadowing API/Socket.io routes
     if path.startswith("api/") or path.startswith("socket.io/") or path.startswith("metrics"):
+        return abort(404)
+        
+    if request.method != "GET":
         return abort(404)
         
     static_folder = os.path.abspath(os.path.join(os.path.dirname(__file__), "../web-dashboard/dist"))

@@ -37,6 +37,15 @@ def register_error_handlers(app):
             "code": "FORBIDDEN"
         }), 403
 
+    from werkzeug.exceptions import HTTPException
+
+    @app.errorhandler(HTTPException)
+    def handle_http_exception(e):
+        return jsonify({
+            "error": e.description,
+            "code": getattr(e, "name", "HTTP_ERROR").upper().replace(" ", "_")
+        }), e.code
+
     @app.errorhandler(Exception)
     def handle_generic_exception(e):
         logger.exception(f"Unhandled exception: {str(e)}")

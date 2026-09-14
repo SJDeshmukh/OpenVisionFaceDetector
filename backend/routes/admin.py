@@ -3998,7 +3998,7 @@ def get_vendor_leave_students(vendor_id):
 # OVER-THE-AIR (OTA) APK RELEASE MANAGEMENT
 # ─────────────────────────────────────────────────────────────────────────────
 
-@admin_bp.route("/app-releases", methods=["GET"])
+@admin_bp.route("/app-releases", methods=["GET"], strict_slashes=False)
 @super_admin_required
 def get_admin_app_releases():
     from utils import get_db_connection
@@ -4019,7 +4019,7 @@ def get_admin_app_releases():
         except Exception:
             pass
 
-@admin_bp.route("/app-releases", methods=["POST"])
+@admin_bp.route("/app-releases", methods=["POST"], strict_slashes=False)
 @super_admin_required
 def upload_admin_app_release():
     from utils import get_db_connection, log_audit
@@ -4070,7 +4070,7 @@ def upload_admin_app_release():
         except Exception:
             pass
 
-@admin_bp.route("/app-releases/<int:release_id>/activate", methods=["POST"])
+@admin_bp.route("/app-releases/<int:release_id>/activate", methods=["POST"], strict_slashes=False)
 @super_admin_required
 def activate_admin_app_release(release_id):
     from utils import get_db_connection, log_audit
@@ -4091,7 +4091,7 @@ def activate_admin_app_release(release_id):
         except Exception:
             pass
 
-@admin_bp.route("/app-releases/broadcast", methods=["POST"])
+@admin_bp.route("/app-releases/broadcast", methods=["POST"], strict_slashes=False)
 @super_admin_required
 def broadcast_app_update_to_kiosks():
     """
