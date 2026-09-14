@@ -50,24 +50,245 @@ const formatValue = (value, column = {}) => {
   return String(value);
 };
 
-const InlineText = ({ text }) => String(text || '').split(/(\*\*[^*]+\*\*)/g).map((part, index) => (
-  part.startsWith('**') && part.endsWith('**')
-    ? <strong key={`${part}-${index}`} className="font-semibold text-slate-50">{part.slice(2, -2)}</strong>
-    : <span key={`${part}-${index}`}>{part}</span>
-));
+const InlineText = ({ text }) => {
+  if (!text) return null;
+  // Support inline code (`...`), bold (**...**), italic (*...*)
+  const parts = String(text).split(/(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g);
+  return parts.map((part, index) => {
+    if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
+      return (
+        <code key={index} className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[11px] text-cyan-300">
+          {part.slice(1, -1)}
+        </code>
+      );
+    }
+    if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
+      return (
+        <strong key={index} className="font-semibold text-slate-100">
+          {part.slice(2, -2)}
+        </strong>
+      );
+    }
+    if (part.startsWith('*') && part.endsWith('*') && part.length > 2) {
+      return (
+        <em key={index} className="italic text-slate-300">
+          {part.slice(1, -1)}
+        </em>
+      );
+    }
+    return <span key={index}>{part}</span>;
+  });
+};
+
+const parseCells = (rowStr) => {
+  const trimmed = rowStr.trim();
+  const parts = trimmed.split('|').map((p) => p.trim());
+  if (parts.length > 0 && parts[0] === '') parts.shift();
+  if (parts.length > 0 && parts[parts.length - 1] === '') parts.pop();
+  return parts;
+};
+
+const isTableSeparator = (line) => {
+  const trimmed = line.trim();
+  return /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/.test(trimmed);
+};
+
+const isTableRow = (line) => {
+  const trimmed = line.trim();
+  return trimmed.includes('|') && !trimmed.startsWith('#');
+};
 
 export const FormattedText = ({ children }) => {
   const lines = String(children || '').split('\n');
+  const blocks = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const rawLine = lines[i];
+    const line = rawLine.trim();
+
+    if (!line) {
+      blocks.push({ type: 'spacer', key: `space-${i}` });
+      i += 1;
+      continue;
+    }
+
+    // 1. Table Detection
+    if (isTableRow(line) && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+      const headers = parseCells(line);
+      const sepCells = parseCells(lines[i + 1]);
+      const alignments = sepCells.map((cell) => {
+        if (cell.startsWith(':') && cell.endsWith(':')) return 'text-center';
+        if (cell.endsWith(':')) return 'text-right';
+        return 'text-left';
+      });
+
+      i += 2;
+      const rows = [];
+      while (i < lines.length && isTableRow(lines[i]) && !isTableSeparator(lines[i])) {
+        const rowCells = parseCells(lines[i]);
+        if (rowCells.length > 0) {
+          rows.push(rowCells);
+        }
+        i += 1;
+      }
+
+      blocks.push({
+        type: 'table',
+        key: `table-${i}`,
+        headers,
+        alignments,
+        rows,
+      });
+      continue;
+    }
+
+    // 2. Orphaned bullet character (e.g. • or - on its own line followed by text)
+    if ((line === '•' || line === '-' || line === '*') && i + 1 < lines.length && lines[i + 1].trim()) {
+      i += 1;
+      blocks.push({
+        type: 'bullet',
+        key: `bullet-${i}`,
+        text: lines[i].trim(),
+      });
+      i += 1;
+      continue;
+    }
+
+    // 3. Regular bullet point (- item, * item, • item)
+    const bulletMatch = line.match(/^[-*•]\s+(.+)/);
+    if (bulletMatch) {
+      blocks.push({
+        type: 'bullet',
+        key: `bullet-${i}`,
+        text: bulletMatch[1],
+      });
+      i += 1;
+      continue;
+    }
+
+    // 4. Numbered list (1. item or 1) item)
+    const numberedMatch = line.match(/^(\d+)[.)]\s+(.+)/);
+    if (numberedMatch) {
+      blocks.push({
+        type: 'numbered',
+        key: `num-${i}`,
+        num: numberedMatch[1],
+        text: numberedMatch[2],
+      });
+      i += 1;
+      continue;
+    }
+
+    // 5. Headings (# Title, ## Title, ### Title) or short section titles followed by table/spacer
+    const isExplicitHeading = /^#{1,4}\s+/.test(line);
+    const isImplicitHeading =
+      line.length < 55 &&
+      !line.endsWith('.') &&
+      !line.endsWith(',') &&
+      (line.endsWith(':') || (i + 1 < lines.length && isTableRow(lines[i + 1])));
+
+    if (isExplicitHeading || isImplicitHeading) {
+      blocks.push({
+        type: 'heading',
+        key: `head-${i}`,
+        text: line.replace(/^#{1,4}\s+/, '').replace(/:$/, ''),
+      });
+      i += 1;
+      continue;
+    }
+
+    // 6. Regular Paragraph
+    blocks.push({
+      type: 'paragraph',
+      key: `p-${i}`,
+      text: line,
+    });
+    i += 1;
+  }
+
   return (
-    <div className="space-y-1.5 break-words">
-      {lines.map((rawLine, index) => {
-        const line = rawLine.trim();
-        if (!line) return <div key={`space-${index}`} className="h-1" />;
-        const bullet = line.match(/^[-*]\s+(.+)/);
-        const numbered = line.match(/^(\d+)[.)]\s+(.+)/);
-        if (bullet) return <div key={`${line}-${index}`} className="flex gap-2"><span className="text-cyan-400">•</span><span><InlineText text={bullet[1]} /></span></div>;
-        if (numbered) return <div key={`${line}-${index}`} className="flex gap-2"><span className="min-w-5 text-right text-cyan-400">{numbered[1]}.</span><span><InlineText text={numbered[2]} /></span></div>;
-        return <p key={`${line}-${index}`}><InlineText text={line.replace(/^#{1,3}\s+/, '')} /></p>;
+    <div className="space-y-1.5 text-xs leading-relaxed text-slate-200 break-words">
+      {blocks.map((block) => {
+        if (block.type === 'spacer') {
+          return <div key={block.key} className="h-1.5" />;
+        }
+
+        if (block.type === 'table') {
+          return (
+            <div key={block.key} className="my-2.5 overflow-hidden rounded-xl border border-slate-700/80 bg-slate-950/75 shadow-sm">
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-full border-collapse text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-700/80 bg-slate-800/90 text-cyan-300">
+                      {block.headers.map((header, hIdx) => (
+                        <th
+                          key={hIdx}
+                          className={`whitespace-nowrap px-3 py-2 font-semibold tracking-wide ${block.alignments[hIdx] || 'text-left'}`}
+                        >
+                          <InlineText text={header} />
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/70 text-slate-200">
+                    {block.rows.map((row, rIdx) => (
+                      <tr key={rIdx} className="transition-colors even:bg-slate-900/40 hover:bg-cyan-950/20">
+                        {row.map((cell, cIdx) => (
+                          <td
+                            key={cIdx}
+                            className={`whitespace-nowrap px-3 py-1.5 text-slate-200 ${block.alignments[cIdx] || 'text-left'}`}
+                          >
+                            <InlineText text={cell} />
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+        }
+
+        if (block.type === 'heading') {
+          return (
+            <div key={block.key} className="mt-3 mb-1 flex items-center gap-1.5 border-b border-slate-800/80 pb-1">
+              <span className="h-1.5 w-1.5 rounded-full bg-cyan-400" />
+              <h4 className="text-[11px] font-bold uppercase tracking-wider text-cyan-200">
+                <InlineText text={block.text} />
+              </h4>
+            </div>
+          );
+        }
+
+        if (block.type === 'bullet') {
+          return (
+            <div key={block.key} className="flex items-start gap-2 pl-0.5 text-xs">
+              <span className="mt-0.5 font-bold text-cyan-400 leading-none">•</span>
+              <span className="flex-1 text-slate-200">
+                <InlineText text={block.text} />
+              </span>
+            </div>
+          );
+        }
+
+        if (block.type === 'numbered') {
+          return (
+            <div key={block.key} className="flex items-start gap-2 pl-0.5 text-xs">
+              <span className="min-w-4 text-right font-semibold text-cyan-400">{block.num}.</span>
+              <span className="flex-1 text-slate-200">
+                <InlineText text={block.text} />
+              </span>
+            </div>
+          );
+        }
+
+        return (
+          <p key={block.key} className="text-xs text-slate-200">
+            <InlineText text={block.text} />
+          </p>
+        );
       })}
     </div>
   );

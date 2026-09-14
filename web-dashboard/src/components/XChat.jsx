@@ -281,10 +281,10 @@ const XChat = () => {
         <section aria-label="XChat business assistant"
           className="fixed inset-0 z-50 flex flex-col overflow-hidden border-slate-700 bg-slate-950 text-slate-100 shadow-2xl sm:inset-auto sm:bottom-5 sm:right-5 sm:h-[min(680px,calc(100vh-40px))] sm:w-[410px] sm:rounded-2xl sm:border">
           <header className="flex h-16 shrink-0 items-center gap-3 border-b border-slate-800 bg-slate-900/95 px-4">
-            {historyOpen && <button type="button" onClick={() => setHistoryOpen(false)} aria-label="Back to chat"><ChevronLeft size={20} /></button>}
+            {historyOpen && <button type="button" onClick={() => setHistoryOpen(false)} aria-label="Back to chat" className="rounded-lg p-2 text-slate-300 hover:text-white hover:bg-slate-800 transition-colors"><ChevronLeft size={20} /></button>}
             <span className="grid h-9 w-9 place-items-center rounded-xl bg-cyan-500/15"><BrandLogo className="h-7 w-7" /></span>
             <div className="min-w-0 flex-1">
-              <h2 className="text-sm font-semibold">XChat</h2>
+              <h2 className="text-sm font-semibold text-white">XChat</h2>
               <p className={`truncate text-[11px] ${credits?.blocked ? 'text-red-400' : 'text-slate-400'}`}>
                 {credits?.billing_mode === 'fixed'
                   ? `${Number(credits.remaining_tokens || 0).toLocaleString()} tokens remaining`
@@ -293,9 +293,9 @@ const XChat = () => {
                     : 'Assistant for your enabled features'}
               </p>
             </div>
-            <button type="button" onClick={() => { voice.cancel(); setHistoryOpen(!historyOpen); }} className="rounded-lg p-2 hover:bg-slate-800" aria-label="Chat history"><History size={19} /></button>
-            <button type="button" onClick={newChat} className="rounded-lg p-2 hover:bg-slate-800" aria-label="New chat"><Plus size={19} /></button>
-            <button type="button" onClick={() => { voice.cancel(); setOpen(false); }} className="rounded-lg p-2 hover:bg-slate-800" aria-label="Close XChat"><X size={19} /></button>
+            <button type="button" onClick={() => { voice.cancel(); setHistoryOpen(!historyOpen); }} className="rounded-lg p-2 text-slate-300 hover:text-cyan-300 hover:bg-slate-800 transition-colors" aria-label="Chat history" title="Chat history"><History size={19} /></button>
+            <button type="button" onClick={newChat} className="rounded-lg p-2 text-slate-300 hover:text-cyan-300 hover:bg-slate-800 transition-colors" aria-label="New chat" title="New chat"><Plus size={19} /></button>
+            <button type="button" onClick={() => { voice.cancel(); setOpen(false); }} className="rounded-lg p-2 text-slate-300 hover:text-rose-300 hover:bg-slate-800 transition-colors" aria-label="Close XChat" title="Close XChat"><X size={19} /></button>
           </header>
 
           {historyOpen ? (
@@ -396,24 +396,53 @@ const XChat = () => {
                     )}
                   </div>
                 )}
-                <div className={`flex items-end gap-2 rounded-xl border bg-slate-950 p-2 ${voice.phase === 'listening' ? 'border-cyan-500/70' : 'border-slate-700 focus-within:border-cyan-600'}`}>
+                {messages.length > 0 && !loading && (
+                  <div className="mb-2 flex items-center gap-1.5 overflow-x-auto pb-1">
+                    <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-slate-400">Quick:</span>
+                    {[
+                      'Daily breakdown',
+                      'Who is late?',
+                      'Summarize last 7 days',
+                      'Summarize this month',
+                      'List all employees',
+                    ].map((suggestion) => (
+                      <button
+                        key={suggestion}
+                        type="button"
+                        onClick={() => send(suggestion)}
+                        className="shrink-0 rounded-full border border-slate-700/80 bg-slate-800/80 px-2.5 py-1 text-[11px] font-medium text-slate-200 hover:border-cyan-400 hover:bg-cyan-950/40 hover:text-cyan-200 transition-all active:scale-95"
+                      >
+                        {suggestion}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div className={`flex items-end gap-2 rounded-xl border bg-slate-950 p-2 ${voice.phase === 'listening' ? 'border-cyan-500/70 shadow-sm shadow-cyan-500/20' : 'border-slate-700 focus-within:border-cyan-500 focus-within:ring-1 focus-within:ring-cyan-500/30'}`}>
                   <textarea value={draft} onChange={(event) => setDraft(event.target.value)} rows={1} maxLength={1000}
                     placeholder={credits?.blocked ? 'Token credits exhausted' : 'Ask about any enabled feature…'}
                     onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); } }}
                     disabled={voice.phase !== 'idle' || credits?.blocked}
-                    className="max-h-24 min-h-9 flex-1 resize-none bg-transparent px-1 py-2 text-sm outline-none placeholder:text-slate-600 disabled:opacity-50" />
+                    className="max-h-24 min-h-9 flex-1 resize-none bg-transparent px-2 py-2 text-sm font-normal text-slate-100 placeholder:text-slate-500 outline-none caret-cyan-400 selection:bg-cyan-500/30 selection:text-white disabled:opacity-50" />
                   {voice.available && (
                     <button type="button" disabled={loading || voice.phase === 'transcribing'} onClick={voice.phase === 'listening' ? voice.stop : voice.start}
                       aria-label={voice.phase === 'listening' ? 'Stop and transcribe recording' : 'Ask with your voice'} aria-pressed={voice.phase === 'listening'}
-                      className={`relative grid h-9 w-9 shrink-0 place-items-center rounded-lg transition disabled:cursor-not-allowed disabled:opacity-40 ${voice.phase === 'listening' ? 'bg-red-500 text-white shadow-lg shadow-red-950/50' : 'bg-slate-800 text-cyan-300 hover:bg-slate-700'}`}>
+                      title={voice.phase === 'listening' ? 'Stop recording' : 'Voice input'}
+                      className={`relative grid h-9 w-9 shrink-0 place-items-center rounded-lg transition-all disabled:cursor-not-allowed disabled:opacity-40 ${voice.phase === 'listening' ? 'bg-red-500 text-white shadow-lg shadow-red-950/50 animate-pulse' : 'border border-slate-700/80 bg-slate-800 text-cyan-300 hover:bg-slate-700 hover:text-cyan-200'}`}>
                       {voice.phase === 'listening' && <span className="absolute inset-0 animate-ping rounded-lg bg-red-400/25" />}
                       <Mic size={17} className="relative" />
                     </button>
                   )}
                   <button type="button" disabled={!draft.trim() || loading || voice.phase !== 'idle' || credits?.blocked} onClick={() => send()} aria-label="Send message"
-                    className="grid h-9 w-9 place-items-center rounded-lg bg-cyan-500 text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"><Send size={17} /></button>
+                    title={draft.trim() ? 'Send prompt' : 'Type a prompt to send'}
+                    className={`grid h-9 w-9 place-items-center rounded-lg transition-all ${
+                      draft.trim() && !loading && voice.phase === 'idle' && !credits?.blocked
+                        ? 'bg-cyan-500 text-slate-950 hover:bg-cyan-400 shadow-md shadow-cyan-500/25 active:scale-95 cursor-pointer'
+                        : 'border border-slate-800 bg-slate-800/80 text-slate-400 cursor-not-allowed'
+                    }`}>
+                    <Send size={16} />
+                  </button>
                 </div>
-                <p className="mt-2 text-center text-[10px] text-slate-500">Read-only insights{voice.available ? ' · Voice enabled' : ''} · Limited to your enabled features</p>
+                <p className="mt-2 text-center text-[10px] text-slate-400">Read-only insights{voice.available ? ' · Voice enabled' : ''} · Limited to your enabled features</p>
               </footer>
             </>
           )}
