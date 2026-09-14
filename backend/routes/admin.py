@@ -4032,15 +4032,17 @@ def upload_admin_app_release():
     if not apk_file.filename or not apk_file.filename.lower().endswith(".apk"):
         return jsonify({"error": "Invalid file. Please upload an .apk file"}), 400
 
-    version_code = request.form.get("version_code")
-    version_name = request.form.get("version_name")
-    if not version_code or not version_name:
-        return jsonify({"error": "version_code and version_name are required"}), 400
+    version_code_raw = request.form.get("version_code")
+    version_name_raw = request.form.get("version_name")
 
-    try:
-        version_code = int(version_code)
-    except ValueError:
-        return jsonify({"error": "version_code must be an integer"}), 400
+    version_code = None
+    if version_code_raw and version_code_raw.strip():
+        try:
+            version_code = int(version_code_raw.strip())
+        except ValueError:
+            return jsonify({"error": "version_code must be an integer"}), 400
+
+    version_name = version_name_raw.strip() if version_name_raw and version_name_raw.strip() else None
 
     release_notes = request.form.get("release_notes", "")
     force_update = str(request.form.get("force_update", "false")).lower() in ["true", "1", "yes"]
@@ -4057,9 +4059,11 @@ def upload_admin_app_release():
             release_notes=release_notes,
             force_update=force_update
         )
-        log_audit("UPLOAD_APP_RELEASE", f"Uploaded APK v{version_name} (code: {version_code})")
+        actual_code = result.get("version_code", version_code)
+        actual_name = result.get("version_name", version_name)
+        log_audit("UPLOAD_APP_RELEASE", f"Uploaded APK v{actual_name} (code: {actual_code})")
         return jsonify({
-            "message": "APK release uploaded and activated successfully",
+            "message": f"APK release v{actual_name} (code {actual_code}) uploaded and activated successfully",
             "release": result
         }), 201
     except Exception as e:

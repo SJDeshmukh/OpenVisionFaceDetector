@@ -490,13 +490,13 @@ const SuperAdminDashboard = () => {
 
     const formData = new FormData();
     formData.append('apk_file', apkFormData.file);
-    formData.append('version_code', apkFormData.version_code);
-    formData.append('version_name', apkFormData.version_name);
+    if (apkFormData.version_code) formData.append('version_code', apkFormData.version_code);
+    if (apkFormData.version_name) formData.append('version_name', apkFormData.version_name);
     formData.append('release_notes', apkFormData.release_notes);
     formData.append('force_update', apkFormData.force_update ? 'true' : 'false');
 
     try {
-      await axios.post(`${API_URL}/admin/app-releases`, formData, {
+      const res = await axios.post(`${API_URL}/admin/app-releases`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
         onUploadProgress: (progressEvent) => {
           if (progressEvent.total) {
@@ -505,7 +505,7 @@ const SuperAdminDashboard = () => {
           }
         }
       });
-      alert('APK Release uploaded and activated successfully!');
+      alert(res.data?.message || 'APK Release uploaded and activated successfully!');
       setApkFormData({ version_code: '', version_name: '', release_notes: '', force_update: false, file: null });
       fetchApkReleases();
     } catch (err) {
@@ -3402,36 +3402,34 @@ const SuperAdminDashboard = () => {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Version Code (Integer) *
+                      Version Code (Integer) <span className="text-slate-400 font-normal">(Optional — Auto-detected)</span>
                     </label>
                     <input
                       type="number"
-                      required
                       min="1"
-                      placeholder="e.g. 3"
+                      placeholder="Auto-detected from APK"
                       value={apkFormData.version_code}
                       onChange={(e) => setApkFormData({ ...apkFormData, version_code: e.target.value })}
-                      className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                      className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none placeholder:text-slate-400"
                     />
                     <span className="text-[10px] text-slate-400 mt-0.5 block">
-                      Must be strictly higher than currently installed version ({latestApkRelease ? `Current: ${latestApkRelease.version_code}` : 'None'}).
+                      Leave blank to auto-read the exact version code inside the APK binary.
                     </span>
                   </div>
 
                   <div>
                     <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Version Name (Semantic) *
+                      Version Name (Semantic) <span className="text-slate-400 font-normal">(Optional — Auto-detected)</span>
                     </label>
                     <input
                       type="text"
-                      required
-                      placeholder="e.g. 1.2.0"
+                      placeholder="Auto-detected from APK"
                       value={apkFormData.version_name}
                       onChange={(e) => setApkFormData({ ...apkFormData, version_name: e.target.value })}
-                      className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                      className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none placeholder:text-slate-400"
                     />
                     <span className="text-[10px] text-slate-400 mt-0.5 block">
-                      User-visible version string (e.g. 1.2.0).
+                      Leave blank to auto-read the exact version name inside the APK binary.
                     </span>
                   </div>
                 </div>

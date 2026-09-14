@@ -1,4 +1,7 @@
 import os
+import io
+import struct
+import zipfile
 import hashlib
 import logging
 import sqlite3
@@ -69,12 +72,98 @@ def ensure_app_releases_table(conn):
             pass
         raise e
 
-def save_apk_release(conn, file_storage, version_code, version_name, 
-                     package_name="com.faceplugin.facerecognitionsdk",
+def extract_apk_manifest_info(apk_file_or_bytes):
+    """
+    Parses Android Binary XML (AXML) from AndroidManifest.xml inside an APK.
+    Extracts version_code, version_name, and package_name directly from the compiled binary.
+    Zero external dependencies.
+    """
+    try:
+        if isinstance(apk_file_or_bytes, bytes):
+            zf = zipfile.ZipFile(io.BytesIO(apk_file_or_bytes), 'r')
+        elif hasattr(apk_file_or_bytes, 'read'):
+            pos = apk_file_or_bytes.tell() if hasattr(apk_file_or_bytes, 'tell') else None
+            data_bytes = apk_file_or_bytes.read()
+            if pos is not None and hasattr(apk_file_or_bytes, 'seek'):
+                apk_file_or_bytes.seek(pos)
+            zf = zipfile.ZipFile(io.BytesIO(data_bytes), 'r')
+        else:
+            zf = zipfile.ZipFile(apk_file_or_bytes, 'r')
+
+        with zf:
+            if 'AndroidManifest.xml' not in zf.namelist():
+                return None
+            data = zf.read('AndroidManifest.xml')
+
+        if len(data) < 40:
+            return None
+
+        file_type, file_size = struct.unpack('<II', data[0:8])
+        if file_type != 0x00080003:
+            return None
+
+        chunk_type, chunk_size, string_count, style_count, flags, strings_start, styles_start = struct.unpack('<IIIIIII', data[8:36])
+        is_utf8 = bool(flags & (1 << 8))
+        offset_table = struct.unpack(f'<{string_count}I', data[36:36 + 4 * string_count])
+        strings_data_start = 8 + strings_start
+
+        strings = []
+        for offset in offset_table:
+            pos = strings_data_start + offset
+            if is_utf8:
+                u16len = data[pos]
+                pos += 1
+                if u16len & 0x80: pos += 1
+                u8len = data[pos]
+                pos += 1
+                if u8len & 0x80: pos += 1
+                s = data[pos:pos+u8len].decode('utf-8', errors='replace')
+            else:
+                u16len = struct.unpack('<H', data[pos:pos+2])[0]
+                pos += 2
+                if u16len & 0x8000: pos += 2
+                byte_len = u16len * 2
+                s = data[pos:pos+byte_len].decode('utf-16le', errors='replace')
+            strings.append(s)
+
+        pos = 8 + chunk_size
+        manifest_info = {'version_code': None, 'version_name': None, 'package_name': None}
+
+        while pos < len(data):
+            if pos + 8 > len(data): break
+            c_type, c_size = struct.unpack('<II', data[pos:pos+8])
+            if c_type == 0x00100102: # CHUNK_START_TAG
+                tag_name_idx = struct.unpack('<I', data[pos+20:pos+24])[0]
+                tag_name = strings[tag_name_idx] if tag_name_idx < len(strings) else ''
+                attr_start, attr_size, attr_count = struct.unpack('<HHH', data[pos+24:pos+30])
+                attr_pos = pos + 16 + attr_start
+
+                for i in range(attr_count):
+                    a_offset = attr_pos + i * attr_size
+                    if a_offset + 20 > len(data): break
+                    ns_idx, name_idx, val_str_idx, val_type, val_data = struct.unpack('<IIIIi', data[a_offset:a_offset+20])
+                    name = strings[name_idx] if name_idx < len(strings) else ''
+                    if name == 'package':
+                        manifest_info['package_name'] = strings[val_str_idx] if val_str_idx < len(strings) else ''
+                    elif name == 'versionCode':
+                        manifest_info['version_code'] = val_data
+                    elif name == 'versionName':
+                        manifest_info['version_name'] = strings[val_str_idx] if (val_str_idx >= 0 and val_str_idx < len(strings)) else str(val_data)
+                if tag_name == 'manifest': break
+            pos += c_size
+            if c_size == 0: break
+        return manifest_info
+    except Exception as e:
+        logger.warning(f"Failed to extract manifest from APK: {e}")
+        return None
+
+def save_apk_release(conn, file_storage, version_code=None, version_name=None, 
+                     package_name=None,
                      release_notes="", force_update=False, min_supported_version=1):
     """
     Saves an uploaded APK file and registers it in the database.
     Deactivates previous active releases so this newly uploaded release becomes the current active one.
+    Automatically auto-detects version_code, version_name, and package_name directly from the APK binary!
     """
     ensure_storage_dir()
     ensure_app_releases_table(conn)
@@ -83,6 +172,31 @@ def save_apk_release(conn, file_storage, version_code, version_name,
     file_bytes = file_storage.read()
     file_size = len(file_bytes)
     sha256_hash = hashlib.sha256(file_bytes).hexdigest()
+
+    # Automatically extract manifest details directly from the uploaded APK
+    extracted = extract_apk_manifest_info(file_bytes)
+    if extracted:
+        if not version_code and extracted.get("version_code") is not None:
+            version_code = extracted["version_code"]
+        if not version_name and extracted.get("version_name"):
+            version_name = extracted["version_name"]
+        if not package_name and extracted.get("package_name"):
+            package_name = extracted["package_name"]
+
+    # Fallback if extraction was None and user did not provide values
+    is_pg = getattr(conn, "_is_pg", False)
+    c = conn.cursor()
+
+    if not version_code:
+        c.execute("SELECT COALESCE(MAX(version_code), 0) + 1 FROM app_releases")
+        row = c.fetchone()
+        version_code = row[0] if row else 1
+
+    if not version_name:
+        version_name = f"{version_code}.0"
+
+    if not package_name:
+        package_name = "com.faceplugin.facerecognitionsdk"
 
     # Generate a clean, unique filename: tapinx_v{code}_{sha256[:8]}.apk
     safe_file_name = f"tapinx_v{version_code}_{sha256_hash[:8]}.apk"
