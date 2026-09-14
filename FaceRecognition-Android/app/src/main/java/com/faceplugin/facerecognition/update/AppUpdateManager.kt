@@ -268,13 +268,20 @@ object AppUpdateManager {
             val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
             val isDeviceOwner = dpm?.isDeviceOwnerApp(context.packageName) == true
 
-            if (isDeviceOwner && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                Log.i(TAG, "Installing via Device Owner silent PackageInstaller session...")
-                installSilentlyAsDeviceOwner(context, apkFile)
-            } else {
-                Log.i(TAG, "Launching system package installer via FileProvider...")
-                launchSystemInstallIntent(context, apkFile)
+            // On Android 12+ (API 31+) or if Device Owner, we can use PackageInstaller with USER_ACTION_NOT_REQUIRED
+            // for completely silent background self-updates!
+            if (isDeviceOwner || Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                try {
+                    Log.i(TAG, "Installing via PackageInstaller session (isDeviceOwner=$isDeviceOwner, sdk=${Build.VERSION.SDK_INT})...")
+                    installViaPackageInstaller(context, apkFile)
+                    return
+                } catch (e: Exception) {
+                    Log.w(TAG, "PackageInstaller session failed; falling back to system intent", e)
+                }
             }
+
+            Log.i(TAG, "Launching system package installer via FileProvider...")
+            launchSystemInstallIntent(context, apkFile)
         } catch (e: Exception) {
             Log.e(TAG, "Error initiating APK installation; falling back to intent", e)
             launchSystemInstallIntent(context, apkFile)
@@ -298,9 +305,14 @@ object AppUpdateManager {
         context.startActivity(intent)
     }
 
-    private fun installSilentlyAsDeviceOwner(context: Context, apkFile: File) {
+    private fun installViaPackageInstaller(context: Context, apkFile: File) {
         val packageInstaller = context.packageManager.packageInstaller
-        val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
+        val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
+            setAppPackageName(context.packageName)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
+            }
+        }
         val sessionId = packageInstaller.createSession(params)
         val session = packageInstaller.openSession(sessionId)
 
@@ -311,18 +323,24 @@ object AppUpdateManager {
             }
         }
 
-        // Commit installation session
-        val intent = Intent(context, AppUpdateReceiver::class.java)
+        // Commit installation session with broadcast to AppUpdateReceiver
+        val intent = Intent(context, AppUpdateReceiver::class.java).apply {
+            action = "com.faceplugin.facerecognition.action.PACKAGE_INSTALL_STATUS"
+        }
         val pendingIntent = android.app.PendingIntent.getBroadcast(
             context,
             sessionId,
             intent,
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) android.app.PendingIntent.FLAG_MUTABLE else 0
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                android.app.PendingIntent.FLAG_MUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
+            } else {
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT
+            }
         )
 
         session.commit(pendingIntent.intentSender)
         session.close()
-        Log.i(TAG, "Silent installation session committed: $sessionId")
+        Log.i(TAG, "PackageInstaller session $sessionId committed successfully")
     }
 
     /**

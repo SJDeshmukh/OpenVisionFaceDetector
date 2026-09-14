@@ -159,6 +159,7 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="com.faceplugin.facerecognition.action.PACKAGE_INSTALL_STATUS" />
             </intent-filter>
         </receiver>
     </application>
