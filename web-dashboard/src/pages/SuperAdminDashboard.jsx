@@ -547,6 +547,18 @@ const SuperAdminDashboard = () => {
     }
   };
 
+  const handleDeleteRelease = async (releaseId, versionName) => {
+    if (!window.confirm(`Are you sure you want to permanently delete APK release v${versionName || releaseId} from the server? This will remove the APK file from disk.`)) {
+      return;
+    }
+    try {
+      await axios.delete(`${API_URL}/admin/app-releases/${releaseId}`);
+      fetchApkReleases();
+    } catch (err) {
+      alert(err.response?.data?.error || 'Failed to delete release.');
+    }
+  };
+
 
   const fetchBusinessTypes = async () => {
     try {
@@ -3582,6 +3594,14 @@ const SuperAdminDashboard = () => {
                                 Activate
                               </button>
                             )}
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteRelease(rel.id, rel.version_name)}
+                              className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all"
+                              title={`Delete release v${rel.version_name} from server`}
+                            >
+                              <Trash2 size={16} />
+                            </button>
                           </div>
                         </td>
                       </tr>

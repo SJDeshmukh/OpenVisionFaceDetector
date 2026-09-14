@@ -276,3 +276,52 @@ def activate_release(conn, release_id):
         conn.rollback()
         logger.error(f"Failed to activate release {release_id}: {e}")
         return False
+
+def delete_release(conn, release_id):
+    """
+    Deletes an APK release from the database and removes its physical file from disk.
+    If the deleted release was active, activates the newest remaining release (if any).
+    """
+    ensure_app_releases_table(conn)
+    is_pg = getattr(conn, "_is_pg", False)
+    c = conn.cursor()
+
+    try:
+        # 1. Fetch file path and active state
+        select_sql = "SELECT file_path, is_active FROM app_releases WHERE id = %s" if is_pg else "SELECT file_path, is_active FROM app_releases WHERE id = ?"
+        c.execute(select_sql, (release_id,))
+        row = c.fetchone()
+        if not row:
+            return False, "Release not found"
+
+        file_path = row[0] if not hasattr(row, 'keys') else row['file_path']
+        was_active = bool(row[1] if not hasattr(row, 'keys') else row['is_active'])
+
+        # 2. Delete from database
+        del_sql = "DELETE FROM app_releases WHERE id = %s" if is_pg else "DELETE FROM app_releases WHERE id = ?"
+        c.execute(del_sql, (release_id,))
+
+        # 3. If was active, promote the newest remaining release to active
+        if was_active:
+            sub_sql = "SELECT id FROM app_releases ORDER BY version_code DESC, id DESC LIMIT 1"
+            c.execute(sub_sql)
+            rem_row = c.fetchone()
+            if rem_row:
+                new_active_id = rem_row[0] if not hasattr(rem_row, 'keys') else rem_row['id']
+                upd_sql = "UPDATE app_releases SET is_active = TRUE WHERE id = %s" if is_pg else "UPDATE app_releases SET is_active = 1 WHERE id = ?"
+                c.execute(upd_sql, (new_active_id,))
+
+        conn.commit()
+
+        # 4. Remove physical file from disk
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception as e:
+                logger.warning(f"Failed to remove physical APK file {file_path}: {e}")
+
+        return True, "Release and APK file deleted successfully"
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Failed to delete release {release_id}: {e}")
+        return False, str(e)

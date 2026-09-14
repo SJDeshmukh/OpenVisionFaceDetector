@@ -4091,6 +4091,28 @@ def activate_admin_app_release(release_id):
         except Exception:
             pass
 
+@admin_bp.route("/app-releases/<int:release_id>", methods=["DELETE"], strict_slashes=False)
+@super_admin_required
+def delete_admin_app_release(release_id):
+    from utils import get_db_connection, log_audit
+    from services.apk_service import delete_release
+    conn = get_db_connection()
+    try:
+        ok, msg = delete_release(conn, release_id)
+        if ok:
+            log_audit("DELETE_APP_RELEASE", f"Deleted APK release id {release_id}")
+            return jsonify({"message": msg}), 200
+        else:
+            status_code = 404 if msg == "Release not found" else 400
+            return jsonify({"error": msg}), status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
 @admin_bp.route("/app-releases/broadcast", methods=["POST"], strict_slashes=False)
 @super_admin_required
 def broadcast_app_update_to_kiosks():

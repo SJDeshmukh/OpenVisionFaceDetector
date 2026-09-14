@@ -394,7 +394,7 @@ class MainActivity : AppCompatActivity() {
             mSocket?.on("app_update_available") { args ->
                 android.util.Log.i("MainActivity", "Real-time OTA update broadcast received from SuperAdmin")
                 runOnUiThread {
-                    checkForOtaUpdate(forceImmediate = false)
+                    checkForOtaUpdate(forceImmediate = true)
                 }
             }
 
