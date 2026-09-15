@@ -4161,3 +4161,24 @@ def broadcast_app_update_to_kiosks():
         except Exception:
             pass
 
+
+@admin_bp.route("/app-releases/device-status", methods=["GET"], strict_slashes=False)
+@super_admin_required
+def get_app_release_device_status():
+    from utils import get_db_connection
+    from services.apk_service import list_device_update_statuses
+    target = request.args.get("version_code")
+    conn = get_db_connection()
+    try:
+        statuses = list_device_update_statuses(conn, target)
+        summary = {}
+        for item in statuses:
+            key = str(item.get("status") or "UNKNOWN")
+            summary[key] = summary.get(key, 0) + 1
+            if isinstance(item.get("updated_at"), datetime):
+                item["updated_at"] = item["updated_at"].isoformat()
+        return jsonify({"devices": statuses, "summary": summary})
+    except (TypeError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    finally:
+        conn.close()

@@ -1273,6 +1273,17 @@ mkdir -p "$SCRIPT_DIR/backend"
 touch "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 
+# Keep uploaded OTA releases outside the Git working tree so a source refresh
+# cannot remove them. This directory lives on the EC2 instance's EBS root
+# volume and is owned only by the application service account.
+BARE_APK_STORAGE_DIR="$(env_get APK_STORAGE_DIR)"
+[ -n "$BARE_APK_STORAGE_DIR" ] || BARE_APK_STORAGE_DIR="/var/lib/openvision/apks"
+[[ "$BARE_APK_STORAGE_DIR" = /* && "$BARE_APK_STORAGE_DIR" != "/" ]] || die "APK_STORAGE_DIR must be a safe absolute directory"
+run_root mkdir -p "$BARE_APK_STORAGE_DIR"
+run_root chown "$RUN_USER:$RUN_GROUP" "$BARE_APK_STORAGE_DIR"
+run_root chmod 0750 "$BARE_APK_STORAGE_DIR"
+env_set APK_STORAGE_DIR "$BARE_APK_STORAGE_DIR"
+
 DB_PASSWORD="$(env_get DB_PASSWORD)"
 [ -n "$DB_PASSWORD" ] || DB_PASSWORD="$(openssl rand -hex 24)"
 if [[ ! "$DB_PASSWORD" =~ ^[A-Za-z0-9]+$ ]]; then

@@ -7,6 +7,8 @@ import android.util.Log
 import android.content.pm.PackageInstaller
 import android.os.Build
 import com.faceplugin.facerecognition.SplashActivity
+import com.faceplugin.facerecognition.BuildConfig
+import com.faceplugin.facerecognition.api.RetrofitClient
 
 /**
  * BroadcastReceiver triggered automatically by Android OS when this application
@@ -25,6 +27,19 @@ class AppUpdateReceiver : BroadcastReceiver() {
         if (Intent.ACTION_MY_PACKAGE_REPLACED == action) {
             Log.i("AppUpdateReceiver", "App package replaced! Automatically relaunching kiosk...")
             try {
+                val body = com.google.gson.JsonObject().apply {
+                    addProperty("target_version_code", BuildConfig.VERSION_CODE)
+                    addProperty("installed_version_code", BuildConfig.VERSION_CODE)
+                    addProperty("installed_version_name", BuildConfig.VERSION_NAME)
+                    addProperty("status", "INSTALLED")
+                    addProperty("progress", 100)
+                }
+                RetrofitClient.getService().sendAppUpdateStatus(body).enqueue(
+                    object : retrofit2.Callback<com.google.gson.JsonObject> {
+                        override fun onResponse(call: retrofit2.Call<com.google.gson.JsonObject>, response: retrofit2.Response<com.google.gson.JsonObject>) {}
+                        override fun onFailure(call: retrofit2.Call<com.google.gson.JsonObject>, t: Throwable) {}
+                    }
+                )
                 AppUpdateManager.clearDownloadedApks(context)
                 val launchIntent = Intent(context, SplashActivity::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)

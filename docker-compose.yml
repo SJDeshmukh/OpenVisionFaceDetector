@@ -106,6 +106,9 @@ services:
       - STT_MAX_AUDIO_BYTES=${STT_MAX_AUDIO_BYTES:-2500000}
       - STT_VAD_MIN_SILENCE_MS=${STT_VAD_MIN_SILENCE_MS:-500}
       - STT_LANGUAGE=${STT_LANGUAGE:-}
+      - APK_STORAGE_DIR=/app/backend/static/apks
+    volumes:
+      - apk_data:/app/backend/static/apks
     depends_on:
       db:
         condition: service_healthy
@@ -155,3 +158,4 @@ services:
 volumes:
   postgres_data:
   omniroute_data:
+  apk_data:

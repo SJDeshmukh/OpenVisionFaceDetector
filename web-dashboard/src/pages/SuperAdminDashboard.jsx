@@ -447,6 +447,8 @@ const SuperAdminDashboard = () => {
 
   // --- APK OTA Updates State ---
   const [apkReleases, setApkReleases] = useState([]);
+  const [apkDeviceStatuses, setApkDeviceStatuses] = useState([]);
+  const [apkDeviceSummary, setApkDeviceSummary] = useState({});
   const [latestApkRelease, setLatestApkRelease] = useState(null);
   const [isLoadingApkReleases, setIsLoadingApkReleases] = useState(false);
   const [isUploadingApk, setIsUploadingApk] = useState(false);
@@ -467,10 +469,24 @@ const SuperAdminDashboard = () => {
       const res = await axios.get(`${API_URL}/admin/app-releases`);
       setApkReleases(res.data?.releases || []);
       setLatestApkRelease(res.data?.latest_release || null);
+      if (res.data?.latest_release?.version_code) {
+        fetchApkDeviceStatuses(res.data.latest_release.version_code);
+      }
     } catch (err) {
       console.error('Failed to fetch APK releases:', err);
     } finally {
       setIsLoadingApkReleases(false);
+    }
+  };
+
+  const fetchApkDeviceStatuses = async (versionCode = latestApkRelease?.version_code) => {
+    try {
+      const params = versionCode ? { version_code: versionCode } : {};
+      const res = await axios.get(`${API_URL}/admin/app-releases/device-status`, { params });
+      setApkDeviceStatuses(res.data?.devices || []);
+      setApkDeviceSummary(res.data?.summary || {});
+    } catch (err) {
+      console.error('Failed to fetch APK device statuses:', err);
     }
   };
 
@@ -480,11 +496,6 @@ const SuperAdminDashboard = () => {
       alert('Please select an .apk file to upload.');
       return;
     }
-    if (!apkFormData.version_code || !apkFormData.version_name) {
-      alert('Version code and version name are required.');
-      return;
-    }
-
     setIsUploadingApk(true);
     setApkUploadProgress(0);
 
@@ -530,6 +541,7 @@ const SuperAdminDashboard = () => {
     try {
       const res = await axios.post(`${API_URL}/admin/app-releases/broadcast`);
       setBroadcastStatus({ type: 'success', message: res.data?.message || 'Update broadcasted to all connected kiosks!' });
+      setTimeout(() => fetchApkDeviceStatuses(latestApkRelease.version_code), 1500);
       setTimeout(() => setBroadcastStatus(null), 6000);
     } catch (err) {
       setBroadcastStatus({ type: 'error', message: err.response?.data?.error || 'Failed to broadcast update.' });
@@ -1961,6 +1973,7 @@ const SuperAdminDashboard = () => {
           onClick={() => {
             setActiveTab('app_updates');
             fetchApkReleases();
+            fetchApkDeviceStatuses();
           }}
         >
           App Releases (OTA)
@@ -3277,7 +3290,7 @@ const SuperAdminDashboard = () => {
             <div className="flex items-center gap-3">
               <button
                 type="button"
-                onClick={fetchApkReleases}
+                onClick={() => { fetchApkReleases(); fetchApkDeviceStatuses(); }}
                 disabled={isLoadingApkReleases}
                 className="flex items-center gap-2 px-4 py-2 border border-slate-300 text-slate-700 rounded-xl hover:bg-slate-50 font-medium text-sm transition-all"
               >
@@ -3513,6 +3526,55 @@ const SuperAdminDashboard = () => {
                 )}
               </form>
             </div>
+          </div>
+
+          {/* Device rollout telemetry */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+            <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div>
+                <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
+                  <Activity size={18} className="text-indigo-600" /> Device Rollout Status
+                </h3>
+                <p className="text-xs text-slate-500 mt-1">Authenticated progress reported by each kiosk for the selected production release.</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(apkDeviceSummary).map(([status, count]) => (
+                  <span key={status} className="px-2.5 py-1 rounded-full bg-slate-100 text-slate-700 text-xs font-semibold">
+                    {status.replaceAll('_', ' ')}: {count}
+                  </span>
+                ))}
+              </div>
+            </div>
+            {apkDeviceStatuses.length === 0 ? (
+              <div className="p-6 text-center text-sm text-slate-400">No kiosk has reported an update state yet.</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-slate-50 text-slate-500 text-xs">
+                    <tr>
+                      <th className="py-3 px-4">Vendor</th><th className="py-3 px-4">Device</th>
+                      <th className="py-3 px-4">Installed</th><th className="py-3 px-4">Target</th>
+                      <th className="py-3 px-4">State</th><th className="py-3 px-4">Progress</th>
+                      <th className="py-3 px-4">Last report</th><th className="py-3 px-4">Error</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {apkDeviceStatuses.map((item) => (
+                      <tr key={`${item.vendor_id}-${item.device_id}-${item.target_version_code}`}>
+                        <td className="py-3 px-4">{item.company_name || item.vendor_id}</td>
+                        <td className="py-3 px-4">{item.device_name || item.device_id}</td>
+                        <td className="py-3 px-4 font-mono text-xs">{item.installed_version_name || '—'} ({item.installed_version_code ?? '—'})</td>
+                        <td className="py-3 px-4 font-mono text-xs">{item.target_version_code}</td>
+                        <td className="py-3 px-4 font-semibold">{item.status}</td>
+                        <td className="py-3 px-4">{item.progress == null ? '—' : `${item.progress}%`}</td>
+                        <td className="py-3 px-4 text-xs text-slate-500">{item.updated_at ? new Date(item.updated_at).toLocaleString() : '—'}</td>
+                        <td className="py-3 px-4 text-xs text-rose-600 max-w-64 truncate" title={item.error_message || ''}>{item.error_message || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
 
           {/* Releases History Table */}

@@ -383,6 +383,9 @@ app.register_blueprint(xchat_bp, url_prefix='/api')
 from routes.whatsapp_routes import whatsapp_bp
 app.register_blueprint(whatsapp_bp)
 
+from routes.workforce_config import workforce_config_bp
+app.register_blueprint(workforce_config_bp, url_prefix='/api')
+
 register_error_handlers(app)
 
 # --- Serve Frontend (SPA) ---

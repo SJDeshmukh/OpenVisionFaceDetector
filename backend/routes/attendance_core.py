@@ -19,6 +19,12 @@ from db_factory import set_row_factory
 from services.attendance_service import (
     calculate_daily_hours, calculate_expected_hours, calculate_arrival_status
 )
+from services.attendance_ingestion_service import (
+    AttendanceEventIngestionService,
+    LegacyAttendanceEvent,
+    resolve_client_event_time,
+)
+from domain.attendance import AttendanceEventSource
 from services.auth_service import require_auth, verify_token, extract_token
 from middleware.validation import validate_request
 from schemas import AttendanceFilterSchema, PersonEventSchema, PublicAttendanceRequest
@@ -34,33 +40,9 @@ from flask import Blueprint, request, jsonify, g
 
 attendance_core_bp = Blueprint('attendance_core_bp', __name__)
 
-_MAX_CLIENT_CLOCK_DRIFT = timedelta(hours=24)
-
-
 def _resolve_event_time(timestamp):
-    """Use client time only for plausible offline replays.
-
-    Live mobile attendance is expected to omit ``timestamp`` and therefore uses
-    server time. Keeping a bounded client timestamp allows a short offline queue
-    to preserve its event time without letting an incorrectly configured phone
-    put attendance years in the past or future.
-    """
-    server_now = datetime.now()
-    if not timestamp:
-        return server_now
-
-    parsed = None
-    for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
-        try:
-            parsed = datetime.strptime(timestamp, fmt)
-            break
-        except (ValueError, TypeError):
-            continue
-
-    if parsed is None or abs(server_now - parsed) > _MAX_CLIENT_CLOCK_DRIFT:
-        logger.warning("Ignoring implausible attendance timestamp; using server time")
-        return server_now
-    return parsed
+    """Backward-compatible wrapper for the canonical time resolver."""
+    return resolve_client_event_time(timestamp)
 
 
 def _person_scope_context(cursor, vendor_id, requested_type=None):
@@ -412,6 +394,29 @@ def person_event(valid_data: PersonEventSchema):
         logger.debug("Device ID lookup from session failed", exc_info=True)
     if not curr_dev_id: curr_dev_id = str(valid_data.device_id or '').strip() or None
 
+    event_source = str(valid_data.event_source or AttendanceEventSource.KIOSK.value).strip().upper()
+    if event_source not in {item.value for item in AttendanceEventSource}:
+        return jsonify({"error": "Unsupported event_source"}), 400
+
+    # Resolve idempotent retries before deriving the next IN/OUT state. Without
+    # this early lookup, retrying a successful CHECK_IN would be reported as a
+    # CHECK_OUT even if persistence correctly rejected the duplicate.
+    if valid_data.source_event_id:
+        existing_event = AttendanceEventIngestionService.find_idempotent_event(
+            c, vendor_id_to_check, event_source, valid_data.source_event_id
+        )
+        if existing_event:
+            conn.close()
+            existing_status = existing_event.event_type or "CHECK_IN"
+            return jsonify({
+                "speak": True,
+                "text": f"{name}: {existing_status.title()}",
+                "status": existing_status,
+                "person_id": person_id,
+                "duplicate": True,
+                "event_id": existing_event.event_id,
+            })
+
     if person_id:
         if vendor_id_to_check:
             q = "SELECT * FROM attendance WHERE person_id = ? AND vendor_id = ?"
@@ -561,14 +566,28 @@ def person_event(valid_data: PersonEventSchema):
             logger.debug("Shift / Late threshold evaluation failed", exc_info=True)
 
     try:
-        c.execute("""INSERT INTO attendance
-                     (name, timestamp, status, captured_image, activity, is_late,
-                      vendor_id, person_id, device_id, class_year, division, branch)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                  (name, current_time_obj, new_status, captured_image, activity_name,
-                   is_late, vendor_id_to_check, person_id, curr_dev_id,
-                   resolved_scope.get("class_year", ""), resolved_scope.get("division", ""),
-                   resolved_scope.get("branch", "")))
+        ingestion = AttendanceEventIngestionService.ingest(
+            c,
+            LegacyAttendanceEvent(
+                name=name,
+                timestamp=current_time_obj,
+                status=new_status,
+                captured_image=captured_image,
+                activity=activity_name,
+                is_late=is_late,
+                vendor_id=vendor_id_to_check,
+                person_id=person_id,
+                device_id=curr_dev_id,
+                class_year=resolved_scope.get("class_year", ""),
+                division=resolved_scope.get("division", ""),
+                branch=resolved_scope.get("branch", ""),
+                source=event_source,
+                source_event_id=valid_data.source_event_id,
+                source_timezone=valid_data.source_timezone,
+                verification_method="FACE",
+                verification_score=valid_data.confidence,
+            ),
+        )
         conn.commit()
         if vendor_id_to_check: cache_delete_vendor_prefix(vendor_id_to_check)
         if vendor_id_to_check and socketio:
@@ -604,7 +623,7 @@ def person_event(valid_data: PersonEventSchema):
                 pass
 
         conn.close()
-        return jsonify({"speak": True, "text": f"{name}: {new_status.title()}", "status": new_status, "is_late": is_late, "activity": activity_name, "person_id": person_id})
+        return jsonify({"speak": True, "text": f"{name}: {new_status.title()}", "status": new_status, "is_late": is_late, "activity": activity_name, "person_id": person_id, "event_id": ingestion.event_id, "duplicate": ingestion.duplicate})
     except Exception as e:
         conn.rollback(); conn.close(); return jsonify({"error": str(e)}), 500
 

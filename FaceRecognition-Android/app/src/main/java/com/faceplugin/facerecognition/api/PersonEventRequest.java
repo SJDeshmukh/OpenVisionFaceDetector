@@ -20,6 +20,15 @@ public class PersonEventRequest {
     @SerializedName("timestamp")
     private String timestamp;
 
+    @SerializedName("source_event_id")
+    private String sourceEventId;
+
+    @SerializedName("source_timezone")
+    private String sourceTimezone;
+
+    @SerializedName("event_source")
+    private String eventSource = "KIOSK";
+
     @SerializedName("device_id")
     private String deviceId;
     @SerializedName("device_name")
@@ -39,6 +48,10 @@ public class PersonEventRequest {
         this.imageBase64 = imageBase64;
         this.is_attendance = is_attendance;
         this.timestamp = timestamp;
+        if (personId != null && timestamp != null) {
+            this.sourceEventId = personId + ":" + timestamp;
+        }
+        this.sourceTimezone = java.util.TimeZone.getDefault().getID();
     }
 
     // Constructor without timestamp (for backward compatibility, though we should avoid using it)
@@ -115,6 +128,30 @@ public class PersonEventRequest {
 
     public void setTimestamp(String timestamp) {
         this.timestamp = timestamp;
+    }
+
+    public String getSourceEventId() {
+        return sourceEventId;
+    }
+
+    public void setSourceEventId(String sourceEventId) {
+        this.sourceEventId = sourceEventId;
+    }
+
+    public String getSourceTimezone() {
+        return sourceTimezone;
+    }
+
+    public void setSourceTimezone(String sourceTimezone) {
+        this.sourceTimezone = sourceTimezone;
+    }
+
+    public String getEventSource() {
+        return eventSource;
+    }
+
+    public void setEventSource(String eventSource) {
+        this.eventSource = eventSource;
     }
 
     public String getDeviceId() {

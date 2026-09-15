@@ -98,6 +98,159 @@ class Attendance(Base):
     vendor = relationship("Vendor", back_populates="attendance")
     person = relationship("Face", back_populates="attendance_records")
 
+class AttendanceEvent(Base):
+    """Immutable capture ledger; calculated attendance must not overwrite it."""
+    __tablename__ = 'attendance_events'
+    __table_args__ = (
+        UniqueConstraint('vendor_id', 'source', 'source_event_id', name='uq_attendance_event_source'),
+    )
+    id = Column(String(36), primary_key=True)
+    vendor_id = Column(Integer, ForeignKey('vendors.id'), nullable=False)
+    person_id = Column(Integer, ForeignKey('faces.id'), nullable=False)
+    legacy_attendance_id = Column(Integer, ForeignKey('attendance.id'))
+    event_type = Column(String(30), nullable=False)
+    event_time_utc = Column(DateTime, nullable=False)
+    event_timezone = Column(String(64), nullable=False)
+    received_at_utc = Column(DateTime, nullable=False, default=datetime.utcnow)
+    source = Column(String(40), nullable=False)
+    source_event_id = Column(String(255), nullable=False)
+    device_id = Column(String(255))
+    location_id = Column(Integer)
+    activity_code = Column(String(255))
+    verification_method = Column(String(40))
+    verification_score = Column(Float)
+    captured_image_reference = Column(Text)
+    payload_metadata = Column(Text)
+    ingestion_status = Column(String(30), nullable=False, default='ACCEPTED')
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+class Location(Base):
+    __tablename__ = 'locations'
+    __table_args__ = (UniqueConstraint('vendor_id', 'code', name='uq_location_vendor_code'),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    vendor_id = Column(Integer, ForeignKey('vendors.id'), nullable=False)
+    code = Column(String(80), nullable=False)
+    name = Column(String(255), nullable=False)
+    location_type = Column(String(40), nullable=False, default='OFFICE')
+    timezone = Column(String(64), nullable=False, default='Asia/Kolkata')
+    address = Column(Text)
+    geofence_lat = Column(Float)
+    geofence_lng = Column(Float)
+    geofence_radius_m = Column(Float)
+    is_active = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+class OrganizationUnit(Base):
+    __tablename__ = 'organization_units'
+    __table_args__ = (UniqueConstraint('vendor_id', 'code', name='uq_org_unit_vendor_code'),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    vendor_id = Column(Integer, ForeignKey('vendors.id'), nullable=False)
+    parent_id = Column(Integer, ForeignKey('organization_units.id'))
+    location_id = Column(Integer, ForeignKey('locations.id'))
+    code = Column(String(80), nullable=False)
+    name = Column(String(255), nullable=False)
+    unit_type = Column(String(40), nullable=False)
+    is_active = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+class PersonOrganizationAssignment(Base):
+    __tablename__ = 'person_organization_assignments'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    vendor_id = Column(Integer, ForeignKey('vendors.id'), nullable=False)
+    person_id = Column(Integer, ForeignKey('faces.id'), nullable=False)
+    organization_unit_id = Column(Integer, ForeignKey('organization_units.id'), nullable=False)
+    effective_from = Column(Date, nullable=False)
+    effective_to = Column(Date)
+    is_primary = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+class Shift(Base):
+    __tablename__ = 'shifts'
+    __table_args__ = (UniqueConstraint('vendor_id', 'code', name='uq_shift_vendor_code'),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    vendor_id = Column(Integer, ForeignKey('vendors.id'), nullable=False)
+    code = Column(String(80), nullable=False)
+    name = Column(String(255), nullable=False)
+    is_active = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+class ShiftVersion(Base):
+    __tablename__ = 'shift_versions'
+    __table_args__ = (UniqueConstraint('shift_id', 'version_number', name='uq_shift_version_number'),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    vendor_id = Column(Integer, ForeignKey('vendors.id'), nullable=False)
+    shift_id = Column(Integer, ForeignKey('shifts.id'), nullable=False)
+    version_number = Column(Integer, nullable=False)
+    effective_from = Column(Date, nullable=False)
+    effective_to = Column(Date)
+    start_time = Column(String(5), nullable=False)
+    end_time = Column(String(5), nullable=False)
+    timezone = Column(String(64), nullable=False, default='Asia/Kolkata')
+    operational_day_offset = Column(Integer, nullable=False, default=0)
+    grace_minutes = Column(Integer, nullable=False, default=0)
+    is_cross_midnight = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+class ShiftSegment(Base):
+    __tablename__ = 'shift_segments'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    vendor_id = Column(Integer, ForeignKey('vendors.id'), nullable=False)
+    shift_version_id = Column(Integer, ForeignKey('shift_versions.id'), nullable=False)
+    segment_type = Column(String(30), nullable=False)
+    start_time = Column(String(5), nullable=False)
+    end_time = Column(String(5), nullable=False)
+    is_paid = Column(Integer, nullable=False, default=1)
+    sequence = Column(Integer, nullable=False, default=0)
+
+class ShiftAssignment(Base):
+    __tablename__ = 'shift_assignments'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    vendor_id = Column(Integer, ForeignKey('vendors.id'), nullable=False)
+    shift_id = Column(Integer, ForeignKey('shifts.id'), nullable=False)
+    scope_type = Column(String(30), nullable=False)
+    person_id = Column(Integer, ForeignKey('faces.id'))
+    organization_unit_id = Column(Integer, ForeignKey('organization_units.id'))
+    location_id = Column(Integer, ForeignKey('locations.id'))
+    group_key = Column(String(255))
+    effective_from = Column(Date, nullable=False)
+    effective_to = Column(Date)
+    priority = Column(Integer, nullable=False, default=0)
+    assignment_source = Column(String(40), nullable=False, default='MANUAL')
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+class HolidayCalendar(Base):
+    __tablename__ = 'holiday_calendars'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    vendor_id = Column(Integer, ForeignKey('vendors.id'), nullable=False)
+    location_id = Column(Integer, ForeignKey('locations.id'))
+    name = Column(String(255), nullable=False)
+    timezone = Column(String(64), nullable=False, default='Asia/Kolkata')
+    is_active = Column(Integer, nullable=False, default=1)
+
+class Holiday(Base):
+    __tablename__ = 'holidays'
+    __table_args__ = (UniqueConstraint('calendar_id', 'holiday_date', name='uq_calendar_holiday_date'),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    vendor_id = Column(Integer, ForeignKey('vendors.id'), nullable=False)
+    calendar_id = Column(Integer, ForeignKey('holiday_calendars.id'), nullable=False)
+    holiday_date = Column(Date, nullable=False)
+    name = Column(String(255), nullable=False)
+    is_paid = Column(Integer, nullable=False, default=1)
+
+class WeeklyOffPattern(Base):
+    __tablename__ = 'weekly_off_patterns'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    vendor_id = Column(Integer, ForeignKey('vendors.id'), nullable=False)
+    name = Column(String(255), nullable=False)
+    weekdays = Column(Text, nullable=False, default='[]')
+    effective_from = Column(Date, nullable=False)
+    effective_to = Column(Date)
+    location_id = Column(Integer, ForeignKey('locations.id'))
+    organization_unit_id = Column(Integer, ForeignKey('organization_units.id'))
+
 class SystemUser(Base):
     __tablename__ = 'system_users'
     username = Column(String(255), primary_key=True)
@@ -205,6 +358,24 @@ class VendorDevice(Base):
     battery_level = Column(Float)
 
     vendor = relationship("Vendor", back_populates="devices")
+
+class AppUpdateDeviceStatus(Base):
+    __tablename__ = 'app_update_device_status'
+    __table_args__ = (
+        UniqueConstraint('vendor_id', 'device_id', 'target_version_code', name='uq_device_update_target'),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    vendor_id = Column(Integer, ForeignKey('vendors.id'), nullable=False)
+    device_id = Column(String(255), nullable=False)
+    release_id = Column(Integer)
+    target_version_code = Column(Integer, nullable=False)
+    installed_version_code = Column(Integer)
+    installed_version_name = Column(String(64))
+    status = Column(String(32), nullable=False)
+    progress = Column(Integer)
+    error_code = Column(String(64))
+    error_message = Column(Text)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 class ActiveSession(Base):
     __tablename__ = 'active_sessions'

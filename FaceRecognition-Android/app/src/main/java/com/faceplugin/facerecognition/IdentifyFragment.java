@@ -544,6 +544,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         // or deliberately adjusted for an unrelated SDK/license check; forwarding
         // it would save today's attendance under the wrong calendar date.
         PersonEventRequest request = new PersonEventRequest(detected, recognized, finalPersonId, name, confidence, imageBase64, isAttendance, null);
+        request.setSourceEventId((finalPersonId != null ? finalPersonId : "unknown") + ":" + timestamp);
         try {
             String deviceId = Settings.Secure.getString(requireContext().getContentResolver(), Settings.Secure.ANDROID_ID);
             android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);

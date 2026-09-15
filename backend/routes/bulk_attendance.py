@@ -25,6 +25,11 @@ from services.person_scope_service import (
     person_type_for,
     vendor_vertical,
 )
+from services.attendance_ingestion_service import (
+    AttendanceEventIngestionService,
+    LegacyAttendanceEvent,
+)
+from domain.attendance import AttendanceEventSource
 
 logger = logging.getLogger(__name__)
 bulk_attendance_bp = Blueprint('bulk_attendance', __name__)
@@ -625,10 +630,27 @@ def mark_lecture_attendance(lecture_id):
                 )
                 if not c.fetchone():
                     device_id = 'Faculty_App' if g.user_role == 'faculty' else 'Bulk_Image_API'
-                    c.execute(
-                        """INSERT INTO attendance (name, timestamp, status, activity, person_id, vendor_id, captured_image, is_late, device_id, class_year, division, branch, subject, lecture_id) 
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (name, now, 'CHECK_IN', 'Lecture', pid, vendor_id, image, 0, device_id, l_year, l_div, l_branch, l_subj, l_id)
+                    AttendanceEventIngestionService.ingest(
+                        c,
+                        LegacyAttendanceEvent(
+                            name=name,
+                            timestamp=now,
+                            status="CHECK_IN",
+                            activity="Lecture",
+                            person_id=pid,
+                            vendor_id=vendor_id,
+                            captured_image=image,
+                            is_late=0,
+                            device_id=device_id,
+                            class_year=l_year,
+                            division=l_div,
+                            branch=l_branch,
+                            subject=l_subj,
+                            lecture_id=l_id,
+                            source=(AttendanceEventSource.FACULTY_APP.value if g.user_role == 'faculty' else AttendanceEventSource.BULK_IMAGE_API.value),
+                            source_event_id=f"lecture:{l_id}:person:{pid}",
+                            verification_method="FACE",
+                        ),
                     )
             elif status == 'absent':
                 # Remove from global attendance logs if it was previously marked present for this lecture
@@ -987,10 +1009,27 @@ def faculty_sync_attendance():
                 )
                 if not c.fetchone():
                     img = rec.get("image", "")
-                    c.execute(
-                        f"""INSERT INTO attendance (name, timestamp, status, activity, person_id, vendor_id, captured_image, is_late, device_id, class_year, division, branch, subject, lecture_id) 
-                           VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})""",
-                        (name, ts, 'CHECK_IN', 'Lecture', person_id, vendor_id, img, 0, 'Faculty_App', l_year, l_div, l_branch, l_subj, lecture_id)
+                    AttendanceEventIngestionService.ingest(
+                        c,
+                        LegacyAttendanceEvent(
+                            name=name,
+                            timestamp=ts,
+                            status="CHECK_IN",
+                            activity="Lecture",
+                            person_id=int(person_id),
+                            vendor_id=vendor_id,
+                            captured_image=img,
+                            is_late=0,
+                            device_id="Faculty_App",
+                            class_year=l_year,
+                            division=l_div,
+                            branch=l_branch,
+                            subject=l_subj,
+                            lecture_id=lecture_id,
+                            source=AttendanceEventSource.FACULTY_APP.value,
+                            source_event_id=f"lecture:{lecture_id}:person:{person_id}",
+                            verification_method="FACE",
+                        ),
                     )
             synced += 1
         except Exception as e:

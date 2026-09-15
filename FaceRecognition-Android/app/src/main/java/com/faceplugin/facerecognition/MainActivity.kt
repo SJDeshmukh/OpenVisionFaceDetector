@@ -531,6 +531,10 @@ class MainActivity : AppCompatActivity() {
                     android.util.Log.i("MainActivity", "OTA Update Available: v${release.versionName} (${release.versionCode})")
                 }
 
+                override fun onStatus(release: AppUpdateManager.ReleaseInfo, status: String, progress: Int?, error: String?) {
+                    reportOtaStatus(release, status, progress, error)
+                }
+
                 override fun onUpdateReadyToInstall(release: AppUpdateManager.ReleaseInfo, apkFile: File) {
                     android.util.Log.i("MainActivity", "OTA Update Ready to install: ${apkFile.name}")
                     runOnUiThread {
@@ -553,6 +557,7 @@ class MainActivity : AppCompatActivity() {
             try {
                 stopLockTask()
             } catch (_: Exception) {}
+            reportOtaStatus(release, "INSTALLING", 100, null)
             AppUpdateManager.installApk(this, apkFile)
             return
         }
@@ -584,6 +589,7 @@ class MainActivity : AppCompatActivity() {
                     try {
                         stopLockTask()
                     } catch (_: Exception) {}
+                    reportOtaStatus(release, "INSTALLING", 100, null)
                     AppUpdateManager.installApk(this@MainActivity, apkFile)
                 }
             }
@@ -605,9 +611,42 @@ class MainActivity : AppCompatActivity() {
                 try {
                     stopLockTask()
                 } catch (_: Exception) {}
+                reportOtaStatus(release, "INSTALLING", 100, null)
                 AppUpdateManager.installApk(this, apkFile)
             }
         }, 60000)
+    }
+
+    private fun reportOtaStatus(
+        release: AppUpdateManager.ReleaseInfo,
+        status: String,
+        progress: Int?,
+        error: String?
+    ) {
+        try {
+            val body = com.google.gson.JsonObject().apply {
+                addProperty("release_id", release.releaseId)
+                addProperty("target_version_code", release.versionCode)
+                addProperty("installed_version_code", BuildConfig.VERSION_CODE)
+                addProperty("installed_version_name", BuildConfig.VERSION_NAME)
+                addProperty("status", status)
+                if (progress != null) addProperty("progress", progress)
+                if (!error.isNullOrBlank()) addProperty("error_message", error.take(1000))
+            }
+            RetrofitClient.getService().sendAppUpdateStatus(body).enqueue(
+                object : retrofit2.Callback<com.google.gson.JsonObject> {
+                    override fun onResponse(
+                        call: retrofit2.Call<com.google.gson.JsonObject>,
+                        response: retrofit2.Response<com.google.gson.JsonObject>
+                    ) {}
+                    override fun onFailure(call: retrofit2.Call<com.google.gson.JsonObject>, t: Throwable) {
+                        android.util.Log.w("MainActivity", "Unable to report OTA status", t)
+                    }
+                }
+            )
+        } catch (e: Exception) {
+            android.util.Log.w("MainActivity", "Unable to build OTA status", e)
+        }
     }
 
     private fun fetchCooldownSettings() {

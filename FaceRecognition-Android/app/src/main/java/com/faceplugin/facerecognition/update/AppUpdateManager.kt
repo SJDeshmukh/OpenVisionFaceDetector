@@ -20,6 +20,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.security.MessageDigest
 
 /**
  * Manages Over-The-Air (OTA) APK updates for the kiosk application.
@@ -43,10 +44,13 @@ object AppUpdateManager {
     private const val CHECK_INTERVAL_MS = 60 * 60 * 1000L // 1 hour between automatic checks
 
     data class ReleaseInfo(
+        val releaseId: Int,
         val versionCode: Int,
         val versionName: String,
+        val packageName: String,
         val downloadUrl: String,
         val fileSize: Long,
+        val checksumSha256: String,
         val releaseNotes: String,
         val forceUpdate: Boolean
     )
@@ -54,6 +58,7 @@ object AppUpdateManager {
     interface UpdateCallback {
         fun onUpdateAvailable(release: ReleaseInfo) {}
         fun onDownloadProgress(percent: Int) {}
+        fun onStatus(release: ReleaseInfo, status: String, progress: Int? = null, error: String? = null) {}
         fun onUpdateReadyToInstall(release: ReleaseInfo, apkFile: File)
         fun onError(error: String) {}
     }
@@ -103,15 +108,19 @@ object AppUpdateManager {
 
                 if (serverVersionCode > currentVersionCode) {
                     val release = ReleaseInfo(
+                        releaseId = json.optInt("release_id", 0),
                         versionCode = serverVersionCode,
                         versionName = json.optString("version_name", ""),
+                        packageName = json.optString("package_name", context.packageName),
                         downloadUrl = json.optString("download_url", ""),
                         fileSize = json.optLong("file_size", 0),
+                        checksumSha256 = json.optString("checksum_sha256", ""),
                         releaseNotes = json.optString("release_notes", ""),
                         forceUpdate = json.optBoolean("force_update", false)
                     )
 
                     mainHandler.post { callback?.onUpdateAvailable(release) }
+                    mainHandler.post { callback?.onStatus(release, "AVAILABLE") }
                     downloadAndVerifyApk(context.applicationContext, release, callback)
                 } else {
                     Log.d(TAG, "App is already up to date (v${BuildConfig.VERSION_NAME})")
@@ -142,7 +151,7 @@ object AppUpdateManager {
                 val apkFile = File(updatesDir, "tapinx_v${release.versionCode}.apk")
 
                 // If already downloaded and valid, don't download again
-                if (apkFile.exists() && isApkValid(context, apkFile, release.versionCode)) {
+                if (apkFile.exists() && isApkValid(context, apkFile, release)) {
                     Log.i(TAG, "Valid APK already present in cache: ${apkFile.absolutePath}")
                     isDownloading.set(false)
                     mainHandler.post { callback?.onUpdateReadyToInstall(release, apkFile) }
@@ -150,6 +159,7 @@ object AppUpdateManager {
                 }
 
                 Log.i(TAG, "Starting background download from: ${release.downloadUrl}")
+                mainHandler.post { callback?.onStatus(release, "DOWNLOADING", 0) }
                 tempFile = File(updatesDir, "download_temp_${System.currentTimeMillis()}.apk")
 
                 val url = URL(release.downloadUrl)
@@ -178,6 +188,7 @@ object AppUpdateManager {
                         if (progress - lastProgressReport >= 5) {
                             lastProgressReport = progress
                             mainHandler.post { callback?.onDownloadProgress(progress) }
+                            mainHandler.post { callback?.onStatus(release, "DOWNLOADING", progress) }
                         }
                     }
 
@@ -190,7 +201,7 @@ object AppUpdateManager {
                 outputStream = null
 
                 // Verify file integrity before renaming
-                if (!isApkValid(context, tempFile, release.versionCode)) {
+                if (!isApkValid(context, tempFile, release)) {
                     throw IllegalStateException("Downloaded APK verification failed or package corrupted")
                 }
 
@@ -203,11 +214,13 @@ object AppUpdateManager {
                 Log.i(TAG, "APK successfully downloaded and verified: ${apkFile.absolutePath} (${apkFile.length()} bytes)")
                 mainHandler.post {
                     callback?.onDownloadProgress(100)
+                    callback?.onStatus(release, "DOWNLOADED", 100)
                     callback?.onUpdateReadyToInstall(release, apkFile)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to download APK update", e)
                 tempFile?.delete()
+                mainHandler.post { callback?.onStatus(release, "FAILED", error = e.message) }
                 mainHandler.post { callback?.onError(e.message ?: "APK download failed") }
             } finally {
                 try { inputStream?.close() } catch (_: Exception) {}
@@ -220,9 +233,26 @@ object AppUpdateManager {
     /**
      * Validates that the file is an intact Android package with a valid signature and expected versionCode.
      */
-    private fun isApkValid(context: Context, file: File, expectedVersionCode: Int): Boolean {
+    private fun isApkValid(context: Context, file: File, release: ReleaseInfo): Boolean {
         if (!file.exists() || file.length() < 1024) return false
         return try {
+            if (release.checksumSha256.isBlank()) {
+                Log.e(TAG, "Release is missing the required SHA-256 checksum")
+                return false
+            }
+            val digest = MessageDigest.getInstance("SHA-256")
+            file.inputStream().use { input ->
+                val buffer = ByteArray(8192)
+                var count: Int
+                while (input.read(buffer).also { count = it } != -1) {
+                    digest.update(buffer, 0, count)
+                }
+            }
+            val actualChecksum = digest.digest().joinToString("") { "%02x".format(it) }
+            if (!actualChecksum.equals(release.checksumSha256, ignoreCase = true)) {
+                Log.e(TAG, "APK checksum mismatch")
+                return false
+            }
             val pm = context.packageManager
             val info = pm.getPackageArchiveInfo(file.absolutePath, PackageManager.GET_ACTIVITIES)
             if (info == null) {
@@ -237,8 +267,13 @@ object AppUpdateManager {
                 info.versionCode
             }
 
-            Log.d(TAG, "Parsed archive pkg: ${info.packageName}, version: $archiveVersion")
-            archiveVersion > com.faceplugin.facerecognition.BuildConfig.VERSION_CODE || archiveVersion >= expectedVersionCode
+            val expectedPackage = release.packageName.ifBlank { context.packageName }
+            val valid = info.packageName == context.packageName &&
+                info.packageName == expectedPackage &&
+                archiveVersion == release.versionCode &&
+                archiveVersion > com.faceplugin.facerecognition.BuildConfig.VERSION_CODE
+            Log.d(TAG, "Parsed archive pkg: ${info.packageName}, version: $archiveVersion, valid=$valid")
+            valid
         } catch (e: Exception) {
             Log.e(TAG, "Error validating APK archive", e)
             false

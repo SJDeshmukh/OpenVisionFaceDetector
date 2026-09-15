@@ -160,6 +160,7 @@ def get_latest_app_version():
 
         return jsonify({
             "has_update": True,
+            "release_id": release["id"],
             "version_code": release["version_code"],
             "version_name": release["version_name"],
             "package_name": release.get("package_name") or "com.faceplugin.facerecognitionsdk",
@@ -247,4 +248,3 @@ def download_release_apk_by_id(release_id):
             conn.close()
         except Exception:
             pass
-

@@ -5,13 +5,17 @@ import zipfile
 import hashlib
 import logging
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
 # Directory where APKs are stored
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
-APK_STORAGE_DIR = os.path.join(_STATIC_DIR, "apks")
+# Production deployments must point this at a persistent mounted volume. Keeping
+# the old path as the default preserves local and existing deployment behavior.
+APK_STORAGE_DIR = os.path.abspath(
+    os.environ.get("APK_STORAGE_DIR", os.path.join(_STATIC_DIR, "apks"))
+)
 
 def ensure_storage_dir():
     """Ensure the APK storage directory exists."""
@@ -71,6 +75,122 @@ def ensure_app_releases_table(conn):
         except Exception:
             pass
         raise e
+
+
+def ensure_app_update_status_table(conn):
+    """Create the per-device OTA delivery/status table idempotently."""
+    c = conn.cursor()
+    is_pg = getattr(conn, "_is_pg", False)
+    if is_pg:
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS app_update_device_status (
+                id SERIAL PRIMARY KEY,
+                vendor_id INTEGER NOT NULL,
+                device_id VARCHAR(255) NOT NULL,
+                release_id INTEGER,
+                target_version_code INTEGER NOT NULL,
+                installed_version_code INTEGER,
+                installed_version_name VARCHAR(64),
+                status VARCHAR(32) NOT NULL,
+                progress INTEGER,
+                error_code VARCHAR(64),
+                error_message TEXT,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(vendor_id, device_id, target_version_code)
+            )
+        """)
+    else:
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS app_update_device_status (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                vendor_id INTEGER NOT NULL,
+                device_id TEXT NOT NULL,
+                release_id INTEGER,
+                target_version_code INTEGER NOT NULL,
+                installed_version_code INTEGER,
+                installed_version_name TEXT,
+                status TEXT NOT NULL,
+                progress INTEGER,
+                error_code TEXT,
+                error_message TEXT,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(vendor_id, device_id, target_version_code)
+            )
+        """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_app_update_status_target ON app_update_device_status(target_version_code, status)")
+    conn.commit()
+
+
+VALID_UPDATE_STATUSES = {
+    "AVAILABLE", "DOWNLOADING", "DOWNLOADED", "INSTALLING",
+    "INSTALLED", "USER_ACTION_REQUIRED", "FAILED",
+}
+
+
+def record_device_update_status(
+    conn, *, vendor_id, device_id, target_version_code, status,
+    release_id=None, installed_version_code=None, installed_version_name=None,
+    progress=None, error_code=None, error_message=None,
+):
+    ensure_app_update_status_table(conn)
+    normalized_status = str(status or "").strip().upper()
+    if normalized_status not in VALID_UPDATE_STATUSES:
+        raise ValueError("Unsupported app update status")
+    if not str(device_id or "").strip():
+        raise ValueError("device_id is required")
+    target_version_code = int(target_version_code)
+    progress = None if progress is None else max(0, min(100, int(progress)))
+    error_message = str(error_message or "")[:1000] or None
+    # Store a DB-portable UTC timestamp string. This avoids Python 3.12+'s
+    # deprecated implicit SQLite datetime adapter while preserving ordering.
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(sep=" ")
+    c = conn.cursor()
+    c.execute(
+        """SELECT id FROM app_update_device_status
+           WHERE vendor_id = ? AND device_id = ? AND target_version_code = ?""",
+        (vendor_id, device_id, target_version_code),
+    )
+    existing = c.fetchone()
+    if existing:
+        c.execute(
+            """UPDATE app_update_device_status
+               SET release_id = ?, installed_version_code = ?, installed_version_name = ?,
+                   status = ?, progress = ?, error_code = ?, error_message = ?, updated_at = ?
+               WHERE vendor_id = ? AND device_id = ? AND target_version_code = ?""",
+            (release_id, installed_version_code, installed_version_name,
+             normalized_status, progress, error_code, error_message, now,
+             vendor_id, device_id, target_version_code),
+        )
+    else:
+        c.execute(
+            """INSERT INTO app_update_device_status
+               (vendor_id, device_id, release_id, target_version_code,
+                installed_version_code, installed_version_name, status, progress,
+                error_code, error_message, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (vendor_id, device_id, release_id, target_version_code,
+             installed_version_code, installed_version_name, normalized_status,
+             progress, error_code, error_message, now),
+        )
+    conn.commit()
+
+
+def list_device_update_statuses(conn, target_version_code=None):
+    ensure_app_update_status_table(conn)
+    c = conn.cursor()
+    sql = """SELECT s.*, v.company_name, d.device_name
+             FROM app_update_device_status s
+             LEFT JOIN vendors v ON v.id = s.vendor_id
+             LEFT JOIN vendor_devices d ON d.vendor_id = s.vendor_id AND d.device_id = s.device_id"""
+    params = ()
+    if target_version_code is not None:
+        sql += " WHERE s.target_version_code = ?"
+        params = (int(target_version_code),)
+    sql += " ORDER BY s.updated_at DESC"
+    c.execute(sql, params)
+    rows = c.fetchall() or []
+    columns = [desc[0] for desc in c.description]
+    return [dict(row) if hasattr(row, "keys") else dict(zip(columns, row)) for row in rows]
 
 def extract_apk_manifest_info(apk_file_or_bytes):
     """
@@ -176,6 +296,12 @@ def save_apk_release(conn, file_storage, version_code=None, version_name=None,
     # Automatically extract manifest details directly from the uploaded APK
     extracted = extract_apk_manifest_info(file_bytes)
     if extracted:
+        if version_code is not None and extracted.get("version_code") is not None and int(version_code) != int(extracted["version_code"]):
+            raise ValueError("Submitted version_code does not match the APK manifest")
+        if version_name and extracted.get("version_name") and str(version_name) != str(extracted["version_name"]):
+            raise ValueError("Submitted version_name does not match the APK manifest")
+        if package_name and extracted.get("package_name") and str(package_name) != str(extracted["package_name"]):
+            raise ValueError("Submitted package_name does not match the APK manifest")
         if not version_code and extracted.get("version_code") is not None:
             version_code = extracted["version_code"]
         if not version_name and extracted.get("version_name"):
@@ -197,6 +323,9 @@ def save_apk_release(conn, file_storage, version_code=None, version_name=None,
 
     if not package_name:
         package_name = "com.faceplugin.facerecognitionsdk"
+
+    if int(version_code) < 1:
+        raise ValueError("version_code must be a positive integer")
 
     # Generate a clean, unique filename: tapinx_v{code}_{sha256[:8]}.apk
     safe_file_name = f"tapinx_v{version_code}_{sha256_hash[:8]}.apk"

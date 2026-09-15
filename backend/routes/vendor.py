@@ -1651,6 +1651,48 @@ def mobile_heartbeat():
         logger.error(f"Global error in mobile_heartbeat: {e}")
         return jsonify({"error": str(e)}), 500
 
+
+@vendor_bp.route("/mobile/app-update-status", methods=["POST"])
+def mobile_app_update_status():
+    """Record authenticated device progress for an OTA release."""
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+    data = request.get_json(silent=True) or {}
+    token = extract_token(request.headers.get("Authorization"))
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute(
+            "SELECT device_id FROM active_sessions WHERE token = ? AND vendor_id = ? LIMIT 1",
+            (token, vendor_id),
+        )
+        session = c.fetchone()
+        device_id = session[0] if session else None
+        if not device_id:
+            return jsonify({"error": "Authenticated mobile device is required"}), 403
+
+        from services.apk_service import record_device_update_status
+        record_device_update_status(
+            conn,
+            vendor_id=vendor_id,
+            device_id=device_id,
+            release_id=data.get("release_id"),
+            target_version_code=data.get("target_version_code"),
+            installed_version_code=data.get("installed_version_code"),
+            installed_version_name=data.get("installed_version_name"),
+            status=data.get("status"),
+            progress=data.get("progress"),
+            error_code=data.get("error_code"),
+            error_message=data.get("error_message"),
+        )
+        return jsonify({"success": True})
+    except (TypeError, ValueError) as exc:
+        conn.rollback()
+        return jsonify({"error": str(exc)}), 400
+    finally:
+        conn.close()
+
 @vendor_bp.route("/subject-master", methods=["GET"])
 @vendor_required
 def get_subject_master():

@@ -34,6 +34,9 @@ class PersonEventSchema(BaseModel):
     timestamp: Optional[str] = None
     is_attendance: bool = True
     device_id: Optional[str] = None
+    source_event_id: Optional[str] = None
+    source_timezone: Optional[str] = None
+    event_source: Optional[str] = None
 
 class ClassBatchStartSchema(BaseModel):
     class_year: Optional[str] = ""

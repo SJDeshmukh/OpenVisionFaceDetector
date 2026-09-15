@@ -114,6 +114,9 @@ public interface GreetingService {
     @POST("api/mobile/heartbeat")
     Call<com.google.gson.JsonObject> sendHeartbeat(@Body com.google.gson.JsonObject body);
 
+    @POST("api/mobile/app-update-status")
+    Call<com.google.gson.JsonObject> sendAppUpdateStatus(@Body com.google.gson.JsonObject body);
+
     @POST("api/parents/face-reset-request")
     Call<com.google.gson.JsonObject> requestFaceReset(@Body com.google.gson.JsonObject body);
 
