@@ -212,6 +212,8 @@ def socketio_preflight():
 def metrics():
     try:
         from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+        from services.queue_service import update_prometheus_metrics
+        update_prometheus_metrics(celery)
         return generate_latest(), 200, {"Content-Type": CONTENT_TYPE_LATEST}
     except ImportError:
         return jsonify({"error": "metrics not available"}), 501

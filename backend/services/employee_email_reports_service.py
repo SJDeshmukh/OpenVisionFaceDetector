@@ -418,7 +418,7 @@ def queue_advance_notification(advance_id, event):
     """Queue without ever making the advance transaction depend on SMTP/broker health."""
     try:
         from tasks import send_advance_notification_task
-        send_advance_notification_task.apply_async(args=[advance_id, event], queue="normal_priority")
+        send_advance_notification_task.apply_async(args=[advance_id, event], queue="notifications")
         return True
     except Exception:
         logger.warning("Advance email could not be queued for advance=%s event=%s", advance_id, event, exc_info=True)

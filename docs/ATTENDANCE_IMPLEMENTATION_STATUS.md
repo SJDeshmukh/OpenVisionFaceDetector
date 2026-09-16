@@ -1,6 +1,16 @@
 # Attendance Platform Implementation Status
 
-Last updated: 2026-09-15
+Last updated: 2026-09-16
+
+## AMQP/background processing foundation (2026-09-16)
+
+- RabbitMQ/AMQP is available as an opt-in Celery broker while Redis remains the backward-compatible broker fallback, cache, deduplication store, and result backend.
+- Durable `face_priority`, `notifications`, `reports`, `bulk_jobs`, and `maintenance` queues have explicit task routing; rejected/expired AMQP messages route to `dead_letter`.
+- Bare-metal EC2 deployment provisions separate AI and I/O workers without Docker.
+- Large face-recognition messages can be offloaded to protected local storage or private S3 object storage.
+- Parent attendance notifications are queued with a local-thread fallback if the broker is unavailable.
+- Superadmin and Prometheus monitoring report broker status, queue depth, and consumer counts.
+- Production broker cutover remains an operational deployment step and must follow the drain/smoke-test procedure in `docs/AMQP_OPERATIONS.md`.
 
 This file tracks implementation against `ATTENDANCE_PLATFORM_ROADMAP.md`.
 

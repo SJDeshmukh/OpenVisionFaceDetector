@@ -1279,7 +1279,7 @@ def send_automated_report_test(vendor_id):
     finally:
         conn.close()
     from tasks import send_automated_report_task
-    task = send_automated_report_task.apply_async(args=[delivery_id], queue="normal_priority")
+    task = send_automated_report_task.apply_async(args=[delivery_id], queue="reports")
     return jsonify({"success": True, "delivery_id": delivery_id, "task_id": task.id}), 202
 
 @admin_bp.route("/registration/templates", methods=["GET"])
@@ -2943,7 +2943,7 @@ def system_health():
 def system_queues():
     from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
-    from utils import redis_client
+    from services.queue_service import broker_snapshot
     data = {
         "broker": "unknown",
         "queues": {},
@@ -2952,20 +2952,14 @@ def system_queues():
         "reserved": {},
         "scheduled": {}
     }
-    # Broker info
-    try:
-        if redis_client:
-            data["broker"] = "redis"
-            # Common Celery queue names
-            for q in ["celery", "default", "high", "low"]:
-                try:
-                    llen = redis_client.llen(q)
-                    if llen is not None:
-                        data["queues"][q] = int(llen)
-                except Exception:
-                    pass
-    except Exception:
-        pass
+    snapshot = broker_snapshot(celery)
+    data["broker"] = snapshot["type"]
+    data["broker_status"] = snapshot["status"]
+    data["queues"] = snapshot.get("queues", {})
+    if snapshot.get("error"):
+        data["broker_error"] = snapshot["error"]
+    if snapshot.get("queue_errors"):
+        data["queue_errors"] = snapshot["queue_errors"]
     # Celery inspect
     try:
         if celery:

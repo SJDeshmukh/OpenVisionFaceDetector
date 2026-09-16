@@ -317,9 +317,11 @@ def parent_register_face():
 
         # Fallback to backend processing (e.g. for web portals registering parents)
         from tasks import detect_faces_task
+        from services.task_payload_service import store_image_payload
         data_part = face_image.split(",")[-1] if "," in face_image else face_image
         try:
-            result = detect_faces_task.apply_async(args=[data_part, {"fast": True}, vendor_id]).get(timeout=60)
+            task_payload = store_image_payload(data_part)
+            result = detect_faces_task.apply_async(args=[task_payload, {"fast": True}, vendor_id]).get(timeout=60)
             faces = result.get("faces", [])
             if not faces:
                  conn.close()
@@ -417,9 +419,11 @@ def parent_approve_request():
             return jsonify({"error": "Parent face not registered"}), 400
         
         from tasks import detect_faces_task
+        from services.task_payload_service import store_image_payload
         data_part = captured_face.split(",")[-1] if "," in captured_face else captured_face
         try:
-            result = detect_faces_task.apply_async(args=[data_part, {"fast": True}, vendor_id]).get(timeout=60)
+            task_payload = store_image_payload(data_part)
+            result = detect_faces_task.apply_async(args=[task_payload, {"fast": True}, vendor_id]).get(timeout=60)
             faces = result.get("faces", [])
             if not faces:
                 return jsonify({"error": "No face detected in captured image"}), 400

@@ -32,6 +32,35 @@ import base64
 import hashlib
 
 TASK_EVENTS_MAX = int(os.environ.get("TASK_EVENTS_MAX", "50000"))
+TASK_EVENT_VALUE_MAX = int(os.environ.get("TASK_EVENT_VALUE_MAX", "2048"))
+
+
+def _event_json(value):
+    """Serialize task metadata without persisting images, tokens, or huge payloads."""
+    def summarize(item, depth=0):
+        if depth > 4:
+            return "<max-depth>"
+        if isinstance(item, str):
+            if item.startswith("data:image/") or len(item) > TASK_EVENT_VALUE_MAX:
+                return f"<redacted-string length={len(item)}>"
+            return item
+        if isinstance(item, dict):
+            return {
+                str(key): ("<redacted>" if any(secret in str(key).lower() for secret in
+                    ("password", "secret", "token", "authorization", "image", "apk"))
+                    else summarize(val, depth + 1))
+                for key, val in list(item.items())[:100]
+            }
+        if isinstance(item, (list, tuple)):
+            return [summarize(val, depth + 1) for val in list(item)[:100]]
+        if item is None or isinstance(item, (bool, int, float)):
+            return item
+        return str(item)[:TASK_EVENT_VALUE_MAX]
+
+    try:
+        return json.dumps(summarize(value), default=str)
+    except Exception:
+        return '"<unserializable>"'
 
 if celery:
     @celery.task(name="tasks.process_vendor_creation")
@@ -250,7 +279,7 @@ if celery:
         from services.automated_reports_service import dispatch_due_reports
         delivery_ids = dispatch_due_reports()
         for delivery_id in delivery_ids:
-            send_automated_report_task.apply_async(args=[delivery_id], queue="normal_priority")
+            send_automated_report_task.apply_async(args=[delivery_id], queue="reports")
         return {"queued": len(delivery_ids), "delivery_ids": delivery_ids}
 
 
@@ -264,6 +293,18 @@ if celery:
     def send_advance_notification_task(advance_id, event):
         from services.employee_email_reports_service import send_advance_notification
         return send_advance_notification(advance_id, event)
+
+
+    @celery.task(bind=True, name="tasks.deliver_parent_notification", max_retries=3)
+    def deliver_parent_notification_task(self, person_id, vendor_id, title, body, data=None):
+        from notifications import notify_parent_async
+        try:
+            return notify_parent_async(
+                person_id, vendor_id, title, body, data or {},
+                _local=True, _wait=True,
+            )
+        except Exception as exc:
+            raise self.retry(exc=exc, countdown=min(300, 5 * (2 ** self.request.retries)))
 
 
     @celery.task(bind=True, name="tasks.send_automated_report", max_retries=3)
@@ -425,8 +466,8 @@ def _on_task_received(sender=None, headers=None, body=None, **kwargs):
             "received_at": datetime.utcnow().isoformat(),
             "retries": headers.get("retries", 0) if headers else 0,
             "eta": headers.get("eta") if headers else None,
-            "args": json.dumps(body.get("args", [])) if body else None,
-            "kwargs": json.dumps(body.get("kwargs", {})) if body else None
+            "args": _event_json(body.get("args", [])) if body else None,
+            "kwargs": _event_json(body.get("kwargs", {})) if body else None
         })
     except Exception:
         pass
@@ -441,8 +482,8 @@ def _on_task_prerun(task=None, **kwargs):
             "worker": getattr(task.request, "hostname", None),
             "status": "started",
             "started_at": datetime.utcnow().isoformat(),
-            "args": json.dumps(getattr(task.request, "args", [])),
-            "kwargs": json.dumps(getattr(task.request, "kwargs", {}))
+            "args": _event_json(getattr(task.request, "args", [])),
+            "kwargs": _event_json(getattr(task.request, "kwargs", {}))
         })
     except Exception:
         pass
@@ -458,7 +499,7 @@ def _on_task_postrun(task=None, retval=None, state=None, **kwargs):
             "status": state or "success",
             "finished_at": datetime.utcnow().isoformat(),
             "runtime": getattr(task.request, "runtime", None),
-            "result": json.dumps(retval) if retval is not None else None
+            "result": _event_json(retval) if retval is not None else None
         })
     except Exception:
         pass
@@ -800,8 +841,10 @@ if celery:
 
 def detect_faces_task(img_b64, params, vendor_id):
     from services.face_service import _detect_faces_from_bytes
+    from services.task_payload_service import resolve_image_payload
     if not img_b64:
         return {"faces": [], "annotated_b64": ""}
+    img_b64, cleanup_payload = resolve_image_payload(img_b64)
     header, encoded = img_b64.split(',', 1) if ',' in img_b64 else ('', img_b64)
     raw = base64.b64decode(encoded)
     # Cache key materials
@@ -818,6 +861,8 @@ def detect_faces_task(img_b64, params, vendor_id):
         try:
             cached = redis_client.get(cache_key)
             if cached:
+                if cleanup_payload:
+                    cleanup_payload()
                 return json.loads(cached)
         except Exception:
             pass
@@ -828,6 +873,8 @@ def detect_faces_task(img_b64, params, vendor_id):
             redis_client.setex(cache_key, cache_ttl, json.dumps(resp))
         except Exception:
             pass
+    if cleanup_payload:
+        cleanup_payload()
     return resp
 
 if celery:
@@ -835,15 +882,19 @@ if celery:
 
 def search_embedding_task(img_b64, params, vendor_id):
     from services.face_service import _detect_faces_from_bytes
+    from services.task_payload_service import resolve_image_payload
     import base64
     
     if not img_b64:
         return {"faces": [], "annotated_b64": ""}
         
     try:
+        img_b64, cleanup_payload = resolve_image_payload(img_b64)
         header, encoded = img_b64.split(',', 1) if ',' in img_b64 else ('', img_b64)
         raw = base64.b64decode(encoded)
         faces, annotated_b64 = _detect_faces_from_bytes(raw, params or {}, vendor_id)
+        if cleanup_payload:
+            cleanup_payload()
         return {"faces": faces, "annotated_b64": annotated_b64, "status": "done"}
     except Exception as e:
         return {"error": str(e), "status": "failed"}
@@ -862,6 +913,9 @@ def _pre_warm_models(sender=None, **kwargs):
     import time as _t0_mod
     import os as _os
     import sys as _sys
+    if _os.environ.get("PREWARM_AI_MODELS", "1").strip().lower() not in {"1", "true", "yes"}:
+        print("[WORKER] AI model pre-warming disabled for this worker", flush=True)
+        return
     _os.environ.setdefault("FORCE_3D_ENGINE", "1")
     BASE = "/home/ubuntu/OpenVisionFaceDetector"
     for _p in [BASE + "/backend", BASE]:

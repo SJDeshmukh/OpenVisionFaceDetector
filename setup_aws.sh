@@ -30,6 +30,7 @@ ACTION="${1:-setup}"
 DEPLOY_DOMAIN="${DEPLOY_DOMAIN:-tapinx.in}"
 ENABLE_SSL="${ENABLE_SSL:-auto}"
 MIGRATE_SQLITE="${MIGRATE_SQLITE:-0}"
+ENABLE_AMQP="${ENABLE_AMQP:-0}"
 ENV_FILE="$SCRIPT_DIR/backend/.env"
 RUN_USER="$(id -un)"
 RUN_GROUP="$(id -gn)"
@@ -54,6 +55,10 @@ ORCHESTRATION_KEYS_NOTICE_SHOWN=0
     printf 'ERROR: MIGRATE_SQLITE must be 0 or 1.\n' >&2
     exit 1
 }
+[[ "$ENABLE_AMQP" =~ ^[01]$ ]] || {
+    printf 'ERROR: ENABLE_AMQP must be 0 or 1.\n' >&2
+    exit 1
+}
 
 log() {
     printf '\n==> %s\n' "$1"
@@ -62,7 +67,7 @@ log() {
 recover_systemd_services() {
     if [ "${RECOVER_SYSTEMD_SERVICES:-0}" = "1" ]; then
         printf 'Restoring OpenVision services after the failed deployment...\n' >&2
-        sudo systemctl start openvision-backend openvision-celery openvision-celery-beat 2>/dev/null || true
+        sudo systemctl start openvision-backend openvision-celery openvision-celery-io openvision-celery-beat 2>/dev/null || true
     fi
 }
 
@@ -85,7 +90,7 @@ on_error() {
     trap - ERR
     recover_systemd_services
     printf '\nDeployment failed at line %s (exit %s).\n' "${BASH_LINENO[0]}" "$exit_code" >&2
-    printf 'Inspect services with: sudo systemctl status openvision-backend openvision-celery openvision-celery-beat --no-pager\n' >&2
+    printf 'Inspect services with: sudo systemctl status openvision-backend openvision-celery openvision-celery-io openvision-celery-beat --no-pager\n' >&2
     exit "$exit_code"
 }
 trap on_error ERR
@@ -453,7 +458,7 @@ wait_for_url() {
 }
 
 stop_application_services() {
-    sudo systemctl stop openvision-backend openvision-celery openvision-celery-beat face-backend 2>/dev/null || true
+    sudo systemctl stop openvision-backend openvision-celery openvision-celery-io openvision-celery-beat face-backend 2>/dev/null || true
 }
 
 install_boot_check_service() {
@@ -1075,12 +1080,15 @@ if [ "$ACTION" = "boot-check" ]; then
         fi
     elif [ "$DEPLOYMENT_MODE" = "bare" ]; then
         run_root systemctl start postgresql redis-server nginx
+        if [[ "$(file_env_get "$ENV_FILE" CELERY_BROKER_URL)" == amqp://* ]] || [[ "$(file_env_get "$ENV_FILE" CELERY_BROKER_URL)" == pyamqp://* ]]; then
+            run_root systemctl start rabbitmq-server
+        fi
         if [ "$(file_env_get "$ENV_FILE" XCHAT_PROVIDER)" = "omniroute" ]; then
             [ -f "$OMNIROUTE_ENV_FILE" ] || die "OmniRoute secrets file is missing; restore it instead of generating replacement encryption secrets"
             run_root systemctl start "$OMNIROUTE_SERVICE"
             wait_for_url "http://127.0.0.1:20128/" 60 || die "OmniRoute failed its post-boot health check"
         fi
-        run_root systemctl start openvision-backend openvision-celery openvision-celery-beat
+        run_root systemctl start openvision-backend openvision-celery openvision-celery-io openvision-celery-beat
     else
         die "Deployment mode is unknown; run setup_aws.sh once to install OpenVision"
     fi
@@ -1102,7 +1110,7 @@ if [ "$ACTION" = "configure-mail" ]; then
         sudo docker compose up -d --no-deps --force-recreate api worker beat
         printf 'Gmail SMTP configured; Docker API, worker, and Beat services restarted.\n'
     elif command -v systemctl >/dev/null 2>&1 && systemctl cat openvision-backend.service >/dev/null 2>&1; then
-        sudo systemctl restart openvision-backend openvision-celery openvision-celery-beat
+        sudo systemctl restart openvision-backend openvision-celery openvision-celery-io openvision-celery-beat
         printf 'Gmail SMTP configured; OpenVision API, worker, and Beat services restarted.\n'
     else
         printf 'Gmail SMTP configured in backend/.env. Start or redeploy the OpenVision services to apply it.\n'
@@ -1284,6 +1292,18 @@ run_root chown "$RUN_USER:$RUN_GROUP" "$BARE_APK_STORAGE_DIR"
 run_root chmod 0750 "$BARE_APK_STORAGE_DIR"
 env_set APK_STORAGE_DIR "$BARE_APK_STORAGE_DIR"
 
+# Large recognition payloads are stored outside RabbitMQ. This shared path is
+# visible to both systemd services even though PrivateTmp is enabled.
+BARE_TASK_PAYLOAD_DIR="$(env_get TASK_PAYLOAD_DIR)"
+[ -n "$BARE_TASK_PAYLOAD_DIR" ] || BARE_TASK_PAYLOAD_DIR="/var/lib/openvision/task-payloads"
+[[ "$BARE_TASK_PAYLOAD_DIR" = /* && "$BARE_TASK_PAYLOAD_DIR" != "/" ]] || die "TASK_PAYLOAD_DIR must be a safe absolute directory"
+run_root mkdir -p "$BARE_TASK_PAYLOAD_DIR"
+run_root chown "$RUN_USER:$RUN_GROUP" "$BARE_TASK_PAYLOAD_DIR"
+run_root chmod 0700 "$BARE_TASK_PAYLOAD_DIR"
+env_set TASK_PAYLOAD_DIR "$BARE_TASK_PAYLOAD_DIR"
+env_set TASK_PAYLOAD_OFFLOAD "true"
+env_set TASK_PAYLOAD_TTL_SECONDS "3600"
+
 DB_PASSWORD="$(env_get DB_PASSWORD)"
 [ -n "$DB_PASSWORD" ] || DB_PASSWORD="$(openssl rand -hex 24)"
 if [[ ! "$DB_PASSWORD" =~ ^[A-Za-z0-9]+$ ]]; then
@@ -1343,6 +1363,11 @@ env_set DATABASE_URL "postgresql://openvision_app:${DB_PASSWORD}@127.0.0.1:5432/
 env_set DB_TYPE "postgres"
 env_set REDIS_URL "$REDIS_URL"
 env_set CELERY_BROKER_URL "$REDIS_URL"
+env_set CELERY_RESULT_BACKEND "$REDIS_URL"
+if [ "$ENABLE_AMQP" = "1" ]; then
+    log "Installing and configuring local-only RabbitMQ"
+    ENV_FILE="$ENV_FILE" bash "$SCRIPT_DIR/scripts/configure-rabbitmq.sh"
+fi
 env_set BACKEND_URL "http://${DEPLOY_DOMAIN}"
 env_set FRONTEND_URL "http://${DEPLOY_DOMAIN}"
 env_set LOW_RAM_MODE "$LOW_RAM_MODE"
@@ -1496,7 +1521,7 @@ log "Installing application-scoped systemd services"
 sudo tee /etc/systemd/system/openvision-backend.service >/dev/null <<UNIT
 [Unit]
 Description=OpenVision API
-After=network-online.target postgresql.service redis-server.service
+After=network-online.target postgresql.service redis-server.service rabbitmq-server.service
 Wants=network-online.target
 
 [Service]
@@ -1522,7 +1547,7 @@ UNIT
 sudo tee /etc/systemd/system/openvision-celery.service >/dev/null <<UNIT
 [Unit]
 Description=OpenVision Celery Worker
-After=network-online.target postgresql.service redis-server.service
+After=network-online.target postgresql.service redis-server.service rabbitmq-server.service
 Wants=network-online.target
 
 [Service]
@@ -1536,8 +1561,41 @@ Environment="OMP_NUM_THREADS=1"
 Environment="MKL_NUM_THREADS=1"
 Environment="OPENBLAS_NUM_THREADS=1"
 Environment="FORCE_3D_ENGINE=1"
+Environment="PREWARM_AI_MODELS=1"
 EnvironmentFile=${ENV_FILE}
-ExecStart=${SCRIPT_DIR}/backend/.venv/bin/celery -A celery_app worker --loglevel=info --concurrency=1 --pool=threads --max-tasks-per-child=500 --prefetch-multiplier=1 -n worker1@%H
+ExecStartPre=${SCRIPT_DIR}/backend/.venv/bin/python ${SCRIPT_DIR}/backend/scripts/declare_celery_topology.py
+ExecStart=${SCRIPT_DIR}/backend/.venv/bin/celery -A celery_app worker --loglevel=info --concurrency=1 --pool=threads --max-tasks-per-child=500 --prefetch-multiplier=1 -Q face_priority -n face@%H
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillMode=mixed
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+sudo tee /etc/systemd/system/openvision-celery-io.service >/dev/null <<UNIT
+[Unit]
+Description=OpenVision Celery I/O Worker
+After=network-online.target postgresql.service redis-server.service rabbitmq-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${RUN_USER}
+Group=${RUN_GROUP}
+WorkingDirectory=${SCRIPT_DIR}/backend
+Environment="PATH=${SCRIPT_DIR}/backend/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONPATH=${SCRIPT_DIR}/backend:${SCRIPT_DIR}"
+Environment="OMP_NUM_THREADS=1"
+Environment="MKL_NUM_THREADS=1"
+Environment="OPENBLAS_NUM_THREADS=1"
+Environment="PREWARM_AI_MODELS=0"
+EnvironmentFile=${ENV_FILE}
+ExecStartPre=${SCRIPT_DIR}/backend/.venv/bin/python ${SCRIPT_DIR}/backend/scripts/declare_celery_topology.py
+ExecStart=${SCRIPT_DIR}/backend/.venv/bin/celery -A celery_app worker --loglevel=info --concurrency=4 --pool=threads --max-tasks-per-child=1000 --prefetch-multiplier=1 -Q notifications,reports,bulk_jobs,maintenance -n io@%H
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30
@@ -1552,7 +1610,7 @@ UNIT
 sudo tee /etc/systemd/system/openvision-celery-beat.service >/dev/null <<UNIT
 [Unit]
 Description=OpenVision Celery Beat Scheduler
-After=network-online.target redis-server.service openvision-celery.service
+After=network-online.target redis-server.service rabbitmq-server.service openvision-celery.service openvision-celery-io.service
 Wants=network-online.target
 
 [Service]
@@ -1576,10 +1634,11 @@ WantedBy=multi-user.target
 UNIT
 
 sudo systemctl daemon-reload
-sudo systemctl enable openvision-backend openvision-celery openvision-celery-beat
-sudo systemctl restart openvision-backend openvision-celery openvision-celery-beat
+sudo systemctl enable openvision-backend openvision-celery openvision-celery-io openvision-celery-beat
+sudo systemctl restart openvision-backend openvision-celery openvision-celery-io openvision-celery-beat
 sudo systemctl is-active --quiet openvision-backend
 sudo systemctl is-active --quiet openvision-celery
+sudo systemctl is-active --quiet openvision-celery-io
 sudo systemctl is-active --quiet openvision-celery-beat
 
 printf 'bare\n' > "$MODE_FILE"
@@ -1617,7 +1676,7 @@ if [ "$ENABLE_SSL" != "no" ]; then
             SSL_ENABLED=1
             env_set BACKEND_URL "https://${DEPLOY_DOMAIN}"
             env_set FRONTEND_URL "https://${DEPLOY_DOMAIN}"
-            sudo systemctl restart openvision-backend openvision-celery openvision-celery-beat
+            sudo systemctl restart openvision-backend openvision-celery openvision-celery-io openvision-celery-beat
             wait_for_url "https://${DEPLOY_DOMAIN}/api/health" 20 \
                 || die "HTTPS certificate was installed, but the public health endpoint is unavailable"
         else
@@ -1642,5 +1701,5 @@ else
     printf 'API:       http://%s/api\n' "$DEPLOY_DOMAIN"
 fi
 printf 'Local health: http://127.0.0.1:5001/api/health\n'
-printf 'Services:     sudo systemctl status openvision-backend openvision-celery openvision-celery-beat nginx\n'
+printf 'Services:     sudo systemctl status openvision-backend openvision-celery openvision-celery-io openvision-celery-beat nginx\n'
 printf 'Application logs: sudo journalctl -u openvision-backend -f\n'

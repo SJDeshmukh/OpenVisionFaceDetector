@@ -292,9 +292,10 @@ def detect_faces_basic():
             return jsonify({"error": "invalid image"}), 400
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         from tasks import detect_faces_task
+        from services.task_payload_service import store_image_payload
         try:
-            # We must pass the raw base64 string because detect_faces_task base64 decodes it
-            task_result = detect_faces_task.apply_async(args=[img_b64, data, vendor_id]).get(timeout=60)
+            task_payload = store_image_payload(img_b64)
+            task_result = detect_faces_task.apply_async(args=[task_payload, data, vendor_id]).get(timeout=60)
             faces = task_result.get("faces", [])
             annotated_b64 = task_result.get("annotated_b64", "")
         except Exception as e:
@@ -315,13 +316,14 @@ def detect_faces_basic():
 def search_embedding():
     from services.auth_service import authenticate_vendor_access
     from tasks import search_embedding_task
+    from services.task_payload_service import store_image_payload
     vendor_id, error = authenticate_vendor_access()
     if error:
         return error
     try:
         data = request.get_json(silent=True) or {}
         img_b64 = data.get('image')
-        if not img_b64:
+        if not isinstance(img_b64, str) or not img_b64:
             return jsonify({"error": "image required"}), 400
             
         from celery_app import celery
@@ -330,10 +332,8 @@ def search_embedding():
             # (Keeping it simple for now, but in production we want it always async)
             return jsonify({"error": "Celery worker not available"}), 503
 
-        task = search_embedding_task.delay(img_b64, data, vendor_id)
+        task = search_embedding_task.delay(store_image_payload(img_b64), data, vendor_id)
         return jsonify({"task_id": task.id, "status": "processing"}), 202
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -346,7 +346,7 @@ def detect_faces_async():
     try:
         data = request.get_json(silent=True) or {}
         img_b64 = data.get('image')
-        if not img_b64:
+        if not isinstance(img_b64, str) or not img_b64:
             return jsonify({"error": "image required"}), 400
         from celery_app import celery
         if not celery:
@@ -359,13 +359,15 @@ def detect_faces_async():
         except Exception:
             img_hash = None
         pr = (data.get('priority') or 'normal').strip().lower()
-        queue = 'normal_priority'
+        queue = 'face_priority'
+        task_priority = 5
         if pr in ('high', 'vip', 'premium'):
-            queue = 'high_priority'
+            task_priority = 9
         elif pr in ('low', 'bulk'):
-            queue = 'low_priority'
+            task_priority = 1
         dedup_ttl = int(os.environ.get("DETECT_DEDUP_TTL", "120"))
         from tasks import detect_faces_task
+        from services.task_payload_service import store_image_payload
         redis = _get_redis()
         if redis and img_hash:
             dedup_key = f"det-task:v1:{vendor_id}:{queue}:{img_hash}"
@@ -375,7 +377,10 @@ def detect_faces_async():
                     return jsonify({"task_id": existing.decode('utf-8'), "status": "processing"}), 202
             except Exception:
                 pass
-        task = detect_faces_task.apply_async(args=[img_b64, data, vendor_id], queue=queue)
+        task_payload = store_image_payload(img_b64)
+        task = detect_faces_task.apply_async(
+            args=[task_payload, data, vendor_id], queue=queue, priority=task_priority,
+        )
         if redis and img_hash:
             try:
                 redis.setex(f"det-task:v1:{vendor_id}:{queue}:{img_hash}", dedup_ttl, task.id)
@@ -394,23 +399,30 @@ def detect_faces_batch_async():
     try:
         data = request.get_json(silent=True) or {}
         images = data.get('images') or []
-        if not isinstance(images, list) or len(images) == 0:
+        if not isinstance(images, list) or len(images) == 0 or not all(isinstance(image, str) and image for image in images):
             return jsonify({"error": "images array required"}), 400
         from celery_app import celery
         if not celery:
             return jsonify({"error": "Celery worker not available"}), 503
         from celery import group
         from tasks import detect_faces_task
+        from services.task_payload_service import store_image_payload
         pr = (data.get('priority') or 'normal').strip().lower()
-        queue = 'normal_priority'
+        queue = 'face_priority'
+        task_priority = 5
         if pr in ('high', 'vip', 'premium'):
-            queue = 'high_priority'
+            task_priority = 9
         elif pr in ('low', 'bulk'):
-            queue = 'low_priority'
+            task_priority = 1
         # Build task signatures
         sigs = []
         for img_b64 in images:
-            sigs.append(detect_faces_task.s(img_b64, data, vendor_id).set(queue=queue))
+            task_payload = store_image_payload(img_b64)
+            sigs.append(
+                detect_faces_task.s(task_payload, data, vendor_id).set(
+                    queue=queue, priority=task_priority,
+                )
+            )
         task_ids = []
         group_id = None
         try:

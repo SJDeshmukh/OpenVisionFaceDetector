@@ -162,13 +162,30 @@ def send_fcm_notification(fcm_token: str, title: str, body: str, data: dict = No
     return False
 
 
-def notify_parent_async(person_id, vendor_id, title: str, body: str, data: dict = None):
+def notify_parent_async(
+    person_id, vendor_id, title: str, body: str, data: dict = None,
+    *, _local=False, _wait=False,
+):
     """Fire-and-forget notification to parent(s) linked to the student.
 
     Delivery layers:
       1. Socket.IO  — instant when app is open / service running
       2. FCM push   — reaches device even when app is fully closed (requires Firebase setup)
     """
+    if not _local:
+        try:
+            from tasks import deliver_parent_notification_task
+            if hasattr(deliver_parent_notification_task, "apply_async"):
+                result = deliver_parent_notification_task.apply_async(
+                    args=[person_id, vendor_id, title, body, data or {}],
+                    queue="notifications",
+                )
+                return {"queued": True, "task_id": result.id}
+        except Exception as exc:
+            logger.warning("Notification queue unavailable; using local fallback: %s", exc)
+
+    outcome = {"delivered": False, "error": None}
+
     def _worker():
         try:
             try:
@@ -242,7 +259,16 @@ def notify_parent_async(person_id, vendor_id, title: str, body: str, data: dict 
             for token in set(fcm_tokens):
                 send_fcm_notification(token, title, body, data)
 
+            outcome["delivered"] = True
+
         except Exception as e:
+            outcome["error"] = str(e)
             logger.warning("notify_parent_async error: %s", e)
 
-    threading.Thread(target=_worker, daemon=True).start()
+    thread = threading.Thread(target=_worker, daemon=not _wait)
+    thread.start()
+    if _wait:
+        thread.join()
+        if outcome["error"]:
+            raise RuntimeError(outcome["error"])
+    return outcome

@@ -409,7 +409,9 @@ npm run dev
 Environment (backend):
 - SECRET_KEY → JWT/session signing
 - BACKEND_URL, FRONTEND_URL → CORS/config
-- REDIS_URL, CELERY_BROKER_URL, CELERY_RESULT_BACKEND → Redis endpoints
+- REDIS_URL → cache, deduplication, and Celery result storage
+- CELERY_BROKER_URL → RabbitMQ AMQP URL in production; falls back to REDIS_URL
+- CELERY_RESULT_BACKEND → Redis endpoint even when RabbitMQ carries tasks
 - FCM_SERVER_KEY → enable parent push notifications
 - AWS_* / S3_BUCKET (optional) → object storage for images/logs
 

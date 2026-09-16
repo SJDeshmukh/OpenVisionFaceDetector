@@ -62,7 +62,7 @@ def email_employee_monthly_reports():
     try:
         from tasks import send_employee_monthly_reports_task
         task = send_employee_monthly_reports_task.apply_async(
-            args=[g.vendor_id, month, person_type, filters], queue="normal_priority",
+            args=[g.vendor_id, month, person_type, filters], queue="reports",
         )
     except (ImportError, AttributeError):
         return jsonify({"error": "Background email worker is not configured"}), 503

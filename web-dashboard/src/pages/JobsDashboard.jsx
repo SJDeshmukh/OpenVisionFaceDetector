@@ -59,7 +59,11 @@ const JobsDashboard = () => {
     const t = setInterval(fetchQueues, 5000);
     const e = setInterval(fetchEvents, 5000);
     const m = setInterval(fetchMetrics, 10000);
-    return () => clearInterval(t);
+    return () => {
+      clearInterval(t);
+      clearInterval(e);
+      clearInterval(m);
+    };
   }, []);
   useEffect(() => { fetchEvents(); }, [statusFilter, queueFilter, nameFilter]);
   useEffect(() => { fetchMetrics(); }, [bucket, windowMinutes]);
@@ -90,6 +94,7 @@ const JobsDashboard = () => {
             <span className="font-semibold">Broker</span>
           </div>
           <div className="text-slate-700">Type: <span className="font-mono">{queues?.broker}</span></div>
+          <div className="text-slate-700 mt-1">Status: <span className={`font-mono ${queues?.broker_status === 'ok' ? 'text-green-600' : 'text-red-600'}`}>{queues?.broker_status || 'unknown'}</span></div>
           <div className="text-slate-700 mt-1">Workers: <span className="font-mono">{queues?.workers?.length || 0}</span></div>
         </div>
         <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
@@ -112,10 +117,15 @@ const JobsDashboard = () => {
           {Object.keys(queues?.queues || {}).length === 0 ? (
             <div className="text-slate-500">No queues discovered</div>
           ) : (
-            Object.entries(queues.queues).map(([name, len]) => (
-              <div key={name} className="p-4 rounded-lg border border-slate-200 bg-slate-50 flex items-center justify-between">
+            Object.entries(queues.queues).map(([name, details]) => (
+              <div key={name} className={`p-4 rounded-lg border ${name === 'dead_letter' && details?.messages > 0 ? 'border-red-300 bg-red-50' : 'border-slate-200 bg-slate-50'} flex items-center justify-between`}>
                 <span className="font-mono">{name}</span>
-                <span className="text-xl font-bold">{len}</span>
+                <div className="text-right">
+                  <div className="text-xl font-bold">{typeof details === 'object' ? details.messages : details}</div>
+                  {typeof details === 'object' && details.consumers !== null && (
+                    <div className="text-xs text-slate-500">{details.consumers} consumer{details.consumers === 1 ? '' : 's'}</div>
+                  )}
+                </div>
               </div>
             ))
           )}
