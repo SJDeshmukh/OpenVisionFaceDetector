@@ -13,7 +13,8 @@ import qrcode
 from io import BytesIO
 from utils import (
     _run, log_audit, ALL_FEATURES, BUNDLE_FEATURES, REGISTRATION_TEMPLATES,
-    cache_get, cache_set, cache_delete, reset_sequence, create_job, complete_job, fail_job, get_db_connection
+    cache_get, cache_set, cache_delete, cache_delete_vendor_prefix, reset_sequence,
+    create_job, complete_job, fail_job, get_db_connection
 )
 from db_factory import get_table_columns
 try:
@@ -1953,6 +1954,8 @@ def update_vendor_subscription(vendor_id):
                 if 'automated_email_reports' not in current_features:
                     c.execute("UPDATE automated_report_schedules SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE vendor_id = ?", (vendor_id,))
             conn.commit()
+            if 'features' in data:
+                cache_delete_vendor_prefix(vendor_id)
             
             # Log Audit
             log_audit('update_subscription', data, target_vendor_id=vendor_id)
@@ -2373,6 +2376,8 @@ def update_vendor_details(vendor_id):
                 c.execute("DELETE FROM system_users WHERE username = ? AND vendor_id = ? AND role = 'owner'", (r_username, vendor_id))
 
         conn.commit()
+        if features_json is not None:
+            cache_delete_vendor_prefix(vendor_id)
         
         # Real-time UI updates
         try:

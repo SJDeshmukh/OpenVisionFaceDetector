@@ -225,6 +225,7 @@ def get_attendance_filters(valid_data: AttendanceFilterSchema):
 @validate_request(AttendanceFilterSchema)
 def get_attendance_summary(valid_data: AttendanceFilterSchema):
     vendor_id = g.vendor_id
+    late_enabled = vendor_has_feature(vendor_id, "late_mark")
 
     date_str = valid_data.start_date or datetime.now().strftime('%Y-%m-%d')
     cache_key = f"vendor:{vendor_id}:attendance_summary:{date_str}:{valid_data.person_type or 'default'}"
@@ -282,7 +283,7 @@ def get_attendance_summary(valid_data: AttendanceFilterSchema):
             elif stats['total_hours'] > (exp_hours + 1): status = "Overtime"
             else: status = "On Track"
         
-        arr_status = calculate_arrival_status(exp_start, stats['sessions'], day_acts)
+        arr_status = calculate_arrival_status(exp_start, stats['sessions'], day_acts) if late_enabled else None
         summary.append({
             "name": user_names[user_key], "person_id": user_person_ids[user_key],
             "date": date_str, "status": status, "arrival_status": arr_status,
@@ -468,7 +469,7 @@ def person_event(valid_data: PersonEventSchema):
             logger.debug("Cooldown check failed", exc_info=True)
 
     is_late = 0
-    if new_status == 'CHECK_IN' and vendor_id_to_check:
+    if new_status == 'CHECK_IN' and vendor_id_to_check and vendor_has_feature(vendor_id_to_check, "late_mark"):
         try:
             # 1. Look for matching Shift in Timetable (companies table)
             matched_shift = None
@@ -634,6 +635,7 @@ def person_event(valid_data: PersonEventSchema):
 @validate_request(AttendanceFilterSchema)
 def get_attendance(valid_data: AttendanceFilterSchema):
     vendor_id = g.vendor_id
+    late_enabled = vendor_has_feature(vendor_id, "late_mark")
     cache_params = sorted(request.args.items())
     cache_key = f"vendor:{vendor_id}:attendance_list:{hash(tuple(cache_params))}"
     cached = cache_get(cache_key)
@@ -719,7 +721,8 @@ def get_attendance(valid_data: AttendanceFilterSchema):
             "id": r["id"], "person_id": r.get("person_id"),
             "vendor_id": r.get("vendor_id"), "name": r["name"],
             "timestamp": str(r["timestamp"]),
-            "status": r["status"], "activity": r["activity"], "is_late": r.get("is_late", 0),
+            "status": r["status"], "activity": r["activity"],
+            "is_late": r.get("is_late", 0) if late_enabled else 0,
             "department": r["department"], "designation": r["designation"],
             "captured_image": r["captured_image"],
             "device_name": device_name,

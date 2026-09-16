@@ -49,6 +49,7 @@ const Attendance = () => {
   const terminology = getBusinessTerminology(user?.vertical);
   const schoolFlow = usesStudentRecords(user?.vertical);
   const isRegularUser = user?.role === 'user' || user?.role === 'student';
+  const lateMarkEnabled = user?.features?.includes('late_mark');
   const [personType, setPersonType] = useState('student');
   const filtersRef = useRef(filters);
   useEffect(() => {
@@ -183,6 +184,12 @@ const Attendance = () => {
   };
 
   const getStatus = (log) => {
+    if (!lateMarkEnabled) {
+      return log.status === 'CHECK_OUT'
+        ? { label: 'Check Out', color: 'bg-slate-100 text-slate-700' }
+        : { label: 'Check In', color: 'bg-green-100 text-green-700' };
+    }
+
     // Backend provided late flag
     // Handle both integer 1/0 and boolean true/false or string "1"
     if (log.is_late === 1 || log.is_late === true || log.is_late === '1') {

@@ -55,6 +55,7 @@ const Dashboard = () => {
   const [activeTab, setActiveTab] = useState('overview');
   const terminology = getBusinessTerminology(user?.vertical);
   const schoolFlow = usesStudentRecords(user?.vertical);
+  const lateMarkEnabled = user?.features?.includes('late_mark');
   const personLabel = terminology.person;
   const peopleLabel = terminology.people;
   const [stats, setStats] = useState({
@@ -254,7 +255,7 @@ const Dashboard = () => {
       {activeTab === 'overview' ? (
         <>
           {/* KPI Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          <div className={`grid grid-cols-1 md:grid-cols-2 ${lateMarkEnabled ? 'lg:grid-cols-4' : 'lg:grid-cols-3'} gap-6`}>
             <KpiCard
               title={`Total ${peopleLabel}`}
               value={stats.total}
@@ -276,13 +277,15 @@ const Dashboard = () => {
               icon={UserX}
               color="bg-red-500"
             />
-            <KpiCard
-              title="Late Arrivals"
-              value={stats.late}
-              subtext="Exceeded grace period"
-              icon={Clock}
-              color="bg-amber-500"
-            />
+            {lateMarkEnabled && (
+              <KpiCard
+                title="Late Arrivals"
+                value={stats.late}
+                subtext="Exceeded grace period"
+                icon={Clock}
+                color="bg-amber-500"
+              />
+            )}
           </div>
 
           {/* Charts Section */}

@@ -42,7 +42,7 @@ class TestLateWithId(unittest.TestCase):
             
             # Add Subscription
             c.execute("INSERT INTO subscriptions (vendor_id, plan_type, features, start_date, end_date, max_employees) VALUES (?, ?, ?, ?, ?, ?)",
-                      (self.vendor_id, 'Enterprise', '["shifts", "mobile_app"]', '2024-01-01', '2099-12-31', 100))
+                      (self.vendor_id, 'Enterprise', '["shifts", "mobile_app", "late_mark"]', '2024-01-01', '2099-12-31', 100))
 
             c.execute("INSERT OR IGNORE INTO system_users (username, password, role, vendor_id) VALUES (?, ?, ?, ?)", ('test_admin', 'pass', 'admin', self.vendor_id))
             
@@ -158,6 +158,43 @@ class TestLateWithId(unittest.TestCase):
         self.assertEqual(row2[2], 0, f"User {id2} should be ON TIME")
         
         print("SUCCESS: Duplicate names handled correctly with IDs for Late Logic!")
+
+    def test_disabled_late_feature_keeps_normal_check_in(self):
+        conn = sqlite3.connect(TEST_DB)
+        conn.execute(
+            "UPDATE subscriptions SET features = ? WHERE vendor_id = ?",
+            ('["shifts", "mobile_app"]', self.vendor_id),
+        )
+        conn.commit()
+        conn.close()
+
+        upload = self.app.post('/api/sync/upload', json={
+            "name": "No Late Employee",
+            "vendor_id": self.vendor_id,
+        }, headers=self.headers)
+        self.assertEqual(upload.status_code, 200)
+        person_id = upload.json.get('person_id')
+
+        late_time = datetime.now().replace(hour=9, minute=30, second=0, microsecond=0)
+        event = self.app.post('/api/person-event', json={
+            "person_id": person_id,
+            "name": "No Late Employee",
+            "timestamp": late_time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "detected": True,
+            "recognized": True,
+        }, headers=self.headers)
+
+        self.assertEqual(event.status_code, 200)
+        self.assertEqual(event.json.get('status'), 'CHECK_IN')
+        self.assertEqual(event.json.get('is_late'), 0)
+
+        conn = sqlite3.connect(TEST_DB)
+        row = conn.execute(
+            "SELECT status, is_late FROM attendance WHERE person_id = ? ORDER BY id DESC LIMIT 1",
+            (person_id,),
+        ).fetchone()
+        conn.close()
+        self.assertEqual(row, ('CHECK_IN', 0))
 
 if __name__ == '__main__':
     unittest.main()

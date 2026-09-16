@@ -245,6 +245,7 @@ def get_report_filters():
 @validate_request(PayrollReportRequest)
 def get_analytics(valid_data: PayrollReportRequest):
     vendor_id = g.vendor_id
+    late_enabled = vendor_has_feature(vendor_id, "late_mark")
     
     start_date = valid_data.start_date or (datetime.now() - timedelta(days=6)).strftime('%Y-%m-%d')
     end_date = valid_data.end_date or datetime.now().strftime('%Y-%m-%d')
@@ -338,7 +339,7 @@ def get_analytics(valid_data: PayrollReportRequest):
             p_present_days += 1
             
             # Check if late in any session of the day
-            is_late_day = any(r.get('is_late') == 1 for r in d_records)
+            is_late_day = late_enabled and any(r.get('is_late') == 1 for r in d_records)
             if is_late_day: p_late_count += 1
             
             # Update daily global stats
