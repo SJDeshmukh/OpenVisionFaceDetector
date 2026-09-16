@@ -94,7 +94,7 @@ const Login = () => {
     const result = await login(username, password);
     setLoading(false);
     if (result.success) {
-      if (result.role === 'super_admin') { logout(); setError('Please use the Super Admin Portal.'); return; }
+      if (result.role === 'super_admin') { logout(); setError('This account uses a separate sign-in portal.'); return; }
       if (result.force_password_change) { setShowPasswordChange(true); return; }
       if (result.status === 'success' && result.needs_student_password) { setShowStudentPasswordModal(true); return; }
       if (result.role === 'faculty') { navigate('/classes'); return; }
@@ -265,7 +265,7 @@ const Login = () => {
             </div>
           </div>
 
-          <h1 className="text-xl font-bold text-white tracking-tight">TapInX Admin</h1>
+          <h1 className="text-xl font-bold text-white tracking-tight">TapInX Sign In</h1>
           <p className="text-xs mt-1 flex items-center justify-center gap-1.5" style={{ color: 'rgba(196,196,224,0.6)' }}>
             <Zap size={11} style={{ color: '#7C3AFF' }} />
             Powered by OpenVisionX
@@ -300,7 +300,7 @@ const Login = () => {
 
                 <Field label="Email" icon={User} type="text"
                   value={username} onChange={e => setUsername(e.target.value)}
-                  placeholder="Enter registered email (Super Admin may use username)" custom={0} />
+                  placeholder="Enter your registered email" custom={0} />
 
                 <Field label="Password" icon={Lock}
                   type={showPassword ? 'text' : 'password'}
@@ -423,13 +423,6 @@ const Login = () => {
           </AnimatePresence>
         </div>
 
-        {/* Footer */}
-        <div
-          className="px-8 py-3.5 text-center text-[11px]"
-          style={{ borderTop: '1px solid rgba(124,58,255,0.1)', color: '#404070' }}
-        >
-          Default: admin / admin123 · Kiosk: kiosk / kiosk123
-        </div>
       </motion.div>
 
       {/* ── Forgot Password Modal ── */}

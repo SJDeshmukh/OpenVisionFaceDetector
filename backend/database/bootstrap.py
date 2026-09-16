@@ -50,7 +50,7 @@ def seed_superadmin():
         conn.close()
 
 def ensure_vendor_companies_and_subscription_features():
-    """Ensures each vendor has a corresponding company and subscription record."""
+    """Ensure required tenant rows exist without changing configured features."""
     conn = get_db_connection()
     c = conn.cursor()
     try:
@@ -58,7 +58,10 @@ def ensure_vendor_companies_and_subscription_features():
         vendors = c.fetchall() or []
         today = date.today().isoformat()
         far_future = "2099-12-31"
-        default_features = ["mobile_app", "shifts", "late_mark"]
+        # Used only to recover a vendor that has no subscription row at all.
+        # Existing feature lists are authoritative Super Admin configuration and
+        # must never be merged with defaults during a deployment/restart.
+        recovery_default_features = ["mobile_app", "shifts"]
 
         for v in vendors:
             try:
@@ -84,24 +87,8 @@ def ensure_vendor_companies_and_subscription_features():
                 if not sub:
                     c.execute(
                         "INSERT INTO subscriptions (vendor_id, plan_type, start_date, end_date, grace_period_days, features) VALUES (?, ?, ?, ?, ?, ?)",
-                        (vendor_id, "basic", today, far_future, 7, json.dumps(default_features)),
+                        (vendor_id, "basic", today, far_future, 7, json.dumps(recovery_default_features)),
                     )
-                else:
-                    # Update features if needed
-                    raw = sub[0]
-                    feats = []
-                    if raw:
-                        try:
-                            feats = json.loads(raw) if isinstance(raw, str) else list(raw)
-                        except Exception: feats = []
-                    
-                    changed = False
-                    for f in default_features:
-                        if f not in feats:
-                            feats.append(f); changed = True
-                    
-                    if changed:
-                        c.execute("UPDATE subscriptions SET features = ? WHERE vendor_id = ?", (json.dumps(feats), vendor_id))
             except Exception: pass
 
         conn.commit()
