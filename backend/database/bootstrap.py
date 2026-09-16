@@ -16,6 +16,7 @@ def bootstrap_db():
     # 3. Data seeding and performance tweaks
     seed_superadmin()
     ensure_vendor_companies_and_subscription_features()
+    migrate_legacy_usernames_to_email()
     add_performance_indexes()
     
     # 4. Run schema migrations/checks for all database types
@@ -94,6 +95,23 @@ def ensure_vendor_companies_and_subscription_features():
         conn.commit()
     except Exception as e:
         logger.error(f"Error in ensure_vendor_companies: {e}")
+    finally:
+        conn.close()
+
+
+def migrate_legacy_usernames_to_email():
+    """Safely migrate linked employee/student IDs to email login identities."""
+    from services.login_identity_service import migrate_legacy_login_identities
+
+    conn = get_db_connection()
+    try:
+        migrated = migrate_legacy_login_identities(conn)
+        conn.commit()
+        if migrated:
+            logger.info("Migrated %s legacy login identities to email", migrated)
+    except Exception as exc:
+        conn.rollback()
+        logger.error("Legacy email-login migration failed: %s", exc)
     finally:
         conn.close()
 

@@ -330,11 +330,11 @@ const Settings = () => {
     try {
       if (editingUser) {
         // Update existing user
-        const payload = {};
+        const payload = { username: userForm.username.trim().toLowerCase() };
         if (userForm.password) payload.password = userForm.password;
         payload.role = userForm.role;
 
-        await axios.put(`${API_URL}/users/${editingUser.username}`, payload, {
+        await axios.put(`${API_URL}/users/${encodeURIComponent(editingUser.username)}`, payload, {
           headers: getAuthHeaders()
         });
       } else {
@@ -366,7 +366,7 @@ const Settings = () => {
 
   const openEditModal = (u) => {
     setEditingUser(u);
-    setUserForm({ username: u.username, password: '', role: u.role }); // Password blank for no change
+    setUserForm({ username: u.login_email || '', password: '', role: u.role }); // Password blank for no change
     setShowUserModal(true);
   };
 
@@ -684,7 +684,7 @@ const Settings = () => {
             <table className="w-full text-left">
               <thead>
                 <tr className="border-b border-slate-200">
-                  <th className="pb-3 font-semibold text-slate-600 text-sm">Username</th>
+                  <th className="pb-3 font-semibold text-slate-600 text-sm">Login Email</th>
                   <th className="pb-3 font-semibold text-slate-600 text-sm">Role</th>
                   <th className="pb-3 font-semibold text-slate-600 text-sm text-right">Actions</th>
                 </tr>
@@ -692,7 +692,15 @@ const Settings = () => {
               <tbody className="text-slate-700">
                 {systemUsers.map((u) => (
                   <tr key={u.username} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                    <td className="py-3 text-sm">{u.username}</td>
+                    <td className="py-3 text-sm">
+                      <div className="font-medium text-slate-700">
+                        {u.login_email || 'Email required'}
+                      </div>
+                      {u.person_name && <div className="text-xs text-slate-400">{u.person_name}</div>}
+                      {u.requires_email_update && (
+                        <div className="text-xs font-medium text-amber-600">Update required before login</div>
+                      )}
+                    </td>
                     <td className="py-3">
                       <span className={`px-2 py-1 rounded-full text-xs font-medium ${u.role === 'admin' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'
                         }`}>
@@ -887,10 +895,10 @@ const Settings = () => {
                 <label className="block text-sm font-medium text-slate-700 mb-1">Login Email</label>
                 <input
                   type="email"
+                  required
                   value={userForm.username}
                   onChange={(e) => setUserForm({ ...userForm, username: e.target.value })}
-                  disabled={!!editingUser}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 disabled:bg-slate-100 disabled:text-slate-500"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                   placeholder="Enter email address"
                 />
               </div>

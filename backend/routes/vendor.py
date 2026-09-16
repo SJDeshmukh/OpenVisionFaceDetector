@@ -1372,6 +1372,7 @@ def update_settings():
 # --- User Management Endpoints ---
 
 @vendor_bp.route("/users", methods=["GET"])
+@admin_required
 def get_users():
     from app import get_db_connection, socketio, is_testing
     from services.auth_service import extract_token, verify_token
@@ -1382,18 +1383,33 @@ def get_users():
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
-    query = "SELECT username, role FROM system_users"
+    query = """SELECT su.username, su.role, su.person_id, f.name, f.custom_data
+               FROM system_users su
+               LEFT JOIN faces f ON f.id = su.person_id AND f.vendor_id = su.vendor_id"""
     params = []
     
     if vendor_id:
-        query += " WHERE vendor_id = ?"
+        query += " WHERE su.vendor_id = ?"
         params.append(vendor_id)
         
     c.execute(query, params)
     rows = c.fetchall()
     conn.close()
 
-    users = [{"username": row["username"], "role": row["role"]} for row in rows]
+    from services.login_identity_service import login_email_from_profile
+    users = []
+    for row in rows:
+        username = row["username"]
+        stored_email = normalize_login_email(username) if is_valid_login_email(username) else ""
+        profile_email = login_email_from_profile(row["custom_data"])
+        users.append({
+            "username": username,
+            "login_email": stored_email or profile_email,
+            "role": row["role"],
+            "person_id": row["person_id"],
+            "person_name": row["name"] or "",
+            "requires_email_update": not bool(stored_email),
+        })
     return jsonify({"users": users})
 
 
@@ -1414,20 +1430,48 @@ def update_user(username):
     vendor_id, error = authenticate_vendor_access()
     if error: return error
 
-    data = request.json
-    password = data.get("password")
+    data = request.json or {}
+    password = str(data.get("password") or "")
     role = data.get("role")
+    requested_email = data.get("username") if "username" in data else data.get("email")
+    new_email = normalize_login_email(requested_email) if requested_email is not None else ""
 
-    if not password and not role:
+    if requested_email is not None and not is_valid_login_email(new_email):
+        return jsonify({"error": "A valid login email address is required"}), 400
+    if password and len(password) < 8:
+        return jsonify({"error": "Password must contain at least 8 characters"}), 400
+    if not password and not role and requested_email is None:
         return jsonify({"error": "Nothing to update"}), 400
 
     conn = get_db_connection()
     c = conn.cursor()
     try:
+        lookup_query = "SELECT role, person_id FROM system_users WHERE username = ?"
+        lookup_params = [username]
+        if vendor_id:
+            lookup_query += " AND vendor_id = ?"
+            lookup_params.append(vendor_id)
+        c.execute(lookup_query, tuple(lookup_params))
+        existing_user = c.fetchone()
+        if not existing_user:
+            return jsonify({"error": "User not found or access denied"}), 404
+
+        if requested_email is not None and new_email != username:
+            c.execute(
+                "SELECT username FROM system_users WHERE LOWER(username) = LOWER(?) AND username <> ? LIMIT 1",
+                (new_email, username),
+            )
+            if c.fetchone():
+                return jsonify({"error": "This email address is already used by another account"}), 409
+
         # Construct Query
         query = "UPDATE system_users SET "
         params = []
         updates = []
+
+        if requested_email is not None:
+            updates.append("username = ?")
+            params.append(new_email)
         
         if password:
             from services.auth_service import hash_password
@@ -1446,10 +1490,34 @@ def update_user(username):
             params.append(vendor_id)
             
         c.execute(query, params)
+        updated_count = c.rowcount
+        if updated_count > 0 and requested_email is not None and new_email != username:
+            c.execute("DELETE FROM active_sessions WHERE username = ?", (username,))
+            c.execute(
+                "UPDATE vendors SET kiosk_username = ? WHERE id = ? AND kiosk_username = ?",
+                (new_email, vendor_id, username),
+            )
+
+            person_id = existing_user["person_id"] if hasattr(existing_user, "keys") else existing_user[1]
+            if person_id:
+                c.execute("SELECT custom_data FROM faces WHERE id = ? AND vendor_id = ?", (person_id, vendor_id))
+                profile_row = c.fetchone()
+                profile_data = parse_custom_data(profile_row[0] if profile_row else None)
+                profile_data["email"] = new_email
+                for alias in ("Email", "employee_email", "student_email", "faculty_email"):
+                    profile_data.pop(alias, None)
+                c.execute(
+                    "UPDATE faces SET custom_data = ? WHERE id = ? AND vendor_id = ?",
+                    (json.dumps(profile_data), person_id, vendor_id),
+                )
         conn.commit()
         
-        if c.rowcount > 0:
-            return jsonify({"status": "success", "message": f"User {username} updated"})
+        if updated_count > 0:
+            return jsonify({
+                "status": "success",
+                "message": f"User {new_email or username} updated",
+                "username": new_email or username,
+            })
         else:
             return jsonify({"error": "User not found or access denied"}), 404
     except Exception as e:
