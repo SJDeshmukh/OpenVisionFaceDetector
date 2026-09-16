@@ -16,7 +16,7 @@ from utils import (
     cache_get, cache_set, cache_delete, cache_delete_vendor_prefix, reset_sequence,
     create_job, complete_job, fail_job, get_db_connection
 )
-from db_factory import get_table_columns
+from db_factory import get_backup_db_connection, get_table_columns
 try:
     from celery_app import celery
 except Exception:
@@ -30,8 +30,14 @@ from services.auth_service import (
     hash_password,
     verify_password,
     generate_token,
+    is_valid_login_email,
+    normalize_login_email,
 )
 from services.restoration_service import run_restore
+from services.vendor_delete_service import (
+    purge_vendor_archive_database,
+    purge_vendor_database,
+)
 from services.person_scope_service import (
     is_school_hostel,
     person_type_for,
@@ -1499,6 +1505,9 @@ def create_vendor():
     
     if not company_name:
         return jsonify({"error": "Company Name is required"}), 400
+    vendor_email = normalize_login_email(data.get("email"))
+    if not is_valid_login_email(vendor_email):
+        return jsonify({"error": "A valid company email address is required"}), 400
         
     conn = get_db_connection()
     c = conn.cursor()
@@ -1512,7 +1521,7 @@ def create_vendor():
         # 1. Create Vendor
         c.execute("""INSERT INTO vendors (company_name, contact_person, phone, email, frontend_bundle_id, backend_service_id, attendance_type, retention_days, registration_config) 
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                  (company_name, data.get("contact_person"), data.get("phone"), data.get("email"), frontend_bundle_id, backend_service_id, data.get("attendance_type", "total_time"), data.get("retention_days", 90), json.dumps(registration_config) if registration_config else None))
+                  (company_name, data.get("contact_person"), data.get("phone"), vendor_email, frontend_bundle_id, backend_service_id, data.get("attendance_type", "total_time"), data.get("retention_days", 90), json.dumps(registration_config) if registration_config else None))
         vendor_id = c.lastrowid
         
         # 2. Setup Subscription (Synchronous now to avoid "Infinity" on first load)
@@ -1568,10 +1577,26 @@ def create_vendor():
         c.execute(f"INSERT INTO subscriptions ({', '.join(s_cols)}) VALUES ({placeholders})", tuple(s_vals))
         
         # 3. Create Admin & User Accounts
-        admin_username = data.get("admin_username") or f"admin_{vendor_id}"
+        admin_username = normalize_login_email(data.get("admin_username") or vendor_email)
         admin_password = str(data.get("admin_password") or "")
-        user_username = data.get("user_username") or f"user_{vendor_id}"
+        user_username = normalize_login_email(data.get("user_username"))
         user_password = str(data.get("user_password") or "")
+        if not is_valid_login_email(admin_username):
+            conn.rollback()
+            return jsonify({"error": "Admin login must be a valid email address"}), 400
+        if not is_valid_login_email(user_username):
+            conn.rollback()
+            return jsonify({"error": "User/Kiosk login must be a valid email address"}), 400
+        if admin_username == user_username:
+            conn.rollback()
+            return jsonify({"error": "Admin and User/Kiosk login emails must be different"}), 400
+        c.execute(
+            "SELECT username FROM system_users WHERE LOWER(username) IN (LOWER(?), LOWER(?)) LIMIT 1",
+            (admin_username, user_username),
+        )
+        if c.fetchone():
+            conn.rollback()
+            return jsonify({"error": "One of these login email addresses is already registered"}), 409
         if len(admin_password) < 8 or len(user_password) < 8:
             conn.rollback()
             return jsonify({"error": "Admin and kiosk passwords must contain at least 8 characters"}), 400
@@ -1614,15 +1639,23 @@ def create_vendor():
         owners = data.get("owners", [])
         if isinstance(owners, list):
             for owner_data in owners:
-                o_username = owner_data.get("username")
-                o_password = owner_data.get("password")
-                if o_username and o_password:
-                    # Check if already exists (username global uniqueness)
-                    c.execute("SELECT username FROM system_users WHERE username = ?", (o_username,))
-                    if not c.fetchone():
-                        c.execute("""INSERT INTO system_users (username, password, password_plain, role, vendor_id)
-                                      VALUES (?, ?, NULL, 'owner', ?)""",
-                                   (o_username, hash_password(o_password), vendor_id))
+                o_username = normalize_login_email(owner_data.get("username"))
+                o_password = str(owner_data.get("password") or "")
+                if not o_username and not o_password:
+                    continue
+                if not is_valid_login_email(o_username):
+                    conn.rollback()
+                    return jsonify({"error": f"Owner login must be a valid email address: {o_username}"}), 400
+                if len(o_password) < 8:
+                    conn.rollback()
+                    return jsonify({"error": f"Owner password must contain at least 8 characters: {o_username}"}), 400
+                c.execute("SELECT username FROM system_users WHERE LOWER(username) = LOWER(?)", (o_username,))
+                if c.fetchone():
+                    conn.rollback()
+                    return jsonify({"error": f"This owner email is already registered: {o_username}"}), 409
+                c.execute("""INSERT INTO system_users (username, password, password_plain, role, vendor_id)
+                              VALUES (?, ?, NULL, 'owner', ?)""",
+                           (o_username, hash_password(o_password), vendor_id))
         
         # 4. Create Default Company
         c.execute("INSERT INTO companies (name, shifts, draft_timetable, live_timetable, vendor_id) VALUES (?, ?, ?, ?, ?)", 
@@ -1635,6 +1668,7 @@ def create_vendor():
                 hostel_flow = str(vertical).strip().lower() == "hostel"
                 rc = json.dumps([
                     {"field": "student_id", "label": "Resident ID" if hostel_flow else "Student ID", "type": "text", "required": True, "options": []},
+                    {"field": "email", "label": "Resident Email" if hostel_flow else "Student Email", "type": "email", "required": True, "options": []},
                     {"field": "phone", "label": "Resident Mobile Number" if hostel_flow else "Student Mobile Number", "type": "text", "required": True, "options": []},
                     {"field": "class_id", "label": "Room/Block" if hostel_flow else "Class/Section", "type": "class_select", "required": True, "options": []}
                 ])
@@ -2136,7 +2170,11 @@ def update_vendor_registration_config(vendor_id):
 def update_vendor_details(vendor_id):
     from app import socketio, is_testing
     from services.auth_service import authenticate_vendor_access
-    data = request.json
+    data = dict(request.json or {})
+    if 'email' in data:
+        data['email'] = normalize_login_email(data.get('email'))
+        if not is_valid_login_email(data['email']):
+            return jsonify({"error": "A valid company email address is required"}), 400
     
     conn = get_db_connection()
     c = conn.cursor()
@@ -2208,6 +2246,7 @@ def update_vendor_details(vendor_id):
                         hostel_flow = str(data.get('vertical') or '').strip().lower() == 'hostel'
                         rc = json.dumps([
                             {"field": "student_id", "label": "Resident ID" if hostel_flow else "Student ID", "type": "text", "required": True, "options": []},
+                            {"field": "email", "label": "Resident Email" if hostel_flow else "Student Email", "type": "email", "required": True, "options": []},
                             {"field": "phone", "label": "Resident Mobile Number" if hostel_flow else "Student Mobile Number", "type": "text", "required": True, "options": []},
                             {"field": "class_id", "label": "Room/Block" if hostel_flow else "Class/Section", "type": "class_select", "required": True, "options": []}
                         ])
@@ -2216,14 +2255,28 @@ def update_vendor_details(vendor_id):
                 pass
             
         # 2. Update Admin Credentials
-        admin_username = data.get('admin_username')
+        admin_username = normalize_login_email(data.get('admin_username')) if data.get('admin_username') else ''
         admin_password = data.get('admin_password')
+        if admin_username and not is_valid_login_email(admin_username):
+            return jsonify({"error": "Admin login must be a valid email address"}), 400
         if admin_username or admin_password:
             # Check if admin user exists for this vendor
             c.execute("SELECT username FROM system_users WHERE vendor_id = ? AND role = 'vendor_admin' LIMIT 1", (vendor_id,))
             admin_user = c.fetchone()
             
             if admin_user:
+                current_admin_username = admin_user[0] if not hasattr(admin_user, "keys") else admin_user["username"]
+                if admin_username:
+                    c.execute(
+                        "SELECT username FROM system_users WHERE LOWER(username) = LOWER(?)",
+                        (admin_username,),
+                    )
+                    matching_users = [
+                        row[0] if not hasattr(row, "keys") else row["username"]
+                        for row in (c.fetchall() or [])
+                    ]
+                    if any(match != current_admin_username for match in matching_users):
+                        return jsonify({"error": "This admin email is already registered"}), 409
                 update_query = "UPDATE system_users SET "
                 update_params = []
                 if admin_username:
@@ -2234,18 +2287,24 @@ def update_vendor_details(vendor_id):
                     update_params.append(hash_password(admin_password))
                 
                 update_query = update_query.rstrip(", ") + " WHERE username = ?"
-                update_params.append(admin_user[0] if not hasattr(admin_user, "keys") else admin_user["username"])
+                update_params.append(current_admin_username)
                 c.execute(update_query, update_params)
+                if admin_username and admin_username != current_admin_username:
+                    c.execute("DELETE FROM active_sessions WHERE username = ?", (current_admin_username,))
             else:
                 # Create if missing (Self-healing)
+                if not admin_username:
+                    return jsonify({"error": "A valid admin email is required for a new admin"}), 400
                 if not admin_password or len(str(admin_password)) < 8:
                     return jsonify({"error": "A password of at least 8 characters is required for a new admin"}), 400
                 c.execute("INSERT INTO system_users (username, password, password_plain, role, vendor_id) VALUES (?, ?, NULL, 'vendor_admin', ?)",
-                          (admin_username or f"admin_{vendor_id}", hash_password(admin_password), vendor_id))
+                          (admin_username, hash_password(admin_password), vendor_id))
 
         # 3. Update User/Kiosk Credentials
-        user_username = (data.get('user_username') or '').strip()
+        user_username = normalize_login_email(data.get('user_username'))
         user_password = data.get('user_password')
+        if user_username and not is_valid_login_email(user_username):
+            return jsonify({"error": "User/Kiosk login must be a valid email address"}), 400
 
         vendor_cols = get_table_columns(conn, "vendors")
         has_kiosk_username_col = "kiosk_username" in vendor_cols
@@ -2277,7 +2336,20 @@ def update_vendor_details(vendor_id):
         current_kiosk_username = (kiosk_user[0] if not hasattr(kiosk_user, "keys") else kiosk_user.get("username")) if kiosk_user else None
 
         if user_username or user_password:
-            target_username = user_username or current_kiosk_username or f"user_{vendor_id}"
+            target_username = user_username or current_kiosk_username
+            if not target_username or not is_valid_login_email(target_username):
+                return jsonify({"error": "A valid User/Kiosk email is required"}), 400
+            if user_username:
+                c.execute(
+                    "SELECT username FROM system_users WHERE LOWER(username) = LOWER(?)",
+                    (user_username,),
+                )
+                matching_users = [
+                    row[0] if not hasattr(row, "keys") else row["username"]
+                    for row in (c.fetchall() or [])
+                ]
+                if any(match != current_kiosk_username for match in matching_users):
+                    return jsonify({"error": "This User/Kiosk email is already registered"}), 409
 
             if kiosk_user:
                 update_query = "UPDATE system_users SET "
@@ -2295,6 +2367,8 @@ def update_vendor_details(vendor_id):
                 update_query = update_query.rstrip(", ") + " WHERE username = ? AND vendor_id = ?"
                 update_params.extend([current_kiosk_username, vendor_id])
                 c.execute(update_query, update_params)
+                if user_username and user_username != current_kiosk_username:
+                    c.execute("DELETE FROM active_sessions WHERE username = ?", (current_kiosk_username,))
             else:
                 # Create if missing (Self-healing)
                 if not user_password or len(str(user_password)) < 8:
@@ -2347,33 +2421,55 @@ def update_vendor_details(vendor_id):
         if isinstance(owners, list):
             # Fetch current owners
             c.execute("SELECT username FROM system_users WHERE vendor_id = ? AND role = 'owner'", (vendor_id,))
-            current_owners = {row[0] if not hasattr(row, "keys") else row["username"] for row in c.fetchall()}
+            current_owners = {
+                normalize_login_email(row[0] if not hasattr(row, "keys") else row["username"]):
+                (row[0] if not hasattr(row, "keys") else row["username"])
+                for row in c.fetchall()
+            }
             
             new_owner_usernames = set()
             for owner_data in owners:
-                o_username = owner_data.get("username")
+                o_username = normalize_login_email(owner_data.get("username"))
                 o_password = owner_data.get("password")
                 if not o_username: continue
+                if not is_valid_login_email(o_username):
+                    return jsonify({"error": f"Owner login must be a valid email address: {o_username}"}), 400
+                if o_password and len(str(o_password)) < 8:
+                    return jsonify({"error": f"Owner password must contain at least 8 characters: {o_username}"}), 400
                 new_owner_usernames.add(o_username)
                 
                 if o_username in current_owners:
+                    current_owner_username = current_owners[o_username]
                     # Update password if provided
-                    if o_password:
-                        c.execute("UPDATE system_users SET password = ?, password_plain = NULL WHERE username = ? AND vendor_id = ?",
-                                   (hash_password(o_password), o_username, vendor_id))
+                    if o_password or current_owner_username != o_username:
+                        assignments = ["username = ?"]
+                        update_values = [o_username]
+                        if o_password:
+                            assignments.extend(["password = ?", "password_plain = NULL"])
+                            update_values.append(hash_password(o_password))
+                        update_values.extend([current_owner_username, vendor_id])
+                        c.execute(
+                            f"UPDATE system_users SET {', '.join(assignments)} WHERE username = ? AND vendor_id = ?",
+                            tuple(update_values),
+                        )
+                        if current_owner_username != o_username:
+                            c.execute("DELETE FROM active_sessions WHERE username = ?", (current_owner_username,))
                 else:
                     # Create new owner (ensure unique username)
-                    c.execute("SELECT username FROM system_users WHERE username = ?", (o_username,))
-                    if not c.fetchone():
-                        if not o_password or len(str(o_password)) < 8:
-                            return jsonify({"error": f"A password of at least 8 characters is required for owner {o_username}"}), 400
-                        c.execute("INSERT INTO system_users (username, password, password_plain, role, vendor_id) VALUES (?, ?, NULL, 'owner', ?)",
-                                   (o_username, hash_password(o_password), vendor_id))
+                    c.execute("SELECT username FROM system_users WHERE LOWER(username) = LOWER(?)", (o_username,))
+                    if c.fetchone():
+                        return jsonify({"error": f"This owner email is already registered: {o_username}"}), 409
+                    if not o_password or len(str(o_password)) < 8:
+                        return jsonify({"error": f"A password of at least 8 characters is required for owner {o_username}"}), 400
+                    c.execute("INSERT INTO system_users (username, password, password_plain, role, vendor_id) VALUES (?, ?, NULL, 'owner', ?)",
+                               (o_username, hash_password(o_password), vendor_id))
             
             # Remove omitted owners
-            to_remove = current_owners - new_owner_usernames
-            for r_username in to_remove:
+            to_remove = set(current_owners) - new_owner_usernames
+            for normalized_username in to_remove:
+                r_username = current_owners[normalized_username]
                 c.execute("DELETE FROM system_users WHERE username = ? AND vendor_id = ? AND role = 'owner'", (r_username, vendor_id))
+                c.execute("DELETE FROM active_sessions WHERE username = ?", (r_username,))
 
         conn.commit()
         if features_json is not None:
@@ -2407,6 +2503,66 @@ def update_vendor_details(vendor_id):
 @admin_bp.route("/vendors/<int:vendor_id>", methods=["DELETE"])
 @super_admin_required
 def delete_vendor(vendor_id):
+    """Permanently remove a vendor and all tenant-owned data atomically."""
+    conn = get_db_connection()
+    archive_conn = None
+    primary_committed = False
+    try:
+        # Stage deletion from the separate attendance archive first. Neither
+        # connection is committed until every delete statement has succeeded.
+        archive_conn = get_backup_db_connection()
+        archive_deleted = purge_vendor_archive_database(archive_conn, vendor_id)
+        deleted = purge_vendor_database(conn, vendor_id)
+        conn.commit()
+        primary_committed = True
+        archive_conn.commit()
+    except LookupError:
+        conn.rollback()
+        if archive_conn is not None:
+            archive_conn.rollback()
+        return jsonify({"error": "Vendor not found"}), 404
+    except Exception as exc:
+        if not primary_committed:
+            conn.rollback()
+        if archive_conn is not None:
+            archive_conn.rollback()
+        logger.exception("Complete vendor purge failed for vendor %s", vendor_id)
+        if primary_committed:
+            return jsonify({
+                "error": "Company was deleted, but retained archive cleanup failed",
+                "details": str(exc),
+            }), 500
+        return jsonify({
+            "error": "Company deletion failed and was rolled back; no partial deletion was kept",
+            "details": str(exc),
+        }), 500
+    finally:
+        conn.close()
+        if archive_conn is not None:
+            archive_conn.close()
+
+    cache_delete("admin_stats")
+    cache_delete_vendor_prefix(vendor_id)
+    try:
+        from app import socketio
+        socketio.emit(
+            'force_logout',
+            {'vendor_id': vendor_id, 'reason': 'Vendor account deleted'},
+            room=f"vendor_{vendor_id}",
+        )
+        socketio.emit('admin_stats_updated', room='super_admin')
+        socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
+    except Exception:
+        pass
+    return jsonify({
+        "success": True,
+        "message": "Company and all associated data were permanently deleted",
+        "deleted_records": sum(deleted.values()) + sum(archive_deleted.values()),
+    })
+
+
+def _legacy_delete_vendor(vendor_id):
+    """Previous archive-based implementation retained temporarily for reference."""
     from app import socketio
     from db_factory import ensure_archive_table
     ensure_archive_table()

@@ -37,6 +37,44 @@ import { getBusinessTerminology, usesStudentRecords } from '../lib/businessTermi
 
 const COLORS = ['#22c55e', '#f59e0b', '#ef4444'];
 
+const EMPTY_FILTER_OPTIONS = {
+  departments: [],
+  designations: [],
+  shifts: [],
+  phones: [],
+  visible_standard_filters: {},
+  standard_filter_labels: {},
+  dynamic_filters: {},
+  matching_employee_count: 0,
+};
+
+const normalizeFiltersForOptions = (currentFilters, options) => {
+  const normalized = { ...currentFilters };
+  const visible = options?.visible_standard_filters || {};
+  const optionLists = {
+    department: options?.departments || [],
+    designation: options?.designations || [],
+    shift: options?.shifts || [],
+    phone: options?.phones || [],
+  };
+
+  Object.entries(optionLists).forEach(([key, values]) => {
+    const allowed = new Set(values.map(String));
+    if (!visible[key] || (normalized[key] && !allowed.has(String(normalized[key])))) {
+      normalized[key] = '';
+    }
+  });
+
+  const dynamic = { ...(normalized.dynamic || {}) };
+  Object.entries(dynamic).forEach(([key, value]) => {
+    const config = options?.dynamic_filters?.[key];
+    const allowed = new Set((config?.options || []).map(String));
+    if (!config || (value && !allowed.has(String(value)))) delete dynamic[key];
+  });
+  normalized.dynamic = dynamic;
+  return normalized;
+};
+
 const Reports = () => {
   const { user } = useAuth();
   const terminology = getBusinessTerminology(user?.vertical);
@@ -45,7 +83,6 @@ const Reports = () => {
   const personLabelPlural = personType === 'faculty' && schoolFlow ? terminology.staffPlural : terminology.people;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [emailPromptOpen, setEmailPromptOpen] = useState(false);
   const [emailSending, setEmailSending] = useState(false);
   const [emailNotice, setEmailNotice] = useState(null);
   const [employeeReportModalOpen, setEmployeeReportModalOpen] = useState(false);
@@ -54,6 +91,7 @@ const Reports = () => {
     department: '',
     designation: '',
     shift: '',
+    phone: '',
     dynamic: {}
   });
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -71,7 +109,8 @@ const Reports = () => {
     }
   });
 
-  const [filterOptions, setFilterOptions] = useState({ departments: [], designations: [], shifts: [], phones: [], visible_standard_filters: {} });
+  const [filterOptions, setFilterOptions] = useState(EMPTY_FILTER_OPTIONS);
+  const [employeeFilterOptions, setEmployeeFilterOptions] = useState(EMPTY_FILTER_OPTIONS);
   const [filters, setFilters] = useState({
     startDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
     endDate: new Date().toISOString().split('T')[0],
@@ -83,6 +122,9 @@ const Reports = () => {
     dynamic: {}
   });
   const filtersRef = useRef(filters);
+  const filterRequestRef = useRef(0);
+  const employeeFilterRequestRef = useRef(0);
+  const recipientPreviewRequestRef = useRef(0);
   useEffect(() => {
     filtersRef.current = filters;
   }, [filters]);
@@ -97,47 +139,53 @@ const Reports = () => {
     return () => clearTimeout(t);
   }, [filters, personType]);
 
+  const filterParams = (activeFilters) => {
+    const f = activeFilters || {};
+    const params = new URLSearchParams();
+    if (schoolFlow) params.append('person_type', personType);
+    ['department', 'designation', 'shift', 'phone'].forEach((key) => {
+      if (f[key]) params.append(key, f[key]);
+    });
+    Object.entries(f.dynamic || {}).forEach(([key, value]) => {
+      if (value) params.append(`dynamic_${key}`, value);
+    });
+    return params;
+  };
+
+  const requestFilterOptions = async (activeFilters) => {
+    const params = filterParams(activeFilters);
+    const response = await axios.get(`${API_URL}/reports/filters?${params.toString()}`);
+    return { ...EMPTY_FILTER_OPTIONS, ...(response.data || {}) };
+  };
+
   const fetchFilters = async (activeFilters) => {
+    const requestId = ++filterRequestRef.current;
     try {
-      const f = activeFilters || {};
-      const params = new URLSearchParams();
-      if (schoolFlow) params.append('person_type', personType);
-      if (f.department) params.append('department', f.department);
-      if (f.designation) params.append('designation', f.designation);
-      if (f.shift) params.append('shift', f.shift);
-      if (f.phone) params.append('phone', f.phone);
-      Object.entries(f.dynamic || {}).forEach(([key, value]) => {
-        if (value) params.append(`dynamic_${key}`, value);
-      });
-      const res = await axios.get(`${API_URL}/reports/filters?${params.toString()}`);
-      const nextOptions = res.data || {};
+      const nextOptions = await requestFilterOptions(activeFilters);
+      if (requestId !== filterRequestRef.current) return activeFilters;
       setFilterOptions(nextOptions);
-      const nextFilters = { ...filtersRef.current };
-      const vis = nextOptions.visible_standard_filters || {};
-      const pruneStandard = (key, enabled, list) => {
-        if (!enabled) {
-          if (nextFilters[key]) nextFilters[key] = '';
-          return;
-        }
-        const allowed = new Set((list || []).map(String));
-        if (nextFilters[key] && !allowed.has(String(nextFilters[key]))) nextFilters[key] = '';
-      };
-      pruneStandard('department', !!vis.department, nextOptions.departments);
-      pruneStandard('designation', !!vis.designation, nextOptions.designations);
-      pruneStandard('shift', !!vis.shift, nextOptions.shifts);
-      pruneStandard('phone', !!vis.phone, nextOptions.phones);
-      const nextDynamic = { ...(nextFilters.dynamic || {}) };
-      Object.entries(nextDynamic).forEach(([key, val]) => {
-        const cfg = (nextOptions.dynamic_filters || {})[key];
-        const allowed = new Set(((cfg && cfg.options) || []).map(String));
-        if (!cfg || (val && !allowed.has(String(val)))) delete nextDynamic[key];
-      });
-      nextFilters.dynamic = nextDynamic;
       const current = filtersRef.current;
-      const changed = JSON.stringify(nextFilters) !== JSON.stringify(current);
-      if (changed) setFilters(nextFilters);
-    } catch (error) {
-      console.error("Error fetching filters:", error);
+      const nextFilters = normalizeFiltersForOptions(current, nextOptions);
+      if (JSON.stringify(nextFilters) !== JSON.stringify(current)) setFilters(nextFilters);
+      return nextFilters;
+    } catch (requestError) {
+      console.error("Error fetching filters:", requestError);
+      return activeFilters;
+    }
+  };
+
+  const fetchEmployeeFilterOptions = async (activeFilters) => {
+    const requestId = ++employeeFilterRequestRef.current;
+    try {
+      const nextOptions = await requestFilterOptions(activeFilters);
+      if (requestId !== employeeFilterRequestRef.current) return null;
+      const normalized = normalizeFiltersForOptions(activeFilters, nextOptions);
+      setEmployeeFilterOptions(nextOptions);
+      setEmployeeReportFilters(normalized);
+      return normalized;
+    } catch (requestError) {
+      console.error('Error fetching employee report filters:', requestError);
+      return activeFilters;
     }
   };
 
@@ -219,9 +267,11 @@ const Reports = () => {
     month: 'long', year: 'numeric'
   });
   const hasEmployeeReportsFeature = user?.role === 'super_admin' || Boolean(user?.features?.includes('employee_reports'));
+  const hasLateMarkFeature = Boolean(user?.features?.includes('late_mark'));
   const canSendEmployeeReports = ['super_admin', 'vendor_admin', 'admin', 'owner'].includes(user?.role);
 
   const fetchRecipientPreview = async (targetMonth, activeFilters) => {
+    const requestId = ++recipientPreviewRequestRef.current;
     setPreviewLoading(true);
     try {
       const response = await axios.post(`${API_URL}/reports/email-employees/preview`, {
@@ -229,13 +279,19 @@ const Reports = () => {
         person_type: schoolFlow ? personType : undefined,
         filters: activeFilters,
       });
-      setPreviewData(response.data);
+      if (requestId === recipientPreviewRequestRef.current) setPreviewData(response.data);
     } catch (err) {
       console.error('Failed to preview recipient count:', err);
-      setPreviewData(null);
+      if (requestId === recipientPreviewRequestRef.current) setPreviewData(null);
     } finally {
-      setPreviewLoading(false);
+      if (requestId === recipientPreviewRequestRef.current) setPreviewLoading(false);
     }
+  };
+
+  const updateEmployeeReportFilters = async (updated) => {
+    setEmployeeReportFilters(updated);
+    const normalized = await fetchEmployeeFilterOptions(updated);
+    if (normalized) await fetchRecipientPreview(employeeReportMonth, normalized);
   };
 
   const handleOpenEmployeeReportsModal = () => {
@@ -245,12 +301,20 @@ const Reports = () => {
       department: filters.department || '',
       designation: filters.designation || '',
       shift: filters.shift || '',
+      phone: filters.phone || '',
       dynamic: { ...(filters.dynamic || {}) }
     };
     setEmployeeReportMonth(initialMonth);
     setEmployeeReportFilters(initialFilters);
+    setEmployeeFilterOptions(filterOptions);
     setEmployeeReportModalOpen(true);
-    fetchRecipientPreview(initialMonth, initialFilters);
+    // Opening the modal must not wait for the filter/recipient preview request.
+    // Keeping this work detached also prevents a slow first request from making
+    // the button appear to need a second click.
+    void (async () => {
+      const normalized = await fetchEmployeeFilterOptions(initialFilters);
+      if (normalized) await fetchRecipientPreview(initialMonth, normalized);
+    })();
   };
 
   const sendEmployeeReports = async () => {
@@ -358,9 +422,8 @@ const Reports = () => {
                   <button
                     type="button"
                     onClick={() => {
-                      const cleared = { department: '', designation: '', shift: '', dynamic: {} };
-                      setEmployeeReportFilters(cleared);
-                      fetchRecipientPreview(employeeReportMonth, cleared);
+                      const cleared = { department: '', designation: '', shift: '', phone: '', dynamic: {} };
+                      updateEmployeeReportFilters(cleared);
                     }}
                     className="text-xs text-violet-600 hover:text-violet-800 font-semibold"
                   >
@@ -368,72 +431,93 @@ const Reports = () => {
                   </button>
                 </div>
 
+                <p className="text-xs font-medium text-slate-500">
+                  {employeeFilterOptions.matching_employee_count || 0} registered {personLabelPlural.toLowerCase()} match the selected filters.
+                </p>
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                   {/* Department */}
-                  <div>
+                  {employeeFilterOptions.visible_standard_filters?.department && <div>
                     <label className="block text-xs font-medium text-slate-600 mb-1">
-                      {filterOptions.standard_filter_labels?.department || 'Department'}
+                      {employeeFilterOptions.standard_filter_labels?.department || 'Department'}
                     </label>
                     <select
                       value={employeeReportFilters.department}
                       onChange={(e) => {
                         const updated = { ...employeeReportFilters, department: e.target.value };
-                        setEmployeeReportFilters(updated);
-                        fetchRecipientPreview(employeeReportMonth, updated);
+                        updateEmployeeReportFilters(updated);
                       }}
                       className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
                     >
                       <option value="">All Departments</option>
-                      {(filterOptions.departments || []).map((dept) => (
+                      {(employeeFilterOptions.departments || []).map((dept) => (
                         <option key={dept} value={dept}>{dept}</option>
                       ))}
                     </select>
-                  </div>
+                  </div>}
 
                   {/* Designation */}
-                  <div>
+                  {employeeFilterOptions.visible_standard_filters?.designation && <div>
                     <label className="block text-xs font-medium text-slate-600 mb-1">
-                      {filterOptions.standard_filter_labels?.designation || 'Designation'}
+                      {employeeFilterOptions.standard_filter_labels?.designation || 'Designation'}
                     </label>
                     <select
                       value={employeeReportFilters.designation}
                       onChange={(e) => {
                         const updated = { ...employeeReportFilters, designation: e.target.value };
-                        setEmployeeReportFilters(updated);
-                        fetchRecipientPreview(employeeReportMonth, updated);
+                        updateEmployeeReportFilters(updated);
                       }}
                       className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
                     >
                       <option value="">All Designations</option>
-                      {(filterOptions.designations || []).map((desig) => (
+                      {(employeeFilterOptions.designations || []).map((desig) => (
                         <option key={desig} value={desig}>{desig}</option>
                       ))}
                     </select>
-                  </div>
+                  </div>}
 
                   {/* Shift */}
-                  <div>
+                  {employeeFilterOptions.visible_standard_filters?.shift && <div>
                     <label className="block text-xs font-medium text-slate-600 mb-1">
-                      {filterOptions.standard_filter_labels?.shift || 'Shift'}
+                      {employeeFilterOptions.standard_filter_labels?.shift || 'Shift'}
                     </label>
                     <select
                       value={employeeReportFilters.shift}
                       onChange={(e) => {
                         const updated = { ...employeeReportFilters, shift: e.target.value };
-                        setEmployeeReportFilters(updated);
-                        fetchRecipientPreview(employeeReportMonth, updated);
+                        updateEmployeeReportFilters(updated);
                       }}
                       className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
                     >
                       <option value="">All Shifts</option>
-                      {(filterOptions.shifts || []).map((s) => (
+                      {(employeeFilterOptions.shifts || []).map((s) => (
                         <option key={s} value={s}>{s}</option>
                       ))}
                     </select>
-                  </div>
+                  </div>}
+
+                  {/* Phone */}
+                  {employeeFilterOptions.visible_standard_filters?.phone && <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">
+                      {employeeFilterOptions.standard_filter_labels?.phone || 'Phone'}
+                    </label>
+                    <select
+                      value={employeeReportFilters.phone}
+                      onChange={(e) => {
+                        const updated = { ...employeeReportFilters, phone: e.target.value };
+                        updateEmployeeReportFilters(updated);
+                      }}
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
+                    >
+                      <option value="">All Phones</option>
+                      {(employeeFilterOptions.phones || []).map((phone) => (
+                        <option key={phone} value={phone}>{phone}</option>
+                      ))}
+                    </select>
+                  </div>}
 
                   {/* Dynamic Registry Fields */}
-                  {Object.entries(filterOptions.dynamic_filters || {}).map(([key, config]) => (
+                  {Object.entries(employeeFilterOptions.dynamic_filters || {}).map(([key, config]) => (
                     <div key={key}>
                       <label className="block text-xs font-medium text-slate-600 mb-1">
                         {config.label || key}
@@ -445,14 +529,13 @@ const Reports = () => {
                             ...employeeReportFilters,
                             dynamic: { ...employeeReportFilters.dynamic, [key]: e.target.value }
                           };
-                          setEmployeeReportFilters(updated);
-                          fetchRecipientPreview(employeeReportMonth, updated);
+                          updateEmployeeReportFilters(updated);
                         }}
                         className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
                       >
                         <option value="">All ({config.label || key})</option>
                         {(config.options || []).map((opt) => (
-                          <option key={opt} value={opt}>{opt}</option>
+                          <option key={opt} value={opt}>{config.option_labels?.[opt] || opt}</option>
                         ))}
                       </select>
                     </div>
@@ -593,6 +676,7 @@ const Reports = () => {
           {canSendEmployeeReports && (
             hasEmployeeReportsFeature ? (
               <button
+                type="button"
                 onClick={handleOpenEmployeeReportsModal}
                 className="flex items-center space-x-2 px-4 py-2 bg-violet-600 text-white rounded-lg hover:bg-violet-700 font-medium transition-colors shadow-sm"
                 title={`Email attendance and wages to employees for ${selectedReportMonthLabel}`}
@@ -666,7 +750,7 @@ const Reports = () => {
       ) : (
         <>
           {/* Summary Cards */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className={`grid grid-cols-2 ${hasLateMarkFeature ? 'md:grid-cols-4' : 'md:grid-cols-3'} gap-4`}>
             {/* Total Users */}
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
               <p className="text-sm text-slate-500 mb-2">Total Registered</p>
@@ -690,10 +774,12 @@ const Reports = () => {
               <p className="text-sm text-slate-500">Present Today</p>
               <p className="text-2xl font-bold text-green-600">{analytics.summary.present_today}</p>
             </div>
-            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-              <p className="text-sm text-slate-500">Late Today</p>
-              <p className="text-2xl font-bold text-amber-500">{analytics.summary.late_today}</p>
-            </div>
+            {hasLateMarkFeature && (
+              <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                <p className="text-sm text-slate-500">Late Today</p>
+                <p className="text-2xl font-bold text-amber-500">{analytics.summary.late_today}</p>
+              </div>
+            )}
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
               <p className="text-sm text-slate-500">Absent Today</p>
               <p className="text-2xl font-bold text-red-500">{analytics.summary.absent_today}</p>
@@ -752,10 +838,15 @@ const Reports = () => {
 
           {/* Custom Export Filter */}
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
-            <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
-              <Filter size={20} className="text-blue-600" />
-              Advanced Report Generation
-            </h3>
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+              <h3 className="flex items-center gap-2 text-lg font-bold text-slate-800">
+                <Filter size={20} className="text-blue-600" />
+                Advanced Report Generation
+              </h3>
+              <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
+                {filterOptions.matching_employee_count || 0} matching {personLabelPlural.toLowerCase()}
+              </span>
+            </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 items-end">
               <div>

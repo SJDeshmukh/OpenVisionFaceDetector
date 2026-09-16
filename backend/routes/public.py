@@ -72,6 +72,7 @@ def public_business_types():
             "default_frontend_bundle_id": "attendx_bulk_ui",
             "default_registration_config": [
                 {"field": "student_number", "label": "Student/Employee Number", "type": "text", "required": True},
+                {"field": "email", "label": "Email", "type": "email", "required": True},
                 {"field": "class_section", "label": "Class/Department", "type": "text", "required": True},
                 {"field": "daily_wage", "label": "Daily Wage", "type": "text", "required": False},
                 {"field": "phone", "label": "Parent/Contact Mobile", "type": "text", "required": True}
@@ -86,6 +87,7 @@ def public_business_types():
             "default_frontend_bundle_id": "tapinx_ui",
             "default_registration_config": [
                 {"field": "student_id", "label": "Resident ID", "type": "text", "required": True},
+                {"field": "email", "label": "Resident Email", "type": "email", "required": True},
                 {"field": "phone", "label": "Resident Mobile Number", "type": "text", "required": True},
                 {"field": "class_id", "label": "Room/Block", "type": "class_select", "required": True}
             ]
@@ -99,6 +101,7 @@ def public_business_types():
             "default_frontend_bundle_id": "tapinx_ui",
             "default_registration_config": [
                 {"field": "student_id", "label": "Student ID", "type": "text", "required": True},
+                {"field": "email", "label": "Student Email", "type": "email", "required": True},
                 {"field": "phone", "label": "Student Mobile Number", "type": "text", "required": True},
                 {"field": "class_id", "label": "Class/Section", "type": "class_select", "required": True}
             ]
@@ -112,6 +115,7 @@ def public_business_types():
             "default_frontend_bundle_id": "tapinx_ui",
             "default_registration_config": [
                 {"field": "employee_id", "label": "Employee ID", "type": "text", "required": True},
+                {"field": "email", "label": "Employee Email", "type": "email", "required": True},
                 {"field": "phone", "label": "Contact Mobile", "type": "text", "required": False},
                 {"field": "department", "label": "Department", "type": "text", "required": False}
             ]

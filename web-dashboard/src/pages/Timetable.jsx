@@ -899,7 +899,7 @@ const Timetable = () => {
             <div className="space-y-4 p-6">
               <p className="text-sm text-slate-700">
                 Delete {deleteRequest.type} <strong>{deleteRequest.name}</strong>?
-                {deleteRequest.type === 'shift' && ' Linked draft activities will be unassigned from this shift.'}
+                {deleteRequest.type === 'shift' && ' All activities linked to this shift will also be permanently deleted.'}
               </p>
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-slate-800">
@@ -922,7 +922,7 @@ const Timetable = () => {
               <p className="text-xs text-slate-500">
                 {deleteRequest.type === 'activity'
                   ? 'This updates the draft. Use Publish Live when you want the live timetable to change.'
-                  : 'Linked activities are unassigned in the draft; publish it when you want the live timetable to change.'}
+                  : 'The shift and its linked activities will be removed from both the draft and live timetable immediately.'}
               </p>
             </div>
             <div className="flex justify-end gap-3 border-t border-slate-100 bg-slate-50 px-6 py-4">

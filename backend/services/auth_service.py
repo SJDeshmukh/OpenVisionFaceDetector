@@ -10,6 +10,11 @@ from functools import wraps
 from flask import request, jsonify, g
 from utils import parse_db_date
 from db_factory import get_db_connection
+from services.login_identity_service import (
+    is_valid_login_email,
+    login_email_from_profile,
+    normalize_login_email,
+)
 
 logger = logging.getLogger(__name__)
 

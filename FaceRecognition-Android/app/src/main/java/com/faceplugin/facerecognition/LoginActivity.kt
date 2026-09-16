@@ -247,7 +247,11 @@ class LoginActivity : AppCompatActivity() {
             val password = etPassword.text.toString().trim()
 
             if (username.isEmpty() || password.isEmpty()) {
-                Toast.makeText(this, "Please enter username and password", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Please enter email and password", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            if (!android.util.Patterns.EMAIL_ADDRESS.matcher(username).matches()) {
+                Toast.makeText(this, "Please enter a valid registered email", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
 
@@ -452,7 +456,11 @@ class LoginActivity : AppCompatActivity() {
             val password = etPassword.text.toString().trim()
 
             if (username.isEmpty() || password.isEmpty()) {
-                Toast.makeText(this, "Enter username and password to register", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Enter email and password to register", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            if (!android.util.Patterns.EMAIL_ADDRESS.matcher(username).matches()) {
+                Toast.makeText(this, "Enter a valid email address", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
 

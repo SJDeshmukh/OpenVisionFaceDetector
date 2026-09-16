@@ -4,6 +4,16 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+
+def set_vendor_statutory_flags(cursor, vendor_id, enabled):
+    """Set PF and ESI together for every employee in exactly one vendor."""
+    flag = 1 if enabled else 0
+    cursor.execute(
+        "UPDATE faces SET pf_enabled = ?, esi_enabled = ? WHERE vendor_id = ?",
+        (flag, flag, vendor_id),
+    )
+    return max(0, int(cursor.rowcount or 0))
+
 def calculate_salary_breakdown(gross_pay, config, pf_percent=12.0, esi_percent=0.75, gratuity_percent=4.81, gratuity_threshold_years=5):
     """
     Calculates the bifurcation of gross salary into components and statutory deductions.

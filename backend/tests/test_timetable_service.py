@@ -1,6 +1,11 @@
 import json
 
-from services.timetable_service import json_list, remove_activity, remove_shift
+from services.timetable_service import (
+    json_list,
+    remove_activity,
+    remove_activities_for_shift,
+    remove_shift,
+)
 
 
 def test_json_list_accepts_json_and_rejects_non_lists():
@@ -9,12 +14,25 @@ def test_json_list_accepts_json_and_rejects_non_lists():
     assert json_list(None) == []
 
 
-def test_remove_shift_matches_string_or_numeric_ids_and_unlinks_activities():
+def test_remove_shift_matches_string_or_numeric_ids_and_deletes_linked_activities():
     shifts = [{"id": 10, "name": "Day"}, {"id": 20, "name": "Night"}]
     activities = [{"id": 1, "shift_id": "10"}, {"id": 2, "shift_id": 20}]
-    remaining, unlinked = remove_shift(json.dumps(shifts), activities, "10")
+    remaining, activities_after_delete = remove_shift(json.dumps(shifts), activities, "10")
     assert remaining == [{"id": 20, "name": "Night"}]
-    assert unlinked == [{"id": 1, "shift_id": ""}, {"id": 2, "shift_id": 20}]
+    assert activities_after_delete == [{"id": 2, "shift_id": 20}]
+
+
+def test_remove_activities_for_shift_handles_draft_and_live_json():
+    activities = json.dumps([
+        {"id": 1, "shift_id": 10},
+        {"id": 2, "shift_id": "10"},
+        {"id": 3, "shift_id": 20},
+        {"id": 4, "shift_id": ""},
+    ])
+    assert remove_activities_for_shift(activities, "10") == [
+        {"id": 3, "shift_id": 20},
+        {"id": 4, "shift_id": ""},
+    ]
 
 
 def test_remove_activity_reports_missing_and_removes_existing():

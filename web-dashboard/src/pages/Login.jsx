@@ -298,9 +298,9 @@ const Login = () => {
                   )}
                 </AnimatePresence>
 
-                <Field label="Username" icon={User} type="text"
+                <Field label="Email" icon={User} type="text"
                   value={username} onChange={e => setUsername(e.target.value)}
-                  placeholder="Enter username" custom={0} />
+                  placeholder="Enter registered email (Super Admin may use username)" custom={0} />
 
                 <Field label="Password" icon={Lock}
                   type={showPassword ? 'text' : 'password'}

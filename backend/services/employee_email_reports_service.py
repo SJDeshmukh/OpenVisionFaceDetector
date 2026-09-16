@@ -92,15 +92,13 @@ def _matches_filters(person, filters):
 
     if dynamic_filters:
         custom = _custom_data(person.get("custom_data"))
-        from services.report_filter_service import custom_value
+        from services.report_filter_service import custom_filter_values
         for dyn_key, expected_val in dynamic_filters.items():
-            expected = str(expected_val or "").strip()
+            expected = str(expected_val or "").strip().lower()
             if not expected:
                 continue
-            actual = custom_value(custom, dyn_key)
-            if actual is None:
-                actual = custom.get(dyn_key)
-            if actual is None or str(actual).strip().lower() != expected.lower():
+            actual_values = [value.lower() for value in custom_filter_values(custom, dyn_key)]
+            if expected not in actual_values:
                 return False
 
     return True

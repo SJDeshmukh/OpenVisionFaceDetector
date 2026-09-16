@@ -41,36 +41,43 @@ ALL_FEATURES = ['reports', 'report_detailed', 'report_payroll', 'automated_email
 REGISTRATION_TEMPLATES = {
     "school": [
         {"field": "student_id", "label": "Student ID", "enabled": True},
+        {"field": "email", "label": "Student Email", "enabled": True, "required": True, "type": "email"},
         {"field": "phone", "label": "Student Mobile Number", "enabled": True},
         {"field": "class_section", "label": "Class/Section", "enabled": False}
     ],
     "hostel": [
         {"field": "student_id", "label": "Resident ID", "enabled": True},
+        {"field": "email", "label": "Resident Email", "enabled": True, "required": True, "type": "email"},
         {"field": "phone", "label": "Resident Mobile Number", "enabled": True},
         {"field": "class_section", "label": "Room/Block", "enabled": False}
     ],
     "daily_wages": [
         {"field": "employee_id", "label": "Employee ID", "enabled": True},
+        {"field": "email", "label": "Employee Email", "enabled": True, "required": True, "type": "email"},
         {"field": "phone", "label": "Contact Mobile", "enabled": False},
         {"field": "department", "label": "Department", "enabled": False}
     ],
     "class_attendance": [
         {"field": "student_number", "label": "Student Number", "enabled": True},
+        {"field": "email", "label": "Student Email", "enabled": True, "required": True, "type": "email"},
         {"field": "class_section", "label": "Class/Section", "enabled": True},
         {"field": "phone", "label": "Parent Mobile Number", "enabled": False}
     ],
     "factory": [
         {"field": "employee_id", "label": "Employee ID", "enabled": True},
+        {"field": "email", "label": "Employee Email", "enabled": True, "required": True, "type": "email"},
         {"field": "department", "label": "Department", "enabled": True}
     ],
     "bulk_attendance_attendx": [
         {"field": "student_number", "label": "Student/Employee Number", "enabled": True},
+        {"field": "email", "label": "Email", "enabled": True, "required": True, "type": "email"},
         {"field": "class_section", "label": "Class/Department", "enabled": True},
         {"field": "daily_wage", "label": "Daily Wage", "enabled": True},
         {"field": "phone", "label": "Parent/Contact Mobile", "enabled": True}
     ],
     "checkin_checkout_tapinx": [
         {"field": "student_id", "label": "Student ID", "enabled": True},
+        {"field": "email", "label": "Email", "enabled": True, "required": True, "type": "email"},
         {"field": "phone", "label": "Parent Mobile Number", "enabled": True},
         {"field": "class_section", "label": "Class/Section", "enabled": True}
     ]

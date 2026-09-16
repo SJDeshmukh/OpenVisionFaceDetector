@@ -12,10 +12,10 @@ import numpy as np
 import cv2
 
 logger = logging.getLogger(__name__)
-from services.auth_service import authenticate_vendor_access, extract_token, verify_token, check_vendor_status, hash_password
+from services.auth_service import authenticate_vendor_access, extract_token, verify_token, check_vendor_status, hash_password, login_email_from_profile
 import db_factory
 from db_factory import set_row_factory, get_table_columns
-from utils import get_db_connection, LOW_RAM_MODE, _VENDOR_EMB_CACHE, reset_sequence, ALL_FEATURES, cache_delete_vendor_prefix, cache_delete, require_feature, cache_get, cache_set, decode_image_to_bgr, decode_image_to_rgb, get_face_augmentations
+from utils import get_db_connection, LOW_RAM_MODE, _VENDOR_EMB_CACHE, reset_sequence, ALL_FEATURES, cache_delete_vendor_prefix, cache_delete, require_feature, cache_get, cache_set, decode_image_to_bgr, decode_image_to_rgb, get_face_augmentations, vendor_has_feature
 from services.face_service import _ensure_vendor_emb_cache, _normalize_vec, _suggest_from_cache
 from storage import upload_base64_image, presigned_url_for_key, OBJECT_STORAGE_ENABLED, compress_image
 import db_factory
@@ -674,6 +674,61 @@ def upload_face():
     if not name:
         return jsonify({"error": "Missing name"}), 400
 
+    raw_profile_email = next(
+        (custom_dict.get(key) for key in ("email", "Email", "employee_email", "student_email", "faculty_email") if custom_dict.get(key)),
+        None,
+    )
+    profile_email = login_email_from_profile(custom_dict)
+    if raw_profile_email and not profile_email:
+        return jsonify({"error": "Enter a valid email address for this person"}), 400
+    if profile_email:
+        custom_dict["email"] = profile_email
+        for alias in ("Email", "employee_email", "student_email", "faculty_email"):
+            custom_dict.pop(alias, None)
+        email_conn = get_db_connection()
+        try:
+            email_cursor = email_conn.cursor()
+            if getattr(email_conn, "_is_pg", False):
+                email_cursor.execute(
+                    """SELECT id FROM faces
+                       WHERE LOWER(COALESCE(
+                           custom_data::jsonb->>'email',
+                           custom_data::jsonb->>'Email',
+                           custom_data::jsonb->>'employee_email',
+                           custom_data::jsonb->>'student_email',
+                           custom_data::jsonb->>'faculty_email',
+                           ''
+                       )) = LOWER(%s)
+                         AND (%s IS NULL OR id <> %s)
+                       LIMIT 1""",
+                    (profile_email, person_id, person_id),
+                )
+            else:
+                email_cursor.execute(
+                    """SELECT id FROM faces
+                       WHERE LOWER(COALESCE(
+                           json_extract(custom_data, '$.email'),
+                           json_extract(custom_data, '$.Email'),
+                           json_extract(custom_data, '$.employee_email'),
+                           json_extract(custom_data, '$.student_email'),
+                           json_extract(custom_data, '$.faculty_email'),
+                           ''
+                       )) = LOWER(?)
+                         AND (? IS NULL OR id <> ?)
+                       LIMIT 1""",
+                    (profile_email, person_id, person_id),
+                )
+            if email_cursor.fetchone():
+                return jsonify({"error": "This email address is already registered to another person"}), 409
+            email_cursor.execute(
+                "SELECT username FROM system_users WHERE LOWER(username) = LOWER(?) AND (? IS NULL OR person_id <> ?)",
+                (profile_email, person_id, person_id),
+            )
+            if email_cursor.fetchone():
+                return jsonify({"error": "This email address is already used by another login"}), 409
+        finally:
+            email_conn.close()
+
     # Generic/mobile enrollment is the student enrollment path for School and
     # Hostel tenants. Faculty must use the dedicated faculty endpoints.
     metadata_conn = get_db_connection()
@@ -1079,12 +1134,10 @@ def upload_face():
                     
                     if 'leave_management' in features:
                         # If phone or ID changed, we might need to update the login
-                        cd_old_obj = json.loads(existing.get("custom_data") or "{}") if existing.get("custom_data") else {}
-                        old_sid = str(cd_old_obj.get("student_id") or cd_old_obj.get("id_number") or "").strip()
-                        new_sid = student_number_for_parent
                         new_phone = str(phone or "").strip()
+                        login_email = login_email_from_profile(updated_cd)
                         
-                        if new_sid and new_phone:
+                        if login_email and new_phone:
                             # Check if a login exists for this person_id
                             c.execute("SELECT username, password_plain FROM system_users WHERE person_id = ?", (person_id,))
                             login_row = c.fetchone()
@@ -1093,9 +1146,15 @@ def upload_face():
                                 old_username = login_row[0]
                                 old_plain = login_row[1]
                                 
-                                # If the username (student ID) changed, update it
-                                if old_username != new_sid:
-                                    c.execute("UPDATE system_users SET username = ? WHERE person_id = ?", (new_sid, person_id))
+                                # Employee/student IDs are not login identities.
+                                if str(old_username).lower() != login_email:
+                                    c.execute(
+                                        "SELECT username FROM system_users WHERE LOWER(username) = LOWER(?) AND person_id <> ?",
+                                        (login_email, person_id),
+                                    )
+                                    if not c.fetchone():
+                                        c.execute("UPDATE system_users SET username = ? WHERE person_id = ?", (login_email, person_id))
+                                        c.execute("DELETE FROM active_sessions WHERE username = ?", (old_username,))
                                 
                                 # If the password was still the old phone number, update it to the new one
                                 if old_plain == str(existing.get("phone") or "").strip():
@@ -1107,7 +1166,7 @@ def upload_face():
                                 from services.auth_service import hash_password
                                 login_role = 'student' if is_school_hostel(vertical) else 'user'
                                 c.execute("INSERT OR IGNORE INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (?, ?, NULL, ?, ?, ?)",
-                                          (new_sid, hash_password(new_phone), login_role, existing.get("vendor_id"), person_id))
+                                          (login_email, hash_password(new_phone), login_role, existing.get("vendor_id"), person_id))
             except Exception:
                 pass
         else:
@@ -1133,14 +1192,15 @@ def upload_face():
                 features = json.loads(s_row[0]) if s_row and s_row[0] else []
                 
                 if 'leave_management' in features:
-                    # Extract student ID from custom_data
+                    # Login identity is the registered email. Employee/student
+                    # numbers remain profile fields and are never credentials.
                     cd_obj = json.loads(custom_data) if custom_data else {}
-                    student_id = str(cd_obj.get("student_id") or cd_obj.get("id_number") or "").strip()
+                    login_email = login_email_from_profile(cd_obj)
                     student_phone = str(phone or "").strip()
                     
-                    if student_id and student_phone:
+                    if login_email and student_phone:
                         # Check if user already exists
-                        c.execute("SELECT username FROM system_users WHERE username = ?", (student_id,))
+                        c.execute("SELECT username FROM system_users WHERE LOWER(username) = LOWER(?)", (login_email,))
                         if not c.fetchone():
                             # Create system user
                             # Using phone as initial password
@@ -1150,7 +1210,7 @@ def upload_face():
                             is_kiosk_val = ", 0" if "is_kiosk" in sys_cols else ""
                             c.execute(
                                 f"INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id{is_kiosk_field}) VALUES (?, ?, NULL, ?, ?, ?{is_kiosk_val})",
-                                (student_id, hash_password(student_phone), login_role, vendor_id, new_id)
+                                (login_email, hash_password(student_phone), login_role, vendor_id, new_id)
                             )
                             # We don't need to commit here if the outer transaction commits
             except Exception as e:
@@ -1917,6 +1977,7 @@ def update_wages():
 
     data = request.json
     updates = data.get("updates", []) # List of {person_id|name, daily_wage, late_allowance_days, late_deduction_amount}
+    late_mark_enabled = vendor_has_feature(vendor_id, "late_mark")
 
     conn = get_db_connection()
     c = conn.cursor()
@@ -1936,10 +1997,10 @@ def update_wages():
                 if 'daily_wage' in u and wage is not None and str(wage) != '':
                     query_parts.append("daily_wage = ?")
                     params.append(u['daily_wage'])
-                if 'late_allowance_days' in u and allowance is not None and str(allowance) != '':
+                if late_mark_enabled and 'late_allowance_days' in u and allowance is not None and str(allowance) != '':
                     query_parts.append("late_allowance_days = ?")
                     params.append(u['late_allowance_days'])
-                if 'late_deduction_amount' in u and deduction is not None and str(deduction) != '':
+                if late_mark_enabled and 'late_deduction_amount' in u and deduction is not None and str(deduction) != '':
                     query_parts.append("late_deduction_amount = ?")
                     params.append(u['late_deduction_amount'])
                 

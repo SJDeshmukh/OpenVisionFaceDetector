@@ -53,6 +53,11 @@ const Wages = () => {
   const [owners, setOwners] = useState([]);
   const [ownersLoading, setOwnersLoading] = useState(false);
   const [ownersSaving, setOwnersSaving] = useState(false);
+  const [disableStatutoryOpen, setDisableStatutoryOpen] = useState(false);
+  const [disableStatutoryPassword, setDisableStatutoryPassword] = useState('');
+  const [disableStatutoryError, setDisableStatutoryError] = useState('');
+  const [disableStatutoryLoading, setDisableStatutoryLoading] = useState(false);
+  const lateMarkEnabled = Boolean(user?.features?.includes('late_mark'));
 
   useEffect(() => {
     if (user) {
@@ -192,9 +197,9 @@ const Wages = () => {
   const recalculatePayrollPerson = (person) => {
     const hourlyRate = (person.daily_wage || 0) / Math.max(parseFloat(workingHours) || 0, 0.01);
     const baseCost = (person.total_hours || 0) * hourlyRate;
-    const allowance = person.late_allowance_days ?? globalSettings.allowance;
-    const deduction = person.late_deduction_amount ?? globalSettings.deduction;
-    const lateMarks = person.late_marks_count || 0;
+    const allowance = lateMarkEnabled ? (person.late_allowance_days ?? globalSettings.allowance) : 0;
+    const deduction = lateMarkEnabled ? (person.late_deduction_amount ?? globalSettings.deduction) : 0;
+    const lateMarks = lateMarkEnabled ? (person.late_marks_count || 0) : 0;
     const lateDeduction = Math.max(0, lateMarks - allowance) * deduction;
 
     const configuredBasic = parseFloat(person.basic_salary || 0);
@@ -268,6 +273,39 @@ const Wages = () => {
     setHasChanges(true);
   };
 
+  const disablePfAndEsiForAll = async () => {
+    if (!disableStatutoryPassword || disableStatutoryLoading) return;
+    setDisableStatutoryLoading(true);
+    setDisableStatutoryError('');
+    try {
+      const res = await fetch(`${API_BASE_URL}/persons/wages/statutory/bulk`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user?.token}`
+        },
+        body: JSON.stringify({ enabled: false, password: disableStatutoryPassword })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setDisableStatutoryError(data.error || 'Could not disable PF and ESI.');
+        return;
+      }
+      setPayrollData(current => current.map(person => recalculatePayrollPerson({
+        ...person,
+        pf_enabled: 0,
+        esi_enabled: 0,
+      })));
+      setDisableStatutoryOpen(false);
+      setDisableStatutoryPassword('');
+      alert(`PF and ESI were disabled for ${data.affected_employees ?? 'all'} employees.`);
+    } catch (_) {
+      setDisableStatutoryError('Could not reach the server. Please try again.');
+    } finally {
+      setDisableStatutoryLoading(false);
+    }
+  };
+
   const saveJoiningDate = () => {
     if (!joiningDatePerson || !tempJoiningDate) return;
     
@@ -285,12 +323,16 @@ const Wages = () => {
   const saveGlobalSettings = async () => {
     try {
       const payload = {
-        ...globalSettings,
         pf_percentage: pfPercentage,
         esi_percentage: esiPercentage,
         gratuity_percentage: gratuityPercentage,
         gratuity_threshold_years: gratuityYears
       };
+      if (lateMarkEnabled) {
+        payload.allowance = globalSettings.allowance;
+        payload.deduction = globalSettings.deduction;
+      }
+      if (globalSettings.timezone_offset !== undefined) payload.timezone_offset = globalSettings.timezone_offset;
       const res = await fetch(`${API_BASE_URL}/settings/late-config`, {
         method: 'PUT',
         headers: {
@@ -319,10 +361,10 @@ const Wages = () => {
         const u = {};
         if (p.person_id) u.person_id = p.person_id; else u.name = p.name;
         if (typeof p.daily_wage === 'number') u.daily_wage = p.daily_wage;
-        if (p.late_allowance_days !== null && p.late_allowance_days !== '' && p.late_allowance_days !== undefined) {
+        if (lateMarkEnabled && p.late_allowance_days !== null && p.late_allowance_days !== '' && p.late_allowance_days !== undefined) {
           u.late_allowance_days = p.late_allowance_days;
         }
-        if (p.late_deduction_amount !== null && p.late_deduction_amount !== '' && p.late_deduction_amount !== undefined) {
+        if (lateMarkEnabled && p.late_deduction_amount !== null && p.late_deduction_amount !== '' && p.late_deduction_amount !== undefined) {
           u.late_deduction_amount = p.late_deduction_amount;
         }
         // New Payroll Fields
@@ -511,6 +553,7 @@ const Wages = () => {
 
         <div className="flex flex-wrap justify-end gap-2">
           <button
+            type="button"
             onClick={enablePfAndEsiForAll}
             disabled={!payrollData.length || loading}
             className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-2 shadow-sm transition-all"
@@ -518,6 +561,20 @@ const Wages = () => {
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/><path d="M16 6h4v4"/></svg>
             Enable PF &amp; ESI for All
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setDisableStatutoryPassword('');
+              setDisableStatutoryError('');
+              setDisableStatutoryOpen(true);
+            }}
+            disabled={!payrollData.length || loading}
+            className="px-4 py-2 bg-white text-red-700 border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-50 flex items-center gap-2 shadow-sm transition-all"
+            title="Password-confirm and disable PF and ESI for every employee in this business"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+            Disable PF &amp; ESI for All
           </button>
 
         {hasChanges && (
@@ -621,7 +678,7 @@ const Wages = () => {
               <button onClick={saveWorkingHours} className="text-xs bg-blue-600 text-white px-2 py-1 rounded hover:bg-blue-700">Update</button>
             )}
 
-            <div className="flex items-center gap-2 border-l border-slate-200 pl-4">
+            {lateMarkEnabled && <div className="flex items-center gap-2 border-l border-slate-200 pl-4">
               <label className="text-sm font-semibold text-slate-700 whitespace-nowrap">Late Allowance:</label>
               <input
                 type="number"
@@ -634,9 +691,9 @@ const Wages = () => {
                 className="w-12 px-2 py-1 border border-slate-300 rounded text-sm focus:ring-2 focus:ring-blue-500"
               />
               <span className="text-xs text-slate-500">days</span>
-            </div>
+            </div>}
 
-            <div className="flex items-center gap-2">
+            {lateMarkEnabled && <div className="flex items-center gap-2">
               <label className="text-sm font-semibold text-slate-700 whitespace-nowrap">Deduction:</label>
               <div className="relative">
                 <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs text-[10px]">₹</span>
@@ -652,7 +709,7 @@ const Wages = () => {
                   className="w-20 pl-4 pr-1 py-1 border border-slate-300 rounded text-sm focus:ring-2 focus:ring-blue-500"
                 />
               </div>
-            </div>
+            </div>}
 
             <div className="flex items-center gap-2 border-l border-slate-200 pl-4">
               <label className="text-sm font-semibold text-slate-700 whitespace-nowrap">TZ Offset:</label>
@@ -761,7 +818,7 @@ const Wages = () => {
                 <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-center">Days Present</th>
                 <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-center">Daily Wage</th>
                 <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-center">Statutory (PF/ESI)</th>
-                <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-center">Allowance / Deduction</th>
+                {lateMarkEnabled && <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-center">Late Allowance / Deduction</th>}
                 <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Net Payout</th>
                 <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider text-center">Actions</th>
               </tr>
@@ -769,7 +826,7 @@ const Wages = () => {
             <tbody className="divide-y divide-slate-100">
               {loading ? (
                 <tr>
-                  <td colSpan="7" className="py-12 text-center text-slate-500">
+                  <td colSpan={lateMarkEnabled ? 7 : 6} className="py-12 text-center text-slate-500">
                     <div className="flex flex-col items-center justify-center">
                       <svg className="animate-spin h-8 w-8 text-slate-400 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
@@ -781,7 +838,7 @@ const Wages = () => {
                 </tr>
               ) : payrollData.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="py-12 text-center text-slate-500">
+                  <td colSpan={lateMarkEnabled ? 7 : 6} className="py-12 text-center text-slate-500">
                     <p className="text-lg font-medium text-slate-900">No records found</p>
                     <p>Try selecting a different date range.</p>
                   </td>
@@ -879,7 +936,7 @@ const Wages = () => {
                         </div>
                       </div>
                     </td>
-                    <td className="py-3 px-4">
+                    {lateMarkEnabled && <td className="py-3 px-4">
                       <div className="flex flex-col gap-1 items-center">
                         <div className="flex items-center gap-1 text-xs">
                           <span className="text-slate-500">Allow:</span>
@@ -905,14 +962,14 @@ const Wages = () => {
                           />
                         </div>
                       </div>
-                    </td>
+                    </td>}
                     <td className="py-3 px-4 text-right">
                       <div className="text-sm font-bold text-slate-900 block cursor-help" title={`Basic: ₹${person.breakdown?.components?.basic || 0}\nHRA: ₹${person.breakdown?.components?.hra || 0}\nDed: ₹${person.breakdown?.deductions?.total_statutory || 0}`}>
                         ₹ {parseFloat(person.final_payout || person.total_cost || 0).toFixed(2)}
                       </div>
                       {(parseFloat(person.late_deduction || 0) > 0 || parseFloat(person.advance_deduction || 0) > 0) && (
                         <div className="flex flex-col items-end">
-                          {parseFloat(person.late_deduction || 0) > 0 && (
+                          {lateMarkEnabled && parseFloat(person.late_deduction || 0) > 0 && (
                             <span className="text-[10px] text-red-500 block">
                               - ₹{person.late_deduction} (Late)
                             </span>
@@ -1123,6 +1180,64 @@ const Wages = () => {
         </div>
       )}
 
+      {disableStatutoryOpen && (
+        <div className="fixed inset-0 bg-black/45 backdrop-blur-sm flex items-center justify-center z-[80] p-4">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              disablePfAndEsiForAll();
+            }}
+            className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden"
+          >
+            <div className="bg-red-600 px-6 py-5 text-white">
+              <h2 className="text-xl font-bold">Disable PF &amp; ESI for All?</h2>
+              <p className="text-red-100 text-sm mt-1">This applies to every employee in this business and saves immediately.</p>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                Gratuity settings will not be changed. Enter your current web-login password to continue.
+              </div>
+              <div>
+                <label htmlFor="disable-statutory-password" className="block text-sm font-semibold text-slate-700 mb-1.5">Current password</label>
+                <input
+                  id="disable-statutory-password"
+                  type="password"
+                  autoFocus
+                  autoComplete="current-password"
+                  value={disableStatutoryPassword}
+                  onChange={(event) => {
+                    setDisableStatutoryPassword(event.target.value);
+                    setDisableStatutoryError('');
+                  }}
+                  className="w-full px-3 py-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
+                  placeholder="Enter your login password"
+                />
+              </div>
+              {disableStatutoryError && (
+                <p className="text-sm font-medium text-red-600" role="alert">{disableStatutoryError}</p>
+              )}
+            </div>
+            <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex gap-3 justify-end">
+              <button
+                type="button"
+                disabled={disableStatutoryLoading}
+                onClick={() => setDisableStatutoryOpen(false)}
+                className="px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-100 disabled:opacity-50 font-semibold"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={!disableStatutoryPassword || disableStatutoryLoading}
+                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 font-semibold"
+              >
+                {disableStatutoryLoading ? 'Disabling…' : 'Disable for All Employees'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {joiningDateModalOpen && joiningDatePerson && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden transform transition-all flex flex-col">
@@ -1190,9 +1305,9 @@ const Wages = () => {
                     {owners.map((owner, idx) => (
                       <div key={idx} className="flex gap-2 items-center bg-slate-50 p-4 rounded-xl border border-slate-200">
                         <div className="flex-1 space-y-2">
-                          <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Owner Email / Username</label>
+                          <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Owner Login Email</label>
                           <input 
-                            type="text"
+                            type="email"
                             value={owner.username}
                             onChange={(e) => {
                               const newOwners = [...owners];

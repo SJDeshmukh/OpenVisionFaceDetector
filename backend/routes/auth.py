@@ -4,7 +4,7 @@ import secrets
 import string
 from flask import Blueprint, request, jsonify, make_response, g
 from datetime import datetime, date, timedelta
-from services.auth_service import authenticate_vendor_access, verify_password, generate_token, check_vendor_status, verify_token, hash_password, generate_token_with_claims, extract_token
+from services.auth_service import authenticate_vendor_access, verify_password, generate_token, check_vendor_status, verify_token, hash_password, generate_token_with_claims, extract_token, is_valid_login_email, normalize_login_email
 from middleware.handlers import rate_limit, get_client_ip
 import json
 import base64
@@ -111,20 +111,34 @@ def forgot_password():
             return jsonify({"error": "No web-login account is registered with this email"}), 404
 
         username = account["username"] if hasattr(account, "keys") else account[0]
+        login_email = normalize_login_email(email)
+        c.execute(
+            f"""SELECT username FROM system_users
+                WHERE LOWER(username) = LOWER({placeholder})
+                  AND username <> {placeholder}
+                LIMIT 1""",
+            (login_email, username),
+        )
+        if c.fetchone():
+            return jsonify({"error": "This email is already assigned to another login account"}), 409
+
         temporary_password = _temporary_password()
+        # Forgot-password is also a safe migration path for legacy accounts
+        # whose username was an employee/student ID. From this point onward the
+        # account identity is the verified email address used for the reset.
+        c.execute(f"DELETE FROM active_sessions WHERE username = {placeholder}", (username,))
         c.execute(
             f"""UPDATE system_users
-                SET password = {placeholder}, password_plain = NULL,
+                SET username = {placeholder}, password = {placeholder}, password_plain = NULL,
                     has_set_password = 0, force_password_change = 1
                 WHERE username = {placeholder}""",
-            (hash_password(temporary_password), username),
+            (login_email, hash_password(temporary_password), username),
         )
         if c.rowcount != 1:
             conn.rollback()
             return jsonify({"error": "Unable to reset this account"}), 409
 
-        # Revoke database-backed mobile/kiosk sessions for the account.
-        c.execute(f"DELETE FROM active_sessions WHERE username = {placeholder}", (username,))
+        username = login_email
 
         subject = "Your TapInX temporary password"
         body = (
@@ -318,7 +332,8 @@ def login():
     features = []
 
     if not username or not password:
-        return jsonify({"error": "Username and password are required"}), 400
+        return jsonify({"error": "Email and password are required"}), 400
+    login_identity = normalize_login_email(username) if is_valid_login_email(username) else username
 
     conn = get_db_connection()
     # If it's our PostgresConnectionWrapper, it won't have row_factory attribute like sqlite3.Connection
@@ -331,7 +346,7 @@ def login():
         
     c = conn.cursor()
     try:
-        c.execute("SELECT * FROM system_users WHERE username = ?", (username,))
+        c.execute("SELECT * FROM system_users WHERE LOWER(username) = LOWER(?)", (login_identity,))
         user = c.fetchone()
     except Exception as e:
         # Fallback for uninitialized DB or other errors
@@ -344,13 +359,13 @@ def login():
         try:
             # Re-fetch cursor after potential init_db
             c = conn.cursor()
-            c.execute("SELECT * FROM system_users WHERE username = ?", (username,))
+            c.execute("SELECT * FROM system_users WHERE LOWER(username) = LOWER(?)", (login_identity,))
             user = c.fetchone()
         except Exception:
             user = None
     
     # Handle demo admin fallback
-    if not user and username in ("admin", "vendor_admin"):
+    if not user and is_testing() and username in ("admin", "vendor_admin"):
         try:
             # Check for demo vendor
             c.execute("SELECT id FROM vendors WHERE company_name = ?", ("Demo Company",))
@@ -402,14 +417,32 @@ def login():
         if p.startswith("0") and len(p) > 10: p = p[1:]
         return p
 
-    # Handle Student Login Auto-Creation
-    if not user and username:
+    # Handle employee/student login auto-creation by registered email only.
+    if not user and is_valid_login_email(username):
         try:
             is_pg = getattr(conn, "_is_pg", False)
             if is_pg:
-                c.execute("SELECT id, name, phone, vendor_id, custom_data FROM faces WHERE custom_data::jsonb->>'student_id' = %s OR custom_data::jsonb->>'id_number' = %s OR custom_data::jsonb->>'student_number' = %s OR custom_data::jsonb->>'student number' = %s", (username, username, username, username))
+                c.execute(
+                    """SELECT id, name, phone, vendor_id, custom_data FROM faces
+                       WHERE LOWER(COALESCE(
+                           custom_data::jsonb->>'email',
+                           custom_data::jsonb->>'Email',
+                           custom_data::jsonb->>'employee_email',
+                           custom_data::jsonb->>'student_email'
+                       )) = LOWER(%s)""",
+                    (login_identity,),
+                )
             else:
-                c.execute("SELECT id, name, phone, vendor_id, custom_data FROM faces WHERE json_extract(custom_data, '$.student_id') = ? OR json_extract(custom_data, '$.id_number') = ? OR json_extract(custom_data, '$.student_number') = ? OR json_extract(custom_data, '$.\"student number\"') = ?", (username, username, username, username))
+                c.execute(
+                    """SELECT id, name, phone, vendor_id, custom_data FROM faces
+                       WHERE LOWER(COALESCE(
+                           json_extract(custom_data, '$.email'),
+                           json_extract(custom_data, '$.Email'),
+                           json_extract(custom_data, '$.employee_email'),
+                           json_extract(custom_data, '$.student_email')
+                       )) = LOWER(?)""",
+                    (login_identity,),
+                )
             
             face = c.fetchone()
             if face:
@@ -433,15 +466,15 @@ def login():
                     if is_pg:
                         c.execute(
                             f"INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id{is_kiosk_field}) VALUES (%s, %s, NULL, 'user', %s, %s{is_kiosk_val})",
-                            (username, hash_password(password), face_row['vendor_id'], face_row['id'])
+                            (login_identity, hash_password(password), face_row['vendor_id'], face_row['id'])
                         )
                     else:
                         c.execute(
                             f"INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id{is_kiosk_field}) VALUES (?, ?, NULL, 'user', ?, ?{is_kiosk_val})",
-                            (username, hash_password(password), face_row['vendor_id'], face_row['id'])
+                            (login_identity, hash_password(password), face_row['vendor_id'], face_row['id'])
                         )
                     conn.commit()
-                    c.execute("SELECT * FROM system_users WHERE username = ?", (username,))
+                    c.execute("SELECT * FROM system_users WHERE LOWER(username) = LOWER(?)", (login_identity,))
                     user = c.fetchone()
                     if user:
                         # Ensure user is a dict for the next steps
@@ -461,6 +494,12 @@ def login():
     elif not isinstance(user, dict):
         # Fallback if it's a tuple/list from a different cursor type
         return jsonify({"error": "Internal database error"}), 500
+
+    if user.get('role') != 'super_admin' and not is_valid_login_email(username):
+        return jsonify({
+            "error": "Please log in using your registered email address and password"
+        }), 400
+    username = str(user.get('username') or login_identity)
 
     if username == "superadmin" and is_testing():
         pass_condition = True
@@ -921,9 +960,13 @@ def register_user():
     if g.user_role not in ['super_admin', 'vendor_admin', 'admin', 'owner']:
         return jsonify({"error": "Access Denied: Admin or Owner privileges required"}), 403
     data = request.json
-    username = data.get("username")
-    password = data.get("password")
+    username = normalize_login_email(data.get("username"))
+    password = str(data.get("password") or "")
     role = data.get("role", "user")
+    if role != 'super_admin' and not is_valid_login_email(username):
+        return jsonify({"error": "A valid email address is required for login"}), 400
+    if len(password) < 8:
+        return jsonify({"error": "Password must contain at least 8 characters"}), 400
     
     target_vendor_id = caller_vendor_id
     if not target_vendor_id:
@@ -932,6 +975,9 @@ def register_user():
     conn = get_db_connection()
     c = conn.cursor()
     try:
+        c.execute("SELECT username FROM system_users WHERE LOWER(username) = LOWER(?)", (username,))
+        if c.fetchone():
+            return jsonify({"error": "Email address is already registered"}), 409
         c.execute(
             "INSERT INTO system_users (username, password, password_plain, role, vendor_id) VALUES (?, ?, ?, ?, ?)",
             (username, hash_password(password), None, role, target_vendor_id),
@@ -939,7 +985,7 @@ def register_user():
         conn.commit()
         return jsonify({"status": "success", "message": "User created"})
     except sqlite3.IntegrityError:
-        return jsonify({"error": "Username already exists"}), 400
+        return jsonify({"error": "Email address is already registered"}), 409
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:

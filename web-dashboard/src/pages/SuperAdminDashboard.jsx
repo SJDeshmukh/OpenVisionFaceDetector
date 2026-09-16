@@ -181,6 +181,7 @@ const SuperAdminDashboard = () => {
     {
       value: 'bulk_attendance_attendx', label: 'AttendX', default_frontend_bundle_id: 'attendx_bulk_ui', default_registration_config: [
         { field: 'student_number', label: 'Student/Employee Number', type: 'text', required: true, options: [] },
+        { field: 'email', label: 'Email', type: 'email', required: true, options: [] },
         { field: 'class_section', label: 'Class/Department', type: 'text', required: true, options: [] },
         { field: 'daily_wage', label: 'Daily Wage', type: 'text', required: false, options: [] },
         { field: 'phone', label: 'Parent/Contact Mobile', type: 'text', required: true, options: [] }
@@ -189,12 +190,14 @@ const SuperAdminDashboard = () => {
     {
       value: 'school', label: 'School / College / Tuitions', default_frontend_bundle_id: 'attendance_ui', default_registration_config: [
         { field: 'student_id', label: 'Student ID', type: 'text', required: true, options: [] },
+        { field: 'email', label: 'Student Email', type: 'email', required: true, options: [] },
         { field: 'student_phone', label: 'Phone Number of Student', type: 'text', required: true, options: [] }
       ]
     },
     {
       value: 'hostel', label: 'Hostel / Accommodation', default_frontend_bundle_id: 'attendance_ui', default_registration_config: [
         { field: 'student_id', label: 'Resident ID', type: 'text', required: true, options: [] },
+        { field: 'email', label: 'Resident Email', type: 'email', required: true, options: [] },
         { field: 'student_phone', label: 'Phone Number of Resident', type: 'text', required: true, options: [] },
         { field: 'class_id', label: 'Room/Block', type: 'class_select', required: true, options: [] }
       ]
@@ -202,6 +205,7 @@ const SuperAdminDashboard = () => {
     {
       value: 'daily_wages', label: 'Daily Wages', default_frontend_bundle_id: 'tapinx_ui', default_registration_config: [
         { field: 'employee_id', label: 'Employee ID', type: 'text', required: true, options: [] },
+        { field: 'email', label: 'Employee Email', type: 'email', required: true, options: [] },
         { field: 'phone', label: 'Contact Mobile', type: 'text', required: false, options: [] },
         { field: 'department', label: 'Department', type: 'text', required: false, options: [] }
       ]
@@ -209,18 +213,21 @@ const SuperAdminDashboard = () => {
     {
       value: 'class_attendance', label: 'Class Attendance', default_frontend_bundle_id: 'class_attendance_ui', default_registration_config: [
         { field: 'student_id', label: 'Student ID', type: 'text', required: true, options: [] },
+        { field: 'email', label: 'Student Email', type: 'email', required: true, options: [] },
         { field: 'class_section', label: 'Class/Section', type: 'text', required: true, options: [] }
       ]
     },
     {
       value: 'checkin_checkout_tapinx', label: 'TapInX (Check-in/Check-out)', default_frontend_bundle_id: 'tapinx_ui', default_registration_config: [
         { field: 'student_id', label: 'Student ID', type: 'text', required: true, options: [] },
+        { field: 'email', label: 'Email', type: 'email', required: true, options: [] },
         { field: 'phone', label: 'Parent Mobile Number', type: 'text', required: true, options: [] },
         { field: 'class_section', label: 'Class/Section', type: 'text', required: true, options: [] }
       ]
     },
     {
       value: 'factory', label: 'Industrial / Manufacturing', default_frontend_bundle_id: 'attendance_payroll_ui', default_registration_config: [
+        { field: 'email', label: 'Employee Email', type: 'email', required: true, options: [] },
         { field: 'department', label: 'Department', type: 'text', required: false, options: [] },
         { field: 'shift', label: 'Shift', type: 'text', required: false, options: [] }
       ]
@@ -1189,6 +1196,23 @@ const SuperAdminDashboard = () => {
     e.preventDefault();
 
     // Validation
+    const validEmail = (value) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(value || '').trim());
+    if (!validEmail(newVendor.email)) {
+      alert("Enter a valid company email address");
+      return;
+    }
+    if (!validEmail(newVendor.admin_username)) {
+      alert("Admin login must be a valid email address");
+      return;
+    }
+    if (!validEmail(newVendor.user_username)) {
+      alert("User/Kiosk login must be a valid email address");
+      return;
+    }
+    if (newVendor.admin_username.trim().toLowerCase() === newVendor.user_username.trim().toLowerCase()) {
+      alert("Admin and User/Kiosk login emails must be different");
+      return;
+    }
     if (newVendor.start_date && newVendor.end_date) {
       if (new Date(newVendor.end_date) < new Date(newVendor.start_date)) {
         alert("End Date cannot be before Start Date");
@@ -1197,25 +1221,6 @@ const SuperAdminDashboard = () => {
     }
 
     try {
-      // Offer restore path if archive has a match
-      if (!editingVendor) {
-        const check = await axios.get(`${API_URL}/admin/archive/vendors`, {
-          params: { company_name: newVendor.company_name, email: newVendor.email },
-          headers: { Authorization: `Bearer ${user?.token}` }
-        });
-        if ((check.data.archived_vendors || []).length > 0) {
-          if (window.confirm("Archived data found for this vendor. Do you want to restore instead of creating fresh?")) {
-            const restore = await axios.post(`${API_URL}/admin/vendors/restore`, {
-              company_name: newVendor.company_name,
-              email: newVendor.email
-            }, { headers: { Authorization: `Bearer ${user?.token}` } });
-            alert(`Vendor Restored. New Vendor ID: ${restore.data.new_vendor_id}`);
-            fetchVendors();
-            setShowModal(false);
-            return;
-          }
-        }
-      }
       if (editingVendor) {
         const liveMaxUsers = maxUsersRef.current ? maxUsersRef.current.value : newVendor.max_users;
         const liveMaxEmployees = maxEmployeesRef.current ? maxEmployeesRef.current.value : newVendor.max_employees;
@@ -4382,14 +4387,14 @@ const SuperAdminDashboard = () => {
                     <div className="text-xs font-bold text-slate-500 mb-2 uppercase">Admin Login</div>
                     <div className="space-y-2">
                       <input
-                        type="text"
-                        placeholder="Admin Username"
+                        type="email"
+                        placeholder="Admin Email"
                         className="w-full p-2 border rounded text-sm"
                         value={newVendor.admin_username}
                         onChange={e => setNewVendor({ ...newVendor, admin_username: e.target.value })}
                       />
                       <input
-                        type="text"
+                        type="password"
                         placeholder={editingVendor ? "New Password (Optional)" : "Admin Password"}
                         className="w-full p-2 border rounded text-sm"
                         value={newVendor.admin_password}
@@ -4401,14 +4406,14 @@ const SuperAdminDashboard = () => {
                     <div className="text-xs font-bold text-slate-500 mb-2 uppercase">Kiosk Login</div>
                     <div className="space-y-2">
                       <input
-                        type="text"
-                        placeholder="Kiosk Username"
+                        type="email"
+                        placeholder="User/Kiosk Email"
                         className="w-full p-2 border rounded text-sm"
                         value={newVendor.user_username}
                         onChange={e => setNewVendor({ ...newVendor, user_username: e.target.value })}
                       />
                       <input
-                        type="text"
+                        type="password"
                         placeholder={editingVendor ? "New Password (Optional)" : "Kiosk Password"}
                         className="w-full p-2 border rounded text-sm"
                         value={newVendor.user_password}

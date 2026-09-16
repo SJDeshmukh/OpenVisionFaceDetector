@@ -73,11 +73,12 @@ def test_forgot_password_emails_hashed_temporary_password_and_forces_change(tmp_
     assert delivered["recipient"] == "student@example.com"
 
     conn = sqlite3.connect(db_path)
-    password_hash, password_plain, has_set, force_change = conn.execute(
-        "SELECT password, password_plain, has_set_password, force_password_change FROM system_users WHERE username = 'STUDENT-1'"
+    username, password_hash, password_plain, has_set, force_change = conn.execute(
+        "SELECT username, password, password_plain, has_set_password, force_password_change FROM system_users WHERE username = 'student@example.com'"
     ).fetchone()
     sessions = conn.execute("SELECT COUNT(*) FROM active_sessions WHERE username = 'STUDENT-1'").fetchone()[0]
     conn.close()
+    assert username == "student@example.com"
     assert verify_password(temporary_password, password_hash)
     assert password_plain is None
     assert (has_set, force_change, sessions) == (0, 1, 0)

@@ -42,6 +42,30 @@ def custom_value(custom, key):
     return None
 
 
+def custom_filter_values(custom, key):
+    """Return scalar or multi-select custom data as normalized filter values."""
+    value = custom_value(custom, key)
+    values = value if isinstance(value, (list, tuple, set)) else [value]
+    return [
+        str(item).strip() for item in values
+        if item is not None and str(item).strip()
+    ]
+
+
+def facet_options(available_values, configured_options=None, limit=200):
+    """Return deterministic options narrowed to values available in the current facet."""
+    available = {
+        str(value).strip() for value in (available_values or [])
+        if value is not None and str(value).strip()
+    }
+    if configured_options:
+        return [
+            str(value).strip() for value in configured_options
+            if str(value).strip() in available
+        ][:limit]
+    return sorted(available)[:limit]
+
+
 def merge_filter_configuration(registration_config, bulk_fields):
     """Merge only fields explicitly configured by Superadmin or bulk upload."""
     visible = {key: False for key in STANDARD_FILTERS}
@@ -99,7 +123,6 @@ def face_matches(face, standard_values, dynamic_values, exclude_standard=None, e
     for key, expected_raw in (dynamic_values or {}).items():
         expected = str(expected_raw or "").strip()
         if key != exclude_dynamic and expected:
-            actual = custom_value(face.get("custom"), key)
-            if actual is None or str(actual).strip() != expected:
+            if expected not in custom_filter_values(face.get("custom"), key):
                 return False
     return True

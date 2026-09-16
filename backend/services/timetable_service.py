@@ -15,22 +15,28 @@ def json_list(value):
     return parsed if isinstance(parsed, list) else []
 
 
+def remove_activities_for_shift(activities_value, shift_id):
+    """Remove every activity associated with a shift."""
+    target = str(shift_id)
+    activities = json_list(activities_value)
+    return [
+        item for item in activities
+        if not isinstance(item, dict) or str(item.get("shift_id")) != target
+    ]
+
+
 def remove_shift(shifts_value, activities_value, shift_id):
-    """Remove one shift and unlink it from draft activities."""
+    """Remove one shift and all activities associated with it."""
     target = str(shift_id)
     shifts = json_list(shifts_value)
-    activities = json_list(activities_value)
-    remaining = [item for item in shifts if str(item.get("id")) != target]
+    remaining = [
+        item for item in shifts
+        if not isinstance(item, dict) or str(item.get("id")) != target
+    ]
     if len(remaining) == len(shifts):
-        return None, activities
+        return None, json_list(activities_value)
 
-    unlinked = []
-    for activity in activities:
-        item = dict(activity)
-        if str(item.get("shift_id")) == target:
-            item["shift_id"] = ""
-        unlinked.append(item)
-    return remaining, unlinked
+    return remaining, remove_activities_for_shift(activities_value, shift_id)
 
 
 def remove_activity(activities_value, activity_id):

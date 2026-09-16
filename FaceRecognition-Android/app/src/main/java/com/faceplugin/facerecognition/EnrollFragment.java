@@ -753,7 +753,7 @@ public class EnrollFragment extends Fragment {
 
                 if (dynamicViews.containsKey(key)) continue;
     
-                if (type.equals("text") || type.equals("number")) {
+                if (type.equals("text") || type.equals("number") || type.equals("email")) {
                     com.google.android.material.textfield.TextInputLayout til = new com.google.android.material.textfield.TextInputLayout(context);
                     til.setLayoutParams(new android.widget.LinearLayout.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -769,7 +769,13 @@ public class EnrollFragment extends Fragment {
                     et.setLayoutParams(new android.widget.LinearLayout.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.WRAP_CONTENT));
-                    et.setInputType(type.equals("number") ? android.text.InputType.TYPE_CLASS_NUMBER : android.text.InputType.TYPE_CLASS_TEXT);
+                    if (type.equals("number")) {
+                        et.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+                    } else if (type.equals("email")) {
+                        et.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
+                    } else {
+                        et.setInputType(android.text.InputType.TYPE_CLASS_TEXT);
+                    }
 
                     til.addView(et);
                     if (dynamicContainer != null) dynamicContainer.addView(til);

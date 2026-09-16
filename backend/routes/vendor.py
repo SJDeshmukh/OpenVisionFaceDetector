@@ -9,10 +9,10 @@ import io
 import time
 import re
 from datetime import datetime, date, timedelta
-from services.auth_service import authenticate_vendor_access, extract_token, verify_password, verify_token
+from services.auth_service import authenticate_vendor_access, extract_token, verify_password, verify_token, is_valid_login_email, normalize_login_email
 from utils import (
     parse_db_date, parse_db_datetime, cache_get, cache_set,
-    cache_delete_vendor_prefix, get_db_connection,
+    cache_delete_vendor_prefix, get_db_connection, vendor_has_feature,
 )
 from services.person_scope_service import (
     apply_class_mapping,
@@ -23,7 +23,8 @@ from services.person_scope_service import (
     person_type_for,
     vendor_vertical,
 )
-from services.timetable_service import remove_activity, remove_shift
+from services.timetable_service import json_list, remove_activity, remove_activities_for_shift, remove_shift
+from services.payroll_service import set_vendor_statutory_flags
 
 # Mock Auth Decorators
 def vendor_required(f):
@@ -636,7 +637,7 @@ def delete_company_shift(company_id, shift_id):
     c = conn.cursor()
     try:
         c.execute(
-            "SELECT shifts, draft_timetable FROM companies WHERE id = ? AND vendor_id = ?",
+            "SELECT shifts, draft_timetable, live_timetable FROM companies WHERE id = ? AND vendor_id = ?",
             (company_id, vendor_id),
         )
         company = c.fetchone()
@@ -649,18 +650,28 @@ def delete_company_shift(company_id, shift_id):
         updated_shifts, updated_activities = remove_shift(company[0], company[1], shift_id)
         if updated_shifts is None:
             return jsonify({"error": "Shift not found"}), 404
+        updated_live_activities = remove_activities_for_shift(company[2], shift_id)
+        deleted_draft_count = len(json_list(company[1])) - len(updated_activities)
+        deleted_live_count = len(json_list(company[2])) - len(updated_live_activities)
         c.execute(
             """UPDATE companies
-               SET shifts = ?, draft_timetable = ?, last_modified_by = ?, last_modified_at = ?
+               SET shifts = ?, draft_timetable = ?, live_timetable = ?,
+                   last_modified_by = ?, last_modified_at = ?
                WHERE id = ? AND vendor_id = ?""",
-            (json.dumps(updated_shifts), json.dumps(updated_activities), g.username,
-             datetime.now(), company_id, vendor_id),
+            (json.dumps(updated_shifts), json.dumps(updated_activities),
+             json.dumps(updated_live_activities), g.username, datetime.now(),
+             company_id, vendor_id),
         )
         conn.commit()
         cache_delete_vendor_prefix(vendor_id)
         log_audit(
             "timetable_shift_delete",
-            {"company_id": company_id, "shift_id": shift_id},
+            {
+                "company_id": company_id,
+                "shift_id": shift_id,
+                "deleted_draft_activities": deleted_draft_count,
+                "deleted_live_activities": deleted_live_count,
+            },
             target_vendor_id=vendor_id,
             actor=g.username,
         )
@@ -677,6 +688,8 @@ def delete_company_shift(company_id, shift_id):
             "success": True,
             "shifts": updated_shifts,
             "draft_timetable": updated_activities,
+            "live_timetable": updated_live_activities,
+            "deleted_activities": deleted_draft_count,
         })
     except Exception as exc:
         conn.rollback()
@@ -1033,8 +1046,9 @@ def update_global_late_config():
     # Assuming authenticate_vendor_access checks for valid token.
     
     data = request.json
-    allowance = data.get('allowance')
-    deduction = data.get('deduction')
+    late_mark_enabled = vendor_has_feature(vendor_id, 'late_mark')
+    allowance = data.get('allowance') if late_mark_enabled else None
+    deduction = data.get('deduction') if late_mark_enabled else None
     pf_pct = data.get('pf_percentage')
     esi_pct = data.get('esi_percentage')
     grat_pct = data.get('gratuity_percentage')
@@ -1080,6 +1094,58 @@ def update_global_late_config():
         conn.close()
         return jsonify({"error": str(e)}), 500
 
+
+@vendor_bp.route("/persons/wages/statutory/bulk", methods=["PUT"])
+@require_feature("payroll")
+def bulk_update_statutory_flags():
+    """Enable or disable PF and ESI for every employee in one vendor."""
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+    if not vendor_id:
+        return jsonify({"error": "Vendor Context Required"}), 400
+    if g.user_role not in {'vendor_admin', 'admin', 'owner'}:
+        return jsonify({"error": "Access Denied"}), 403
+
+    data = request.get_json(silent=True) or {}
+    enabled = data.get('enabled')
+    if not isinstance(enabled, bool):
+        return jsonify({"error": "enabled must be true or false"}), 400
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        password_error = _verify_current_web_password(c, data.get('password'))
+        if password_error:
+            return jsonify({"error": password_error[0]}), password_error[1]
+
+        flag = 1 if enabled else 0
+        affected = set_vendor_statutory_flags(c, vendor_id, enabled)
+        conn.commit()
+        cache_delete_vendor_prefix(vendor_id)
+        log_audit(
+            "payroll_statutory_bulk_update",
+            {"pf_enabled": flag, "esi_enabled": flag, "affected_employees": affected},
+            target_vendor_id=vendor_id,
+            actor=g.username,
+        )
+        try:
+            from app import socketio
+            socketio.emit(
+                'persons_updated',
+                {'vendor_id': vendor_id, 'kind': 'statutory_bulk_update'},
+                room=f"vendor_{vendor_id}",
+            )
+        except Exception:
+            pass
+        return jsonify({"success": True, "enabled": enabled, "affected_employees": affected})
+    except Exception as exc:
+        conn.rollback()
+        logger.exception("Unable to bulk-update statutory flags for vendor %s", vendor_id)
+        return jsonify({"error": "Unable to update PF and ESI for all employees"}), 500
+    finally:
+        conn.close()
+
 @vendor_bp.route("/vendor/owners", methods=["GET"])
 @vendor_required
 def get_vendor_owners():
@@ -1115,10 +1181,12 @@ def sync_vendor_owners():
     for owner_data in owners:
         if not isinstance(owner_data, dict):
             return jsonify({"error": "Each owner must be an object"}), 400
-        username = str(owner_data.get("username") or "").strip()
+        username = normalize_login_email(owner_data.get("username"))
         password = str(owner_data.get("password") or "")
         if not username:
             continue
+        if not is_valid_login_email(username):
+            return jsonify({"error": f"Owner login must be a valid email address: {username}"}), 400
         username_key = username.casefold()
         if username_key in seen_usernames:
             return jsonify({"error": f"Duplicate owner username: {username}"}), 400
@@ -1148,7 +1216,7 @@ def sync_vendor_owners():
                                (hash_password(o_password), o_username, vendor_id))
             else:
                 # Check for global uniqueness across all users
-                c.execute("SELECT username FROM system_users WHERE username = ?", (o_username,))
+                c.execute("SELECT username FROM system_users WHERE LOWER(username) = LOWER(?)", (o_username,))
                 if c.fetchone():
                     conn.rollback()
                     conn.close()
@@ -1185,6 +1253,8 @@ def get_settings():
     vendor_id, error = authenticate_vendor_access()
     if error:
         return error
+    if vendor_id and not vendor_has_feature(vendor_id, 'late_mark'):
+        allowed_keys.difference_update({'late_threshold', 'late_grace_period'})
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -1244,6 +1314,10 @@ def update_settings():
         return jsonify({"error": "Access Denied"}), 403
     if role != 'super_admin' and not vendor_id:
         return jsonify({"error": "Vendor Context Required"}), 400
+
+    if vendor_id and not vendor_has_feature(vendor_id, 'late_mark'):
+        data.pop('late_threshold', None)
+        data.pop('late_grace_period', None)
 
     # Only super_admin is allowed to change engine threshold and cooldown
     if role != 'super_admin':

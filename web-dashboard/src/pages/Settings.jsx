@@ -92,6 +92,7 @@ const Settings = () => {
 
   const getAuthHeaders = () => (user?.token ? { Authorization: `Bearer ${user.token}` } : {});
   const hasWhatsappFeature = (Array.isArray(user?.features) && user.features.includes('whatsapp_alerts')) || user?.role === 'super_admin';
+  const hasLateMarkFeature = Array.isArray(user?.features) && user.features.includes('late_mark');
 
   useEffect(() => {
     fetchSettings();
@@ -293,7 +294,7 @@ const Settings = () => {
   };
 
   const handleSaveSettings = async () => {
-    if (workStartTime && lateThreshold && lateThreshold < workStartTime) {
+    if (hasLateMarkFeature && workStartTime && lateThreshold && lateThreshold < workStartTime) {
       alert("Late After time cannot be earlier than Work Start Time. Please adjust the timings.");
       return;
     }
@@ -301,9 +302,9 @@ const Settings = () => {
     try {
       const payload = {
         work_start_time: workStartTime,
-        late_threshold: lateThreshold,
         voice_greeting: voiceGreeting,
       };
+      if (hasLateMarkFeature) payload.late_threshold = lateThreshold;
       await axios.post(`${API_URL}/settings`, payload, {
         headers: getAuthHeaders()
       });
@@ -609,7 +610,7 @@ const Settings = () => {
                   </div>
                 </label>
 
-                <label className="flex items-start gap-3 p-3 rounded-xl border border-slate-200 hover:bg-slate-50 cursor-pointer transition-colors">
+                {hasLateMarkFeature && <label className="flex items-start gap-3 p-3 rounded-xl border border-slate-200 hover:bg-slate-50 cursor-pointer transition-colors">
                   <input
                     type="checkbox"
                     className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
@@ -624,7 +625,7 @@ const Settings = () => {
                     <span className="text-sm font-medium text-slate-800">Late Arrival Warning</span>
                     <p className="text-xs text-slate-500">Alerts employee when they clock in past the configured grace period.</p>
                   </div>
-                </label>
+                </label>}
               </div>
             </div>
 
@@ -742,7 +743,7 @@ const Settings = () => {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-semibold text-slate-800">Active Timetable Shifts</p>
-                <p className="text-xs text-slate-500">Attendance and late marks are governed by the shifts configured in your Timetable.</p>
+                <p className="text-xs text-slate-500">Attendance is governed by the shifts configured in your Timetable.</p>
               </div>
               <span className="text-xs font-semibold px-2.5 py-1 bg-green-50 text-green-700 border border-green-200 rounded-full">
                 {companyShifts.filter(s => s.active !== false).length} Active Shifts
@@ -762,9 +763,11 @@ const Settings = () => {
                     <Clock size={13} className="text-slate-400" />
                     <span>{shift.start_time} - {shift.end_time}</span>
                   </div>
-                  <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1 rounded font-medium">
-                    Late after: <span className="font-bold">{calculateLateTime(shift.start_time, shift.grace_period_mins ?? 15)}</span> ({shift.grace_period_mins ?? 15}m grace)
-                  </div>
+                  {hasLateMarkFeature && (
+                    <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1 rounded font-medium">
+                      Late after: <span className="font-bold">{calculateLateTime(shift.start_time, shift.grace_period_mins ?? 15)}</span> ({shift.grace_period_mins ?? 15}m grace)
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -774,7 +777,7 @@ const Settings = () => {
                 <summary className="text-xs font-medium text-slate-500 hover:text-slate-700 cursor-pointer select-none">
                   Advanced: Fallback Rule (For staff without an assigned shift)
                 </summary>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-5 mt-3 pt-2">
+                <div className={`grid grid-cols-1 ${hasLateMarkFeature ? 'sm:grid-cols-2' : ''} gap-5 mt-3 pt-2`}>
                   <div>
                     <label htmlFor="work-start-time" className="block text-xs font-semibold text-slate-700 mb-1.5">Fallback Work Start</label>
                     <input
@@ -785,7 +788,7 @@ const Settings = () => {
                       className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"
                     />
                   </div>
-                  <div>
+                  {hasLateMarkFeature && <div>
                     <label htmlFor="late-threshold" className="block text-xs font-semibold text-slate-700 mb-1.5">Fallback Late After</label>
                     <input
                       id="late-threshold"
@@ -794,7 +797,7 @@ const Settings = () => {
                       onChange={(e) => setLateThreshold(e.target.value)}
                       className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"
                     />
-                  </div>
+                  </div>}
                 </div>
               </details>
             </div>
@@ -804,7 +807,7 @@ const Settings = () => {
             <div className="p-4 bg-blue-50/70 border border-blue-100 rounded-xl flex items-center justify-between">
               <div>
                 <p className="text-sm font-semibold text-blue-900">Want to use multi-shift schedules?</p>
-                <p className="text-xs text-blue-700 mt-0.5">Create shifts and assign staff in the Timetable tab for automatic shift-based late rules.</p>
+                <p className="text-xs text-blue-700 mt-0.5">Create shifts and assign staff in the Timetable tab for automatic attendance rules.</p>
               </div>
               <Link 
                 to="/timetable" 
@@ -815,7 +818,7 @@ const Settings = () => {
               </Link>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+            <div className={`grid grid-cols-1 ${hasLateMarkFeature ? 'sm:grid-cols-2' : ''} gap-5`}>
               <div>
                 <label htmlFor="work-start-time" className="block text-sm font-semibold text-slate-700 mb-2">Work Start Time</label>
                 <input
@@ -826,7 +829,7 @@ const Settings = () => {
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg"
                 />
               </div>
-              <div>
+              {hasLateMarkFeature && <div>
                 <label htmlFor="late-threshold" className="block text-sm font-semibold text-slate-700 mb-2">Late After</label>
                 <input
                   id="late-threshold"
@@ -835,9 +838,9 @@ const Settings = () => {
                   onChange={(e) => setLateThreshold(e.target.value)}
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg"
                 />
-              </div>
+              </div>}
             </div>
-            <p className="text-xs text-slate-500">A check-in after the configured late time is marked late for this business.</p>
+            {hasLateMarkFeature && <p className="text-xs text-slate-500">A check-in after the configured late time is marked late for this business.</p>}
           </div>
         )}
       </Section>
@@ -881,14 +884,14 @@ const Settings = () => {
 
             <div className="p-6 space-y-4">
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Username</label>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Login Email</label>
                 <input
-                  type="text"
+                  type="email"
                   value={userForm.username}
                   onChange={(e) => setUserForm({ ...userForm, username: e.target.value })}
                   disabled={!!editingUser}
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 disabled:bg-slate-100 disabled:text-slate-500"
-                  placeholder="Enter username"
+                  placeholder="Enter email address"
                 />
               </div>
 

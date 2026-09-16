@@ -21,7 +21,8 @@ from services.attendance_service import (
 from services.payroll_service import calculate_salary_breakdown, get_approved_advances
 from services.auth_service import require_auth
 from services.report_filter_service import (
-    STANDARD_FILTERS, custom_value, face_matches, merge_filter_configuration, parse_json_list,
+    STANDARD_FILTERS, custom_filter_values, face_matches, facet_options,
+    merge_filter_configuration, parse_json_list,
 )
 from middleware.validation import validate_request
 from schemas import PayrollReportRequest
@@ -214,13 +215,10 @@ def get_report_filters():
         candidates = [face for face in faces if face_matches(face, req_standard, req_dyn, exclude_dynamic=fk)]
         unique_values = set()
         for f in candidates:
-            val = custom_value(f['custom'], fk)
-            if val is not None and str(val).strip():
-                unique_values.add(str(val).strip())
-        options = sorted(list(unique_values))[:200]
-        # if the config defines a fixed option list, always show all configured options
-        if field.get('options'):
-            options = [str(x) for x in field['options']]
+            unique_values.update(custom_filter_values(f['custom'], fk))
+        # A configured option list defines ordering and allowed values, while
+        # the current employee subset determines which values remain visible.
+        options = facet_options(unique_values, field.get('options'))
         filter_config = {'label': fl, 'options': options}
         normalized_filter_key = fk.strip().lower().replace(' ', '_').replace('-', '_')
         if normalized_filter_key in {'class', 'class_id', 'class_section'}:
@@ -238,6 +236,9 @@ def get_report_filters():
         'visible_standard_filters': visible_standard_filters,
         'standard_filter_labels': standard_filter_labels,
         'dynamic_filters': dynamic_filters,
+        'matching_employee_count': sum(
+            1 for face in faces if face_matches(face, req_standard, req_dyn)
+        ),
     })
 
 @attendance_reports_bp.route("/reports/analytics", methods=["GET"])
@@ -479,7 +480,7 @@ def export_attendance(valid_data: PayrollReportRequest):
         # Apply dynamic (custom_data) filters – Python-side after parse
         match = True
         for dk, dv in dyn_filters.items():
-            if str(custom_value(cdata, dk) or '').strip() != dv:
+            if dv not in custom_filter_values(cdata, dk):
                 match = False
                 break
         if not match:
@@ -844,7 +845,7 @@ def export_payroll_daily():
                     cdata = json.loads(rd.get('custom_data') or '{}')
                 except Exception:
                     cdata = {}
-                if any(str(custom_value(cdata, dk) or '').strip() != dv for dk, dv in dyn_filters.items()):
+                if any(dv not in custom_filter_values(cdata, dk) for dk, dv in dyn_filters.items()):
                     continue
             persons[rd['id']] = rd
 
@@ -970,7 +971,7 @@ def export_payroll_excel():
         persons = {}
         for person in scoped_faces:
             if dyn_filters and any(
-                str(custom_value(person.get('custom'), key) or '').strip() != value
+                value not in custom_filter_values(person.get('custom'), key)
                 for key, value in dyn_filters.items()
             ):
                 continue

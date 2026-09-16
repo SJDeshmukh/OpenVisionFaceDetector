@@ -8,7 +8,7 @@ import pandas as pd
 from flask import Blueprint, request, jsonify, g
 from utils import get_db_connection, log_audit, vendor_has_feature
 from db_factory import get_table_columns
-from services.auth_service import require_auth, hash_password
+from services.auth_service import require_auth, hash_password, is_valid_login_email, normalize_login_email
 from services.person_scope_service import is_school_hostel, parse_custom_data
 from services.spreadsheet_mapping_service import map_spreadsheet_headers
 from services.spreadsheet_type_inference import inspect_spreadsheet_fields, clean_cell_value
@@ -176,6 +176,7 @@ def bulk_registration_upload():
         header_mapping = mapping_result['mapping']
         name_key = header_mapping.get('name')
         phone_key = header_mapping.get('phone')
+        email_key = header_mapping.get('email')
         id_key = header_mapping.get('person_id')
         excel_class_id_key = header_mapping.get('class_id')
         department_key = header_mapping.get('department')
@@ -276,6 +277,50 @@ def bulk_registration_upload():
                     continue
 
                 phone = str(row.get(phone_key) or "").strip() if phone_key else ""
+                raw_login_email = str(row.get(email_key) or "").strip() if email_key else ""
+                login_email = normalize_login_email(raw_login_email)
+                if raw_login_email and not is_valid_login_email(login_email):
+                    errors.append(f"Row {row_idx + 2}: invalid email address")
+                    skipped_count += 1
+                    continue
+                if login_email:
+                    c.execute("SELECT username FROM system_users WHERE LOWER(username) = LOWER(?)", (login_email,))
+                    if c.fetchone():
+                        errors.append(f"Row {row_idx + 2}: email is already used by another login")
+                        skipped_count += 1
+                        continue
+                    if getattr(conn, "_is_pg", False):
+                        c.execute(
+                            """SELECT id FROM faces
+                               WHERE LOWER(COALESCE(
+                                   custom_data::jsonb->>'email',
+                                   custom_data::jsonb->>'Email',
+                                   custom_data::jsonb->>'employee_email',
+                                   custom_data::jsonb->>'student_email',
+                                   custom_data::jsonb->>'faculty_email',
+                                   ''
+                               )) = LOWER(%s)
+                               LIMIT 1""",
+                            (login_email,),
+                        )
+                    else:
+                        c.execute(
+                            """SELECT id FROM faces
+                               WHERE LOWER(COALESCE(
+                                   json_extract(custom_data, '$.email'),
+                                   json_extract(custom_data, '$.Email'),
+                                   json_extract(custom_data, '$.employee_email'),
+                                   json_extract(custom_data, '$.student_email'),
+                                   json_extract(custom_data, '$.faculty_email'),
+                                   ''
+                               )) = LOWER(?)
+                               LIMIT 1""",
+                            (login_email,),
+                        )
+                    if c.fetchone():
+                        errors.append(f"Row {row_idx + 2}: email is already registered to another person")
+                        skipped_count += 1
+                        continue
 
                 # Duplicate detection is student-scoped. A faculty profile with the
                 # same name/phone must never block or absorb a student registration.
@@ -334,8 +379,10 @@ def bulk_registration_upload():
                 custom_dict = {
                     "person_type": "employee" if employee_record_flow else "student"
                 }
+                if login_email:
+                    custom_dict["email"] = login_email
                 canonical_by_header = {header: canonical for canonical, header in header_mapping.items()}
-                core_keys = {key for key in (name_key, phone_key, id_key, department_key, designation_key, shift_key, excel_class_id_key) if key is not None}
+                core_keys = {key for key in (name_key, phone_key, email_key, id_key, department_key, designation_key, shift_key, excel_class_id_key) if key is not None}
                 for k, v in row.items():
                     if k in core_keys:
                         continue
@@ -392,9 +439,8 @@ def bulk_registration_upload():
                 person_id = c.lastrowid
 
                 # Optional: Automated Login Creation ("Inking")
-                student_id_val = str(row.get(id_key) or "").strip() if id_key else ""
-                if inking_enabled and student_id_val and phone:
-                    c.execute("SELECT username FROM system_users WHERE username = ?", (student_id_val,))
+                if inking_enabled and is_valid_login_email(login_email) and phone:
+                    c.execute("SELECT username FROM system_users WHERE LOWER(username) = LOWER(?)", (login_email,))
                     if not c.fetchone():
                         login_role = 'student' if school_student_flow else 'user'
                         sys_cols = get_table_columns(conn, "system_users")
@@ -403,7 +449,7 @@ def bulk_registration_upload():
                         c.execute(f"""
                             INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id{is_kiosk_field})
                             VALUES (?, ?, NULL, ?, ?, ?{is_kiosk_val})
-                        """, (student_id_val, hash_password(phone), login_role, vendor_id, person_id))
+                        """, (login_email, hash_password(phone), login_role, vendor_id, person_id))
 
                 success_count += 1
             except Exception as e:
@@ -647,7 +693,7 @@ def create_faculty_single():
     conn = get_db_connection()
     c = conn.cursor()
     try:
-        c.execute("SELECT username FROM system_users WHERE username = ? AND vendor_id = ?", (email, vendor_id))
+        c.execute("SELECT username FROM system_users WHERE LOWER(username) = LOWER(?)", (email,))
         if c.fetchone():
             return jsonify({"error": "A faculty account with this email already exists"}), 409
 
@@ -753,7 +799,7 @@ def bulk_registration_upload_faculty():
 
         for item in emails_to_process:
             email = item['email']
-            c.execute("SELECT username FROM system_users WHERE username = ? AND vendor_id = ?", (email, vendor_id))
+            c.execute("SELECT username FROM system_users WHERE LOWER(username) = LOWER(?)", (email,))
             if c.fetchone():
                 skipped += 1
                 continue
@@ -918,7 +964,7 @@ def update_faculty_login(username):
         
         if new_email and new_email != username:
             # Check if new username is taken
-            c.execute("SELECT 1 FROM system_users WHERE username = ?", (new_email,))
+            c.execute("SELECT 1 FROM system_users WHERE LOWER(username) = LOWER(?)", (new_email,))
             if c.fetchone():
                 return jsonify({"error": "Username already taken"}), 409
             c.execute("UPDATE system_users SET username = ? WHERE username = ? AND vendor_id = ?", (new_email, username, vendor_id))

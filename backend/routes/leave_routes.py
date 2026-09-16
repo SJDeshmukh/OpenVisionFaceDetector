@@ -3,7 +3,7 @@ import json
 import base64
 import numpy as np
 from datetime import datetime, timedelta
-from services.auth_service import authenticate_vendor_access, generate_token_with_claims, hash_password, verify_token, require_auth
+from services.auth_service import authenticate_vendor_access, generate_token_with_claims, hash_password, verify_token, require_auth, login_email_from_profile
 from services.face_service import _normalize_vec, _decode_data_uri_to_rgb
 from services.mobile_face_template import decode_face_template as _decode_face_template
 from utils import get_db_connection, require_feature
@@ -849,17 +849,17 @@ def generate_student_logins():
         for f in faces:
             row = get_row_dict(f)
             cd = json.loads(row.get('custom_data') or '{}')
-            student_number = str(cd.get('student_id') or cd.get('id_number') or "").strip()
+            login_email = login_email_from_profile(cd)
             
-            if not student_number:
+            if not login_email:
                 skipped_count += 1
                 continue
                 
             # Check if user already exists
             if is_pg:
-                c.execute("SELECT username FROM system_users WHERE username = %s", (student_number,))
+                c.execute("SELECT username FROM system_users WHERE LOWER(username) = LOWER(%s)", (login_email,))
             else:
-                c.execute("SELECT username FROM system_users WHERE username = ?", (student_number,))
+                c.execute("SELECT username FROM system_users WHERE LOWER(username) = LOWER(?)", (login_email,))
             if c.fetchone():
                 skipped_count += 1
                 continue
@@ -870,12 +870,12 @@ def generate_student_logins():
             if is_pg:
                 c.execute(
                     "INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (%s, %s, NULL, 'user', %s, %s)",
-                    (student_number, hash_password(phone), vendor_id, row.get('id'))
+                    (login_email, hash_password(phone), vendor_id, row.get('id'))
                 )
             else:
                 c.execute(
                     "INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (?, ?, NULL, 'user', ?, ?)",
-                    (student_number, hash_password(phone), vendor_id, row.get('id'))
+                    (login_email, hash_password(phone), vendor_id, row.get('id'))
                 )
             created_count += 1
             
@@ -884,7 +884,7 @@ def generate_student_logins():
             "status": "success", 
             "created": created_count, 
             "skipped": skipped_count,
-            "message": f"Successfully created {created_count} student logins. Default password is 'student' followed by student number."
+            "message": f"Successfully created {created_count} email-based student logins."
         })
     except Exception as e:
         if is_pg: conn.rollback()
