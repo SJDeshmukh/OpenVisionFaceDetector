@@ -1,0 +1,70 @@
+name: Deploy TapInX Frontend
+
+on:
+  push:
+    branches: [aws_deploy]
+    paths:
+      - 'web-dashboard/**'
+      - 'scripts/deploy-frontend-s3.sh'
+      - '.github/workflows/deploy-frontend.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: tapinx-production-frontend
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      AWS_REGION: us-east-1
+      FRONTEND_BUCKET: ${{ vars.AWS_FRONTEND_BUCKET || 'tapinx-web-portal-532025488693-us-east-1-an' }}
+      CLOUDFRONT_DISTRIBUTION_ID: ${{ vars.AWS_CLOUDFRONT_DISTRIBUTION_ID || 'E28VCKLNUS67BA' }}
+      AWS_FRONTEND_DEPLOY_ROLE_ARN: ${{ secrets.AWS_FRONTEND_DEPLOY_ROLE_ARN }}
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web-dashboard/package-lock.json
+
+      - name: Install dependencies
+        working-directory: web-dashboard
+        run: npm ci
+
+      - name: Lint frontend
+        working-directory: web-dashboard
+        run: npm run lint
+
+      - name: Build production frontend
+        working-directory: web-dashboard
+        env:
+          VITE_API_URL: ''
+        run: npm run build
+
+      - name: Validate deployment credentials
+        run: |
+          if [ -z "${AWS_FRONTEND_DEPLOY_ROLE_ARN}" ]; then
+            echo "Missing production secret: AWS_FRONTEND_DEPLOY_ROLE_ARN" >&2
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_FRONTEND_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Upload to S3 and invalidate CloudFront
+        run: scripts/deploy-frontend-s3.sh --skip-build
