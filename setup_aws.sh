@@ -115,9 +115,7 @@ require_source_tree() {
         "backend/app.py"
         "backend/requirements.txt"
         "backend/celery_app.py"
-        "web-dashboard/package.json"
-        "web-dashboard/package-lock.json"
-        "nginx_face_detection.conf"
+        "docker-compose.yml"
         "docker-compose.hybrid.yml"
     )
     local path
@@ -1051,34 +1049,6 @@ validate_ai_for_deploy() {
     die "${provider_name} API validation failed; correct the key/account shown above and rerun setup"
 }
 
-frontend_dependency_fingerprint() {
-    (
-        cd "$SCRIPT_DIR/web-dashboard"
-        {
-            node --version
-            npm --version
-            sha256sum package.json package-lock.json
-        } | sha256sum | awk '{print $1}'
-    )
-}
-
-frontend_source_fingerprint() {
-    local dependency_fingerprint="$1"
-    (
-        cd "$SCRIPT_DIR/web-dashboard"
-        {
-            printf '%s\n' "$dependency_fingerprint" "${VITE_API_URL:-}"
-            find src public -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
-            for source_file in index.html vite.config.js postcss.config.js package.json package-lock.json; do
-                [ ! -f "$source_file" ] || sha256sum "$source_file"
-            done
-            for env_file in .env.production .env.production.local; do
-                [ ! -f "$env_file" ] || sha256sum "$env_file"
-            done
-        } | sha256sum | awk '{print $1}'
-    )
-}
-
 if [ "$ACTION" = "check" ]; then
     require_source_tree
     bash -n "$SCRIPT_DIR/setup_aws.sh"
@@ -1331,20 +1301,8 @@ sudo env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout="$APT_LOC
     redis-server redis-tools \
     nginx curl ca-certificates openssl \
     libgl1 libglib2.0-0 libgomp1 libheif-dev \
-    psmisc lsof build-essential rsync \
+    psmisc lsof build-essential \
     certbot python3-certbot-nginx
-
-NODE_MAJOR=0
-if command -v node >/dev/null 2>&1; then
-    NODE_MAJOR="$(node --version | sed -E 's/^v([0-9]+).*/\1/')"
-fi
-if [ "$NODE_MAJOR" -lt 24 ]; then
-    log "Installing Node.js 24 LTS"
-    curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
-    sudo env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT_SECONDS" install -y nodejs
-fi
-node --version
-npm --version
 
 log "Configuring swap without replacing existing swap data"
 if [ ! -e /swapfile ]; then
@@ -1486,6 +1444,8 @@ PUBLIC_IP="$(curl -fsS --max-time 10 https://api.ipify.org || hostname -I | awk 
 env_set SECRET_KEY "$SECRET_KEY"
 env_set DB_PASSWORD "$DB_PASSWORD"
 env_set DATABASE_URL "postgresql://openvision_app:${DB_PASSWORD}@127.0.0.1:${PGBOUNCER_PORT}/face_detection"
+env_set DB_MIN_CONN "1"
+env_set DB_MAX_CONN "8"
 env_set PGBOUNCER_PORT "$PGBOUNCER_PORT"
 env_set DB_TYPE "postgres"
 env_set REDIS_URL "$REDIS_URL"
@@ -1556,50 +1516,7 @@ PGPASSWORD="$DB_PASSWORD" psql -h 127.0.0.1 -U openvision_app -d face_detection 
     "SELECT CASE WHEN to_regclass('public.vendors') IS NOT NULL THEN 1 ELSE 0 END" | grep -q 1 \
     || die "PostgreSQL schema validation failed: vendors table is missing"
 
-log "Building the web dashboard"
-(
-    cd "$SCRIPT_DIR/web-dashboard"
-    FRONTEND_CACHE_DIR="$SCRIPT_DIR/.openvision-cache"
-    DEPENDENCY_STAMP="$FRONTEND_CACHE_DIR/frontend-dependencies.sha256"
-    BUILD_STAMP="$FRONTEND_CACHE_DIR/frontend-build.sha256"
-    mkdir -p "$FRONTEND_CACHE_DIR"
-
-    DEPENDENCY_FINGERPRINT="$(frontend_dependency_fingerprint)"
-    REUSED_DEPENDENCIES=0
-    if [ -x node_modules/.bin/vite ] \
-        && [ "$(sed -n '1p' "$DEPENDENCY_STAMP" 2>/dev/null || true)" = "$DEPENDENCY_FINGERPRINT" ]; then
-        printf 'Frontend dependencies unchanged; reusing node_modules.\n'
-        REUSED_DEPENDENCIES=1
-    else
-        npm ci --legacy-peer-deps --prefer-offline --no-audit
-        printf '%s\n' "$DEPENDENCY_FINGERPRINT" > "$DEPENDENCY_STAMP"
-    fi
-
-    BUILD_FINGERPRINT="$(frontend_source_fingerprint "$DEPENDENCY_FINGERPRINT")"
-    if [ -f dist/index.html ] && [ -d dist/assets ] \
-        && [ "$(sed -n '1p' "$BUILD_STAMP" 2>/dev/null || true)" = "$BUILD_FINGERPRINT" ]; then
-        printf 'Frontend sources unchanged; reusing the verified dashboard build.\n'
-    else
-        if ! NODE_OPTIONS="--max-old-space-size=1536" npm run build; then
-            if [ "$REUSED_DEPENDENCIES" -ne 1 ]; then
-                exit 1
-            fi
-            printf 'Cached frontend dependencies failed; rebuilding them once.\n'
-            npm ci --legacy-peer-deps --prefer-offline --no-audit
-            printf '%s\n' "$DEPENDENCY_FINGERPRINT" > "$DEPENDENCY_STAMP"
-            NODE_OPTIONS="--max-old-space-size=1536" npm run build
-        fi
-        printf '%s\n' "$BUILD_FINGERPRINT" > "$BUILD_STAMP"
-    fi
-    [ -f dist/index.html ] || die "Dashboard build did not create dist/index.html"
-)
-
-log "Deploying dashboard assets"
-sudo install -d -o www-data -g www-data -m 0755 /var/www/face_detection
-sudo rsync -a --delete "$SCRIPT_DIR/web-dashboard/dist/" /var/www/face_detection/
-sudo chown -R www-data:www-data /var/www/face_detection
-
-log "Installing Nginx configuration for ${DEPLOY_DOMAIN}"
+log "Installing backend-only Nginx configuration for ${DEPLOY_DOMAIN}"
 sudo tee /etc/nginx/sites-available/face_detection >/dev/null <<NGINX
 server {
     listen 80;
@@ -1607,11 +1524,8 @@ server {
     server_name ${DEPLOY_DOMAIN} www.${DEPLOY_DOMAIN};
     client_max_body_size 50M;
 
-    root /var/www/face_detection;
-    index index.html;
-
     location / {
-        try_files \$uri \$uri/ /index.html;
+        return 404;
     }
 
     location /api/ {
@@ -1826,12 +1740,11 @@ printf '\n%s\n' "===============================================================
 printf '%s\n' "OPENVISION BARE-METAL DEPLOYMENT COMPLETED"
 printf '%s\n' "=============================================================================="
 if [ "$SSL_ENABLED" -eq 1 ]; then
-    printf 'Dashboard: https://%s\n' "$DEPLOY_DOMAIN"
     printf 'API:       https://%s/api\n' "$DEPLOY_DOMAIN"
 else
-    printf 'Dashboard: http://%s\n' "$DEPLOY_DOMAIN"
     printf 'API:       http://%s/api\n' "$DEPLOY_DOMAIN"
 fi
+printf 'Frontend:  deployed independently by GitHub Actions to S3/CloudFront\n'
 printf 'Local health: http://127.0.0.1:5001/api/health\n'
 printf 'Services:     sudo systemctl status postgresql pgbouncer openvision-backend openvision-celery openvision-celery-io openvision-celery-beat nginx\n'
 printf 'Application logs: sudo journalctl -u openvision-backend -f\n'
