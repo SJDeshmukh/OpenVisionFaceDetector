@@ -31,6 +31,11 @@ Create a GitHub environment named `production` and add this environment secret:
 
 - `AWS_FRONTEND_DEPLOY_ROLE_ARN`: ARN of the IAM role GitHub Actions may assume.
 
+The IAM OIDC provider in account `532025488693` must have exactly:
+
+- Provider URL: `https://token.actions.githubusercontent.com`
+- Audience/client ID: `sts.amazonaws.com`
+
 The role should trust GitHub's OIDC provider only for this repository's
 `production` environment. Configure that GitHub environment to allow deployment
 only from the `aws_deploy` branch. The role's permissions should be limited to
@@ -86,6 +91,10 @@ Its trust policy should restrict the GitHub subject to this repository's
 
 Optional GitHub environment variables `AWS_FRONTEND_BUCKET` and
 `AWS_CLOUDFRONT_DISTRIBUTION_ID` can override the checked-in production defaults.
+
+The workflow uses Node 24-compatible GitHub actions and explicitly requests the
+`sts.amazonaws.com` audience. It also rejects credentials returned for any AWS
+account other than `532025488693`.
 
 ## Manual deployment
 
