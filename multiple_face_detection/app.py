@@ -23,15 +23,15 @@ from multiple_face_detection.mobile_embedder import FacePluginEmbedder
 _bulk_attendance_cache = {"v": None, "ts": 0.0}
 _BULK_CACHE_TTL = 60.0
 
+def invalidate_bulk_feature_cache():
+    _bulk_attendance_cache["v"] = None
+    _bulk_attendance_cache["ts"] = 0.0
+
 def _force_3d_engine() -> bool:
     return str(os.environ.get("FORCE_3D_ENGINE", "0")).strip().lower() in ("1", "true", "yes", "y")
 
 def is_bulk_attendance_allowed() -> bool:
     """Checks if ANY active vendor has bulk_image_attendance enabled. Cached 60 s."""
-    # The dedicated EC2 Celery worker sets this flag because it is the single,
-    # memory-bounded process responsible for producing landmark meshes.
-    if _force_3d_engine():
-        return True
     import time as _t
     _now = _t.monotonic()
     if _bulk_attendance_cache["v"] is not None and (_now - _bulk_attendance_cache["ts"]) < _BULK_CACHE_TTL:
@@ -67,9 +67,6 @@ def _is_bulk_attendance_uncached() -> bool:
             except Exception:
                 continue
     except Exception as e:
-        # If DB fails or not initialized, check for FORCE environment variable
-        if _force_3d_engine():
-             return True
         print(f"[MFD] Feature check failed: {e}", flush=True)
         return False
     return False
@@ -624,13 +621,16 @@ _retina_det = None
 # Per-model locks — GPU models (GFPGAN, ArcFace, RealESRGAN) are not re-entrant;
 # the 3D engine is CPU-only so it gets its own lock and can overlap with GPU work.
 _gfpgan_lock = threading.Lock()
-_embedder_lock = threading.Lock()
+_embedder_lock = threading.RLock()
+_detector_lock = threading.RLock()
 _realesrgan_lock = threading.Lock()
 _3d_engine_lock = threading.Lock()
 
 # Active detection counter for GC gating
 _active_detections = 0
 _active_detections_lock = threading.Lock()
+_model_transition = threading.Condition(_active_detections_lock)
+_model_unloading = False
 
 # Unload TTL (seconds of idle before models are released)
 # Keep models hot permanently — unloading causes 20-30s reload on next request
@@ -647,47 +647,89 @@ def _start_model_gc_thread():
 
     def _gc_loop():
         while True:
-            time.sleep(300)  # Models stay loaded permanently once hot
-            pass
+            time.sleep(60)
+            if not models_are_loaded():
+                continue
+            # A SuperAdmin feature change invalidates the cache in the web
+            # process. Worker processes independently re-check at this interval.
+            invalidate_bulk_feature_cache()
+            if not is_bulk_attendance_allowed():
+                unload_all_models(reason="bulk_image_attendance disabled")
 
     t = threading.Thread(target=_gc_loop, daemon=True, name="mfd-model-gc")
     t.start()
 
-def _check_and_unload_models():
-    """Release memory by unloading models that haven't been used recently."""
-    global _gfpgan_manager, _embedder, _realesrgan_manager, _mesh_engine
-    now = time.time()
-    
-    # Check GFPGAN
-    if _gfpgan_manager and _gfpgan_manager._restorer and (now - _gfpgan_manager._last_used > _UNLOAD_TTL):
-        _gfpgan_manager._restorer = None
-        print("[MEM] Unloaded GFPGAN model to free RAM")
-        
-    if _embedder and _embedder._get_face_feature and (now - _embedder._last_used > _UNLOAD_TTL):
-        _embedder._get_face_feature = None
-        _embedder._get_face_landmark = None
-        _embedder._available = None
-        print("[MEM] Unloaded FaceEmbedder model to free RAM")
+def models_are_loaded():
+    return any(model is not None for model in (
+        _detector, _embedder, _gfpgan_manager, _codeformer_manager,
+        _realesrgan_manager, _mesh_engine, _retina_det,
+    ))
 
-    # Check RealESRGAN
-    if _realesrgan_manager and _realesrgan_manager._upsampler and (now - _realesrgan_manager._last_used > _UNLOAD_TTL):
-        _realesrgan_manager._upsampler = None
-        print("[MEM] Unloaded RealESRGAN model to free RAM")
-        
-    # Periodic GC if anything was unloaded
-    import gc
-    gc.collect()
+def unload_all_models(reason="feature disabled"):
+    """Release every server-side bulk-recognition model from this process."""
+    global _detector, _embedder, _gfpgan_manager, _codeformer_manager
+    global _realesrgan_manager, _mesh_engine, _retina_det
+    global _model_unloading
+
+    with _model_transition:
+        if _active_detections > 0:
+            print(f"[MEM] Model unload deferred; {_active_detections} detection(s) active", flush=True)
+            return False
+        _model_unloading = True
+
     try:
-        import torch
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    except Exception:
-        pass
+        if not models_are_loaded():
+            return False
+
+        with _detector_lock, _embedder_lock, _gfpgan_lock, _realesrgan_lock, _3d_engine_lock:
+            detector_module = getattr(_detector, "_detect_module", None) if _detector is not None else None
+            if detector_module is not None:
+                # The legacy detector stores its torch network as module globals.
+                # Clear those references as well as the wrapper instance.
+                for attr in ("predictor", "net"):
+                    if hasattr(detector_module, attr):
+                        setattr(detector_module, attr, None)
+                module_name = getattr(detector_module, "__name__", "")
+                if module_name:
+                    sys.modules.pop(module_name, None)
+                    parent_name, _, child_name = module_name.rpartition(".")
+                    parent_module = sys.modules.get(parent_name)
+                    if parent_module is not None and child_name and hasattr(parent_module, child_name):
+                        delattr(parent_module, child_name)
+            _detector = None
+            _embedder = None
+            _gfpgan_manager = None
+            _codeformer_manager = None
+            _realesrgan_manager = None
+            _mesh_engine = None
+            _retina_det = None
+
+        gc.collect()
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+        print(f"[MEM] Unloaded optional face models ({reason})", flush=True)
+        return True
+    finally:
+        with _model_transition:
+            _model_unloading = False
+            _model_transition.notify_all()
+
+def _check_and_unload_models():
+    """Backward-compatible hook used by low-RAM call sites."""
+    invalidate_bulk_feature_cache()
+    if not is_bulk_attendance_allowed():
+        return unload_all_models(reason="bulk feature unavailable")
+    return False
 
 def get_detector():
     global _detector
-    if _detector is None:
-        _detector = FaceDetector(sdk_dir=os.path.join(os.path.dirname(__file__), "sdk_src"))
+    _start_model_gc_thread()
+    with _detector_lock:
+        if _detector is None:
+            _detector = FaceDetector(sdk_dir=os.path.join(os.path.dirname(__file__), "sdk_src"))
     return _detector
 
 def get_gfpgan_manager():
@@ -709,8 +751,10 @@ def get_codeformer_manager():
 
 def get_embedder():
     global _embedder
-    if _embedder is None:
-        _embedder = FaceEmbedder(sdk_dir=os.path.join(os.path.dirname(__file__), "sdk_src"))
+    _start_model_gc_thread()
+    with _embedder_lock:
+        if _embedder is None:
+            _embedder = FaceEmbedder(sdk_dir=os.path.join(os.path.dirname(__file__), "sdk_src"))
     return _embedder
 
 def get_retina_det():
@@ -1213,7 +1257,9 @@ def detect_faces(image_input, enhancer="GFPGAN", enhance_level=0.5, gfpgan_upsca
     global _active_detections
     _start_model_gc_thread()
 
-    with _active_detections_lock:
+    with _model_transition:
+        while _model_unloading:
+            _model_transition.wait()
         _active_detections += 1
 
     try:
@@ -1431,11 +1477,17 @@ def detect_faces(image_input, enhancer="GFPGAN", enhance_level=0.5, gfpgan_upsca
         return annotated, crops, df, pd.Series(embs_out)
 
     finally:
-        with _active_detections_lock:
+        with _model_transition:
             _active_detections -= 1
+            _model_transition.notify_all()
 
 def init_all_models():
-    """Explicitly pre-load all AI models for zero-latency startup."""
+    """Pre-load the optional face suite only while bulk attendance is enabled."""
+    invalidate_bulk_feature_cache()
+    if not is_bulk_attendance_allowed():
+        print("[PRELOAD] Skipped: bulk image attendance is not enabled for any active vendor.", flush=True)
+        return False
+
     print("[PRELOAD] Initializing comprehensive AI suite...", flush=True)
     try:
         get_detector()
@@ -1445,8 +1497,10 @@ def init_all_models():
         get_realesrgan_manager().load()
         get_realtime_engine()
         print("[PRELOAD] All AI models (Detection, Enhancement, 3D, Embedding) are ready.", flush=True)
+        return True
     except Exception as e:
         print(f"[PRELOAD] Error during pre-loading: {e}", flush=True)
+        return False
 
 # Start GC thread and pre-load models as soon as this module is imported, but ONLY in the main process
 # and ONLY if PRELOAD_AI_MODELS is set to '1' or 'true'.

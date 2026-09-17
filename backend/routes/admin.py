@@ -46,7 +46,7 @@ from services.person_scope_service import (
 )
 
 def trigger_model_download_if_needed(features):
-    """Background task to ensure heavy AI models are downloaded if bulk_image_attendance is selected."""
+    """Download model files when needed without loading them into server RAM."""
     if not features:
         return
     if 'bulk_image_attendance' in features:
@@ -58,6 +58,16 @@ def trigger_model_download_if_needed(features):
             threading.Thread(target=run_full_download, daemon=True).start()
         except Exception as e:
             print(f"[ADMIN] Error triggering model download: {e}", flush=True)
+
+
+def reconcile_optional_model_memory():
+    """Apply feature changes to web and worker model memory without loading models."""
+    try:
+        from services.model_lifecycle_service import reconcile_after_feature_change
+        return reconcile_after_feature_change()
+    except Exception as exc:
+        logger.warning("Unable to reconcile optional AI model memory: %s", exc)
+        return None
 
 # Authentication decorators - these might be defined in app.py, so we will import them locally or they might need to be resolved.
 def super_admin_required(f):
@@ -1794,6 +1804,10 @@ def suspend_vendor(vendor_id):
     if status == 'suspended':
         socketio.emit('force_logout', {'vendor_id': vendor_id}) # For Vendor Dashboard
 
+    # A suspended vendor no longer keeps optional AI models resident. If some
+    # other active vendor still owns the feature, reconciliation leaves them loaded.
+    reconcile_optional_model_memory()
+
     return jsonify({"success": True, "status": status})
 
 @admin_bp.route("/vendors/<int:vendor_id>/toggle_web_login", methods=["POST"])
@@ -2050,6 +2064,7 @@ def update_vendor_subscription(vendor_id):
             conn.commit()
             if 'features' in data:
                 cache_delete_vendor_prefix(vendor_id)
+                reconcile_optional_model_memory()
             
             # Log Audit
             log_audit('update_subscription', data, target_vendor_id=vendor_id)
@@ -2534,6 +2549,7 @@ def update_vendor_details(vendor_id):
         conn.commit()
         if features_json is not None:
             cache_delete_vendor_prefix(vendor_id)
+            reconcile_optional_model_memory()
         
         # Real-time UI updates
         try:
@@ -2603,6 +2619,7 @@ def delete_vendor(vendor_id):
 
     cache_delete("admin_stats")
     cache_delete_vendor_prefix(vendor_id)
+    reconcile_optional_model_memory()
     try:
         from app import socketio
         socketio.emit(

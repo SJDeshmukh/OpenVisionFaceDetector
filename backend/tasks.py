@@ -219,6 +219,14 @@ def process_delete_vendor_task(vendor_id):
         # 9. Invalidate admin stats cache so the numbers update immediately
         from utils import cache_delete
         cache_delete("admin_stats")
+
+        # Release optional model memory when the deleted vendor was the final
+        # active subscriber using bulk attendance or XChat.
+        try:
+            from services.model_lifecycle_service import reconcile_loaded_models
+            reconcile_loaded_models()
+        except Exception as exc:
+            print(f"Optional model reconciliation after vendor deletion failed: {exc}")
         
         # 10. Reset sequences if no vendors left
         try:
@@ -910,9 +918,22 @@ if celery:
     search_embedding_task = celery.task(name="tasks.search_embedding")(search_embedding_task)
 
 
+def reconcile_optional_models_task():
+    """Release optional model memory inside the Celery worker process."""
+    from services.model_lifecycle_service import reconcile_loaded_models
+    return reconcile_loaded_models()
+
+
+if celery:
+    reconcile_optional_models_task = celery.task(
+        name="tasks.reconcile_optional_models"
+    )(reconcile_optional_models_task)
+
+
 # ── Model pre-warming ────────────────────────────────────────────────────────
-# Load all ML models when the worker process starts, BEFORE accepting any task.
-# Without this, the first batch task triggers a 14-16s cold-start penalty.
+# Pre-warm only when at least one active vendor has paid for bulk attendance.
+# Otherwise the worker stays lightweight and the first authorized request loads
+# models lazily.
 from celery.signals import worker_ready
 
 @worker_ready.connect
@@ -923,7 +944,14 @@ def _pre_warm_models(sender=None, **kwargs):
     if _os.environ.get("PREWARM_AI_MODELS", "1").strip().lower() not in {"1", "true", "yes"}:
         print("[WORKER] AI model pre-warming disabled for this worker", flush=True)
         return
-    _os.environ.setdefault("FORCE_3D_ENGINE", "1")
+    try:
+        from services.model_lifecycle_service import any_active_vendor_has_feature
+        if not any_active_vendor_has_feature("bulk_image_attendance"):
+            print("[WORKER] Bulk attendance disabled for all active vendors; AI models remain unloaded", flush=True)
+            return
+    except Exception as _feature_error:
+        print(f"[WORKER] Unable to verify bulk feature; skipping model pre-warm: {_feature_error}", flush=True)
+        return
     BASE = "/home/ubuntu/OpenVisionFaceDetector"
     for _p in [BASE + "/backend", BASE]:
         if _p not in _sys.path:
@@ -931,7 +959,9 @@ def _pre_warm_models(sender=None, **kwargs):
     _t0 = _t0_mod.time()
     print("[WORKER] Pre-warming ML models...", flush=True)
     try:
-        from multiple_face_detection.app import get_retina_det, get_realtime_engine, get_embedder
+        from multiple_face_detection.app import get_detector, get_retina_det, get_realtime_engine, get_embedder
+        get_detector()
+        print(f"[WORKER] Face detector ready ({_t0_mod.time()-_t0:.1f}s)", flush=True)
         get_retina_det()
         print(f"[WORKER] RetinaFace ready ({_t0_mod.time()-_t0:.1f}s)", flush=True)
         get_realtime_engine()

@@ -68,6 +68,9 @@ def test_enabled_switch_loads_base_cpu_int8_once_and_transcribes():
         model_factory=factory,
         audio_decoder=lambda *_args, **_kwargs: [0] * 32000,
     )
+    assert created == []
+    assert service.status()["ready"] is True
+    assert service.status()["loaded"] is False
     result = service.transcribe(b"valid recording", "audio/webm;codecs=opus")
 
     assert created == [("base", {
@@ -77,6 +80,29 @@ def test_enabled_switch_loads_base_cpu_int8_once_and_transcribes():
     assert model.calls[0][1]["beam_size"] == 1
     assert model.calls[0][1]["vad_filter"] is True
     assert model.calls[0][1]["vad_parameters"] == {"min_silence_duration_ms": 500}
+    assert service.status()["loaded"] is True
+
+
+def test_loaded_model_can_be_unloaded_and_lazily_reloaded():
+    created = []
+
+    def factory(*_args, **_kwargs):
+        model = FakeModel()
+        created.append(model)
+        return model
+
+    service = LocalWhisperService(
+        environ={"STT_ENABLED": "true"},
+        model_factory=factory,
+        audio_decoder=lambda *_args, **_kwargs: [0] * 16000,
+    )
+    service.transcribe(b"audio", "audio/webm")
+    assert len(created) == 1
+    assert service.unload("test") is True
+    assert service.status()["loaded"] is False
+
+    service.transcribe(b"audio", "audio/webm")
+    assert len(created) == 2
 
 
 def test_audio_format_size_duration_and_empty_transcript_are_bounded():

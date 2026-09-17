@@ -101,10 +101,11 @@ STT_CPU_THREADS=1
 STT_MAX_AUDIO_SECONDS=20
 STT_MAX_AUDIO_BYTES=2500000
 STT_VAD_MIN_SILENCE_MS=500
+STT_MODEL_TTL_SECONDS=300
 STT_LANGUAGE=
 ```
 
-The model is loaded once during API startup on CPU with INT8 computation. The first enabled startup can take longer while the model is downloaded. Inference is limited to one recording at a time for small servers. Browser microphone access requires HTTPS in production (or localhost during development). Choose `n` at the installer's microphone prompt to write `STT_ENABLED=false`, disable model loading, and hide the microphone.
+The service starts without loading Whisper into RAM. The first valid voice request loads the CPU/INT8 model lazily, and it is released after the configured idle period or when no active vendor has `xchat_ai`. Inference is limited to one recording at a time for small servers. Browser microphone access requires HTTPS in production (or localhost during development). Choose `n` at the installer's microphone prompt to write `STT_ENABLED=false` and hide the microphone.
 
 The installer waits up to 15 minutes for Ubuntu's package-manager lock instead of failing immediately during `unattended-upgrades`. If a later deployment step fails, it also attempts to restore the OpenVision API, Celery worker, and Celery Beat services automatically.
 

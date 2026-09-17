@@ -833,6 +833,7 @@ configure_stt_file() {
     file_env_set "$target_file" STT_MAX_AUDIO_SECONDS 20
     file_env_set "$target_file" STT_MAX_AUDIO_BYTES 2500000
     file_env_set "$target_file" STT_VAD_MIN_SILENCE_MS 500
+    file_env_set "$target_file" STT_MODEL_TTL_SECONDS 300
 }
 
 verify_stt_health() {
@@ -843,7 +844,7 @@ verify_stt_health() {
         | python3 -c 'import json, sys; data=json.load(sys.stdin); sys.exit(0 if data.get("stt", {}).get("ready") is True else 1)'; then
         return 1
     fi
-    printf 'Local Whisper microphone: enabled and ready.\n'
+    printf 'Local Whisper microphone: enabled and ready for lazy loading.\n'
 }
 
 verify_ai_access() {

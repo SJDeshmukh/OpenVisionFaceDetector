@@ -1,9 +1,11 @@
 """Startup-gated, local speech-to-text service for XChat."""
 
 from io import BytesIO
+import gc
 import logging
 import os
 import threading
+import time
 
 
 logger = logging.getLogger(__name__)
@@ -80,46 +82,92 @@ class LocalWhisperService:
         self._model = None
         self._load_error = None
         self._inference_lock = threading.Lock()
+        self._load_lock = threading.Lock()
+        self._last_used = 0.0
+        self._idle_ttl = _bounded_int(environ, "STT_MODEL_TTL_SECONDS", 300, 60, 86400)
 
         if self.enabled:
-            self._load()
+            logger.info("Local XChat speech-to-text is enabled; model will load on first voice request")
+            self._start_idle_reaper()
         else:
             logger.info("Local XChat speech-to-text is disabled (STT_ENABLED=false)")
 
     def _load(self):
-        try:
-            if self._model_factory is None or self._audio_decoder is None:
-                from faster_whisper import WhisperModel
-                from faster_whisper.audio import decode_audio
+        with self._load_lock:
+            if self._model is not None:
+                return True
+            try:
+                if self._model_factory is None or self._audio_decoder is None:
+                    from faster_whisper import WhisperModel
+                    from faster_whisper.audio import decode_audio
 
-                self._model_factory = self._model_factory or WhisperModel
-                self._audio_decoder = self._audio_decoder or decode_audio
-            logger.info(
-                "Loading local XChat speech-to-text model '%s' on CPU with INT8",
-                self.model_name,
-            )
-            self._model = self._model_factory(
-                self.model_name,
-                device="cpu",
-                compute_type=self.compute_type,
-                cpu_threads=self.cpu_threads,
-                num_workers=1,
-            )
-            logger.info("Local XChat speech-to-text model is ready")
-        except Exception as exc:
-            self._load_error = type(exc).__name__
-            self._model = None
-            logger.exception("Unable to load the local XChat speech-to-text model")
+                    self._model_factory = self._model_factory or WhisperModel
+                    self._audio_decoder = self._audio_decoder or decode_audio
+                logger.info(
+                    "Loading local XChat speech-to-text model '%s' on first use (CPU/INT8)",
+                    self.model_name,
+                )
+                self._model = self._model_factory(
+                    self.model_name,
+                    device="cpu",
+                    compute_type=self.compute_type,
+                    cpu_threads=self.cpu_threads,
+                    num_workers=1,
+                )
+                self._load_error = None
+                self._last_used = time.monotonic()
+                logger.info("Local XChat speech-to-text model is ready")
+                return True
+            except Exception as exc:
+                self._load_error = type(exc).__name__
+                self._model = None
+                logger.exception("Unable to load the local XChat speech-to-text model")
+                return False
+
+    def unload(self, reason="disabled or idle"):
+        """Release Whisper memory without disabling future lazy use."""
+        with self._inference_lock:
+            with self._load_lock:
+                if self._model is None:
+                    return False
+                self._model = None
+                self._last_used = 0.0
+        gc.collect()
+        logger.info("Unloaded local XChat speech-to-text model (%s)", reason)
+        return True
+
+    def _start_idle_reaper(self):
+        def reap():
+            while True:
+                time.sleep(60)
+                if self._model is None:
+                    continue
+                feature_enabled = True
+                try:
+                    from services.model_lifecycle_service import any_active_vendor_has_feature
+                    feature_enabled = any_active_vendor_has_feature("xchat_ai")
+                except Exception:
+                    logger.debug("Unable to check XChat feature state", exc_info=True)
+                idle_for = time.monotonic() - self._last_used if self._last_used else 0
+                if not feature_enabled:
+                    self.unload("xchat_ai disabled for all active vendors")
+                elif idle_for >= self._idle_ttl:
+                    self.unload(f"idle for {int(idle_for)} seconds")
+
+        threading.Thread(target=reap, daemon=True, name="stt-model-reaper").start()
 
     @property
     def ready(self):
-        return self.enabled and self._model is not None and self._audio_decoder is not None
+        # Ready means the service can accept a request. The heavy model may still
+        # be unloaded and will be initialized lazily on the first transcription.
+        return self.enabled and self._load_error is None
 
     def status(self):
-        state = "ready" if self.ready else ("unavailable" if self.enabled else "disabled")
+        state = "loaded" if self._model is not None else ("ready" if self.ready else ("unavailable" if self.enabled else "disabled"))
         return {
             "enabled": self.enabled,
             "ready": self.ready,
+            "loaded": self._model is not None,
             "state": state,
             "model": self.model_name if self.enabled else None,
             "device": "cpu" if self.enabled else None,
@@ -141,6 +189,9 @@ class LocalWhisperService:
         if normalized_type not in SUPPORTED_AUDIO_TYPES:
             raise InvalidAudioError("Unsupported audio format")
 
+        if not self._load():
+            raise SpeechToTextUnavailableError("Voice input is temporarily unavailable")
+
         try:
             audio = self._audio_decoder(BytesIO(audio_bytes), sampling_rate=SAMPLE_RATE)
         except Exception as exc:
@@ -157,6 +208,7 @@ class LocalWhisperService:
         if not self._inference_lock.acquire(blocking=False):
             raise SpeechToTextBusyError("Voice transcription is busy; please try again")
         try:
+            self._last_used = time.monotonic()
             segments, info = self._model.transcribe(
                 audio,
                 language=self.language,
@@ -179,6 +231,7 @@ class LocalWhisperService:
             logger.exception("Local XChat speech transcription failed")
             raise SpeechToTextUnavailableError("Voice transcription failed") from exc
         finally:
+            self._last_used = time.monotonic()
             self._inference_lock.release()
 
         if not text:
@@ -190,6 +243,6 @@ class LocalWhisperService:
         }
 
 
-# Importing the XChat route happens during application startup. This construction
-# intentionally loads the model at startup only when STT_ENABLED is true.
+# Importing the XChat route only creates the lightweight service. The model is
+# loaded by the first valid voice request and can be released again when idle.
 speech_to_text = LocalWhisperService()

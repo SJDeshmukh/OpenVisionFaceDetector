@@ -96,6 +96,9 @@ TASK_ROUTES = {
     "tasks.bulk_vendor_action": {"queue": "bulk_jobs", "routing_key": "bulk_jobs"},
     "tasks.process_vendor_creation": {"queue": "maintenance", "routing_key": "maintenance"},
     "tasks.process_delete_vendor": {"queue": "maintenance", "routing_key": "maintenance"},
+    # This must execute in the dedicated face worker, which owns the resident
+    # detector/embedder memory. The I/O worker deliberately never preloads it.
+    "tasks.reconcile_optional_models": {"queue": "face_priority", "routing_key": "face_priority"},
 }
 
 def make_celery():
