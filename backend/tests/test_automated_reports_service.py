@@ -91,7 +91,8 @@ def test_dispatch_claim_is_idempotent(tmp_path, monkeypatch):
 
     service.save_schedule(1, schedule(daily_days=["Mon"]))
     now = datetime(2026, 9, 1, 8, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
-    first = service.dispatch_due_reports(now)
+    assert service.dispatch_due_reports(now, vendor_ids={"2"}) == []
+    first = service.dispatch_due_reports(now, vendor_ids={"1"})
     second = service.dispatch_due_reports(now)
     assert len(first) == 1
     assert second == []

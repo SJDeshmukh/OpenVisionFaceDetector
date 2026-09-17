@@ -1,0 +1,57 @@
+services:
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.24.1-p0
+    restart: unless-stopped
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      DB_NAME: ${DB_NAME:-face_detection}
+      LISTEN_PORT: 6432
+      AUTH_TYPE: scram-sha-256
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: ${PGBOUNCER_MAX_CLIENT_CONN:-40}
+      DEFAULT_POOL_SIZE: ${PGBOUNCER_DEFAULT_POOL_SIZE:-8}
+      RESERVE_POOL_SIZE: ${PGBOUNCER_RESERVE_POOL_SIZE:-2}
+      SERVER_IDLE_TIMEOUT: 300
+      SERVER_LIFETIME: 3600
+      QUERY_TIMEOUT: 60
+    ports:
+      # AWS security groups must restrict this port to the Lambda security group.
+      - "6432:6432"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U ${DB_USER:-postgres} -d ${DB_NAME:-face_detection}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@pgbouncer:6432/${DB_NAME:-face_detection}
+      - DB_MIN_CONN=${API_DB_MIN_CONN:-1}
+      - DB_MAX_CONN=${API_DB_MAX_CONN:-8}
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+
+  worker:
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@pgbouncer:6432/${DB_NAME:-face_detection}
+      - DB_MIN_CONN=1
+      - DB_MAX_CONN=${WORKER_DB_MAX_CONN:-3}
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+
+  beat:
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@pgbouncer:6432/${DB_NAME:-face_detection}
+      - DB_MIN_CONN=1
+      - DB_MAX_CONN=2
+    depends_on:
+      pgbouncer:
+        condition: service_healthy

@@ -49,6 +49,12 @@ backend/metric_models/
 backend/faces.db*
 backend/logs/
 backend/uploads/
+backend/.build/
+backend/.dist/
+backend/.package/
+.terraform/
+*.tfstate
+*.tfstate.*
 multiple_face_detection/backend/*.json
 multiple_face_detection/backend/*.sqlite*
 

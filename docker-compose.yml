@@ -60,6 +60,11 @@ services:
       - MAIL_SMTP_USERNAME=${MAIL_SMTP_USERNAME:-openvisionx@gmail.com}
       - MAIL_SMTP_APP_PASSWORD=${MAIL_SMTP_APP_PASSWORD:-}
       - MAIL_FROM_ADDRESS=${MAIL_FROM_ADDRESS:-openvisionx@gmail.com}
+      - REPORT_TASK_BACKEND=${REPORT_TASK_BACKEND:-celery}
+      - REPORT_DATABASE_QUEUE_URL=${REPORT_DATABASE_QUEUE_URL:-}
+      - REPORT_DLQ_URL=${REPORT_DLQ_URL:-}
+      - REPORT_LAMBDA_VENDOR_IDS=${REPORT_LAMBDA_VENDOR_IDS:-}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
       - XCHAT_PROVIDER=${XCHAT_PROVIDER:-bedrock}
       - AWS_BEDROCK_REGION=${AWS_BEDROCK_REGION:-ap-south-1}
       - AWS_BEDROCK_RUNTIME_BASE_URL=${AWS_BEDROCK_RUNTIME_BASE_URL:-https://bedrock-runtime.ap-south-1.amazonaws.com}
@@ -130,6 +135,11 @@ services:
       - MAIL_SMTP_USERNAME=${MAIL_SMTP_USERNAME:-openvisionx@gmail.com}
       - MAIL_SMTP_APP_PASSWORD=${MAIL_SMTP_APP_PASSWORD:-}
       - MAIL_FROM_ADDRESS=${MAIL_FROM_ADDRESS:-openvisionx@gmail.com}
+      - REPORT_TASK_BACKEND=${REPORT_TASK_BACKEND:-celery}
+      - REPORT_DATABASE_QUEUE_URL=${REPORT_DATABASE_QUEUE_URL:-}
+      - REPORT_DLQ_URL=${REPORT_DLQ_URL:-}
+      - REPORT_LAMBDA_VENDOR_IDS=${REPORT_LAMBDA_VENDOR_IDS:-}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
       - CELERY_CONCURRENCY=1 # Each container handles 1 heavy task at a time for better isolation
     depends_on:
       db:

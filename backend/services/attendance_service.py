@@ -1,6 +1,20 @@
 import json
 from datetime import datetime, date, timedelta
-from utils import parse_db_datetime
+
+try:
+    from utils import parse_db_datetime
+except ImportError:
+    # The DB-only Lambda intentionally does not package the Flask/image-heavy
+    # utils module. Report calculations need only this small conversion.
+    def parse_db_datetime(value):
+        if isinstance(value, datetime):
+            return value.replace(tzinfo=None) if value.tzinfo else value
+        if value in (None, ""):
+            return None
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+        except (TypeError, ValueError):
+            return None
 
 def calculate_daily_hours(records, timetable=None, date_str=None, attendance_type='total_time'):
     """

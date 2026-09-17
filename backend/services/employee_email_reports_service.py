@@ -9,7 +9,6 @@ import re
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 
-from services.email_service import send_email
 from services.payroll_service import calculate_salary_breakdown, get_approved_advances
 from services.person_scope_service import person_type_for, requested_person_type, vendor_vertical
 
@@ -23,6 +22,9 @@ EMAIL_FIELDS = frozenset({
 
 
 def _db():
+    if str(__import__("os").environ.get("TAPINX_DB_ONLY_LAMBDA", "")).lower() in {"1", "true", "yes"}:
+        from lambda_workers.db_adapter import get_db_connection
+        return get_db_connection()
     from utils import get_db_connection
     return get_db_connection()
 
@@ -352,6 +354,8 @@ def build_employee_monthly_deliveries(vendor_id, month, person_type=None, filter
 
 
 def send_employee_monthly_reports(vendor_id, month, person_type=None, filters=None):
+    from services.email_service import send_email
+
     vendor_name, deliveries, skipped_without_email = build_employee_monthly_deliveries(vendor_id, month, person_type, filters=filters)
     sent = 0
     failures = []
@@ -369,6 +373,8 @@ def send_employee_monthly_reports(vendor_id, month, person_type=None, filters=No
 
 
 def send_advance_notification(advance_id, event):
+    from services.email_service import send_email
+
     conn = _db()
     cursor = conn.cursor()
     try:

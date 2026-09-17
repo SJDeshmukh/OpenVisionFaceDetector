@@ -1,0 +1,18 @@
+aws_region                = "us-east-1"
+vpc_id                   = "vpc-REPLACE_ME"
+private_subnet_ids       = ["subnet-REPLACE_ME"]
+private_route_table_ids  = ["rtb-REPLACE_ME"]
+ec2_security_group_id    = "sg-REPLACE_ME"
+ec2_application_role_name = "REPLACE_WITH_EXISTING_EC2_ROLE"
+database_url             = "postgresql://USER:PASSWORD@EC2_PRIVATE_IP:6432/face_detection"
+smtp_username            = "sender@example.com"
+smtp_app_password        = "REPLACE_ME"
+vpc_worker_reserved_concurrency = 5
+enable_maintenance_schedule     = false
+enable_report_schedule          = false
+report_lambda_vendor_ids        = [] # Start with one vendor ID, use ["*"] only after canary validation.
+
+tags = {
+  Environment = "production"
+  CostCenter  = "tapinx"
+}

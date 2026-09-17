@@ -325,6 +325,24 @@ class AutomatedReportDelivery(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     sent_at = Column(DateTime)
 
+class ReportDeliveryJob(Base):
+    __tablename__ = 'report_delivery_jobs'
+    id = Column(String(64), primary_key=True)
+    vendor_id = Column(Integer, ForeignKey('vendors.id'), nullable=False)
+    report_kind = Column(String(40), nullable=False)
+    reference_id = Column(String(64))
+    person_id = Column(Integer)
+    idempotency_key = Column(String(255), unique=True, nullable=False)
+    recipient_email = Column(String(255), nullable=False)
+    artifact_key = Column(Text)
+    status = Column(String(20), default='queued', nullable=False)
+    attempts = Column(Integer, default=0, nullable=False)
+    message_id = Column(String(500))
+    error = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    prepared_at = Column(DateTime)
+    sent_at = Column(DateTime)
+
 class XChatConversation(Base):
     __tablename__ = 'xchat_conversations'
     id = Column(String(36), primary_key=True)

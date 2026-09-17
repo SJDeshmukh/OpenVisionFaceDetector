@@ -2,7 +2,7 @@
 # OpenVision AWS installer
 #
 # Usage:
-#   bash setup_aws.sh          Interactive deployment (choose Docker or bare metal)
+#   bash setup_aws.sh          Interactive hybrid deployment (choose Docker or bare metal)
 #   bash setup_aws.sh check    Read-only source/configuration checks
 #   bash setup_aws.sh stop     Stop OpenVision application services only
 #   bash setup_aws.sh boot-check      Idempotently start and verify an installed deployment
@@ -42,6 +42,10 @@ AI_PROVIDER_KEYS_FILE="${AI_PROVIDER_KEYS_FILE:-$SCRIPT_DIR/ai-provider-keys.env
 RECOVER_SYSTEMD_SERVICES=0
 APT_LOCK_TIMEOUT_SECONDS="${APT_LOCK_TIMEOUT_SECONDS:-900}"
 ORCHESTRATION_KEYS_NOTICE_SHOWN=0
+PGBOUNCER_PORT="${PGBOUNCER_PORT:-6432}"
+PGBOUNCER_MAX_CLIENT_CONN="${PGBOUNCER_MAX_CLIENT_CONN:-40}"
+PGBOUNCER_DEFAULT_POOL_SIZE="${PGBOUNCER_DEFAULT_POOL_SIZE:-8}"
+PGBOUNCER_RESERVE_POOL_SIZE="${PGBOUNCER_RESERVE_POOL_SIZE:-2}"
 
 [[ "$DEPLOY_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] || {
     printf 'ERROR: DEPLOY_DOMAIN contains invalid characters.\n' >&2
@@ -59,6 +63,16 @@ ORCHESTRATION_KEYS_NOTICE_SHOWN=0
     printf 'ERROR: ENABLE_AMQP must be 0 or 1.\n' >&2
     exit 1
 }
+[[ "$PGBOUNCER_PORT" =~ ^[0-9]+$ ]] && [ "$PGBOUNCER_PORT" -ge 1024 ] && [ "$PGBOUNCER_PORT" -le 65535 ] || {
+    printf 'ERROR: PGBOUNCER_PORT must be a number from 1024 to 65535.\n' >&2
+    exit 1
+}
+for pool_value in "$PGBOUNCER_MAX_CLIENT_CONN" "$PGBOUNCER_DEFAULT_POOL_SIZE" "$PGBOUNCER_RESERVE_POOL_SIZE"; do
+    [[ "$pool_value" =~ ^[0-9]+$ ]] && [ "$pool_value" -gt 0 ] || {
+        printf 'ERROR: PgBouncer connection limits must be positive integers.\n' >&2
+        exit 1
+    }
+done
 
 log() {
     printf '\n==> %s\n' "$1"
@@ -67,6 +81,7 @@ log() {
 recover_systemd_services() {
     if [ "${RECOVER_SYSTEMD_SERVICES:-0}" = "1" ]; then
         printf 'Restoring OpenVision services after the failed deployment...\n' >&2
+        sudo systemctl start postgresql pgbouncer 2>/dev/null || true
         sudo systemctl start openvision-backend openvision-celery openvision-celery-io openvision-celery-beat 2>/dev/null || true
     fi
 }
@@ -103,11 +118,58 @@ require_source_tree() {
         "web-dashboard/package.json"
         "web-dashboard/package-lock.json"
         "nginx_face_detection.conf"
+        "docker-compose.hybrid.yml"
     )
     local path
     for path in "${required[@]}"; do
         [ -f "$SCRIPT_DIR/$path" ] || die "Missing required project file: $path"
     done
+}
+
+# All Docker lifecycle commands must include the hybrid override. Keeping this
+# in one helper prevents a reboot, mail reconfiguration, or AI reconfiguration
+# from accidentally recreating the application with direct PostgreSQL access.
+docker_compose() {
+    run_root docker compose \
+        -f "$SCRIPT_DIR/docker-compose.yml" \
+        -f "$SCRIPT_DIR/docker-compose.hybrid.yml" \
+        "$@"
+}
+
+wait_for_local_pgbouncer() {
+    local attempts="${1:-30}"
+    local db_password="${DB_PASSWORD:-}"
+    local i
+    [ -n "$db_password" ] || db_password="$(env_get DB_PASSWORD)"
+    for ((i = 1; i <= attempts; i++)); do
+        if [ -n "$db_password" ]; then
+            if PGPASSWORD="$db_password" psql -qAt \
+                -h 127.0.0.1 -p "$PGBOUNCER_PORT" \
+                -U openvision_app -d face_detection \
+                -c 'SELECT 1' 2>/dev/null | grep -qx 1; then
+                return 0
+            fi
+        elif pg_isready -q -h 127.0.0.1 -p "$PGBOUNCER_PORT" \
+            -U openvision_app -d face_detection; then
+            return 0
+        fi
+        sleep 2
+    done
+    return 1
+}
+
+wait_for_docker_pgbouncer() {
+    local attempts="${1:-30}"
+    local container_id="" health="" i
+    for ((i = 1; i <= attempts; i++)); do
+        container_id="$(docker_compose ps -q pgbouncer 2>/dev/null || true)"
+        if [ -n "$container_id" ]; then
+            health="$(run_root docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container_id" 2>/dev/null || true)"
+            [ "$health" = "healthy" ] && return 0
+        fi
+        sleep 2
+    done
+    return 1
 }
 
 env_get() {
@@ -350,7 +412,7 @@ provision_omniroute_gateway_key() {
 
     log "Creating the OmniRoute XChat API key through the local CLI"
     if [ "$runtime_mode" = "docker" ]; then
-        if ! cli_output="$(run_root docker compose --profile omniroute exec -T omniroute \
+        if ! cli_output="$(docker_compose --profile omniroute exec -T omniroute \
             env OMNIROUTE_BASE_URL=http://127.0.0.1:20128 \
             omniroute --output json --quiet --no-color api api-keys post-api-keys \
             --body '{"name":"OpenVision XChat"}' 2>&1)"; then
@@ -376,7 +438,7 @@ ensure_omniroute_gateway() {
     local existing_gateway_key=""
     configure_omniroute_secret_file "$runtime_mode"
     if [ "$runtime_mode" = "docker" ]; then
-        run_root docker compose --profile omniroute up -d omniroute
+        docker_compose --profile omniroute up -d omniroute
     else
         install_omniroute_systemd_service
     fi
@@ -417,8 +479,8 @@ show_omniroute_status() {
     fallback_providers="$(file_env_get "$xchat_env" XCHAT_FALLBACK_PROVIDERS)"
     fallback_display="${fallback_providers//,/ -> }"
     if [ "$runtime_mode" = "docker" ] && command -v docker >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/docker-compose.yml" ]; then
-        if [ -n "$(run_root docker compose --profile omniroute ps -q omniroute 2>/dev/null || true)" ]; then
-            service_state="docker $(run_root docker compose --profile omniroute ps --status running -q omniroute 2>/dev/null | grep -q . && printf running || printf stopped)"
+        if [ -n "$(docker_compose --profile omniroute ps -q omniroute 2>/dev/null || true)" ]; then
+            service_state="docker $(docker_compose --profile omniroute ps --status running -q omniroute 2>/dev/null | grep -q . && printf running || printf stopped)"
         fi
     elif command -v systemctl >/dev/null 2>&1 && systemctl cat "$OMNIROUTE_SERVICE" >/dev/null 2>&1; then
         service_state="$(systemctl is-active "$OMNIROUTE_SERVICE" 2>/dev/null || true)"
@@ -465,7 +527,7 @@ install_boot_check_service() {
     sudo tee /etc/systemd/system/openvision-boot-check.service >/dev/null <<UNIT
 [Unit]
 Description=OpenVision post-boot startup and health check
-After=network-online.target docker.service postgresql.service redis-server.service
+After=network-online.target docker.service postgresql.service pgbouncer.service redis-server.service
 Wants=network-online.target
 
 [Service]
@@ -1024,7 +1086,7 @@ if [ "$ACTION" = "check" ]; then
     printf 'Bash syntax: OK\n'
     if command -v docker >/dev/null 2>&1; then
         if [ -f "$SCRIPT_DIR/.env" ]; then
-            docker compose config --quiet
+            docker_compose config --quiet
             printf 'Docker Compose configuration: OK\n'
         else
             printf 'Docker Compose configuration: skipped (root .env not created yet)\n'
@@ -1060,7 +1122,7 @@ if [ "$ACTION" = "stop" ]; then
     stop_application_services
     sudo systemctl stop "$OMNIROUTE_SERVICE" 2>/dev/null || true
     if command -v docker >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/docker-compose.yml" ]; then
-        sudo docker compose --profile omniroute stop api worker beat omniroute 2>/dev/null || true
+        docker_compose --profile omniroute stop api worker beat pgbouncer omniroute 2>/dev/null || true
     fi
     printf 'OpenVision API, worker services, and its OmniRoute gateway are stopped. PostgreSQL, Redis, Nginx, and unrelated containers were left running.\n'
     exit 0
@@ -1073,13 +1135,16 @@ if [ "$ACTION" = "boot-check" ]; then
         [ -f "$SCRIPT_DIR/.env" ] || die "Docker environment file is missing"
         if [ "$(file_env_get "$SCRIPT_DIR/.env" XCHAT_PROVIDER)" = "omniroute" ]; then
             [ -f "$OMNIROUTE_ENV_FILE" ] || die "OmniRoute secrets file is missing; restore it instead of generating replacement encryption secrets"
-            run_root docker compose --profile omniroute up -d --remove-orphans
+            docker_compose --profile omniroute up -d --remove-orphans
+            wait_for_docker_pgbouncer 60 || die "PgBouncer failed its post-boot health check"
             wait_for_url "http://127.0.0.1:20128/" 60 || die "OmniRoute failed its post-boot health check"
         else
-            run_root docker compose up -d --remove-orphans
+            docker_compose up -d --remove-orphans
+            wait_for_docker_pgbouncer 60 || die "PgBouncer failed its post-boot health check"
         fi
     elif [ "$DEPLOYMENT_MODE" = "bare" ]; then
-        run_root systemctl start postgresql redis-server nginx
+        run_root systemctl start postgresql pgbouncer redis-server nginx
+        wait_for_local_pgbouncer 60 || die "PgBouncer failed its post-boot health check"
         if [[ "$(file_env_get "$ENV_FILE" CELERY_BROKER_URL)" == amqp://* ]] || [[ "$(file_env_get "$ENV_FILE" CELERY_BROKER_URL)" == pyamqp://* ]]; then
             run_root systemctl start rabbitmq-server
         fi
@@ -1106,8 +1171,8 @@ if [ "$ACTION" = "configure-mail" ]; then
         configure_mail_file "$SCRIPT_DIR/.env" "$SMTP_APP_PASSWORD"
     fi
 
-    if command -v docker >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/.env" ] && [ -n "$(sudo docker compose ps -q api 2>/dev/null || true)" ]; then
-        sudo docker compose up -d --no-deps --force-recreate api worker beat
+    if command -v docker >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/.env" ] && [ -n "$(docker_compose ps -q api 2>/dev/null || true)" ]; then
+        docker_compose up -d --no-deps --force-recreate api worker beat
         printf 'Gmail SMTP configured; Docker API, worker, and Beat services restarted.\n'
     elif command -v systemctl >/dev/null 2>&1 && systemctl cat openvision-backend.service >/dev/null 2>&1; then
         sudo systemctl restart openvision-backend openvision-celery openvision-celery-io openvision-celery-beat
@@ -1145,8 +1210,8 @@ if [ "$ACTION" = "configure-ai" ]; then
     if [ -f "$SCRIPT_DIR/.env" ]; then
         file_env_set "$SCRIPT_DIR/.env" XCHAT_FALLBACK_PROVIDERS "$ACTIVE_FALLBACK_PROVIDERS"
     fi
-    if command -v docker >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/.env" ] && [ -n "$(sudo docker compose ps -q api 2>/dev/null || true)" ]; then
-        sudo docker compose up -d --no-deps --force-recreate api
+    if command -v docker >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/.env" ] && [ -n "$(docker_compose ps -q api 2>/dev/null || true)" ]; then
+        docker_compose up -d --no-deps --force-recreate api
         printf 'XChat provider set to %s; Docker API restarted.\n' "$AI_PROVIDER"
     elif command -v systemctl >/dev/null 2>&1 && systemctl cat openvision-backend.service >/dev/null 2>&1; then
         sudo systemctl restart openvision-backend
@@ -1164,7 +1229,24 @@ require_source_tree
 printf '%s\n' "=============================================================================="
 printf '%s\n' "OpenVision AWS Deployment"
 printf '%s\n' "=============================================================================="
-read -r -p "Do you want to use Docker for deployment? (y/n): " USE_DOCKER
+SAVED_DEPLOYMENT_MODE="$(sed -n '1p' "$MODE_FILE" 2>/dev/null || true)"
+REQUESTED_DEPLOYMENT_MODE="${DEPLOYMENT_MODE:-$SAVED_DEPLOYMENT_MODE}"
+case "$REQUESTED_DEPLOYMENT_MODE" in
+    docker)
+        USE_DOCKER=y
+        printf 'Reusing the recorded Docker deployment mode.\n'
+        ;;
+    bare)
+        USE_DOCKER=n
+        printf 'Reusing the recorded bare-metal deployment mode.\n'
+        ;;
+    "")
+        read -r -p "Do you want to use Docker for deployment? (y/n): " USE_DOCKER
+        ;;
+    *)
+        die "DEPLOYMENT_MODE must be docker or bare"
+        ;;
+esac
 
 if [[ "$USE_DOCKER" =~ ^[Yy]$ ]]; then
     log "Preparing isolated Docker deployment"
@@ -1215,17 +1297,18 @@ if [[ "$USE_DOCKER" =~ ^[Yy]$ ]]; then
     configure_ai_file "$ROOT_ENV" "$AI_PROVIDER" "$AI_KEY"
     validate_orchestration_fallbacks "$ROOT_ENV" "$AI_PROVIDER"
 
-    sudo docker compose config --quiet
+    docker_compose config --quiet
     if [ "$AI_PROVIDER" = "omniroute" ]; then
-        sudo docker compose --profile omniroute up -d --build --remove-orphans --scale worker=1
+        docker_compose --profile omniroute up -d --build --remove-orphans --scale worker=1
     else
-        sudo docker compose up -d --build --remove-orphans --scale worker=1
+        docker_compose up -d --build --remove-orphans --scale worker=1
     fi
+    wait_for_docker_pgbouncer 60 || die "Docker PgBouncer did not become healthy"
     HEALTH_ATTEMPTS=45
     [ "$STT_ENABLED_VALUE" = "true" ] && HEALTH_ATTEMPTS=300
     wait_for_url "http://127.0.0.1:5001/api/health" "$HEALTH_ATTEMPTS" || die "Docker API did not become healthy"
     verify_stt_health "http://127.0.0.1:5001/api/health" "$STT_ENABLED_VALUE" || {
-        sudo docker compose logs --tail=100 api || true
+        docker_compose logs --tail=100 api || true
         die "Local Whisper was enabled but did not become ready"
     }
     printf 'docker\n' > "$MODE_FILE"
@@ -1244,7 +1327,7 @@ printf 'Package-manager lock wait timeout: %s seconds.\n' "$APT_LOCK_TIMEOUT_SEC
 sudo apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT_SECONDS" update
 sudo env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT_SECONDS" install -y \
     python3-pip python3-venv python3-dev \
-    postgresql postgresql-contrib libpq-dev \
+    postgresql postgresql-contrib postgresql-client pgbouncer libpq-dev \
     redis-server redis-tools \
     nginx curl ca-certificates openssl \
     libgl1 libglib2.0-0 libgomp1 libheif-dev \
@@ -1326,9 +1409,11 @@ fi
 
 log "Creating the dedicated PostgreSQL application role and database"
 if sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='openvision_app'" | grep -q 1; then
-    sudo -u postgres psql -v ON_ERROR_STOP=1 -c "ALTER ROLE openvision_app WITH LOGIN PASSWORD '${DB_PASSWORD}'" >/dev/null
+    sudo -u postgres psql -v ON_ERROR_STOP=1 \
+        -c "SET password_encryption = 'scram-sha-256'; ALTER ROLE openvision_app WITH LOGIN PASSWORD '${DB_PASSWORD}'" >/dev/null
 else
-    sudo -u postgres psql -v ON_ERROR_STOP=1 -c "CREATE ROLE openvision_app WITH LOGIN PASSWORD '${DB_PASSWORD}'" >/dev/null
+    sudo -u postgres psql -v ON_ERROR_STOP=1 \
+        -c "SET password_encryption = 'scram-sha-256'; CREATE ROLE openvision_app WITH LOGIN PASSWORD '${DB_PASSWORD}'" >/dev/null
 fi
 if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='face_detection'" | grep -q 1; then
     sudo -u postgres createdb --owner=openvision_app face_detection
@@ -1341,6 +1426,47 @@ GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO openvision_app;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO openvision_app;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO openvision_app;
 SQL
+
+log "Configuring PgBouncer as the only application database entry point"
+PGBOUNCER_AUTH_SECRET="$(sudo -u postgres psql -tAc "SELECT rolpassword FROM pg_authid WHERE rolname='openvision_app'" | tr -d '[:space:]')"
+[[ "$PGBOUNCER_AUTH_SECRET" == SCRAM-SHA-256\$* ]] \
+    || die "PostgreSQL did not create a SCRAM password for openvision_app"
+printf '"openvision_app" "%s"\n' "$PGBOUNCER_AUTH_SECRET" \
+    | sudo tee /etc/pgbouncer/userlist.txt >/dev/null
+sudo chmod 0640 /etc/pgbouncer/userlist.txt
+sudo chown root:postgres /etc/pgbouncer/userlist.txt
+sudo tee /etc/pgbouncer/pgbouncer.ini >/dev/null <<PGBOUNCER
+[databases]
+face_detection = host=127.0.0.1 port=5432 dbname=face_detection
+
+[pgbouncer]
+listen_addr = 0.0.0.0
+listen_port = ${PGBOUNCER_PORT}
+unix_socket_dir = /var/run/postgresql
+auth_type = scram-sha-256
+auth_file = /etc/pgbouncer/userlist.txt
+pool_mode = transaction
+max_client_conn = ${PGBOUNCER_MAX_CLIENT_CONN}
+default_pool_size = ${PGBOUNCER_DEFAULT_POOL_SIZE}
+reserve_pool_size = ${PGBOUNCER_RESERVE_POOL_SIZE}
+server_idle_timeout = 300
+server_lifetime = 3600
+query_timeout = 60
+server_reset_query = DISCARD ALL
+ignore_startup_parameters = extra_float_digits
+admin_users = openvision_app
+stats_users = openvision_app
+logfile = /var/log/postgresql/pgbouncer.log
+pidfile = /var/run/postgresql/pgbouncer.pid
+PGBOUNCER
+sudo chmod 0640 /etc/pgbouncer/pgbouncer.ini
+sudo chown root:postgres /etc/pgbouncer/pgbouncer.ini
+sudo systemctl enable pgbouncer
+sudo systemctl restart pgbouncer
+wait_for_local_pgbouncer 30 || {
+    sudo journalctl -u pgbouncer -n 100 --no-pager || true
+    die "PgBouncer did not become ready"
+}
 
 REDIS_PASSWORD="$(env_get REDIS_PASSWORD)"
 if redis-cli ping 2>/dev/null | grep -q PONG; then
@@ -1359,7 +1485,8 @@ PUBLIC_IP="$(curl -fsS --max-time 10 https://api.ipify.org || hostname -I | awk 
 
 env_set SECRET_KEY "$SECRET_KEY"
 env_set DB_PASSWORD "$DB_PASSWORD"
-env_set DATABASE_URL "postgresql://openvision_app:${DB_PASSWORD}@127.0.0.1:5432/face_detection"
+env_set DATABASE_URL "postgresql://openvision_app:${DB_PASSWORD}@127.0.0.1:${PGBOUNCER_PORT}/face_detection"
+env_set PGBOUNCER_PORT "$PGBOUNCER_PORT"
 env_set DB_TYPE "postgres"
 env_set REDIS_URL "$REDIS_URL"
 env_set CELERY_BROKER_URL "$REDIS_URL"
@@ -1521,7 +1648,8 @@ log "Installing application-scoped systemd services"
 sudo tee /etc/systemd/system/openvision-backend.service >/dev/null <<UNIT
 [Unit]
 Description=OpenVision API
-After=network-online.target postgresql.service redis-server.service rabbitmq-server.service
+After=network-online.target postgresql.service pgbouncer.service redis-server.service rabbitmq-server.service
+Requires=pgbouncer.service
 Wants=network-online.target
 
 [Service]
@@ -1547,7 +1675,8 @@ UNIT
 sudo tee /etc/systemd/system/openvision-celery.service >/dev/null <<UNIT
 [Unit]
 Description=OpenVision Celery Worker
-After=network-online.target postgresql.service redis-server.service rabbitmq-server.service
+After=network-online.target postgresql.service pgbouncer.service redis-server.service rabbitmq-server.service
+Requires=pgbouncer.service
 Wants=network-online.target
 
 [Service]
@@ -1579,7 +1708,8 @@ UNIT
 sudo tee /etc/systemd/system/openvision-celery-io.service >/dev/null <<UNIT
 [Unit]
 Description=OpenVision Celery I/O Worker
-After=network-online.target postgresql.service redis-server.service rabbitmq-server.service
+After=network-online.target postgresql.service pgbouncer.service redis-server.service rabbitmq-server.service
+Requires=pgbouncer.service
 Wants=network-online.target
 
 [Service]
@@ -1610,7 +1740,8 @@ UNIT
 sudo tee /etc/systemd/system/openvision-celery-beat.service >/dev/null <<UNIT
 [Unit]
 Description=OpenVision Celery Beat Scheduler
-After=network-online.target redis-server.service rabbitmq-server.service openvision-celery.service openvision-celery-io.service
+After=network-online.target pgbouncer.service redis-server.service rabbitmq-server.service openvision-celery.service openvision-celery-io.service
+Requires=pgbouncer.service
 Wants=network-online.target
 
 [Service]
@@ -1634,7 +1765,8 @@ WantedBy=multi-user.target
 UNIT
 
 sudo systemctl daemon-reload
-sudo systemctl enable openvision-backend openvision-celery openvision-celery-io openvision-celery-beat
+sudo systemctl enable pgbouncer openvision-backend openvision-celery openvision-celery-io openvision-celery-beat
+sudo systemctl is-active --quiet pgbouncer
 sudo systemctl restart openvision-backend openvision-celery openvision-celery-io openvision-celery-beat
 sudo systemctl is-active --quiet openvision-backend
 sudo systemctl is-active --quiet openvision-celery
@@ -1701,5 +1833,5 @@ else
     printf 'API:       http://%s/api\n' "$DEPLOY_DOMAIN"
 fi
 printf 'Local health: http://127.0.0.1:5001/api/health\n'
-printf 'Services:     sudo systemctl status openvision-backend openvision-celery openvision-celery-io openvision-celery-beat nginx\n'
+printf 'Services:     sudo systemctl status postgresql pgbouncer openvision-backend openvision-celery openvision-celery-io openvision-celery-beat nginx\n'
 printf 'Application logs: sudo journalctl -u openvision-backend -f\n'

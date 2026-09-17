@@ -146,6 +146,7 @@ def process_delete_vendor_task(vendor_id):
             ("registration_batch_items", f"DELETE FROM registration_batch_items WHERE batch_id IN (SELECT id FROM registration_batches WHERE vendor_id = {placeholder})", (vendor_id,)),
             ("lecture_attendance", f"DELETE FROM lecture_attendance WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("automated_report_deliveries", f"DELETE FROM automated_report_deliveries WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("report_delivery_jobs", f"DELETE FROM report_delivery_jobs WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("xchat_messages", f"DELETE FROM xchat_messages WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("xchat_token_usage", f"DELETE FROM xchat_token_usage WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("advance_revisions", f"DELETE FROM advance_revisions WHERE vendor_id = {placeholder}", (vendor_id,)),
@@ -277,9 +278,15 @@ if celery:
     def dispatch_automated_reports_task():
         """Beat entrypoint. Claim due delivery rows before queueing to stay idempotent."""
         from services.automated_reports_service import dispatch_due_reports
+        from services.automated_reports_service import delivery_vendor_id
+        from services.report_queue_service import queue_automated_report
         delivery_ids = dispatch_due_reports()
         for delivery_id in delivery_ids:
-            send_automated_report_task.apply_async(args=[delivery_id], queue="reports")
+            queue_automated_report(
+                delivery_id,
+                vendor_id=delivery_vendor_id(delivery_id),
+                celery_task=send_automated_report_task,
+            )
         return {"queued": len(delivery_ids), "delivery_ids": delivery_ids}
 
 

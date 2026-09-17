@@ -35,6 +35,9 @@ def _row_dict(row):
 
 def _get_db_connection():
     # Keep calendar validation importable in lightweight worker/test environments.
+    if str(__import__("os").environ.get("TAPINX_DB_ONLY_LAMBDA", "")).lower() in {"1", "true", "yes"}:
+        from lambda_workers.db_adapter import get_db_connection
+        return get_db_connection()
     from utils import get_db_connection
     return get_db_connection()
 
@@ -213,7 +216,10 @@ def due_periods(schedule, now=None, working_days=None):
     return periods
 
 
-def dispatch_due_reports(now=None):
+def dispatch_due_reports(now=None, vendor_ids=None):
+    allowed_vendor_ids = None
+    if vendor_ids is not None:
+        allowed_vendor_ids = {str(value) for value in vendor_ids}
     conn = _get_db_connection()
     c = conn.cursor()
     queued = []
@@ -227,6 +233,8 @@ def dispatch_due_reports(now=None):
         """)
         for raw in c.fetchall() or []:
             raw_dict = _row_dict(raw)
+            if allowed_vendor_ids is not None and str(raw_dict.get("vendor_id")) not in allowed_vendor_ids:
+                continue
             features = _json_list(raw_dict.get("features"))
             if raw_dict.get("vendor_status") != "active" or "automated_email_reports" not in features:
                 continue
@@ -244,6 +252,20 @@ def dispatch_due_reports(now=None):
                     queued.append(c.fetchone()[0])
         conn.commit()
         return queued
+    finally:
+        conn.close()
+
+
+def delivery_vendor_id(delivery_id):
+    conn = _get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT vendor_id FROM automated_report_deliveries WHERE id = ?",
+            (delivery_id,),
+        )
+        row = cursor.fetchone()
+        return int(row[0]) if row else None
     finally:
         conn.close()
 

@@ -1259,7 +1259,8 @@ def get_vendor_edit_details(vendor_id):
 @admin_bp.route("/vendors/<int:vendor_id>/automated-report-test", methods=["POST"])
 @super_admin_required
 def send_automated_report_test(vendor_id):
-    if not celery:
+    from services.report_queue_service import lambda_reports_enabled, queue_automated_report
+    if not celery and not lambda_reports_enabled(vendor_id):
         return jsonify({"error": "Background worker is not configured"}), 503
     from services.automated_reports_service import get_schedule
     try:
@@ -1285,9 +1286,27 @@ def send_automated_report_test(vendor_id):
         conn.commit()
     finally:
         conn.close()
-    from tasks import send_automated_report_task
-    task = send_automated_report_task.apply_async(args=[delivery_id], queue="reports")
-    return jsonify({"success": True, "delivery_id": delivery_id, "task_id": task.id}), 202
+    celery_task = None
+    if not lambda_reports_enabled(vendor_id):
+        from tasks import send_automated_report_task
+        celery_task = send_automated_report_task
+    task = queue_automated_report(
+        delivery_id, vendor_id=vendor_id, celery_task=celery_task,
+    )
+    return jsonify({
+        "success": True, "delivery_id": delivery_id, "task_id": task.id,
+        "queue_backend": task.backend,
+    }), 202
+
+
+@admin_bp.route("/hybrid-reports/health", methods=["GET"])
+@super_admin_required
+def hybrid_report_pipeline_health():
+    """Operational readiness without exposing credentials or report contents."""
+    from services.report_status_service import hybrid_report_health
+
+    result = hybrid_report_health()
+    return jsonify(result), (503 if result["status"] == "degraded" else 200)
 
 @admin_bp.route("/registration/templates", methods=["GET"])
 @super_admin_required
@@ -2637,7 +2656,7 @@ def _legacy_delete_vendor(vendor_id):
             # Child tables first (they reference faces/parent_users/lectures/schedules which reference vendors)
             "lecture_attendance", "face_reset_requests", "student_parents",
             "advance_revisions", "advances", "leave_requests", "person_embeddings",
-            "automated_report_deliveries", "automated_report_schedules",
+            "report_delivery_jobs", "automated_report_deliveries", "automated_report_schedules",
             "xchat_messages", "xchat_token_usage", "xchat_conversations", "class_thresholds",
             # Tables that reference vendors directly
             "class_batches", "attendance", "lectures",
@@ -2709,6 +2728,7 @@ def _legacy_delete_vendor(vendor_id):
             ("class_batch_items", f"DELETE FROM class_batch_items WHERE batch_id IN (SELECT id FROM class_batches WHERE vendor_id = {placeholder})", (vendor_id,)),
             ("registration_batch_items", f"DELETE FROM registration_batch_items WHERE batch_id IN (SELECT id FROM registration_batches WHERE vendor_id = {placeholder})", (vendor_id,)),
             ("lecture_attendance", f"DELETE FROM lecture_attendance WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("report_delivery_jobs", f"DELETE FROM report_delivery_jobs WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("automated_report_deliveries", f"DELETE FROM automated_report_deliveries WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("xchat_messages", f"DELETE FROM xchat_messages WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("xchat_token_usage", f"DELETE FROM xchat_token_usage WHERE vendor_id = {placeholder}", (vendor_id,)),

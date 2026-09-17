@@ -125,9 +125,14 @@ const Reports = () => {
   const filterRequestRef = useRef(0);
   const employeeFilterRequestRef = useRef(0);
   const recipientPreviewRequestRef = useRef(0);
+  const reportStatusTimerRef = useRef(null);
   useEffect(() => {
     filtersRef.current = filters;
   }, [filters]);
+
+  useEffect(() => () => {
+    if (reportStatusTimerRef.current) clearTimeout(reportStatusTimerRef.current);
+  }, []);
 
   useEffect(() => {
     fetchAnalytics();
@@ -321,19 +326,70 @@ const Reports = () => {
     setEmailSending(true);
     setEmailNotice(null);
     try {
-      const response = await axios.post(`${API_URL}/reports/email-employees`, {
-        month: employeeReportMonth || selectedReportMonth,
-        person_type: schoolFlow ? personType : undefined,
-        filters: employeeReportFilters,
-      });
+      const idempotencyKey = globalThis.crypto?.randomUUID?.()
+        || `report-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const response = await axios.post(
+        `${API_URL}/reports/email-employees`,
+        {
+          month: employeeReportMonth || selectedReportMonth,
+          person_type: schoolFlow ? personType : undefined,
+          filters: employeeReportFilters,
+        },
+        { headers: { 'Idempotency-Key': idempotencyKey } },
+      );
       setEmployeeReportModalOpen(false);
       setEmailNotice({
         type: 'success',
+        title: 'Reports Queued',
         message: `${response.data.recipient_count} employee report${response.data.recipient_count === 1 ? '' : 's'} queued for email.`,
       });
+      if (response.data.queue_backend === 'lambda_sqs' && response.data.task_id) {
+        const pollStatus = async (attempt = 0) => {
+          try {
+            const statusResponse = await axios.get(
+              `${API_URL}/reports/email-employees/status/${encodeURIComponent(response.data.task_id)}`,
+            );
+            const batch = statusResponse.data;
+            if (batch.status === 'sent') {
+              setEmailNotice({
+                type: 'success',
+                title: 'Reports Delivered',
+                message: `All ${batch.total} employee reports were delivered successfully.`,
+              });
+              return;
+            }
+            if (batch.status === 'failed') {
+              setEmailNotice({
+                type: attempt >= 40 ? 'error' : 'success',
+                title: attempt >= 40 ? 'Report Delivery Failed' : 'Retrying Report Delivery',
+                message: attempt >= 40
+                  ? `${batch.counts?.failed || 0} employee report deliveries failed. Check System Health for details.`
+                  : `${batch.counts?.failed || 0} deliveries encountered an error and are being retried.`,
+              });
+              if (attempt >= 40) return;
+            } else {
+              setEmailNotice({
+                type: 'success',
+                title: 'Sending Reports',
+                message: `${batch.counts?.sent || 0} of ${batch.total} employee reports delivered.`,
+              });
+            }
+          } catch (statusError) {
+            // A 404 is expected briefly while the DB Lambda creates delivery rows.
+            if (statusError.response?.status !== 404) {
+              console.error('Failed to read employee report delivery status:', statusError);
+            }
+          }
+          if (attempt < 40) {
+            reportStatusTimerRef.current = setTimeout(() => pollStatus(attempt + 1), 3000);
+          }
+        };
+        reportStatusTimerRef.current = setTimeout(() => pollStatus(), 1500);
+      }
     } catch (requestError) {
       setEmailNotice({
         type: 'error',
+        title: 'Error',
         message: requestError.response?.data?.error || 'Could not queue employee report emails.',
       });
     } finally {
@@ -351,7 +407,7 @@ const Reports = () => {
               {emailNotice?.type === 'error' ? <AlertCircle size={18} /> : <CheckCircle2 size={18} />}
             </div>
             <div className="min-w-0 flex-1 pr-6">
-              <p className="font-bold text-slate-900">{emailNotice?.type === 'error' ? 'Error' : 'Reports Queued'}</p>
+              <p className="font-bold text-slate-900">{emailNotice?.title || (emailNotice?.type === 'error' ? 'Error' : 'Reports Queued')}</p>
               <p className={`mt-1 text-sm font-medium ${emailNotice?.type === 'error' ? 'text-red-700' : 'text-slate-600'}`}>
                 {emailNotice?.message}
               </p>

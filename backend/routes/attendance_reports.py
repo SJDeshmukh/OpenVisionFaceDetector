@@ -49,6 +49,14 @@ def email_employee_monthly_reports():
     month = str(payload.get("month") or "").strip()
     person_type = payload.get("person_type")
     filters = payload.get("filters") or {}
+    idempotency_key = str(request.headers.get("Idempotency-Key") or "").strip() or None
+    if idempotency_key and (
+        len(idempotency_key) > 128
+        or any(not (char.isalnum() or char in "-_.:") for char in idempotency_key)
+    ):
+        return jsonify({
+            "error": "Idempotency-Key must be at most 128 letters, numbers, dots, colons, underscores, or hyphens"
+        }), 400
     from services.employee_email_reports_service import count_employee_report_recipients, month_period
     try:
         month_period(month)
@@ -61,9 +69,15 @@ def email_employee_monthly_reports():
     if recipient_count == 0:
         return jsonify({"error": "No employees matching the selected filters have a registered email address"}), 400
     try:
-        from tasks import send_employee_monthly_reports_task
-        task = send_employee_monthly_reports_task.apply_async(
-            args=[g.vendor_id, month, person_type, filters], queue="reports",
+        from services.report_queue_service import lambda_reports_enabled, queue_employee_monthly_report
+        celery_task = None
+        if not lambda_reports_enabled(g.vendor_id):
+            from tasks import send_employee_monthly_reports_task
+            celery_task = send_employee_monthly_reports_task
+        task = queue_employee_monthly_report(
+            g.vendor_id, month, person_type, filters,
+            celery_task=celery_task,
+            request_id=idempotency_key,
         )
     except (ImportError, AttributeError):
         return jsonify({"error": "Background email worker is not configured"}), 503
@@ -72,6 +86,7 @@ def email_employee_monthly_reports():
         return jsonify({"error": "Could not queue employee report emails"}), 503
     return jsonify({
         "success": True, "status": "queued", "task_id": task.id,
+        "queue_backend": task.backend,
         "recipient_count": recipient_count, "month": month,
     }), 202
 
@@ -101,6 +116,26 @@ def preview_employee_monthly_reports():
     except Exception:
         logger.exception("Unable to generate preview for employee report emails for vendor %s", g.vendor_id)
         return jsonify({"error": "Could not generate recipient preview"}), 500
+
+
+@attendance_reports_bp.route("/reports/email-employees/status/<reference_id>", methods=["GET"])
+@require_auth(roles=["super_admin", "vendor_admin", "admin", "owner"])
+def employee_report_delivery_status(reference_id):
+    """Return reconciled Lambda delivery progress for one report request."""
+    reference_id = str(reference_id or "").strip()
+    if not reference_id or len(reference_id) > 128:
+        return jsonify({"error": "Invalid report reference"}), 400
+    try:
+        from services.report_status_service import report_batch_status
+        result = report_batch_status(g.vendor_id, reference_id)
+        code = 404 if result["status"] == "not_found" else 200
+        return jsonify({"success": code == 200, **result}), code
+    except Exception:
+        logger.exception(
+            "Unable to read report delivery status vendor=%s reference=%s",
+            g.vendor_id, reference_id,
+        )
+        return jsonify({"error": "Could not read report delivery status"}), 500
 
 
 def _scope_face_rows(cursor, vendor_id, rows, requested_type=None):

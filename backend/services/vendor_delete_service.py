@@ -15,6 +15,7 @@ DIRECT_DELETE_ORDER = (
     "advances",
     "leave_requests",
     "person_embeddings",
+    "report_delivery_jobs",
     "automated_report_deliveries",
     "xchat_messages",
     "xchat_token_usage",
