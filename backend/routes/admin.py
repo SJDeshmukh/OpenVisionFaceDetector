@@ -374,8 +374,49 @@ def update_device_geofence(vendor_id, device_id):
             """, (radius, vendor_id, device_id))
             
         conn.commit()
+
+        # Return and broadcast the configuration that was actually persisted.  This is
+        # especially important for reset_anchor: the supplied latitude/longitude are
+        # intentionally empty, while the device may still have an old anchor cached.
+        c.execute("""
+            SELECT geofence_lat, geofence_lng, geofence_radius
+            FROM vendor_devices
+            WHERE vendor_id = ? AND device_id = ?
+        """, (vendor_id, device_id))
+        saved_row = c.fetchone()
+        if saved_row:
+            if hasattr(saved_row, "keys"):
+                saved_lat = saved_row["geofence_lat"]
+                saved_lng = saved_row["geofence_lng"]
+                saved_radius = saved_row["geofence_radius"]
+            else:
+                saved_lat, saved_lng, saved_radius = saved_row[0], saved_row[1], saved_row[2]
+        else:
+            saved_lat = saved_lng = saved_radius = None
         conn.close()
-        return jsonify({"success": True, "geofence_radius": radius, "geofence_lat": latitude, "geofence_lng": longitude})
+
+        enabled = saved_radius is not None and float(saved_radius or 0) > 0
+        reset_pending = bool(enabled and reset_anchor and (saved_lat is None or saved_lng is None))
+        payload = {
+            "success": True,
+            "vendor_id": vendor_id,
+            "device_id": device_id,
+            "geofence_enabled": enabled,
+            "reset_anchor": reset_pending,
+            "geofence_radius": float(saved_radius) if enabled else None,
+            "geofence_lat": float(saved_lat) if saved_lat is not None else None,
+            "geofence_lng": float(saved_lng) if saved_lng is not None else None,
+        }
+
+        # Tell an online kiosk to discard its old local anchor immediately.  Offline
+        # kiosks are still protected by the first-heartbeat confirmation in the app.
+        try:
+            from app import socketio
+            socketio.emit("geofence_config_updated", payload, room=f"vendor_{vendor_id}")
+        except Exception as emit_error:
+            logger.warning("Unable to broadcast geofence update for device %s: %s", device_id, emit_error)
+
+        return jsonify(payload)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

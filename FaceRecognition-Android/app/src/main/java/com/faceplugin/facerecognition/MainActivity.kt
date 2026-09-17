@@ -56,6 +56,7 @@ import com.google.android.gms.location.LocationSettingsRequest
 import com.google.android.gms.location.LocationSettingsResponse
 import com.google.android.gms.common.api.ResolvableApiException
 import android.content.IntentSender
+import java.net.URLEncoder
 
 class MainActivity : AppCompatActivity() {
 
@@ -84,6 +85,7 @@ class MainActivity : AppCompatActivity() {
     private var anchorLat: Double? = null
     private var anchorLng: Double? = null
     private var anchorRadius: Double? = null
+    @Volatile private var geofenceServerConfirmed = false
     private val REQUEST_CHECK_SETTINGS = 1001
     private var isLoggingOut = false
     private var locationManager: LocationManager? = null
@@ -319,6 +321,10 @@ class MainActivity : AppCompatActivity() {
             val options = IO.Options()
             options.transports = arrayOf("polling")
             options.path = "/socket.io"
+            val authToken = getSharedPreferences("app_prefs", MODE_PRIVATE).getString("token", null)
+            if (!authToken.isNullOrBlank()) {
+                options.query = "token=${URLEncoder.encode(authToken, "UTF-8")}"
+            }
             mSocket = IO.socket(serverUrl, options)
 
             mSocket?.on(Socket.EVENT_CONNECT) {
@@ -388,6 +394,23 @@ class MainActivity : AppCompatActivity() {
                         android.widget.Toast.makeText(this, "Plan updated", android.widget.Toast.LENGTH_SHORT).show()
                         fetchCooldownSettings()
                     } catch (_: Exception) {}
+                }
+            }
+
+            // SuperAdmin can reset/reconfigure an anchor without requiring an app
+            // reinstall. Only the matching physical device applies the update.
+            mSocket?.on("geofence_config_updated") { args ->
+                if (args.isNotEmpty()) {
+                    try {
+                        val obj = args[0] as JSONObject
+                        val targetDid = obj.optString("device_id", "")
+                        val myDid = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
+                        if (targetDid == myDid) {
+                            applyServerGeofenceConfig(obj)
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.w("Geofence", "Unable to apply pushed geofence configuration", e)
+                    }
                 }
             }
 
@@ -971,6 +994,9 @@ class MainActivity : AppCompatActivity() {
                         if (response.isSuccessful) {
                             val resBody = response.body()
                             val geofenceStatus = resBody?.get("geofence_status")?.asString
+                            val anchorPending = resBody?.get("anchor_pending")?.let {
+                                !it.isJsonNull && it.asBoolean
+                            } ?: false
                             android.util.Log.d("Heartbeat", "Sent successfully: $battery%, geofence=$geofenceStatus")
                             val distance = if (resBody != null && resBody.has("distance_meters") && !resBody.get("distance_meters").isJsonNull) {
                                 resBody.get("distance_meters").asDouble
@@ -991,6 +1017,9 @@ class MainActivity : AppCompatActivity() {
                             } else {
                                 anchorRadius = null
                             }
+                            // Cached coordinates are advisory until a heartbeat from
+                            // this login session confirms the server's current state.
+                            geofenceServerConfirmed = true
 
                             // Cache anchor locally for zero-latency local geofence checking
                             try {
@@ -1010,7 +1039,7 @@ class MainActivity : AppCompatActivity() {
                             val lat = if (finalBody.has("latitude")) finalBody.get("latitude").asDouble else null
                             val lng = if (finalBody.has("longitude")) finalBody.get("longitude").asDouble else null
                             runOnUiThread {
-                                updateGeofenceBadge(geofenceStatus, distance, lat, lng)
+                                updateGeofenceBadge(if (anchorPending) "recalibrating" else geofenceStatus, distance, lat, lng)
                             }
 
                             if (resBody != null && resBody.has("geofence_status")) {
@@ -1064,10 +1093,11 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 if (bestLoc != null) {
-                    updateBestLocation(bestLoc)
+                    updateBestLocation(bestLoc, enforceLocalGeofence = false)
                     body.addProperty("latitude", bestLoc.latitude)
                     body.addProperty("longitude", bestLoc.longitude)
                     body.addProperty("accuracy", bestLoc.accuracy)
+                    body.addProperty("location_timestamp", bestLoc.time)
                 }
 
                 // 2. Also attempt fresh high-accuracy fix from Google Fused Location
@@ -1075,10 +1105,11 @@ class MainActivity : AppCompatActivity() {
                     fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
                         .addOnSuccessListener { freshLoc ->
                             if (freshLoc != null) {
-                                updateBestLocation(freshLoc)
+                                updateBestLocation(freshLoc, enforceLocalGeofence = false)
                                 body.addProperty("latitude", freshLoc.latitude)
                                 body.addProperty("longitude", freshLoc.longitude)
                                 body.addProperty("accuracy", freshLoc.accuracy)
+                                body.addProperty("location_timestamp", freshLoc.time)
                             }
                             apiCall(body)
                         }
@@ -1392,7 +1423,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun updateBestLocation(loc: Location) {
+    private fun updateBestLocation(loc: Location, enforceLocalGeofence: Boolean = true) {
         latestDeviceLocation = loc
         lastKnownLat = loc.latitude
         lastKnownLng = loc.longitude
@@ -1408,7 +1439,7 @@ class MainActivity : AppCompatActivity() {
         val aLat = anchorLat
         val aLng = anchorLng
         val aRadius = anchorRadius
-        if (aLat != null && aLng != null && aRadius != null && aRadius > 0.0) {
+        if (enforceLocalGeofence && geofenceServerConfirmed && aLat != null && aLng != null && aRadius != null && aRadius > 0.0) {
             val distResults = FloatArray(1)
             Location.distanceBetween(loc.latitude, loc.longitude, aLat, aLng, distResults)
             val currentDist = distResults[0].toDouble()
@@ -1489,6 +1520,12 @@ class MainActivity : AppCompatActivity() {
                 tv.setTextColor(gray)
                 iv.setColorFilter(gray)
             }
+            "recalibrating" -> {
+                tv.text = "GPS: RECALIBRATING"
+                val amber = ContextCompat.getColor(this, R.color.status_warning)
+                tv.setTextColor(amber)
+                iv.setColorFilter(amber)
+            }
             else -> {
                 if (lastKnownLat != null && lastKnownLng != null) {
                     tv.text = "GPS LOCKED"
@@ -1503,6 +1540,52 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    private fun applyServerGeofenceConfig(obj: JSONObject) {
+        val resetPending = obj.optBoolean("reset_anchor", false)
+        val enabled = obj.optBoolean("geofence_enabled", false)
+
+        if (resetPending || !enabled) {
+            anchorLat = null
+            anchorLng = null
+            anchorRadius = if (enabled && !obj.isNull("geofence_radius")) obj.optDouble("geofence_radius") else null
+            geofenceServerConfirmed = !resetPending
+            getSharedPreferences("app_prefs", MODE_PRIVATE).edit()
+                .remove("anchor_lat")
+                .remove("anchor_lng")
+                .remove("anchor_radius")
+                .apply()
+
+            runOnUiThread {
+                if (resetPending) {
+                    updateGeofenceBadge("recalibrating", null, lastKnownLat, lastKnownLng)
+                    // Send immediately so the server captures this device's newest fix.
+                    handler.removeCallbacks(heartbeatRunnable)
+                    sendHeartbeat()
+                    handler.postDelayed(heartbeatRunnable, heartbeatInterval)
+                } else {
+                    updateGeofenceBadge("disabled", null, lastKnownLat, lastKnownLng)
+                }
+            }
+            return
+        }
+
+        anchorLat = if (!obj.isNull("geofence_lat")) obj.optDouble("geofence_lat") else null
+        anchorLng = if (!obj.isNull("geofence_lng")) obj.optDouble("geofence_lng") else null
+        anchorRadius = if (!obj.isNull("geofence_radius")) obj.optDouble("geofence_radius") else null
+        geofenceServerConfirmed = true
+
+        val editor = getSharedPreferences("app_prefs", MODE_PRIVATE).edit()
+        if (anchorLat != null && anchorLng != null && anchorRadius != null && anchorRadius!! > 0.0) {
+            editor.putString("anchor_lat", anchorLat.toString())
+            editor.putString("anchor_lng", anchorLng.toString())
+            editor.putString("anchor_radius", anchorRadius.toString())
+        } else {
+            editor.remove("anchor_lat").remove("anchor_lng").remove("anchor_radius")
+        }
+        editor.apply()
+        latestDeviceLocation?.let { updateBestLocation(it) }
     }
 
     private fun showGeofenceDetailsDialog() {
@@ -1523,6 +1606,7 @@ class MainActivity : AppCompatActivity() {
             lastKnownGeofenceStatus == "inside" -> "🟢 Inside Authorized Geofence"
             lastKnownGeofenceStatus == "outside" -> "🔴 Outside Geofence (Violation)"
             lastKnownGeofenceStatus == "disabled" -> "⚪ Geofence Not Configured"
+            lastKnownGeofenceStatus == "recalibrating" -> "🟡 Waiting to capture a fresh anchor"
             lastKnownGeofenceStatus == "no_gps" || lastKnownGeofenceStatus == "gps_required" -> "🟡 Server waiting for GPS lock"
             lastKnownLat != null -> "🟢 GPS Signal Locked"
             else -> "🟡 Acquiring GPS / WiFi Satellite Signal..."

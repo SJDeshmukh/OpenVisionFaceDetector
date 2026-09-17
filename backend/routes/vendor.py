@@ -1620,6 +1620,8 @@ def mobile_heartbeat():
     battery_level = data.get("battery_level")
     lat = data.get("latitude")
     lng = data.get("longitude")
+    accuracy = data.get("accuracy")
+    location_timestamp = data.get("location_timestamp")
     
     if not device_id:
         # Fallback: resolve from session if possible
@@ -1663,6 +1665,23 @@ def mobile_heartbeat():
         distance_meters = None
         has_geofence = False
         radius = None
+        anchor_lat = None
+        anchor_lng = None
+        parsed_lat = None
+        parsed_lng = None
+
+        # Parse location once so telemetry payloads are safe even for a newly
+        # registered device.
+        if lat is not None and lng is not None:
+            try:
+                candidate_lat = float(lat)
+                candidate_lng = float(lng)
+                if -90.0 <= candidate_lat <= 90.0 and -180.0 <= candidate_lng <= 180.0:
+                    parsed_lat = candidate_lat
+                    parsed_lng = candidate_lng
+            except (ValueError, TypeError):
+                parsed_lat = None
+                parsed_lng = None
 
         if device_row:
             row_dict = dict(device_row) if hasattr(device_row, 'keys') or isinstance(device_row, dict) else {'geofence_lat': device_row[0], 'geofence_lng': device_row[1], 'geofence_radius': device_row[2]}
@@ -1671,31 +1690,47 @@ def mobile_heartbeat():
             radius = row_dict.get('geofence_radius')
             has_geofence = radius is not None and float(radius or 0) > 0
 
-            # Safe float conversion for lat/lng
-            parsed_lat = None
-            parsed_lng = None
-            if lat is not None and lng is not None:
-                try:
-                    parsed_lat = float(lat)
-                    parsed_lng = float(lng)
-                except (ValueError, TypeError):
-                    parsed_lat = None
-                    parsed_lng = None
-
             if parsed_lat is not None and parsed_lng is not None:
                 if has_geofence:
                     radius = float(radius)
                     # If geofence is active but anchor not set yet, lock current position as anchor
                     if anchor_lat is None or anchor_lng is None:
-                        anchor_lat = parsed_lat
-                        anchor_lng = parsed_lng
-                        c.execute("""
-                            UPDATE vendor_devices 
-                            SET last_active_at = ?, battery_level = ?, last_lat = ?, last_lng = ?, geofence_lat = ?, geofence_lng = ? 
-                            WHERE vendor_id = ? AND device_id = ?
-                        """, (now, battery_level, parsed_lat, parsed_lng, parsed_lat, parsed_lng, vendor_id, device_id))
-                        geofence_status = "inside"
-                        distance_meters = 0.0
+                        # A reset must use a current device fix, never a location cached
+                        # hours earlier by Android. Older clients without a timestamp
+                        # remain compatible; new clients explicitly report fix time.
+                        location_is_fresh = True
+                        if location_timestamp is not None:
+                            try:
+                                fix_age_ms = abs((now.timestamp() * 1000.0) - float(location_timestamp))
+                                location_is_fresh = float(location_timestamp) > 0 and fix_age_ms <= 120000
+                            except (ValueError, TypeError):
+                                location_is_fresh = False
+
+                        accuracy_is_usable = True
+                        if accuracy is not None:
+                            try:
+                                accuracy_value = float(accuracy)
+                                accuracy_is_usable = accuracy_value >= 0 and accuracy_value <= 100.0
+                            except (ValueError, TypeError):
+                                accuracy_is_usable = False
+
+                        if location_is_fresh and accuracy_is_usable:
+                            anchor_lat = parsed_lat
+                            anchor_lng = parsed_lng
+                            c.execute("""
+                                UPDATE vendor_devices
+                                SET last_active_at = ?, battery_level = ?, last_lat = ?, last_lng = ?, geofence_lat = ?, geofence_lng = ?
+                                WHERE vendor_id = ? AND device_id = ?
+                            """, (now, battery_level, parsed_lat, parsed_lng, parsed_lat, parsed_lng, vendor_id, device_id))
+                            geofence_status = "inside"
+                            distance_meters = 0.0
+                        else:
+                            c.execute("""
+                                UPDATE vendor_devices
+                                SET last_active_at = ?, battery_level = ?, last_lat = ?, last_lng = ?
+                                WHERE vendor_id = ? AND device_id = ?
+                            """, (now, battery_level, parsed_lat, parsed_lng, vendor_id, device_id))
+                            geofence_status = "gps_required"
                     else:
                         anchor_lat = float(anchor_lat)
                         anchor_lng = float(anchor_lng)
@@ -1781,9 +1816,11 @@ def mobile_heartbeat():
                 safe_anchor_lat = None
                 safe_anchor_lng = None
 
+        anchor_pending = bool(has_geofence and (anchor_lat is None or anchor_lng is None))
         return jsonify({
             "status": "success", 
             "geofence_status": geofence_status,
+            "anchor_pending": anchor_pending,
             "distance_meters": distance_meters,
             "radius_meters": float(radius) if (has_geofence and radius is not None) else None,
             "anchor_lat": safe_anchor_lat,

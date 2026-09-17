@@ -894,7 +894,7 @@ const SuperAdminDashboard = () => {
         { headers: { Authorization: `Bearer ${user?.token}` } }
       );
       if (payload.reset_anchor) {
-        alert("Geofence anchor cleared. The next heartbeat from this device will auto-calibrate its anchor.");
+        alert("Geofence anchor cleared. Keep the device online with Location enabled; its next fresh heartbeat will become the new anchor. Reinstalling the app is not required.");
       } else if (!payload.radius_meters) {
         alert("Geofence disabled for this device.");
       } else {
