@@ -1524,8 +1524,14 @@ server {
     server_name ${DEPLOY_DOMAIN} www.${DEPLOY_DOMAIN};
     client_max_body_size 50M;
 
+    # Temporary compatibility fallback while production DNS still targets EC2.
+    # This directory is never built or updated by this startup script; new
+    # frontend releases remain owned exclusively by GitHub Actions/S3/CloudFront.
+    root /var/www/face_detection;
+    index index.html;
+
     location / {
-        return 404;
+        try_files \$uri \$uri/ /index.html;
     }
 
     location /api/ {
