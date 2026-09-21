@@ -127,3 +127,31 @@ def test_disabled_superadmin_feature_stops_alert_processing(tmp_path):
 
     assert result == {"vendors": 0, "sent": 0, "failed": 0, "skipped": 0}
     assert sent == []
+
+
+def test_feature_flag_allows_alerts_for_non_hostel_vertical(tmp_path):
+    """The separately billed feature, not a legacy vertical label, controls access."""
+    factory = _database(tmp_path)
+    save_settings(1, {
+        "enabled": True,
+        "owner_phone": "9000000099",
+        "cutoff_time": "19:00",
+        "escalation_minutes": 60,
+        "timezone": "Asia/Kolkata",
+        "owner_summary_enabled": False,
+    }, connection_factory=factory)
+    conn = factory()
+    conn.execute("UPDATE vendors SET vertical = 'school' WHERE id = 1")
+    conn.commit()
+    conn.close()
+    sent = []
+
+    result = process_due_alerts(
+        datetime(2026, 9, 21, 13, 31, tzinfo=timezone.utc),  # 19:01 IST
+        connection_factory=factory,
+        sender=lambda vendor_id, phone, message: sent.append(phone) or {"success": True},
+    )
+
+    assert result["vendors"] == 1
+    assert result["sent"] == 1
+    assert sent == ["9000000001"]

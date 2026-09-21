@@ -62,7 +62,7 @@ const FaceResetRoute = () => {
 
 const HostelAlertsRoute = () => {
   const { user } = useAuth();
-  const allowed = String(user?.vertical || '').toLowerCase() === 'hostel' &&
+  const allowed = ['vendor_admin', 'admin', 'owner'].includes(user?.role) &&
     user?.features?.includes('hostel_attendance_alerts');
   return allowed ? <HostelAlerts /> : <Navigate to="/dashboard" replace />;
 };

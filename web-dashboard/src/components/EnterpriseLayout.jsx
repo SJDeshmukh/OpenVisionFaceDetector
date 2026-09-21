@@ -133,6 +133,15 @@ export const Sidebar = ({ isOpen, onClose }) => {
     const vertical = String(user?.vertical || '').trim().toLowerCase();
     const faceResetSupported = !['daily_wages', 'wages', 'factory', 'enterprise'].includes(vertical) &&
       user?.features?.includes('parent_login');
+    const hostelAlertsSupported = !staffSession &&
+      ['vendor_admin', 'admin', 'owner'].includes(user?.role) &&
+      user?.features?.includes('hostel_attendance_alerts');
+
+    // Feature-controlled pages must be added explicitly. Filtering a role's base
+    // menu is not sufficient when older accounts have a reduced/default bundle.
+    if (hostelAlertsSupported && !navItems.some(item => item.path === '/hostel-alerts')) {
+      navItems = [...navItems, { name: 'Hostel Alerts', path: '/hostel-alerts', icon: Bell }];
+    }
     if (user?.features && Array.isArray(user.features)) {
       const allowedNames = new Set(ALWAYS_VISIBLE_ITEMS);
       user.features.forEach(fk => { const sn = FEATURE_TO_SIDEBAR_MAP[fk]; if (sn) allowedNames.add(sn); });
@@ -145,6 +154,7 @@ export const Sidebar = ({ isOpen, onClose }) => {
       if (allowed !== 'ALL') navItems = navItems.filter(item => allowed.includes(item.name));
     }
     if (!faceResetSupported) navItems = navItems.filter(item => item.name !== 'Face Reset Requests');
+    if (!hostelAlertsSupported) navItems = navItems.filter(item => item.name !== 'Hostel Alerts');
   }
 
   const navLabel = (item) => {

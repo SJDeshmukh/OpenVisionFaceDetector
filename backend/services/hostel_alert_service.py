@@ -294,7 +294,7 @@ def process_due_alerts(now_utc=None, connection_factory=None, sender=None):
             SELECT h.vendor_id, h.enabled, h.owner_phone, h.cutoff_time,
                    h.escalation_minutes, h.timezone, h.student_template,
                    h.parent_template, h.owner_summary_enabled,
-                   v.status AS vendor_status, v.vertical, s.features,
+                   v.status AS vendor_status, s.features,
                    w.status AS whatsapp_status
             FROM hostel_alert_settings h
             JOIN vendors v ON v.id = h.vendor_id
@@ -309,8 +309,6 @@ def process_due_alerts(now_utc=None, connection_factory=None, sender=None):
             if not setting.get("enabled"):
                 continue
             if str(setting.get("vendor_status") or "").lower() != "active":
-                continue
-            if str(setting.get("vertical") or "").lower() != "hostel":
                 continue
             if FEATURE_NAME not in _features(setting.get("features")):
                 continue

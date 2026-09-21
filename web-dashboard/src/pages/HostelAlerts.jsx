@@ -3,16 +3,32 @@ import axios from 'axios';
 import { Bell, RefreshCw, Save } from 'lucide-react';
 import { API_URL } from '../config';
 
+const DEFAULT_STUDENT_TEMPLATE = '⚠️ *Hostel Entry Reminder*\n\nHello {student_name}, no hostel entry was recorded by {cutoff_time} on {date}. Please report to the hostel or contact the administrator.';
+const DEFAULT_PARENT_TEMPLATE = '⚠️ *Hostel Attendance Alert*\n\nDear Parent/Guardian, {student_name} has not recorded hostel entry as of {current_time} on {date}. Please contact the student or hostel administrator.';
+
 const defaults = {
   enabled: 0,
   owner_phone: '',
   cutoff_time: '19:00',
   escalation_minutes: 60,
   timezone: 'Asia/Kolkata',
-  student_template: '',
-  parent_template: '',
+  student_template: DEFAULT_STUDENT_TEMPLATE,
+  parent_template: DEFAULT_PARENT_TEMPLATE,
   owner_summary_enabled: 1,
 };
+
+const normalizeSettings = (value = {}) => ({
+  ...defaults,
+  ...value,
+  student_template: value.student_template || DEFAULT_STUDENT_TEMPLATE,
+  parent_template: value.parent_template || DEFAULT_PARENT_TEMPLATE,
+});
+
+const previewTemplate = (template) => String(template || '')
+  .replaceAll('{student_name}', 'Sample Student')
+  .replaceAll('{date}', '21-Sep-2026')
+  .replaceAll('{cutoff_time}', '07:00 PM')
+  .replaceAll('{current_time}', '08:00 PM');
 
 export default function HostelAlerts() {
   const [settings, setSettings] = useState(defaults);
@@ -20,16 +36,18 @@ export default function HostelAlerts() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
 
   const load = async () => {
     setLoading(true);
     setError('');
+    setSuccess('');
     try {
       const [settingsResponse, deliveriesResponse] = await Promise.all([
         axios.get(`${API_URL}/hostel-alerts/settings`),
         axios.get(`${API_URL}/hostel-alerts/deliveries?limit=100`),
       ]);
-      setSettings({ ...defaults, ...(settingsResponse.data?.settings || {}) });
+      setSettings(normalizeSettings(settingsResponse.data?.settings));
       setDeliveries(deliveriesResponse.data?.deliveries || []);
     } catch (requestError) {
       setError(requestError.response?.data?.error || requestError.message);
@@ -43,6 +61,7 @@ export default function HostelAlerts() {
   const save = async () => {
     setSaving(true);
     setError('');
+    setSuccess('');
     try {
       const response = await axios.put(`${API_URL}/hostel-alerts/settings`, {
         ...settings,
@@ -50,7 +69,8 @@ export default function HostelAlerts() {
         owner_summary_enabled: Boolean(settings.owner_summary_enabled),
         escalation_minutes: Number(settings.escalation_minutes),
       });
-      setSettings({ ...defaults, ...(response.data?.settings || {}) });
+      setSettings(normalizeSettings(response.data?.settings));
+      setSuccess('Hostel alert configuration saved successfully.');
     } catch (requestError) {
       setError(requestError.response?.data?.error || requestError.message);
     } finally {
@@ -81,6 +101,7 @@ export default function HostelAlerts() {
       </div>
 
       {error && <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm">{error}</div>}
+      {success && <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm">{success}</div>}
 
       <section className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-5">
         <label className="flex items-center justify-between gap-4 p-4 rounded-xl bg-slate-50 border">
@@ -118,12 +139,28 @@ export default function HostelAlerts() {
         </label>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <label className="text-sm font-medium text-slate-700">Resident message template
-            <textarea rows="5" value={settings.student_template || ''} onChange={e => setSettings(s => ({ ...s, student_template: e.target.value }))} placeholder="Leave blank to use the default message." className="mt-1 w-full border rounded-lg px-3 py-2" />
-          </label>
-          <label className="text-sm font-medium text-slate-700">Parent message template
-            <textarea rows="5" value={settings.parent_template || ''} onChange={e => setSettings(s => ({ ...s, parent_template: e.target.value }))} placeholder="Leave blank to use the default message." className="mt-1 w-full border rounded-lg px-3 py-2" />
-          </label>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <label htmlFor="student-alert-template" className="text-sm font-medium text-slate-700">Resident message template</label>
+              <button type="button" onClick={() => setSettings(s => ({ ...s, student_template: DEFAULT_STUDENT_TEMPLATE }))} className="text-xs font-medium text-indigo-600 hover:text-indigo-800">Restore default</button>
+            </div>
+            <textarea id="student-alert-template" rows="6" value={settings.student_template || ''} onChange={e => setSettings(s => ({ ...s, student_template: e.target.value }))} className="w-full border rounded-lg px-3 py-2" />
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Preview</div>
+              <div className="whitespace-pre-wrap text-xs text-slate-700">{previewTemplate(settings.student_template)}</div>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <label htmlFor="parent-alert-template" className="text-sm font-medium text-slate-700">Parent message template</label>
+              <button type="button" onClick={() => setSettings(s => ({ ...s, parent_template: DEFAULT_PARENT_TEMPLATE }))} className="text-xs font-medium text-indigo-600 hover:text-indigo-800">Restore default</button>
+            </div>
+            <textarea id="parent-alert-template" rows="6" value={settings.parent_template || ''} onChange={e => setSettings(s => ({ ...s, parent_template: e.target.value }))} className="w-full border rounded-lg px-3 py-2" />
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Preview</div>
+              <div className="whitespace-pre-wrap text-xs text-slate-700">{previewTemplate(settings.parent_template)}</div>
+            </div>
+          </div>
         </div>
         <p className="text-xs text-slate-500">Template fields: {'{student_name}'}, {'{date}'}, {'{cutoff_time}'}, {'{current_time}'}. Connect WhatsApp from Settings before enabling delivery.</p>
       </section>

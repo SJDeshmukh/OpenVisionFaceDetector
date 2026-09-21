@@ -6,7 +6,7 @@ from flask import Blueprint, g, jsonify, request
 
 from services.auth_service import authenticate_vendor_access
 from services.hostel_alert_service import get_settings, recent_deliveries, save_settings
-from utils import get_db_connection, log_audit, vendor_has_feature
+from utils import log_audit, vendor_has_feature
 
 
 logger = logging.getLogger(__name__)
@@ -24,16 +24,6 @@ def _authorize():
     if not vendor_id:
         return None, (jsonify({"error": "Select a company first"}), 400)
 
-    conn = get_db_connection()
-    try:
-        c = conn.cursor()
-        c.execute("SELECT vertical FROM vendors WHERE id = ?", (vendor_id,))
-        row = c.fetchone()
-        vertical = row[0] if row else None
-    finally:
-        conn.close()
-    if str(vertical or "").lower() != "hostel":
-        return None, (jsonify({"error": "Hostel Alerts is available only to hostel companies"}), 403)
     if getattr(g, "user_role", None) != "super_admin" and not vendor_has_feature(vendor_id, FEATURE_NAME):
         return None, (jsonify({
             "error": "Hostel Attendance Alerts is not enabled for this company",

@@ -114,6 +114,24 @@ export const AuthProvider = ({ children }) => {
     return () => axios.interceptors.response.eject(interceptor);
   }, [logout, refreshUserData]);
 
+  // Subscription features can be changed by SuperAdmin while this session is
+  // already open. Refresh when the operator returns to the tab so navigation
+  // updates even if a Socket.IO feature event was missed during deployment or
+  // a temporary disconnect.
+  useEffect(() => {
+    if (!user) return undefined;
+    const refreshOnFocus = () => refreshUserData().catch(() => {});
+    const refreshOnVisible = () => {
+      if (document.visibilityState === 'visible') refreshOnFocus();
+    };
+    window.addEventListener('focus', refreshOnFocus);
+    document.addEventListener('visibilitychange', refreshOnVisible);
+    return () => {
+      window.removeEventListener('focus', refreshOnFocus);
+      document.removeEventListener('visibilitychange', refreshOnVisible);
+    };
+  }, [Boolean(user), refreshUserData]);
+
   const login = async (username, password, secondary_password = null) => {
     try {
       let deviceId = localStorage.getItem('web_device_id');
