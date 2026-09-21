@@ -4,10 +4,12 @@ import pytest
 
 from services.hostel_allocation_service import (
     HostelAllocationError,
+    add_bed,
     allocate,
     create_building,
     create_floor,
     create_rooms,
+    delete_bed,
     ensure_tables,
     get_state,
     undo_allocation_change,
@@ -89,3 +91,17 @@ def test_unavailability_cannot_be_silently_replaced_by_reservation(hostel):
     bed = state["buildings"][0]["floors"][0]["rooms"][0]["beds"][0]
     assert bed["status"] == "unavailable"
     assert state["summary"]["total"] == state["summary"]["occupied"] + state["summary"]["available"] + state["summary"]["reserved"] + state["summary"]["unavailable"]
+
+
+def test_custom_beds_can_be_added_renamed_and_safely_deleted(hostel):
+    conn, _building, _floor, room, beds = hostel
+    custom_bed = add_bed(conn, 10, room, {"bed_label": "Window Bed"}, ADMIN)
+    update_bed(conn, 10, custom_bed, {"bed_label": "Balcony Bed"}, ADMIN)
+    allocate(conn, 10, 1, custom_bed, "admin@example.com", ADMIN)
+    with pytest.raises(HostelAllocationError, match="Remove the resident"):
+        delete_bed(conn, 10, custom_bed, ADMIN)
+    conn.execute("DELETE FROM hostel_allocations WHERE bed_id=?", (custom_bed,))
+    conn.commit()
+    delete_bed(conn, 10, custom_bed, ADMIN)
+    labels = [row[0] for row in conn.execute("SELECT bed_label FROM hostel_beds WHERE room_id=? ORDER BY position_index", (room,)).fetchall()]
+    assert labels == ["Bed 1", "Bed 2"]

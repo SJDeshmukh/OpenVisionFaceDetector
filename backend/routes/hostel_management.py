@@ -9,8 +9,8 @@ from flask import Blueprint, Response, g, jsonify, request
 
 from services.auth_service import authenticate_vendor_access, verify_token
 from services.hostel_allocation_service import (
-    HostelAllocationError, access_for, allocate, create_building, create_floor,
-    create_rooms, delete_building, delete_floor, delete_room, duplicate_floor,
+    HostelAllocationError, access_for, add_bed, allocate, create_building, create_floor,
+    create_rooms, delete_bed, delete_building, delete_floor, delete_room, duplicate_floor,
     ensure_tables, get_state, remove_allocation, reorder_rooms, require_permission,
     undo_allocation_change, update_bed, update_building, update_floor, update_room,
 )
@@ -186,14 +186,32 @@ def room_mutate(room_id):
     except Exception as exc: return _error(exc)
 
 
-@hostel_management_bp.route("/hostel-management/beds/<int:bed_id>", methods=["PUT"])
+@hostel_management_bp.route("/hostel-management/rooms/<int:room_id>/beds", methods=["POST"])
+def bed_create(room_id):
+    try:
+        vendor_id, access, conn, error = _context("can_edit_layout")
+        if error: return error
+        try:
+            bed_id = add_bed(conn, vendor_id, room_id, request.get_json(silent=True) or {}, access)
+            log_audit("hostel_bed_created", {"room_id": room_id, "bed_id": bed_id}, target_vendor_id=vendor_id)
+            return jsonify({"success": True, "id": bed_id}), 201
+        finally: conn.close()
+    except Exception as exc: return _error(exc)
+
+
+@hostel_management_bp.route("/hostel-management/beds/<int:bed_id>", methods=["PUT", "DELETE"])
 def bed_update(bed_id):
     try:
         vendor_id, access, conn, error = _context("can_edit_layout")
         if error: return error
         try:
-            update_bed(conn, vendor_id, bed_id, request.get_json(silent=True) or {}, access)
-            log_audit("hostel_bed_status_updated", {"bed_id": bed_id, **(request.get_json(silent=True) or {})}, target_vendor_id=vendor_id)
+            payload = request.get_json(silent=True) or {}
+            if request.method == "DELETE":
+                delete_bed(conn, vendor_id, bed_id, access)
+                log_audit("hostel_bed_deleted", {"bed_id": bed_id}, target_vendor_id=vendor_id)
+            else:
+                update_bed(conn, vendor_id, bed_id, payload, access)
+                log_audit("hostel_bed_updated", {"bed_id": bed_id, **payload}, target_vendor_id=vendor_id)
             return jsonify({"success": True})
         finally: conn.close()
     except Exception as exc: return _error(exc)

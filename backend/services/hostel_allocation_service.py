@@ -413,8 +413,17 @@ def update_bed(conn, vendor_id, bed_id, data, access):
     c = conn.cursor(); bed = _bed_context(c, vendor_id, bed_id)
     if not bed: raise HostelAllocationError("Bed not found", 404, "NOT_FOUND")
     require_permission(access, "can_edit_layout", bed["building_id"])
+    if "bed_label" in data:
+        label = str(data.get("bed_label") or "").strip()
+        if not label: raise HostelAllocationError("Bed label is required")
+        c.execute("SELECT id FROM hostel_beds WHERE room_id=? AND LOWER(bed_label)=LOWER(?) AND id<>?", (bed["room_id"], label, bed_id))
+        if c.fetchone(): raise HostelAllocationError("A bed with this label already exists in the room", 409, "DUPLICATE_BED")
+        c.execute("UPDATE hostel_beds SET bed_label=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND vendor_id=?", (label, bed_id, vendor_id))
+    if "status" not in data:
+        conn.commit()
+        return
     c.execute("SELECT person_id FROM hostel_allocations WHERE bed_id = ?", (bed_id,)); occupied = c.fetchone()
-    mode = str(data.get("status") or "available").lower()
+    mode = str(data.get("status") or "").lower()
     if occupied and mode != "occupied": raise HostelAllocationError("Transfer or remove the resident before changing this bed", 409, "BED_OCCUPIED")
     if mode == "unavailable":
         reason = str(data.get("reason") or "").lower()
@@ -443,6 +452,35 @@ def update_bed(conn, vendor_id, bed_id, data, access):
         c.execute("UPDATE hostel_beds SET availability_status='available', unavailable_reason=NULL, unavailable_note=NULL, unavailable_from=NULL, expected_reopening_date=NULL, reservation_expires_at=NULL, reserved_for_person_id=NULL, reservation_note=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (bed_id,))
     else: raise HostelAllocationError("Unsupported bed status")
     conn.commit()
+
+
+def add_bed(conn, vendor_id, room_id, data, access):
+    label = str(data.get("bed_label") or "").strip()
+    if not label: raise HostelAllocationError("Bed label is required")
+    c = conn.cursor()
+    c.execute("""SELECT f.building_id FROM hostel_rooms r JOIN hostel_floors f ON f.id=r.floor_id
+                 WHERE r.id=? AND r.vendor_id=?""", (room_id, vendor_id))
+    room = c.fetchone()
+    if not room: raise HostelAllocationError("Room not found", 404, "NOT_FOUND")
+    require_permission(access, "can_edit_layout", room[0])
+    c.execute("SELECT COUNT(*), COALESCE(MAX(position_index), -1) FROM hostel_beds WHERE room_id=? AND vendor_id=?", (room_id, vendor_id))
+    count, max_position = c.fetchone()
+    if int(count) >= 20: raise HostelAllocationError("A room cannot contain more than 20 beds", 409, "BED_LIMIT_REACHED")
+    c.execute("SELECT id FROM hostel_beds WHERE room_id=? AND LOWER(bed_label)=LOWER(?)", (room_id, label))
+    if c.fetchone(): raise HostelAllocationError("A bed with this label already exists in the room", 409, "DUPLICATE_BED")
+    c.execute("INSERT INTO hostel_beds (vendor_id,room_id,bed_label,position_index) VALUES (?,?,?,?)", (vendor_id, room_id, label, int(max_position) + 1))
+    bed_id = c.lastrowid; conn.commit(); return bed_id
+
+
+def delete_bed(conn, vendor_id, bed_id, access):
+    c = conn.cursor(); bed = _bed_context(c, vendor_id, bed_id)
+    if not bed: raise HostelAllocationError("Bed not found", 404, "NOT_FOUND")
+    require_permission(access, "can_edit_layout", bed["building_id"])
+    c.execute("SELECT 1 FROM hostel_allocations WHERE bed_id=?", (bed_id,))
+    if c.fetchone(): raise HostelAllocationError("Remove the resident before deleting this bed", 409, "BED_OCCUPIED")
+    if _effective_bed_status(bed, False) != "available":
+        raise HostelAllocationError("Clear the reservation or unavailability restriction before deleting this bed", 409, "BED_NOT_AVAILABLE")
+    c.execute("DELETE FROM hostel_beds WHERE id=? AND vendor_id=?", (bed_id, vendor_id)); conn.commit()
 
 
 def reorder_rooms(conn, vendor_id, floor_id, room_ids, access):
