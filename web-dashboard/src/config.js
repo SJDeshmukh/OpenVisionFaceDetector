@@ -49,7 +49,8 @@ export const FEATURE_TO_SIDEBAR_MAP = {
   'lecture_wise_reports': 'Reports',
   'parent_alerts': 'Settings',
   'checkin_checkout': 'Attendance',
-  'hostel_attendance_alerts': 'Hostel Alerts'
+  'hostel_attendance_alerts': 'Hostel Alerts',
+  'hostel_allocation': 'Hostel Allocation'
 };
 
 // Items that are ALWAYS visible regardless of features (Base System)

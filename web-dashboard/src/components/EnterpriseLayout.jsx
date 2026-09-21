@@ -6,7 +6,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   LayoutDashboard, Users, ClipboardList, Video, FileText, Settings,
   Shield, Bell, Search, LogOut, CalendarClock, DollarSign, Activity,
-  Menu, X, FileCheck, Zap, ChevronRight, Moon, Sun
+  Menu, X, FileCheck, Zap, ChevronRight, Moon, Sun, Building2
 } from 'lucide-react';
 import { Image as ImageIcon } from 'lucide-react';
 import BrandLogo from './BrandLogo';
@@ -29,6 +29,7 @@ const adminNavItems = [
   { name: 'Leave Management',     path: '/leave-management',     icon: FileCheck },
   { name: 'Face Reset Requests',  path: '/face-reset-requests',  icon: Shield },
   { name: 'Hostel Alerts',        path: '/hostel-alerts',        icon: Bell },
+  { name: 'Hostel Allocation',    path: '/hostel-allocation',    icon: Building2 },
 ];
 
 const superAdminNavItems = [
@@ -48,6 +49,7 @@ const ownerNavItems = [
   { name: 'Advance Approvals', path: '/owner/advances', icon: DollarSign },
   { name: 'Attendance',        path: '/attendance',     icon: ClipboardList },
   { name: 'Hostel Alerts',     path: '/hostel-alerts',  icon: Bell },
+  { name: 'Hostel Allocation', path: '/hostel-allocation', icon: Building2 },
 ];
 
 const facultyNavItems = [
@@ -136,11 +138,16 @@ export const Sidebar = ({ isOpen, onClose }) => {
     const hostelAlertsSupported = !staffSession &&
       ['vendor_admin', 'admin', 'owner'].includes(user?.role) &&
       user?.features?.includes('hostel_attendance_alerts');
+    const hostelAllocationSupported = Boolean(user?.features?.includes('hostel_allocation')) &&
+      (Boolean(staffSession) || ['vendor_admin', 'admin', 'owner', 'rector', 'hod'].includes(user?.role));
 
     // Feature-controlled pages must be added explicitly. Filtering a role's base
     // menu is not sufficient when older accounts have a reduced/default bundle.
     if (hostelAlertsSupported && !navItems.some(item => item.path === '/hostel-alerts')) {
       navItems = [...navItems, { name: 'Hostel Alerts', path: '/hostel-alerts', icon: Bell }];
+    }
+    if (hostelAllocationSupported && !navItems.some(item => item.path === '/hostel-allocation')) {
+      navItems = [...navItems, { name: 'Hostel Allocation', path: '/hostel-allocation', icon: Building2 }];
     }
     if (user?.features && Array.isArray(user.features)) {
       const allowedNames = new Set(ALWAYS_VISIBLE_ITEMS);
@@ -155,6 +162,7 @@ export const Sidebar = ({ isOpen, onClose }) => {
     }
     if (!faceResetSupported) navItems = navItems.filter(item => item.name !== 'Face Reset Requests');
     if (!hostelAlertsSupported) navItems = navItems.filter(item => item.name !== 'Hostel Alerts');
+    if (!hostelAllocationSupported) navItems = navItems.filter(item => item.name !== 'Hostel Allocation');
   }
 
   const navLabel = (item) => {

@@ -26,6 +26,7 @@ import LeaveManagement from './pages/LeaveManagement';
 import FaceResetRequests from './pages/FaceResetRequests';
 import OwnerAdvances from './pages/OwnerAdvances';
 import HostelAlerts from './pages/HostelAlerts';
+import HostelAllocation from './pages/HostelAllocation';
 
 import { usesStudentRecords } from './lib/businessTerminology';
 
@@ -65,6 +66,13 @@ const HostelAlertsRoute = () => {
   const allowed = ['vendor_admin', 'admin', 'owner'].includes(user?.role) &&
     user?.features?.includes('hostel_attendance_alerts');
   return allowed ? <HostelAlerts /> : <Navigate to="/dashboard" replace />;
+};
+
+const HostelAllocationRoute = () => {
+  const { user, staffSession } = useAuth();
+  const allowed = (Boolean(staffSession) || ['vendor_admin', 'admin', 'owner', 'rector', 'hod'].includes(user?.role)) &&
+    user?.features?.includes('hostel_allocation');
+  return allowed ? <HostelAllocation /> : <Navigate to="/dashboard" replace />;
 };
 
 function App() {
@@ -112,6 +120,7 @@ function App() {
                 <Route path="/leave-management" element={<LeaveManagement />} />
                 <Route path="/face-reset-requests" element={<FaceResetRoute />} />
                 <Route path="/hostel-alerts" element={<HostelAlertsRoute />} />
+                <Route path="/hostel-allocation" element={<HostelAllocationRoute />} />
               </Route>
 
               {/* Shared/User Routes */}

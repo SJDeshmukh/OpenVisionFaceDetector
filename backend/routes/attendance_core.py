@@ -24,6 +24,7 @@ from services.attendance_ingestion_service import (
     LegacyAttendanceEvent,
     resolve_client_event_time,
 )
+from services.attendance_state_service import next_attendance_status
 from domain.attendance import AttendanceEventSource
 from services.auth_service import require_auth, verify_token, extract_token
 from middleware.validation import validate_request
@@ -418,28 +419,46 @@ def person_event(valid_data: PersonEventSchema):
                 "event_id": existing_event.event_id,
             })
 
+    hostel_movement_mode = bool(
+        person_id and vendor_id_to_check and
+        vendor_has_feature(vendor_id_to_check, "hostel_attendance_alerts")
+    )
+
     if person_id:
         if vendor_id_to_check:
             q = "SELECT * FROM attendance WHERE person_id = ? AND vendor_id = ?"
             p = [person_id, vendor_id_to_check]
-            if curr_dev_id: q += " AND device_id = ?"; p.append(curr_dev_id)
+            # Hostel entry/exit is a person-wide state. A resident may leave
+            # through one gate and return through another, so do not scope the
+            # previous event to the current device in hostel movement mode.
+            if curr_dev_id and not hostel_movement_mode:
+                q += " AND device_id = ?"; p.append(curr_dev_id)
             c.execute(q + " ORDER BY timestamp DESC LIMIT 1", p)
         else:
             q = "SELECT * FROM attendance WHERE person_id = ?"
             p = [person_id]
-            if curr_dev_id: q += " AND device_id = ?"; p.append(curr_dev_id)
+            if curr_dev_id and not hostel_movement_mode:
+                q += " AND device_id = ?"; p.append(curr_dev_id)
             c.execute(q + " ORDER BY timestamp DESC LIMIT 1", p)
     else:
         # Fallback to name...
         c.execute("SELECT * FROM attendance WHERE name = ? ORDER BY timestamp DESC LIMIT 1", (name,))
     
     last_record = c.fetchone()
-    new_status = 'CHECK_OUT' if last_record and last_record['status'] == 'CHECK_IN' else 'CHECK_IN'
-    if new_status == 'CHECK_OUT':
+    last_status = last_record['status'] if last_record else None
+    hours_since_last = None
+    if last_record:
         try:
             lts = parse_db_datetime(last_record['timestamp'])
-            if lts and (current_time_obj - lts).total_seconds() / 3600 > 16: new_status = 'CHECK_IN'
-        except (ValueError, TypeError, AttributeError): pass
+            if lts:
+                hours_since_last = (current_time_obj - lts).total_seconds() / 3600
+        except (ValueError, TypeError, AttributeError):
+            pass
+    new_status = next_attendance_status(
+        last_status,
+        hours_since_last=hours_since_last,
+        hostel_mode=hostel_movement_mode,
+    )
 
     activity_name, activity_type = "Work", "Work"
     # (Simplified activity/shift logic for core split - should be fully migrated from monolithic)

@@ -336,7 +336,7 @@ const SuperAdminDashboard = () => {
   const [availableFeatures, setAvailableFeatures] = useState([
     'reports', 'report_detailed', 'report_payroll', 'automated_email_reports', 'employee_reports', 'xchat_ai', 'mobile_app', 'payroll', 'shifts',
     'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 
-    'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'hostel_attendance_alerts', 'api_access', 'white_labeling',
+    'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'hostel_attendance_alerts', 'hostel_allocation', 'api_access', 'white_labeling',
     'late_mark', 'bulk_image_attendance', 'classes', 'leave_management'
   ]);
   const [bundleConfig, setBundleConfig] = useState({
