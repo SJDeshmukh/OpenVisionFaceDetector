@@ -19,10 +19,10 @@ from services.login_identity_service import (
 logger = logging.getLogger(__name__)
 
 # Token TTLs
-# Web sessions expire after 24 hours via the cryptographic signature.
+# Web sessions expire after one hour via the cryptographic signature.
 # Mobile/parent/kiosk tokens use a long TTL but are invalidated by deleting
 # their row from active_sessions (logout or superadmin force-logout).
-WEB_TOKEN_TTL = 86400          # 24 hours
+WEB_TOKEN_TTL = 3600           # 1 hour
 PERSISTENT_TOKEN_TTL = 2592000  # 30 days; persistent sessions are also DB-revocable
 
 # Platforms that are validated against active_sessions instead of expiry time
@@ -43,7 +43,7 @@ def get_serializer():
 def generate_token(username, role, vendor_id=None, platform='web'):
     """
     Generate a signed token.
-    platform='web'    → expires in 24 h (enforced by verify_token)
+    platform='web'    → expires in 1 h (enforced by verify_token)
     platform='mobile' → long-lived; invalidated via active_sessions deletion
     """
     payload = {'username': username, 'role': role, 'platform': platform, 'nonce': str(uuid.uuid4())}

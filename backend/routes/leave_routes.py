@@ -6,6 +6,14 @@ from datetime import datetime, timedelta
 from services.auth_service import authenticate_vendor_access, generate_token_with_claims, hash_password, verify_token, require_auth, login_email_from_profile
 from services.face_service import _normalize_vec, _decode_data_uri_to_rgb
 from services.mobile_face_template import decode_face_template as _decode_face_template
+from services.leave_workflow_service import (
+    attach_approval_steps,
+    current_stage,
+    decide_current_stage,
+    get_active_workflow,
+    replace_workflow,
+    snapshot_request,
+)
 from utils import get_db_connection, require_feature
 
 leave_bp = Blueprint('leave_bp', __name__)
@@ -34,7 +42,8 @@ def _authenticated_parent(cursor, vendor_id):
     if getattr(g, "user_role", None) != "parent" or not getattr(g, "username", None):
         return None
     cursor.execute(
-        """SELECT id, student_number, selected_person_id, face_template
+        """SELECT id, student_number, selected_person_id, face_template, device_id,
+                  face_image, face_server_template
            FROM parent_users WHERE vendor_id = ? AND username = ?""",
         (vendor_id, g.username),
     )
@@ -49,6 +58,9 @@ def _authenticated_parent(cursor, vendor_id):
         "student_number": row[1],
         "selected_person_id": row[2],
         "face_template": row[3],
+        "device_id": row[4],
+        "face_image": row[5],
+        "face_server_template": row[6],
     }
 
 
@@ -64,17 +76,75 @@ def _authenticated_leave_staff(vendor_id, required_role=None):
     conn = get_db_connection()
     try:
         c = conn.cursor()
-        c.execute("SELECT id, role, department FROM leave_staff WHERE id = ? AND vendor_id = ?", (data.get("staff_id"), vendor_id))
+        c.execute("SELECT id, name, role, department FROM leave_staff WHERE id = ? AND vendor_id = ?", (data.get("staff_id"), vendor_id))
         row = c.fetchone()
         if not row:
             return None
-        role = row["role"] if hasattr(row, "keys") else row[1]
-        department = row["department"] if hasattr(row, "keys") else row[2]
+        name = row["name"] if hasattr(row, "keys") else row[1]
+        role = row["role"] if hasattr(row, "keys") else row[2]
+        department = row["department"] if hasattr(row, "keys") else row[3]
         if role != data.get("staff_role") or (required_role and role != required_role):
             return None
-        return {"id": data.get("staff_id"), "role": role, "department": department}
+        return {"id": data.get("staff_id"), "name": name, "role": role, "department": department}
     finally:
         conn.close()
+
+
+def _student_matches_department(request_row, department):
+    if not department:
+        return False
+    expected = str(department).strip().lower()
+    if str(request_row.get("student_dept") or "").strip().lower() == expected:
+        return True
+    raw = request_row.get("student_custom_data")
+    try:
+        custom = json.loads(raw) if isinstance(raw, str) else (raw or {})
+    except (TypeError, ValueError):
+        custom = {}
+    return str(custom.get("department") or "").strip().lower() == expected
+
+
+def _notify_parent_when_current(conn, vendor_id, request_row):
+    """Notify the linked parent exactly when a request reaches a Parent stage."""
+    stages = snapshot_request(conn, vendor_id, request_row["id"], request_row)
+    stage = current_stage(stages)
+    if not stage or stage.get("actor_type") != "parent":
+        return
+    try:
+        from notifications import notify_parent_async
+        notify_parent_async(
+            request_row["student_id"],
+            vendor_id,
+            "Leave request awaiting your approval",
+            f"A leave request is ready for {stage.get('display_name') or 'Parent'} review.",
+            {
+                "type": "leave_approval",
+                "request_id": str(request_row["id"]),
+                "stage": str(stage.get("stage_key") or "parent"),
+            },
+        )
+    except Exception:
+        # Notification delivery must never roll back an approval transaction.
+        pass
+
+
+def _extract_server_face_template(face_image, vendor_id):
+    """Extract a server-controlled embedding from an audit image."""
+    from tasks import detect_faces_task
+    from services.task_payload_service import store_image_payload
+
+    data_part = face_image.split(",")[-1] if "," in face_image else face_image
+    task_payload = store_image_payload(data_part)
+    result = detect_faces_task.apply_async(
+        args=[task_payload, {"fast": True}, vendor_id]
+    ).get(timeout=60)
+    faces = result.get("faces", [])
+    if not faces:
+        raise ValueError("No face detected in captured image")
+    template = faces[0].get("emb_vec", "")
+    if not template:
+        raise RuntimeError("Failed to extract face embedding")
+    return template
 
 @leave_bp.route("/request", methods=["POST"])
 @require_feature("leave_management")
@@ -178,17 +248,27 @@ def create_leave_request():
                 INSERT INTO leave_requests 
                 (vendor_id, student_id, leave_type, reason, start_date, end_date, start_time, end_time) 
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
             """, (vendor_id, student_id, leave_type, reason, start_date, end_date, start_time, end_time))
+            inserted = c.fetchone()
+            request_id = inserted["id"] if hasattr(inserted, "keys") else inserted[0]
         else:
             c.execute("""
                 INSERT INTO leave_requests 
                 (vendor_id, student_id, leave_type, reason, start_date, end_date, start_time, end_time) 
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, (vendor_id, student_id, leave_type, reason, start_date, end_date, start_time, end_time))
+            request_id = c.lastrowid
         
         conn.commit()
-        request_id = c.lastrowid
-        return jsonify({"status": "success", "request_id": request_id})
+        steps = snapshot_request(conn, vendor_id, request_id) if request_id else []
+        if request_id:
+            _notify_parent_when_current(conn, vendor_id, {
+                "id": request_id,
+                "vendor_id": vendor_id,
+                "student_id": student_id,
+            })
+        return jsonify({"status": "success", "request_id": request_id, "approval_steps": steps})
     except Exception as e:
         if is_pg: conn.rollback()
         return jsonify({"error": str(e)}), 500
@@ -224,22 +304,16 @@ def get_parent_pending_requests():
         if student_id is None:
             return jsonify({"requests": []})
 
-        # Parents only receive the request after Rector and HOD approval.
-        if is_pg:
-            c.execute("""SELECT * FROM leave_requests
-                         WHERE student_id = %s AND vendor_id = %s
-                           AND rector_status = 'approved' AND hod_status = 'approved'
-                           AND parent_status = 'pending' AND final_status = 'pending'
-                         ORDER BY created_at DESC""", (student_id, vendor_id))
-        else:
-            c.execute("""SELECT * FROM leave_requests
-                         WHERE student_id = ? AND vendor_id = ?
-                           AND rector_status = 'approved' AND hod_status = 'approved'
-                           AND parent_status = 'pending' AND final_status = 'pending'
-                         ORDER BY created_at DESC""", (student_id, vendor_id))
-        
-        rows = c.fetchall()
-        return jsonify({"requests": [get_row_dict(r) for r in rows]})
+        c.execute("""SELECT * FROM leave_requests
+                     WHERE student_id = ? AND vendor_id = ? AND final_status = 'pending'
+                     ORDER BY created_at DESC""", (student_id, vendor_id))
+        rows = [get_row_dict(r) for r in c.fetchall()]
+        attach_approval_steps(conn, rows)
+        pending = [
+            row for row in rows
+            if row.get("current_stage") and row["current_stage"].get("actor_type") == "parent"
+        ]
+        return jsonify({"requests": pending})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
@@ -273,77 +347,60 @@ def parent_register_face():
     if face_template:
         try:
             new_emb, new_family = _decode_face_template(face_template)
-            
-            # Get all faces for this vendor to compare
-            c.execute("SELECT id, templates, name FROM faces WHERE vendor_id = ?", (vendor_id,))
-            rows = c.fetchall()
-            
-            for row in rows:
-                r = get_row_dict(row)
-                if not r.get('templates'): continue
-                try:
-                    stored_emb, stored_family = _decode_face_template(r['templates'])
-                except (ValueError, TypeError):
-                    continue
-                # Embeddings from different recognition models are incomparable.
-                if stored_family != new_family:
-                    continue
-                similarity = float(np.dot(new_emb, stored_emb))
-                
-                if similarity > 0.62:
-                    conn.close()
-                    return jsonify({"error": f"Violation: Face already registered as student '{r['name']}'"}), 409
-        except Exception as e:
-            print(f"Error in unique check: {e}")
+        except (ValueError, TypeError) as e:
+            conn.close()
+            return jsonify({"error": f"Invalid parent face template: {e}"}), 400
+
+        # Get all faces for this vendor to compare.
+        c.execute("SELECT id, templates, name FROM faces WHERE vendor_id = ?", (vendor_id,))
+        rows = c.fetchall()
+        for row in rows:
+            r = get_row_dict(row)
+            if not r.get('templates'):
+                continue
+            try:
+                stored_emb, stored_family = _decode_face_template(r['templates'])
+            except (ValueError, TypeError):
+                continue
+            # Embeddings from different recognition models are incomparable.
+            if stored_family != new_family:
+                continue
+            similarity = float(np.dot(new_emb, stored_emb))
+            if similarity > 0.62:
+                conn.close()
+                return jsonify({"error": f"Violation: Face already registered as student '{r['name']}'"}), 409
 
     # 2. Proceed with registration
     try:
         is_pg = getattr(conn, "_is_pg", False)
-        if face_template:
-            if is_pg:
-                c.execute("UPDATE parent_users SET face_image = %s, face_template = %s WHERE id = %s AND vendor_id = %s",
-                          (face_image, face_template, parent["id"], vendor_id))
-            else:
-                c.execute("UPDATE parent_users SET face_image = ?, face_template = ? WHERE id = ? AND vendor_id = ?",
-                          (face_image, face_template, parent["id"], vendor_id))
-            
-            if c.rowcount == 0:
-                conn.close()
-                return jsonify({"status": "error", "error": "Parent record not found for this student. Please ensure you are using the correct student ID."}), 404
-            
-            conn.commit()
-            conn.close()
-            return jsonify({"status": "success"})
-
-        # Fallback to backend processing (e.g. for web portals registering parents)
-        from tasks import detect_faces_task
-        from services.task_payload_service import store_image_payload
-        data_part = face_image.split(",")[-1] if "," in face_image else face_image
+        server_template = None
         try:
-            task_payload = store_image_payload(data_part)
-            result = detect_faces_task.apply_async(args=[task_payload, {"fast": True}, vendor_id]).get(timeout=60)
-            faces = result.get("faces", [])
-            if not faces:
-                 conn.close()
-                 return jsonify({"error": "No face detected"}), 400
-            
-            face_template = faces[0].get("emb_vec", "")
-            if not face_template:
-                 conn.close()
-                 return jsonify({"error": "No embedding generated"}), 400
+            server_template = _extract_server_face_template(face_image, vendor_id)
         except Exception as e:
-            conn.close()
-            return jsonify({"error": f"Inference failed or timed out: {str(e)}"}), 500
+            if not face_template:
+                conn.close()
+                return jsonify({"error": f"Inference failed or timed out: {str(e)}"}), 500
+
+        # Web clients without the local model may use the server template for
+        # local storage too; Android keeps its model-specific FID1 template.
+        local_template = face_template or server_template
 
         if is_pg:
-            c.execute("UPDATE parent_users SET face_image = %s, face_template = %s WHERE id = %s AND vendor_id = %s",
-                      (face_image, face_template, parent["id"], vendor_id))
+            c.execute("UPDATE parent_users SET face_image = %s, face_template = %s, face_server_template = %s WHERE id = %s AND vendor_id = %s",
+                      (face_image, local_template, server_template, parent["id"], vendor_id))
         else:
-            c.execute("UPDATE parent_users SET face_image = ?, face_template = ? WHERE id = ? AND vendor_id = ?",
-                      (face_image, face_template, parent["id"], vendor_id))
+            c.execute("UPDATE parent_users SET face_image = ?, face_template = ?, face_server_template = ? WHERE id = ? AND vendor_id = ?",
+                      (face_image, local_template, server_template, parent["id"], vendor_id))
+        if c.rowcount == 0:
+            conn.close()
+            return jsonify({"status": "error", "error": "Parent record not found for this student."}), 404
         conn.commit()
         conn.close()
-        return jsonify({"status": "success"})
+        return jsonify({
+            "status": "success",
+            "server_verification_ready": bool(server_template),
+            "verification_note": None if server_template else "Server template will be prepared on first approval",
+        })
     except Exception as e:
         if conn: conn.close()
         return jsonify({"error": str(e)}), 500
@@ -358,7 +415,6 @@ def parent_approve_request():
     student_number = data.get("student_number")
     captured_face = data.get("captured_face")
     action = data.get("action")
-    local_verified = data.get("local_verified", False)
     
     if not all([request_id, student_number, action]):
         return jsonify({"error": "Missing fields"}), 400
@@ -380,63 +436,40 @@ def parent_approve_request():
         if student_id is None:
             return jsonify({"error": "Parent account is not linked to a student record"}), 409
 
-        if is_pg:
-            c.execute("""SELECT id FROM leave_requests
-                         WHERE id = %s AND vendor_id = %s AND student_id = %s
-                           AND rector_status = 'approved' AND hod_status = 'approved'
-                           AND parent_status = 'pending' AND final_status = 'pending'""",
-                      (request_id, vendor_id, student_id))
-        else:
-            c.execute("""SELECT id FROM leave_requests
-                         WHERE id = ? AND vendor_id = ? AND student_id = ?
-                           AND rector_status = 'approved' AND hod_status = 'approved'
-                           AND parent_status = 'pending' AND final_status = 'pending'""",
-                      (request_id, vendor_id, student_id))
-        if not c.fetchone():
+        c.execute("""SELECT * FROM leave_requests
+                     WHERE id = ? AND vendor_id = ? AND student_id = ?
+                       AND final_status = 'pending'""", (request_id, vendor_id, student_id))
+        request_row_raw = c.fetchone()
+        if not request_row_raw:
             return jsonify({"error": "Leave request is not awaiting this parent's decision"}), 409
+        request_row = get_row_dict(request_row_raw)
+        steps = snapshot_request(conn, vendor_id, request_id, request_row)
+        stage = current_stage(steps)
+        if not stage or stage.get("actor_type") != "parent":
+            waiting_for = stage.get("display_name") if stage else "another stage"
+            return jsonify({"error": f"Leave request is awaiting {waiting_for} approval"}), 409
 
-        # The FaceIDApp engine performs multi-frame liveness and face matching
-        # before setting this flag; the API still requires the capture payload.
-        if local_verified:
-             if is_pg:
-                 c.execute("""UPDATE leave_requests SET parent_status = %s, final_status = %s
-                              WHERE id = %s AND vendor_id = %s AND student_id = %s
-                                AND rector_status = 'approved' AND hod_status = 'approved'
-                                AND parent_status = 'pending' AND final_status = 'pending'""",
-                           (action, action, request_id, vendor_id, student_id))
-             else:
-                 c.execute("""UPDATE leave_requests SET parent_status = ?, final_status = ?
-                              WHERE id = ? AND vendor_id = ? AND student_id = ?
-                                AND rector_status = 'approved' AND hod_status = 'approved'
-                                AND parent_status = 'pending' AND final_status = 'pending'""",
-                           (action, action, request_id, vendor_id, student_id))
-             if c.rowcount == 0:
-                 return jsonify({"error": "Leave request is no longer awaiting the parent's decision"}), 409
-             conn.commit()
-             return jsonify({"status": "success", "similarity": 1.0})
-
-        if not parent or not parent.get('face_template'):
+        if not parent or not (parent.get('face_server_template') or parent.get('face_image')):
             return jsonify({"error": "Parent face not registered"}), 400
-        
-        from tasks import detect_faces_task
-        from services.task_payload_service import store_image_payload
-        data_part = captured_face.split(",")[-1] if "," in captured_face else captured_face
+
         try:
-            task_payload = store_image_payload(data_part)
-            result = detect_faces_task.apply_async(args=[task_payload, {"fast": True}, vendor_id]).get(timeout=60)
-            faces = result.get("faces", [])
-            if not faces:
-                return jsonify({"error": "No face detected in captured image"}), 400
-            
-            emb_vec_b64 = faces[0].get("emb_vec", "")
-            if not emb_vec_b64:
-                return jsonify({"error": "Failed to extract embeddings"}), 500
-                
-            emb, live_family = _decode_face_template(emb_vec_b64)
-            stored_template, stored_family = _decode_face_template(parent['face_template'])
+            live_server_template = _extract_server_face_template(captured_face, vendor_id)
+            stored_server_template = parent.get("face_server_template")
+            if not stored_server_template:
+                # One-time migration for parents enrolled before server-side
+                # verification was introduced.
+                stored_server_template = _extract_server_face_template(parent["face_image"], vendor_id)
+                c.execute(
+                    "UPDATE parent_users SET face_server_template = ? WHERE id = ? AND vendor_id = ?",
+                    (stored_server_template, parent["id"], vendor_id),
+                )
+                conn.commit()
+
+            emb, live_family = _decode_face_template(live_server_template)
+            stored_template, stored_family = _decode_face_template(stored_server_template)
             if live_family != stored_family:
                 return jsonify({
-                    "error": "Registered and captured faces use different recognition models; re-register on this device"
+                    "error": "Registered and captured faces use different recognition models; please re-register the parent face"
                 }), 409
             similarity = float(np.dot(emb, stored_template))
         except Exception as e:
@@ -445,21 +478,22 @@ def parent_approve_request():
         if similarity < 0.6:
              return jsonify({"error": "Face verification failed", "similarity": similarity}), 401
 
-        if is_pg:
-            c.execute("""UPDATE leave_requests SET parent_status = %s, final_status = %s
-                         WHERE id = %s AND vendor_id = %s AND student_id = %s
-                           AND rector_status = 'approved' AND hod_status = 'approved'
-                           AND parent_status = 'pending' AND final_status = 'pending'""",
-                      (action, action, request_id, vendor_id, student_id))
-        else:
-            c.execute("""UPDATE leave_requests SET parent_status = ?, final_status = ?
-                         WHERE id = ? AND vendor_id = ? AND student_id = ?
-                           AND rector_status = 'approved' AND hod_status = 'approved'
-                           AND parent_status = 'pending' AND final_status = 'pending'""",
-                      (action, action, request_id, vendor_id, student_id))
-        if c.rowcount == 0:
-            return jsonify({"error": "Leave request is no longer awaiting the parent's decision"}), 409
-        conn.commit()
+        decide_current_stage(
+            conn,
+            vendor_id,
+            request_row,
+            action,
+            actor_type="parent",
+            role_key="parent",
+            actor_id=parent["id"],
+            actor_name=parent["student_number"],
+            metadata={
+                "face_similarity": similarity,
+                "verification": "server_face_match",
+                "device_id": parent.get("device_id"),
+                "ip": request.remote_addr,
+            },
+        )
         return jsonify({"status": "success", "similarity": similarity})
     finally:
         conn.close()
@@ -469,10 +503,10 @@ def parent_approve_request():
 def get_leave_tracking():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
+    role_error = _require_role("vendor_admin", "admin", "owner", "super_admin")
+    if role_error: return role_error
     
     role = request.args.get("role", "rector")
-    if role not in {"rector", "hod"}:
-        return jsonify({"error": "Invalid role"}), 400
     staff = _authenticated_leave_staff(vendor_id, role)
     if not staff:
         return jsonify({"error": "A valid staff PIN session is required"}), 403
@@ -494,7 +528,14 @@ def get_leave_tracking():
         """
         params = [vendor_id, today - timedelta(days=1), today]
         
-        if role == 'hod' and dept:
+        workflow = get_active_workflow(conn, vendor_id)
+        role_stages = [
+            stage for stage in workflow["stages"]
+            if stage.get("actor_type") == "staff" and stage.get("role_key") == role
+        ]
+        if not role_stages:
+            return jsonify({"error": "This staff role is not part of the active workflow"}), 403
+        if any(stage.get("department_scoped") for stage in role_stages) and dept:
             if is_pg:
                 query += """ AND (
                     LOWER(TRIM(f.department)) = LOWER(TRIM(%s)) OR
@@ -572,10 +613,10 @@ def get_leave_tracking():
 def get_admin_pending_requests():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
+    role_error = _require_role("vendor_admin", "admin", "owner", "super_admin")
+    if role_error: return role_error
     
     role = request.args.get("role", "rector")
-    if role not in {"rector", "hod"}:
-        return jsonify({"error": "Invalid role"}), 400
     staff = _authenticated_leave_staff(vendor_id, role)
     if not staff:
         return jsonify({"error": "A valid staff PIN session is required"}), 403
@@ -585,63 +626,25 @@ def get_admin_pending_requests():
     c = conn.cursor()
     try:
         is_pg = getattr(conn, "_is_pg", False)
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.info(f"Admin pending fetch: role={role}, dept={dept}, vendor_id={vendor_id}")
-
-        if role == 'rector':
-            if is_pg:
-                c.execute("""
-                    SELECT lr.*, f.name as student_name 
-                    FROM leave_requests lr
-                    JOIN faces f ON lr.student_id = f.id
-                    WHERE lr.vendor_id = %s AND lr.rector_status = 'pending' AND lr.final_status = 'pending'
-                """, (vendor_id,))
-            else:
-                c.execute("""
-                    SELECT lr.*, f.name as student_name 
-                    FROM leave_requests lr
-                    JOIN faces f ON lr.student_id = f.id
-                    WHERE lr.vendor_id = ? AND lr.rector_status = 'pending' AND lr.final_status = 'pending'
-                """, (vendor_id,))
-        elif role == 'hod':
-            if not dept:
-                return jsonify({"error": "Department required for HOD"}), 400
-            
-            # Use case-insensitive and trimmed department matching, searching both column and custom_data
-            if is_pg:
-                c.execute("""
-                    SELECT lr.*, f.name as student_name 
-                    FROM leave_requests lr
-                    JOIN faces f ON lr.student_id = f.id
-                    WHERE lr.vendor_id = %s 
-                    AND lr.rector_status = 'approved' 
-                    AND lr.hod_status = 'pending'
-                    AND lr.final_status = 'pending'
-                    AND (
-                        LOWER(TRIM(f.department)) = LOWER(TRIM(%s)) OR
-                        LOWER(TRIM(f.custom_data::jsonb->>'department')) = LOWER(TRIM(%s))
-                    )
-                """, (vendor_id, dept, dept))
-            else:
-                c.execute("""
-                    SELECT lr.*, f.name as student_name 
-                    FROM leave_requests lr
-                    JOIN faces f ON lr.student_id = f.id
-                    WHERE lr.vendor_id = ? 
-                    AND lr.rector_status = 'approved' 
-                    AND lr.hod_status = 'pending'
-                    AND lr.final_status = 'pending'
-                    AND (
-                        LOWER(TRIM(f.department)) = LOWER(TRIM(?)) OR
-                        LOWER(TRIM(json_extract(f.custom_data, '$.department'))) = LOWER(TRIM(?))
-                    )
-                """, (vendor_id, dept, dept))
-        else:
-            return jsonify({"error": "Invalid role"}), 400
-            
-        rows = c.fetchall()
-        return jsonify({"requests": [get_row_dict(r) for r in rows]})
+        c.execute("""
+            SELECT lr.*, f.name AS student_name, f.department AS student_dept,
+                   f.custom_data AS student_custom_data
+            FROM leave_requests lr
+            JOIN faces f ON lr.student_id = f.id
+            WHERE lr.vendor_id = ? AND lr.final_status = 'pending'
+            ORDER BY lr.created_at ASC
+        """, (vendor_id,))
+        rows = [get_row_dict(r) for r in c.fetchall()]
+        attach_approval_steps(conn, rows)
+        pending = []
+        for row in rows:
+            stage = row.get("current_stage")
+            if not stage or stage.get("actor_type") != "staff" or stage.get("role_key") != role:
+                continue
+            if stage.get("department_scoped") and not _student_matches_department(row, dept):
+                continue
+            pending.append(row)
+        return jsonify({"requests": pending})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
@@ -652,14 +655,14 @@ def get_admin_pending_requests():
 def get_admin_leave_history():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
+    role_error = _require_role("vendor_admin", "admin", "owner", "super_admin")
+    if role_error: return role_error
     
     role = request.args.get("role")
     status = request.args.get("status", "all")
     
     if not role:
         return jsonify({"error": "Role required"}), 400
-    if role not in {"rector", "hod"}:
-        return jsonify({"error": "Invalid role"}), 400
     staff = _authenticated_leave_staff(vendor_id, role)
     if not staff:
         return jsonify({"error": "A valid staff PIN session is required"}), 403
@@ -681,24 +684,6 @@ def get_admin_leave_history():
         """
         params = [vendor_id]
 
-        if role == 'hod':
-            if not dept:
-                return jsonify({"error": "Department required for HOD history"}), 400
-            
-            if is_pg:
-                query += """ AND (
-                    LOWER(TRIM(f.department)) = LOWER(TRIM(%s)) OR
-                    LOWER(TRIM(f.custom_data::jsonb->>'department')) = LOWER(TRIM(%s))
-                )"""
-            else:
-                query += """ AND (
-                    LOWER(TRIM(f.department)) = LOWER(TRIM(?)) OR
-                    LOWER(TRIM(json_extract(f.custom_data, '$.department'))) = LOWER(TRIM(?))
-                )"""
-            params.extend([dept, dept])
-        elif role != 'rector':
-            return jsonify({"error": "Invalid role"}), 400
-
         if status != "all":
             query += " AND lr.final_status = ?"
             params.append(status)
@@ -708,8 +693,26 @@ def get_admin_leave_history():
             query = query.replace('?', '%s')
 
         c.execute(query, tuple(params))
-        rows = c.fetchall()
-        return jsonify({"history": [get_row_dict(r) for r in rows]})
+        rows = [get_row_dict(r) for r in c.fetchall()]
+        attach_approval_steps(conn, rows)
+        filtered = []
+        for row in rows:
+            matching = [step for step in row.get("approval_steps", []) if step.get("role_key") == role]
+            if not matching:
+                continue
+            if any(step.get("department_scoped") for step in matching):
+                # History follows the scope captured with the request, including
+                # requests from an older workflow version.
+                c.execute("SELECT department, custom_data FROM faces WHERE id = ?", (row["student_id"],))
+                person = c.fetchone()
+                person_data = get_row_dict(person) if person else {}
+                row["student_dept"] = person_data.get("department") if isinstance(person_data, dict) else person[0]
+                row["student_custom_data"] = person_data.get("custom_data") if isinstance(person_data, dict) else person[1]
+                if not _student_matches_department(row, dept):
+                    continue
+            filtered.append(row)
+        rows = filtered
+        return jsonify({"history": rows})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
@@ -720,6 +723,8 @@ def get_admin_leave_history():
 def admin_approve_request():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
+    role_error = _require_role("vendor_admin", "admin", "owner", "super_admin")
+    if role_error: return role_error
     
     data = request.json
     request_id = data.get("request_id")
@@ -728,8 +733,6 @@ def admin_approve_request():
     
     if not all([request_id, role, action]):
         return jsonify({"error": "Missing fields"}), 400
-    if role not in {"rector", "hod"}:
-        return jsonify({"error": "Invalid role"}), 400
     if action not in ALLOWED_LEAVE_ACTIONS:
         return jsonify({"error": "Action must be approved or rejected"}), 400
     staff = _authenticated_leave_staff(vendor_id, role)
@@ -739,89 +742,47 @@ def admin_approve_request():
     conn = get_db_connection()
     c = conn.cursor()
     try:
-        is_pg = getattr(conn, "_is_pg", False)
-        if role == 'hod':
-            # HOD can only decide after Rector approval.
-            if is_pg:
-                c.execute("""SELECT lr.rector_status, lr.hod_status, lr.final_status
-                             FROM leave_requests lr
-                             JOIN faces f ON lr.student_id = f.id
-                             WHERE lr.id = %s AND lr.vendor_id = %s
-                               AND (
-                                   LOWER(TRIM(f.department)) = LOWER(TRIM(%s)) OR
-                                   LOWER(TRIM(f.custom_data::jsonb->>'department')) = LOWER(TRIM(%s))
-                               )""", (request_id, vendor_id, staff.get("department"), staff.get("department")))
-            else:
-                c.execute("""SELECT lr.rector_status, lr.hod_status, lr.final_status
-                             FROM leave_requests lr
-                             JOIN faces f ON lr.student_id = f.id
-                             WHERE lr.id = ? AND lr.vendor_id = ?
-                               AND (
-                                   LOWER(TRIM(f.department)) = LOWER(TRIM(?)) OR
-                                   LOWER(TRIM(json_extract(f.custom_data, '$.department'))) = LOWER(TRIM(?))
-                               )""", (request_id, vendor_id, staff.get("department"), staff.get("department")))
-            res = c.fetchone()
-            res_dict = get_row_dict(res) if res else None
-            rector_status = res_dict.get('rector_status') if isinstance(res_dict, dict) else (res[0] if res else None)
-            hod_status = res_dict.get('hod_status') if isinstance(res_dict, dict) else (res[1] if res else None)
-            final_status = res_dict.get('final_status') if isinstance(res_dict, dict) else (res[2] if res else None)
-            if rector_status != 'approved':
-                return jsonify({"error": "Wait for Rector's approval first"}), 400
-            if hod_status != 'pending' or final_status != 'pending':
-                return jsonify({"error": "Leave request is no longer awaiting HOD approval"}), 409
-            
-            # Reset parent_status when HOD approves so legacy in-flight requests
-            # from the old Parent -> Rector -> HOD order enter the new final queue.
-            action_placeholder = "%s" if is_pg else "?"
-            assignments = f"hod_status = {action_placeholder}"
-            if action == 'approved':
-                assignments += ", parent_status = 'pending'"
-            if is_pg:
-                c.execute(f"""UPDATE leave_requests SET {assignments}
-                              WHERE id = %s AND vendor_id = %s
-                                AND rector_status = 'approved' AND hod_status = 'pending'
-                                AND final_status = 'pending'""",
-                          (action, request_id, vendor_id))
-            else:
-                c.execute(f"""UPDATE leave_requests SET {assignments}
-                              WHERE id = ? AND vendor_id = ?
-                                AND rector_status = 'approved' AND hod_status = 'pending'
-                                AND final_status = 'pending'""",
-                          (action, request_id, vendor_id))
-            if c.rowcount == 0:
-                return jsonify({"error": "Leave request is no longer awaiting HOD approval"}), 409
-                
-        else:
-            # Rector is the first approver after student submission.
-            column = "rector_status"
-            if is_pg:
-                c.execute(f"""UPDATE leave_requests SET {column} = %s
-                              WHERE id = %s AND vendor_id = %s
-                                AND rector_status = 'pending' AND final_status = 'pending'""",
-                          (action, request_id, vendor_id))
-            else:
-                c.execute(f"""UPDATE leave_requests SET {column} = ?
-                              WHERE id = ? AND vendor_id = ?
-                                AND rector_status = 'pending' AND final_status = 'pending'""",
-                          (action, request_id, vendor_id))
-            if c.rowcount == 0:
-                return jsonify({"error": "Leave request is no longer awaiting Rector approval"}), 409
-            
-        if action == 'rejected':
-            if is_pg:
-                c.execute("UPDATE leave_requests SET final_status = 'rejected' WHERE id = %s AND vendor_id = %s", (request_id, vendor_id))
-            else:
-                c.execute("UPDATE leave_requests SET final_status = 'rejected' WHERE id = ? AND vendor_id = ?", (request_id, vendor_id))
-            
-        conn.commit()
+        c.execute("""
+            SELECT lr.*, f.name AS student_name, f.department AS student_dept,
+                   f.custom_data AS student_custom_data
+            FROM leave_requests lr JOIN faces f ON lr.student_id = f.id
+            WHERE lr.id = ? AND lr.vendor_id = ? AND lr.final_status = 'pending'
+        """, (request_id, vendor_id))
+        row = c.fetchone()
+        if not row:
+            return jsonify({"error": "Leave request is no longer awaiting approval"}), 409
+        request_row = get_row_dict(row)
+        stages = snapshot_request(conn, vendor_id, request_id, request_row)
+        stage = current_stage(stages)
+        if not stage or stage.get("actor_type") != "staff" or stage.get("role_key") != role:
+            waiting_for = stage.get("display_name") if stage else "another stage"
+            return jsonify({"error": f"Leave request is awaiting {waiting_for} approval"}), 409
+        if stage.get("department_scoped") and not _student_matches_department(request_row, staff.get("department")):
+            return jsonify({"error": "This request is outside your assigned department"}), 403
+
+        decide_current_stage(
+            conn,
+            vendor_id,
+            request_row,
+            action,
+            actor_type="staff",
+            role_key=role,
+            actor_id=staff.get("id"),
+            actor_name=staff.get("name") or role,
+            metadata={"ip": request.remote_addr, "department": staff.get("department")},
+        )
+        _notify_parent_when_current(conn, vendor_id, request_row)
         try:
             from services.evolution_whatsapp_service import notify_leave_event_async
             notify_leave_event_async(vendor_id, request_id, action)
         except Exception:
             pass
         return jsonify({"status": "success"})
+    except (PermissionError, ValueError) as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 409
     except Exception as e:
-        if is_pg: conn.rollback()
+        conn.rollback()
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
@@ -831,6 +792,8 @@ def admin_approve_request():
 def generate_student_logins():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
+    role_error = _require_role("vendor_admin", "admin", "owner", "super_admin")
+    if role_error: return role_error
     
     conn = get_db_connection()
     c = conn.cursor()
@@ -896,6 +859,8 @@ def generate_student_logins():
 def verify_staff_pin():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
+    role_error = _require_role("vendor_admin", "admin", "owner", "super_admin")
+    if role_error: return role_error
     
     data = request.json
     pin = data.get("pin")
@@ -938,6 +903,8 @@ def verify_staff_pin():
 def manage_staff():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
+    role_error = _require_role("vendor_admin", "admin", "owner", "super_admin")
+    if role_error: return role_error
     
     conn = get_db_connection()
     c = conn.cursor()
@@ -961,16 +928,24 @@ def manage_staff():
             if not all([name, role, pin]):
                 return jsonify({"error": "Missing required fields"}), 400
                 
-            # If HOD, ensure department is provided and not already assigned
-            if role == 'hod':
+            workflow = get_active_workflow(conn, vendor_id)
+            matching_stages = [
+                stage for stage in workflow["stages"]
+                if stage.get("actor_type") == "staff" and stage.get("role_key") == role
+            ]
+            if not matching_stages:
+                return jsonify({"error": "Role is not part of the active approval workflow"}), 400
+
+            # Department-scoped roles require one approver per department.
+            if any(stage.get("department_scoped") for stage in matching_stages):
                 if not department:
-                    return jsonify({"error": "Department required for HOD"}), 400
+                    return jsonify({"error": "Department required for this role"}), 400
                 if is_pg:
-                    c.execute("SELECT id FROM leave_staff WHERE vendor_id = %s AND LOWER(TRIM(department)) = LOWER(TRIM(%s)) AND role = 'hod'", (vendor_id, department))
+                    c.execute("SELECT id FROM leave_staff WHERE vendor_id = %s AND LOWER(TRIM(department)) = LOWER(TRIM(%s)) AND role = %s", (vendor_id, department, role))
                 else:
-                    c.execute("SELECT id FROM leave_staff WHERE vendor_id = ? AND LOWER(TRIM(department)) = LOWER(TRIM(?)) AND role = 'hod'", (vendor_id, department))
+                    c.execute("SELECT id FROM leave_staff WHERE vendor_id = ? AND LOWER(TRIM(department)) = LOWER(TRIM(?)) AND role = ?", (vendor_id, department, role))
                 if c.fetchone():
-                    return jsonify({"error": f"An HOD is already assigned to {department}"}), 409
+                    return jsonify({"error": f"An approver for this role is already assigned to {department}"}), 409
 
             # Check for duplicate PIN
             if is_pg:
@@ -1004,10 +979,48 @@ def manage_staff():
     finally:
         conn.close()
 
+
+@leave_bp.route("/admin/workflow", methods=["GET", "PUT"])
+@require_feature("leave_management")
+def manage_leave_workflow():
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+    if getattr(g, "user_role", None) not in {"super_admin", "vendor_admin", "admin", "owner"}:
+        return jsonify({"error": "Workflow configuration requires administrator access"}), 403
+    if not vendor_id:
+        return jsonify({"error": "Select a vendor before configuring its workflow"}), 400
+
+    conn = get_db_connection()
+    try:
+        if request.method == "GET":
+            return jsonify({"workflow": get_active_workflow(conn, vendor_id)})
+        payload = request.get_json(silent=True) or {}
+        try:
+            workflow = replace_workflow(
+                conn,
+                vendor_id,
+                payload.get("name") or "Leave Approval",
+                payload.get("stages"),
+                getattr(g, "username", None) or "administrator",
+            )
+        except ValueError as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({
+            "status": "success",
+            "workflow": workflow,
+            "message": "Workflow saved. Existing leave requests keep their original approval path.",
+        })
+    finally:
+        conn.close()
+
 @leave_bp.route("/admin/departments", methods=["GET", "POST", "DELETE"], strict_slashes=False)
 def manage_departments():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
+    role_error = _require_role("vendor_admin", "admin", "owner", "super_admin")
+    if role_error: return role_error
     
     conn = get_db_connection()
     c = conn.cursor()
@@ -1221,6 +1234,8 @@ def get_vendor_parents(vendor_id):
 def get_parent_faces():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
+    role_error = _require_role("vendor_admin", "admin", "owner", "super_admin")
+    if role_error: return role_error
     
     conn = get_db_connection()
     c = conn.cursor()
@@ -1342,7 +1357,8 @@ def get_student_history():
                 ORDER BY lr.created_at DESC
             """, (person_id, vendor_id))
             
-        rows = c.fetchall()
-        return jsonify({"status": "success", "requests": [get_row_dict(r) for r in rows]})
+        rows = [get_row_dict(r) for r in c.fetchall()]
+        attach_approval_steps(conn, rows)
+        return jsonify({"status": "success", "requests": rows})
     finally:
         conn.close()

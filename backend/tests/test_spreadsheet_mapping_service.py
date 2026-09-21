@@ -38,6 +38,20 @@ def test_deterministic_mapping_understands_common_business_headers(monkeypatch):
     }
 
 
+def test_student_mapping_keeps_parent_identity_separate(monkeypatch):
+    monkeypatch.setenv("SPREADSHEET_LLM_MAPPING_ENABLED", "false")
+    result = mapping_service.map_spreadsheet_headers(
+        ["Student Name", "Student Mobile", "Guardian Name", "Parent WhatsApp"],
+        [],
+        context="student",
+    )
+    assert result["mapping"] == {
+        "name": "Student Name",
+        "parent_name": "Guardian Name",
+        "parent_phone": "Parent WhatsApp",
+    }
+
+
 def test_llm_maps_custom_headers_in_one_call_without_receiving_row_values(monkeypatch):
     monkeypatch.setenv("SPREADSHEET_LLM_MAPPING_ENABLED", "true")
     provider = FakeProvider('```json\n{"mapping":{"name":"Associate","phone":"Reach No","person_id":"Badge Ref","email":"invented"}}\n```')

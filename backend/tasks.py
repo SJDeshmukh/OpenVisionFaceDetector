@@ -146,13 +146,16 @@ def process_delete_vendor_task(vendor_id):
             ("registration_batch_items", f"DELETE FROM registration_batch_items WHERE batch_id IN (SELECT id FROM registration_batches WHERE vendor_id = {placeholder})", (vendor_id,)),
             ("lecture_attendance", f"DELETE FROM lecture_attendance WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("automated_report_deliveries", f"DELETE FROM automated_report_deliveries WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("hostel_alert_deliveries", f"DELETE FROM hostel_alert_deliveries WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("report_delivery_jobs", f"DELETE FROM report_delivery_jobs WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("xchat_messages", f"DELETE FROM xchat_messages WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("xchat_token_usage", f"DELETE FROM xchat_token_usage WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("advance_revisions", f"DELETE FROM advance_revisions WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("leave_workflow_stages", f"DELETE FROM leave_workflow_stages WHERE workflow_id IN (SELECT id FROM leave_workflows WHERE vendor_id = {placeholder})", (vendor_id,)),
 
             # 2. Tables referencing faces or parent_users
             ("advances", f"DELETE FROM advances WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("leave_request_stages", f"DELETE FROM leave_request_stages WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("leave_requests", f"DELETE FROM leave_requests WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("person_embeddings", f"DELETE FROM person_embeddings WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("attendance", f"DELETE FROM attendance WHERE vendor_id = {placeholder}", (vendor_id,)),
@@ -174,6 +177,7 @@ def process_delete_vendor_task(vendor_id):
             ("registration_batches", f"DELETE FROM registration_batches WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("lectures", f"DELETE FROM lectures WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("automated_report_schedules", f"DELETE FROM automated_report_schedules WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("hostel_alert_settings", f"DELETE FROM hostel_alert_settings WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("xchat_conversations", f"DELETE FROM xchat_conversations WHERE vendor_id = {placeholder}", (vendor_id,)),
 
             # 7. Remaining vendor-direct tables
@@ -182,6 +186,7 @@ def process_delete_vendor_task(vendor_id):
             ("class_thresholds", f"DELETE FROM class_thresholds WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("bulk_attendance_config", f"DELETE FROM bulk_attendance_config WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("leave_staff", f"DELETE FROM leave_staff WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("leave_workflows", f"DELETE FROM leave_workflows WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("vendor_device_slots", f"DELETE FROM vendor_device_slots WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("vendor_devices", f"DELETE FROM vendor_devices WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("active_sessions", f"DELETE FROM active_sessions WHERE vendor_id = {placeholder}", (vendor_id,)),
@@ -279,6 +284,14 @@ def process_delete_vendor_task(vendor_id):
 
 if celery:
     process_delete_vendor_task = celery.task(name="tasks.process_delete_vendor")(process_delete_vendor_task)
+
+
+if celery:
+    @celery.task(name="tasks.process_hostel_attendance_alerts")
+    def process_hostel_attendance_alerts_task():
+        """Evaluate cutoff/escalation stages; database uniqueness prevents duplicates."""
+        from services.hostel_alert_service import process_due_alerts
+        return process_due_alerts()
 
 
 if celery:

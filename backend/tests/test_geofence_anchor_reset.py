@@ -74,6 +74,8 @@ def geofence_client(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "app", fake_app)
     monkeypatch.setattr(admin_routes, "authenticate_vendor_access", admin_authenticate)
     monkeypatch.setattr(vendor_routes, "authenticate_vendor_access", device_authenticate)
+    monkeypatch.setattr(admin_routes, "vendor_has_feature", lambda *_args: True)
+    monkeypatch.setattr(vendor_routes, "vendor_has_feature", lambda *_args: True)
 
     app = Flask(__name__)
     app.config.update(TESTING=True)
@@ -149,3 +151,24 @@ def test_reset_does_not_capture_stale_cached_android_location(geofence_client):
     ).fetchone()
     conn.close()
     assert tuple(saved) == (None, None)
+
+
+def test_disabled_feature_ignores_stored_anchor(geofence_client, monkeypatch):
+    client, _connection, _socket = geofence_client
+    monkeypatch.setattr(vendor_routes, "vendor_has_feature", lambda *_args: False)
+
+    heartbeat = client.post(
+        "/api/mobile/heartbeat",
+        json={
+            "device_id": "device-a",
+            "latitude": 20.0,
+            "longitude": 75.0,
+            "accuracy": 10,
+            "location_timestamp": int(time.time() * 1000),
+        },
+    )
+
+    assert heartbeat.status_code == 200
+    assert heartbeat.get_json()["geofence_status"] == "disabled"
+    assert heartbeat.get_json()["anchor_lat"] is None
+    assert heartbeat.get_json()["radius_meters"] is None

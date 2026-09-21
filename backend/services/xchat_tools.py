@@ -1259,6 +1259,8 @@ def get_leave_summary(vendor_id, start_date=None, end_date=None, status=None, li
         query += " ORDER BY lr.created_at DESC"
         c.execute(query, params)
         rows = [_dict(row) for row in (c.fetchall() or [])]
+        from services.leave_workflow_service import attach_approval_steps
+        attach_approval_steps(conn, rows)
     finally:
         conn.close()
     by_status, by_type = defaultdict(int), defaultdict(int)
@@ -1276,6 +1278,11 @@ def get_leave_summary(vendor_id, start_date=None, end_date=None, status=None, li
         "start_time": row.get("start_time"),
         "end_time": row.get("end_time"),
         "status": row.get("final_status"),
+        "current_stage": (row.get("current_stage") or {}).get("display_name"),
+        "approval_steps": [
+            {"name": step.get("display_name"), "status": step.get("status")}
+            for step in row.get("approval_steps", [])
+        ],
         "parent_status": row.get("parent_status"),
         "rector_status": row.get("rector_status"),
         "hod_status": row.get("hod_status"),
@@ -1422,7 +1429,7 @@ TOOL_SCHEMAS = [
     {"type": "function", "function": {"name": "get_person_images", "description": "Find a named person's registered photo and recent attendance capture images. Use this for requests to find, show, or view photos/images of an individual.", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "Full or partial person name"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}, "required": ["name"]}}},
     {"type": "function", "function": {"name": "get_device_status", "description": "List registered cameras/mobile devices and summarize activity, battery, and geofence configuration.", "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 25}}}}},
     {"type": "function", "function": {"name": "get_shift_configuration", "description": "Read the published work timetable, working hours, payable activities, and overnight shifts.", "parameters": {"type": "object", "properties": {}}}},
-    {"type": "function", "function": {"name": "get_leave_summary", "description": "Summarize or list leave requests and gate passes with multi-stage approval statuses (parent, rector/warden, HOD, final).", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "status": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}}}},
+    {"type": "function", "function": {"name": "get_leave_summary", "description": "Summarize or list leave requests and gate passes with their configured approval stages, current stage, and final status.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "status": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}}}}},
     {"type": "function", "function": {"name": "get_class_activity_summary", "description": "Summarize configured classes, lectures, subjects, teachers, and lecture attendance for a period.", "parameters": {"type": "object", "properties": {**_date_properties("start_date", "end_date"), "limit": {"type": "integer", "minimum": 1, "maximum": 25}}, "required": ["start_date", "end_date"]}}},
     {"type": "function", "function": {"name": "get_automated_report_status", "description": "Read the automated email report schedule and recent delivery statuses.", "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 25}}}}},
     {"type": "function", "function": {"name": "get_parent_access_summary", "description": "Summarize parent accounts, student links, and pending face-reset requests.", "parameters": {"type": "object", "properties": {}}}},

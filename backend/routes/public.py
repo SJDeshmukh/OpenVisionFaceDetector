@@ -89,6 +89,8 @@ def public_business_types():
                 {"field": "student_id", "label": "Resident ID", "type": "text", "required": True},
                 {"field": "email", "label": "Resident Email", "type": "email", "required": True},
                 {"field": "phone", "label": "Resident Mobile Number", "type": "text", "required": True},
+                {"field": "parent_name", "label": "Parent / Guardian Name", "type": "text", "required": False},
+                {"field": "parent_phone", "label": "Parent / Guardian WhatsApp Number", "type": "text", "required": False},
                 {"field": "class_id", "label": "Room/Block", "type": "class_select", "required": True}
             ]
         },

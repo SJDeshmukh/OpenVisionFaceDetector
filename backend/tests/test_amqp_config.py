@@ -27,6 +27,8 @@ def test_amqp_uses_redis_result_backend_and_durable_routed_queues(monkeypatch):
     assert module.celery.conf.task_routes["tasks.detect_faces"]["queue"] == "face_priority"
     assert module.celery.conf.task_routes["tasks.reconcile_optional_models"]["queue"] == "face_priority"
     assert module.celery.conf.task_routes["tasks.send_automated_report"]["queue"] == "reports"
+    assert module.celery.conf.task_routes["tasks.process_hostel_attendance_alerts"]["queue"] == "notifications"
+    assert "process-hostel-attendance-alerts-every-minute" in module.celery.conf.beat_schedule
     queues = {queue.name: queue for queue in module.celery.conf.task_queues}
     assert set(module.QUEUE_NAMES).issubset(queues)
     assert queues["face_priority"].queue_arguments["x-max-priority"] == 10

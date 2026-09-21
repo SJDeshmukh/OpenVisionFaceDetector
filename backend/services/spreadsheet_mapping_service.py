@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 CANONICAL_FIELDS = (
     "name", "phone", "person_id", "email", "department", "designation",
     "shift", "class_id", "class_year", "division", "branch",
+    "parent_name", "parent_phone",
 )
 
 _SYNONYMS = {
@@ -34,6 +35,11 @@ _SYNONYMS = {
     "class_year": ("class year", "academic year", "year", "standard", "grade", "class"),
     "division": ("division", "section", "class section"),
     "branch": ("branch", "course", "stream"),
+    "parent_name": ("parent name", "guardian name", "father name", "mother name", "parent guardian name"),
+    "parent_phone": (
+        "parent phone", "parent mobile", "parent whatsapp", "guardian phone", "guardian mobile",
+        "guardian whatsapp", "father mobile", "mother mobile", "parent contact number",
+    ),
 }
 
 

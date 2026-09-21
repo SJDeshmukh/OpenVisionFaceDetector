@@ -91,7 +91,9 @@ const Settings = () => {
   const [savingWhatsapp, setSavingWhatsapp] = useState(false);
 
   const getAuthHeaders = () => (user?.token ? { Authorization: `Bearer ${user.token}` } : {});
-  const hasWhatsappFeature = (Array.isArray(user?.features) && user.features.includes('whatsapp_alerts')) || user?.role === 'super_admin';
+  const hasWhatsappFeature = (Array.isArray(user?.features) && (
+    user.features.includes('whatsapp_alerts') || user.features.includes('hostel_attendance_alerts')
+  )) || user?.role === 'super_admin';
   const hasLateMarkFeature = Array.isArray(user?.features) && user.features.includes('late_mark');
 
   useEffect(() => {

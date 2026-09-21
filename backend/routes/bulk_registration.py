@@ -185,6 +185,8 @@ def bulk_registration_upload():
         class_year_key = header_mapping.get('class_year')
         division_key = header_mapping.get('division')
         branch_key = header_mapping.get('branch')
+        parent_name_key = header_mapping.get('parent_name')
+        parent_phone_key = header_mapping.get('parent_phone')
 
         if not name_key:
             return jsonify({
@@ -277,6 +279,13 @@ def bulk_registration_upload():
                     continue
 
                 phone = str(row.get(phone_key) or "").strip() if phone_key else ""
+                parent_name = str(row.get(parent_name_key) or "").strip() if parent_name_key else ""
+                parent_phone = str(row.get(parent_phone_key) or "").strip() if parent_phone_key else ""
+                parent_phone_digits = re.sub(r"\D", "", parent_phone)
+                if parent_phone and not (7 <= len(parent_phone_digits) <= 15):
+                    errors.append(f"Row {row_idx + 2}: invalid parent/guardian mobile number")
+                    skipped_count += 1
+                    continue
                 raw_login_email = str(row.get(email_key) or "").strip() if email_key else ""
                 login_email = normalize_login_email(raw_login_email)
                 if raw_login_email and not is_valid_login_email(login_email):
@@ -381,8 +390,16 @@ def bulk_registration_upload():
                 }
                 if login_email:
                     custom_dict["email"] = login_email
+                if school_student_flow and parent_name:
+                    custom_dict["parent_name"] = parent_name
+                if school_student_flow and parent_phone:
+                    custom_dict["parent_phone"] = parent_phone
                 canonical_by_header = {header: canonical for canonical, header in header_mapping.items()}
-                core_keys = {key for key in (name_key, phone_key, email_key, id_key, department_key, designation_key, shift_key, excel_class_id_key) if key is not None}
+                core_keys = {key for key in (
+                    name_key, phone_key, email_key, id_key, department_key,
+                    designation_key, shift_key, excel_class_id_key,
+                    parent_name_key, parent_phone_key,
+                ) if key is not None}
                 for k, v in row.items():
                     if k in core_keys:
                         continue

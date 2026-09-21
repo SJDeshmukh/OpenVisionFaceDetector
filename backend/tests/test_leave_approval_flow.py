@@ -31,7 +31,10 @@ def _create_db(db_path):
             username TEXT NOT NULL,
             student_number TEXT NOT NULL,
             selected_person_id INTEGER,
-            face_template TEXT
+            face_template TEXT,
+            device_id TEXT,
+            face_image TEXT,
+            face_server_template TEXT
         );
         CREATE TABLE leave_staff (
             id INTEGER PRIMARY KEY,
@@ -55,6 +58,27 @@ def _create_db(db_path):
             final_status TEXT DEFAULT 'pending',
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE leave_workflows (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER NOT NULL,
+            name TEXT NOT NULL, version INTEGER NOT NULL, is_active INTEGER NOT NULL,
+            created_by TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(vendor_id, version)
+        );
+        CREATE TABLE leave_workflow_stages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id INTEGER NOT NULL,
+            stage_key TEXT NOT NULL, display_name TEXT NOT NULL, actor_type TEXT NOT NULL,
+            role_key TEXT, sequence INTEGER NOT NULL, department_scoped INTEGER NOT NULL,
+            auth_method TEXT NOT NULL, UNIQUE(workflow_id, sequence), UNIQUE(workflow_id, stage_key)
+        );
+        CREATE TABLE leave_request_stages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, request_id INTEGER NOT NULL,
+            vendor_id INTEGER NOT NULL, workflow_id INTEGER, workflow_version INTEGER NOT NULL,
+            stage_key TEXT NOT NULL, display_name TEXT NOT NULL, actor_type TEXT NOT NULL,
+            role_key TEXT, sequence INTEGER NOT NULL, department_scoped INTEGER NOT NULL,
+            auth_method TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', actor_id TEXT,
+            actor_name TEXT, decided_at TEXT, decision_metadata TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(request_id, sequence)
+        );
         """
     )
     conn.execute(
@@ -62,8 +86,8 @@ def _create_db(db_path):
         (10, 1, "Student One", "Science", json.dumps({"student_id": "STU-1", "department": "Science"})),
     )
     conn.execute(
-        "INSERT INTO parent_users VALUES (?, ?, ?, ?, ?, ?)",
-        (20, 1, "parent_1_STU-1", "STU-1", 10, "registered-template"),
+        "INSERT INTO parent_users VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (20, 1, "parent_1_STU-1", "STU-1", 10, "registered-template", "device-1", "audit-image", "server-template"),
     )
     conn.executemany(
         "INSERT INTO leave_staff VALUES (?, ?, ?, ?)",
@@ -88,7 +112,7 @@ def test_student_rector_hod_parent_is_the_only_valid_order(tmp_path, monkeypatch
     _create_db(db_path)
     monkeypatch.setattr(leave_routes, "get_db_connection", _connection_factory(db_path))
 
-    principal = {"role": "rector", "username": "vendor-admin"}
+    principal = {"role": "vendor_admin", "username": "vendor-admin"}
 
     def authenticate():
         g.user_role = principal["role"]
@@ -105,6 +129,24 @@ def test_student_rector_hod_parent_is_the_only_valid_order(tmp_path, monkeypatch
             "department": None if required_role == "rector" else "Science",
         },
     )
+    import tasks
+    import services.task_payload_service as task_payload_service
+
+    class _Result:
+        def get(self, timeout=None):
+            return {"faces": [{"emb_vec": "verified-live-template"}]}
+
+    class _Task:
+        def apply_async(self, *args, **kwargs):
+            return _Result()
+
+    monkeypatch.setattr(tasks, "detect_faces_task", _Task())
+    monkeypatch.setattr(task_payload_service, "store_image_payload", lambda payload: payload)
+    monkeypatch.setattr(
+        leave_routes,
+        "_decode_face_template",
+        lambda template: (__import__("numpy").array([1.0]), "test-model"),
+    )
 
     app = Flask(__name__)
 
@@ -112,7 +154,7 @@ def test_student_rector_hod_parent_is_the_only_valid_order(tmp_path, monkeypatch
     with app.test_request_context("/parent/pending?student_number=STU-1"):
         assert _json(leave_routes.get_parent_pending_requests())["requests"] == []
 
-    principal.update(role="rector", username="vendor-admin")
+    principal.update(role="vendor_admin", username="vendor-admin")
     with app.test_request_context("/admin/pending?role=rector"):
         assert [r["id"] for r in _json(leave_routes.get_admin_pending_requests.__wrapped__())["requests"]] == [100]
     with app.test_request_context(
@@ -126,7 +168,7 @@ def test_student_rector_hod_parent_is_the_only_valid_order(tmp_path, monkeypatch
     with app.test_request_context("/parent/pending?student_number=STU-1"):
         assert _json(leave_routes.get_parent_pending_requests())["requests"] == []
 
-    principal.update(role="hod", username="vendor-admin")
+    principal.update(role="vendor_admin", username="vendor-admin")
     with app.test_request_context("/admin/pending?role=hod"):
         assert [r["id"] for r in _json(leave_routes.get_admin_pending_requests.__wrapped__())["requests"]] == [100]
     with app.test_request_context(
@@ -146,7 +188,6 @@ def test_student_rector_hod_parent_is_the_only_valid_order(tmp_path, monkeypatch
             "request_id": 100,
             "student_number": "STU-1",
             "action": "approved",
-            "local_verified": True,
             "captured_face": "data:image/jpeg;base64,audit-image",
         },
     ):
@@ -166,7 +207,7 @@ def test_rector_rejection_stops_the_flow(tmp_path, monkeypatch):
     monkeypatch.setattr(leave_routes, "get_db_connection", _connection_factory(db_path))
 
     def authenticate():
-        g.user_role = "rector"
+        g.user_role = "vendor_admin"
         g.username = "vendor-admin"
         return 1, None
 

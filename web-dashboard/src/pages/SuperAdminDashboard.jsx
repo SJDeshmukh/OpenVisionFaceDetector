@@ -199,6 +199,8 @@ const SuperAdminDashboard = () => {
         { field: 'student_id', label: 'Resident ID', type: 'text', required: true, options: [] },
         { field: 'email', label: 'Resident Email', type: 'email', required: true, options: [] },
         { field: 'student_phone', label: 'Phone Number of Resident', type: 'text', required: true, options: [] },
+        { field: 'parent_name', label: 'Parent / Guardian Name', type: 'text', required: false, options: [] },
+        { field: 'parent_phone', label: 'Parent / Guardian WhatsApp Number', type: 'text', required: false, options: [] },
         { field: 'class_id', label: 'Room/Block', type: 'class_select', required: true, options: [] }
       ]
     },
@@ -334,7 +336,7 @@ const SuperAdminDashboard = () => {
   const [availableFeatures, setAvailableFeatures] = useState([
     'reports', 'report_detailed', 'report_payroll', 'automated_email_reports', 'employee_reports', 'xchat_ai', 'mobile_app', 'payroll', 'shifts',
     'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 
-    'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'api_access', 'white_labeling', 
+    'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'hostel_attendance_alerts', 'api_access', 'white_labeling',
     'late_mark', 'bulk_image_attendance', 'classes', 'leave_management'
   ]);
   const [bundleConfig, setBundleConfig] = useState({
@@ -354,6 +356,8 @@ const SuperAdminDashboard = () => {
      "hostel": [
          {"field": "student_id", "label": "Resident ID", "enabled": true},
          {"field": "student_phone", "label": "Phone Number of Resident", "enabled": true},
+         {"field": "parent_name", "label": "Parent / Guardian Name", "enabled": true},
+         {"field": "parent_phone", "label": "Parent / Guardian WhatsApp Number", "enabled": true},
          {"field": "class_id", "label": "Room/Block", "enabled": true}
      ],
      "daily_wages": [
@@ -414,6 +418,8 @@ const SuperAdminDashboard = () => {
    const [leaveDepts, setLeaveDepts] = useState([]);
    const [leaveStaff, setLeaveStaff] = useState([]);
    const [leaveStudents, setLeaveStudents] = useState([]);
+   const [leaveWorkflow, setLeaveWorkflow] = useState(null);
+   const [savingLeaveWorkflow, setSavingLeaveWorkflow] = useState(false);
    const [loadingLeaveData, setLoadingLeaveData] = useState(false);
    const [newDept, setNewDept] = useState('');
    const [newStaff, setNewStaff] = useState({ name: '', role: 'rector', pin: '', department: '' });
@@ -920,6 +926,44 @@ const SuperAdminDashboard = () => {
     }
   };
 
+  const fetchLeaveWorkflow = async (vendorId) => {
+    try {
+      const res = await axios.get(`${API_URL}/leave/admin/workflow`, {
+        params: { vendor_id: vendorId },
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      const next = res.data.workflow || null;
+      setLeaveWorkflow(next);
+      const firstStaffRole = next?.stages?.find(stage => stage.actor_type === 'staff')?.role_key || 'rector';
+      setNewStaff(prev => ({ ...prev, role: firstStaffRole }));
+    } catch (e) {
+      console.error("Error fetching leave workflow:", e);
+      setLeaveWorkflow(null);
+    }
+  };
+
+  const saveLeaveWorkflow = async (vendorId) => {
+    if (!leaveWorkflow?.stages?.length) return alert('Add at least one approval stage.');
+    if (!window.confirm('Save this hierarchy for new leave requests? Existing requests retain their current hierarchy.')) return;
+    setSavingLeaveWorkflow(true);
+    try {
+      const res = await axios.put(`${API_URL}/leave/admin/workflow?vendor_id=${vendorId}`, {
+        name: leaveWorkflow.name,
+        stages: leaveWorkflow.stages
+      }, { headers: { Authorization: `Bearer ${user?.token}` } });
+      setLeaveWorkflow(res.data.workflow);
+      const staffRoles = (res.data.workflow?.stages || []).filter(stage => stage.actor_type === 'staff');
+      setNewStaff(prev => staffRoles.some(stage => stage.role_key === prev.role)
+        ? prev
+        : { ...prev, role: staffRoles[0]?.role_key || '', department: '' });
+      alert(res.data.message || 'Workflow saved.');
+    } catch (e) {
+      alert(e.response?.data?.error || e.message);
+    } finally {
+      setSavingLeaveWorkflow(false);
+    }
+  };
+
   const fetchVendorDepts = async (vendorId) => {
     try {
       const res = await axios.get(`${API_URL}/leave/admin/departments`, {
@@ -952,7 +996,8 @@ const SuperAdminDashboard = () => {
       await Promise.all([
         fetchVendorDepts(vendor.id),
         fetchLeaveStaff(vendor.id),
-        fetchLeaveStudents(vendor.id)
+        fetchLeaveStudents(vendor.id),
+        fetchLeaveWorkflow(vendor.id)
       ]);
     } finally {
       setLoadingLeaveData(false);
@@ -1070,7 +1115,12 @@ const SuperAdminDashboard = () => {
         { headers: { Authorization: `Bearer ${user?.token}` } }
       );
       fetchLeaveStaff(vendorId);
-      setNewStaff({ name: '', role: 'rector', pin: '', department: '' });
+      setNewStaff({
+        name: '',
+        role: leaveWorkflow?.stages?.find(stage => stage.actor_type === 'staff')?.role_key || 'rector',
+        pin: '',
+        department: ''
+      });
     } catch (e) {
       alert(e.response?.data?.error || "Failed to create staff");
     }
@@ -4787,6 +4837,51 @@ const SuperAdminDashboard = () => {
 
             {/* Modal Content */}
             <div className="flex-1 overflow-y-auto p-8 grid grid-cols-1 lg:grid-cols-2 gap-8 bg-white">
+              <section className="lg:col-span-2 space-y-4 rounded-2xl border border-blue-100 bg-blue-50/30 p-5">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Settings size={18} className="text-blue-600" /> Approval Hierarchy</h3>
+                    <p className="text-xs text-slate-500 mt-1">Rename and reorder stages. The hierarchy is snapshotted when a student submits a request.</p>
+                  </div>
+                  <button
+                    onClick={() => setLeaveWorkflow(prev => ({
+                      ...(prev || { name: 'Leave Approval' }),
+                      stages: [...(prev?.stages || []), { display_name: 'New Approver', actor_type: 'staff', role_key: `approver_${(prev?.stages?.length || 0) + 1}`, department_scoped: false, auth_method: 'staff_pin' }]
+                    }))}
+                    className="px-3 py-2 bg-white border border-blue-200 text-blue-700 rounded-lg text-sm font-bold hover:bg-blue-50"
+                  >+ Add Stage</button>
+                </div>
+                <input
+                  value={leaveWorkflow?.name || ''}
+                  onChange={e => setLeaveWorkflow(prev => ({ ...(prev || { stages: [] }), name: e.target.value }))}
+                  placeholder="Workflow name"
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-200"
+                />
+                <div className="space-y-2">
+                  {(leaveWorkflow?.stages || []).map((stage, index) => (
+                    <div key={`${stage.stage_key || 'stage'}-${index}`} className="grid grid-cols-1 md:grid-cols-[auto_1fr_150px_1fr_auto] gap-2 items-center rounded-xl border border-slate-200 bg-white p-3">
+                      <span className="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center text-sm font-bold">{index + 1}</span>
+                      <input value={stage.display_name || ''} onChange={e => setLeaveWorkflow(prev => ({ ...prev, stages: prev.stages.map((s, i) => i === index ? { ...s, display_name: e.target.value } : s) }))} className="rounded-lg border border-slate-200 px-2 py-2 text-sm" />
+                      <select value={stage.actor_type || 'staff'} onChange={e => setLeaveWorkflow(prev => ({ ...prev, stages: prev.stages.map((s, i) => i !== index ? s : e.target.value === 'parent' ? { ...s, actor_type: 'parent', role_key: 'parent', auth_method: 'face', department_scoped: false } : { ...s, actor_type: 'staff', role_key: s.role_key === 'parent' ? `approver_${index + 1}` : s.role_key, auth_method: 'staff_pin' }) }))} className="rounded-lg border border-slate-200 px-2 py-2 text-sm bg-white">
+                        <option value="staff">Staff</option><option value="parent">Parent</option>
+                      </select>
+                      <div className="flex items-center gap-2">
+                        <input disabled={stage.actor_type === 'parent'} value={stage.role_key || ''} onChange={e => setLeaveWorkflow(prev => ({ ...prev, stages: prev.stages.map((s, i) => i === index ? { ...s, role_key: e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, '_') } : s) }))} placeholder="Role key" className="min-w-0 flex-1 rounded-lg border border-slate-200 px-2 py-2 text-sm disabled:bg-slate-100" />
+                        <label className="text-[10px] text-slate-500 flex items-center gap-1"><input type="checkbox" disabled={stage.actor_type === 'parent'} checked={!!stage.department_scoped} onChange={e => setLeaveWorkflow(prev => ({ ...prev, stages: prev.stages.map((s, i) => i === index ? { ...s, department_scoped: e.target.checked } : s) }))} /> Dept</label>
+                      </div>
+                      <div className="flex">
+                        <button disabled={index === 0} onClick={() => setLeaveWorkflow(prev => { const stages = [...prev.stages]; [stages[index - 1], stages[index]] = [stages[index], stages[index - 1]]; return { ...prev, stages }; })} className="p-1.5 disabled:opacity-25" title="Move up"><ArrowLeft size={15} /></button>
+                        <button disabled={index === leaveWorkflow.stages.length - 1} onClick={() => setLeaveWorkflow(prev => { const stages = [...prev.stages]; [stages[index + 1], stages[index]] = [stages[index], stages[index + 1]]; return { ...prev, stages }; })} className="p-1.5 disabled:opacity-25" title="Move down"><ArrowRight size={15} /></button>
+                        <button onClick={() => setLeaveWorkflow(prev => ({ ...prev, stages: prev.stages.filter((_, i) => i !== index) }))} className="p-1.5 text-red-500" title="Remove"><Trash2 size={15} /></button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-slate-500">Parent stages always use face authentication. Existing requests are never rerouted.</p>
+                  <button onClick={() => saveLeaveWorkflow(editingVendor.id)} disabled={savingLeaveWorkflow || !leaveWorkflow?.stages?.length} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-bold disabled:opacity-50">{savingLeaveWorkflow ? 'Saving...' : 'Save Hierarchy'}</button>
+                </div>
+              </section>
               {/* Left Column: Departments */}
               <div className="space-y-6">
                 <div className="flex items-center justify-between">
@@ -4841,7 +4936,7 @@ const SuperAdminDashboard = () => {
                 <div className="flex items-center justify-between">
                   <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
                     <Users size={18} className="text-emerald-600" />
-                    Leave Staff (Rector/HOD)
+                    Leave Approvers
                   </h3>
                   <span className="text-xs bg-emerald-50 text-emerald-700 px-2 py-1 rounded-full font-bold">
                     {leaveStaff.length} Members
@@ -4867,8 +4962,9 @@ const SuperAdminDashboard = () => {
                         value={newStaff.role}
                         onChange={e => setNewStaff({ ...newStaff, role: e.target.value })}
                       >
-                        <option value="rector">Rector</option>
-                        <option value="hod">HOD</option>
+                        {(leaveWorkflow?.stages || [])
+                          .filter((stage, index, stages) => stage.actor_type === 'staff' && stages.findIndex(item => item.actor_type === 'staff' && item.role_key === stage.role_key) === index)
+                          .map(stage => <option key={stage.role_key} value={stage.role_key}>{stage.display_name}</option>)}
                       </select>
                     </div>
                   </div>
@@ -4885,11 +4981,11 @@ const SuperAdminDashboard = () => {
                       />
                     </div>
                     <div>
-                      <label className="block text-[10px] uppercase font-bold text-slate-400 mb-1 ml-1">Department (HOD Only)</label>
+                      <label className="block text-[10px] uppercase font-bold text-slate-400 mb-1 ml-1">Department (when scoped)</label>
                       <select 
                         className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500/20 outline-none transition-all shadow-sm disabled:opacity-50"
                         value={newStaff.department}
-                        disabled={newStaff.role !== 'hod'}
+                        disabled={!leaveWorkflow?.stages?.some(stage => stage.actor_type === 'staff' && stage.role_key === newStaff.role && stage.department_scoped)}
                         onChange={e => setNewStaff({ ...newStaff, department: e.target.value })}
                       >
                         <option value="">Select Department</option>
@@ -4911,7 +5007,7 @@ const SuperAdminDashboard = () => {
                 <div className="grid grid-cols-1 gap-3 overflow-y-auto max-h-[300px] pr-2">
                   {leaveStaff.length === 0 ? (
                     <div className="text-center py-12 border-2 border-dashed border-slate-100 rounded-2xl text-slate-400">
-                      <p className="text-sm">No rectors or Hods registered yet.</p>
+                      <p className="text-sm">No leave approvers registered yet.</p>
                     </div>
                   ) : (
                     leaveStaff.map(staff => (

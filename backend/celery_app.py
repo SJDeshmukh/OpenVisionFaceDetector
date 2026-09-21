@@ -89,6 +89,7 @@ TASK_ROUTES = {
     "tasks.process_registration_batch_items": {"queue": "face_priority", "routing_key": "face_priority"},
     "tasks.send_advance_notification": {"queue": "notifications", "routing_key": "notifications"},
     "tasks.deliver_parent_notification": {"queue": "notifications", "routing_key": "notifications"},
+    "tasks.process_hostel_attendance_alerts": {"queue": "notifications", "routing_key": "notifications"},
     "tasks.send_employee_monthly_reports": {"queue": "reports", "routing_key": "reports"},
     "tasks.dispatch_automated_reports": {"queue": "reports", "routing_key": "reports"},
     "tasks.send_automated_report": {"queue": "reports", "routing_key": "reports"},
@@ -141,6 +142,11 @@ def make_celery():
                 "task": "tasks.dispatch_automated_reports",
                 "schedule": 60.0,
                 "options": {"queue": "reports", "routing_key": "reports"},
+            },
+            "process-hostel-attendance-alerts-every-minute": {
+                "task": "tasks.process_hostel_attendance_alerts",
+                "schedule": 60.0,
+                "options": {"queue": "notifications", "routing_key": "notifications"},
             },
         },
     )

@@ -487,7 +487,11 @@ public class EnrollFragment extends Fragment {
             vendorId = prefs.getInt("selected_vendor_id", -1);
         }
         if (vendorId == -1) {
-            resolveVendorIdFromSelectedBusinessThenFetch(prefs);
+            Toast.makeText(
+                    requireContext(),
+                    "Vendor session is unavailable. Please sign in again.",
+                    Toast.LENGTH_LONG
+            ).show();
             return;
         }
 
@@ -552,83 +556,6 @@ public class EnrollFragment extends Fragment {
                             }
                             return;
                         }
-                    }
-                } catch (Exception ignored) {}
-                if (getActivity() != null && isAdded()) {
-                    getActivity().runOnUiThread(() -> showDefaultProfileFields());
-                }
-            }
-        });
-    }
-
-    private void resolveVendorIdFromSelectedBusinessThenFetch(android.content.SharedPreferences prefs) {
-        String vertical = null;
-        try {
-            vertical = prefs.getString("selected_business_type_code", null);
-            if (vertical == null || vertical.isEmpty()) {
-                vertical = prefs.getString("selected_business_type", null);
-            }
-        } catch (Exception ignored) {}
-        if (vertical == null || vertical.isEmpty()) return;
-        final String verticalFinal = vertical;
-
-        RetrofitClient.getService().getPublicVendors().enqueue(new Callback<JsonObject>() {
-            @Override
-            public void onResponse(Call<JsonObject> call, Response<JsonObject> response) {
-                try {
-                    if (response.isSuccessful() && response.body() != null) {
-                        JsonObject root = response.body();
-                        if (root.has("vendors") && root.get("vendors").isJsonArray()) {
-                            JsonArray vendors = root.getAsJsonArray("vendors");
-                            Integer selectedVendorId = null;
-                            for (JsonElement el : vendors) {
-                                try {
-                                    if (!el.isJsonObject()) continue;
-                                    JsonObject v = el.getAsJsonObject();
-                                    if (!v.has("id") || v.get("id").isJsonNull()) continue;
-                                    int id = v.get("id").getAsInt();
-                                    String vVertical = v.has("vertical") && !v.get("vertical").isJsonNull() ? v.get("vertical").getAsString() : "";
-                                    if (!vVertical.isEmpty() && vVertical.equalsIgnoreCase(verticalFinal)) {
-                                        selectedVendorId = id;
-                                        break;
-                                    }
-                                } catch (Exception ignored) {}
-                            }
-                            if (selectedVendorId != null) {
-                                try {
-                                    prefs.edit().putInt("selected_vendor_id", selectedVendorId).apply();
-                                } catch (Exception ignored) {}
-                                fetchRegistrationConfig();
-                                return;
-                            }
-                        }
-                    }
-                } catch (Exception ignored) {}
-                try {
-                    String cached = prefs.getString("cached_registration_config", null);
-                    if (cached != null && !cached.isEmpty()) {
-                        JsonArray config = new JsonParser().parse(cached).getAsJsonArray();
-                        if (getActivity() != null && isAdded()) {
-                            getActivity().runOnUiThread(() -> renderDynamicFields(config));
-                        }
-                        return;
-                    }
-                } catch (Exception ignored) {}
-                if (getActivity() != null && isAdded()) {
-                    getActivity().runOnUiThread(() -> showDefaultProfileFields());
-                }
-            }
-
-            @Override
-            public void onFailure(Call<JsonObject> call, Throwable t) {
-                try {
-                    String cached = prefs.getString("cached_registration_config", null);
-                    if (cached != null && !cached.isEmpty()) {
-                        JsonArray config = new JsonParser().parse(cached).getAsJsonArray();
-                        if (getActivity() != null && isAdded()) {
-                            getActivity().runOnUiThread(() -> renderDynamicFields(config));
-                        }
-                        return;
                     }
                 } catch (Exception ignored) {}
                 if (getActivity() != null && isAdded()) {
@@ -911,13 +838,18 @@ public class EnrollFragment extends Fragment {
             public void onResponse(Call<UploadFaceResponse> call, Response<UploadFaceResponse> response) {
                 if (response.isSuccessful()) {
                     String newId = null;
+                    Integer assignedDisplayId = null;
                     try {
                         UploadFaceResponse body = response.body();
                         if (body != null && body.getPersonId() != null) {
                             newId = String.valueOf(body.getPersonId());
                         }
+                        if (body != null) assignedDisplayId = body.getDisplayId();
                     } catch (Exception ignored) {}
-                    Toast.makeText(getContext(), "Synced to Cloud", Toast.LENGTH_SHORT).show();
+                    String successMessage = assignedDisplayId != null
+                            ? "Registered under this vendor with ID " + assignedDisplayId
+                            : "Synced to Cloud";
+                    Toast.makeText(getContext(), successMessage, Toast.LENGTH_LONG).show();
                     if (dbManager != null && newId != null && !newId.isEmpty()) {
                         dbManager.updatePersonAfterSyncByLocalUid(localUid, newId);
                         try { dbManager.loadPerson(); } catch (Exception ignored) {}

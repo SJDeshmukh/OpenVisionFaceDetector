@@ -16,7 +16,6 @@ import retrofit2.Response
 import android.widget.TextView
 import android.view.View
 import android.provider.Settings
-import com.faceplugin.facerecognition.api.RegisterRequest
 import java.security.MessageDigest
 import android.animation.AnimatorSet
 import android.animation.ObjectAnimator
@@ -99,7 +98,7 @@ class LoginActivity : AppCompatActivity() {
                 isParentLogin = false
                 etUsername.visibility = View.VISIBLE
                 etPassword.visibility = View.VISIBLE
-                btnRegister.visibility = View.VISIBLE
+                btnRegister.visibility = View.GONE
                 etStudentId.visibility = View.GONE
                 etMobileNumber.visibility = View.GONE
                 btnParentLogin.text = "Parent Portal Login"
@@ -451,34 +450,10 @@ class LoginActivity : AppCompatActivity() {
             })
         }
 
-        btnRegister.setOnClickListener {
-            val username = etUsername.text.toString().trim()
-            val password = etPassword.text.toString().trim()
-
-            if (username.isEmpty() || password.isEmpty()) {
-                Toast.makeText(this, "Enter email and password to register", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-            if (!android.util.Patterns.EMAIL_ADDRESS.matcher(username).matches()) {
-                Toast.makeText(this, "Enter a valid email address", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-
-            val request = RegisterRequest(username, password, "user")
-            RetrofitClient.getService().register(request).enqueue(object : Callback<LoginResponse> {
-                override fun onResponse(call: Call<LoginResponse>, response: Response<LoginResponse>) {
-                    if (response.isSuccessful && response.body()?.status == "success") {
-                         Toast.makeText(this@LoginActivity, "Registration successful! Please Login.", Toast.LENGTH_LONG).show()
-                    } else {
-                        Toast.makeText(this@LoginActivity, "Registration failed: ${response.body()?.error ?: "Unknown error"}", Toast.LENGTH_SHORT).show()
-                    }
-                }
-
-                override fun onFailure(call: Call<LoginResponse>, t: Throwable) {
-                    Toast.makeText(this@LoginActivity, "Network error: ${t.message}", Toast.LENGTH_SHORT).show()
-                }
-            })
-        }
+        // People are enrolled only after an authorized vendor signs in and
+        // opens the Enrol tab. The login screen must never create a vendor or
+        // let an unauthenticated person select a company to join.
+        btnRegister.visibility = View.GONE
 
     }
 

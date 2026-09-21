@@ -1614,6 +1614,7 @@ def mobile_heartbeat():
     from app import get_db_connection, socketio
     vendor_id, error = authenticate_vendor_access()
     if error: return error
+    geofencing_enabled = vendor_has_feature(vendor_id, "geofencing")
     
     data = request.json or {}
     device_id = data.get("device_id")
@@ -1688,7 +1689,9 @@ def mobile_heartbeat():
             anchor_lat = row_dict.get('geofence_lat')
             anchor_lng = row_dict.get('geofence_lng')
             radius = row_dict.get('geofence_radius')
-            has_geofence = radius is not None and float(radius or 0) > 0
+            # Stored anchors are configuration only. The subscription feature is
+            # the authoritative enforcement switch and must take effect immediately.
+            has_geofence = geofencing_enabled and radius is not None and float(radius or 0) > 0
 
             if parsed_lat is not None and parsed_lng is not None:
                 if has_geofence:

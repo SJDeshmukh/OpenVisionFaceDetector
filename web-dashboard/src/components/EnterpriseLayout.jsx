@@ -28,6 +28,7 @@ const adminNavItems = [
   { name: 'Audit Logs',           path: '/audit-logs',           icon: Shield },
   { name: 'Leave Management',     path: '/leave-management',     icon: FileCheck },
   { name: 'Face Reset Requests',  path: '/face-reset-requests',  icon: Shield },
+  { name: 'Hostel Alerts',        path: '/hostel-alerts',        icon: Bell },
 ];
 
 const superAdminNavItems = [
@@ -46,6 +47,7 @@ const userNavItems = [
 const ownerNavItems = [
   { name: 'Advance Approvals', path: '/owner/advances', icon: DollarSign },
   { name: 'Attendance',        path: '/attendance',     icon: ClipboardList },
+  { name: 'Hostel Alerts',     path: '/hostel-alerts',  icon: Bell },
 ];
 
 const facultyNavItems = [

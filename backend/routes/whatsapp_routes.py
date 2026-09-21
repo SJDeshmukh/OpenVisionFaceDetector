@@ -25,7 +25,10 @@ def _authenticate_whatsapp_access():
     role = getattr(g, "user_role", None)
 
     # Enforce feature check unless super_admin
-    if role != "super_admin" and not vendor_has_feature(vendor_id, "whatsapp_alerts"):
+    if role != "super_admin" and not (
+        vendor_has_feature(vendor_id, "whatsapp_alerts")
+        or vendor_has_feature(vendor_id, "hostel_attendance_alerts")
+    ):
         return None, None, (jsonify({
             "error": "WhatsApp Alerts feature is not enabled for your company. Please contact support/administrator to activate it.",
             "code": "FEATURE_NOT_ENABLED"

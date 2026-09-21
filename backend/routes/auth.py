@@ -4,7 +4,7 @@ import secrets
 import string
 from flask import Blueprint, request, jsonify, make_response, g
 from datetime import datetime, date, timedelta
-from services.auth_service import authenticate_vendor_access, verify_password, generate_token, check_vendor_status, verify_token, hash_password, generate_token_with_claims, extract_token, is_valid_login_email, normalize_login_email
+from services.auth_service import authenticate_vendor_access, verify_password, generate_token, check_vendor_status, verify_token, hash_password, generate_token_with_claims, extract_token, is_valid_login_email, normalize_login_email, WEB_TOKEN_TTL
 from middleware.handlers import rate_limit, get_client_ip
 import json
 import base64
@@ -682,9 +682,9 @@ def login():
                 try:
                     is_pg = getattr(conn, "_is_pg", False)
                     if is_pg:
-                        c.execute("DELETE FROM active_sessions WHERE platform = 'web' AND last_active < (NOW() - INTERVAL '1 day')")
+                        c.execute("DELETE FROM active_sessions WHERE platform = 'web' AND last_active < (NOW() - INTERVAL '1 hour')")
                     else:
-                        c.execute("DELETE FROM active_sessions WHERE platform = 'web' AND last_active < datetime('now','-1 day')")
+                        c.execute("DELETE FROM active_sessions WHERE platform = 'web' AND last_active < datetime('now','-1 hour')")
                     c.execute("DELETE FROM active_sessions WHERE username = ? AND platform = 'web' AND (device_id IS NULL OR device_id = '')", (username,))
                     # Faculty: single-session across ALL platforms — new login invalidates everything
                     if user.get('role') == 'faculty':
@@ -870,9 +870,9 @@ def login():
                 # Only purge web sessions automatically; mobile sessions persist
                 # until explicit logout or admin force-logout.
                 if is_pg:
-                    c.execute("DELETE FROM active_sessions WHERE platform = 'web' AND last_active < (NOW() - INTERVAL '12 hours')")
+                    c.execute("DELETE FROM active_sessions WHERE platform = 'web' AND last_active < (NOW() - INTERVAL '1 hour')")
                 else:
-                    c.execute("DELETE FROM active_sessions WHERE platform = 'web' AND last_active < datetime('now','-12 hours')")
+                    c.execute("DELETE FROM active_sessions WHERE platform = 'web' AND last_active < datetime('now','-1 hour')")
             except Exception as e:
                 logger.error(f"Error cleaning stale sessions: {e}")
 
@@ -944,7 +944,7 @@ def login():
                 httponly=True,
                 secure=is_secure,
                 samesite='Lax',
-                max_age=86400,  # matches WEB_TOKEN_TTL (24 h)
+                max_age=WEB_TOKEN_TTL,
                 path='/'
             )
 
@@ -954,23 +954,31 @@ def login():
 
 @auth_bp.route("/auth/register", methods=["POST"])
 def register_user():
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
+    """Create a system-access account inside the authenticated vendor."""
+    from app import get_db_connection
     caller_vendor_id, error = authenticate_vendor_access()
-    if error: return error
+    if error:
+        return error
     if g.user_role not in ['super_admin', 'vendor_admin', 'admin', 'owner']:
         return jsonify({"error": "Access Denied: Admin or Owner privileges required"}), 403
-    data = request.json
+
+    data = request.json or {}
     username = normalize_login_email(data.get("username"))
     password = str(data.get("password") or "")
-    role = data.get("role", "user")
-    if role != 'super_admin' and not is_valid_login_email(username):
+    role = str(data.get("role") or "user").strip().lower()
+    if role not in {"user", "faculty", "owner", "vendor_admin", "admin"}:
+        return jsonify({"error": "Invalid account role"}), 400
+    if not is_valid_login_email(username):
         return jsonify({"error": "A valid email address is required for login"}), 400
     if len(password) < 8:
         return jsonify({"error": "Password must contain at least 8 characters"}), 400
-    
+
     target_vendor_id = caller_vendor_id
-    if not target_vendor_id:
-        target_vendor_id = data.get("vendor_id")
+    if not target_vendor_id and g.user_role == "super_admin":
+        try:
+            target_vendor_id = int(data.get("vendor_id"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "Select a company first"}), 400
 
     conn = get_db_connection()
     c = conn.cursor()
@@ -979,15 +987,18 @@ def register_user():
         if c.fetchone():
             return jsonify({"error": "Email address is already registered"}), 409
         c.execute(
-            "INSERT INTO system_users (username, password, password_plain, role, vendor_id) VALUES (?, ?, ?, ?, ?)",
-            (username, hash_password(password), None, role, target_vendor_id),
+            "INSERT INTO system_users (username, password, password_plain, role, vendor_id) VALUES (?, ?, NULL, ?, ?)",
+            (username, hash_password(password), role, target_vendor_id),
         )
         conn.commit()
-        return jsonify({"status": "success", "message": "User created"})
+        return jsonify({"status": "success", "message": "User created"}), 201
     except sqlite3.IntegrityError:
+        conn.rollback()
         return jsonify({"error": "Email address is already registered"}), 409
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        conn.rollback()
+        logger.exception("System access registration failed for vendor %s", target_vendor_id)
+        return jsonify({"error": "Unable to create this account"}), 500
     finally:
         conn.close()
 
@@ -1741,11 +1752,11 @@ def verify_student_password():
                 placeholder = "%s" if is_pg else "?"
                 c.execute(f"DELETE FROM active_sessions WHERE username = {placeholder} AND platform = 'web' AND device_id = {placeholder}", (username, device_id))
                 
-                # Cleanup stale web sessions (older than 12h)
+                # Cleanup web sessions beyond the one-hour policy.
                 if is_pg:
-                    c.execute(f"DELETE FROM active_sessions WHERE platform = 'web' AND last_active < (NOW() - INTERVAL '12 hours')")
+                    c.execute(f"DELETE FROM active_sessions WHERE platform = 'web' AND last_active < (NOW() - INTERVAL '1 hour')")
                 else:
-                    c.execute(f"DELETE FROM active_sessions WHERE platform = 'web' AND last_active < datetime('now','-12 hours')")
+                    c.execute(f"DELETE FROM active_sessions WHERE platform = 'web' AND last_active < datetime('now','-1 hour')")
                 
                 c.execute(
                     f"INSERT INTO active_sessions (token, username, vendor_id, device_id, platform, last_active) VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, 'web', {placeholder})",

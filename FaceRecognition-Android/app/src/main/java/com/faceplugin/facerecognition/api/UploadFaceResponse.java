@@ -12,6 +12,9 @@ public class UploadFaceResponse {
     @SerializedName("person_id")
     private Integer personId;
 
+    @SerializedName("display_id")
+    private Integer displayId;
+
     public String getStatus() {
         return status;
     }
@@ -23,5 +26,8 @@ public class UploadFaceResponse {
     public Integer getPersonId() {
         return personId;
     }
-}
 
+    public Integer getDisplayId() {
+        return displayId;
+    }
+}

@@ -165,7 +165,7 @@ def run_safe_migration():
         ('audit_logs', ['id', 'actor_username', 'action', 'target_vendor_id', 'details', 'timestamp'], None, 'id'),
         ('system_settings', ['key', 'value'], None, 'key'),
         ('parent_users', 
-         ['id', 'vendor_id', 'username', 'password', 'contact_email', 'contact_phone', 'student_number', 'selected_person_id', 'device_id', 'fcm_token', 'session_version', 'face_image', 'face_template', 'created_at'], 
+         ['id', 'vendor_id', 'username', 'password', 'contact_email', 'contact_phone', 'student_number', 'selected_person_id', 'device_id', 'fcm_token', 'session_version', 'face_image', 'face_template', 'face_server_template', 'created_at'],
          None, 'id'),
         ('student_parents', ['id', 'vendor_id', 'person_id', 'parent_id', 'created_at'], None, 'id'),
         ('parent_tokens', ['token', 'vendor_id', 'student_number', 'created_at'], None, 'token'),
@@ -173,6 +173,9 @@ def run_safe_migration():
          ['id', 'vendor_id', 'student_id', 'leave_type', 'reason', 'start_date', 'end_date', 'start_time', 'end_time', 'parent_status', 'rector_status', 'hod_status', 'final_status', 'created_at'], 
          None, 'id'),
         ('leave_staff', ['id', 'vendor_id', 'name', 'role', 'pin', 'department', 'created_at'], None, 'id'),
+        ('leave_workflows', ['id', 'vendor_id', 'name', 'version', 'is_active', 'created_by', 'created_at'], None, 'id'),
+        ('leave_workflow_stages', ['id', 'workflow_id', 'stage_key', 'display_name', 'actor_type', 'role_key', 'sequence', 'department_scoped', 'auth_method'], None, 'id'),
+        ('leave_request_stages', ['id', 'request_id', 'vendor_id', 'workflow_id', 'workflow_version', 'stage_key', 'display_name', 'actor_type', 'role_key', 'sequence', 'department_scoped', 'auth_method', 'status', 'actor_id', 'actor_name', 'decided_at', 'decision_metadata', 'created_at'], None, 'id'),
         ('person_embeddings', ['id', 'vendor_id', 'person_id', 'class_year', 'division', 'branch', 'vec', 'dim', 'struct_vec', 'landmarks_3d', 'created_at'], None, 'id')
     ]
 

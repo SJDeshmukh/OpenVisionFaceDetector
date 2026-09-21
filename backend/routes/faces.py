@@ -593,6 +593,8 @@ def upload_face():
     # Auth Check
     caller_vendor_id, error = authenticate_vendor_access()
     if error: return error
+    if getattr(g, "user_role", None) not in {"super_admin", "vendor_admin", "admin"}:
+        return jsonify({"error": "Vendor administrator access is required to enrol people"}), 403
 
     data = request.get_json(silent=True) or {}
     person_id = data.get("person_id")
@@ -910,10 +912,19 @@ def upload_face():
 
     conn = get_db_connection()
     c = conn.cursor()
+    assigned_display_id = None
     
     try:
         # 2. Employee Limit Check & Operation
         if not person_id and vendor_id:
+            # New mobile enrolments for a vendor share one sequence. Serialize
+            # the limit check and MAX+1 allocation so concurrent devices cannot
+            # assign the same display ID.
+            if getattr(conn, "_is_pg", False):
+                c.execute("SELECT pg_advisory_xact_lock(?)", (int(vendor_id),))
+            else:
+                c.execute("BEGIN IMMEDIATE")
+
             # Check limit (only for new users)
             c.execute("SELECT max_employees FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
             sub = c.fetchone()
@@ -1179,6 +1190,7 @@ def upload_face():
             # Get next display_id for this vendor
             c.execute("SELECT COALESCE(MAX(display_id), 0) + 1 FROM faces WHERE vendor_id = ?", (vendor_id,))
             next_display_id = c.fetchone()[0]
+            assigned_display_id = int(next_display_id)
 
             c.execute("INSERT INTO faces (name, templates, face_image, phone, department, designation, shift, vendor_id, custom_data, display_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                       (name, to_store_templates, face_image, phone or "", department or "", designation or "", shift or "", vendor_id, custom_data, next_display_id))
@@ -1301,7 +1313,13 @@ def upload_face():
         socketio.emit('persons_updated', {'vendor_id': vendor_id}, room=f"vendor_{vendor_id}")
         socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
 
-        return jsonify({"status": "success", "message": f"Face for {name} saved.", "person_id": new_id})
+        return jsonify({
+            "status": "success",
+            "message": f"Face for {name} saved.",
+            "person_id": new_id,
+            "display_id": assigned_display_id,
+            "vendor_id": vendor_id,
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:

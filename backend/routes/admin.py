@@ -14,7 +14,7 @@ from io import BytesIO
 from utils import (
     _run, log_audit, ALL_FEATURES, BUNDLE_FEATURES, REGISTRATION_TEMPLATES,
     cache_get, cache_set, cache_delete, cache_delete_vendor_prefix, reset_sequence,
-    create_job, complete_job, fail_job, get_db_connection
+    create_job, complete_job, fail_job, get_db_connection, vendor_has_feature
 )
 from db_factory import get_backup_db_connection, get_table_columns
 try:
@@ -325,6 +325,12 @@ def update_device_geofence(vendor_id, device_id):
     else:
         radius = None
 
+    if radius is not None and not vendor_has_feature(vendor_id, "geofencing"):
+        return jsonify({
+            "error": "Geofencing is not enabled for this company",
+            "code": "FEATURE_NOT_ENABLED",
+        }), 403
+
     # Validation for coordinates if provided
     latitude = None
     longitude = None
@@ -448,9 +454,10 @@ def get_fleet_telemetry():
                    d.device_id, d.device_name, d.registered_at, 
                    d.last_active_at, d.last_login_at, d.battery_level,
                    d.geofence_lat, d.geofence_lng, d.geofence_radius,
-                   d.last_lat, d.last_lng
+                   d.last_lat, d.last_lng, s.features
             FROM vendor_devices d
             LEFT JOIN vendors v ON d.vendor_id = v.id
+            LEFT JOIN subscriptions s ON s.vendor_id = d.vendor_id
             ORDER BY d.last_active_at DESC
         """
         c.execute(query)
@@ -459,7 +466,7 @@ def get_fleet_telemetry():
             'device_id': r[4], 'device_name': r[5], 'registered_at': r[6],
             'last_active_at': r[7], 'last_login_at': r[8], 'battery_level': r[9],
             'geofence_lat': r[10], 'geofence_lng': r[11], 'geofence_radius': r[12],
-            'last_lat': r[13], 'last_lng': r[14]
+            'last_lat': r[13], 'last_lng': r[14], 'features': r[15]
         } for r in c.fetchall() or []]
         conn.close()
         
@@ -484,12 +491,17 @@ def get_fleet_telemetry():
             anchor_lat = r.get("geofence_lat")
             anchor_lng = r.get("geofence_lng")
             radius = r.get("geofence_radius")
+            try:
+                feature_values = json.loads(r.get("features") or "[]")
+            except (TypeError, ValueError):
+                feature_values = []
+            geofencing_enabled = "geofencing" in feature_values
             last_lat = r.get("last_lat")
             last_lng = r.get("last_lng")
             
             distance = None
             geofence_status = "disabled"
-            if radius and float(radius) > 0:
+            if geofencing_enabled and radius and float(radius) > 0:
                 if last_lat is not None and last_lng is not None and anchor_lat is not None and anchor_lng is not None:
                     dist = haversine_distance(float(anchor_lat), float(anchor_lng), float(last_lat), float(last_lng))
                     distance = round(dist, 1)
@@ -502,6 +514,7 @@ def get_fleet_telemetry():
             r["is_online"] = is_online
             r["distance_meters"] = distance
             r["geofence_status"] = geofence_status
+            r["geofence_enabled"] = geofencing_enabled
 
             # Standardize coordinates and vendor fields for map components
             lat_f = None
@@ -1442,6 +1455,8 @@ def bulk_vendor_action():
                 c.execute("UPDATE subscriptions SET features = ? WHERE vendor_id = ?", (json.dumps(feats), vid))
                 if feature == "automated_email_reports" and not enabled:
                     c.execute("UPDATE automated_report_schedules SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE vendor_id = ?", (vid,))
+                if feature == "hostel_attendance_alerts" and not enabled:
+                    c.execute("UPDATE hostel_alert_settings SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE vendor_id = ?", (vid,))
                 log_audit("vendor_toggle_feature", {"feature": feature, "enabled": enabled}, target_vendor_id=vid)
                 try:
                     socketio.emit('features_updated', {'vendor_id': vid, 'features': feats}, room=f"vendor_{vid}")
@@ -1736,12 +1751,18 @@ def create_vendor():
             c.execute("UPDATE vendors SET vertical = ? WHERE id = ?", (vertical, vendor_id))
             if str(vertical).strip().lower() in {"school", "hostel"}:
                 hostel_flow = str(vertical).strip().lower() == "hostel"
-                rc = json.dumps([
+                default_fields = [
                     {"field": "student_id", "label": "Resident ID" if hostel_flow else "Student ID", "type": "text", "required": True, "options": []},
                     {"field": "email", "label": "Resident Email" if hostel_flow else "Student Email", "type": "email", "required": True, "options": []},
                     {"field": "phone", "label": "Resident Mobile Number" if hostel_flow else "Student Mobile Number", "type": "text", "required": True, "options": []},
                     {"field": "class_id", "label": "Room/Block" if hostel_flow else "Class/Section", "type": "class_select", "required": True, "options": []}
-                ])
+                ]
+                if hostel_flow:
+                    default_fields[3:3] = [
+                        {"field": "parent_name", "label": "Parent / Guardian Name", "type": "text", "required": False, "options": []},
+                        {"field": "parent_phone", "label": "Parent / Guardian WhatsApp Number", "type": "text", "required": False, "options": []},
+                    ]
+                rc = json.dumps(default_fields)
                 c.execute("UPDATE vendors SET registration_config = ? WHERE id = ?", (rc, vendor_id))
         
         # 6. Finalize Transaction
@@ -2061,6 +2082,8 @@ def update_vendor_subscription(vendor_id):
                         current_features = []
                 if 'automated_email_reports' not in current_features:
                     c.execute("UPDATE automated_report_schedules SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE vendor_id = ?", (vendor_id,))
+                if 'hostel_attendance_alerts' not in current_features:
+                    c.execute("UPDATE hostel_alert_settings SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE vendor_id = ?", (vendor_id,))
             conn.commit()
             if 'features' in data:
                 cache_delete_vendor_prefix(vendor_id)
@@ -2270,7 +2293,11 @@ def update_vendor_details(vendor_id):
                 query += f"{field} = ?, "
                 params.append(data[field])
         
-        # Sync Features: Prioritize granular features if provided, otherwise fallback to bundle defaults
+        # Existing subscriptions are authoritative. Changing presentation/bundle
+        # metadata must not silently restore default features that SuperAdmin has
+        # explicitly disabled (for example geofencing). Bundle defaults are only
+        # used during vendor creation; edits synchronize features only when the
+        # caller deliberately submits a feature list.
         features_json = None
         if 'features' in data:
             features_val = data['features']
@@ -2278,11 +2305,6 @@ def update_vendor_details(vendor_id):
                 # Trigger model download if new feature set includes bulk attendance
                 trigger_model_download_if_needed(features_val)
                 features_json = json.dumps(features_val)
-        elif 'frontend_bundle_id' in data:
-            new_bundle_id = data['frontend_bundle_id']
-            new_features = BUNDLE_FEATURES.get(new_bundle_id, [])
-            trigger_model_download_if_needed(new_features)
-            features_json = json.dumps(new_features)
 
         if features_json:
             # Check if subscription exists
@@ -2292,6 +2314,8 @@ def update_vendor_details(vendor_id):
             else:
                 # Create if missing (Self-healing)
                 c.execute("INSERT INTO subscriptions (vendor_id, features) VALUES (?, ?)", (vendor_id, features_json))
+            if "hostel_attendance_alerts" not in json.loads(features_json):
+                c.execute("UPDATE hostel_alert_settings SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE vendor_id = ?", (vendor_id,))
         
         if 'config' in data:
             config = data['config']
@@ -2319,12 +2343,18 @@ def update_vendor_details(vendor_id):
                             needs_set = True
                     if needs_set:
                         hostel_flow = str(data.get('vertical') or '').strip().lower() == 'hostel'
-                        rc = json.dumps([
+                        default_fields = [
                             {"field": "student_id", "label": "Resident ID" if hostel_flow else "Student ID", "type": "text", "required": True, "options": []},
                             {"field": "email", "label": "Resident Email" if hostel_flow else "Student Email", "type": "email", "required": True, "options": []},
                             {"field": "phone", "label": "Resident Mobile Number" if hostel_flow else "Student Mobile Number", "type": "text", "required": True, "options": []},
                             {"field": "class_id", "label": "Room/Block" if hostel_flow else "Class/Section", "type": "class_select", "required": True, "options": []}
-                        ])
+                        ]
+                        if hostel_flow:
+                            default_fields[3:3] = [
+                                {"field": "parent_name", "label": "Parent / Guardian Name", "type": "text", "required": False, "options": []},
+                                {"field": "parent_phone", "label": "Parent / Guardian WhatsApp Number", "type": "text", "required": False, "options": []},
+                            ]
+                        rc = json.dumps(default_fields)
                         c.execute("UPDATE vendors SET registration_config = ? WHERE id = ?", (rc, vendor_id))
             except Exception:
                 pass
@@ -2791,9 +2821,11 @@ def _legacy_delete_vendor(vendor_id):
             ("xchat_messages", f"DELETE FROM xchat_messages WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("xchat_token_usage", f"DELETE FROM xchat_token_usage WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("advance_revisions", f"DELETE FROM advance_revisions WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("leave_workflow_stages", f"DELETE FROM leave_workflow_stages WHERE workflow_id IN (SELECT id FROM leave_workflows WHERE vendor_id = {placeholder})", (vendor_id,)),
 
             # 2. Tables referencing faces or parent_users
             ("advances", f"DELETE FROM advances WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("leave_request_stages", f"DELETE FROM leave_request_stages WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("leave_requests", f"DELETE FROM leave_requests WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("person_embeddings", f"DELETE FROM person_embeddings WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("attendance", f"DELETE FROM attendance WHERE vendor_id = {placeholder}", (vendor_id,)),
@@ -2823,6 +2855,7 @@ def _legacy_delete_vendor(vendor_id):
             ("class_thresholds", f"DELETE FROM class_thresholds WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("bulk_attendance_config", f"DELETE FROM bulk_attendance_config WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("leave_staff", f"DELETE FROM leave_staff WHERE vendor_id = {placeholder}", (vendor_id,)),
+            ("leave_workflows", f"DELETE FROM leave_workflows WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("vendor_device_slots", f"DELETE FROM vendor_device_slots WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("vendor_devices", f"DELETE FROM vendor_devices WHERE vendor_id = {placeholder}", (vendor_id,)),
             ("active_sessions", f"DELETE FROM active_sessions WHERE vendor_id = {placeholder}", (vendor_id,)),
@@ -3510,14 +3543,14 @@ def restore_vendor():
         for (row_json,) in c.fetchall():
             p = json.loads(row_json)
             old_id = p.get("id")
-            sql = """INSERT INTO parent_users (username, password, contact_email, contact_phone, student_number, device_id, fcm_token, face_image, face_template, vendor_id) 
-                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""" if is_pg else \
-                  """INSERT INTO parent_users (username, password, contact_email, contact_phone, student_number, device_id, fcm_token, face_image, face_template, vendor_id) 
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+            sql = """INSERT INTO parent_users (username, password, contact_email, contact_phone, student_number, device_id, fcm_token, face_image, face_template, face_server_template, vendor_id)
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""" if is_pg else \
+                  """INSERT INTO parent_users (username, password, contact_email, contact_phone, student_number, device_id, fcm_token, face_image, face_template, face_server_template, vendor_id)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
             c.execute(sql, (
                 p.get("username"), p.get("password"), p.get("contact_email"), p.get("contact_phone"),
                 p.get("student_number"), p.get("device_id"), p.get("fcm_token"), p.get("face_image"),
-                p.get("face_template"), new_vendor_id
+                p.get("face_template"), p.get("face_server_template"), new_vendor_id
             ))
             
             new_id = None

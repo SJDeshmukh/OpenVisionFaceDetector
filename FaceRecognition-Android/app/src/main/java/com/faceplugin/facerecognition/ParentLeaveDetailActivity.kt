@@ -185,7 +185,6 @@ class ParentLeaveDetailActivity : AppCompatActivity() {
         body.addProperty("request_id", leaveRequestId)
         body.addProperty("student_number", studentNumber)
         body.addProperty("action", pendingAction)
-        body.addProperty("local_verified", true)
         body.addProperty("captured_face", "data:image/jpeg;base64,$capturedFaceB64")
 
         RetrofitClient.getService().parentApproveLeave(body).enqueue(object : Callback<JsonObject> {

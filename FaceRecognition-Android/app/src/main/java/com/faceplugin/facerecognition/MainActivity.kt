@@ -215,11 +215,16 @@ class MainActivity : AppCompatActivity() {
         val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
         val role = prefs.getString("role", "user")
         val isUser = "user".equals(role, ignoreCase = true)
+        val canManagePeople = role.equals("vendor_admin", true) ||
+            role.equals("admin", true) || role.equals("super_admin", true)
 
-        if (isUser) {
-            // Hide Enroll and Users for user login
+        if (!canManagePeople) {
+            // Employee/student/kiosk sessions cannot enrol or administer people.
             bottomNav.menu.findItem(R.id.nav_enroll).isVisible = false
             bottomNav.menu.findItem(R.id.nav_users).isVisible = false
+        }
+
+        if (isUser) {
             // Hide the bottom navigation bar entirely for users since they only have one tab
             bottomNav.visibility = android.view.View.GONE
 
@@ -391,6 +396,24 @@ class MainActivity : AppCompatActivity() {
             mSocket?.on("features_updated") { args ->
                 runOnUiThread {
                     try {
+                        if (args.isNotEmpty()) {
+                            val payload = args[0] as? JSONObject
+                            val features = payload?.optJSONArray("features")
+                            var geofencingEnabled = false
+                            if (features != null) {
+                                for (i in 0 until features.length()) {
+                                    if (features.optString(i) == "geofencing") {
+                                        geofencingEnabled = true
+                                        break
+                                    }
+                                }
+                            }
+                            if (!geofencingEnabled) {
+                                applyServerGeofenceConfig(JSONObject().apply {
+                                    put("geofence_enabled", false)
+                                })
+                            }
+                        }
                         android.widget.Toast.makeText(this, "Plan updated", android.widget.Toast.LENGTH_SHORT).show()
                         fetchCooldownSettings()
                     } catch (_: Exception) {}

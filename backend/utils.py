@@ -36,7 +36,7 @@ BUNDLE_FEATURES = {
     'tapinx_ui': ['reports', 'report_detailed', 'mobile_app', 'live_attendance', 'cameras', 'enable_attendance', 'geofencing', 'parent_alerts', 'checkin_checkout', 'parent_login']
 }
 
-ALL_FEATURES = ['reports', 'report_detailed', 'report_payroll', 'automated_email_reports', 'employee_reports', 'xchat_ai', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'api_access', 'white_labeling', 'late_mark', 'bulk_image_attendance', 'classes', 'leave_management', 'parent_login', 'lecture_wise_reports', 'parent_alerts', 'checkin_checkout']
+ALL_FEATURES = ['reports', 'report_detailed', 'report_payroll', 'automated_email_reports', 'employee_reports', 'xchat_ai', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'hostel_attendance_alerts', 'api_access', 'white_labeling', 'late_mark', 'bulk_image_attendance', 'classes', 'leave_management', 'parent_login', 'lecture_wise_reports', 'parent_alerts', 'checkin_checkout']
 
 REGISTRATION_TEMPLATES = {
     "school": [
@@ -49,6 +49,8 @@ REGISTRATION_TEMPLATES = {
         {"field": "student_id", "label": "Resident ID", "enabled": True},
         {"field": "email", "label": "Resident Email", "enabled": True, "required": True, "type": "email"},
         {"field": "phone", "label": "Resident Mobile Number", "enabled": True},
+        {"field": "parent_name", "label": "Parent / Guardian Name", "enabled": True},
+        {"field": "parent_phone", "label": "Parent / Guardian WhatsApp Number", "enabled": True},
         {"field": "class_section", "label": "Room/Block", "enabled": False}
     ],
     "daily_wages": [

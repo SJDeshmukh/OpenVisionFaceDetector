@@ -531,7 +531,7 @@ def _init_pg_schema_on_conn(conn):
         "CREATE TABLE IF NOT EXISTS invoices (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), amount REAL, status TEXT DEFAULT 'generated', due_date DATE, generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, paid_at TIMESTAMP, invoice_date DATE, details TEXT)",
         "CREATE TABLE IF NOT EXISTS audit_logs (id SERIAL PRIMARY KEY, actor_username TEXT, actor_role TEXT, target_vendor_id INTEGER, action TEXT, details TEXT, ip TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT)",
-        "CREATE TABLE IF NOT EXISTS parent_users (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), username TEXT UNIQUE, password TEXT, contact_email TEXT, contact_phone TEXT, student_number TEXT, selected_person_id INTEGER, device_id TEXT, fcm_token TEXT, session_version INTEGER DEFAULT 1, face_image TEXT, face_template TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS parent_users (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), username TEXT UNIQUE, password TEXT, contact_email TEXT, contact_phone TEXT, student_number TEXT, selected_person_id INTEGER, device_id TEXT, fcm_token TEXT, session_version INTEGER DEFAULT 1, face_image TEXT, face_template TEXT, face_server_template TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS leave_requests (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), student_id INTEGER REFERENCES faces(id), leave_type TEXT, reason TEXT, start_date DATE, end_date DATE, start_time TEXT, end_time TEXT, parent_status TEXT DEFAULT 'pending', rector_status TEXT DEFAULT 'pending', hod_status TEXT DEFAULT 'pending', final_status TEXT DEFAULT 'pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS student_parents (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id), parent_id INTEGER REFERENCES parent_users(id), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(person_id, parent_id))",
         "CREATE TABLE IF NOT EXISTS parent_tokens (token TEXT PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), student_number TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
@@ -539,6 +539,11 @@ def _init_pg_schema_on_conn(conn):
         "CREATE TABLE IF NOT EXISTS class_batches (id TEXT PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), class_year TEXT, division TEXT, branch TEXT, status TEXT DEFAULT 'active', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS class_batch_items (id TEXT PRIMARY KEY, batch_id TEXT REFERENCES class_batches(id), seq INTEGER, image_b64 TEXT, annotated_b64 TEXT, faces_json TEXT, status TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS leave_staff (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), name TEXT, role TEXT, pin TEXT, department TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS leave_workflows (id SERIAL PRIMARY KEY, vendor_id INTEGER NOT NULL REFERENCES vendors(id), name TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, is_active INTEGER NOT NULL DEFAULT 1, created_by TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, version))",
+        "CREATE TABLE IF NOT EXISTS leave_workflow_stages (id SERIAL PRIMARY KEY, workflow_id INTEGER NOT NULL REFERENCES leave_workflows(id) ON DELETE CASCADE, stage_key TEXT NOT NULL, display_name TEXT NOT NULL, actor_type TEXT NOT NULL, role_key TEXT, sequence INTEGER NOT NULL, department_scoped INTEGER NOT NULL DEFAULT 0, auth_method TEXT NOT NULL DEFAULT 'staff_session', UNIQUE(workflow_id, sequence), UNIQUE(workflow_id, stage_key))",
+        "CREATE TABLE IF NOT EXISTS leave_request_stages (id SERIAL PRIMARY KEY, request_id INTEGER NOT NULL REFERENCES leave_requests(id) ON DELETE CASCADE, vendor_id INTEGER NOT NULL REFERENCES vendors(id), workflow_id INTEGER REFERENCES leave_workflows(id), workflow_version INTEGER NOT NULL, stage_key TEXT NOT NULL, display_name TEXT NOT NULL, actor_type TEXT NOT NULL, role_key TEXT, sequence INTEGER NOT NULL, department_scoped INTEGER NOT NULL DEFAULT 0, auth_method TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', actor_id TEXT, actor_name TEXT, decided_at TIMESTAMP, decision_metadata TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(request_id, sequence))",
+        "CREATE INDEX IF NOT EXISTS idx_leave_workflows_vendor_active ON leave_workflows(vendor_id, is_active, version)",
+        "CREATE INDEX IF NOT EXISTS idx_leave_request_stages_queue ON leave_request_stages(vendor_id, status, actor_type, role_key, sequence)",
         "CREATE TABLE IF NOT EXISTS archive_objects (id SERIAL PRIMARY KEY, vendor_id INTEGER, table_name TEXT, row_json TEXT, archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, restored_at TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS bulk_attendance_config (id SERIAL PRIMARY KEY, vendor_id INTEGER UNIQUE REFERENCES vendors(id), fields TEXT DEFAULT '[]', updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS lectures (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), subject TEXT NOT NULL, class_year TEXT, division TEXT, branch TEXT, lecture_date DATE, start_time TEXT, teacher TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
@@ -556,6 +561,8 @@ def _init_pg_schema_on_conn(conn):
         "CREATE TABLE IF NOT EXISTS xchat_messages (id SERIAL PRIMARY KEY, conversation_id TEXT REFERENCES xchat_conversations(id) ON DELETE CASCADE, vendor_id INTEGER REFERENCES vendors(id) NOT NULL, username TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, tool_name TEXT, message_metadata TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS xchat_token_usage (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id) NOT NULL, username TEXT NOT NULL, conversation_id TEXT, model TEXT, usage_type TEXT DEFAULT 'chat', input_tokens BIGINT DEFAULT 0, output_tokens BIGINT DEFAULT 0, total_tokens BIGINT DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS vendor_whatsapp_settings (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id) UNIQUE NOT NULL, instance_name TEXT, phone_number TEXT, status TEXT DEFAULT 'disconnected', auto_punch_alerts INTEGER DEFAULT 1, auto_leave_alerts INTEGER DEFAULT 1, auto_advance_alerts INTEGER DEFAULT 1, auto_late_alerts INTEGER DEFAULT 0, last_connected_at TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS hostel_alert_settings (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id) UNIQUE NOT NULL, enabled INTEGER NOT NULL DEFAULT 0, owner_phone TEXT, cutoff_time TEXT NOT NULL DEFAULT '19:00', escalation_minutes INTEGER NOT NULL DEFAULT 60, timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata', student_template TEXT, parent_template TEXT, owner_summary_enabled INTEGER NOT NULL DEFAULT 1, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS hostel_alert_deliveries (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id) NOT NULL, person_id INTEGER NOT NULL, alert_date DATE NOT NULL, alert_type TEXT NOT NULL, recipient_phone TEXT, status TEXT NOT NULL DEFAULT 'processing', attempts INTEGER NOT NULL DEFAULT 0, error TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, attempted_at TIMESTAMP, sent_at TIMESTAMP, UNIQUE(vendor_id, person_id, alert_date, alert_type))",
 
         # --- Performance Indices ---
         "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_time ON attendance(vendor_id, timestamp)",
@@ -625,6 +632,7 @@ def _init_pg_schema_on_conn(conn):
         ("vendor_devices", "last_lng", "REAL"),
         ("parent_users", "face_image", "TEXT"),
         ("parent_users", "face_template", "TEXT"),
+        ("parent_users", "face_server_template", "TEXT"),
         ("parent_users", "vendor_id", "INTEGER"),
         ("vendors", "num_rectors", "INTEGER DEFAULT 0"),
         ("vendors", "num_hods", "INTEGER DEFAULT 0"),
@@ -862,6 +870,13 @@ def _init_pg_schema_on_conn(conn):
 
     conn.commit()
     cur.close()
+    try:
+        from services.leave_workflow_service import backfill_legacy_requests
+        migrated = backfill_legacy_requests(conn)
+        if migrated:
+            logger.info("Snapshotted %s legacy leave approval workflows", migrated)
+    except Exception as exc:
+        logger.warning("Could not backfill legacy leave workflows: %s", exc)
 
 def init_sqlite_schema(conn):
     cur = conn.cursor()
@@ -893,7 +908,7 @@ def init_sqlite_schema(conn):
         "CREATE TABLE IF NOT EXISTS invoices (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, amount REAL, status TEXT DEFAULT 'generated', due_date DATE, generated_at DATETIME DEFAULT CURRENT_TIMESTAMP, paid_at DATETIME, invoice_date DATE, details TEXT)",
         "CREATE TABLE IF NOT EXISTS audit_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, actor_username TEXT, actor_role TEXT, target_vendor_id INTEGER, action TEXT, details TEXT, ip TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT)",
-        "CREATE TABLE IF NOT EXISTS parent_users (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, username TEXT UNIQUE, password TEXT, contact_email TEXT, contact_phone TEXT, student_number TEXT, selected_person_id INTEGER, device_id TEXT, fcm_token TEXT, session_version INTEGER DEFAULT 1, face_image TEXT, face_template TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS parent_users (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, username TEXT UNIQUE, password TEXT, contact_email TEXT, contact_phone TEXT, student_number TEXT, selected_person_id INTEGER, device_id TEXT, fcm_token TEXT, session_version INTEGER DEFAULT 1, face_image TEXT, face_template TEXT, face_server_template TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS leave_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, student_id INTEGER, leave_type TEXT, reason TEXT, start_date DATE, end_date DATE, start_time TEXT, end_time TEXT, parent_status TEXT DEFAULT 'pending', rector_status TEXT DEFAULT 'pending', hod_status TEXT DEFAULT 'pending', final_status TEXT DEFAULT 'pending', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS student_parents (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, person_id INTEGER, parent_id INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(person_id, parent_id))",
         "CREATE TABLE IF NOT EXISTS parent_tokens (token TEXT PRIMARY KEY, vendor_id INTEGER, student_number TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
@@ -901,6 +916,11 @@ def init_sqlite_schema(conn):
         "CREATE TABLE IF NOT EXISTS class_batches (id TEXT PRIMARY KEY, vendor_id INTEGER, class_year TEXT, division TEXT, branch TEXT, status TEXT DEFAULT 'active', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS class_batch_items (id TEXT PRIMARY KEY, batch_id TEXT, seq INTEGER, image_b64 TEXT, annotated_b64 TEXT, faces_json TEXT, status TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS leave_staff (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, name TEXT, role TEXT, pin TEXT, department TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS leave_workflows (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER NOT NULL, name TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, is_active INTEGER NOT NULL DEFAULT 1, created_by TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, version))",
+        "CREATE TABLE IF NOT EXISTS leave_workflow_stages (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id INTEGER NOT NULL, stage_key TEXT NOT NULL, display_name TEXT NOT NULL, actor_type TEXT NOT NULL, role_key TEXT, sequence INTEGER NOT NULL, department_scoped INTEGER NOT NULL DEFAULT 0, auth_method TEXT NOT NULL DEFAULT 'staff_session', UNIQUE(workflow_id, sequence), UNIQUE(workflow_id, stage_key))",
+        "CREATE TABLE IF NOT EXISTS leave_request_stages (id INTEGER PRIMARY KEY AUTOINCREMENT, request_id INTEGER NOT NULL, vendor_id INTEGER NOT NULL, workflow_id INTEGER, workflow_version INTEGER NOT NULL, stage_key TEXT NOT NULL, display_name TEXT NOT NULL, actor_type TEXT NOT NULL, role_key TEXT, sequence INTEGER NOT NULL, department_scoped INTEGER NOT NULL DEFAULT 0, auth_method TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', actor_id TEXT, actor_name TEXT, decided_at DATETIME, decision_metadata TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(request_id, sequence))",
+        "CREATE INDEX IF NOT EXISTS idx_leave_workflows_vendor_active ON leave_workflows(vendor_id, is_active, version)",
+        "CREATE INDEX IF NOT EXISTS idx_leave_request_stages_queue ON leave_request_stages(vendor_id, status, actor_type, role_key, sequence)",
         "CREATE TABLE IF NOT EXISTS archive_objects (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, table_name TEXT, row_json TEXT, archived_at DATETIME DEFAULT CURRENT_TIMESTAMP, restored_at DATETIME)",
         "CREATE TABLE IF NOT EXISTS bulk_attendance_config (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER UNIQUE, fields TEXT DEFAULT '[]', updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS lectures (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, subject TEXT NOT NULL, class_year TEXT, division TEXT, branch TEXT, lecture_date DATE, start_time TEXT, teacher TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
@@ -917,6 +937,8 @@ def init_sqlite_schema(conn):
         "CREATE TABLE IF NOT EXISTS xchat_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT NOT NULL, vendor_id INTEGER NOT NULL, username TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, tool_name TEXT, message_metadata TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(conversation_id) REFERENCES xchat_conversations(id) ON DELETE CASCADE)",
         "CREATE TABLE IF NOT EXISTS xchat_token_usage (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER NOT NULL, username TEXT NOT NULL, conversation_id TEXT, model TEXT, usage_type TEXT DEFAULT 'chat', input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, total_tokens INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS vendor_whatsapp_settings (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER UNIQUE NOT NULL, instance_name TEXT, phone_number TEXT, status TEXT DEFAULT 'disconnected', auto_punch_alerts INTEGER DEFAULT 1, auto_leave_alerts INTEGER DEFAULT 1, auto_advance_alerts INTEGER DEFAULT 1, auto_late_alerts INTEGER DEFAULT 0, last_connected_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS hostel_alert_settings (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER UNIQUE NOT NULL, enabled INTEGER NOT NULL DEFAULT 0, owner_phone TEXT, cutoff_time TEXT NOT NULL DEFAULT '19:00', escalation_minutes INTEGER NOT NULL DEFAULT 60, timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata', student_template TEXT, parent_template TEXT, owner_summary_enabled INTEGER NOT NULL DEFAULT 1, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS hostel_alert_deliveries (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER NOT NULL, person_id INTEGER NOT NULL, alert_date DATE NOT NULL, alert_type TEXT NOT NULL, recipient_phone TEXT, status TEXT NOT NULL DEFAULT 'processing', attempts INTEGER NOT NULL DEFAULT 0, error TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, attempted_at DATETIME, sent_at DATETIME, UNIQUE(vendor_id, person_id, alert_date, alert_type))",
 
         # --- Performance Indices ---
         "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_time ON attendance(vendor_id, timestamp)",
@@ -987,7 +1009,7 @@ def init_sqlite_schema(conn):
     except Exception:
         pass
     
-    for col in ["face_image TEXT", "face_template TEXT", "vendor_id INTEGER"]:
+    for col in ["face_image TEXT", "face_template TEXT", "face_server_template TEXT", "vendor_id INTEGER"]:
         try:
             cur.execute(f"ALTER TABLE parent_users ADD COLUMN {col}")
         except Exception:
@@ -1047,6 +1069,13 @@ def init_sqlite_schema(conn):
 
     conn.commit()
     cur.close()
+    try:
+        from services.leave_workflow_service import backfill_legacy_requests
+        migrated = backfill_legacy_requests(conn)
+        if migrated:
+            logger.info("Snapshotted %s legacy leave approval workflows", migrated)
+    except Exception as exc:
+        logger.warning("Could not backfill legacy leave workflows: %s", exc)
 
 
 def _init_backup_schema_on_conn(conn):

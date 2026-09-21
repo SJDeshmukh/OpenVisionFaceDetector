@@ -13,10 +13,12 @@ DIRECT_DELETE_ORDER = (
     "student_parents",
     "advance_revisions",
     "advances",
+    "leave_request_stages",
     "leave_requests",
     "person_embeddings",
     "report_delivery_jobs",
     "automated_report_deliveries",
+    "hostel_alert_deliveries",
     "xchat_messages",
     "xchat_token_usage",
     "attendance",
@@ -30,6 +32,7 @@ DIRECT_DELETE_ORDER = (
     "registration_batches",
     "lectures",
     "automated_report_schedules",
+    "hostel_alert_settings",
     "xchat_conversations",
     "weekly_off_patterns",
     "shift_versions",
@@ -42,6 +45,7 @@ DIRECT_DELETE_ORDER = (
     "class_thresholds",
     "bulk_attendance_config",
     "leave_staff",
+    "leave_workflows",
     "vendor_whatsapp_settings",
     "app_update_device_status",
     "vendor_device_slots",
@@ -116,6 +120,13 @@ def purge_vendor_database(conn, vendor_id):
     deleted["registration_batch_items"] = _delete_batch_items(
         cursor, tables, "registration_batch_items", "registration_batches", vendor_id
     )
+    if "leave_workflow_stages" in tables and "leave_workflows" in tables:
+        cursor.execute(
+            "DELETE FROM leave_workflow_stages WHERE workflow_id IN "
+            "(SELECT id FROM leave_workflows WHERE vendor_id = ?)",
+            (vendor_id,),
+        )
+        deleted["leave_workflow_stages"] = max(0, int(cursor.rowcount or 0))
 
     vendor_tables = {
         table: "target_vendor_id" if "target_vendor_id" in columns else "vendor_id"

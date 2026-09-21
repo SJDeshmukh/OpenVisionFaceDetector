@@ -25,6 +25,7 @@ import Faces from './pages/Faces';
 import LeaveManagement from './pages/LeaveManagement';
 import FaceResetRequests from './pages/FaceResetRequests';
 import OwnerAdvances from './pages/OwnerAdvances';
+import HostelAlerts from './pages/HostelAlerts';
 
 import { usesStudentRecords } from './lib/businessTerminology';
 
@@ -57,6 +58,13 @@ const FaceResetRoute = () => {
   const supported = !['daily_wages', 'wages', 'factory', 'enterprise'].includes(vertical) &&
     user?.features?.includes('parent_login');
   return supported ? <FaceResetRequests /> : <Navigate to="/dashboard" replace />;
+};
+
+const HostelAlertsRoute = () => {
+  const { user } = useAuth();
+  const allowed = String(user?.vertical || '').toLowerCase() === 'hostel' &&
+    user?.features?.includes('hostel_attendance_alerts');
+  return allowed ? <HostelAlerts /> : <Navigate to="/dashboard" replace />;
 };
 
 function App() {
@@ -103,6 +111,7 @@ function App() {
                 <Route path="/faces" element={<Faces />} />
                 <Route path="/leave-management" element={<LeaveManagement />} />
                 <Route path="/face-reset-requests" element={<FaceResetRoute />} />
+                <Route path="/hostel-alerts" element={<HostelAlertsRoute />} />
               </Route>
 
               {/* Shared/User Routes */}

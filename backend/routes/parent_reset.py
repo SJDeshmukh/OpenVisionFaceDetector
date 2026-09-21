@@ -136,7 +136,7 @@ def handle_face_reset():
         if action == 'approved':
             # 1. Clear parent face data
             c.execute(
-                "UPDATE parent_users SET face_image = NULL, face_template = NULL WHERE id = ?",
+                "UPDATE parent_users SET face_image = NULL, face_template = NULL, face_server_template = NULL WHERE id = ?",
                 (parent_id,)
             )
             # 2. Update request status

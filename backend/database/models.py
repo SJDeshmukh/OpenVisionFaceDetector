@@ -448,6 +448,7 @@ class ParentUser(Base):
     session_version = Column(Integer, default=1)
     face_image = Column(Text)
     face_template = Column(Text)
+    face_server_template = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     vendor = relationship("Vendor", back_populates="parent_users")
@@ -541,6 +542,58 @@ class LeaveStaff(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     vendor = relationship("Vendor", back_populates="leave_staff")
+
+
+class LeaveWorkflow(Base):
+    __tablename__ = 'leave_workflows'
+    __table_args__ = (UniqueConstraint('vendor_id', 'version'),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    vendor_id = Column(Integer, ForeignKey('vendors.id'), nullable=False)
+    name = Column(String(120), nullable=False)
+    version = Column(Integer, nullable=False, default=1)
+    is_active = Column(Integer, nullable=False, default=1)
+    created_by = Column(String(255))
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class LeaveWorkflowStage(Base):
+    __tablename__ = 'leave_workflow_stages'
+    __table_args__ = (
+        UniqueConstraint('workflow_id', 'sequence'),
+        UniqueConstraint('workflow_id', 'stage_key'),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    workflow_id = Column(Integer, ForeignKey('leave_workflows.id', ondelete='CASCADE'), nullable=False)
+    stage_key = Column(String(100), nullable=False)
+    display_name = Column(String(80), nullable=False)
+    actor_type = Column(String(30), nullable=False)
+    role_key = Column(String(100))
+    sequence = Column(Integer, nullable=False)
+    department_scoped = Column(Integer, nullable=False, default=0)
+    auth_method = Column(String(30), nullable=False, default='staff_session')
+
+
+class LeaveRequestStage(Base):
+    __tablename__ = 'leave_request_stages'
+    __table_args__ = (UniqueConstraint('request_id', 'sequence'),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    request_id = Column(Integer, ForeignKey('leave_requests.id', ondelete='CASCADE'), nullable=False)
+    vendor_id = Column(Integer, ForeignKey('vendors.id'), nullable=False)
+    workflow_id = Column(Integer, ForeignKey('leave_workflows.id'))
+    workflow_version = Column(Integer, nullable=False)
+    stage_key = Column(String(100), nullable=False)
+    display_name = Column(String(80), nullable=False)
+    actor_type = Column(String(30), nullable=False)
+    role_key = Column(String(100))
+    sequence = Column(Integer, nullable=False)
+    department_scoped = Column(Integer, nullable=False, default=0)
+    auth_method = Column(String(30), nullable=False)
+    status = Column(String(30), nullable=False, default='pending')
+    actor_id = Column(String(100))
+    actor_name = Column(String(255))
+    decided_at = Column(DateTime)
+    decision_metadata = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 class VendorWhatsAppSetting(Base):
     __tablename__ = 'vendor_whatsapp_settings'

@@ -48,7 +48,8 @@ export const FEATURE_TO_SIDEBAR_MAP = {
   'parent_login': 'Reports',
   'lecture_wise_reports': 'Reports',
   'parent_alerts': 'Settings',
-  'checkin_checkout': 'Attendance'
+  'checkin_checkout': 'Attendance',
+  'hostel_attendance_alerts': 'Hostel Alerts'
 };
 
 // Items that are ALWAYS visible regardless of features (Base System)

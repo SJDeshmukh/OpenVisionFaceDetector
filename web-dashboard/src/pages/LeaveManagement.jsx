@@ -13,7 +13,12 @@ import {
   ShieldCheck,
   Search,
   Users,
-  RotateCcw
+  RotateCcw,
+  Settings,
+  Plus,
+  Trash2,
+  ChevronUp,
+  ChevronDown
 } from 'lucide-react';
 import { getBusinessTerminology, usesStudentRecords } from '../lib/businessTerminology';
 
@@ -34,6 +39,9 @@ const LeaveManagement = () => {
   const [generating, setGenerating] = useState(false);
   const [showPinModal, setShowPinModal] = useState(false);
   const [pin, setPin] = useState('');
+  const [workflow, setWorkflow] = useState(null);
+  const [savingWorkflow, setSavingWorkflow] = useState(false);
+  const canConfigureWorkflow = ['super_admin', 'vendor_admin', 'admin', 'owner'].includes(user?.role);
   
   const currentRole = staffSession?.role || user?.role;
   const staffRequestConfig = staffSession?.access_token
@@ -127,6 +135,9 @@ const LeaveManagement = () => {
       } else if (activeTab === 'parents') {
         const res = await axios.get(`${API_URL}/leave/parent-faces`);
         setParents(res.data.parents || []);
+      } else if (activeTab === 'workflow') {
+        const res = await axios.get(`${API_URL}/leave/admin/workflow`);
+        setWorkflow(res.data.workflow || null);
       }
     } catch (err) {
       console.error("Error fetching leave data:", err);
@@ -217,6 +228,57 @@ const LeaveManagement = () => {
     }
   };
 
+  const updateWorkflowStage = (index, patch) => {
+    setWorkflow(prev => ({
+      ...prev,
+      stages: prev.stages.map((stage, stageIndex) => stageIndex === index ? { ...stage, ...patch } : stage)
+    }));
+  };
+
+  const moveWorkflowStage = (index, offset) => {
+    setWorkflow(prev => {
+      const stages = [...prev.stages];
+      const target = index + offset;
+      if (target < 0 || target >= stages.length) return prev;
+      [stages[index], stages[target]] = [stages[target], stages[index]];
+      return { ...prev, stages };
+    });
+  };
+
+  const addWorkflowStage = () => {
+    setWorkflow(prev => ({
+      ...(prev || { name: 'Leave Approval' }),
+      stages: [
+        ...(prev?.stages || []),
+        {
+          display_name: 'New Approver',
+          actor_type: 'staff',
+          role_key: `approver_${(prev?.stages?.length || 0) + 1}`,
+          department_scoped: false,
+          auth_method: 'staff_pin'
+        }
+      ]
+    }));
+  };
+
+  const saveWorkflow = async () => {
+    if (!workflow?.stages?.length) return alert('Add at least one approval stage.');
+    if (!window.confirm('Save this workflow for new leave requests? Existing requests will keep their current path.')) return;
+    setSavingWorkflow(true);
+    try {
+      const res = await axios.put(`${API_URL}/leave/admin/workflow`, {
+        name: workflow.name,
+        stages: workflow.stages
+      });
+      setWorkflow(res.data.workflow);
+      alert(res.data.message || 'Workflow saved successfully.');
+    } catch (err) {
+      alert('Unable to save workflow: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setSavingWorkflow(false);
+    }
+  };
+
   const filteredRequests = requests.filter(req => 
     (req.student_name || req.name || req.employee_name || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
     (req.reason || "").toLowerCase().includes(searchTerm.toLowerCase())
@@ -244,6 +306,14 @@ const LeaveManagement = () => {
         </div>
 
         <div className="flex bg-slate-100 p-1 rounded-lg">
+          {!isRegularUser && (
+            <button
+              onClick={() => setShowPinModal(true)}
+              className="px-4 py-2 rounded-md text-sm font-medium text-slate-700 hover:bg-white hover:text-blue-600 transition-colors flex items-center gap-1.5"
+            >
+              <ShieldCheck size={15} /> {staffSession ? `${staffSession.name || staffSession.role}` : 'Staff PIN'}
+            </button>
+          )}
           {isRegularUser ? (
             <>
               <button
@@ -287,6 +357,14 @@ const LeaveManagement = () => {
               >
                 Leave History
               </button>
+              {canConfigureWorkflow && (
+                <button
+                  onClick={() => setActiveTab('workflow')}
+                  className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === 'workflow' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}
+                >
+                  Workflow Setup
+                </button>
+              )}
             </>
           )}
         </div>
@@ -294,7 +372,7 @@ const LeaveManagement = () => {
       </div>
 
       {/* Search Bar & Filters */}
-      <div className="flex flex-col md:flex-row gap-4">
+      {activeTab !== 'workflow' && <div className="flex flex-col md:flex-row gap-4">
         <div className="relative flex-1">
           <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-slate-400">
             <Search size={18} />
@@ -343,7 +421,7 @@ const LeaveManagement = () => {
             )}
           </div>
         )}
-      </div>
+      </div>}
 
       {loading ? (
         <div className="flex justify-center py-12">
@@ -351,7 +429,87 @@ const LeaveManagement = () => {
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-4">
-          {activeTab === 'new_request' ? (
+          {activeTab === 'workflow' ? (
+            <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-6">
+              <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
+                <div className="flex-1">
+                  <label className="block text-sm font-bold text-slate-700 mb-2">Workflow name</label>
+                  <input
+                    value={workflow?.name || ''}
+                    onChange={(e) => setWorkflow(prev => ({ ...(prev || { stages: [] }), name: e.target.value }))}
+                    className="w-full p-3 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="Student Leave Approval"
+                  />
+                  <p className="text-xs text-slate-500 mt-2">
+                    Version {workflow?.version || 'new'} · Changes apply only to newly submitted requests.
+                  </p>
+                </div>
+                <button onClick={addWorkflowStage} className="flex items-center justify-center gap-2 px-4 py-3 border border-blue-200 text-blue-700 rounded-lg hover:bg-blue-50 font-bold">
+                  <Plus size={18} /> Add Stage
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                {(workflow?.stages || []).map((stage, index) => (
+                  <div key={`${stage.stage_key || 'new'}-${index}`} className="grid grid-cols-1 lg:grid-cols-[auto_1.4fr_1fr_1fr_auto_auto] gap-3 items-center p-4 border border-slate-200 rounded-xl bg-slate-50/60">
+                    <div className="w-9 h-9 rounded-full bg-blue-600 text-white font-bold flex items-center justify-center">{index + 1}</div>
+                    <div>
+                      <label className="text-[10px] uppercase font-bold text-slate-400">Stage name</label>
+                      <input
+                        value={stage.display_name || ''}
+                        onChange={(e) => updateWorkflowStage(index, { display_name: e.target.value })}
+                        className="w-full p-2 border border-slate-200 rounded-lg bg-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] uppercase font-bold text-slate-400">Approver type</label>
+                      <select
+                        value={stage.actor_type || 'staff'}
+                        onChange={(e) => updateWorkflowStage(index, e.target.value === 'parent'
+                          ? { actor_type: 'parent', role_key: 'parent', auth_method: 'face', department_scoped: false }
+                          : { actor_type: 'staff', role_key: stage.role_key === 'parent' ? `approver_${index + 1}` : stage.role_key, auth_method: 'staff_pin' })}
+                        className="w-full p-2 border border-slate-200 rounded-lg bg-white"
+                      >
+                        <option value="staff">Staff</option>
+                        <option value="parent">Parent</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] uppercase font-bold text-slate-400">Role key</label>
+                      <input
+                        value={stage.role_key || ''}
+                        disabled={stage.actor_type === 'parent'}
+                        onChange={(e) => updateWorkflowStage(index, { role_key: e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, '_') })}
+                        className="w-full p-2 border border-slate-200 rounded-lg bg-white disabled:bg-slate-100"
+                        placeholder="warden"
+                      />
+                    </div>
+                    <label className="flex items-center gap-2 text-sm text-slate-600 whitespace-nowrap">
+                      <input
+                        type="checkbox"
+                        disabled={stage.actor_type === 'parent'}
+                        checked={Boolean(stage.department_scoped)}
+                        onChange={(e) => updateWorkflowStage(index, { department_scoped: e.target.checked })}
+                      />
+                      Department scoped
+                    </label>
+                    <div className="flex items-center justify-end gap-1">
+                      <button onClick={() => moveWorkflowStage(index, -1)} disabled={index === 0} className="p-2 text-slate-500 hover:bg-white rounded disabled:opacity-30" title="Move up"><ChevronUp size={18} /></button>
+                      <button onClick={() => moveWorkflowStage(index, 1)} disabled={index === workflow.stages.length - 1} className="p-2 text-slate-500 hover:bg-white rounded disabled:opacity-30" title="Move down"><ChevronDown size={18} /></button>
+                      <button onClick={() => setWorkflow(prev => ({ ...prev, stages: prev.stages.filter((_, i) => i !== index) }))} className="p-2 text-red-500 hover:bg-red-50 rounded" title="Remove stage"><Trash2 size={18} /></button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex items-center justify-between border-t border-slate-100 pt-5">
+                <p className="text-xs text-slate-500">Parent stages always require face authentication. Staff stages use an assigned staff PIN session.</p>
+                <button onClick={saveWorkflow} disabled={savingWorkflow || !workflow?.stages?.length} className="flex items-center gap-2 px-5 py-3 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 disabled:opacity-50">
+                  <Settings size={18} /> {savingWorkflow ? 'Saving...' : 'Save Workflow'}
+                </button>
+              </div>
+            </div>
+          ) : activeTab === 'new_request' ? (
             <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
               <form onSubmit={handleSubmitRequest} className="space-y-4">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -554,7 +712,10 @@ const LeaveManagement = () => {
                       <div className="absolute top-1/2 left-10 right-10 h-0.5 bg-slate-100 -translate-y-1/2 z-0"></div>
                       
                       {/* Logic for steps */}
-                      {(isStudentFlow ? [
+                      {(req.approval_steps?.length ? req.approval_steps.map(step => ({
+                        label: step.display_name,
+                        status: step.status
+                      })) : isStudentFlow ? [
                         { label: 'Rector', status: req.rector_status },
                         { label: 'HOD', status: req.hod_status },
                         { label: 'Parent', status: req.parent_status }
