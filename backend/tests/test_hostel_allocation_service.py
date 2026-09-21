@@ -33,6 +33,9 @@ ADMIN = {
 @pytest.fixture()
 def hostel():
     conn = sqlite3.connect(":memory:")
+    # Named rows reproduce PostgreSQL DictCursor behavior, including the risk
+    # of duplicate column names in joined queries.
+    conn.row_factory = sqlite3.Row
     conn.execute("""CREATE TABLE faces (
         id INTEGER PRIMARY KEY, vendor_id INTEGER NOT NULL, name TEXT,
         display_id TEXT, phone TEXT, department TEXT, custom_data TEXT

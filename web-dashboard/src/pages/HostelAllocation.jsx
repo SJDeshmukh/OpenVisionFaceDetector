@@ -39,7 +39,13 @@ function Summary({ value = {} }) {
 
 function Modal({ title, children, onClose }) {
   const closeRef = useRef(null);
-  useEffect(() => { closeRef.current?.focus(); const onKey = e => e.key === 'Escape' && onClose(); window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey); }, [onClose]);
+  const onCloseRef = useRef(onClose);
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
+  useEffect(() => {
+    const onKey = event => event.key === 'Escape' && onCloseRef.current?.();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
   return <div className="fixed inset-0 z-[70] grid place-items-center bg-slate-950/60 p-4" role="dialog" aria-modal="true" aria-label={title}>
     <div className="w-full max-w-lg rounded-2xl bg-white shadow-2xl">
       <div className="flex items-center justify-between border-b p-4"><h2 className="text-lg font-bold">{title}</h2><button ref={closeRef} onClick={onClose} aria-label="Close dialog" className="rounded-lg p-2 hover:bg-slate-100"><X size={18} /></button></div>

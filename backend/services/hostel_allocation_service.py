@@ -168,11 +168,16 @@ def get_state(conn, vendor_id, access):
             for room in rooms:
                 room["eligibility_rules"] = _json(room.get("eligibility_rules"), {})
                 room["effective_eligibility"] = _merge_rules(building["eligibility_rules"], floor["eligibility_rules"], room["eligibility_rules"])
-                c.execute("""SELECT b.id, b.bed_label, b.position_index, b.availability_status, b.unavailable_reason,
-                                    b.unavailable_note, b.unavailable_from, b.expected_reopening_date,
-                                    b.reservation_expires_at, b.reserved_for_person_id, b.reservation_note,
-                                    a.id, a.person_id, a.allocated_at, a.allocated_by,
-                                    f.name, f.display_id, f.phone, f.department, f.custom_data
+                c.execute("""SELECT b.id AS id, b.bed_label AS bed_label, b.position_index AS position_index,
+                                    b.availability_status AS availability_status, b.unavailable_reason AS unavailable_reason,
+                                    b.unavailable_note AS unavailable_note, b.unavailable_from AS unavailable_from,
+                                    b.expected_reopening_date AS expected_reopening_date,
+                                    b.reservation_expires_at AS reservation_expires_at,
+                                    b.reserved_for_person_id AS reserved_for_person_id, b.reservation_note AS reservation_note,
+                                    a.id AS allocation_id, a.person_id AS person_id,
+                                    a.allocated_at AS allocated_at, a.allocated_by AS allocated_by,
+                                    f.name AS person_name, f.display_id AS display_id, f.phone AS phone,
+                                    f.department AS department, f.custom_data AS custom_data
                              FROM hostel_beds b
                              LEFT JOIN hostel_allocations a ON a.bed_id = b.id AND a.vendor_id = b.vendor_id
                              LEFT JOIN faces f ON f.id = a.person_id AND f.vendor_id = b.vendor_id
@@ -207,8 +212,10 @@ def get_state(conn, vendor_id, access):
         if not access.get("can_view_resident_details"):
             resident.pop("phone", None); resident.pop("custom", None)
 
-    c.execute("""SELECT h.id, h.person_id, f.name, h.action, h.previous_bed_id, h.new_bed_id,
-                        h.actor_username, h.reason, h.override_reason, h.created_at
+    c.execute("""SELECT h.id AS id, h.person_id AS person_id, f.name AS resident_name,
+                        h.action AS action, h.previous_bed_id AS previous_bed_id, h.new_bed_id AS new_bed_id,
+                        h.actor_username AS actor_username, h.reason AS reason,
+                        h.override_reason AS override_reason, h.created_at AS created_at
                  FROM hostel_allocation_history h LEFT JOIN faces f ON f.id = h.person_id
                  WHERE h.vendor_id = ? ORDER BY h.id DESC LIMIT 100""", (vendor_id,))
     history_columns = ("id", "person_id", "resident_name", "action", "previous_bed_id", "new_bed_id", "actor_username", "reason", "override_reason", "created_at")
@@ -337,7 +344,12 @@ def allocate(conn, vendor_id, person_id, bed_id, actor, access, reason=None, ove
 
 def remove_allocation(conn, vendor_id, person_id, actor, access, reason=None):
     require_permission(access, "can_allocate")
-    c = conn.cursor(); c.execute("""SELECT a.id, a.bed_id, g.id FROM hostel_allocations a JOIN hostel_beds b ON b.id = a.bed_id JOIN hostel_rooms r ON r.id = b.room_id JOIN hostel_floors f ON f.id = r.floor_id JOIN hostel_buildings g ON g.id = f.building_id WHERE a.vendor_id = ? AND a.person_id = ?""", (vendor_id, person_id)); row = c.fetchone()
+    c = conn.cursor(); c.execute("""SELECT a.id AS id, a.bed_id AS bed_id, g.id AS building_id
+                                    FROM hostel_allocations a JOIN hostel_beds b ON b.id = a.bed_id
+                                    JOIN hostel_rooms r ON r.id = b.room_id
+                                    JOIN hostel_floors f ON f.id = r.floor_id
+                                    JOIN hostel_buildings g ON g.id = f.building_id
+                                    WHERE a.vendor_id = ? AND a.person_id = ?""", (vendor_id, person_id)); row = c.fetchone()
     if not row: raise HostelAllocationError("Resident is not currently allocated", 404, "NOT_FOUND")
     current = _row(row, ("id", "bed_id", "building_id")); require_permission(access, "can_allocate", current["building_id"])
     c.execute("DELETE FROM hostel_allocations WHERE id = ?", (current["id"],))
