@@ -1228,6 +1228,10 @@ const SuperAdminDashboard = () => {
 
     return matchesSearch && matchesStatus && matchesSubscription;
   });
+  const vendorSerialNumber = vendorId => {
+    const index = vendors.findIndex(vendor => String(vendor.id) === String(vendorId));
+    return index >= 0 ? index + 1 : '-';
+  };
 
   const fetchVendors = async () => {
     try {
@@ -2370,7 +2374,7 @@ const SuperAdminDashboard = () => {
                       </div>
                       <div>
                         <h3 className="font-bold text-slate-800 text-lg group-hover:text-indigo-600 transition-colors">{vendor.company_name}</h3>
-                        <p className="text-sm text-slate-500">{vendor.contact_person}</p>
+                        <p className="text-sm text-slate-500">Serial No. {vendorSerialNumber(vendor.id)} · {vendor.contact_person}</p>
                       </div>
                     </div>
                     <div className="pt-3 border-t border-slate-100 flex justify-between items-center">
@@ -2395,7 +2399,7 @@ const SuperAdminDashboard = () => {
                 </div>
                 <div className="flex items-center gap-2">
                   <div className="bg-indigo-50 text-indigo-700 px-4 py-2 rounded-lg font-mono text-sm">
-                    Vendor ID: {selectedVendorForDetail.id}
+                    Serial No: {vendorSerialNumber(selectedVendorForDetail.id)}
                   </div>
                   {selectedVendorForDetail.features?.includes('whatsapp_alerts') && (
                     selectedVendorForDetail.whatsapp_status === 'connected' ? (
