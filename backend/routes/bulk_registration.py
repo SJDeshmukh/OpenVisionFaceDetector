@@ -273,7 +273,7 @@ def bulk_registration_upload():
                             continue
                         row_class_year, row_division, row_branch = row_class[0], row_class[1], row_class[2]
 
-                if school_student_flow and not row_class_id:
+                if is_classroom(vendor_vertical) and not row_class_id:
                     errors.append(f"Row {row_idx + 2}: class allocation is required for students")
                     skipped_count += 1
                     continue
@@ -587,9 +587,8 @@ def bulk_registration_upload():
                 })
 
         # Spreadsheet synchronization must not remove the authoritative class
-        # selector from School/Hostel registration. The class may have come
-        # from the class card rather than from an Excel column.
-        if school_student_flow:
+        # selector from School/College registration.
+        if is_classroom(vendor_vertical):
             class_config = next(
                 (field for field in new_sync_fields if str(field.get('name') or '').strip().lower() == 'class_id'),
                 None,
