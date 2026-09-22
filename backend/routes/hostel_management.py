@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import logging
+from time import perf_counter
 
 from flask import Blueprint, Response, g, jsonify, request
 
@@ -20,6 +21,23 @@ from utils import get_db_connection, log_audit, vendor_has_feature
 logger = logging.getLogger(__name__)
 hostel_management_bp = Blueprint("hostel_management_bp", __name__)
 FEATURE_NAME = "hostel_allocation"
+
+
+@hostel_management_bp.before_request
+def _start_request_timer():
+    g.hostel_request_started_at = perf_counter()
+
+
+@hostel_management_bp.after_request
+def _record_request_timing(response):
+    started_at = getattr(g, "hostel_request_started_at", None)
+    if started_at is None:
+        return response
+    duration_ms = (perf_counter() - started_at) * 1000
+    response.headers["Server-Timing"] = f"hostel;dur={duration_ms:.1f}"
+    if request.method != "GET" or duration_ms >= 250:
+        logger.info("Hostel management %s %s completed in %.1fms", request.method, request.path, duration_ms)
+    return response
 
 
 def _context(permission=None):

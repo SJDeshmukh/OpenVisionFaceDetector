@@ -105,3 +105,16 @@ def test_custom_beds_can_be_added_renamed_and_safely_deleted(hostel):
     delete_bed(conn, 10, custom_bed, ADMIN)
     labels = [row[0] for row in conn.execute("SELECT bed_label FROM hostel_beds WHERE room_id=? ORDER BY position_index", (room,)).fetchall()]
     assert labels == ["Bed 1", "Bed 2"]
+
+
+def test_state_loading_uses_fixed_bulk_queries(hostel):
+    conn, _building, floor, _room, _beds = hostel
+    create_rooms(conn, 10, floor, {"count": 12, "start_number": 201, "capacity": 3}, ADMIN)
+    statements = []
+    conn.set_trace_callback(statements.append)
+
+    state = get_state(conn, 10, ADMIN)
+
+    selects = [statement for statement in statements if statement.lstrip().upper().startswith("SELECT")]
+    assert len(state["buildings"][0]["floors"][0]["rooms"]) == 13
+    assert len(selects) == 7

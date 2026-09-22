@@ -2,11 +2,14 @@
 
 from datetime import datetime, timezone
 import json
+from threading import Lock
 
 
 ADMIN_ROLES = {"super_admin", "vendor_admin", "admin", "owner"}
 EDIT_ROLES = {"administrator", "warden"}
 VALID_BED_REASONS = {"maintenance", "cleaning", "out_of_service", "other"}
+_PG_SCHEMA_READY = False
+_SCHEMA_LOCK = Lock()
 
 
 class HostelAllocationError(ValueError):
@@ -39,18 +42,30 @@ def _dump(value):
 
 def ensure_tables(conn):
     """Create the module schema for upgraded installations at first use."""
-    c = conn.cursor()
+    global _PG_SCHEMA_READY
     pg = bool(getattr(conn, "_is_pg", False))
-    pk = "SERIAL PRIMARY KEY" if pg else "INTEGER PRIMARY KEY AUTOINCREMENT"
-    ts = "TIMESTAMP" if pg else "DATETIME"
-    c.execute(f"CREATE TABLE IF NOT EXISTS hostel_buildings (id {pk}, vendor_id INTEGER NOT NULL, name TEXT NOT NULL, code TEXT, sort_order INTEGER NOT NULL DEFAULT 0, eligibility_rules TEXT NOT NULL DEFAULT '{{}}', created_at {ts} DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, name))")
-    c.execute(f"CREATE TABLE IF NOT EXISTS hostel_floors (id {pk}, vendor_id INTEGER NOT NULL, building_id INTEGER NOT NULL, name TEXT NOT NULL, sort_order INTEGER NOT NULL DEFAULT 0, eligibility_rules TEXT NOT NULL DEFAULT '{{}}', created_at {ts} DEFAULT CURRENT_TIMESTAMP, UNIQUE(building_id, name))")
-    c.execute(f"CREATE TABLE IF NOT EXISTS hostel_rooms (id {pk}, vendor_id INTEGER NOT NULL, floor_id INTEGER NOT NULL, room_number TEXT NOT NULL, room_type TEXT NOT NULL DEFAULT 'Standard', position_index INTEGER NOT NULL DEFAULT 0, eligibility_rules TEXT NOT NULL DEFAULT '{{}}', created_at {ts} DEFAULT CURRENT_TIMESTAMP, UNIQUE(floor_id, room_number))")
-    c.execute(f"CREATE TABLE IF NOT EXISTS hostel_beds (id {pk}, vendor_id INTEGER NOT NULL, room_id INTEGER NOT NULL, bed_label TEXT NOT NULL, position_index INTEGER NOT NULL DEFAULT 0, availability_status TEXT NOT NULL DEFAULT 'available', unavailable_reason TEXT, unavailable_note TEXT, unavailable_from DATE, expected_reopening_date DATE, reservation_expires_at {ts}, reserved_for_person_id INTEGER, reservation_note TEXT, updated_at {ts} DEFAULT CURRENT_TIMESTAMP, UNIQUE(room_id, bed_label))")
-    c.execute(f"CREATE TABLE IF NOT EXISTS hostel_allocations (id {pk}, vendor_id INTEGER NOT NULL, person_id INTEGER NOT NULL, bed_id INTEGER NOT NULL, allocated_at {ts} DEFAULT CURRENT_TIMESTAMP, allocated_by TEXT, UNIQUE(vendor_id, person_id), UNIQUE(bed_id))")
-    c.execute(f"CREATE TABLE IF NOT EXISTS hostel_allocation_history (id {pk}, vendor_id INTEGER NOT NULL, person_id INTEGER NOT NULL, action TEXT NOT NULL, previous_bed_id INTEGER, new_bed_id INTEGER, actor_username TEXT, reason TEXT, override_reason TEXT, created_at {ts} DEFAULT CURRENT_TIMESTAMP)")
-    c.execute(f"CREATE TABLE IF NOT EXISTS hostel_staff_permissions (id {pk}, vendor_id INTEGER NOT NULL, username TEXT NOT NULL, building_id INTEGER, access_role TEXT NOT NULL DEFAULT 'viewer', can_export INTEGER NOT NULL DEFAULT 0, can_override_eligibility INTEGER NOT NULL DEFAULT 0, can_view_resident_details INTEGER NOT NULL DEFAULT 0, created_at {ts} DEFAULT CURRENT_TIMESTAMP, updated_at {ts} DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, username, building_id))")
-    conn.commit()
+    if pg and _PG_SCHEMA_READY:
+        return
+    with _SCHEMA_LOCK:
+        if pg and _PG_SCHEMA_READY:
+            return
+        c = conn.cursor()
+        pk = "SERIAL PRIMARY KEY" if pg else "INTEGER PRIMARY KEY AUTOINCREMENT"
+        ts = "TIMESTAMP" if pg else "DATETIME"
+        c.execute(f"CREATE TABLE IF NOT EXISTS hostel_buildings (id {pk}, vendor_id INTEGER NOT NULL, name TEXT NOT NULL, code TEXT, sort_order INTEGER NOT NULL DEFAULT 0, eligibility_rules TEXT NOT NULL DEFAULT '{{}}', created_at {ts} DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, name))")
+        c.execute(f"CREATE TABLE IF NOT EXISTS hostel_floors (id {pk}, vendor_id INTEGER NOT NULL, building_id INTEGER NOT NULL, name TEXT NOT NULL, sort_order INTEGER NOT NULL DEFAULT 0, eligibility_rules TEXT NOT NULL DEFAULT '{{}}', created_at {ts} DEFAULT CURRENT_TIMESTAMP, UNIQUE(building_id, name))")
+        c.execute(f"CREATE TABLE IF NOT EXISTS hostel_rooms (id {pk}, vendor_id INTEGER NOT NULL, floor_id INTEGER NOT NULL, room_number TEXT NOT NULL, room_type TEXT NOT NULL DEFAULT 'Standard', position_index INTEGER NOT NULL DEFAULT 0, eligibility_rules TEXT NOT NULL DEFAULT '{{}}', created_at {ts} DEFAULT CURRENT_TIMESTAMP, UNIQUE(floor_id, room_number))")
+        c.execute(f"CREATE TABLE IF NOT EXISTS hostel_beds (id {pk}, vendor_id INTEGER NOT NULL, room_id INTEGER NOT NULL, bed_label TEXT NOT NULL, position_index INTEGER NOT NULL DEFAULT 0, availability_status TEXT NOT NULL DEFAULT 'available', unavailable_reason TEXT, unavailable_note TEXT, unavailable_from DATE, expected_reopening_date DATE, reservation_expires_at {ts}, reserved_for_person_id INTEGER, reservation_note TEXT, updated_at {ts} DEFAULT CURRENT_TIMESTAMP, UNIQUE(room_id, bed_label))")
+        c.execute(f"CREATE TABLE IF NOT EXISTS hostel_allocations (id {pk}, vendor_id INTEGER NOT NULL, person_id INTEGER NOT NULL, bed_id INTEGER NOT NULL, allocated_at {ts} DEFAULT CURRENT_TIMESTAMP, allocated_by TEXT, UNIQUE(vendor_id, person_id), UNIQUE(bed_id))")
+        c.execute(f"CREATE TABLE IF NOT EXISTS hostel_allocation_history (id {pk}, vendor_id INTEGER NOT NULL, person_id INTEGER NOT NULL, action TEXT NOT NULL, previous_bed_id INTEGER, new_bed_id INTEGER, actor_username TEXT, reason TEXT, override_reason TEXT, created_at {ts} DEFAULT CURRENT_TIMESTAMP)")
+        c.execute(f"CREATE TABLE IF NOT EXISTS hostel_staff_permissions (id {pk}, vendor_id INTEGER NOT NULL, username TEXT NOT NULL, building_id INTEGER, access_role TEXT NOT NULL DEFAULT 'viewer', can_export INTEGER NOT NULL DEFAULT 0, can_override_eligibility INTEGER NOT NULL DEFAULT 0, can_view_resident_details INTEGER NOT NULL DEFAULT 0, created_at {ts} DEFAULT CURRENT_TIMESTAMP, updated_at {ts} DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, username, building_id))")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_hostel_floors_vendor_building ON hostel_floors(vendor_id, building_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_hostel_rooms_vendor_floor ON hostel_rooms(vendor_id, floor_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_hostel_beds_vendor_room ON hostel_beds(vendor_id, room_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_hostel_history_vendor_id ON hostel_allocation_history(vendor_id, id)")
+        conn.commit()
+        if pg:
+            _PG_SCHEMA_READY = True
 
 
 def access_for(conn, vendor_id, username, system_role):
@@ -147,64 +162,93 @@ def _eligibility_errors(person, rules):
 
 
 def get_state(conn, vendor_id, access):
-    ensure_tables(conn)
     c = conn.cursor()
     scope = access.get("building_ids")
     c.execute("SELECT id, name, code, sort_order, eligibility_rules FROM hostel_buildings WHERE vendor_id = ? ORDER BY sort_order, name", (vendor_id,))
     buildings = [_row(row, ("id", "name", "code", "sort_order", "eligibility_rules")) for row in (c.fetchall() or [])]
     if scope is not None:
         buildings = [item for item in buildings if int(item["id"]) in scope]
-    building_ids = [item["id"] for item in buildings]
+    building_by_id = {int(item["id"]): item for item in buildings}
     for building in buildings:
         building["eligibility_rules"] = _json(building.get("eligibility_rules"), {})
-        c.execute("SELECT id, name, sort_order, eligibility_rules FROM hostel_floors WHERE vendor_id = ? AND building_id = ? ORDER BY sort_order, name", (vendor_id, building["id"]))
-        floors = [_row(row, ("id", "name", "sort_order", "eligibility_rules")) for row in (c.fetchall() or [])]
-        building["floors"] = floors
-        for floor in floors:
-            floor["eligibility_rules"] = _json(floor.get("eligibility_rules"), {})
-            c.execute("SELECT id, room_number, room_type, position_index, eligibility_rules FROM hostel_rooms WHERE vendor_id = ? AND floor_id = ? ORDER BY position_index, room_number", (vendor_id, floor["id"]))
-            rooms = [_row(row, ("id", "room_number", "room_type", "position_index", "eligibility_rules")) for row in (c.fetchall() or [])]
-            floor["rooms"] = rooms
-            for room in rooms:
-                room["eligibility_rules"] = _json(room.get("eligibility_rules"), {})
-                room["effective_eligibility"] = _merge_rules(building["eligibility_rules"], floor["eligibility_rules"], room["eligibility_rules"])
-                c.execute("""SELECT b.id AS id, b.bed_label AS bed_label, b.position_index AS position_index,
-                                    b.availability_status AS availability_status, b.unavailable_reason AS unavailable_reason,
-                                    b.unavailable_note AS unavailable_note, b.unavailable_from AS unavailable_from,
-                                    b.expected_reopening_date AS expected_reopening_date,
-                                    b.reservation_expires_at AS reservation_expires_at,
-                                    b.reserved_for_person_id AS reserved_for_person_id, b.reservation_note AS reservation_note,
-                                    a.id AS allocation_id, a.person_id AS person_id,
-                                    a.allocated_at AS allocated_at, a.allocated_by AS allocated_by,
-                                    f.name AS person_name, f.display_id AS display_id, f.phone AS phone,
-                                    f.department AS department, f.custom_data AS custom_data
-                             FROM hostel_beds b
-                             LEFT JOIN hostel_allocations a ON a.bed_id = b.id AND a.vendor_id = b.vendor_id
-                             LEFT JOIN faces f ON f.id = a.person_id AND f.vendor_id = b.vendor_id
-                             WHERE b.vendor_id = ? AND b.room_id = ? ORDER BY b.position_index, b.id""", (vendor_id, room["id"]))
-                beds = []
-                columns = ("id", "bed_label", "position_index", "availability_status", "unavailable_reason", "unavailable_note", "unavailable_from", "expected_reopening_date", "reservation_expires_at", "reserved_for_person_id", "reservation_note", "allocation_id", "person_id", "allocated_at", "allocated_by", "person_name", "display_id", "phone", "department", "custom_data")
-                for raw in c.fetchall() or []:
-                    bed = _row(raw, columns)
-                    occupied = bed.get("allocation_id") is not None
-                    bed["status"] = _effective_bed_status(bed, occupied)
-                    if occupied:
-                        profile = _person_profile((bed["person_id"], bed["person_name"], bed.get("display_id"), bed.get("phone"), bed.get("department"), bed.get("custom_data")))
-                        if not access.get("can_view_resident_details"):
-                            profile = {"id": profile["id"], "name": profile["name"], "resident_id": profile["resident_id"]}
-                        bed["resident"] = profile
-                    beds.append(bed)
-                room["beds"] = beds
+        building["floors"] = []
+
+    # Load each hierarchy level once. The previous implementation queried once
+    # per building, floor, and room, which made a simple allocation increasingly
+    # slow as the hostel grew.
+    c.execute("SELECT id, building_id, name, sort_order, eligibility_rules FROM hostel_floors WHERE vendor_id = ? ORDER BY building_id, sort_order, name", (vendor_id,))
+    floor_by_id = {}
+    for raw in c.fetchall() or []:
+        floor = _row(raw, ("id", "building_id", "name", "sort_order", "eligibility_rules"))
+        building = building_by_id.get(int(floor["building_id"]))
+        if not building:
+            continue
+        floor["eligibility_rules"] = _json(floor.get("eligibility_rules"), {})
+        floor["rooms"] = []
+        building["floors"].append(floor)
+        floor_by_id[int(floor["id"])] = floor
+
+    c.execute("SELECT id, floor_id, room_number, room_type, position_index, eligibility_rules FROM hostel_rooms WHERE vendor_id = ? ORDER BY floor_id, position_index, room_number", (vendor_id,))
+    room_by_id = {}
+    for raw in c.fetchall() or []:
+        room = _row(raw, ("id", "floor_id", "room_number", "room_type", "position_index", "eligibility_rules"))
+        floor = floor_by_id.get(int(room["floor_id"]))
+        if not floor:
+            continue
+        building = building_by_id[int(floor["building_id"])]
+        room["eligibility_rules"] = _json(room.get("eligibility_rules"), {})
+        room["effective_eligibility"] = _merge_rules(building["eligibility_rules"], floor["eligibility_rules"], room["eligibility_rules"])
+        room["beds"] = []
+        floor["rooms"].append(room)
+        room_by_id[int(room["id"])] = room
+
+    c.execute("""SELECT b.room_id AS room_id, b.id AS id, b.bed_label AS bed_label,
+                        b.position_index AS position_index, b.availability_status AS availability_status,
+                        b.unavailable_reason AS unavailable_reason, b.unavailable_note AS unavailable_note,
+                        b.unavailable_from AS unavailable_from,
+                        b.expected_reopening_date AS expected_reopening_date,
+                        b.reservation_expires_at AS reservation_expires_at,
+                        b.reserved_for_person_id AS reserved_for_person_id, b.reservation_note AS reservation_note,
+                        a.id AS allocation_id, a.person_id AS person_id,
+                        a.allocated_at AS allocated_at, a.allocated_by AS allocated_by,
+                        f.name AS person_name, f.display_id AS display_id, f.phone AS phone,
+                        f.department AS department, f.custom_data AS custom_data
+                 FROM hostel_beds b
+                 LEFT JOIN hostel_allocations a ON a.bed_id = b.id AND a.vendor_id = b.vendor_id
+                 LEFT JOIN faces f ON f.id = a.person_id AND f.vendor_id = b.vendor_id
+                 WHERE b.vendor_id = ? ORDER BY b.room_id, b.position_index, b.id""", (vendor_id,))
+    bed_columns = ("room_id", "id", "bed_label", "position_index", "availability_status", "unavailable_reason", "unavailable_note", "unavailable_from", "expected_reopening_date", "reservation_expires_at", "reserved_for_person_id", "reservation_note", "allocation_id", "person_id", "allocated_at", "allocated_by", "person_name", "display_id", "phone", "department", "custom_data")
+    for raw in c.fetchall() or []:
+        bed = _row(raw, bed_columns)
+        room = room_by_id.get(int(bed["room_id"]))
+        if not room:
+            continue
+        occupied = bed.get("allocation_id") is not None
+        bed["status"] = _effective_bed_status(bed, occupied)
+        if occupied:
+            profile = _person_profile((bed["person_id"], bed["person_name"], bed.get("display_id"), bed.get("phone"), bed.get("department"), bed.get("custom_data")))
+            if not access.get("can_view_resident_details"):
+                profile = {"id": profile["id"], "name": profile["name"], "resident_id": profile["resident_id"]}
+            bed["resident"] = profile
+        room["beds"].append(bed)
+
+    for building in buildings:
+        for floor in building["floors"]:
+            for room in floor["rooms"]:
+                beds = room["beds"]
                 counts = {key: sum(1 for bed in beds if bed["status"] == key) for key in ("occupied", "available", "reserved", "unavailable")}
                 room["summary"] = {"total": len(beds), **counts}
-            floor["summary"] = summarize_rooms(rooms)
-        building["summary"] = summarize_rooms([room for floor in floors for room in floor["rooms"]])
+            floor["summary"] = summarize_rooms(floor["rooms"])
+        building["summary"] = summarize_rooms([room for floor in building["floors"] for room in floor["rooms"]])
 
     visible_bed_ids = {int(bed["id"]) for building in buildings for floor in building["floors"] for room in floor["rooms"] for bed in room["beds"]}
     c.execute("SELECT id, name, display_id, phone, department, custom_data FROM faces WHERE vendor_id = ? ORDER BY name", (vendor_id,))
     residents = [_person_profile(row) for row in (c.fetchall() or [])]
     c.execute("SELECT person_id, bed_id, allocated_at FROM hostel_allocations WHERE vendor_id = ?", (vendor_id,))
-    allocations = {_row(row, ("person_id", "bed_id", "allocated_at"))["person_id"]: _row(row, ("person_id", "bed_id", "allocated_at")) for row in (c.fetchall() or [])}
+    allocations = {}
+    for row in c.fetchall() or []:
+        allocation = _row(row, ("person_id", "bed_id", "allocated_at"))
+        allocations[allocation["person_id"]] = allocation
     if scope is not None:
         residents = [resident for resident in residents if resident["id"] not in allocations or int(allocations[resident["id"]]["bed_id"]) in visible_bed_ids]
     for resident in residents:
