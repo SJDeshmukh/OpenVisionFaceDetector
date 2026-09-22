@@ -86,6 +86,20 @@ def _error(exc):
     return jsonify({"error": "Unable to complete hostel management request"}), 500
 
 
+def _success(conn, vendor_id, access, payload=None, status=200):
+    """Optionally bundle the refreshed workspace into a mutation response.
+
+    The web client requests this to avoid a second authenticated HTTP round trip
+    after every small allocation or layout change. The state is still rebuilt
+    from committed database data, so concurrent-admin safeguards are preserved.
+    """
+    body = {"success": True, **(payload or {})}
+    if request.args.get("include_state") == "1":
+        body["state"] = get_state(conn, vendor_id, access)
+    response = jsonify(body)
+    return (response, status) if status != 200 else response
+
+
 @hostel_management_bp.route("/hostel-management/state", methods=["GET"])
 def state_get():
     try:
@@ -104,7 +118,7 @@ def building_create():
         try:
             building_id = create_building(conn, vendor_id, request.get_json(silent=True) or {})
             log_audit("hostel_building_created", {"building_id": building_id}, target_vendor_id=vendor_id)
-            return jsonify({"success": True, "id": building_id}), 201
+            return _success(conn, vendor_id, access, {"id": building_id}, 201)
         finally: conn.close()
     except Exception as exc: return _error(exc)
 
@@ -118,7 +132,7 @@ def building_mutate(building_id):
             if request.method == "DELETE": delete_building(conn, vendor_id, building_id, access)
             else: update_building(conn, vendor_id, building_id, request.get_json(silent=True) or {}, access)
             log_audit("hostel_building_deleted" if request.method == "DELETE" else "hostel_building_updated", {"building_id": building_id}, target_vendor_id=vendor_id)
-            return jsonify({"success": True})
+            return _success(conn, vendor_id, access)
         finally: conn.close()
     except Exception as exc: return _error(exc)
 
@@ -132,7 +146,7 @@ def floor_create(building_id):
             require_permission(access, "can_edit_layout", building_id)
             floor_id = create_floor(conn, vendor_id, building_id, request.get_json(silent=True) or {})
             log_audit("hostel_floor_created", {"building_id": building_id, "floor_id": floor_id}, target_vendor_id=vendor_id)
-            return jsonify({"success": True, "id": floor_id}), 201
+            return _success(conn, vendor_id, access, {"id": floor_id}, 201)
         finally: conn.close()
     except Exception as exc: return _error(exc)
 
@@ -145,7 +159,7 @@ def rooms_create(floor_id):
         try:
             ids = create_rooms(conn, vendor_id, floor_id, request.get_json(silent=True) or {}, access)
             log_audit("hostel_rooms_created", {"floor_id": floor_id, "room_ids": ids}, target_vendor_id=vendor_id)
-            return jsonify({"success": True, "ids": ids}), 201
+            return _success(conn, vendor_id, access, {"ids": ids}, 201)
         finally: conn.close()
     except Exception as exc: return _error(exc)
 
@@ -159,7 +173,7 @@ def floor_duplicate(floor_id):
             payload = request.get_json(silent=True) or {}
             floor_id_new = duplicate_floor(conn, vendor_id, floor_id, str(payload.get("name") or "").strip(), access)
             log_audit("hostel_floor_duplicated", {"source_floor_id": floor_id, "floor_id": floor_id_new}, target_vendor_id=vendor_id)
-            return jsonify({"success": True, "id": floor_id_new}), 201
+            return _success(conn, vendor_id, access, {"id": floor_id_new}, 201)
         finally: conn.close()
     except Exception as exc: return _error(exc)
 
@@ -173,7 +187,7 @@ def floor_mutate(floor_id):
             if request.method == "DELETE": delete_floor(conn, vendor_id, floor_id, access)
             else: update_floor(conn, vendor_id, floor_id, request.get_json(silent=True) or {}, access)
             log_audit("hostel_floor_deleted" if request.method == "DELETE" else "hostel_floor_updated", {"floor_id": floor_id}, target_vendor_id=vendor_id)
-            return jsonify({"success": True})
+            return _success(conn, vendor_id, access)
         finally: conn.close()
     except Exception as exc: return _error(exc)
 
@@ -185,7 +199,7 @@ def room_order_update(floor_id):
         if error: return error
         try:
             reorder_rooms(conn, vendor_id, floor_id, (request.get_json(silent=True) or {}).get("room_ids") or [], access)
-            return jsonify({"success": True})
+            return _success(conn, vendor_id, access)
         finally: conn.close()
     except Exception as exc: return _error(exc)
 
@@ -199,7 +213,7 @@ def room_mutate(room_id):
             if request.method == "DELETE": delete_room(conn, vendor_id, room_id, access)
             else: update_room(conn, vendor_id, room_id, request.get_json(silent=True) or {}, access)
             log_audit("hostel_room_deleted" if request.method == "DELETE" else "hostel_room_updated", {"room_id": room_id}, target_vendor_id=vendor_id)
-            return jsonify({"success": True})
+            return _success(conn, vendor_id, access)
         finally: conn.close()
     except Exception as exc: return _error(exc)
 
@@ -212,7 +226,7 @@ def bed_create(room_id):
         try:
             bed_id = add_bed(conn, vendor_id, room_id, request.get_json(silent=True) or {}, access)
             log_audit("hostel_bed_created", {"room_id": room_id, "bed_id": bed_id}, target_vendor_id=vendor_id)
-            return jsonify({"success": True, "id": bed_id}), 201
+            return _success(conn, vendor_id, access, {"id": bed_id}, 201)
         finally: conn.close()
     except Exception as exc: return _error(exc)
 
@@ -230,7 +244,7 @@ def bed_update(bed_id):
             else:
                 update_bed(conn, vendor_id, bed_id, payload, access)
                 log_audit("hostel_bed_updated", {"bed_id": bed_id, **payload}, target_vendor_id=vendor_id)
-            return jsonify({"success": True})
+            return _success(conn, vendor_id, access)
         finally: conn.close()
     except Exception as exc: return _error(exc)
 
@@ -244,7 +258,7 @@ def allocation_create():
         try:
             result = allocate(conn, vendor_id, int(payload.get("person_id")), int(payload.get("bed_id")), getattr(g, "hostel_actor", getattr(g, "username", "unknown")), access, payload.get("reason"), bool(payload.get("override")), payload.get("override_reason"))
             log_audit("hostel_resident_" + result["action"], {"person_id": payload.get("person_id"), "bed_id": payload.get("bed_id"), "reason": payload.get("reason"), "override": result["eligibility_overridden"]}, target_vendor_id=vendor_id)
-            return jsonify({"success": True, **result})
+            return _success(conn, vendor_id, access, result)
         finally: conn.close()
     except (TypeError, ValueError) as exc:
         if isinstance(exc, HostelAllocationError): return _error(exc)
@@ -260,7 +274,7 @@ def allocation_remove(person_id):
         try:
             history_id = remove_allocation(conn, vendor_id, person_id, getattr(g, "hostel_actor", getattr(g, "username", "unknown")), access, (request.get_json(silent=True) or {}).get("reason"))
             log_audit("hostel_resident_removed", {"person_id": person_id}, target_vendor_id=vendor_id)
-            return jsonify({"success": True, "history_id": history_id})
+            return _success(conn, vendor_id, access, {"history_id": history_id})
         finally: conn.close()
     except Exception as exc: return _error(exc)
 
@@ -273,7 +287,7 @@ def allocation_undo(history_id):
         try:
             undo_id = undo_allocation_change(conn, vendor_id, history_id, getattr(g, "hostel_actor", getattr(g, "username", "unknown")), access)
             log_audit("hostel_allocation_undone", {"history_id": history_id, "undo_history_id": undo_id}, target_vendor_id=vendor_id)
-            return jsonify({"success": True, "history_id": undo_id})
+            return _success(conn, vendor_id, access, {"history_id": undo_id})
         finally: conn.close()
     except Exception as exc: return _error(exc)
 
@@ -302,7 +316,7 @@ def permissions_manage():
                          ON CONFLICT (vendor_id,username,building_id) DO UPDATE SET access_role=EXCLUDED.access_role,can_export=EXCLUDED.can_export,can_override_eligibility=EXCLUDED.can_override_eligibility,can_view_resident_details=EXCLUDED.can_view_resident_details,updated_at=CURRENT_TIMESTAMP""",
                       (vendor_id, username, int(building_id), role, 1 if payload.get("can_export") else 0, 1 if payload.get("can_override_eligibility") else 0, 1 if payload.get("can_view_resident_details") else 0))
             conn.commit(); log_audit("hostel_staff_permission_updated", {"username": username, "building_id": building_id, "role": role}, target_vendor_id=vendor_id)
-            return jsonify({"success": True})
+            return _success(conn, vendor_id, access)
         finally: conn.close()
     except Exception as exc: return _error(exc)
 

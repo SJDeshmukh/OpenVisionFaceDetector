@@ -234,16 +234,8 @@ export default function HostelAlerts() {
 
   const update = (key, value) => setSettings((current) => ({ ...current, [key]: value }));
 
-  if (loading) {
-    return (
-      <div className="mx-auto flex min-h-[65vh] max-w-7xl items-center justify-center p-8">
-        <div className="text-center"><LoaderCircle className="mx-auto animate-spin text-indigo-600" size={34} /><p className="mt-3 text-sm font-medium text-slate-600">Preparing hostel alerts…</p></div>
-      </div>
-    );
-  }
-
   return (
-    <div className="mx-auto max-w-7xl space-y-6 p-4 pb-24 md:p-8 md:pb-24">
+    <div className="mx-auto max-w-7xl space-y-6 p-4 pb-24 md:p-8 md:pb-24" aria-busy={loading || refreshing}>
       <Toast toast={toast} onClose={() => setToast(null)} />
 
       <header className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-indigo-700 via-violet-700 to-fuchsia-700 px-5 py-6 text-white shadow-xl shadow-indigo-200/50 md:px-8 md:py-8">
@@ -253,18 +245,18 @@ export default function HostelAlerts() {
           <div className="max-w-2xl">
             <div className="mb-3 flex flex-wrap items-center gap-2">
               <span className="inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1 text-xs font-semibold backdrop-blur"><Bell size={14} /> Hostel safety</span>
-              <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${settings.enabled ? 'bg-emerald-300 text-emerald-950' : 'bg-white/15 text-white'}`}>
-                <span className={`h-2 w-2 rounded-full ${settings.enabled ? 'animate-pulse bg-emerald-700' : 'bg-white/70'}`} /> {settings.enabled ? 'Automation active' : 'Automation paused'}
+              <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${loading ? 'bg-white/15 text-white' : settings.enabled ? 'bg-emerald-300 text-emerald-950' : 'bg-white/15 text-white'}`}>
+                {loading ? <LoaderCircle className="animate-spin" size={13} /> : <span className={`h-2 w-2 rounded-full ${settings.enabled ? 'animate-pulse bg-emerald-700' : 'bg-white/70'}`} />} {loading ? 'Loading saved settings' : settings.enabled ? 'Automation active' : 'Automation paused'}
               </span>
             </div>
             <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Hostel Entry Alerts</h1>
             <p className="mt-2 max-w-xl text-sm leading-6 text-indigo-100">Keep residents, parents, and hostel staff informed when a student has not returned by the configured entry time.</p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={refresh} disabled={refreshing} className="flex cursor-pointer items-center gap-2 rounded-xl border border-white/25 bg-white/10 px-4 py-2.5 text-sm font-semibold backdrop-blur transition hover:bg-white/20 disabled:cursor-wait disabled:opacity-60">
-              <RefreshCw size={16} className={refreshing ? 'animate-spin' : ''} /> {refreshing ? 'Refreshing…' : 'Refresh'}
+            <button type="button" onClick={refresh} disabled={loading || refreshing} className="flex cursor-pointer items-center gap-2 rounded-xl border border-white/25 bg-white/10 px-4 py-2.5 text-sm font-semibold backdrop-blur transition hover:bg-white/20 disabled:cursor-wait disabled:opacity-60">
+              <RefreshCw size={16} className={loading || refreshing ? 'animate-spin' : ''} /> {loading || refreshing ? 'Loading…' : 'Refresh'}
             </button>
-            <button type="button" onClick={save} disabled={saving || !dirty} className="flex cursor-pointer items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-indigo-700 shadow-sm transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60">
+            <button type="button" onClick={save} disabled={loading || saving || !dirty} className="flex cursor-pointer items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-indigo-700 shadow-sm transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60">
               {saving ? <LoaderCircle size={16} className="animate-spin" /> : <Save size={16} />} {saving ? 'Saving…' : dirty ? 'Save changes' : 'Saved'}
             </button>
           </div>

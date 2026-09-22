@@ -86,16 +86,21 @@ export default function HostelAllocation() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  const applyState = useCallback((nextState) => {
+    const normalized = nextState || EMPTY;
+    setData(normalized);
+    setBuildingId(current => current && normalized.buildings?.some(item => String(item.id) === String(current)) ? current : String(normalized.buildings?.[0]?.id || ''));
+  }, []);
+
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
     setError('');
     try {
       const response = await axios.get(`${API_URL}/hostel-management/state`, { ...requestConfig, params: { _ts: Date.now() } });
-      setData(response.data || EMPTY);
-      setBuildingId(current => current && response.data.buildings?.some(item => String(item.id) === String(current)) ? current : String(response.data.buildings?.[0]?.id || ''));
+      applyState(response.data);
     } catch (requestError) { const message = apiError(requestError); setError(message); showToast(message, 'error'); }
     finally { if (!quiet) setLoading(false); }
-  }, [requestConfig, showToast]);
+  }, [applyState, requestConfig, showToast]);
   useEffect(() => { load(); }, [load]);
 
   const building = data.buildings.find(item => String(item.id) === String(buildingId));
@@ -117,9 +122,11 @@ export default function HostelAllocation() {
     const action = method === 'delete' ? 'Deleting safely…' : method === 'post' ? 'Creating and saving…' : 'Saving changes…';
     setBusyAction(action); setError(''); setAnnouncement('');
     try {
-      const response = await axios({ method, url: `${API_URL}${path}`, data: payload, ...requestConfig });
+      const response = await axios({ method, url: `${API_URL}${path}`, data: payload, ...requestConfig, params: { include_state: 1 } });
       showToast(success); setLastChange(response.data?.history_id ? { historyId: response.data.history_id, message: success } : null);
-      await load(true); return response.data;
+      if (response.data?.state) applyState(response.data.state);
+      else await load(true);
+      return response.data;
     } catch (requestError) { const message = apiError(requestError); setError(message); showToast(message, 'error'); throw requestError; }
     finally { setBusyAction(''); }
   };
