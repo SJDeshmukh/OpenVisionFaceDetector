@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import {
   BedDouble, Building2, ChevronDown, ChevronRight, Copy, Download, GripVertical,
-  Home, Maximize2, Minus, Plus, RefreshCw, Search, ShieldAlert, Trash2, Undo2,
+  Home, Loader2, Maximize2, Minus, Plus, RefreshCw, Search, ShieldAlert, Trash2, Undo2,
   UserPlus, Wrench, X
 } from 'lucide-react';
 import { API_URL } from '../config';
@@ -27,12 +27,12 @@ const roomMatchesFilter = (room, filter) => filter === 'all' ||
 
 function Summary({ value = {} }) {
   return (
-    <div className="grid grid-cols-2 xl:grid-cols-5 gap-2" aria-label="Occupancy summary">
+    <div className="grid grid-cols-2 gap-3 xl:grid-cols-5" aria-label="Occupancy summary">
       {[
         ['Total beds', value.total || 0, 'text-slate-800'], ['Occupied', value.occupied || 0, 'text-blue-700'],
         ['Available', value.available || 0, 'text-emerald-700'], ['Reserved', value.reserved || 0, 'text-amber-700'],
         ['Unavailable', value.unavailable || 0, 'text-slate-600'],
-      ].map(([label, count, color]) => <div key={label} className="rounded-xl border bg-white px-3 py-2"><div className={`text-xl font-bold ${color}`}>{count}</div><div className="text-[11px] text-slate-500">{label}</div></div>)}
+      ].map(([label, count, color]) => <div key={label} className="rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"><div className={`text-2xl font-extrabold ${color}`}>{count}</div><div className="mt-0.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">{label}</div></div>)}
     </div>
   );
 }
@@ -50,7 +50,7 @@ export default function HostelAllocation() {
   const { staffSession } = useAuth();
   const [data, setData] = useState(EMPTY);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
+  const [busyAction, setBusyAction] = useState('');
   const [error, setError] = useState('');
   const [announcement, setAnnouncement] = useState('');
   const [buildingId, setBuildingId] = useState('');
@@ -65,6 +65,7 @@ export default function HostelAllocation() {
   const [modal, setModal] = useState(null);
   const [lastChange, setLastChange] = useState(null);
   const [draggedRoom, setDraggedRoom] = useState(null);
+  const busy = Boolean(busyAction);
   const requestConfig = useMemo(() => staffSession?.access_token ? { headers: { 'X-Leave-Staff-Token': staffSession.access_token } } : {}, [staffSession?.access_token]);
 
   const load = useCallback(async (quiet = false) => {
@@ -95,19 +96,27 @@ export default function HostelAllocation() {
   const exportQuery = new URLSearchParams({ building_id: buildingId || '', room_filter: roomFilter, search }).toString();
 
   const mutate = async (method, path, payload, success) => {
-    setBusy(true); setError('');
+    const action = method === 'delete' ? 'Deleting safely…' : method === 'post' ? 'Creating and saving…' : 'Saving changes…';
+    setBusyAction(action); setError(''); setAnnouncement('');
     try {
       const response = await axios({ method, url: `${API_URL}${path}`, data: payload, ...requestConfig });
       setAnnouncement(success); setLastChange(response.data?.history_id ? { historyId: response.data.history_id, message: success } : null);
       await load(true); return response.data;
     } catch (requestError) { const message = apiError(requestError); setError(message); setAnnouncement(message); throw requestError; }
-    finally { setBusy(false); }
+    finally { setBusyAction(''); }
   };
 
   const createBuilding = () => setModal({ type: 'building', name: '', code: '' });
   const saveBuilding = async e => { e.preventDefault(); await mutate('post', '/hostel-management/buildings', modal, `Building ${modal.name} created`); setModal(null); };
   const saveFloor = async e => { e.preventDefault(); await mutate('post', `/hostel-management/buildings/${building.id}/floors`, { name: modal.name }, `Floor ${modal.name} created`); setModal(null); };
   const saveRooms = async e => { e.preventDefault(); await mutate('post', `/hostel-management/floors/${modal.floorId}/rooms`, modal, `${modal.count} room(s) created`); setModal(null); };
+
+  const deleteBuilding = async () => {
+    if (!building || !window.confirm(`Delete ${building.name} and all of its vacant floors, rooms, and beds? This cannot be undone. A building with allocated residents cannot be deleted.`)) return;
+    const deletedName = building.name;
+    await mutate('delete', `/hostel-management/buildings/${building.id}`, null, `${deletedName} deleted`);
+    setSelectedResidentId(null); setSelectedRoomId(null); setSelectedBedId(null); setCollapsed(new Set());
+  };
 
   const beginAssignment = (residentId, bed) => {
     if (bed.status !== 'available') { setAnnouncement(`Cannot assign: ${bed.status}`); return; }
@@ -204,8 +213,10 @@ export default function HostelAllocation() {
   };
   const managePermission = async () => {
     let staff = [];
+    setBusyAction('Loading staff access…');
     try { staff = (await axios.get(`${API_URL}/hostel-management/permissions`, requestConfig)).data?.staff || []; }
     catch (requestError) { setError(apiError(requestError)); return; }
+    finally { setBusyAction(''); }
     const directory = staff.map(item => `${item.id}: ${item.name} (${item.role}${item.department ? `, ${item.department}` : ''})`).join('\n');
     const staffId = window.prompt(`PIN-based staff ID to configure:\n${directory || 'No staff records found'}`); if (!staffId) return;
     const selectedStaff = staff.find(item => String(item.id) === staffId.trim());
@@ -218,6 +229,7 @@ export default function HostelAllocation() {
     await mutate('put', '/hostel-management/permissions', { username, building_id: building.id, access_role: role, can_export: canExport, can_override_eligibility: canOverride, can_view_resident_details: details }, `${username} access updated for ${building.name}`);
   };
   const downloadExport = async (kind) => {
+    setBusyAction('Preparing your CSV download…');
     try {
       const query = kind === 'current' ? exportQuery : `building_id=${buildingId || ''}`;
       const response = await axios.get(`${API_URL}/hostel-management/export/${kind}.csv?${query}`, { ...requestConfig, responseType: 'blob' });
@@ -225,6 +237,7 @@ export default function HostelAllocation() {
       anchor.href = url; anchor.download = kind === 'current' ? 'hostel-current-occupancy.csv' : 'hostel-allocation-history.csv'; anchor.click();
       URL.revokeObjectURL(url);
     } catch (requestError) { setError(apiError(requestError)); }
+    finally { setBusyAction(''); }
   };
   const deleteRoom = async room => { if (window.confirm(`Delete vacant room ${room.room_number}?`)) await mutate('delete', `/hostel-management/rooms/${room.id}`, null, `Room ${room.room_number} deleted`); };
 
@@ -240,25 +253,27 @@ export default function HostelAllocation() {
     if (bed) { setBuildingId(String(bed.building.id)); setCollapsed(current => { const next = new Set(current); next.delete(bed.floor.id); return next; }); setSelectedRoomId(bed.room.id); setSelectedBedId(bed.id); }
   };
 
-  if (loading) return <div className="p-10 text-slate-500">Loading visual hostel allocation…</div>;
+  if (loading) return <div className="grid min-h-[520px] place-items-center rounded-3xl border border-slate-200 bg-white shadow-sm"><div className="text-center"><span className="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-2xl bg-indigo-50 text-indigo-600"><Loader2 className="animate-spin" size={27} /></span><h2 className="font-bold text-slate-900">Loading hostel allocation</h2><p className="mt-1 text-sm text-slate-500">Preparing buildings, rooms, beds and residents…</p></div></div>;
 
-  return <div className="space-y-4">
-    <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+  return <div className="hostel-allocation relative space-y-5 pb-8" aria-busy={busy}>
+    {busy && <div className="fixed inset-0 z-[100] grid cursor-wait place-items-center bg-slate-950/15 backdrop-blur-[1px]" role="status" aria-live="assertive"><div className="flex items-center gap-3 rounded-2xl border border-indigo-100 bg-white px-5 py-3 font-semibold text-slate-800 shadow-2xl"><Loader2 className="animate-spin text-indigo-600" size={20} /><span>{busyAction}</span></div></div>}
+    <div className="flex flex-col gap-4 rounded-3xl border border-indigo-100 bg-gradient-to-br from-white via-indigo-50/60 to-violet-50/70 p-5 shadow-sm xl:flex-row xl:items-center xl:justify-between">
       <div><h1 className="flex items-center gap-2 text-2xl font-bold text-slate-900"><Building2 className="text-indigo-600" /> Building & Resident Allocation</h1><p className="text-sm text-slate-500">Build the hostel visually, then allocate residents to real bed slots.</p></div>
       <div className="flex flex-wrap gap-2">
-        <button onClick={() => load()} className="rounded-lg border px-3 py-2 text-sm"><RefreshCw size={15} className="inline mr-1" />Refresh</button>
-        {data.permissions.can_export && <><button onClick={() => downloadExport('current')} className="rounded-lg border px-3 py-2 text-sm"><Download size={15} className="inline mr-1" />Filtered occupancy CSV</button><button onClick={() => downloadExport('history')} className="rounded-lg border px-3 py-2 text-sm"><Download size={15} className="inline mr-1" />History CSV</button></>}
-        {data.permissions.can_edit_layout && <button onClick={() => setMode(value => value === 'layout' ? 'allocation' : 'layout')} className={`rounded-lg px-4 py-2 text-sm font-semibold ${mode === 'layout' ? 'bg-amber-500 text-white' : 'bg-indigo-600 text-white'}`}>{mode === 'layout' ? 'Finish Layout Editing' : 'Edit Layout'}</button>}
+        <button disabled={busy} onClick={() => load()} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold shadow-sm"><RefreshCw size={15} className="mr-1 inline" />Refresh</button>
+        {data.permissions.can_export && <><button disabled={busy} onClick={() => downloadExport('current')} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold shadow-sm"><Download size={15} className="mr-1 inline" />Filtered occupancy CSV</button><button disabled={busy} onClick={() => downloadExport('history')} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold shadow-sm"><Download size={15} className="mr-1 inline" />History CSV</button></>}
+        {data.permissions.can_edit_layout && <button disabled={busy} onClick={() => setMode(value => value === 'layout' ? 'allocation' : 'layout')} className={`rounded-xl px-4 py-2 text-sm font-semibold shadow-sm ${mode === 'layout' ? 'bg-amber-500 text-white' : 'bg-indigo-600 text-white'}`}>{mode === 'layout' ? 'Finish Layout Editing' : 'Edit Layout'}</button>}
       </div>
     </div>
     <div aria-live="polite" className="sr-only">{announcement}</div>
     {error && <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
+    {announcement && !error && !lastChange && <div className="flex items-center justify-between gap-3 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm font-medium text-indigo-800"><span>{announcement}</span><button type="button" onClick={() => setAnnouncement('')} className="rounded-lg p-1" aria-label="Dismiss notification"><X size={15} /></button></div>}
     {data.permissions.role === 'viewer' && <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">Read-only access: you can view assigned buildings and permitted resident details, but cannot change layouts or allocations.</div>}
     {lastChange && <div className="flex items-center justify-between rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800"><span>{lastChange.message}</span>{data.permissions.can_allocate && <button disabled={busy} onClick={undoLastChange} className="rounded-lg border border-emerald-300 bg-white px-3 py-1.5 font-semibold"><Undo2 size={14} className="mr-1 inline" />Undo</button>}</div>}
     <Summary value={building?.summary || data.summary} />
 
-    <div className="grid min-h-[650px] grid-cols-1 gap-4 xl:grid-cols-[260px_minmax(0,1fr)_300px]">
-      <aside className="rounded-2xl border bg-white p-4 shadow-sm">
+    <div className="grid min-h-[650px] grid-cols-1 gap-4 xl:grid-cols-[270px_minmax(0,1fr)_310px]">
+      <aside className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm xl:sticky xl:top-4 xl:self-start">
         <div className="mb-4 flex items-center justify-between"><h2 className="font-bold">Buildings</h2>{data.permissions.can_manage_buildings && <button onClick={createBuilding} aria-label="Create building" className="rounded-lg bg-indigo-50 p-2 text-indigo-700"><Plus size={16} /></button>}</div>
         <select className="mb-3 w-full rounded-lg border p-2 text-sm" value={buildingId} onChange={e => setBuildingId(e.target.value)}><option value="">Select building</option>{data.buildings.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
         {building && <div className="mb-5 space-y-1">{building.floors.map(floor => <button key={floor.id} onClick={() => document.getElementById(`floor-${floor.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })} className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-left text-sm hover:bg-slate-50"><span>{floor.name}</span><span className="text-xs text-slate-400">{floor.summary.available} free</span></button>)}</div>}
@@ -267,9 +282,9 @@ export default function HostelAllocation() {
         </div>
       </aside>
 
-      <main className="overflow-auto rounded-2xl border bg-slate-100/70 p-4 shadow-inner">
-        {!building ? <div className="grid h-full min-h-[500px] place-items-center text-center"><div><Building2 className="mx-auto mb-3 text-slate-300" size={52} /><h2 className="text-lg font-bold">{data.permissions.can_manage_buildings ? 'Create your first hostel building' : 'No assigned hostel buildings'}</h2><p className="mb-4 text-sm text-slate-500">Building → Floors → Rooms → Beds</p>{data.permissions.can_manage_buildings && <button onClick={createBuilding} className="rounded-lg bg-indigo-600 px-4 py-2 text-white">Create Building</button>}</div></div> : <>
-          <div className="sticky left-0 mb-4 flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-xl font-bold">{building.name}</h2><p className="text-xs text-slate-500">{mode === 'layout' ? 'Layout Editing — drag rooms to rearrange' : 'Resident Allocation — drag or select a resident, then choose a bed'}</p></div><div className="flex flex-wrap gap-2">{data.permissions.can_edit_layout && <button onClick={() => setModal({ type: 'floor', name: '' })} className="rounded-lg border bg-white px-3 py-2 text-sm"><Plus size={14} className="inline" /> Floor</button>}{data.permissions.can_manage_eligibility && <button onClick={() => editEntityEligibility(building, `/hostel-management/buildings/${building.id}`, building.name)} className="rounded-lg border bg-white px-3 py-2 text-sm">Building rules</button>}{data.permissions.can_manage_permissions && <button onClick={managePermission} className="rounded-lg border bg-white px-3 py-2 text-sm">Staff access</button>}<button onClick={() => setZoom(value => Math.max(.7, value - .1))} className="rounded-lg border bg-white p-2" aria-label="Zoom out"><Minus size={15} /></button><button onClick={() => setZoom(1)} className="rounded-lg border bg-white p-2" aria-label="Fit to screen"><Maximize2 size={15} /></button><button onClick={() => setZoom(value => Math.min(1.4, value + .1))} className="rounded-lg border bg-white p-2" aria-label="Zoom in"><Plus size={15} /></button></div></div>
+      <main className="overflow-auto rounded-3xl border border-slate-200 bg-gradient-to-b from-slate-50 to-indigo-50/30 p-4 shadow-inner">
+        {!building ? <div className="grid h-full min-h-[500px] place-items-center text-center"><div><span className="mx-auto mb-4 grid h-20 w-20 place-items-center rounded-3xl bg-indigo-100 text-indigo-500"><Building2 size={42} /></span><h2 className="text-xl font-bold">{data.permissions.can_manage_buildings ? 'Create your first hostel building' : 'No assigned hostel buildings'}</h2><p className="mb-5 mt-1 text-sm text-slate-500">Building → Floors → Rooms → Beds</p>{data.permissions.can_manage_buildings && <button disabled={busy} onClick={createBuilding} className="rounded-xl bg-indigo-600 px-5 py-2.5 font-semibold text-white shadow-md shadow-indigo-200">Create Building</button>}</div></div> : <>
+          <div className="sticky left-0 mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white/90 p-3 shadow-sm backdrop-blur"><div><h2 className="text-xl font-bold">{building.name}</h2><p className="text-xs text-slate-500">{mode === 'layout' ? 'Layout Editing — drag rooms to rearrange' : 'Resident Allocation — drag or select a resident, then choose a bed'}</p></div><div className="flex flex-wrap gap-2">{data.permissions.can_edit_layout && <button disabled={busy} onClick={() => setModal({ type: 'floor', name: '' })} className="rounded-lg border bg-white px-3 py-2 text-sm font-semibold"><Plus size={14} className="inline" /> Floor</button>}{data.permissions.can_manage_eligibility && <button disabled={busy} onClick={() => editEntityEligibility(building, `/hostel-management/buildings/${building.id}`, building.name)} className="rounded-lg border bg-white px-3 py-2 text-sm font-semibold">Building rules</button>}{data.permissions.can_manage_permissions && <button disabled={busy} onClick={managePermission} className="rounded-lg border bg-white px-3 py-2 text-sm font-semibold">Staff access</button>}{mode === 'layout' && data.permissions.can_manage_buildings && <button disabled={busy} onClick={deleteBuilding} className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700"><Trash2 size={14} className="mr-1 inline" />Delete building</button>}<button disabled={busy} onClick={() => setZoom(value => Math.max(.7, value - .1))} className="rounded-lg border bg-white p-2" aria-label="Zoom out"><Minus size={15} /></button><button disabled={busy} onClick={() => setZoom(1)} className="rounded-lg border bg-white p-2" aria-label="Fit to screen"><Maximize2 size={15} /></button><button disabled={busy} onClick={() => setZoom(value => Math.min(1.4, value + .1))} className="rounded-lg border bg-white p-2" aria-label="Zoom in"><Plus size={15} /></button></div></div>
           <div className="origin-top-left space-y-4" style={{ transform: `scale(${zoom})`, width: `${100 / zoom}%` }}>{building.floors.map(floor => <section id={`floor-${floor.id}`} key={floor.id} className="rounded-2xl border border-slate-200 bg-white shadow-sm">
             <div className="flex flex-wrap items-center gap-3 border-b p-3"><button onClick={() => setCollapsed(current => { const next = new Set(current); next.has(floor.id) ? next.delete(floor.id) : next.add(floor.id); return next; })} aria-expanded={!collapsed.has(floor.id)} className="flex items-center gap-2 font-bold">{collapsed.has(floor.id) ? <ChevronRight size={17} /> : <ChevronDown size={17} />}{floor.name}</button><span className="text-xs text-slate-500">{floor.summary.occupied}/{floor.summary.total} occupied · {floor.summary.available} available for allocation</span>{mode === 'layout' && <div className="ml-auto flex flex-wrap gap-2"><button onClick={() => setModal({ type: 'rooms', floorId: floor.id, count: 10, start_number: 1, prefix: '', capacity: 3, room_type: 'Standard' })} className="rounded-lg bg-indigo-50 px-3 py-1.5 text-xs font-semibold text-indigo-700">+ Add rooms</button>{data.permissions.can_manage_eligibility && <button onClick={() => editEntityEligibility(floor, `/hostel-management/floors/${floor.id}`, floor.name)} className="rounded-lg border px-3 py-1.5 text-xs">Floor rules</button>}<button onClick={async () => { const name = window.prompt('Name for duplicated floor', `Copy of ${floor.name}`); if (name) await mutate('post', `/hostel-management/floors/${floor.id}/duplicate`, { name }, `${name} created without resident assignments`); }} className="rounded-lg border px-3 py-1.5 text-xs"><Copy size={13} className="inline" /> Duplicate layout</button><button onClick={async () => { if (window.confirm(`Delete vacant floor ${floor.name}?`)) await mutate('delete', `/hostel-management/floors/${floor.id}`, null, `${floor.name} deleted`); }} className="rounded-lg border border-red-200 px-2 py-1.5 text-xs text-red-600" aria-label={`Delete ${floor.name}`}><Trash2 size={13} /></button></div>}</div>
             {!collapsed.has(floor.id) && <div className="grid grid-cols-1 gap-3 p-3 md:grid-cols-2 2xl:grid-cols-3">{floor.rooms.filter(room => roomMatchesFilter(room, roomFilter) && (!search.trim() || `${building.name} ${floor.name} ${room.room_number} ${room.beds.map(bed => `${bed.resident?.name || ''} ${bed.resident?.resident_id || ''}`).join(' ')}`.toLowerCase().includes(search.toLowerCase()))).map(room => <article key={room.id} draggable={mode === 'layout'} onDragStart={() => setDraggedRoom({ roomId: room.id, floorId: floor.id })} onDragOver={e => { if (mode === 'layout' || (mode === 'allocation' && room.summary.available)) e.preventDefault(); }} onDrop={e => { e.preventDefault(); if (mode === 'layout') dropRoom(floor, room.id); else beginRoomAssignment(e.dataTransfer.getData('residentId'), { ...room, floor, building }); }} onClick={() => { setSelectedResidentId(null); setSelectedBedId(null); setSelectedRoomId(room.id); }} className={`rounded-xl border-2 bg-white p-3 transition ${selectedRoomId === room.id ? 'border-indigo-500 shadow-md' : room.summary.available ? 'border-emerald-200' : room.summary.unavailable === room.summary.total ? 'border-slate-300' : 'border-blue-200'}`}>
@@ -281,7 +296,7 @@ export default function HostelAllocation() {
         </>}
       </main>
 
-      <aside className="rounded-2xl border bg-white p-4 shadow-sm">
+      <aside className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm xl:sticky xl:top-4 xl:self-start">
         <div className="mb-4"><label className="text-xs font-semibold uppercase text-slate-500">Room filter</label><select value={roomFilter} onChange={e => setRoomFilter(e.target.value)} className="mt-1 w-full rounded-lg border p-2 text-sm"><option value="all">All rooms</option><option value="available">Rooms with available beds</option><option value="partial">Partially occupied rooms</option><option value="full">Full rooms</option><option value="unavailable">Rooms with unavailable beds</option></select></div>
         {selectedResident ? (
           <div className="space-y-3">
@@ -308,10 +323,10 @@ export default function HostelAllocation() {
       </aside>
     </div>
 
-    {modal?.type === 'building' && <Modal title="Create Building" onClose={() => setModal(null)}><form onSubmit={saveBuilding} className="space-y-4"><label className="block text-sm">Building name<input autoFocus required value={modal.name} onChange={e => setModal({ ...modal, name: e.target.value })} className="mt-1 w-full rounded-lg border p-2" placeholder="Building A" /></label><label className="block text-sm">Building number/code<input value={modal.code} onChange={e => setModal({ ...modal, code: e.target.value })} className="mt-1 w-full rounded-lg border p-2" placeholder="A" /></label><button disabled={busy} className="w-full rounded-lg bg-indigo-600 p-2 text-white">Create Building</button></form></Modal>}
-    {modal?.type === 'floor' && <Modal title={`Add Floor to ${building?.name}`} onClose={() => setModal(null)}><form onSubmit={saveFloor} className="space-y-4"><label className="block text-sm">Floor name<input autoFocus required value={modal.name} onChange={e => setModal({ ...modal, name: e.target.value })} className="mt-1 w-full rounded-lg border p-2" placeholder="Ground Floor" /></label><button disabled={busy} className="w-full rounded-lg bg-indigo-600 p-2 text-white">Add Floor</button></form></Modal>}
-    {modal?.type === 'rooms' && <Modal title="Quick Add Rooms" onClose={() => setModal(null)}><form onSubmit={saveRooms} className="grid grid-cols-2 gap-4"><label className="text-sm">Number of rooms<input type="number" min="1" max="100" value={modal.count} onChange={e => setModal({ ...modal, count: Number(e.target.value) })} className="mt-1 w-full rounded-lg border p-2" /></label><label className="text-sm">First room number<input type="number" value={modal.start_number} onChange={e => setModal({ ...modal, start_number: Number(e.target.value) })} className="mt-1 w-full rounded-lg border p-2" /></label><label className="text-sm">Number prefix<input value={modal.prefix} onChange={e => setModal({ ...modal, prefix: e.target.value })} className="mt-1 w-full rounded-lg border p-2" placeholder="2" /></label><label className="text-sm">Beds per room<input type="number" min="1" max="20" value={modal.capacity} onChange={e => setModal({ ...modal, capacity: Number(e.target.value) })} className="mt-1 w-full rounded-lg border p-2" /></label><label className="col-span-2 text-sm">Room type<input value={modal.room_type} onChange={e => setModal({ ...modal, room_type: e.target.value })} className="mt-1 w-full rounded-lg border p-2" /></label><button disabled={busy} className="col-span-2 rounded-lg bg-indigo-600 p-2 text-white">Create Rooms & Beds</button></form></Modal>}
+    {modal?.type === 'building' && <Modal title="Create Building" onClose={() => setModal(null)}><form onSubmit={saveBuilding} className="space-y-4"><label className="block text-sm font-medium">Building name<input autoFocus required value={modal.name} onChange={e => setModal({ ...modal, name: e.target.value })} className="mt-1 w-full rounded-xl border p-2.5" placeholder="Building A" /></label><label className="block text-sm font-medium">Building number/code<input value={modal.code} onChange={e => setModal({ ...modal, code: e.target.value })} className="mt-1 w-full rounded-xl border p-2.5" placeholder="A" /></label><button disabled={busy} className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 p-2.5 font-semibold text-white">{busy ? <><Loader2 className="animate-spin" size={17} />Creating building…</> : 'Create Building'}</button></form></Modal>}
+    {modal?.type === 'floor' && <Modal title={`Add Floor to ${building?.name}`} onClose={() => setModal(null)}><form onSubmit={saveFloor} className="space-y-4"><label className="block text-sm font-medium">Floor name<input autoFocus required value={modal.name} onChange={e => setModal({ ...modal, name: e.target.value })} className="mt-1 w-full rounded-xl border p-2.5" placeholder="Ground Floor" /></label><button disabled={busy} className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 p-2.5 font-semibold text-white">{busy ? <><Loader2 className="animate-spin" size={17} />Adding floor…</> : 'Add Floor'}</button></form></Modal>}
+    {modal?.type === 'rooms' && <Modal title="Quick Add Rooms" onClose={() => setModal(null)}><form onSubmit={saveRooms} className="grid grid-cols-2 gap-4"><label className="text-sm font-medium">Number of rooms<input type="number" min="1" max="100" value={modal.count} onChange={e => setModal({ ...modal, count: Number(e.target.value) })} className="mt-1 w-full rounded-xl border p-2.5" /></label><label className="text-sm font-medium">First room number<input type="number" value={modal.start_number} onChange={e => setModal({ ...modal, start_number: Number(e.target.value) })} className="mt-1 w-full rounded-xl border p-2.5" /></label><label className="text-sm font-medium">Number prefix<input value={modal.prefix} onChange={e => setModal({ ...modal, prefix: e.target.value })} className="mt-1 w-full rounded-xl border p-2.5" placeholder="2" /></label><label className="text-sm font-medium">Beds per room<input type="number" min="1" max="20" value={modal.capacity} onChange={e => setModal({ ...modal, capacity: Number(e.target.value) })} className="mt-1 w-full rounded-xl border p-2.5" /></label><label className="col-span-2 text-sm font-medium">Room type<input value={modal.room_type} onChange={e => setModal({ ...modal, room_type: e.target.value })} className="mt-1 w-full rounded-xl border p-2.5" /></label><button disabled={busy} className="col-span-2 flex items-center justify-center gap-2 rounded-xl bg-indigo-600 p-2.5 font-semibold text-white">{busy ? <><Loader2 className="animate-spin" size={17} />Creating rooms and beds…</> : 'Create Rooms & Beds'}</button></form></Modal>}
     {modal?.type === 'bedSelect' && <Modal title={`Choose a bed in Room ${modal.room.room_number}`} onClose={() => setModal(null)}><p className="mb-3 text-sm text-slate-600">Choose an available destination for <strong>{modal.resident.name}</strong>.</p><div className="grid grid-cols-2 gap-2">{modal.beds.map(bed => <button key={bed.id} onClick={() => beginAssignment(modal.resident.id, { ...bed, room: modal.room })} className="rounded-xl border border-emerald-300 bg-emerald-50 p-3 text-left text-sm font-semibold text-emerald-800"><BedDouble size={15} className="mr-1 inline" />{bed.bed_label}<span className="block text-xs font-normal">Available</span></button>)}</div></Modal>}
-    {modal?.type === 'allocate' && <Modal title={modal.resident.allocation ? 'Confirm Resident Transfer' : 'Confirm Resident Allocation'} onClose={() => setModal(null)}><form onSubmit={confirmAssignment} className="space-y-4"><div className="rounded-xl bg-indigo-50 p-3 text-sm"><strong>{modal.resident.name}</strong><div className="mt-1 text-indigo-700">{modal.resident.allocation ? `${bedLocation(modalOriginBed) || `Bed #${modal.resident.allocation.bed_id}`} → ` : ''}{bedLocation({ ...modal.bed, building: modal.bed.room?.building || building, floor: modal.bed.room?.floor, room: modal.bed.room || selectedRoom })}</div></div>{modal.eligibilityError && <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">{modal.eligibilityError}</div>}<label className="block text-sm">Reason or note<input value={modal.reason} onChange={e => setModal({ ...modal, reason: e.target.value })} className="mt-1 w-full rounded-lg border p-2" /></label>{modal.showOverride && <><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={modal.override} onChange={e => setModal({ ...modal, override: e.target.checked })} />Use authorized eligibility override</label>{modal.override && <label className="block text-sm">Override reason<input required value={modal.override_reason} onChange={e => setModal({ ...modal, override_reason: e.target.value })} className="mt-1 w-full rounded-lg border p-2" /></label>}</>}<button disabled={busy} className="w-full rounded-lg bg-indigo-600 p-2 text-white"><UserPlus size={16} className="mr-1 inline" />Confirm {modal.resident.allocation ? 'Transfer' : 'Allocation'}</button></form></Modal>}
+    {modal?.type === 'allocate' && <Modal title={modal.resident.allocation ? 'Confirm Resident Transfer' : 'Confirm Resident Allocation'} onClose={() => setModal(null)}><form onSubmit={confirmAssignment} className="space-y-4"><div className="rounded-xl bg-indigo-50 p-3 text-sm"><strong>{modal.resident.name}</strong><div className="mt-1 text-indigo-700">{modal.resident.allocation ? `${bedLocation(modalOriginBed) || `Bed #${modal.resident.allocation.bed_id}`} → ` : ''}{bedLocation({ ...modal.bed, building: modal.bed.room?.building || building, floor: modal.bed.room?.floor, room: modal.bed.room || selectedRoom })}</div></div>{modal.eligibilityError && <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">{modal.eligibilityError}</div>}<label className="block text-sm font-medium">Reason or note<input value={modal.reason} onChange={e => setModal({ ...modal, reason: e.target.value })} className="mt-1 w-full rounded-xl border p-2.5" /></label>{modal.showOverride && <><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={modal.override} onChange={e => setModal({ ...modal, override: e.target.checked })} />Use authorized eligibility override</label>{modal.override && <label className="block text-sm font-medium">Override reason<input required value={modal.override_reason} onChange={e => setModal({ ...modal, override_reason: e.target.value })} className="mt-1 w-full rounded-xl border p-2.5" /></label>}</>}<button disabled={busy} className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 p-2.5 font-semibold text-white">{busy ? <><Loader2 className="animate-spin" size={17} />Saving allocation…</> : <><UserPlus size={16} />Confirm {modal.resident.allocation ? 'Transfer' : 'Allocation'}</>}</button></form></Modal>}
   </div>;
 }
