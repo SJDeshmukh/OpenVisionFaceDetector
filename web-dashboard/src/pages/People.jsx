@@ -24,7 +24,7 @@ import {
 import { useSocket } from '../context/SocketContext';
 import { API_URL, BASE_URL } from '../config';
 import { motion, AnimatePresence } from 'framer-motion';
-import { getBusinessTerminology, localizeBusinessLabel, usesStudentRecords } from '../lib/businessTerminology';
+import { getBusinessTerminology, localizeBusinessLabel, usesStudentRecords, isHostelVertical, isClassroomVertical } from '../lib/businessTerminology';
 
 const Toast = ({ message, type, onClose }) => (
   <motion.div
@@ -72,6 +72,8 @@ const People = () => {
   const { user } = useAuth();
   const terminology = useMemo(() => getBusinessTerminology(user?.vertical), [user?.vertical]);
   const schoolFlow = usesStudentRecords(user?.vertical);
+  const isHostel = useMemo(() => isHostelVertical(user?.vertical), [user?.vertical]);
+  const requiresClassroomAllocation = useMemo(() => isClassroomVertical(user?.vertical), [user?.vertical]);
   const personLabel = terminology.person;
   const peopleLabel = terminology.people;
   const groupLabel = terminology.group;
@@ -454,7 +456,7 @@ const People = () => {
       return;
     }
     if (!formData.name) return;
-    if (schoolFlow && !formData.class_id) {
+    if (requiresClassroomAllocation && !formData.class_id) {
       alert(`Please allocate the ${personLabel.toLowerCase()} to a ${groupLabel.toLowerCase()}.`);
       return;
     }
@@ -905,7 +907,7 @@ const People = () => {
                 </button>
                 <button
                   onClick={() => {
-                    setBulkImportPhase(terminology.groupedPeople ? 'cards' : 'upload');
+                    setBulkImportPhase(requiresClassroomAllocation ? 'cards' : 'upload');
                     setSelectedBulkClass(null);
                     setIsBulkImportModalOpen(true);
                   }}
@@ -1383,7 +1385,7 @@ const People = () => {
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-slate-700">
                       {classField.label || `Select ${groupLabel}`}
-                      {(schoolFlow || classField.required) && <span className="text-red-500 ml-1">*</span>}
+                      {(requiresClassroomAllocation || classField.required) && <span className="text-red-500 ml-1">*</span>}
                     </label>
                     <div className="relative">
                       <select
@@ -1410,9 +1412,9 @@ const People = () => {
                           }
                         }}
                         className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                        required={schoolFlow || classField.required}
+                        required={requiresClassroomAllocation || classField.required}
                       >
-                        <option value="">-- Choose {groupLabel} --</option>
+                        <option value="">{isHostel ? `-- None (Allocate Later) --` : `-- Choose ${groupLabel} --`}</option>
                         {vendorClasses.map(c => (
                           <option key={c.id} value={c.id}>
                             {c.class_year} - {c.branch} ({c.division})
@@ -1458,7 +1460,7 @@ const People = () => {
                   setBulkImportError(null);
                   setBulkImportProgress(null);
                   setBulkMappingRequest(null);
-                  setBulkImportPhase('cards');
+                  setBulkImportPhase(requiresClassroomAllocation ? 'cards' : 'upload');
                   setSelectedBulkClass(null);
                 }} 
                 className="p-2 hover:bg-slate-200 rounded-lg transition-colors"
@@ -1494,20 +1496,20 @@ const People = () => {
                       </button>
                     ))}
                     
-                    {!schoolFlow && <button
+                    {(!requiresClassroomAllocation || vendorClasses.length === 0) && <button
                       onClick={() => {
                         setSelectedBulkClass(null);
                         setBulkImportPhase('upload');
                       }}
                       className="flex items-center justify-center p-4 border border-dashed border-slate-300 rounded-xl hover:border-slate-400 hover:bg-slate-50 transition-all text-slate-500 text-sm font-medium"
                     >
-                      Skip {groupLabel} Assignment
+                      Skip {groupLabel} Assignment (Upload All)
                     </button>}
                   </div>
                 </>
               ) : !bulkImportProgress ? (
                 <>
-                  {terminology.groupedPeople && <button
+                  {requiresClassroomAllocation && vendorClasses.length > 0 && <button
                     onClick={() => setBulkImportPhase('cards')}
                     className="flex items-center gap-1.5 text-xs font-bold text-blue-600 hover:text-blue-700 mb-6 transition-colors"
                   >

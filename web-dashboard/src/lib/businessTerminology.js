@@ -108,6 +108,11 @@ export const getBusinessTerminology = (vertical) => ({
 });
 
 export const usesStudentRecords = (vertical) => getBusinessTerminology(vertical).studentRecords;
+export const isHostelVertical = (vertical) => normalizeVertical(vertical) === 'hostel';
+export const isClassroomVertical = (vertical) => {
+  const v = normalizeVertical(vertical);
+  return v === 'school' || v === 'college' || v === 'tuition';
+};
 
 const preserveCase = (source, replacement) => {
   if (source === source.toUpperCase()) return replacement.toUpperCase();
