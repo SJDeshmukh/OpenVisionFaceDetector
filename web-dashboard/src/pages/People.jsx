@@ -771,14 +771,14 @@ const People = () => {
       });
     }
 
-    if (schoolFlow && !baseColumns.some(isClassField)) {
+    if (requiresClassroomAllocation && !baseColumns.some(isClassField)) {
       baseColumns.push({
         field: 'class_id', key: 'class_id', label: groupLabel,
         type: 'class_select', required: true,
       });
     }
     return baseColumns;
-  }, [vendorConfig, bulkAttendanceFields, user?.features, schoolFlow, groupLabel, terminology]);
+  }, [vendorConfig, bulkAttendanceFields, user?.features, requiresClassroomAllocation, groupLabel, terminology]);
 
   // Dynamically identify the Name header from the registration config
   const nameHeaderObj = registrationColumns.find(isNameField);
@@ -1336,8 +1336,8 @@ const People = () => {
               <div className="space-y-4">
                 {registrationColumns.map((col, idx) => {
                   const fieldKey = col.key || col.field;
-                  // Skip core fields to prevent duplication
-                  if (isNameField(col) || isPhoneField(col) || (classField && isClassField(col))) return null;
+                  // Skip core fields to prevent duplication, and skip room/class fields for hostel since allocation is handled separately
+                  if (isNameField(col) || isPhoneField(col) || isClassField(col)) return null;
 
                   const inputType = col.type || 'text';
                   const options = Array.isArray(col.options) ? col.options : [];
@@ -1380,8 +1380,8 @@ const People = () => {
                   );
                 })}
                 
-                {/* Simplified Class Selection */}
-                {classField && (
+                {/* Simplified Class Selection - Hidden for Hostels where allocations are done on the floor map */}
+                {classField && !isHostel && (
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-slate-700">
                       {classField.label || `Select ${groupLabel}`}

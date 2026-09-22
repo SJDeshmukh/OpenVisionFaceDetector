@@ -23,6 +23,9 @@ _PERSON_TYPE_ALIASES = {
 }
 
 
+CLASSROOM_VERTICALS = frozenset({"school", "college", "tuition"})
+
+
 def normalize_person_type(value, default=None):
     normalized = str(value or "").strip().lower()
     normalized = _PERSON_TYPE_ALIASES.get(normalized, normalized)
@@ -31,6 +34,10 @@ def normalize_person_type(value, default=None):
 
 def is_school_hostel(vertical):
     return str(vertical or "").strip().lower() in SCHOOL_HOSTEL_VERTICALS
+
+
+def is_classroom(vertical):
+    return str(vertical or "").strip().lower() in CLASSROOM_VERTICALS
 
 
 def parse_custom_data(value):

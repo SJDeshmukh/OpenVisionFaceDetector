@@ -25,6 +25,7 @@ from services.face_service import _extract_structural_vector
 from services.person_scope_service import (
     class_scope_matches,
     is_school_hostel,
+    is_classroom,
     normalize_person_type,
     parse_custom_data,
     person_type_for,
@@ -759,9 +760,9 @@ def upload_face():
                 if existing_scope.get("class_id"):
                     custom_dict["class_id"] = existing_scope["class_id"]
 
-            if not custom_dict.get("class_id"):
+            if not custom_dict.get("class_id") and is_classroom(vertical):
                 return jsonify({
-                    "error": "Class allocation is required for School/Hostel students"
+                    "error": "Class allocation is required for School students"
                 }), 400
     finally:
         metadata_conn.close()

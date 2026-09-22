@@ -9,7 +9,7 @@ from flask import Blueprint, request, jsonify, g
 from utils import get_db_connection, log_audit, vendor_has_feature
 from db_factory import get_table_columns
 from services.auth_service import require_auth, hash_password, is_valid_login_email, normalize_login_email
-from services.person_scope_service import is_school_hostel, parse_custom_data
+from services.person_scope_service import is_school_hostel, is_classroom, parse_custom_data
 from services.spreadsheet_mapping_service import map_spreadsheet_headers
 from services.spreadsheet_type_inference import inspect_spreadsheet_fields, clean_cell_value
 
@@ -218,7 +218,7 @@ def bulk_registration_upload():
         else:
             person_id_custom_key = 'employee_id'
 
-        if school_student_flow and not req_class_id and not excel_class_id_key:
+        if is_classroom(vendor_vertical) and not req_class_id and not excel_class_id_key:
             return jsonify({
                 "error": "Class allocation is required for every student. Select a class or include a class_id column."
             }), 400
