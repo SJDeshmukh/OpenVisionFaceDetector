@@ -155,3 +155,40 @@ def test_feature_flag_allows_alerts_for_non_hostel_vertical(tmp_path):
     assert result["vendors"] == 1
     assert result["sent"] == 1
     assert sent == ["9000000001"]
+
+
+def test_time_change_starts_new_same_day_alert_cycle(tmp_path):
+    factory = _database(tmp_path)
+    config = {
+        "enabled": True,
+        "cutoff_time": "19:00",
+        "escalation_minutes": 60,
+        "timezone": "Asia/Kolkata",
+        "owner_summary_enabled": False,
+    }
+    initial = save_settings(1, config, connection_factory=factory)
+    sent = []
+    sender = lambda vendor_id, phone, message: sent.append(phone) or {"success": True}
+    now = datetime(2026, 9, 21, 13, 31, tzinfo=timezone.utc)  # 19:01 IST
+
+    first = process_due_alerts(now, connection_factory=factory, sender=sender)
+    duplicate = process_due_alerts(now, connection_factory=factory, sender=sender)
+    unchanged = save_settings(1, config, connection_factory=factory)
+    still_duplicate = process_due_alerts(now, connection_factory=factory, sender=sender)
+
+    changed = save_settings(
+        1,
+        {**config, "cutoff_time": "18:30"},
+        connection_factory=factory,
+    )
+    after_time_change = process_due_alerts(now, connection_factory=factory, sender=sender)
+    new_duplicate = process_due_alerts(now, connection_factory=factory, sender=sender)
+
+    assert first["sent"] == 1
+    assert duplicate["sent"] == 0
+    assert still_duplicate["sent"] == 0
+    assert unchanged["schedule_revision"] == initial["schedule_revision"]
+    assert changed["schedule_revision"] == initial["schedule_revision"] + 1
+    assert after_time_change["sent"] == 1
+    assert new_duplicate["sent"] == 0
+    assert sent == ["9000000001", "9000000001"]

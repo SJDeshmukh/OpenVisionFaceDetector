@@ -53,7 +53,9 @@ const addMinutesToClock = (value, amount) => {
 };
 
 const formatStage = (value) => ({
+  student: 'Resident reminder',
   student_reminder: 'Resident reminder',
+  parent: 'Parent escalation',
   parent_alert: 'Parent escalation',
   parent_escalation: 'Parent escalation',
   owner_summary: 'Admin summary',
@@ -210,6 +212,8 @@ export default function HostelAlerts() {
   };
 
   const save = async () => {
+    const scheduleChanged = ['enabled', 'cutoff_time', 'escalation_minutes', 'timezone']
+      .some((key) => String(settings[key]) !== String(savedSettings[key]));
     setSaving(true);
     setError('');
     try {
@@ -222,7 +226,12 @@ export default function HostelAlerts() {
       const normalized = normalizeSettings(response.data?.settings);
       setSettings(normalized);
       setSavedSettings(normalized);
-      setToast({ type: 'success', message: 'Hostel alert settings are now up to date.' });
+      setToast({
+        type: 'success',
+        message: scheduleChanged && normalized.enabled
+          ? 'New alert cycle saved. Missing-entry reminders will be evaluated after the new cutoff on the next scheduler run.'
+          : 'Hostel alert settings are now up to date.',
+      });
     } catch (requestError) {
       const message = requestError.response?.data?.error || requestError.message;
       setError(message);

@@ -38,6 +38,7 @@ def ensure_tables(conn):
             student_template TEXT,
             parent_template TEXT,
             owner_summary_enabled INTEGER NOT NULL DEFAULT 1,
+            schedule_revision INTEGER NOT NULL DEFAULT 1,
             created_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP,
             updated_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP
         )
@@ -59,6 +60,20 @@ def ensure_tables(conn):
             UNIQUE(vendor_id, person_id, alert_date, alert_type)
         )
     """)
+    if is_pg:
+        c.execute("""
+            ALTER TABLE hostel_alert_settings
+            ADD COLUMN IF NOT EXISTS schedule_revision INTEGER NOT NULL DEFAULT 1
+        """)
+    else:
+        c.execute("PRAGMA table_info(hostel_alert_settings)")
+        columns = {row[1] if not hasattr(row, "keys") else row["name"] for row in (c.fetchall() or [])}
+        if "schedule_revision" not in columns:
+            c.execute("""
+                ALTER TABLE hostel_alert_settings
+                ADD COLUMN schedule_revision INTEGER NOT NULL DEFAULT 1
+            """)
+    conn.commit()
 
 
 def _row_dict(row, columns):
@@ -164,9 +179,17 @@ def save_settings(vendor_id, data, connection_factory=None):
         c.execute("""
             INSERT INTO hostel_alert_settings
                 (vendor_id, enabled, owner_phone, cutoff_time, escalation_minutes, timezone,
-                 student_template, parent_template, owner_summary_enabled, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                 student_template, parent_template, owner_summary_enabled, schedule_revision, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
             ON CONFLICT (vendor_id) DO UPDATE SET
+                schedule_revision = CASE WHEN
+                    hostel_alert_settings.enabled <> EXCLUDED.enabled OR
+                    hostel_alert_settings.cutoff_time <> EXCLUDED.cutoff_time OR
+                    hostel_alert_settings.escalation_minutes <> EXCLUDED.escalation_minutes OR
+                    hostel_alert_settings.timezone <> EXCLUDED.timezone
+                    THEN hostel_alert_settings.schedule_revision + 1
+                    ELSE hostel_alert_settings.schedule_revision
+                END,
                 enabled = EXCLUDED.enabled,
                 owner_phone = EXCLUDED.owner_phone,
                 cutoff_time = EXCLUDED.cutoff_time,
@@ -208,6 +231,12 @@ def _claim_delivery(c, vendor_id, person_id, alert_date, alert_type, phone):
         ON CONFLICT (vendor_id, person_id, alert_date, alert_type) DO NOTHING
     """, (vendor_id, person_id, alert_date, alert_type, phone))
     return int(c.rowcount or 0) > 0
+
+
+def _revisioned_alert_type(alert_type, revision):
+    """Keep legacy first-cycle claims while allowing a newly saved schedule cycle."""
+    revision = max(1, int(revision or 1))
+    return alert_type if revision == 1 else f"{alert_type}:r{revision}"
 
 
 def _finish_delivery(c, vendor_id, person_id, alert_date, alert_type, result):
@@ -293,7 +322,7 @@ def process_due_alerts(now_utc=None, connection_factory=None, sender=None):
         c.execute("""
             SELECT h.vendor_id, h.enabled, h.owner_phone, h.cutoff_time,
                    h.escalation_minutes, h.timezone, h.student_template,
-                   h.parent_template, h.owner_summary_enabled,
+                   h.parent_template, h.owner_summary_enabled, h.schedule_revision,
                    v.status AS vendor_status, s.features,
                    w.status AS whatsapp_status
             FROM hostel_alert_settings h
@@ -330,6 +359,10 @@ def process_due_alerts(now_utc=None, connection_factory=None, sender=None):
             if local_now < cutoff:
                 continue
             parent_due = (local_now - cutoff).total_seconds() >= int(setting.get("escalation_minutes") or 60) * 60
+            schedule_revision = int(setting.get("schedule_revision") or 1)
+            student_alert_type = _revisioned_alert_type("student", schedule_revision)
+            parent_alert_type = _revisioned_alert_type("parent", schedule_revision)
+            summary_alert_type = _revisioned_alert_type("owner_summary", schedule_revision)
             stats["vendors"] += 1
 
             c.execute("SELECT id, name, phone, custom_data FROM faces WHERE vendor_id = ? ORDER BY id", (vendor_id,))
@@ -360,7 +393,7 @@ def process_due_alerts(now_utc=None, connection_factory=None, sender=None):
                     "hostel_name": "Hostel",
                 }
                 student_phone = _valid_phone(person.get("phone") or person["custom"].get("student_phone"))
-                if _claim_delivery(c, vendor_id, person["id"], alert_date, "student", student_phone):
+                if _claim_delivery(c, vendor_id, person["id"], alert_date, student_alert_type, student_phone):
                     if student_phone:
                         result = sender(
                             vendor_id, student_phone,
@@ -368,7 +401,7 @@ def process_due_alerts(now_utc=None, connection_factory=None, sender=None):
                         )
                     else:
                         result = {"success": False, "error": "Student mobile/WhatsApp number is missing or invalid"}
-                    if _finish_delivery(c, vendor_id, person["id"], alert_date, "student", result):
+                    if _finish_delivery(c, vendor_id, person["id"], alert_date, student_alert_type, result):
                         stats["sent"] += 1
                     else:
                         stats["failed"] += 1
@@ -376,7 +409,7 @@ def process_due_alerts(now_utc=None, connection_factory=None, sender=None):
 
                 if parent_due:
                     parent_phone = _valid_phone(_parent_phone(c, vendor_id, person["id"], person["custom"]))
-                    if _claim_delivery(c, vendor_id, person["id"], alert_date, "parent", parent_phone):
+                    if _claim_delivery(c, vendor_id, person["id"], alert_date, parent_alert_type, parent_phone):
                         if parent_phone:
                             result = sender(
                                 vendor_id, parent_phone,
@@ -384,7 +417,7 @@ def process_due_alerts(now_utc=None, connection_factory=None, sender=None):
                             )
                         else:
                             result = {"success": False, "error": "Parent/guardian mobile number is missing or invalid"}
-                        if _finish_delivery(c, vendor_id, person["id"], alert_date, "parent", result):
+                        if _finish_delivery(c, vendor_id, person["id"], alert_date, parent_alert_type, result):
                             stats["sent"] += 1
                         else:
                             stats["failed"] += 1
@@ -393,7 +426,7 @@ def process_due_alerts(now_utc=None, connection_factory=None, sender=None):
 
             owner_phone = _valid_phone(setting.get("owner_phone"))
             if parent_due and setting.get("owner_summary_enabled") and owner_summary_names:
-                if _claim_delivery(c, vendor_id, 0, alert_date, "owner_summary", owner_phone):
+                if _claim_delivery(c, vendor_id, 0, alert_date, summary_alert_type, owner_phone):
                     if owner_phone:
                         names = ", ".join(owner_summary_names[:30])
                         suffix = f" and {len(owner_summary_names) - 30} more" if len(owner_summary_names) > 30 else ""
@@ -404,7 +437,7 @@ def process_due_alerts(now_utc=None, connection_factory=None, sender=None):
                         )
                     else:
                         result = {"success": False, "error": "Hostel administrator WhatsApp number is missing or invalid"}
-                    if _finish_delivery(c, vendor_id, 0, alert_date, "owner_summary", result):
+                    if _finish_delivery(c, vendor_id, 0, alert_date, summary_alert_type, result):
                         stats["sent"] += 1
                     else:
                         stats["failed"] += 1
@@ -435,6 +468,13 @@ def recent_deliveries(vendor_id, limit=100, connection_factory=None):
             ORDER BY d.id DESC LIMIT ?
         """, (vendor_id, max(1, min(int(limit), 500))))
         columns = [item[0] for item in c.description]
-        return [_row_dict(row, columns) for row in (c.fetchall() or [])]
+        deliveries = [_row_dict(row, columns) for row in (c.fetchall() or [])]
+        for delivery in deliveries:
+            stored_type = str(delivery.get("alert_type") or "")
+            base_type, separator, revision = stored_type.rpartition(":r")
+            if separator and revision.isdigit():
+                delivery["alert_type"] = base_type
+                delivery["schedule_revision"] = int(revision)
+        return deliveries
     finally:
         conn.close()
