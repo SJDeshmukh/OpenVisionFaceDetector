@@ -29,6 +29,7 @@ from domain.attendance import AttendanceEventSource
 from services.auth_service import require_auth, verify_token, extract_token
 from middleware.validation import validate_request
 from schemas import AttendanceFilterSchema, PersonEventSchema, PublicAttendanceRequest
+from storage import compact_image_data_url
 from services.person_scope_service import (
     class_scope_for,
     parse_custom_data,
@@ -743,7 +744,7 @@ def get_attendance(valid_data: AttendanceFilterSchema):
             "status": r["status"], "activity": r["activity"],
             "is_late": r.get("is_late", 0) if late_enabled else 0,
             "department": r["department"], "designation": r["designation"],
-            "captured_image": r["captured_image"],
+            "captured_image": compact_image_data_url(r["captured_image"]),
             "device_name": device_name,
             "class_id": custom.get("class_id"),
             "class_year": r.get("class_year"),

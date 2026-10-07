@@ -26,6 +26,7 @@ from services.report_filter_service import (
 )
 from middleware.validation import validate_request
 from schemas import PayrollReportRequest
+from storage import compact_image_data_url
 from services.person_scope_service import (
     parse_custom_data,
     person_type_for,
@@ -773,7 +774,7 @@ def get_payroll_report(valid_data: PayrollReportRequest):
             "name": person_info.get('name'),
             "department": person_info.get('department'),
             "designation": person_info.get('designation'),
-            "face_image": person_info.get('face_image'),
+            "face_image": compact_image_data_url(person_info.get('face_image')),
             "phone": person_info.get('phone'),
             "daily_wage": daily_wage,
             "total_hours": round(total_hours, 2),

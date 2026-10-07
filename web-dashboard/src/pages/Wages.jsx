@@ -6,6 +6,11 @@ import { useSocket } from '../context/SocketContext';
 const Wages = () => {
   const { user } = useAuth();
   const { socket } = useSocket();
+  const imageSource = (value) => {
+    if (!value) return '';
+    if (value.startsWith('data:') || value.startsWith('http://') || value.startsWith('https://')) return value;
+    return `data:image/jpeg;base64,${value}`;
+  };
 
   // Helper to format date as YYYY-MM-DD in local time
   const formatDate = (date) => {
@@ -851,7 +856,7 @@ const Wages = () => {
                         <div className="w-10 h-10 rounded-full bg-slate-200 overflow-hidden flex-shrink-0 border border-slate-300">
                           {person.face_image ? (
                             <img
-                              src={person.face_image.startsWith('data:') ? person.face_image : `data:image/jpeg;base64,${person.face_image}`}
+                              src={imageSource(person.face_image)}
                               alt={person.name}
                               className="w-full h-full object-cover"
                             />

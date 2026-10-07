@@ -1,6 +1,9 @@
 import os
 import base64
+import hashlib
+from collections import OrderedDict
 from io import BytesIO
+from threading import Lock
 try:
     import boto3
     from botocore.client import Config
@@ -9,10 +12,14 @@ except Exception:
     Config = None
 try:
     from PIL import Image
+except Exception:
+    Image = None
+
+try:
     from pillow_heif import register_heif_opener
     register_heif_opener()
 except Exception:
-    Image = None
+    pass
 from datetime import timedelta
 
 AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID")
@@ -20,6 +27,9 @@ AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 S3_BUCKET = os.environ.get("S3_BUCKET")
 OBJECT_STORAGE_ENABLED = bool(S3_BUCKET and boto3)
+_thumbnail_cache = OrderedDict()
+_thumbnail_cache_lock = Lock()
+_THUMBNAIL_CACHE_LIMIT = 512
 
 def get_s3():
     if not OBJECT_STORAGE_ENABLED:
@@ -46,6 +56,44 @@ def compress_image(body, format="WEBP", quality=60, max_size=640):
         return buf.getvalue()
     except Exception:
         return body
+
+def compact_image_data_url(value, max_size=128, quality=50):
+    """Return a compact WebP data URL for list views without changing storage.
+
+    Remote/object-storage URLs are already efficient to transport and are left
+    untouched. Invalid image payloads also fall back to their original value.
+    The bounded hash cache avoids recompressing the same stored image on every
+    attendance or payroll request without retaining the large source string.
+    """
+    if not value or not isinstance(value, str):
+        return value
+    if value.startswith(("http://", "https://", "s3://")):
+        return value
+
+    encoded = value.split(",", 1)[1] if value.startswith("data:") and "," in value else value
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except Exception:
+        return value
+
+    cache_key = (hashlib.sha256(raw).hexdigest(), int(max_size), int(quality))
+    with _thumbnail_cache_lock:
+        cached = _thumbnail_cache.get(cache_key)
+        if cached is not None:
+            _thumbnail_cache.move_to_end(cache_key)
+            return cached
+
+    compact = compress_image(raw, format="WEBP", quality=quality, max_size=max_size)
+    if compact is raw:
+        return value
+    result = "data:image/webp;base64," + base64.b64encode(compact).decode("ascii")
+
+    with _thumbnail_cache_lock:
+        _thumbnail_cache[cache_key] = result
+        _thumbnail_cache.move_to_end(cache_key)
+        while len(_thumbnail_cache) > _THUMBNAIL_CACHE_LIMIT:
+            _thumbnail_cache.popitem(last=False)
+    return result
 
 def upload_base64_image(name, b64_data):
     s3 = get_s3()

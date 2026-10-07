@@ -32,6 +32,11 @@ const Attendance = () => {
     const d = new Date(ts);
     return isNaN(d.getTime()) ? new Date() : d;
   };
+  const imageSource = (value) => {
+    if (!value) return '';
+    if (value.startsWith('data:') || value.startsWith('http://') || value.startsWith('https://')) return value;
+    return `data:image/jpeg;base64,${value}`;
+  };
 
   const [filterOptions, setFilterOptions] = useState({ names: [], departments: [], designations: [], shifts: [], phones: [], dynamic_filters: {}, visible_standard_filters: {} });
   const [filters, setFilters] = useState({
@@ -415,7 +420,7 @@ const Attendance = () => {
                           <div className="flex items-center space-x-3">
                             {log.captured_image ? (
                               <img
-                                src={log.captured_image.startsWith('data:') ? log.captured_image : `data:image/jpeg;base64,${log.captured_image}`}
+                                src={imageSource(log.captured_image)}
                                 alt="Captured"
                                 className="h-10 w-10 rounded-full object-cover border border-slate-200"
                               />
@@ -493,7 +498,7 @@ const Attendance = () => {
                                       <td className="px-4 py-2">
                                         {historyLog.captured_image ? (
                                           <img
-                                            src={historyLog.captured_image.startsWith('data:') ? historyLog.captured_image : `data:image/jpeg;base64,${historyLog.captured_image}`}
+                                            src={imageSource(historyLog.captured_image)}
                                             alt="Thumb"
                                             className="h-12 w-12 rounded-md object-cover border border-slate-200"
                                           />
