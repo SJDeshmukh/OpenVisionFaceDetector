@@ -740,12 +740,19 @@ def login():
                                 conn.close()
                                 return jsonify({"error": f"Mobile device limit reached ({max_devs}). Contact Admin to register new device."}), 403
 
-                            try:
-                                c.execute("INSERT INTO vendor_devices (vendor_id, device_id, device_name, last_login_at) VALUES (?, ?, ?, ?)",
-                                          (user['vendor_id'], device_id, f"Device {device_id[:8]}", datetime.now()))
-                                conn.commit()
-                            except sqlite3.IntegrityError:
-                                pass
+                            # Another login request for the same phone can arrive
+                            # between the SELECT above and this write. Use one
+                            # atomic upsert so that race updates the existing
+                            # device instead of aborting the PostgreSQL transaction.
+                            c.execute(
+                                """INSERT INTO vendor_devices
+                                       (vendor_id, device_id, device_name, last_login_at)
+                                   VALUES (?, ?, ?, ?)
+                                   ON CONFLICT (vendor_id, device_id) DO UPDATE SET
+                                       last_login_at = EXCLUDED.last_login_at""",
+                                (user['vendor_id'], device_id, f"Device {device_id[:8]}", datetime.now()),
+                            )
+                            conn.commit()
                     else:
                         conn.close()
                         return jsonify({"error": "Device ID required for mobile login"}), 400
