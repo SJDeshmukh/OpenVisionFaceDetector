@@ -483,8 +483,6 @@ const Attendance = () => {
                                     <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Image</th>
                                     <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Time</th>
                                     <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Date</th>
-                                    <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Subject</th>
-                                    <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">{terminology.group}</th>
                                     <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Place</th>
                                     <th className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase">Status</th>
                                   </tr>
@@ -510,12 +508,6 @@ const Attendance = () => {
                                       </td>
                                       <td className="px-4 py-2 text-sm text-slate-600">
                                         {parseDate(historyLog.timestamp).toLocaleDateString()}
-                                      </td>
-                                      <td className="px-4 py-2 text-sm text-slate-600">
-                                        {historyLog.subject || <span className="text-slate-400 italic">-</span>}
-                                      </td>
-                                      <td className="px-4 py-2 text-sm text-slate-600">
-                                        {historyLog.class_year ? `${historyLog.class_year} ${historyLog.division || ''} ${historyLog.branch || ''}` : <span className="text-slate-400 italic">-</span>}
                                       </td>
                                       <td className="px-4 py-2 text-sm text-slate-600">
                                         {historyLog.device_name ? historyLog.device_name : <span className="text-slate-400 italic">-</span>}
