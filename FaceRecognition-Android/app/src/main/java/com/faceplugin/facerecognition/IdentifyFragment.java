@@ -1220,25 +1220,39 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                         if (!markedNames.isEmpty()) {
                             if (markedNames.size() == 1) {
                                 String singleName = markedNames.get(0);
-                                String predicted = dbManager.predictNextAttendanceStatus(readyToMark.get(0).personId, readyToMark.get(0).localUid, singleName);
-                                playAttendanceSound(predicted);
-                                speakAttendanceGreeting(singleName, predicted);
-                                showStatusOverlay(predicted);
+                                // Re-fetch status AFTER insertAttendanceQueue updated the state
+                                String confirmedStatus = dbManager.getAttendanceStateStatus(
+                                        readyToMark.get(0).personId, readyToMark.get(0).localUid, singleName);
+                                if (confirmedStatus == null) confirmedStatus = "CHECK_IN";
+                                final String fStatus = confirmedStatus;
+                                playAttendanceSound(fStatus);
+                                speakAttendanceGreeting(singleName, fStatus);
+                                showStatusOverlay(fStatus);
                                 if (getActivity() != null) {
                                     getActivity().runOnUiThread(() -> {
-                                        if (statusText != null) statusText.setText(singleName + " " + predicted);
+                                        if (statusText != null) statusText.setText(singleName + " " + fStatus);
                                     });
                                 }
                             } else {
+                                // Multi-face offline batch: collect per-person predicted statuses
+                                // (statuses were already written by insertAttendanceQueue above)
+                                int checkInCount = 0;
+                                for (RecognizedFaceMatch match : readyToMark) {
+                                    String s = dbManager.getAttendanceStateStatus(match.personId, match.localUid, match.person.name);
+                                    if ("CHECK_IN".equalsIgnoreCase(s)) checkInCount++;
+                                }
+                                // Majority vote for sound/overlay
+                                String batchStatus = checkInCount >= readyToMark.size() / 2.0 ? "CHECK_IN" : "CHECK_OUT";
+
                                 StringBuilder sb = new StringBuilder();
                                 for (int k = 0; k < markedNames.size(); k++) {
                                     if (k > 0) sb.append(k == markedNames.size() - 1 ? " & " : ", ");
                                     sb.append(markedNames.get(k));
                                 }
                                 String batchNamesStr = sb.toString();
-                                playAttendanceSound("CHECK_IN");
-                                speakAttendanceGreeting(batchNamesStr, "CHECK_IN");
-                                showStatusOverlay("CHECK_IN");
+                                playAttendanceSound(batchStatus);
+                                speakAttendanceGreeting(batchNamesStr, batchStatus);
+                                showStatusOverlay(batchStatus);
                                 if (getActivity() != null) {
                                     getActivity().runOnUiThread(() -> {
                                         if (statusText != null) statusText.setText("Marked: " + batchNamesStr);
@@ -1262,21 +1276,26 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                             sendPersonEvent(true, true, single.personId, single.localUid, single.person.name, single.similarity, finalProcessed, true);
                         } else {
                             List<String> names = new java.util.ArrayList<>();
+                            int batchCheckInCount = 0;
                             for (RecognizedFaceMatch match : readyToMark) {
                                 String trackKey = !match.personId.isEmpty() ? match.personId : ("local:" + match.localUid);
                                 try { lastEventSentAtMs.put(trackKey, System.currentTimeMillis()); } catch (Exception ignored) {}
                                 names.add(match.person.name);
+                                // Predict before sending — sendPersonEvent will independently predict again server-side
+                                String matchPredicted = dbManager.predictNextAttendanceStatus(match.personId, match.localUid, match.person.name);
+                                if ("CHECK_IN".equalsIgnoreCase(matchPredicted)) batchCheckInCount++;
                                 sendPersonEvent(true, true, match.personId, match.localUid, match.person.name, match.similarity, finalProcessed, false);
                             }
+                            String onlineBatchStatus = batchCheckInCount >= readyToMark.size() / 2.0 ? "CHECK_IN" : "CHECK_OUT";
                             StringBuilder sb = new StringBuilder();
                             for (int k = 0; k < names.size(); k++) {
                                 if (k > 0) sb.append(k == names.size() - 1 ? " & " : ", ");
                                 sb.append(names.get(k));
                             }
                             String batchNamesStr = sb.toString();
-                            playAttendanceSound("CHECK_IN");
-                            speakAttendanceGreeting(batchNamesStr, "CHECK_IN");
-                            showStatusOverlay("CHECK_IN");
+                            playAttendanceSound(onlineBatchStatus);
+                            speakAttendanceGreeting(batchNamesStr, onlineBatchStatus);
+                            showStatusOverlay(onlineBatchStatus);
                             if (getActivity() != null) {
                                 getActivity().runOnUiThread(() -> {
                                     if (statusText != null) statusText.setText("Marked: " + batchNamesStr);

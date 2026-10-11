@@ -131,7 +131,22 @@ def _company_settings(c, vendor_id):
         except Exception: timetable = []
         try: working_hours = float(row[1] or 8.0)
         except (TypeError, ValueError): working_hours = 8.0
-    return timetable, max(0.25, working_hours)
+
+    # Read missing_checkout_deduction_percent from system_settings (vendor-specific override first)
+    missing_checkout_deduction_percent = 50.0  # default: 50% deduction
+    try:
+        vendor_key = f"missing_checkout_deduction_percent_vendor_{vendor_id}"
+        global_key = "missing_checkout_deduction_percent"
+        c.execute("SELECT key, value FROM system_settings WHERE key IN (?, ?)", (vendor_key, global_key))
+        setting_rows = {r[0]: r[1] for r in (c.fetchall() or [])}
+        if vendor_key in setting_rows and setting_rows[vendor_key] not in (None, ''):
+            missing_checkout_deduction_percent = float(setting_rows[vendor_key])
+        elif global_key in setting_rows and setting_rows[global_key] not in (None, ''):
+            missing_checkout_deduction_percent = float(setting_rows[global_key])
+    except Exception:
+        pass
+
+    return timetable, max(0.25, working_hours), missing_checkout_deduction_percent
 
 
 def _employee_metrics(vendor_id, start, end, department=None):
@@ -139,7 +154,7 @@ def _employee_metrics(vendor_id, start, end, department=None):
     conn = _db()
     c = conn.cursor()
     try:
-        timetable, working_hours = _company_settings(c, vendor_id)
+        timetable, working_hours, missing_checkout_deduction_percent = _company_settings(c, vendor_id)
         query = "SELECT id, name, department, designation, daily_wage FROM faces WHERE vendor_id = ?"
         params = [vendor_id]
         if department:
@@ -165,7 +180,12 @@ def _employee_metrics(vendor_id, start, end, department=None):
 
     metrics = []
     for person in people:
-        stats = calculate_daily_hours(grouped.get(person["id"], []), timetable)
+        stats = calculate_daily_hours(
+            grouped.get(person["id"], []),
+            timetable,
+            missing_checkout_deduction_percent=missing_checkout_deduction_percent,
+            working_hours=working_hours
+        )
         sessions = []
         for session in stats.get("sessions", []):
             try:

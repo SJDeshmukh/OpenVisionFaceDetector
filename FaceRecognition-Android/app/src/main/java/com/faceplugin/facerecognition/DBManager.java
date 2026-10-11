@@ -9,8 +9,13 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 
 import java.io.ByteArrayOutputStream;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Calendar;
+import java.util.Date;
+import java.util.Locale;
+import java.util.TimeZone;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
  
@@ -19,7 +24,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
      public static CopyOnWriteArrayList<Person> personList = new CopyOnWriteArrayList<Person>();
 
     public DBManager(Context context) {
-        super(context, "mydb" , null, 15);
+        super(context, "mydb" , null, 16);
     }
 
     @Override
@@ -36,7 +41,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
         );
         db.execSQL(
                 "create table attendance_state " +
-                        "(id_key text primary key, person_id text, local_uid text, name text, last_status text, last_timestamp text)"
+                        "(id_key text primary key, person_id text, local_uid text, name text, last_status text, last_timestamp text, operational_date text)"
         );
         db.execSQL(
                 "create table delete_queue " +
@@ -133,6 +138,12 @@ import java.util.concurrent.CopyOnWriteArrayList;
         if (oldVersion < 15) {
             try {
                 db.execSQL("ALTER TABLE faculty_attendance_queue ADD COLUMN image blob");
+            } catch (Exception ignored) {}
+        }
+        if (oldVersion < 16) {
+            // Add operational_date column to attendance_state for 6AM-shift boundary tracking
+            try {
+                db.execSQL("ALTER TABLE attendance_state ADD COLUMN operational_date TEXT");
             } catch (Exception ignored) {}
         }
     }
@@ -473,9 +484,47 @@ import java.util.concurrent.CopyOnWriteArrayList;
             qCv.put("person_id", id);
             db.update("attendance_queue", qCv, "local_uid = ? AND (person_id IS NULL OR person_id = '' OR person_id LIKE 'local:%')", new String[]{localUid});
 
-            ContentValues sCv = new ContentValues();
-            sCv.put("person_id", id);
-            db.update("attendance_state", sCv, "local_uid = ? AND (person_id IS NULL OR person_id = '' OR person_id LIKE 'local:%')", new String[]{localUid});
+            // Update attendance_state: fix both person_id column AND id_key primary key.
+            // Without this, the row stays as "lu:<localUid>" but future lookups use "pid:<id>",
+            // causing the state to appear empty and resetting every offline punch to CHECK_IN.
+            String luKey = "lu:" + localUid;
+            String pidKey = "pid:" + id;
+            Cursor stCur = db.rawQuery("SELECT id_key FROM attendance_state WHERE id_key = ? LIMIT 1", new String[]{luKey});
+            if (stCur.moveToFirst()) {
+                // Row exists under lu: key — we must delete and re-insert under pid: key
+                // (SQLite does not support UPDATE of a PRIMARY KEY in place reliably)
+                stCur.close();
+                // Fetch existing row data
+                Cursor rowCur = db.rawQuery(
+                        "SELECT local_uid, name, last_status, last_timestamp, operational_date FROM attendance_state WHERE id_key = ? LIMIT 1",
+                        new String[]{luKey});
+                if (rowCur.moveToFirst()) {
+                    ContentValues migrateCV = new ContentValues();
+                    migrateCV.put("id_key", pidKey);
+                    migrateCV.put("person_id", id);
+                    migrateCV.put("local_uid", rowCur.getString(0));
+                    migrateCV.put("name", rowCur.getString(1));
+                    migrateCV.put("last_status", rowCur.getString(2));
+                    migrateCV.put("last_timestamp", rowCur.getString(3));
+                    int odIdx = rowCur.getColumnIndex("operational_date");
+                    if (odIdx >= 0) migrateCV.put("operational_date", rowCur.getString(odIdx));
+                    rowCur.close();
+                    db.delete("attendance_state", "id_key = ?", new String[]{luKey});
+                    db.insertWithOnConflict("attendance_state", null, migrateCV, SQLiteDatabase.CONFLICT_REPLACE);
+                } else {
+                    rowCur.close();
+                    // Fallback: just update person_id column
+                    ContentValues sCv = new ContentValues();
+                    sCv.put("person_id", id);
+                    db.update("attendance_state", sCv, "id_key = ?", new String[]{luKey});
+                }
+            } else {
+                stCur.close();
+                // No lu: row — just update by local_uid column in case it exists differently
+                ContentValues sCv = new ContentValues();
+                sCv.put("person_id", id);
+                db.update("attendance_state", sCv, "local_uid = ? AND (person_id IS NULL OR person_id = '' OR person_id LIKE 'local:%')", new String[]{localUid});
+            }
         } catch (Exception ignored) {}
 
         synchronized (personList) {
@@ -763,9 +812,38 @@ import java.util.concurrent.CopyOnWriteArrayList;
         return predictNextAttendanceStatus(personId, localUid, null);
     }
 
+    /**
+     * Determines the next attendance action (CHECK_IN or CHECK_OUT) for a person.
+     *
+     * <p>Operational day boundary: 06:00 AM local time.
+     *   - Shift window: 06:00 AM today → 05:59:59 AM tomorrow.
+     *   - Any timestamp T belongs to operational date = date(T − 6 hours).
+     *
+     * <p>Rule: If the person's last punch was on a DIFFERENT operational day than now,
+     * the next action must be CHECK_IN (start of new shift), regardless of the previous
+     * status (handles the "forgot to check out" case).
+     */
     public String predictNextAttendanceStatus(String personId, String localUid, String name) {
-        String last = getLastAttendanceStatus(personId, localUid, name);
-        if ("CHECK_IN".equalsIgnoreCase(last)) return "CHECK_OUT";
+        // Fetch stored state (status + operational_date)
+        String[] stateRow = getAttendanceStateRow(personId, localUid, name);
+        String lastStatus = stateRow != null ? stateRow[0] : null;
+        String lastOpDate = stateRow != null ? stateRow[1] : null;
+
+        // If no stored state, fall back to attendance_queue history
+        if (lastStatus == null || lastStatus.isEmpty()) {
+            lastStatus = getLastAttendanceStatus(personId, localUid, name);
+            lastOpDate = null; // no operational_date in queue; treat as different day
+        }
+
+        String todayOpDate = getOperationalDate(System.currentTimeMillis());
+
+        // If last punch was on a different operational day → must CHECK_IN (new shift)
+        if (lastOpDate == null || !lastOpDate.equals(todayOpDate)) {
+            return "CHECK_IN";
+        }
+
+        // Same operational day: toggle
+        if ("CHECK_IN".equalsIgnoreCase(lastStatus)) return "CHECK_OUT";
         return "CHECK_IN";
     }
 
@@ -821,8 +899,26 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
     public void upsertAttendanceState(String personId, String localUid, String name, String status, String timestamp) {
         SQLiteDatabase db = this.getWritableDatabase();
-        String key = makeAttendanceStateKey(personId, localUid, name);
+        // Resolve the primary key — prefer pid: when available
+        String key = resolveAttendanceStateKey(db, personId, localUid);
+        if (key == null) key = makeAttendanceStateKey(personId, localUid, name);
         if (key == null) return;
+
+        // Compute which operational day this punch belongs to
+        String opDate;
+        try {
+            if (timestamp != null && !timestamp.isEmpty()) {
+                // Parse ISO timestamp to epoch ms
+                java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US);
+                Date d = sdf.parse(timestamp);
+                opDate = getOperationalDate(d != null ? d.getTime() : System.currentTimeMillis());
+            } else {
+                opDate = getOperationalDate(System.currentTimeMillis());
+            }
+        } catch (Exception e) {
+            opDate = getOperationalDate(System.currentTimeMillis());
+        }
+
         ContentValues cv = new ContentValues();
         cv.put("id_key", key);
         cv.put("person_id", personId);
@@ -830,24 +926,78 @@ import java.util.concurrent.CopyOnWriteArrayList;
         cv.put("name", name);
         cv.put("last_status", normalizeAttendanceStatus(status));
         cv.put("last_timestamp", timestamp);
+        cv.put("operational_date", opDate);
         db.insertWithOnConflict("attendance_state", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
     }
 
-    public String getAttendanceStateStatus(String personId, String localUid, String name) {
+    /**
+     * Returns [last_status, operational_date] for the person, or null if not found.
+     * Uses three-tier lookup: pid: key first, then lu: key, then name fallback.
+     */
+    public String[] getAttendanceStateRow(String personId, String localUid, String name) {
         SQLiteDatabase db = this.getReadableDatabase();
         Cursor c = null;
         try {
-            String key = makeAttendanceStateKey(personId, localUid, name);
-            if (key == null) return null;
-            c = db.rawQuery("select last_status from attendance_state where id_key = ? limit 1", new String[]{key});
-            if (c.moveToFirst()) {
-                return normalizeAttendanceStatus(c.getString(0));
+            // Tier 1: try pid: key
+            if (personId != null && !personId.isEmpty()) {
+                c = db.rawQuery("SELECT last_status, operational_date FROM attendance_state WHERE id_key = ? LIMIT 1",
+                        new String[]{"pid:" + personId});
+                if (c.moveToFirst()) {
+                    String st = normalizeAttendanceStatus(c.getString(0));
+                    String od = c.getString(1);
+                    c.close();
+                    return new String[]{st, od};
+                }
+                c.close(); c = null;
+            }
+            // Tier 2: try lu: key
+            if (localUid != null && !localUid.isEmpty()) {
+                c = db.rawQuery("SELECT last_status, operational_date FROM attendance_state WHERE id_key = ? LIMIT 1",
+                        new String[]{"lu:" + localUid});
+                if (c.moveToFirst()) {
+                    String st = normalizeAttendanceStatus(c.getString(0));
+                    String od = c.getString(1);
+                    c.close();
+                    return new String[]{st, od};
+                }
+                c.close(); c = null;
+            }
+            // Tier 3: name fallback (last resort)
+            if (name != null && !name.isEmpty()) {
+                c = db.rawQuery("SELECT last_status, operational_date FROM attendance_state WHERE name = ? ORDER BY last_timestamp DESC LIMIT 1",
+                        new String[]{name});
+                if (c.moveToFirst()) {
+                    String st = normalizeAttendanceStatus(c.getString(0));
+                    String od = c.getString(1);
+                    c.close();
+                    return new String[]{st, od};
+                }
             }
         } catch (Exception ignored) {
         } finally {
-            if (c != null) {
-                try { c.close(); } catch (Exception ignored) {}
-            }
+            if (c != null) { try { c.close(); } catch (Exception ignored) {} }
+        }
+        return null;
+    }
+
+    public String getAttendanceStateStatus(String personId, String localUid, String name) {
+        String[] row = getAttendanceStateRow(personId, localUid, name);
+        return row != null ? row[0] : null;
+    }
+
+    /**
+     * Resolves the existing id_key in attendance_state for a person.
+     * Used during upsert to find an existing lu: record and return its key
+     * even when we now have a pid:. Avoids creating duplicate rows.
+     */
+    private String resolveAttendanceStateKey(SQLiteDatabase db, String personId, String localUid) {
+        // If we have a personId, the canonical key is pid:
+        if (personId != null && !personId.isEmpty()) {
+            return "pid:" + personId;
+        }
+        // Otherwise, check if a lu: record already exists
+        if (localUid != null && !localUid.isEmpty()) {
+            return "lu:" + localUid;
         }
         return null;
     }
@@ -856,6 +1006,24 @@ import java.util.concurrent.CopyOnWriteArrayList;
         if (personId != null && !personId.isEmpty()) return "pid:" + personId;
         if (localUid != null && !localUid.isEmpty()) return "lu:" + localUid;
         return null;
+    }
+
+    /**
+     * Computes the operational date for a given epoch timestamp in milliseconds.
+     *
+     * <p>The operational day runs from 06:00 AM to 05:59:59 AM the following calendar day.
+     * Any time before 06:00 AM is considered part of the previous day's operational shift.
+     *
+     * <p>Formula: operational_date = calendar_date(epoch_ms − 6_hours)
+     *
+     * @param epochMs epoch milliseconds (e.g., System.currentTimeMillis())
+     * @return date string in "yyyy-MM-dd" format representing the operational day
+     */
+    public static String getOperationalDate(long epochMs) {
+        // Subtract 6 hours from the epoch, then format as a calendar date
+        long adjusted = epochMs - (6L * 60L * 60L * 1000L);
+        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
+        return sdf.format(new Date(adjusted));
     }
 
     private String normalizeAttendanceStatus(String status) {

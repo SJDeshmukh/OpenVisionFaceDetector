@@ -1249,7 +1249,7 @@ def sync_vendor_owners():
 def get_settings():
     from app import get_db_connection, socketio, is_testing
     from services.auth_service import extract_token, verify_token
-    allowed_keys = {'threshold', 'cooldown', 'work_start_time', 'late_threshold', 'late_grace_period', 'auto_checkout', 'voice_greeting', 'admin_alerts'}
+    allowed_keys = {'threshold', 'cooldown', 'work_start_time', 'late_threshold', 'late_grace_period', 'auto_checkout', 'voice_greeting', 'admin_alerts', 'missing_checkout_deduction_percent'}
     vendor_id, error = authenticate_vendor_access()
     if error:
         return error
@@ -1307,7 +1307,7 @@ def update_settings():
     if error:
         return error
 
-    allowed_keys = {'threshold', 'cooldown', 'work_start_time', 'late_threshold', 'late_grace_period', 'auto_checkout', 'voice_greeting', 'admin_alerts'}
+    allowed_keys = {'threshold', 'cooldown', 'work_start_time', 'late_threshold', 'late_grace_period', 'auto_checkout', 'voice_greeting', 'admin_alerts', 'missing_checkout_deduction_percent'}
     data = dict(request.json or {})
     role = g.user_role
     if role not in {'super_admin', 'vendor_admin', 'admin', 'owner'}:
@@ -1332,6 +1332,10 @@ def update_settings():
         for time_key in ('work_start_time', 'late_threshold'):
             if time_key in data and not re.fullmatch(r'([01]\d|2[0-3]):[0-5]\d', str(data[time_key])):
                 raise ValueError(f"{time_key} must use HH:MM format")
+        if 'missing_checkout_deduction_percent' in data:
+            pct = float(data['missing_checkout_deduction_percent'])
+            if not 0 <= pct <= 100:
+                raise ValueError("missing_checkout_deduction_percent must be between 0 and 100")
     except (TypeError, ValueError) as exc:
         return jsonify({"error": str(exc)}), 400
 

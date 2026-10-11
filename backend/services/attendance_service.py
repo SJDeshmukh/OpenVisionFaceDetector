@@ -16,13 +16,17 @@ except ImportError:
         except (TypeError, ValueError):
             return None
 
-def calculate_daily_hours(records, timetable=None, date_str=None, attendance_type='total_time'):
+def calculate_daily_hours(records, timetable=None, date_str=None, attendance_type='total_time',
+                          missing_checkout_deduction_percent=50, working_hours=8.0):
     """
     Calculate work hours from a list of attendance records for a single user.
     Records must be sorted by timestamp ASC.
     timetable: List of activity objects (from company live_timetable) to determine payability of gaps.
     date_str: Optional date string to enable real-time calculation for active sessions.
     attendance_type: 'total_time' (sum intervals) or 'first_last' (earliest IN to latest OUT).
+    missing_checkout_deduction_percent: 0–100. When an employee forgets to CHECK_OUT on a
+        past operational day, credit (1 - pct/100) × working_hours instead of 0 hours.
+    working_hours: Standard shift length in hours (used for the forgotten-checkout credit).
     """
     total_seconds = 0
     sessions = []
@@ -184,6 +188,30 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
                 "start": current_checkin.strftime('%H:%M'),
                 "end": now_dt.strftime('%H:%M'),
                 "duration_mins": round(duration / 60)
+            })
+        except Exception:
+            pass
+
+    # Forgotten Checkout Policy: For past-day incomplete sessions (active but NOT today),
+    # credit a partial day instead of zero based on the configured deduction percent.
+    # Example: 50% deduction → employee gets credit for 0.5 × working_hours.
+    if is_active and not date_str:
+        try:
+            deduction_pct = float(missing_checkout_deduction_percent)
+            deduction_pct = max(0.0, min(100.0, deduction_pct))
+            credit_hours = working_hours * (1.0 - deduction_pct / 100.0)
+            credit_seconds = credit_hours * 3600.0
+            total_seconds += credit_seconds
+            sessions.append({
+                "type": "Work (Forgotten Checkout)",
+                "activity": "Work",
+                "is_payable": True,
+                "start_ts": current_checkin.isoformat(),
+                "end_ts": None,
+                "start": current_checkin.strftime('%H:%M'),
+                "end": "—",
+                "duration_mins": round(credit_seconds / 60),
+                "note": f"No checkout recorded. {deduction_pct:.0f}% deduction applied."
             })
         except Exception:
             pass

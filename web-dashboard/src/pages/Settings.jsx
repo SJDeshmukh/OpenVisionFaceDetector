@@ -49,6 +49,7 @@ const Settings = () => {
   const [workStartTime, setWorkStartTime] = useState("09:00");
   const [lateThreshold, setLateThreshold] = useState("09:30");
   const [voiceGreeting, setVoiceGreeting] = useState(true);
+  const [missingCheckoutDeduction, setMissingCheckoutDeduction] = useState(50);
   const [saving, setSaving] = useState(false);
   const [companyShifts, setCompanyShifts] = useState([]);
 
@@ -276,6 +277,10 @@ const Settings = () => {
           setLateThreshold(lt);
         }
         if (s.voice_greeting !== undefined) setVoiceGreeting(String(s.voice_greeting).toLowerCase() === 'true');
+        if (s.missing_checkout_deduction_percent !== undefined) {
+          const pct = parseFloat(s.missing_checkout_deduction_percent);
+          if (!isNaN(pct)) setMissingCheckoutDeduction(pct);
+        }
       }
 
       // Fetch active company shifts for Timetable integration preview
@@ -305,6 +310,7 @@ const Settings = () => {
       const payload = {
         work_start_time: workStartTime,
         voice_greeting: voiceGreeting,
+        missing_checkout_deduction_percent: missingCheckoutDeduction,
       };
       if (hasLateMarkFeature) payload.late_threshold = lateThreshold;
       await axios.post(`${API_URL}/settings`, payload, {
@@ -856,8 +862,68 @@ const Settings = () => {
       </Section>
 
 
+      {/* Forgotten Checkout Wage Deduction Policy */}
+      <Section title="Forgotten Checkout Policy" icon={Clock}>
+        <div className="space-y-4">
+          <div>
+            <p className="text-sm font-semibold text-slate-800 mb-1">Wage Deduction for Missing Check-Out</p>
+            <p className="text-xs text-slate-500 mb-4">
+              When an employee checks in but never checks out before the 6:00 AM shift reset,
+              this deduction is applied to their wage for that day.
+              <span className="font-medium text-slate-700"> 0% = full day wage credited. 100% = no wage credited.</span>
+            </p>
+            {/* Preset Quick Buttons */}
+            <div className="flex flex-wrap gap-2 mb-3">
+              {[
+                { label: '0% — Full Day', value: 0 },
+                { label: '25% — ¾ Day', value: 25 },
+                { label: '50% — Half Day', value: 50 },
+                { label: '100% — No Pay', value: 100 },
+              ].map(({ label, value }) => (
+                <button
+                  key={value}
+                  onClick={() => setMissingCheckoutDeduction(value)}
+                  className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                    missingCheckoutDeduction === value
+                      ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                      : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {/* Custom Input */}
+            <div className="flex items-center space-x-3">
+              <label htmlFor="missing-checkout-deduction" className="text-xs font-semibold text-slate-700 whitespace-nowrap">
+                Custom %:
+              </label>
+              <input
+                id="missing-checkout-deduction"
+                type="number"
+                min="0"
+                max="100"
+                step="5"
+                value={missingCheckoutDeduction}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value);
+                  if (!isNaN(v) && v >= 0 && v <= 100) setMissingCheckoutDeduction(v);
+                }}
+                className="w-24 px-3 py-2 border border-slate-300 rounded-lg text-sm"
+              />
+              <span className="text-xs text-slate-500">%</span>
+              {/* Live preview */}
+              <span className="ml-3 text-xs font-medium px-2.5 py-1 bg-amber-50 text-amber-800 border border-amber-200 rounded-full">
+                Employee earns {(100 - missingCheckoutDeduction).toFixed(0)}% of daily wage if they forget to check out
+              </span>
+            </div>
+          </div>
+        </div>
+      </Section>
 
-      <Section title="Notifications & Interface" icon={Bell}>
+
+
+      <Section title="Notifications &amp; Interface" icon={Bell}>
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
@@ -878,6 +944,7 @@ const Settings = () => {
           </div>
         </div>
       </Section>
+
 
       {/* User Modal */}
       {showUserModal && (
