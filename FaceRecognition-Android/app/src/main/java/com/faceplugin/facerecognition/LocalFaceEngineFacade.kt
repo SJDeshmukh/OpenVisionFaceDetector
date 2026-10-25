@@ -64,6 +64,21 @@ object LocalFaceEngineFacade {
         }
     }
 
+    @JvmStatic
+    @Synchronized
+    fun extractTemplateFromBitmap(bitmap: Bitmap?): ByteArray? {
+        if (!isInitialized || bitmap == null || bitmap.isRecycled) {
+            MyGlobal.context?.let { ensureInitialized(it) }
+        }
+        if (!isInitialized || bitmap == null || bitmap.isRecycled) return null
+        return try {
+            LocalFaceEngine.extractTemplateFromBitmap(bitmap)
+        } catch (error: Throwable) {
+            Log.e(TAG, "Local extractTemplateFromBitmap failed", error)
+            null
+        }
+    }
+
     fun aggregateTemplates(templates: List<ByteArray>): ByteArray? {
         return try {
             LocalFaceEngine.aggregateTemplates(templates)

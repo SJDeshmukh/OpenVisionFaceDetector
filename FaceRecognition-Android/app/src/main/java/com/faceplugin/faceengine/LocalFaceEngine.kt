@@ -149,6 +149,48 @@ object LocalFaceEngine {
     }
 
     @Synchronized
+    fun extractTemplateFromBitmap(bitmap: Bitmap?): ByteArray? {
+        val engine = components ?: return null
+        if (bitmap == null || bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) return null
+
+        // 1. Direct face detection + alignment
+        val detected = detect(bitmap, null)
+        if (detected.isNotEmpty() && detected[0].landmarkCount >= 5 && detected[0].landmarks_68.size >= 10) {
+            val tpl = extractTemplate(bitmap, detected[0])
+            if (tpl != null) return tpl
+        }
+
+        // 2. If tight crop (no border), pad with neutral margin and retry detection
+        try {
+            val padW = (bitmap.width * 0.25f).toInt().coerceAtLeast(16)
+            val padH = (bitmap.height * 0.25f).toInt().coerceAtLeast(16)
+            val padded = Bitmap.createBitmap(bitmap.width + padW * 2, bitmap.height + padH * 2, Bitmap.Config.ARGB_8888)
+            val canvas = android.graphics.Canvas(padded)
+            canvas.drawColor(android.graphics.Color.GRAY)
+            canvas.drawBitmap(bitmap, padW.toFloat(), padH.toFloat(), null)
+            val paddedDetected = detect(padded, null)
+            if (paddedDetected.isNotEmpty() && paddedDetected[0].landmarkCount >= 5 && paddedDetected[0].landmarks_68.size >= 10) {
+                val tpl = extractTemplate(padded, paddedDetected[0])
+                padded.recycle()
+                if (tpl != null) return tpl
+            }
+            padded.recycle()
+        } catch (_: Throwable) {}
+
+        // 3. Fallback: Direct embedding on 112x112 resized crop
+        return try {
+            val scaled = if (bitmap.width == 112 && bitmap.height == 112) bitmap else Bitmap.createScaledBitmap(bitmap, 112, 112, true)
+            try {
+                FaceTemplateCodec.encode(engine.recognizer.getEmbedding(scaled))
+            } finally {
+                if (scaled != bitmap) scaled.recycle()
+            }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    @Synchronized
     fun similarity(first: ByteArray, second: ByteArray): Float {
         val a = decodedTemplate(first) ?: return 0f
         val b = decodedTemplate(second) ?: return 0f

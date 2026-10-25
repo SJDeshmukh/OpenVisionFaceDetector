@@ -1145,7 +1145,21 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                                 people = DBManager.personList.toArray(new Person[0]);
                             }
                             for (Person person : people) {
-                                if (person == null || person.templates == null || person.templates.length == 0) continue;
+                                if (person == null) continue;
+                                if (person.templates == null || person.templates.length == 0 || com.faceplugin.faceengine.FaceTemplateCodec.decode(person.templates) == null) {
+                                    if (dbManager != null) {
+                                        Bitmap face = dbManager.getPersonFace(person.localUid);
+                                        if (face != null) {
+                                            byte[] extracted = LocalFaceEngineFacade.extractTemplateFromBitmap(face);
+                                            if (extracted != null && extracted.length > 0) {
+                                                person.templates = extracted;
+                                                dbManager.updatePersonTemplates(person.localUid, extracted);
+                                            }
+                                            face.recycle();
+                                        }
+                                    }
+                                }
+                                if (person.templates == null || person.templates.length == 0) continue;
                                 float similarity = LocalFaceEngineFacade.INSTANCE.similarityCalculation(templates, person.templates);
                                 if (similarity > maxSimilarityForBox) {
                                     maxSimilarityForBox = similarity;

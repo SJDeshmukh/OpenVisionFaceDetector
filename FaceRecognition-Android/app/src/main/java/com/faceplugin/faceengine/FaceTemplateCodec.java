@@ -25,16 +25,39 @@ public final class FaceTemplateCodec {
         return buffer.array();
     }
 
-    /** Returns null for malformed or pre-FID1 templates. */
+    /** Returns null for malformed or unrecognized templates. Supports FID1 (2056 bytes) and raw 2048-byte float vectors (LE/BE). */
     public static float[] decode(byte[] bytes) {
-        if (bytes == null || bytes.length != HEADER_SIZE + EMBEDDING_SIZE * Float.BYTES) return null;
-        if (!Arrays.equals(MAGIC, Arrays.copyOfRange(bytes, 0, MAGIC.length))) return null;
-        ByteBuffer buffer = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN);
-        buffer.position(MAGIC.length);
-        if (buffer.getInt() != EMBEDDING_SIZE) return null;
-        float[] embedding = new float[EMBEDDING_SIZE];
-        for (int i = 0; i < embedding.length; i++) embedding[i] = buffer.getFloat();
-        return normalizedCopy(embedding);
+        if (bytes == null) return null;
+        if (bytes.length == HEADER_SIZE + EMBEDDING_SIZE * Float.BYTES) {
+            if (Arrays.equals(MAGIC, Arrays.copyOfRange(bytes, 0, MAGIC.length))) {
+                ByteBuffer buffer = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN);
+                buffer.position(MAGIC.length);
+                if (buffer.getInt() == EMBEDDING_SIZE) {
+                    float[] embedding = new float[EMBEDDING_SIZE];
+                    for (int i = 0; i < embedding.length; i++) embedding[i] = buffer.getFloat();
+                    return normalizedCopy(embedding);
+                }
+            }
+        }
+        if (bytes.length == EMBEDDING_SIZE * Float.BYTES) {
+            // Little Endian (numpy tobytes)
+            try {
+                ByteBuffer leBuf = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+                float[] leEmbedding = new float[EMBEDDING_SIZE];
+                for (int i = 0; i < leEmbedding.length; i++) leEmbedding[i] = leBuf.getFloat();
+                float[] leNorm = normalizedCopy(leEmbedding);
+                if (leNorm != null) return leNorm;
+            } catch (Exception ignored) {}
+
+            // Big Endian
+            try {
+                ByteBuffer beBuf = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN);
+                float[] beEmbedding = new float[EMBEDDING_SIZE];
+                for (int i = 0; i < beEmbedding.length; i++) beEmbedding[i] = beBuf.getFloat();
+                return normalizedCopy(beEmbedding);
+            } catch (Exception ignored) {}
+        }
+        return null;
     }
 
     private static float[] normalizedCopy(float[] embedding) {

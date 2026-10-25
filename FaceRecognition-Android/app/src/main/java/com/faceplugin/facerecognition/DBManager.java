@@ -367,6 +367,16 @@ import java.util.concurrent.CopyOnWriteArrayList;
         }
     }
 
+    public void updatePersonTemplates(String localUid, byte[] templates) {
+        if (localUid == null || localUid.isEmpty() || templates == null) return;
+        try {
+            SQLiteDatabase db = this.getWritableDatabase();
+            ContentValues cv = new ContentValues();
+            cv.put("templates", templates);
+            db.update("person", cv, "local_uid = ?", new String[]{localUid});
+        } catch (Exception ignored) {}
+    }
+
     public void insertPerson (String id, String name, Bitmap face, byte[] templates, String phone, String department, String designation, String shift, String customData, boolean synced) {
         insertPersonInternal(null, id, name, face, templates, phone, department, designation, shift, customData, synced);
     }
@@ -674,6 +684,34 @@ import java.util.concurrent.CopyOnWriteArrayList;
                     db.update("person", cv, "rowid = ?", new String[]{String.valueOf(rid)});
                     localUid = newUid;
                 } catch (Exception ignored) {}
+            }
+
+            // AUTO-HEAL: If template is missing or cannot be decoded, regenerate from stored face photo
+            boolean isTemplateValid = (templates != null && com.faceplugin.faceengine.FaceTemplateCodec.decode(templates) != null);
+            if (!isTemplateValid) {
+                try {
+                    byte[] faceBlob = null;
+                    int faceIdx = res.getColumnIndex("face");
+                    if (faceIdx != -1) faceBlob = res.getBlob(faceIdx);
+                    if (faceBlob != null && faceBlob.length > 0) {
+                        Bitmap bmp = BitmapFactory.decodeByteArray(faceBlob, 0, faceBlob.length);
+                        if (bmp != null) {
+                            byte[] extracted = LocalFaceEngineFacade.extractTemplateFromBitmap(bmp);
+                            if (extracted != null && extracted.length > 0) {
+                                templates = extracted;
+                                try {
+                                    SQLiteDatabase writeDb = this.getWritableDatabase();
+                                    ContentValues cv = new ContentValues();
+                                    cv.put("templates", extracted);
+                                    if (localUid != null && !localUid.isEmpty()) {
+                                        writeDb.update("person", cv, "local_uid = ?", new String[]{localUid});
+                                    }
+                                } catch (Exception ignoredWrite) {}
+                            }
+                            bmp.recycle();
+                        }
+                    }
+                } catch (Exception ignoredExtraction) {}
             }
 
             String id = "";

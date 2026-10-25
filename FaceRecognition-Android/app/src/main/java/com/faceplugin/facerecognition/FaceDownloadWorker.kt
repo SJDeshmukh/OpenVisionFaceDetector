@@ -113,11 +113,12 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
                 }
 
                 // If template missing or in incompatible format, extract on-device from the enrolled face image
-                if (templates == null && faceBitmap != null) {
+                val isTemplateValid = templates != null && com.faceplugin.faceengine.FaceTemplateCodec.decode(templates) != null
+                if (!isTemplateValid && faceBitmap != null) {
                     try {
-                        val boxes = LocalFaceEngineFacade.faceDetection(faceBitmap, FacePipeline.enrollmentDetectionParams(applicationContext))
-                        if (boxes.isNotEmpty()) {
-                            templates = LocalFaceEngineFacade.templateExtraction(faceBitmap, boxes[0])
+                        val extracted = LocalFaceEngineFacade.extractTemplateFromBitmap(faceBitmap)
+                        if (extracted != null) {
+                            templates = extracted
                         }
                     } catch (_: Exception) {}
                 }
