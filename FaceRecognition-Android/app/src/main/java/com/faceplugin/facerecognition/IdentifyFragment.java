@@ -110,6 +110,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     private TextView similarityLabel;
     private View syncOrb;
     private TextView networkStatusPill;
+    private android.net.ConnectivityManager.NetworkCallback networkCallback;
     private long lastNotRecognizedToastAtMs = 0L;
     private boolean vendorVerifyOnlyMode = false;
     private java.util.Map<String, Long> lastEventSentAtMs = new java.util.HashMap<>();
@@ -230,6 +231,31 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         similarityLabel = view.findViewById(R.id.similarityLabel);
         syncOrb = view.findViewById(R.id.syncOrb);
         networkStatusPill = view.findViewById(R.id.networkStatusPill);
+        if (networkStatusPill != null) {
+            networkStatusPill.setOnClickListener(v -> {
+                boolean isNowOnline = NetworkUtils.INSTANCE.isOnline(requireContext().getApplicationContext());
+                updateNetworkHud(isNowOnline);
+                if (isNowOnline) {
+                    Toast.makeText(getContext(), "Syncing offline attendance...", Toast.LENGTH_SHORT).show();
+                    AttendanceSyncWorker.syncNow(requireContext().getApplicationContext(), (syncedCount) -> {
+                        if (getActivity() != null) {
+                            getActivity().runOnUiThread(() -> {
+                                if (syncedCount > 0) {
+                                    Toast.makeText(getContext(), "Synced " + syncedCount + " attendance records!", Toast.LENGTH_SHORT).show();
+                                } else {
+                                    Toast.makeText(getContext(), "All attendance up to date.", Toast.LENGTH_SHORT).show();
+                                }
+                            });
+                        }
+                        return null;
+                    });
+                    SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
+                } else {
+                    int pending = dbManager.getAttendanceQueue().size();
+                    Toast.makeText(getContext(), "Offline: " + pending + " records waiting to sync", Toast.LENGTH_SHORT).show();
+                }
+            });
+        }
         vendorVerifyOnlyMode = isVendorVerifyOnlyMode();
 
         // Keep screen on
@@ -311,15 +337,13 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             statusText.setText(vendorVerifyOnlyMode ? "Show a face to verify registration..." : "Looking for a registered face...");
         }
         updateSimilarityHud(0f);
+        registerNetworkCallback();
         try {
             boolean online = NetworkUtils.INSTANCE.isOnline(requireContext().getApplicationContext());
             updateNetworkHud(online);
             if (online) {
-                android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
-                String token = prefs.getString("token", null);
-                if (token != null && !token.isEmpty()) {
-                    SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
-                }
+                AttendanceSyncWorker.syncNow(requireContext().getApplicationContext());
+                SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
             }
         } catch (Exception ignored) {}
         
@@ -334,6 +358,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     }
 
     private void pauseResources() {
+        unregisterNetworkCallback();
         if (faceView != null) {
             faceView.setFaceBoxes(null);
         }
@@ -347,6 +372,53 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         if (cameraProvider != null) {
             cameraProvider.unbindAll();
         }
+    }
+
+    private void registerNetworkCallback() {
+        try {
+            if (getContext() == null || networkCallback != null) return;
+            android.net.ConnectivityManager cm = (android.net.ConnectivityManager) requireContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm != null) {
+                networkCallback = new android.net.ConnectivityManager.NetworkCallback() {
+                    @Override
+                    public void onAvailable(@NonNull android.net.Network network) {
+                        if (getActivity() != null) {
+                            getActivity().runOnUiThread(() -> {
+                                updateNetworkHud(true);
+                                Context ctx = getContext();
+                                if (ctx != null) {
+                                    AttendanceSyncWorker.syncNow(ctx.getApplicationContext());
+                                    SyncScheduler.scheduleImmediate(ctx.getApplicationContext());
+                                }
+                            });
+                        }
+                    }
+
+                    @Override
+                    public void onLost(@NonNull android.net.Network network) {
+                        if (getActivity() != null) {
+                            getActivity().runOnUiThread(() -> updateNetworkHud(false));
+                        }
+                    }
+                };
+                android.net.NetworkRequest req = new android.net.NetworkRequest.Builder()
+                        .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                        .build();
+                cm.registerNetworkCallback(req, networkCallback);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void unregisterNetworkCallback() {
+        try {
+            if (networkCallback != null && getContext() != null) {
+                android.net.ConnectivityManager cm = (android.net.ConnectivityManager) requireContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+                if (cm != null) {
+                    cm.unregisterNetworkCallback(networkCallback);
+                }
+                networkCallback = null;
+            }
+        } catch (Exception ignored) {}
     }
 
     private boolean isVendorVerifyOnlyMode() {

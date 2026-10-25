@@ -317,6 +317,9 @@ def person_event(valid_data: PersonEventSchema):
     name, person_id = valid_data.name, valid_data.person_id
     
     kiosk_vendor_id, person_vendor_id = g.vendor_id, None
+    if not kiosk_vendor_id and getattr(valid_data, 'vendor_id', None):
+        kiosk_vendor_id = valid_data.vendor_id
+
     auth_header = request.headers.get('Authorization')
     if auth_header:
         try:
@@ -325,15 +328,20 @@ def person_event(valid_data: PersonEventSchema):
                 conn_a = get_db_connection(); ca = conn_a.cursor()
                 ca.execute("SELECT vendor_id FROM system_users WHERE username = ?", (ud['username'],))
                 ur = ca.fetchone(); conn_a.close()
-                if ur: kiosk_vendor_id = ur[0]
+                if ur and ur[0]: kiosk_vendor_id = ur[0]
         except Exception:
             logger.debug("Auth token lookup failed in person-event", exc_info=True)
 
     if recognized:
          conn_c = get_db_connection(); cc = conn_c.cursor(); fr = None
          if person_id:
-             cc.execute("SELECT vendor_id FROM faces WHERE id = ?", (person_id,))
-             fr = cc.fetchone()
+             if isinstance(person_id, str) and person_id.startswith("local:"):
+                 luid = person_id.replace("local:", "")
+                 cc.execute("SELECT vendor_id FROM faces WHERE local_uid = ? LIMIT 1", (luid,))
+                 fr = cc.fetchone()
+             else:
+                 cc.execute("SELECT vendor_id FROM faces WHERE id = ?", (person_id,))
+                 fr = cc.fetchone()
          if not fr and name and kiosk_vendor_id:
              cc.execute("SELECT vendor_id FROM faces WHERE name = ? AND vendor_id = ? LIMIT 1", (name, kiosk_vendor_id))
              fr = cc.fetchone()
@@ -367,7 +375,11 @@ def person_event(valid_data: PersonEventSchema):
             luid = resolved_pid.replace("local:", "")
             cr.execute("SELECT id, name FROM faces WHERE local_uid = ? LIMIT 1", (luid,))
             rr = cr.fetchone()
-            if rr: resolved_pid = rr[0]; name = rr[1] if not name else name
+            if rr:
+                resolved_pid = rr[0]
+                name = rr[1] if not name else name
+            else:
+                resolved_pid = None
         if not resolved_pid and name and vendor_id_to_check:
             cr.execute("SELECT id FROM faces WHERE name = ? AND vendor_id = ? LIMIT 1", (name, vendor_id_to_check))
             rr = cr.fetchone()
@@ -388,7 +400,27 @@ def person_event(valid_data: PersonEventSchema):
                     assigned_shift = str(rr[3]).strip() if len(rr) > 3 and rr[3] else None
                 except Exception:
                     assigned_shift = None
-            else: resolved_pid = None
+            else:
+                if name and vendor_id_to_check:
+                    cr.execute(
+                        """SELECT id, name, vendor_id, custom_data, shift FROM faces
+                           WHERE name = ? AND vendor_id = ? LIMIT 1""",
+                        (name, vendor_id_to_check)
+                    )
+                    fn = cr.fetchone()
+                    if fn:
+                        resolved_pid = fn[0]
+                        name = fn[1]
+                        vendor_id_to_check = fn[2]
+                        resolved_scope = class_scope_for(fn[3])
+                        try:
+                            assigned_shift = str(fn[4]).strip() if len(fn) > 4 and fn[4] else None
+                        except Exception:
+                            assigned_shift = None
+                    else:
+                        resolved_pid = None
+                else:
+                    resolved_pid = None
         conn_r.close()
 
     person_id = resolved_pid

@@ -13,16 +13,24 @@ import java.util.concurrent.TimeUnit;
 
 public class SyncScheduler {
     public static void scheduleImmediate(Context ctx) {
+        // 1. Direct immediate background sync if currently online
+        AttendanceSyncWorker.syncNow(ctx);
+
         Constraints constraints = new Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.CONNECTED)
                 .build();
 
-        OneTimeWorkRequest faceSync = new OneTimeWorkRequest.Builder(FaceSyncWorker.class)
+        // 2. AttendanceSyncWorker runs independently with REPLACE policy
+        OneTimeWorkRequest attendanceSync = new OneTimeWorkRequest.Builder(AttendanceSyncWorker.class)
                 .setConstraints(constraints)
-                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.SECONDS)
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
                 .build();
 
-        OneTimeWorkRequest attendanceSync = new OneTimeWorkRequest.Builder(AttendanceSyncWorker.class)
+        WorkManager.getInstance(ctx)
+                .enqueueUniqueWork("attendance-sync", ExistingWorkPolicy.REPLACE, attendanceSync);
+
+        // 3. Heavy face upload/download runs in separate background chain
+        OneTimeWorkRequest faceSync = new OneTimeWorkRequest.Builder(FaceSyncWorker.class)
                 .setConstraints(constraints)
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.SECONDS)
                 .build();
@@ -39,7 +47,6 @@ public class SyncScheduler {
 
         WorkManager.getInstance(ctx)
                 .beginUniqueWork("sync-chain", ExistingWorkPolicy.KEEP, faceSync)
-                .then(attendanceSync)
                 .then(deleteSync)
                 .then(faceDownload)
                 .enqueue();

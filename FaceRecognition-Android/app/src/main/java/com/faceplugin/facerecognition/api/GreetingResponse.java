@@ -37,4 +37,15 @@ public class GreetingResponse {
     public void setDisplayStatus(String displayStatus) {
         this.display_status = displayStatus;
     }
+
+    @com.google.gson.annotations.SerializedName("person_id")
+    private Object personId;
+
+    public Object getPersonId() {
+        return personId;
+    }
+
+    public void setPersonId(Object personId) {
+        this.personId = personId;
+    }
 }
