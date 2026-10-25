@@ -638,7 +638,7 @@ def upload_face():
     # OCP (FacePlugin) compatibility, bypassing any ArcFace templates from the scan.
     if face_image:
         try:
-            from services.face_service import _decode_data_uri_to_rgb
+            from services.face_service import _decode_data_uri_to_rgb, _normalize_vec
             from multiple_face_detection import app as mfd_app
             img_rgb_base = _decode_data_uri_to_rgb(face_image)
             if img_rgb_base is not None:

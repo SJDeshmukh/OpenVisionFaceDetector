@@ -14,6 +14,7 @@ def delete_person_dependencies(execute, person_id, vendor_id=None):
                 (person_id, person_id),
             ),
             ("DELETE FROM advances WHERE person_id = ?", (person_id,)),
+            ("DELETE FROM attendance_events WHERE person_id = ? OR legacy_attendance_id IN (SELECT id FROM attendance WHERE person_id = ?)", (person_id, person_id)),
             ("DELETE FROM attendance WHERE person_id = ?", (person_id,)),
             ("DELETE FROM student_parents WHERE person_id = ?", (person_id,)),
             ("UPDATE parent_users SET selected_person_id = NULL WHERE selected_person_id = ?", (person_id,)),
@@ -33,6 +34,7 @@ def delete_person_dependencies(execute, person_id, vendor_id=None):
                 (vendor_id, person_id, vendor_id, person_id),
             ),
             ("DELETE FROM advances WHERE vendor_id = ? AND person_id = ?", (vendor_id, person_id)),
+            ("DELETE FROM attendance_events WHERE vendor_id = ? AND (person_id = ? OR legacy_attendance_id IN (SELECT id FROM attendance WHERE vendor_id = ? AND person_id = ?))", (vendor_id, person_id, vendor_id, person_id)),
             ("DELETE FROM attendance WHERE vendor_id = ? AND person_id = ?", (vendor_id, person_id)),
             ("DELETE FROM student_parents WHERE vendor_id = ? AND person_id = ?", (vendor_id, person_id)),
             (
