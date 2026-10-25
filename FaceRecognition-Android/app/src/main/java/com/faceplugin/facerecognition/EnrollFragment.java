@@ -268,7 +268,7 @@ public class EnrollFragment extends Fragment {
     private void processImage(Bitmap bitmap, byte[] capturedTemplate, boolean capturedVerified) {
         // Run Face Detection
         List<FaceBox> faceBoxes = LocalFaceEngineFacade.INSTANCE.faceDetection(
-                bitmap, FacePipeline.secureDetectionParams(requireContext()));
+                bitmap, FacePipeline.enrollmentDetectionParams(requireContext()));
 
         // CaptureActivity already validated that exactly one face was present and
         // extracted its template. Do not discard that successful scan merely because
@@ -283,8 +283,8 @@ public class EnrollFragment extends Fragment {
         } else {
             FaceBox faceBox = faceBoxes != null && !faceBoxes.isEmpty() ? faceBoxes.get(0) : null;
             if (!hasCapturedTemplate && !FacePipeline.recognitionReady(
-                    requireContext(), faceBox, bitmap.getWidth(), bitmap.getHeight())) {
-                Toast.makeText(getContext(), "A clear, live face is required", Toast.LENGTH_SHORT).show();
+                    requireContext(), faceBox, bitmap.getWidth(), bitmap.getHeight(), true)) {
+                Toast.makeText(getContext(), "A clear front-facing face is required", Toast.LENGTH_SHORT).show();
                 return;
             }
             Bitmap faceImage = faceBox != null

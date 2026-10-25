@@ -240,7 +240,7 @@ public class UsersFragment extends Fragment {
     private void processCameraResult(Bitmap bitmap, byte[] capturedTemplate, boolean capturedVerified) {
         if (pendingPersonForRegistration == null) return;
         List<FaceBox> faceBoxes = LocalFaceEngineFacade.INSTANCE.faceDetection(
-                bitmap, FacePipeline.secureDetectionParams(requireContext()));
+                bitmap, FacePipeline.enrollmentDetectionParams(requireContext()));
         boolean hasCapturedTemplate = capturedVerified
                 && capturedTemplate != null && capturedTemplate.length > 0;
 
@@ -254,8 +254,8 @@ public class UsersFragment extends Fragment {
         
         FaceBox faceBox = faceBoxes == null || faceBoxes.isEmpty() ? null : faceBoxes.get(0);
         if (!hasCapturedTemplate && !FacePipeline.recognitionReady(
-                requireContext(), faceBox, bitmap.getWidth(), bitmap.getHeight())) {
-            Toast.makeText(getContext(), "A clear, live face is required", Toast.LENGTH_SHORT).show();
+                requireContext(), faceBox, bitmap.getWidth(), bitmap.getHeight(), true)) {
+            Toast.makeText(getContext(), "A clear front-facing face is required", Toast.LENGTH_SHORT).show();
             return;
         }
         Bitmap faceImage = faceBox == null ? bitmap : Utils.cropFace(bitmap, faceBox);

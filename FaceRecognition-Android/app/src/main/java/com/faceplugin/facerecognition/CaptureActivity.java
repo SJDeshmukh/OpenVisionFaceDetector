@@ -331,11 +331,13 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
     public void view5_finished() {
 
         if (capturedBitmap == null || capturedFace == null) return;
-        FaceDetectionParam param = FacePipeline.secureDetectionParams(this);
+        FaceDetectionParam param = isCaptureOnly ? FacePipeline.enrollmentDetectionParams(this) : FacePipeline.secureDetectionParams(this);
 
         List<FaceBox> faceBoxes = LocalFaceEngineFacade.INSTANCE.faceDetection(capturedBitmap, param);
         if(faceBoxes != null && faceBoxes.size() > 0) {
-            if(FacePipeline.isLive(context, faceBoxes.get(0), true)) {
+            if (isCaptureOnly) {
+                livenessTxt.setVisibility(View.GONE);
+            } else if(FacePipeline.isLive(context, faceBoxes.get(0), false)) {
                 String msg = String.format("Liveness: Real, score = %.03f", faceBoxes.get(0).liveness);
                 livenessTxt.setText(msg);
             }
@@ -414,7 +416,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
             }
             // -----------------------
 
-            FaceDetectionParam param = FacePipeline.secureDetectionParams(this);
+            FaceDetectionParam param = isCaptureOnly ? FacePipeline.enrollmentDetectionParams(this) : FacePipeline.secureDetectionParams(this);
 
             List<FaceBox> faceBoxes = LocalFaceEngineFacade.INSTANCE.faceDetection(bitmap, param);
             FACE_CAPTURE_STATE evaluatedState = checkFace(faceBoxes, this, bitmap.getWidth(), bitmap.getHeight());

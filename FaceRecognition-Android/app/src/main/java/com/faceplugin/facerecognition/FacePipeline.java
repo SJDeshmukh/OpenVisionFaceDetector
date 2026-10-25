@@ -17,11 +17,25 @@ import java.util.Locale;
 public final class FacePipeline {
     private FacePipeline() {}
 
-    /** Full, security-sensitive analysis. Use this before enrollment or matching. */
+    /** Full, security-sensitive analysis. Use this for attendance matching and identification. */
     public static FaceDetectionParam secureDetectionParams(Context context) {
         FaceDetectionParam param = new FaceDetectionParam();
         param.check_liveness = true;
         param.check_liveness_level = SettingsActivity.getLivenessLevel(context);
+        param.check_landmarks = true;
+        param.check_pose = true;
+        param.check_quality = true;
+        param.check_face_occlusion = true;
+        param.check_eye_closeness = true;
+        param.check_mask = true;
+        return param;
+    }
+
+    /** Enrollment/registration parameters: spoof/liveness checking is disabled per user requirements */
+    public static FaceDetectionParam enrollmentDetectionParams(Context context) {
+        FaceDetectionParam param = new FaceDetectionParam();
+        param.check_liveness = false;
+        param.check_liveness_level = 0;
         param.check_landmarks = true;
         param.check_pose = true;
         param.check_quality = true;
@@ -36,6 +50,7 @@ public final class FacePipeline {
     }
 
     public static boolean isLive(Context context, FaceBox face, boolean isEnrollment) {
+        if (isEnrollment) return true; // Spoof check disabled during enrollment
         return face != null && SettingsActivity.livenessPassed(
                 context, face.liveness, face.livenessLabel, isEnrollment);
     }
@@ -48,7 +63,8 @@ public final class FacePipeline {
 
     public static boolean recognitionReady(
             Context context, FaceBox face, int frameWidth, int frameHeight, boolean isEnrollment) {
-        if (!hasValidBounds(face, frameWidth, frameHeight) || !isLive(context, face, isEnrollment)) return false;
+        if (!hasValidBounds(face, frameWidth, frameHeight)) return false;
+        if (!isEnrollment && !isLive(context, face, false)) return false;
         int shorterFrameSide = Math.min(frameWidth, frameHeight);
         int shorterFaceSide = Math.min(face.width(), face.height());
         if (shorterFrameSide <= 0 || shorterFaceSide < shorterFrameSide * 0.12f) return false;
@@ -145,7 +161,7 @@ public final class FacePipeline {
                 || face.face_luminance > SettingsActivity.getMaxLuminance(context)) {
             return FACE_CAPTURE_STATE.BAD_LIGHTING;
         }
-        if (!isLive(context, face, true)) return FACE_CAPTURE_STATE.SPOOFED_FACE;
+        // Spoof / liveness check is intentionally skipped for registration/enrollment.
         return FACE_CAPTURE_STATE.CAPTURE_OK;
     }
 

@@ -70,10 +70,12 @@ class SettingsActivity : AppCompatActivity() {
         @JvmStatic
         @JvmOverloads
         fun livenessPassed(context: Context, score: Float, label: String?, isEnrollment: Boolean = false): Boolean {
+            // Spoof/liveness check is NOT activated when registering/enrolling faces
+            if (isEnrollment) return true
             val normalizedLabel = label.orEmpty().lowercase()
             if (!score.isFinite()) return false
             if (listOf("spoof", "fake", "print", "replay", "attack").any(normalizedLabel::contains)) return false
-            val threshold = if (isEnrollment) getEnrollLivenessThreshold(context) else getLivenessThreshold(context)
+            val threshold = getLivenessThreshold(context)
             return score >= threshold
         }
 

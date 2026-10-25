@@ -77,7 +77,7 @@ class ParentFaceRegistrationActivity : AppCompatActivity() {
     }
 
     private fun processImage(bitmap: Bitmap, capturedTemplate: ByteArray?, capturedVerified: Boolean) {
-        val faces = LocalFaceEngineFacade.faceDetection(bitmap, FacePipeline.secureDetectionParams(this))
+        val faces = LocalFaceEngineFacade.faceDetection(bitmap, FacePipeline.enrollmentDetectionParams(this))
         val hasCapturedTemplate = capturedVerified
             && capturedTemplate != null && capturedTemplate.isNotEmpty()
 
@@ -94,12 +94,12 @@ class ParentFaceRegistrationActivity : AppCompatActivity() {
         } else {
             val faceBox = faces.firstOrNull()
             
-            // Liveness check
+            // Frontality and quality check (spoof disabled for registration)
             if (!hasCapturedTemplate && !FacePipeline.recognitionReady(
                     this, faceBox, bitmap.width, bitmap.height, true)) {
                 runOnUiThread {
                     showLoading(false)
-                    Toast.makeText(this, "Real face required (Spoof detected)", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "A clear front-facing face is required", Toast.LENGTH_SHORT).show()
                 }
                 return
             }
