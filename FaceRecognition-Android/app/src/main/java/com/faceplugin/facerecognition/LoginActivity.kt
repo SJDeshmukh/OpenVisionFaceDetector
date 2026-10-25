@@ -265,7 +265,9 @@ class LoginActivity : AppCompatActivity() {
 
             if (!online) {
                 if (tryOfflineLogin(username, password)) {
-                    val intent = Intent(this@LoginActivity, MainActivity::class.java)
+                    val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+                    val target = getTargetActivity(prefs)
+                    val intent = Intent(this@LoginActivity, target)
                     startActivity(intent)
                     finish()
                 } else {
@@ -312,12 +314,10 @@ class LoginActivity : AppCompatActivity() {
                                 editor.putString("cached_registration_config", cached)
                             }
                         } catch (_: Exception) {}
-                        editor.putString("offline_login_hash", offlineLoginHash(username, password))
-                        val facultyName = body?.facultyDisplayName
-                        if (!facultyName.isNullOrBlank()) editor.putString("faculty_display_name", facultyName)
                         val kioskPin = body?.kioskPin ?: "8888"
                         editor.putString("kiosk_pin", kioskPin)
                         editor.apply()
+                        saveOfflineUserCredentials(username, password, role, token, vendorId, companyId, kioskPin)
 
                         // Set token in RetrofitClient
                         if (token != null) {
@@ -591,8 +591,42 @@ class LoginActivity : AppCompatActivity() {
         } catch (_: Exception) {}
     }
 
-    private fun offlineLoginHash(username: String, password: String): String {
-        val input = "$username:$password"
+    private fun saveOfflineUserCredentials(
+        username: String,
+        password: String,
+        role: String?,
+        token: String?,
+        vendorId: Int?,
+        companyId: Int?,
+        kioskPin: String?
+    ) {
+        try {
+            val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+            val editor = prefs.edit()
+            val normalizedUser = username.trim().lowercase()
+            val hash = offlineLoginHash(username, password)
+            val userKey = "offline_user_" + hashString(normalizedUser)
+            val userObj = org.json.JSONObject().apply {
+                put("username", username)
+                put("hash", hash)
+                put("role", role ?: "user")
+                put("token", token ?: "")
+                put("vendor_id", vendorId ?: -1)
+                put("company_id", companyId ?: -1)
+                put("kiosk_pin", kioskPin ?: "8888")
+            }
+            editor.putString(userKey, userObj.toString())
+            editor.putString("offline_username", username)
+            editor.putString("offline_login_hash", hash)
+            editor.putString("offline_saved_role", role ?: "user")
+            editor.putString("offline_saved_token", token ?: "")
+            editor.putInt("offline_saved_vendor_id", vendorId ?: -1)
+            editor.putInt("offline_saved_company_id", companyId ?: -1)
+            editor.apply()
+        } catch (_: Exception) {}
+    }
+
+    private fun hashString(input: String): String {
         val bytes = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.UTF_8))
         val sb = StringBuilder(bytes.size * 2)
         for (b in bytes) {
@@ -601,13 +635,76 @@ class LoginActivity : AppCompatActivity() {
         return sb.toString()
     }
 
+    private fun offlineLoginHash(username: String, password: String): String {
+        return hashString("${username.trim().lowercase()}:$password")
+    }
+
     private fun tryOfflineLogin(username: String, password: String): Boolean {
         val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
-        val savedUser = prefs.getString("username", null)
-        val savedHash = prefs.getString("offline_login_hash", null)
-        if (savedUser.isNullOrBlank() || savedHash.isNullOrBlank()) return false
-        if (savedUser != username) return false
-        return savedHash == offlineLoginHash(username, password)
+        val normalizedUser = username.trim().lowercase()
+        val userKey = "offline_user_" + hashString(normalizedUser)
+        val userJsonStr = prefs.getString(userKey, null)
+        val candidateHash = offlineLoginHash(username, password)
+
+        var authenticated = false
+        var targetRole: String? = null
+        var targetToken: String? = null
+        var targetVendorId = -1
+        var targetCompanyId = -1
+        var targetKioskPin = "8888"
+
+        if (!userJsonStr.isNullOrBlank()) {
+            try {
+                val obj = org.json.JSONObject(userJsonStr)
+                val storedHash = obj.optString("hash", "")
+                if (storedHash.isNotEmpty() && storedHash == candidateHash) {
+                    authenticated = true
+                    targetRole = obj.optString("role", "user")
+                    targetToken = obj.optString("token", "")
+                    targetVendorId = obj.optInt("vendor_id", -1)
+                    targetCompanyId = obj.optInt("company_id", -1)
+                    targetKioskPin = obj.optString("kiosk_pin", "8888")
+                }
+            } catch (_: Exception) {}
+        }
+
+        // Fallback to single-user legacy offline cache
+        if (!authenticated) {
+            val savedUser = prefs.getString("offline_username", null) ?: prefs.getString("username", null)
+            val savedHash = prefs.getString("offline_login_hash", null)
+            if (!savedUser.isNullOrBlank() && savedUser.equals(username, ignoreCase = true) && savedHash == candidateHash) {
+                authenticated = true
+                targetRole = prefs.getString("offline_saved_role", null) ?: prefs.getString("role", "user")
+                targetToken = prefs.getString("offline_saved_token", null) ?: prefs.getString("token", "")
+                targetVendorId = prefs.getInt("offline_saved_vendor_id", -1).let {
+                    if (it != -1) it else prefs.getInt("vendor_id", -1)
+                }
+                targetCompanyId = prefs.getInt("offline_saved_company_id", -1).let {
+                    if (it != -1) it else prefs.getInt("company_id", -1)
+                }
+                targetKioskPin = prefs.getString("kiosk_pin", "8888") ?: "8888"
+            }
+        }
+
+        if (!authenticated) return false
+
+        // Successfully authenticated offline! Restore active session state
+        val editor = prefs.edit()
+        editor.putString("username", username)
+        editor.putString("role", targetRole ?: "user")
+        if (!targetToken.isNullOrBlank()) {
+            editor.putString("token", targetToken)
+            RetrofitClient.setAuthToken(targetToken)
+        }
+        if (targetVendorId != -1) {
+            editor.putInt("vendor_id", targetVendorId)
+        }
+        if (targetCompanyId != -1) {
+            editor.putInt("company_id", targetCompanyId)
+        }
+        editor.putString("kiosk_pin", targetKioskPin)
+        editor.apply()
+        return true
     }
 
     private fun checkAndPromptPermissionsAndLocation() {

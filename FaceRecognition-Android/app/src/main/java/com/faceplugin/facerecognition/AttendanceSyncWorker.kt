@@ -16,7 +16,7 @@ class AttendanceSyncWorker(appContext: Context, params: WorkerParameters) : Work
     override fun doWork(): Result {
         val prefs = applicationContext.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
         val baseUrl = prefs.getString("server_url", RetrofitClient.getBaseUrl())
-        val token = prefs.getString("token", null)
+        val token = prefs.getString("token", null) ?: prefs.getString("offline_saved_token", null)
         if (baseUrl != null) RetrofitClient.setBaseUrl(baseUrl)
         if (token != null) RetrofitClient.setAuthToken(token)
         if (token.isNullOrBlank()) return Result.success()
@@ -59,7 +59,9 @@ class AttendanceSyncWorker(appContext: Context, params: WorkerParameters) : Work
                     req.deviceId = deviceId
                     req.deviceName = dn
                     val prefs2 = applicationContext.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
-                    val vendorId = prefs2.getInt("vendor_id", -1)
+                    val vendorId = prefs2.getInt("vendor_id", -1).let {
+                        if (it > 0) it else prefs2.getInt("offline_saved_vendor_id", -1)
+                    }
                     if (vendorId > 0) req.vendorId = vendorId
                     var btype = prefs2.getString("selected_business_type_code", null)
                     if (btype.isNullOrBlank()) {

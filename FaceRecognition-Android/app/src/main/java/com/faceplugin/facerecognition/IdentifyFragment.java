@@ -353,12 +353,14 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         try {
             android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
             String role = prefs.getString("role", null);
-
+            if (role == null || role.trim().isEmpty()) {
+                role = prefs.getString("offline_saved_role", "user");
+            }
             // Attendance is an explicit kiosk/user capability. Vendor and admin
             // Identify tabs verify enrollment only and must never create an event.
             return !RecognitionModePolicy.canMarkAttendance(role);
         } catch (Exception ignored) {
-            return true; // Default to verify only on error
+            return false; // Default to allow attendance on error so offline punches are recorded
         }
     }
 
