@@ -289,7 +289,10 @@ def build_employee_monthly_deliveries(vendor_id, month, person_type=None, filter
             for session in sessions:
                 stamp = _timestamp(session.get("start_ts"))
                 if stamp and start <= stamp.date() <= end and session.get("is_payable", False):
-                    total_hours += _as_float(session.get("duration_mins")) / 60
+                    dur_sec = session.get("duration_seconds")
+                    if dur_sec is None:
+                        dur_sec = _as_float(session.get("duration_mins")) * 60.0
+                    total_hours += _as_float(dur_sec) / 3600.0
                     present_dates.add(stamp.date())
 
             late_dates = {

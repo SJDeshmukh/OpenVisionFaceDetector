@@ -194,7 +194,11 @@ def _employee_metrics(vendor_id, start, end, department=None):
                 continue
             if start <= session_day <= end and session.get("is_payable", True):
                 sessions.append(session)
-        hours = round(sum(float(item.get("duration_mins") or 0) for item in sessions) / 60.0, 2)
+        total_sec = sum(
+            float(item.get("duration_seconds") if item.get("duration_seconds") is not None else (float(item.get("duration_mins") or 0) * 60.0))
+            for item in sessions
+        )
+        hours = round(total_sec / 3600.0, 2)
         daily_wage = float(person.get("daily_wage") or 0)
         estimated_wages = round(hours * (daily_wage / working_hours), 2) if daily_wage else 0.0
         metrics.append({

@@ -99,7 +99,8 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
                                 "end_ts": None,
                                 "start": first_in.strftime('%H:%M'),
                                 "end": "—",
-                                "duration_mins": round(credit_seconds / 60),
+                                "duration_seconds": credit_seconds,
+                                "duration_mins": round(credit_seconds / 60.0, 2),
                                 "note": f"No checkout recorded. {deduction_pct:.0f}% deduction applied."
                             })
                         except Exception:
@@ -117,7 +118,8 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
                     "end_ts": effective_last_out.isoformat(),
                     "start": first_in.strftime('%H:%M'),
                     "end": effective_last_out.strftime('%H:%M'),
-                    "duration_mins": round(duration / 60)
+                    "duration_seconds": duration,
+                    "duration_mins": round(duration / 60.0, 2)
                 })
         
         # Calculate string format (e.g. "2h 30m")
@@ -127,6 +129,7 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
 
         return {
             "total_hours": round(total_seconds / 3600, 2),
+            "total_seconds": round(total_seconds, 2),
             "total_hours_str": total_hours_str,
             "sessions": sessions,
             "is_active": is_active,
@@ -166,7 +169,8 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
                     "end_ts": None,
                     "start": current_checkin.strftime('%H:%M'),
                     "end": "—",
-                    "duration_mins": round(credit_seconds / 60),
+                    "duration_seconds": credit_seconds,
+                    "duration_mins": round(credit_seconds / 60.0, 2),
                     "note": f"No checkout recorded. {deduction_pct:.0f}% deduction applied."
                 })
             except Exception:
@@ -214,7 +218,8 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
                     "end_ts": ts.isoformat(),
                     "start": current_checkin.strftime('%H:%M'),
                     "end": ts.strftime('%H:%M'),
-                    "duration_mins": round(duration / 60)
+                    "duration_seconds": duration,
+                    "duration_mins": round(duration / 60.0, 2)
                 })
                 current_checkin = None
                 current_checkin_activity = None
@@ -275,7 +280,8 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
                     "end_ts": now_dt.isoformat(),
                     "start": current_checkin.strftime('%H:%M'),
                     "end": now_dt.strftime('%H:%M'),
-                    "duration_mins": round(duration / 60)
+                    "duration_seconds": duration,
+                    "duration_mins": round(duration / 60.0, 2)
                 })
             except Exception:
                 pass
@@ -295,7 +301,8 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
                     "end_ts": None,
                     "start": current_checkin.strftime('%H:%M'),
                     "end": "—",
-                    "duration_mins": round(credit_seconds / 60),
+                    "duration_seconds": credit_seconds,
+                    "duration_mins": round(credit_seconds / 60.0, 2),
                     "note": f"No checkout recorded. {deduction_pct:.0f}% deduction applied."
                 })
             except Exception:
@@ -307,6 +314,7 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
 
     return {
         "total_hours": round(total_seconds / 3600, 2),
+        "total_seconds": round(total_seconds, 2),
         "total_hours_str": total_hours_str,
         "sessions": sessions,
         "is_active": is_active and is_current_shift,
