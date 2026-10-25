@@ -459,9 +459,13 @@ def get_persons():
     cache_params = sorted(request.args.items())
     caller_scope = f"{getattr(g, 'user_role', '')}:{getattr(g, 'username', '')}"
     cache_key = f"vendor:{vendor_id}:persons_list:{caller_scope}:{hash(tuple(cache_params))}"
-    cached = cache_get(cache_key)
-    if cached:
-        return jsonify(cached)
+    
+    # Bypass cache if client explicitly asks via no-cache (e.g. on Ctrl+Shift+R or after action)
+    no_cache = request.headers.get("Cache-Control") in ("no-cache", "max-age=0") or request.args.get("nocache") == "1"
+    if not no_cache:
+        cached = cache_get(cache_key)
+        if cached:
+            return jsonify(cached)
 
     conn = get_db_connection()
     set_row_factory(conn)
@@ -582,7 +586,7 @@ def get_persons():
     conn.close()
 
     result = {"persons": persons}
-    cache_set(cache_key, result, 300) # 5 min cache
+    cache_set(cache_key, result, 15) # 15 sec cache to ensure near real-time freshness
     return jsonify(result)
 
 
@@ -1314,6 +1318,7 @@ def upload_face():
         
         cache_delete("admin_stats")
         socketio.emit('persons_updated', {'vendor_id': vendor_id}, room=f"vendor_{vendor_id}")
+        socketio.emit('persons_updated', {'vendor_id': vendor_id})
         socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
 
         return jsonify({
@@ -1650,12 +1655,20 @@ def delete_face(name):
         except Exception:
             pass
 
+        for vid in by_vendor.keys():
+            cache_delete_vendor_prefix(vid)
+        if vendor_id:
+            cache_delete_vendor_prefix(vendor_id)
+        cache_delete("admin_stats")
+
         if deleted_faces > 0:
             # Real-time update
-            if vendor_id:
-                socketio.emit('persons_updated', {'vendor_id': vendor_id}, room=f"vendor_{vendor_id}")
-                socketio.emit('attendance_updated', {'vendor_id': vendor_id}, room=f"vendor_{vendor_id}")
-                socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
+            broadcast_vendor = vendor_id or (list(by_vendor.keys())[0] if by_vendor else None)
+            if broadcast_vendor:
+                socketio.emit('persons_updated', {'vendor_id': broadcast_vendor}, room=f"vendor_{broadcast_vendor}")
+                socketio.emit('attendance_updated', {'vendor_id': broadcast_vendor}, room=f"vendor_{broadcast_vendor}")
+            socketio.emit('persons_updated', {'vendor_id': broadcast_vendor})
+            socketio.emit('vendor_updated', {'vendor_id': broadcast_vendor}, room='super_admin')
             
             return jsonify({"status": "success", "message": f"Face for {name} deleted."})
         else:
@@ -1803,9 +1816,10 @@ def delete_face_by_id(person_id):
 
         conn.commit()
         
+        effective_vendor_id = vendor_id or target_vendor_id
         # Invalidate vendor-specific caches and global stats
-        if vendor_id:
-            cache_delete_vendor_prefix(vendor_id)
+        if effective_vendor_id:
+            cache_delete_vendor_prefix(effective_vendor_id)
         cache_delete("admin_stats")
         
         try:
@@ -1814,10 +1828,11 @@ def delete_face_by_id(person_id):
             pass
 
         if deleted_faces > 0:
-            if vendor_id:
-                socketio.emit('persons_updated', {'vendor_id': vendor_id}, room=f"vendor_{vendor_id}")
-                socketio.emit('attendance_updated', {'vendor_id': vendor_id}, room=f"vendor_{vendor_id}")
-                socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
+            if effective_vendor_id:
+                socketio.emit('persons_updated', {'vendor_id': effective_vendor_id}, room=f"vendor_{effective_vendor_id}")
+                socketio.emit('attendance_updated', {'vendor_id': effective_vendor_id}, room=f"vendor_{effective_vendor_id}")
+            socketio.emit('persons_updated', {'vendor_id': effective_vendor_id})
+            socketio.emit('vendor_updated', {'vendor_id': effective_vendor_id}, room='super_admin')
             return jsonify({"status": "success", "message": f"Face for {name} deleted.", "person_id": person_id})
         else:
             return jsonify({"error": "User not found"}), 404
