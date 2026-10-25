@@ -49,6 +49,7 @@ class AttendanceSyncWorker(appContext: Context, params: WorkerParameters) : Work
                     true,
                     item.timestamp
                 )
+                req.status = item.status
                 try {
                     val deviceId = android.provider.Settings.Secure.getString(applicationContext.contentResolver, android.provider.Settings.Secure.ANDROID_ID)
                     val deviceName = applicationContext.getSharedPreferences("app_prefs", Context.MODE_PRIVATE).getString("device_name", null)

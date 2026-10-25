@@ -436,48 +436,77 @@ def person_event(valid_data: PersonEventSchema):
         vendor_has_feature(vendor_id_to_check, "hostel_attendance_alerts")
     )
 
-    if person_id:
-        if vendor_id_to_check:
-            q = "SELECT * FROM attendance WHERE person_id = ? AND vendor_id = ?"
-            p = [person_id, vendor_id_to_check]
-            # Hostel entry/exit is a person-wide state. A resident may leave
-            # through one gate and return through another, so do not scope the
-            # previous event to the current device in hostel movement mode.
-            if curr_dev_id and not hostel_movement_mode:
-                q += " AND device_id = ?"; p.append(curr_dev_id)
-            c.execute(q + " ORDER BY timestamp DESC LIMIT 1", p)
-        else:
+    provided_status = str(valid_data.status or "").strip().upper()
+    if provided_status in ("CHECK_IN", "CHECK_OUT"):
+        new_status = provided_status
+        if person_id:
             q = "SELECT * FROM attendance WHERE person_id = ?"
             p = [person_id]
+            if vendor_id_to_check:
+                q += " AND vendor_id = ?"; p.append(vendor_id_to_check)
             if curr_dev_id and not hostel_movement_mode:
                 q += " AND device_id = ?"; p.append(curr_dev_id)
+            if valid_data.timestamp and current_time_obj:
+                q += " AND timestamp < ?"; p.append(current_time_obj.isoformat(sep=" "))
             c.execute(q + " ORDER BY timestamp DESC LIMIT 1", p)
+        else:
+            q = "SELECT * FROM attendance WHERE name = ?"
+            p = [name]
+            if valid_data.timestamp and current_time_obj:
+                q += " AND timestamp < ?"; p.append(current_time_obj.isoformat(sep=" "))
+            c.execute(q + " ORDER BY timestamp DESC LIMIT 1", p)
+        last_record = c.fetchone()
     else:
-        # Fallback to name...
-        c.execute("SELECT * FROM attendance WHERE name = ? ORDER BY timestamp DESC LIMIT 1", (name,))
-    
-    last_record = c.fetchone()
-    last_status = last_record['status'] if last_record else None
-    hours_since_last = None
-    if last_record:
-        try:
-            lts = parse_db_datetime(last_record['timestamp'])
-            if lts:
-                hours_since_last = (current_time_obj - lts).total_seconds() / 3600
-        except (ValueError, TypeError, AttributeError):
-            pass
-    new_status = next_attendance_status(
-        last_status,
-        hours_since_last=hours_since_last,
-        hostel_mode=hostel_movement_mode,
-    )
+        if person_id:
+            if vendor_id_to_check:
+                q = "SELECT * FROM attendance WHERE person_id = ? AND vendor_id = ?"
+                p = [person_id, vendor_id_to_check]
+                # Hostel entry/exit is a person-wide state. A resident may leave
+                # through one gate and return through another, so do not scope the
+                # previous event to the current device in hostel movement mode.
+                if curr_dev_id and not hostel_movement_mode:
+                    q += " AND device_id = ?"; p.append(curr_dev_id)
+                if valid_data.timestamp and current_time_obj:
+                    q += " AND timestamp < ?"; p.append(current_time_obj.isoformat(sep=" "))
+                c.execute(q + " ORDER BY timestamp DESC LIMIT 1", p)
+            else:
+                q = "SELECT * FROM attendance WHERE person_id = ?"
+                p = [person_id]
+                if curr_dev_id and not hostel_movement_mode:
+                    q += " AND device_id = ?"; p.append(curr_dev_id)
+                if valid_data.timestamp and current_time_obj:
+                    q += " AND timestamp < ?"; p.append(current_time_obj.isoformat(sep=" "))
+                c.execute(q + " ORDER BY timestamp DESC LIMIT 1", p)
+        else:
+            # Fallback to name...
+            q = "SELECT * FROM attendance WHERE name = ?"
+            p = [name]
+            if valid_data.timestamp and current_time_obj:
+                q += " AND timestamp < ?"; p.append(current_time_obj.isoformat(sep=" "))
+            c.execute(q + " ORDER BY timestamp DESC LIMIT 1", p)
+        
+        last_record = c.fetchone()
+        last_status = last_record['status'] if last_record else None
+        hours_since_last = None
+        if last_record:
+            try:
+                lts = parse_db_datetime(last_record['timestamp'])
+                if lts:
+                    hours_since_last = (current_time_obj - lts).total_seconds() / 3600
+            except (ValueError, TypeError, AttributeError):
+                pass
+        new_status = next_attendance_status(
+            last_status,
+            hours_since_last=hours_since_last,
+            hostel_mode=hostel_movement_mode,
+        )
 
     activity_name, activity_type = "Work", "Work"
     # (Simplified activity/shift logic for core split - should be fully migrated from monolithic)
     # Full shift matching logic here...
     
-    # Cooldown Check
-    if last_record:
+    # Cooldown Check: only apply for live punches (not offline replay sync)
+    if last_record and not valid_data.timestamp:
         try:
             lts = parse_db_datetime(last_record['timestamp'])
             cooldown_key = f"cooldown_vendor_{vendor_id_to_check}" if vendor_id_to_check else "cooldown"

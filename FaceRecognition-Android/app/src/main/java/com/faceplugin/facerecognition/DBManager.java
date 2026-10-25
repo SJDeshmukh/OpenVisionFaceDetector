@@ -1038,7 +1038,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
         ArrayList<QueueItem> list = new ArrayList<>();
         SQLiteDatabase db = this.getReadableDatabase();
         try {
-            Cursor res = db.rawQuery("select * from attendance_queue", null);
+            Cursor res = db.rawQuery("select * from attendance_queue order by id asc, timestamp asc", null);
             res.moveToFirst();
 
             while (!res.isAfterLast()) {
