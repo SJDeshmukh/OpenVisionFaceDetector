@@ -204,6 +204,18 @@ socketio = SocketIO(
     allow_upgrades=True
 )
 
+# Intercept disconnected engineio session exceptions gracefully without cluttering server logs
+_orig_wsgi_app = app.wsgi_app
+def _safe_engineio_wsgi(environ, start_response):
+    try:
+        return _orig_wsgi_app(environ, start_response)
+    except KeyError as exc:
+        if 'Session is disconnected' in str(exc):
+            start_response('400 Bad Request', [('Content-Type', 'text/plain')])
+            return [b'Session is disconnected']
+        raise
+app.wsgi_app = _safe_engineio_wsgi
+
 @app.route('/socket.io/', methods=['OPTIONS'])
 def socketio_preflight():
     return ('', 200)
