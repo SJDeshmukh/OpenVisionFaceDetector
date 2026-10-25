@@ -851,7 +851,11 @@ public class EnrollFragment extends Fragment {
                             : "Synced to Cloud";
                     Toast.makeText(getContext(), successMessage, Toast.LENGTH_LONG).show();
                     if (dbManager != null && newId != null && !newId.isEmpty()) {
-                        dbManager.updatePersonAfterSyncByLocalUid(localUid, newId);
+                        if (assignedDisplayId != null && assignedDisplayId > 0) {
+                            dbManager.updatePersonAfterSyncByLocalUid(localUid, newId, assignedDisplayId);
+                        } else {
+                            dbManager.updatePersonAfterSyncByLocalUid(localUid, newId);
+                        }
                         try { dbManager.loadPerson(); } catch (Exception ignored) {}
                     }
                 } else {

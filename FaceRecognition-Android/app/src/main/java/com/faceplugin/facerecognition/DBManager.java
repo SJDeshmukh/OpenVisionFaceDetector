@@ -562,6 +562,26 @@ import java.util.concurrent.CopyOnWriteArrayList;
         }
     }
 
+    public void updatePersonAfterSyncByLocalUid(String localUid, String id, int displayId) {
+        updatePersonAfterSyncByLocalUid(localUid, id);
+        if (displayId > 0 && localUid != null) {
+            try {
+                SQLiteDatabase db = this.getWritableDatabase();
+                ContentValues cv = new ContentValues();
+                cv.put("display_id", displayId);
+                db.update("person", cv, "local_uid = ?", new String[]{localUid});
+            } catch (Exception ignored) {}
+            synchronized (personList) {
+                for (Person p : personList) {
+                    if (p.localUid != null && p.localUid.equals(localUid)) {
+                        p.displayId = displayId;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     public void updatePersonStatusByLocalUid(String localUid, boolean synced) {
         if (localUid == null || localUid.isEmpty()) return;
         SQLiteDatabase db = this.getWritableDatabase();
