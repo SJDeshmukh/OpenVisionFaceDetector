@@ -34,7 +34,12 @@ class FaceSyncWorker(appContext: Context, params: WorkerParameters) : Worker(app
         for (p in unsynced) {
             try {
                 // MEMORY OPTIMIZATION: Fetch face from DB only when needed for sync
-                val faceImage = db.getPersonFace(p.localUid) ?: continue
+                val faceImage = db.getPersonFace(p.localUid)
+                if (faceImage == null) {
+                    // No face image to sync; mark for retry later
+                    needsRetry = true
+                    continue
+                }
                 
                 val json = JsonObject()
                 json.addProperty("name", p.name ?: "")
@@ -77,10 +82,11 @@ class FaceSyncWorker(appContext: Context, params: WorkerParameters) : Worker(app
                     val id = resp.body()?.personId?.toString()
                     if (!id.isNullOrBlank()) {
                         db.updatePersonAfterSyncByLocalUid(p.localUid, id)
+                        successCount++
                     } else {
-                        db.updatePersonStatusByLocalUid(p.localUid, true)
+                        // Server response missing canonical personId; keep record unsynced for retry.
+                        needsRetry = true
                     }
-                    successCount++
                 } else {
                     val code = resp.code()
                     if (code == 401 || code == 403) {

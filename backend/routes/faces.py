@@ -1003,10 +1003,10 @@ def upload_face():
             params = []
             if name is not None:
                 fields.append("name=?"); params.append(name)
-            if templates_list and isinstance(templates_list, list) and len(templates_list) > 0:
-                fields.append("templates=?"); params.append(json.dumps(templates_list))
-            elif templates is not None and templates != "":
+            if templates is not None and templates != "":
                 fields.append("templates=?"); params.append(templates)
+            elif templates_list and isinstance(templates_list, list) and len(templates_list) > 0:
+                fields.append("templates=?"); params.append(json.dumps(templates_list))
             if face_image is not None and face_image != "":
                 fields.append("face_image=?"); params.append(face_image)
             if phone is not None and phone != "":
@@ -1184,10 +1184,12 @@ def upload_face():
         else:
             # Insert New
             to_store_templates = None
-            if templates_list and isinstance(templates_list, list) and len(templates_list) > 0:
+            if templates is not None and templates != "":
+                to_store_templates = templates
+            elif templates_list and isinstance(templates_list, list) and len(templates_list) > 0:
                 to_store_templates = json.dumps(templates_list)
             else:
-                to_store_templates = templates or ""
+                to_store_templates = ""
             # Get next display_id for this vendor
             c.execute("SELECT COALESCE(MAX(display_id), 0) + 1 FROM faces WHERE vendor_id = ?", (vendor_id,))
             next_display_id = c.fetchone()[0]
