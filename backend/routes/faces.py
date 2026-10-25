@@ -1311,15 +1311,25 @@ def upload_face():
         except Exception:
             pass
 
-        # Final real-time updates and reindexing
-        if vendor_id:
-            reindex_vendor_faces(conn, vendor_id)
-            cache_delete_vendor_prefix(vendor_id)
-        
+        # Emit real-time updates immediately after commit — don't block on reindex
+        cache_delete_vendor_prefix(vendor_id)
         cache_delete("admin_stats")
-        socketio.emit('persons_updated', {'vendor_id': vendor_id}, room=f"vendor_{vendor_id}")
-        socketio.emit('persons_updated', {'vendor_id': vendor_id})
-        socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
+        if vendor_id:
+            socketio.emit('persons_updated', {'vendor_id': vendor_id}, room=f"vendor_{vendor_id}")
+            socketio.emit('persons_updated', {'vendor_id': vendor_id})
+            socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
+
+        # Run heavy reindexing and sequence reset in background so HTTP response returns instantly
+        def _post_upload_cleanup(_vid):
+            try:
+                _c2 = get_db_connection()
+                reindex_vendor_faces(_c2, _vid)
+                reset_sequence("faces")
+                _c2.close()
+            except Exception:
+                logger.exception("Async post-upload cleanup failed for vendor %s", _vid)
+        import threading as _threading
+        _threading.Thread(target=_post_upload_cleanup, args=(vendor_id,), daemon=True).start()
 
         return jsonify({
             "status": "success",
@@ -1647,14 +1657,8 @@ def delete_face(name):
             pass
             
         conn.commit()
-        try:
-            # Re-index all affected vendors
-            for vid in by_vendor.keys():
-                reindex_vendor_faces(conn, vid)
-            reset_sequence("faces")
-        except Exception:
-            pass
 
+        # Invalidate caches immediately
         for vid in by_vendor.keys():
             cache_delete_vendor_prefix(vid)
         if vendor_id:
@@ -1662,14 +1666,28 @@ def delete_face(name):
         cache_delete("admin_stats")
 
         if deleted_faces > 0:
-            # Real-time update
+            # Emit real-time updates NOW before any heavy background work
             broadcast_vendor = vendor_id or (list(by_vendor.keys())[0] if by_vendor else None)
             if broadcast_vendor:
                 socketio.emit('persons_updated', {'vendor_id': broadcast_vendor}, room=f"vendor_{broadcast_vendor}")
                 socketio.emit('attendance_updated', {'vendor_id': broadcast_vendor}, room=f"vendor_{broadcast_vendor}")
             socketio.emit('persons_updated', {'vendor_id': broadcast_vendor})
             socketio.emit('vendor_updated', {'vendor_id': broadcast_vendor}, room='super_admin')
-            
+
+            # Reindex off-thread — display_id gaps are cosmetic, don't block the response
+            _vids = list(by_vendor.keys())
+            def _post_delete_by_name_cleanup(_vids):
+                try:
+                    _c2 = get_db_connection()
+                    for _vid in _vids:
+                        reindex_vendor_faces(_c2, _vid)
+                    reset_sequence("faces")
+                    _c2.close()
+                except Exception:
+                    logger.exception("Async post-delete-by-name cleanup failed")
+            import threading as _threading
+            _threading.Thread(target=_post_delete_by_name_cleanup, args=(_vids,), daemon=True).start()
+
             return jsonify({"status": "success", "message": f"Face for {name} deleted."})
         else:
             return jsonify({"error": "User not found"}), 404
@@ -1803,36 +1821,43 @@ def delete_face_by_id(person_id):
                 if getattr(conn, "_is_pg", False): c.execute("ROLLBACK TO SAVEPOINT sp_ph")
                 logger.warning(f"Phone-based parent cleanup skipped for person_id={person_id}: {e}")
 
-        # 2. Finally delete the face record
+        # 2. Delete the face record itself
         if vendor_id:
             c.execute("DELETE FROM faces WHERE id = ? AND vendor_id = ?", (person_id, vendor_id))
         else:
             c.execute("DELETE FROM faces WHERE id = ?", (person_id,))
         deleted_faces = c.rowcount
 
-        # 3. Re-index remaining faces for this vendor
-        if deleted_faces > 0 and target_vendor_id is not None:
-            reindex_vendor_faces(conn, target_vendor_id)
-
+        # 3. Commit first, then emit and clean up in background
         conn.commit()
-        
+
         effective_vendor_id = vendor_id or target_vendor_id
-        # Invalidate vendor-specific caches and global stats
+        # Invalidate vendor-specific caches and global stats immediately
         if effective_vendor_id:
             cache_delete_vendor_prefix(effective_vendor_id)
         cache_delete("admin_stats")
-        
-        try:
-            reset_sequence("faces")
-        except Exception:
-            pass
 
         if deleted_faces > 0:
+            # Emit socket NOW — before any blocking reindex/reset
             if effective_vendor_id:
                 socketio.emit('persons_updated', {'vendor_id': effective_vendor_id}, room=f"vendor_{effective_vendor_id}")
                 socketio.emit('attendance_updated', {'vendor_id': effective_vendor_id}, room=f"vendor_{effective_vendor_id}")
             socketio.emit('persons_updated', {'vendor_id': effective_vendor_id})
             socketio.emit('vendor_updated', {'vendor_id': effective_vendor_id}, room='super_admin')
+
+            # Heavy reindex and sequence reset run off the request thread
+            def _post_delete_cleanup(_vid):
+                try:
+                    _c2 = get_db_connection()
+                    reindex_vendor_faces(_c2, _vid)
+                    reset_sequence("faces")
+                    _c2.close()
+                except Exception:
+                    logger.exception("Async post-delete-by-id cleanup failed for vendor %s", _vid)
+            import threading as _threading
+            if effective_vendor_id:
+                _threading.Thread(target=_post_delete_cleanup, args=(effective_vendor_id,), daemon=True).start()
+
             return jsonify({"status": "success", "message": f"Face for {name} deleted.", "person_id": person_id})
         else:
             return jsonify({"error": "User not found"}), 404
