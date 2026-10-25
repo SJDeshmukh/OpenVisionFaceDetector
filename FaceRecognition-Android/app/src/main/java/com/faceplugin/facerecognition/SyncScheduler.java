@@ -29,7 +29,16 @@ public class SyncScheduler {
         WorkManager.getInstance(ctx)
                 .enqueueUniqueWork("attendance-sync", ExistingWorkPolicy.REPLACE, attendanceSync);
 
-        // 3. Heavy face upload/download runs in separate background chain
+        // 3. Face download runs independently with REPLACE policy so latest gallery is fetched immediately
+        OneTimeWorkRequest faceDownload = new OneTimeWorkRequest.Builder(FaceDownloadWorker.class)
+                .setConstraints(constraints)
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.SECONDS)
+                .build();
+
+        WorkManager.getInstance(ctx)
+                .enqueueUniqueWork("face-download", ExistingWorkPolicy.REPLACE, faceDownload);
+
+        // 4. Heavy face upload runs in background chain
         OneTimeWorkRequest faceSync = new OneTimeWorkRequest.Builder(FaceSyncWorker.class)
                 .setConstraints(constraints)
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.SECONDS)
@@ -40,15 +49,9 @@ public class SyncScheduler {
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.SECONDS)
                 .build();
 
-        OneTimeWorkRequest faceDownload = new OneTimeWorkRequest.Builder(FaceDownloadWorker.class)
-                .setConstraints(constraints)
-                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.SECONDS)
-                .build();
-
         WorkManager.getInstance(ctx)
                 .beginUniqueWork("sync-chain", ExistingWorkPolicy.KEEP, faceSync)
                 .then(deleteSync)
-                .then(faceDownload)
                 .enqueue();
     }
 

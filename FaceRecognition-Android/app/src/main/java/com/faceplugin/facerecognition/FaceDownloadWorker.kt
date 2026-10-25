@@ -44,7 +44,7 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
         if (faces.isEmpty() && hasLocalFaces()) return Result.retry()
         val signature = facesSignature(faces)
         val lastSig = prefs.getString("last_faces_signature", null)
-        if (lastSig != null && lastSig == signature) {
+        if (lastSig != null && lastSig == signature && hasLocalFaces()) {
             // Even if signature unchanged, perform reconciliation to remove deleted faces
             try {
                 reconcileLocalWithServer(faces)
@@ -58,10 +58,32 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
             try {
                 val id = faceData.id ?: ""
                 if (id.isBlank()) continue
-                val templatesB64 = faceData.templates
+                val rawTemplatesB64 = faceData.templates?.trim()
+                var templatesB64 = rawTemplatesB64
+                if (!templatesB64.isNullOrEmpty() && templatesB64.startsWith("[")) {
+                    try {
+                        val arr = org.json.JSONArray(templatesB64)
+                        if (arr.length() > 0) {
+                            templatesB64 = arr.getString(0).trim()
+                        }
+                    } catch (_: Exception) {}
+                }
+
                 val faceB64 = faceData.faceImage
-                val templates = if (templatesB64.isNullOrBlank()) null else Base64.decode(templatesB64, Base64.NO_WRAP)
-                val faceImageBytes = if (faceB64.isNullOrBlank()) null else Base64.decode(faceB64, Base64.NO_WRAP)
+                var templates = if (templatesB64.isNullOrBlank()) null else {
+                    try {
+                        Base64.decode(templatesB64, Base64.NO_WRAP)
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+                val faceImageBytes = if (faceB64.isNullOrBlank()) null else {
+                    try {
+                        Base64.decode(faceB64, Base64.NO_WRAP)
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
                 
                 var faceBitmap: android.graphics.Bitmap? = null
                 if (faceImageBytes != null) {
@@ -84,6 +106,16 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
                     options.inJustDecodeBounds = false
                     options.inSampleSize = inSampleSize
                     faceBitmap = BitmapFactory.decodeByteArray(faceImageBytes, 0, faceImageBytes.size, options)
+                }
+
+                // If template missing or in incompatible format, extract on-device from the enrolled face image
+                if (templates == null && faceBitmap != null) {
+                    try {
+                        val boxes = LocalFaceEngineFacade.faceDetection(faceBitmap, FacePipeline.enrollmentDetectionParams(applicationContext))
+                        if (boxes.isNotEmpty()) {
+                            templates = LocalFaceEngineFacade.templateExtraction(faceBitmap, boxes[0])
+                        }
+                    } catch (_: Exception) {}
                 }
 
                 val phone = faceData.phone ?: ""

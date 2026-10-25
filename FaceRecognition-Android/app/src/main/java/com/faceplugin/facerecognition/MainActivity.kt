@@ -881,7 +881,7 @@ class MainActivity : AppCompatActivity() {
                             val signature = facesSignature(faces)
                             val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
                             val lastSig = prefs.getString("last_faces_signature", null)
-                            if (lastSig != null && lastSig == signature) {
+                            if (lastSig != null && lastSig == signature && !DBManager.personList.isEmpty()) {
                                 return
                             }
                             prefs.edit().putString("last_faces_signature", signature).apply()
@@ -908,11 +908,30 @@ class MainActivity : AppCompatActivity() {
                                             val customDataObj = faceData.customData
                                             val customDataStr = if (customDataObj != null) customDataObj.toString() else ""
 
-                                            val templatesB64 = faceData.templates
+                                            val rawTemplatesB64 = faceData.templates?.trim()
+                                            var templatesB64 = rawTemplatesB64
+                                            if (!templatesB64.isNullOrEmpty() && templatesB64.startsWith("[")) {
+                                                try {
+                                                    val arr = org.json.JSONArray(templatesB64)
+                                                    if (arr.length() > 0) {
+                                                        templatesB64 = arr.getString(0).trim()
+                                                    }
+                                                } catch (_: Exception) {}
+                                            }
+
                                             val faceB64 = faceData.faceImage
-                                            val templates = if (templatesB64.isNullOrEmpty()) null else try { Base64.decode(templatesB64, Base64.NO_WRAP) } catch (e: Exception) { null }
+                                            var templates = if (templatesB64.isNullOrEmpty()) null else try { Base64.decode(templatesB64, Base64.NO_WRAP) } catch (e: Exception) { null }
                                             val faceImageBytes = if (faceB64.isNullOrEmpty()) null else try { Base64.decode(faceB64, Base64.NO_WRAP) } catch (e: Exception) { null }
                                             val faceBitmap = if (faceImageBytes != null) try { BitmapFactory.decodeByteArray(faceImageBytes, 0, faceImageBytes.size) } catch (e: Exception) { null } else null
+
+                                            if (templates == null && faceBitmap != null) {
+                                                try {
+                                                    val boxes = LocalFaceEngineFacade.faceDetection(faceBitmap, FacePipeline.enrollmentDetectionParams(applicationContext))
+                                                    if (boxes.isNotEmpty()) {
+                                                        templates = LocalFaceEngineFacade.templateExtraction(faceBitmap, boxes[0])
+                                                    }
+                                                } catch (_: Exception) {}
+                                            }
 
                                             val currentPerson = existingPerson
                                             if (currentPerson == null) {
