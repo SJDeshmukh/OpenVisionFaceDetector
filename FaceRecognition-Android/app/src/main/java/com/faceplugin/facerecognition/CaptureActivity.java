@@ -181,9 +181,8 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
 
                 if (capturedBitmap == null || capturedFace == null
                         || capturedTemplate == null
-                        || consecutiveValidFrames < REQUIRED_VALID_FRAMES
-                        || !FacePipeline.isLive(context, capturedFace, true)) {
-                    Toast.makeText(context, "Hold still until the live-face check completes", Toast.LENGTH_SHORT).show();
+                        || consecutiveValidFrames < REQUIRED_VALID_FRAMES) {
+                    Toast.makeText(context, "Hold still while capturing face", Toast.LENGTH_SHORT).show();
                     return;
                 }
 
@@ -534,9 +533,8 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
         if (isCapturing) return;
         if (capturedBitmap == null || capturedFace == null
                 || capturedTemplate == null
-                || consecutiveValidFrames < REQUIRED_VALID_FRAMES
-                || !FacePipeline.isLive(context, capturedFace, true)) {
-            Toast.makeText(context, "Hold still until the live-face check completes", Toast.LENGTH_SHORT).show();
+                || consecutiveValidFrames < REQUIRED_VALID_FRAMES) {
+            Toast.makeText(context, "Hold still while capturing face", Toast.LENGTH_SHORT).show();
             return;
         }
         isCapturing = true;
