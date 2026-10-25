@@ -438,6 +438,13 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
+            mSocket?.on("persons_updated") { args ->
+                android.util.Log.i("MainActivity", "Real-time persons_updated broadcast received from server")
+                runOnUiThread {
+                    syncFacesFromBackend()
+                }
+            }
+
             mSocket?.on("app_update_available") { args ->
                 android.util.Log.i("MainActivity", "Real-time OTA update broadcast received from SuperAdmin")
                 runOnUiThread {

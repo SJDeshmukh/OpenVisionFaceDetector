@@ -50,7 +50,7 @@ public class SyncScheduler {
                 .build();
 
         WorkManager.getInstance(ctx)
-                .beginUniqueWork("sync-chain", ExistingWorkPolicy.KEEP, faceSync)
+                .beginUniqueWork("sync-chain", ExistingWorkPolicy.REPLACE, faceSync)
                 .then(deleteSync)
                 .enqueue();
     }
