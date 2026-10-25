@@ -30,11 +30,15 @@ class DeleteSyncWorker(appContext: Context, params: WorkerParameters) : Worker(a
                 if (pid.isNullOrBlank() && !item.localUid.isNullOrBlank()) {
                     pid = db.resolvePersonId(item.localUid)
                 }
-                if (pid.isNullOrBlank()) {
-                    needsRetry = true
+                val resp = if (!pid.isNullOrBlank()) {
+                    service.deleteFaceById(pid).execute()
+                } else if (!item.name.isNullOrBlank()) {
+                    service.deleteFace(item.name).execute()
+                } else {
+                    // Nothing to delete by, remove from queue
+                    db.deleteDeleteQueueItem(item.id)
                     continue
                 }
-                val resp = service.deleteFaceById(pid).execute()
 
                 if (resp.isSuccessful || resp.code() == 404) {
                     db.deleteDeleteQueueItem(item.id)

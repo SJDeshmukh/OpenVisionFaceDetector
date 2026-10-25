@@ -152,11 +152,16 @@ public class UsersFragment extends Fragment {
             online = NetworkUtils.INSTANCE.isOnline(requireContext().getApplicationContext());
         } catch (Exception ignored) {}
 
-        // 3. Delete from Backend (or queue if offline)
-        if (!online) {
+        android.content.SharedPreferences prefs = requireContext().getApplicationContext().getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE);
+        String baseUrl = prefs.getString("server_url", RetrofitClient.getBaseUrl());
+        String token = prefs.getString("token", null);
+        if (baseUrl != null) RetrofitClient.setBaseUrl(baseUrl);
+        if (token != null) RetrofitClient.setAuthToken(token);
+
+        if (token == null || token.trim().isEmpty() || !online) {
             queueDelete(person);
             try {
-                SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
+                DeleteSyncWorker.Companion.scheduleImmediate(requireContext().getApplicationContext());
             } catch (Exception ignored) {}
             return;
         }
@@ -166,14 +171,14 @@ public class UsersFragment extends Fragment {
         call.enqueue(new Callback<Void>() {
             @Override
             public void onResponse(Call<Void> call, Response<Void> response) {
-                if (response.isSuccessful()) {
+                if (response.isSuccessful() || response.code() == 404) {
                     if (getActivity() != null) {
-                         Toast.makeText(getContext(), "Deleted from backend", Toast.LENGTH_SHORT).show();
+                        Toast.makeText(getContext(), "Deleted from cloud", Toast.LENGTH_SHORT).show();
                     }
                 } else {
                     queueDelete(person);
                     try {
-                        SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
+                        DeleteSyncWorker.Companion.scheduleImmediate(requireContext().getApplicationContext());
                     } catch (Exception ignored) {}
                 }
             }
@@ -182,7 +187,7 @@ public class UsersFragment extends Fragment {
             public void onFailure(Call<Void> call, Throwable t) {
                 queueDelete(person);
                 try {
-                    SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
+                    DeleteSyncWorker.Companion.scheduleImmediate(requireContext().getApplicationContext());
                 } catch (Exception ignored) {}
             }
         });

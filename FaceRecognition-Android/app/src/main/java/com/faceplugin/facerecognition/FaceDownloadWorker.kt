@@ -130,7 +130,9 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
                 val name = faceData.name ?: ""
                 val customDataStr = faceData.customData?.toString() ?: ""
 
-                db.insertPerson(id, name, faceBitmap, templates, phone, dept, desig, shift, customDataStr, true)
+                val displayId = faceData.displayId  // sequential number matching the web UI
+
+                db.insertPerson(id, name, faceBitmap, templates, phone, dept, desig, shift, customDataStr, true, displayId)
             } catch (_: Exception) {
                 hadFailure = true
             }

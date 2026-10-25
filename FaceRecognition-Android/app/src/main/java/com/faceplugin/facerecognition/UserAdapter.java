@@ -69,16 +69,13 @@ public class UserAdapter extends RecyclerView.Adapter<UserAdapter.UserViewHolder
             holder.imgFace.setImageResource(R.drawable.openvision_logo);
         }
         
-        String details = "";
+        String idLabel = (person.displayId > 0) ? String.valueOf(person.displayId) : ((person.id != null && !person.id.isEmpty()) ? person.id : String.valueOf(position + 1));
+        String details = "ID: " + idLabel;
         if (person.department != null && !person.department.isEmpty()) {
-            details += person.department;
+            details += " • " + person.department;
         }
         if (person.designation != null && !person.designation.isEmpty()) {
-            if (!details.isEmpty()) details += " • ";
-            details += person.designation;
-        }
-        if (details.isEmpty()) {
-             details = "ID: " + (position + 1);
+            details += " • " + person.designation;
         }
         holder.tvDetails.setText(details);
 

@@ -6,6 +6,10 @@ public class SyncRequest {
     @SerializedName("id")
     private String id;
 
+    /** Sequential display number from server — same as what the web UI shows */
+    @SerializedName("display_id")
+    private int displayId;
+
     @SerializedName("name")
     private String name;
 
@@ -49,6 +53,7 @@ public class SyncRequest {
     }
 
     public String getId() { return id; }
+    public int getDisplayId() { return displayId; }
     public String getName() { return name; }
     public String getTemplates() { return templates; }
     public String getFaceImage() { return faceImage; }

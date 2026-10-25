@@ -5,7 +5,8 @@ import android.graphics.Bitmap;
 public class Person {
 
     public String localUid;
-    public String id; // Backend ID
+    public String id; // Backend ID (auto-increment, may be large e.g. 129)
+    public int displayId; // Sequential display number from server (1, 2, 3…) — matches web UI
     public String name;
     public byte[] templates;
     public String phone;

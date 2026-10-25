@@ -24,7 +24,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
      public static CopyOnWriteArrayList<Person> personList = new CopyOnWriteArrayList<Person>();
 
     public DBManager(Context context) {
-        super(context, "mydb" , null, 16);
+        super(context, "mydb" , null, 17);
     }
 
     @Override
@@ -32,7 +32,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
         // TODO Auto-generated method stub
         db.execSQL(
                 "create table person " +
-                        "(local_uid text, id text, name text, face blob, templates blob, phone text, department text, designation text, shift text, custom_data text, synced integer default 1)"
+                        "(local_uid text, id text, name text, face blob, templates blob, phone text, department text, designation text, shift text, custom_data text, synced integer default 1, display_id integer default 0)"
         );
         db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_person_local_uid ON person(local_uid)");
         db.execSQL(
@@ -144,6 +144,12 @@ import java.util.concurrent.CopyOnWriteArrayList;
             // Add operational_date column to attendance_state for 6AM-shift boundary tracking
             try {
                 db.execSQL("ALTER TABLE attendance_state ADD COLUMN operational_date TEXT");
+            } catch (Exception ignored) {}
+        }
+        if (oldVersion < 17) {
+            // Add display_id so Android shows the same sequential number as the web UI
+            try {
+                db.execSQL("ALTER TABLE person ADD COLUMN display_id integer default 0");
             } catch (Exception ignored) {}
         }
     }
@@ -265,7 +271,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
         return UUID.randomUUID().toString();
     }
 
-    private void insertPersonInternal(String localUid, String id, String name, Bitmap face, byte[] templates, String phone, String department, String designation, String shift, String customData, boolean synced) {
+    private void insertPersonInternal(String localUid, String id, String name, Bitmap face, byte[] templates, String phone, String department, String designation, String shift, String customData, boolean synced, int displayId) {
 
         String existingLocalUid = null;
         boolean exists = false;
@@ -342,6 +348,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
         contentValues.put("shift", shift);
         contentValues.put("custom_data", customData);
         contentValues.put("synced", synced ? 1 : 0);
+        contentValues.put("display_id", displayId);
 
         if (exists) {
             if (id != null && !id.isEmpty()) {
@@ -361,7 +368,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
         Person p = new Person(effectiveLocalUid, id, name, templates, phone, department, designation, shift, customData, face);
         p.synced = synced;
-        
+        p.displayId = displayId;
+
         synchronized (personList) {
             personList.add(p);
         }
@@ -377,21 +385,27 @@ import java.util.concurrent.CopyOnWriteArrayList;
         } catch (Exception ignored) {}
     }
 
-    public void insertPerson (String id, String name, Bitmap face, byte[] templates, String phone, String department, String designation, String shift, String customData, boolean synced) {
-        insertPersonInternal(null, id, name, face, templates, phone, department, designation, shift, customData, synced);
+    /** Insert or update a person downloaded from the server, including their display_id. */
+    public void insertPerson(String id, String name, Bitmap face, byte[] templates, String phone, String department, String designation, String shift, String customData, boolean synced, int displayId) {
+        insertPersonInternal(null, id, name, face, templates, phone, department, designation, shift, customData, synced, displayId);
+    }
+
+    /** Backward-compat overload — display_id defaults to 0 (will be overwritten on next sync) */
+    public void insertPerson(String id, String name, Bitmap face, byte[] templates, String phone, String department, String designation, String shift, String customData, boolean synced) {
+        insertPersonInternal(null, id, name, face, templates, phone, department, designation, shift, customData, synced, 0);
     }
 
     public String insertLocalPerson(String name, Bitmap face, byte[] templates, String phone, String department, String designation, String shift, String customData) {
         String localUid = ensureLocalUid(null);
-        insertPersonInternal(localUid, "", name, face, templates, phone, department, designation, shift, customData, false);
+        insertPersonInternal(localUid, "", name, face, templates, phone, department, designation, shift, customData, false, 0);
         return localUid;
     }
 
-    public void insertPerson (String name, Bitmap face, byte[] templates, String phone, String department, String designation, String shift, boolean synced) {
-        insertPersonInternal(null, "", name, face, templates, phone, department, designation, shift, "", synced);
+    public void insertPerson(String name, Bitmap face, byte[] templates, String phone, String department, String designation, String shift, boolean synced) {
+        insertPersonInternal(null, "", name, face, templates, phone, department, designation, shift, "", synced, 0);
     }
 
-    public void insertPerson (String name, Bitmap face, byte[] templates, String phone, String department, String designation, boolean synced) {
+    public void insertPerson(String name, Bitmap face, byte[] templates, String phone, String department, String designation, boolean synced) {
         insertPerson(name, face, templates, phone, department, designation, "", synced);
     }
     
@@ -717,7 +731,12 @@ import java.util.concurrent.CopyOnWriteArrayList;
             String id = "";
             int idIdx = res.getColumnIndex("id");
             if (idIdx != -1) id = res.getString(idIdx);
-            
+
+            // Read display_id — the sequential number that matches the web UI
+            int displayId = 0;
+            int displayIdIdx = res.getColumnIndex("display_id");
+            if (displayIdIdx != -1) displayId = res.getInt(displayIdIdx);
+
             // Handle potentially missing columns if something went wrong with upgrade, though unlikely
             String phone = "";
             String department = "";
@@ -747,9 +766,10 @@ import java.util.concurrent.CopyOnWriteArrayList;
             // MEMORY OPTIMIZATION: Do not load full bitmap into RAM for identification list.
             // person.face will remain null in the main list. 
             // The photo is loaded from DB only when needed by adapters.
-            Person person = new Person(localUid, id, name, templates, phone, department, designation, shift, customData, null); 
+            Person person = new Person(localUid, id, name, templates, phone, department, designation, shift, customData, null);
             person.synced = synced;
-            
+            person.displayId = displayId;
+
             // Deduplicate into the local list using a Set for O(1) lookups
             // We use a simple composite key or just track what we've already added.
             // Since we are building newList from scratch, we can just use a Map to keep track.
@@ -1284,7 +1304,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
         try {
             for (Person p : persons) {
                 // Reuse existing insert logic
-                insertPersonInternal(p.localUid, p.id, p.name, null, p.templates, p.phone, p.department, p.designation, p.shift, p.customData, p.synced);
+                insertPersonInternal(p.localUid, p.id, p.name, null, p.templates, p.phone, p.department, p.designation, p.shift, p.customData, p.synced, p.displayId);
             }
             db.setTransactionSuccessful();
         } catch (Exception e) {
