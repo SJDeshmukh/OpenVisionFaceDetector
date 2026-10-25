@@ -1876,6 +1876,10 @@ def mobile_app_update_status():
     except (TypeError, ValueError) as exc:
         conn.rollback()
         return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        conn.rollback()
+        logger.error(f"Error updating device update status: {exc}")
+        return jsonify({"error": "Failed to record update status"}), 500
     finally:
         conn.close()
 

@@ -145,13 +145,30 @@ def record_device_update_status(
     # deprecated implicit SQLite datetime adapter while preserving ordering.
     now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(sep=" ")
     c = conn.cursor()
-    c.execute(
-        """SELECT id FROM app_update_device_status
-           WHERE vendor_id = ? AND device_id = ? AND target_version_code = ?""",
-        (vendor_id, device_id, target_version_code),
-    )
-    existing = c.fetchone()
-    if existing:
+    try:
+        c.execute(
+            """INSERT INTO app_update_device_status
+               (vendor_id, device_id, release_id, target_version_code,
+                installed_version_code, installed_version_name, status, progress,
+                error_code, error_message, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (vendor_id, device_id, target_version_code)
+               DO UPDATE SET
+                   release_id = EXCLUDED.release_id,
+                   installed_version_code = EXCLUDED.installed_version_code,
+                   installed_version_name = EXCLUDED.installed_version_name,
+                   status = EXCLUDED.status,
+                   progress = EXCLUDED.progress,
+                   error_code = EXCLUDED.error_code,
+                   error_message = EXCLUDED.error_message,
+                   updated_at = EXCLUDED.updated_at""",
+            (vendor_id, device_id, release_id, target_version_code,
+             installed_version_code, installed_version_name, normalized_status,
+             progress, error_code, error_message, now),
+        )
+    except Exception:
+        conn.rollback()
+        c = conn.cursor()
         c.execute(
             """UPDATE app_update_device_status
                SET release_id = ?, installed_version_code = ?, installed_version_name = ?,
@@ -161,17 +178,17 @@ def record_device_update_status(
              normalized_status, progress, error_code, error_message, now,
              vendor_id, device_id, target_version_code),
         )
-    else:
-        c.execute(
-            """INSERT INTO app_update_device_status
-               (vendor_id, device_id, release_id, target_version_code,
-                installed_version_code, installed_version_name, status, progress,
-                error_code, error_message, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (vendor_id, device_id, release_id, target_version_code,
-             installed_version_code, installed_version_name, normalized_status,
-             progress, error_code, error_message, now),
-        )
+        if c.rowcount == 0:
+            c.execute(
+                """INSERT INTO app_update_device_status
+                   (vendor_id, device_id, release_id, target_version_code,
+                    installed_version_code, installed_version_name, status, progress,
+                    error_code, error_message, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (vendor_id, device_id, release_id, target_version_code,
+                 installed_version_code, installed_version_name, normalized_status,
+                 progress, error_code, error_message, now),
+            )
     conn.commit()
 
 
