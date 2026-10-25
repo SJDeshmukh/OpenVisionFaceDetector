@@ -591,7 +591,8 @@ def get_payroll_report(valid_data: PayrollReportRequest):
         'global_esi_percentage',
         'global_gratuity_percentage',
         'global_gratuity_threshold_years',
-        'global_timezone_offset'
+        'global_timezone_offset',
+        'missing_checkout_deduction_percent'
     ]
     try:
         # DB Factory handles the ? placeholder correctly for both PG and SQLite
@@ -692,13 +693,20 @@ def get_payroll_report(valid_data: PayrollReportRequest):
     start_dt_req = datetime.strptime(start_date, '%Y-%m-%d').date()
     end_dt_req = datetime.strptime(end_date, '%Y-%m-%d').date()
 
+    missing_deduction_pct = float(stored_settings.get('missing_checkout_deduction_percent', 50.0))
+
     for pid, person_info in persons.items():
         total_hours = 0
         present_dates = set()
         late_dates = set()
         
         records = user_records.get(pid, [])
-        stats = calculate_daily_hours(records, timetable)
+        stats = calculate_daily_hours(
+            records,
+            timetable,
+            missing_checkout_deduction_percent=missing_deduction_pct,
+            working_hours=company_working_hours
+        )
         
         for r in records:
             if r.get('is_late') == 1:
@@ -886,11 +894,12 @@ def export_payroll_daily():
             persons[rd['id']] = rd
 
         setting_suffix = f'_vendor_{vendor_id}'
-        c.execute("SELECT key, value FROM system_settings WHERE key IN (?, ?)",
-                  (f'global_late_allowance{setting_suffix}', f'global_late_deduction{setting_suffix}'))
+        c.execute("SELECT key, value FROM system_settings WHERE key IN (?, ?, ?)",
+                  (f'global_late_allowance{setting_suffix}', f'global_late_deduction{setting_suffix}', f'missing_checkout_deduction_percent{setting_suffix}'))
         s_map = {r['key'].removesuffix(setting_suffix): r['value'] for r in c.fetchall()}
         global_allowance = int(s_map.get('global_late_allowance', 7))
         global_deduction = float(s_map.get('global_late_deduction', 0.0))
+        missing_deduction_pct = float(s_map.get('missing_checkout_deduction_percent', 50.0))
 
         output = io.StringIO()
         writer = csv.writer(output)
@@ -906,7 +915,12 @@ def export_payroll_daily():
                 if tjson: timetable = json.loads(tjson) if isinstance(tjson, str) else (tjson or [])
             except (json.JSONDecodeError, ValueError): pass
             
-            stats = calculate_daily_hours(records, timetable)
+            stats = calculate_daily_hours(
+                records,
+                timetable,
+                missing_checkout_deduction_percent=missing_deduction_pct,
+                working_hours=company_working_hours
+            )
             per_day = defaultdict(float)
             for s in stats.get('sessions', []):
                 try:
@@ -1014,11 +1028,12 @@ def export_payroll_excel():
             persons[person['id']] = person
 
         setting_suffix = f'_vendor_{vendor_id}'
-        c.execute("SELECT key, value FROM system_settings WHERE key IN (?, ?)",
-                  (f'global_late_allowance{setting_suffix}', f'global_late_deduction{setting_suffix}'))
+        c.execute("SELECT key, value FROM system_settings WHERE key IN (?, ?, ?)",
+                  (f'global_late_allowance{setting_suffix}', f'global_late_deduction{setting_suffix}', f'missing_checkout_deduction_percent{setting_suffix}'))
         s_map = {r['key'].removesuffix(setting_suffix): r['value'] for r in c.fetchall()}
         global_allowance = int(s_map.get('global_late_allowance', 7))
         global_deduction = float(s_map.get('global_late_deduction', 0.0))
+        missing_deduction_pct = float(s_map.get('missing_checkout_deduction_percent', 50.0))
 
         wb = Workbook()
         ws = wb.active
@@ -1035,7 +1050,11 @@ def export_payroll_excel():
         for pid, records in user_records.items():
             if pid not in persons: continue
             info = persons[pid]
-            stats = calculate_daily_hours(records)
+            stats = calculate_daily_hours(
+                records,
+                missing_checkout_deduction_percent=missing_deduction_pct,
+                working_hours=company_working_hours
+            )
             per_day = defaultdict(float)
             for s in stats.get('sessions', []):
                 try:

@@ -239,9 +239,14 @@ def get_attendance_summary(valid_data: AttendanceFilterSchema):
     c = conn.cursor()
     _vertical, wanted_type, people = _person_scope_context(c, vendor_id, valid_data.person_type)
     
-    c.execute("SELECT live_timetable FROM companies WHERE vendor_id = ?", (vendor_id,))
+    c.execute("SELECT live_timetable, working_hours FROM companies WHERE vendor_id = ?", (vendor_id,))
     crow = c.fetchone()
     timetable = json.loads(crow['live_timetable']) if crow and crow['live_timetable'] else []
+    company_working_hours = float(crow['working_hours']) if crow and crow.get('working_hours') else 8.0
+
+    c.execute("SELECT value FROM system_settings WHERE key = ?", (f'missing_checkout_deduction_percent_vendor_{vendor_id}',))
+    srow = c.fetchone()
+    missing_deduction_pct = float(srow['value']) if srow and srow.get('value') else 50.0
             
     target_date = datetime.strptime(date_str, '%Y-%m-%d')
     day_name = target_date.strftime('%a')
@@ -277,7 +282,13 @@ def get_attendance_summary(valid_data: AttendanceFilterSchema):
 
     summary = []
     for user_key, records in user_recs.items():
-        stats = calculate_daily_hours(records, timetable, date_str=date_str)
+        stats = calculate_daily_hours(
+            records,
+            timetable,
+            date_str=date_str,
+            missing_checkout_deduction_percent=missing_deduction_pct,
+            working_hours=company_working_hours
+        )
         status = "Present"
         if stats['total_hours'] == 0: status = "Absent"
         elif exp_hours > 0:

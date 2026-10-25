@@ -16,6 +16,21 @@ except ImportError:
         except (TypeError, ValueError):
             return None
 
+def get_operational_date(dt, cutoff_hour=6):
+    """
+    Returns the operational date for a given datetime based on a 06:00 AM shift start.
+    Punches between 00:00 and 05:59:59 count toward the previous calendar day's shift.
+    """
+    if dt is None:
+        return None
+    if isinstance(dt, datetime):
+        if dt.hour < cutoff_hour:
+            return (dt - timedelta(days=1)).date()
+        return dt.date()
+    elif isinstance(dt, date):
+        return dt
+    return None
+
 def calculate_daily_hours(records, timetable=None, date_str=None, attendance_type='total_time',
                           missing_checkout_deduction_percent=50, working_hours=8.0):
     """
@@ -48,17 +63,47 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
             elif record['status'] == 'CHECK_OUT':
                 last_out = ts
         
-        # Handle active session if it's today
+        # Handle active session vs past day forgotten checkout
         effective_last_out = last_out
         is_active = False
         if first_in:
             last_record = sorted_records[-1]
             if last_record['status'] == 'CHECK_IN':
-                # If there's an IN without a LATER OUT, it's active
-                # Check if it was today
                 now_dt = datetime.now()
-                effective_last_out = now_dt
-                is_active = True
+                now_op_date = get_operational_date(now_dt)
+                last_ts = parse_db_datetime(last_record['timestamp'])
+                last_op_date = get_operational_date(last_ts) if last_ts else now_op_date
+                
+                is_current_shift = (last_op_date == now_op_date)
+                if date_str:
+                    req_date_str = str(date_str).strip()
+                    if req_date_str != now_op_date.isoformat() and req_date_str != now_dt.strftime('%Y-%m-%d'):
+                        is_current_shift = False
+
+                if is_current_shift:
+                    effective_last_out = now_dt
+                    is_active = True
+                else:
+                    if effective_last_out is None:
+                        try:
+                            deduction_pct = float(missing_checkout_deduction_percent)
+                            deduction_pct = max(0.0, min(100.0, deduction_pct))
+                            credit_hours = working_hours * (1.0 - deduction_pct / 100.0)
+                            credit_seconds = credit_hours * 3600.0
+                            total_seconds = credit_seconds
+                            sessions.append({
+                                "type": "Work (Forgotten Checkout)",
+                                "activity": "Work",
+                                "is_payable": True,
+                                "start_ts": first_in.isoformat(),
+                                "end_ts": None,
+                                "start": first_in.strftime('%H:%M'),
+                                "end": "—",
+                                "duration_mins": round(credit_seconds / 60),
+                                "note": f"No checkout recorded. {deduction_pct:.0f}% deduction applied."
+                            })
+                        except Exception:
+                            pass
         
         if first_in and effective_last_out:
             duration = (effective_last_out - first_in).total_seconds()
@@ -101,6 +146,33 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
         ts = parse_db_datetime(record['timestamp'])
         if not ts:
             continue # Skip invalid
+
+        record_op_date = get_operational_date(ts)
+
+        # If we have an open check-in from a previous operational day,
+        # close it as a forgotten checkout before processing this new day.
+        if current_checkin is not None and get_operational_date(current_checkin) != record_op_date:
+            try:
+                deduction_pct = float(missing_checkout_deduction_percent)
+                deduction_pct = max(0.0, min(100.0, deduction_pct))
+                credit_hours = working_hours * (1.0 - deduction_pct / 100.0)
+                credit_seconds = credit_hours * 3600.0
+                total_seconds += credit_seconds
+                sessions.append({
+                    "type": "Work (Forgotten Checkout)",
+                    "activity": current_checkin_activity or "Work",
+                    "is_payable": True,
+                    "start_ts": current_checkin.isoformat(),
+                    "end_ts": None,
+                    "start": current_checkin.strftime('%H:%M'),
+                    "end": "—",
+                    "duration_mins": round(credit_seconds / 60),
+                    "note": f"No checkout recorded. {deduction_pct:.0f}% deduction applied."
+                })
+            except Exception:
+                pass
+            current_checkin = None
+            current_checkin_activity = None
 
         if status == 'CHECK_IN':
             if current_checkin is None:
@@ -149,72 +221,85 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
                 last_checkout_activity = activity_name
 
     is_active = current_checkin is not None
-    
-    # Real-time Calculation: If active and today, add duration from last checkin to NOW
-    if is_active and date_str:
-        try:
-            now_dt = datetime.now()
-            duration = (now_dt - current_checkin).total_seconds()
-            if duration < 0: duration = 0
-            
-            # Check payability of current active session
-            last_in_record = None
-            for r in reversed(sorted_records):
-                if r['status'] == 'CHECK_IN':
-                    last_in_record = r
-                    break
-            
-            active_activity_name = last_in_record.get('activity', 'Work') if last_in_record else "Unknown"
-            is_active_payable = False
-            found_act = None
-            if timetable:
-                 for act in timetable:
-                     if act.get('name') == active_activity_name:
-                         found_act = act
-                         break
-                 if found_act:
-                     act_type = found_act.get('type', 'Work')
-                     is_active_payable = found_act.get('is_payable', act_type == 'Work')
-            
-            if is_active_payable:
-                total_seconds += duration
-            
-            sessions.append({
-                "type": "Work (Active)",
-                "activity": active_activity_name,
-                "is_payable": is_active_payable,
-                "start_ts": current_checkin.isoformat(),
-                "end_ts": now_dt.isoformat(),
-                "start": current_checkin.strftime('%H:%M'),
-                "end": now_dt.strftime('%H:%M'),
-                "duration_mins": round(duration / 60)
-            })
-        except Exception:
-            pass
+    now_dt = datetime.now()
+    now_op_date = get_operational_date(now_dt)
+    is_current_shift = False
 
-    # Forgotten Checkout Policy: For past-day incomplete sessions (active but NOT today),
-    # credit a partial day instead of zero based on the configured deduction percent.
-    # Example: 50% deduction → employee gets credit for 0.5 × working_hours.
-    if is_active and not date_str:
-        try:
-            deduction_pct = float(missing_checkout_deduction_percent)
-            deduction_pct = max(0.0, min(100.0, deduction_pct))
-            credit_hours = working_hours * (1.0 - deduction_pct / 100.0)
-            credit_seconds = credit_hours * 3600.0
-            total_seconds += credit_seconds
-            sessions.append({
-                "type": "Work (Forgotten Checkout)",
-                "activity": "Work",
-                "is_payable": True,
-                "start_ts": current_checkin.isoformat(),
-                "end_ts": None,
-                "start": current_checkin.strftime('%H:%M'),
-                "end": "—",
-                "duration_mins": round(credit_seconds / 60),
-                "note": f"No checkout recorded. {deduction_pct:.0f}% deduction applied."
-            })
-        except Exception:
-            pass
+    if is_active:
+        checkin_op_date = get_operational_date(current_checkin)
+        # Determine if this session belongs to the currently ongoing operational shift
+        is_current_shift = (checkin_op_date == now_op_date)
+        if date_str:
+            req_date_str = str(date_str).strip()
+            if req_date_str != now_op_date.isoformat() and req_date_str != now_dt.strftime('%Y-%m-%d'):
+                is_current_shift = False
+
+        if is_current_shift:
+            # Real-time Calculation: Session is actively ongoing right now!
+            try:
+                duration = (now_dt - current_checkin).total_seconds()
+                if duration < 0: duration = 0
+                
+                # Check payability of current active session
+                last_in_record = None
+                for r in reversed(sorted_records):
+                    if r['status'] == 'CHECK_IN':
+                        last_in_record = r
+                        break
+                
+                active_activity_name = last_in_record.get('activity', 'Work') if last_in_record else "Unknown"
+                active_activity_lower = active_activity_name.lower().strip() if active_activity_name else ""
+                is_active_payable = False
+                found_act = None
+                if timetable:
+                    for act in timetable:
+                        if act.get('name', '').lower().strip() == active_activity_lower:
+                            found_act = act
+                            break
+                    if found_act:
+                        act_type = found_act.get('type', 'Work')
+                        is_active_payable = found_act.get('is_payable', act_type == 'Work')
+                    else:
+                        is_active_payable = (active_activity_lower == 'work' or not active_activity_lower)
+                else:
+                    is_active_payable = (active_activity_lower == 'work' or not active_activity_lower)
+                
+                if is_active_payable:
+                    total_seconds += duration
+                
+                sessions.append({
+                    "type": "Work (Active)",
+                    "activity": active_activity_name,
+                    "is_payable": is_active_payable,
+                    "start_ts": current_checkin.isoformat(),
+                    "end_ts": now_dt.isoformat(),
+                    "start": current_checkin.strftime('%H:%M'),
+                    "end": now_dt.strftime('%H:%M'),
+                    "duration_mins": round(duration / 60)
+                })
+            except Exception:
+                pass
+        else:
+            # Forgotten Checkout Policy: Past-day incomplete session where shift cutoff has passed
+            try:
+                deduction_pct = float(missing_checkout_deduction_percent)
+                deduction_pct = max(0.0, min(100.0, deduction_pct))
+                credit_hours = working_hours * (1.0 - deduction_pct / 100.0)
+                credit_seconds = credit_hours * 3600.0
+                total_seconds += credit_seconds
+                sessions.append({
+                    "type": "Work (Forgotten Checkout)",
+                    "activity": current_checkin_activity or "Work",
+                    "is_payable": True,
+                    "start_ts": current_checkin.isoformat(),
+                    "end_ts": None,
+                    "start": current_checkin.strftime('%H:%M'),
+                    "end": "—",
+                    "duration_mins": round(credit_seconds / 60),
+                    "note": f"No checkout recorded. {deduction_pct:.0f}% deduction applied."
+                })
+            except Exception:
+                pass
 
     h = int(total_seconds // 3600)
     m = int((total_seconds % 3600) // 60)
@@ -224,7 +309,7 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
         "total_hours": round(total_seconds / 3600, 2),
         "total_hours_str": total_hours_str,
         "sessions": sessions,
-        "is_active": is_active,
+        "is_active": is_active and is_current_shift,
         "last_checkin": current_checkin.strftime('%H:%M') if current_checkin else None
     }
 
