@@ -69,7 +69,7 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
                     } catch (_: Exception) {}
                 }
 
-                val faceB64 = faceData.faceImage
+                val rawFaceImage = faceData.imageUrl?.takeIf { it.isNotBlank() } ?: faceData.faceImage
                 var templates = if (templatesB64.isNullOrBlank()) null else {
                     try {
                         Base64.decode(templatesB64, Base64.NO_WRAP)
@@ -77,35 +77,39 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
                         null
                     }
                 }
-                val faceImageBytes = if (faceB64.isNullOrBlank()) null else {
-                    try {
-                        Base64.decode(faceB64, Base64.NO_WRAP)
-                    } catch (_: Exception) {
-                        null
-                    }
-                }
-                
+
                 var faceBitmap: android.graphics.Bitmap? = null
-                if (faceImageBytes != null) {
-                    // Use BitmapFactory.Options for memory-efficient decoding
-                    val options = BitmapFactory.Options()
-                    options.inJustDecodeBounds = true
-                    BitmapFactory.decodeByteArray(faceImageBytes, 0, faceImageBytes.size, options)
-                    
-                    // Scale down if image is too large (max 400px)
-                    val maxDim = 400
-                    var inSampleSize = 1
-                    if (options.outHeight > maxDim || options.outWidth > maxDim) {
-                        val halfHeight = options.outHeight / 2
-                        val halfWidth = options.outWidth / 2
-                        while (halfHeight / inSampleSize >= maxDim && halfWidth / inSampleSize >= maxDim) {
-                            inSampleSize *= 2
+                if (!rawFaceImage.isNullOrBlank()) {
+                    if (rawFaceImage.startsWith("http://") || rawFaceImage.startsWith("https://")) {
+                        try {
+                            val url = java.net.URL(rawFaceImage)
+                            val conn = url.openConnection() as java.net.HttpURLConnection
+                            conn.connectTimeout = 7000
+                            conn.readTimeout = 7000
+                            conn.inputStream.use { input ->
+                                faceBitmap = BitmapFactory.decodeStream(input)
+                            }
+                        } catch (_: Exception) {}
+                    } else {
+                        val faceImageBytes = try { Base64.decode(rawFaceImage, Base64.NO_WRAP) } catch (_: Exception) { null }
+                        if (faceImageBytes != null) {
+                            val options = BitmapFactory.Options()
+                            options.inJustDecodeBounds = true
+                            BitmapFactory.decodeByteArray(faceImageBytes, 0, faceImageBytes.size, options)
+                            val maxDim = 400
+                            var inSampleSize = 1
+                            if (options.outHeight > maxDim || options.outWidth > maxDim) {
+                                val halfHeight = options.outHeight / 2
+                                val halfWidth = options.outWidth / 2
+                                while (halfHeight / inSampleSize >= maxDim && halfWidth / inSampleSize >= maxDim) {
+                                    inSampleSize *= 2
+                                }
+                            }
+                            options.inJustDecodeBounds = false
+                            options.inSampleSize = inSampleSize
+                            faceBitmap = BitmapFactory.decodeByteArray(faceImageBytes, 0, faceImageBytes.size, options)
                         }
                     }
-                    
-                    options.inJustDecodeBounds = false
-                    options.inSampleSize = inSampleSize
-                    faceBitmap = BitmapFactory.decodeByteArray(faceImageBytes, 0, faceImageBytes.size, options)
                 }
 
                 // If template missing or in incompatible format, extract on-device from the enrolled face image

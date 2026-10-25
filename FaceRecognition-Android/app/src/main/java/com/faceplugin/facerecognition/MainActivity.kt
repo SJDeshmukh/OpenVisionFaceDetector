@@ -1,6 +1,7 @@
 package com.faceplugin.facerecognition
 
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Bundle
 import android.graphics.Color
@@ -919,10 +920,26 @@ class MainActivity : AppCompatActivity() {
                                                 } catch (_: Exception) {}
                                             }
 
-                                            val faceB64 = faceData.faceImage
+                                            val rawFaceImage = faceData.imageUrl?.takeIf { it.isNotBlank() } ?: faceData.faceImage
                                             var templates = if (templatesB64.isNullOrEmpty()) null else try { Base64.decode(templatesB64, Base64.NO_WRAP) } catch (e: Exception) { null }
-                                            val faceImageBytes = if (faceB64.isNullOrEmpty()) null else try { Base64.decode(faceB64, Base64.NO_WRAP) } catch (e: Exception) { null }
-                                            val faceBitmap = if (faceImageBytes != null) try { BitmapFactory.decodeByteArray(faceImageBytes, 0, faceImageBytes.size) } catch (e: Exception) { null } else null
+
+                                            var faceBitmap: Bitmap? = null
+                                            if (!rawFaceImage.isNullOrBlank()) {
+                                                if (rawFaceImage.startsWith("http://") || rawFaceImage.startsWith("https://")) {
+                                                    try {
+                                                        val url = java.net.URL(rawFaceImage)
+                                                        val conn = url.openConnection() as java.net.HttpURLConnection
+                                                        conn.connectTimeout = 7000
+                                                        conn.readTimeout = 7000
+                                                        conn.inputStream.use { input ->
+                                                            faceBitmap = BitmapFactory.decodeStream(input)
+                                                        }
+                                                    } catch (_: Exception) {}
+                                                } else {
+                                                    val faceImageBytes = try { Base64.decode(rawFaceImage, Base64.NO_WRAP) } catch (e: Exception) { null }
+                                                    faceBitmap = if (faceImageBytes != null) try { BitmapFactory.decodeByteArray(faceImageBytes, 0, faceImageBytes.size) } catch (e: Exception) { null } else null
+                                                }
+                                            }
 
                                             if (templates == null && faceBitmap != null) {
                                                 try {

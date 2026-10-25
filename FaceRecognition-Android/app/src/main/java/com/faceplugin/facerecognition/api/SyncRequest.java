@@ -15,6 +15,9 @@ public class SyncRequest {
     @SerializedName("face_image")
     private String faceImage;
 
+    @SerializedName("image_url")
+    private String imageUrl;
+
     @SerializedName("phone")
     private String phone;
 
@@ -49,6 +52,7 @@ public class SyncRequest {
     public String getName() { return name; }
     public String getTemplates() { return templates; }
     public String getFaceImage() { return faceImage; }
+    public String getImageUrl() { return imageUrl; }
     public String getPhone() { return phone; }
     public String getDepartment() { return department; }
     public String getDesignation() { return designation; }
