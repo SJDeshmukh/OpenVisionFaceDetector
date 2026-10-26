@@ -521,6 +521,17 @@ stop_application_services() {
     sudo systemctl stop openvision-backend openvision-celery openvision-celery-io openvision-celery-beat face-backend 2>/dev/null || true
 }
 
+disable_legacy_backend_service() {
+    # Older installations used face-backend.service and bound 0.0.0.0:5001.
+    # Leaving it enabled makes it race the current openvision-backend service
+    # after deployment and on every reboot.
+    if command -v systemctl >/dev/null 2>&1 \
+        && systemctl cat face-backend.service >/dev/null 2>&1; then
+        sudo systemctl disable --now face-backend.service >/dev/null 2>&1 || true
+        sudo systemctl reset-failed face-backend.service >/dev/null 2>&1 || true
+    fi
+}
+
 install_boot_check_service() {
     sudo tee /etc/systemd/system/openvision-boot-check.service >/dev/null <<UNIT
 [Unit]
@@ -1114,6 +1125,7 @@ if [ "$ACTION" = "boot-check" ]; then
             wait_for_docker_pgbouncer 60 || die "PgBouncer failed its post-boot health check"
         fi
     elif [ "$DEPLOYMENT_MODE" = "bare" ]; then
+        disable_legacy_backend_service
         run_root systemctl start postgresql pgbouncer redis-server nginx
         wait_for_local_pgbouncer 60 || die "PgBouncer failed its post-boot health check"
         if [[ "$(file_env_get "$ENV_FILE" CELERY_BROKER_URL)" == amqp://* ]] || [[ "$(file_env_get "$ENV_FILE" CELERY_BROKER_URL)" == pyamqp://* ]]; then
@@ -1483,6 +1495,7 @@ chmod 600 "$ENV_FILE"
 
 log "Stopping only existing OpenVision application services"
 stop_application_services
+disable_legacy_backend_service
 if sudo lsof -nP -iTCP:5001 -sTCP:LISTEN >/dev/null 2>&1; then
     sudo lsof -nP -iTCP:5001 -sTCP:LISTEN || true
     die "Port 5001 is occupied by a process outside the OpenVision systemd services"
