@@ -49,6 +49,7 @@ from services.face_service import (
 from flask import Flask, Blueprint, request, jsonify, render_template, send_from_directory, abort
 from flask_cors import CORS
 from flask_socketio import SocketIO, join_room, leave_room
+from origin_policy import get_allowed_web_origins
 import cv2
 import numpy as np
 
@@ -194,10 +195,7 @@ setup_middleware(app)
 # Initialize SocketIO
 socketio = SocketIO(
     app,
-    cors_allowed_origins=[origin.strip() for origin in os.environ.get(
-        "SOCKET_ALLOWED_ORIGINS",
-        os.environ.get("FRONTEND_URL", "http://localhost:5173,http://127.0.0.1:5173")
-    ).split(",") if origin.strip()],
+    cors_allowed_origins=get_allowed_web_origins(),
     async_mode='threading',
     ping_timeout=60,
     ping_interval=25,

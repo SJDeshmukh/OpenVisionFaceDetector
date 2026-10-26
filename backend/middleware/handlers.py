@@ -6,6 +6,7 @@ import collections
 import redis
 from functools import wraps
 from flask import request, jsonify
+from origin_policy import get_allowed_web_origins
 
 # Redis setup
 redis_client = None
@@ -117,11 +118,8 @@ def rate_limit(key_func=None, limit=100, window=60):
 def setup_middleware(app):
     """Configures global middleware and hooks for the Flask app."""
     
-    FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
     allowed_origins = [
-        FRONTEND_URL, 
-        "http://localhost:5173", 
-        "http://127.0.0.1:5173",
+        *get_allowed_web_origins(),
         "https://face-detection-frontend-kepx.onrender.com",
         r"^https?://.*\.vercel\.app$",
         r"^https?://.*\.ngrok-free\.(app|dev)$",

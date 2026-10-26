@@ -1008,8 +1008,15 @@ def init_sqlite_schema(conn):
         ,"CREATE INDEX IF NOT EXISTS idx_xchat_message_conversation ON xchat_messages(conversation_id, vendor_id, created_at)"
         ,"CREATE INDEX IF NOT EXISTS idx_xchat_token_usage_vendor ON xchat_token_usage(vendor_id, created_at)"
     ]
+    # Existing SQLite databases can be older than the index definitions below.
+    # Create tables/triggers now and defer indexes until additive migrations have
+    # supplied every indexed column.
+    deferred_indexes = []
     for q in queries:
-        cur.execute(q)
+        if q.lstrip().upper().startswith("CREATE INDEX"):
+            deferred_indexes.append(q)
+        else:
+            cur.execute(q)
     
     # Migration: Add columns if they don't exist
     for col in ["last_active_at DATETIME", "battery_level REAL", "geofence_lat REAL", "geofence_lng REAL", "geofence_radius REAL DEFAULT 0", "last_lat REAL", "last_lng REAL"]:
@@ -1076,9 +1083,15 @@ def init_sqlite_schema(conn):
     except Exception:
         pass
             
-    for col in ["basic_salary REAL DEFAULT 0", "hra REAL DEFAULT 0", "conveyance REAL DEFAULT 0", "special_allowance REAL DEFAULT 0", "pf_enabled INTEGER DEFAULT 0", "esi_enabled INTEGER DEFAULT 0", "gratuity_enabled INTEGER DEFAULT 0", "professional_tax REAL DEFAULT 0", "joining_date DATE"]:
+    for col in ["display_id INTEGER", "basic_salary REAL DEFAULT 0", "hra REAL DEFAULT 0", "conveyance REAL DEFAULT 0", "special_allowance REAL DEFAULT 0", "pf_enabled INTEGER DEFAULT 0", "esi_enabled INTEGER DEFAULT 0", "gratuity_enabled INTEGER DEFAULT 0", "professional_tax REAL DEFAULT 0", "joining_date DATE"]:
         try:
             cur.execute(f"ALTER TABLE faces ADD COLUMN {col}")
+        except Exception:
+            pass
+
+    for col in ["device_id TEXT", "platform TEXT", "last_active DATETIME", "created_at DATETIME"]:
+        try:
+            cur.execute(f"ALTER TABLE active_sessions ADD COLUMN {col}")
         except Exception:
             pass
 
@@ -1110,6 +1123,9 @@ def init_sqlite_schema(conn):
         )
     except Exception:
         pass
+
+    for q in deferred_indexes:
+        cur.execute(q)
 
     conn.commit()
     cur.close()

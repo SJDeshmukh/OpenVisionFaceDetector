@@ -1458,6 +1458,12 @@ if [ "$ENABLE_AMQP" = "1" ]; then
 fi
 env_set BACKEND_URL "http://${DEPLOY_DOMAIN}"
 env_set FRONTEND_URL "http://${DEPLOY_DOMAIN}"
+if [[ "$DEPLOY_DOMAIN" == www.* ]]; then
+    SOCKET_DOMAIN_ALIAS="${DEPLOY_DOMAIN#www.}"
+else
+    SOCKET_DOMAIN_ALIAS="www.${DEPLOY_DOMAIN}"
+fi
+env_set SOCKET_ALLOWED_ORIGINS "http://${DEPLOY_DOMAIN},http://${SOCKET_DOMAIN_ALIAS}"
 env_set LOW_RAM_MODE "$LOW_RAM_MODE"
 STT_ENABLED_VALUE="$(prompt_stt_enabled "$(env_get STT_ENABLED)")"
 configure_stt_file "$ENV_FILE" "$STT_ENABLED_VALUE"
@@ -1729,6 +1735,7 @@ if [ "$ENABLE_SSL" != "no" ]; then
             SSL_ENABLED=1
             env_set BACKEND_URL "https://${DEPLOY_DOMAIN}"
             env_set FRONTEND_URL "https://${DEPLOY_DOMAIN}"
+            env_set SOCKET_ALLOWED_ORIGINS "https://${DEPLOY_DOMAIN},https://${SOCKET_DOMAIN_ALIAS}"
             sudo systemctl restart openvision-backend openvision-celery openvision-celery-io openvision-celery-beat
             wait_for_url "https://${DEPLOY_DOMAIN}/api/health" 20 \
                 || die "HTTPS certificate was installed, but the public health endpoint is unavailable"
