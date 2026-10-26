@@ -101,7 +101,8 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
                             }
                         } catch (_: Exception) {}
                     } else {
-                        val faceImageBytes = try { Base64.decode(rawFaceImage, Base64.NO_WRAP) } catch (_: Exception) { null }
+                        val cleanB64 = if (rawFaceImage.contains(",")) rawFaceImage.substringAfter(",") else rawFaceImage
+                        val faceImageBytes = try { Base64.decode(cleanB64, Base64.NO_WRAP) } catch (_: Exception) { null }
                         if (faceImageBytes != null) {
                             val options = BitmapFactory.Options()
                             options.inJustDecodeBounds = true

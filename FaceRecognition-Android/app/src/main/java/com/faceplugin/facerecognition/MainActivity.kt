@@ -1039,7 +1039,8 @@ class MainActivity : AppCompatActivity() {
                                                         }
                                                     } catch (_: Exception) {}
                                                 } else {
-                                                    val faceImageBytes = try { Base64.decode(rawFaceImage, Base64.NO_WRAP) } catch (e: Exception) { null }
+                                                    val cleanB64 = if (rawFaceImage.contains(",")) rawFaceImage.substringAfter(",") else rawFaceImage
+                                                    val faceImageBytes = try { Base64.decode(cleanB64, Base64.NO_WRAP) } catch (e: Exception) { null }
                                                     faceBitmap = if (faceImageBytes != null) try { BitmapFactory.decodeByteArray(faceImageBytes, 0, faceImageBytes.size) } catch (e: Exception) { null } else null
                                                 }
                                             }

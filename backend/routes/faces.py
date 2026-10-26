@@ -491,6 +491,17 @@ def get_persons():
             division=division, branch=branch,
         ):
             continue
+        # Format face_image for web dashboard (data:image/jpeg;base64, or presigned URL)
+        img = r.get("face_image")
+        if img and isinstance(img, str):
+            if img.startswith("s3://"):
+                try:
+                    r["face_image"] = presigned_url_for_key(img)
+                except Exception:
+                    pass
+            elif not img.startswith("http") and not img.startswith("data:"):
+                r["face_image"] = f"data:image/jpeg;base64,{img}"
+
         custom["person_type"] = resolved_type
         r["person_type"] = resolved_type
         r["custom_data"] = custom
