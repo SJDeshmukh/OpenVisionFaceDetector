@@ -100,6 +100,14 @@ def register_socket_handlers(socketio):
         if identity['role'] != 'super_admin' and requested is not None and str(requested) != str(vendor_id):
             return {'error': 'forbidden'}, 403
         join_room(f"vendor_{vendor_id}")
+        # Reconnecting kiosks may have missed changes while either side was
+        # offline. Notify only this authenticated socket so existing Android
+        # clients immediately run their cursor-based authoritative sync.
+        socketio.emit(
+            'persons_updated',
+            {'vendor_id': vendor_id, 'action': 'reconcile'},
+            room=request.sid,
+        )
         return {'status': 'joined', 'room': f'vendor_{vendor_id}'}
 
     @socketio.on('join_stream')
