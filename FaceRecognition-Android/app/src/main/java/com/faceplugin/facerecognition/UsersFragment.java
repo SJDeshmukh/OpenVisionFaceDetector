@@ -139,8 +139,7 @@ public class UsersFragment extends Fragment {
         }
         
         // 2. Update UI
-        adapter.notifyItemRemoved(position);
-        adapter.notifyItemRangeChanged(position, adapter.getItemCount());
+        if (adapter != null) adapter.removeUser(person);
         Toast.makeText(getContext(), "Deleted locally", Toast.LENGTH_SHORT).show();
 
         if (person != null && !person.synced) {
@@ -225,7 +224,7 @@ public class UsersFragment extends Fragment {
                 dbManager.loadPerson();
             }
         } catch (Exception ignored) {}
-        if (adapter != null) adapter.notifyDataSetChanged();
+        if (adapter != null) adapter.replaceUsers(DBManager.personList);
     }
 
     private void showRegisterFaceDialog(Person person) {
@@ -296,7 +295,7 @@ public class UsersFragment extends Fragment {
         }
 
         dbManager.updatePersonFaceByLocalUid(pendingPersonForRegistration.localUid, faceImage, templates);
-        adapter.notifyDataSetChanged();
+        if (adapter != null) adapter.invalidateFace(pendingPersonForRegistration);
 
         if (NetworkUtils.INSTANCE.isOnline(requireContext().getApplicationContext()) &&
             "true".equalsIgnoreCase(requireContext().getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE).getString("cloud_sync", "true"))) {
@@ -306,6 +305,19 @@ public class UsersFragment extends Fragment {
         }
         
         pendingPersonForRegistration = null;
+    }
+
+    @Override
+    public void onDestroyView() {
+        if (adapter != null) {
+            adapter.release();
+            adapter = null;
+        }
+        if (recyclerView != null) {
+            recyclerView.setAdapter(null);
+            recyclerView = null;
+        }
+        super.onDestroyView();
     }
 
     private void syncFaceToBackend(Person person, byte[] templates, Bitmap faceImage) {

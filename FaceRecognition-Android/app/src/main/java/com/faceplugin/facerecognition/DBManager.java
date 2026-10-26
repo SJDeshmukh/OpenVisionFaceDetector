@@ -853,6 +853,36 @@ import java.util.concurrent.CopyOnWriteArrayList;
         return null;
     }
 
+    /** Decode a bounded bitmap for list rows without allocating the full photo. */
+    public Bitmap getPersonFaceThumbnail(String localUid, int maxDimension) {
+        if (localUid == null || localUid.isEmpty()) return null;
+        SQLiteDatabase db = this.getReadableDatabase();
+        Cursor res = null;
+        try {
+            res = db.rawQuery("select face from person where local_uid = ? limit 1", new String[]{localUid});
+            if (!res.moveToFirst()) return null;
+            byte[] faceJpg = res.getBlob(0);
+            if (faceJpg == null || faceJpg.length == 0) return null;
+
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            BitmapFactory.decodeByteArray(faceJpg, 0, faceJpg.length, bounds);
+            int target = Math.max(64, maxDimension);
+            int sample = 1;
+            while (bounds.outWidth / (sample * 2) >= target && bounds.outHeight / (sample * 2) >= target) {
+                sample *= 2;
+            }
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inSampleSize = sample;
+            options.inPreferredConfig = Bitmap.Config.RGB_565;
+            return BitmapFactory.decodeByteArray(faceJpg, 0, faceJpg.length, options);
+        } catch (Exception | OutOfMemoryError ignored) {
+            return null;
+        } finally {
+            if (res != null) res.close();
+        }
+    }
+
     // --- Offline Attendance Queue Methods ---
 
     public void insertAttendanceQueue(String personId, String name, String timestamp, String status, Bitmap image, boolean isLate) {
@@ -860,6 +890,18 @@ import java.util.concurrent.CopyOnWriteArrayList;
     }
 
     public void insertAttendanceQueue(String personId, String localUid, String name, String timestamp, String status, Bitmap image, boolean isLate) {
+        byte[] imageJpeg = null;
+        if (image != null && !image.isRecycled()) {
+            try {
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                image.compress(Bitmap.CompressFormat.JPEG, 60, output);
+                imageJpeg = output.toByteArray();
+            } catch (Exception | OutOfMemoryError ignored) {}
+        }
+        insertAttendanceQueueJpeg(personId, localUid, name, timestamp, status, imageJpeg, isLate);
+    }
+
+    public void insertAttendanceQueueJpeg(String personId, String localUid, String name, String timestamp, String status, byte[] imageJpeg, boolean isLate) {
         SQLiteDatabase db = this.getWritableDatabase();
         String effectivePersonId = personId;
         if ((effectivePersonId == null || effectivePersonId.isEmpty() || effectivePersonId.startsWith("local:")) && localUid != null && !localUid.isEmpty()) {
@@ -876,10 +918,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
         contentValues.put("status", status);
         contentValues.put("is_late", isLate ? 1 : 0);
 
-        if (image != null) {
-            ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
-            image.compress(Bitmap.CompressFormat.JPEG, 60, byteArrayOutputStream);
-            contentValues.put("image", byteArrayOutputStream.toByteArray());
+        if (imageJpeg != null && imageJpeg.length > 0) {
+            contentValues.put("image", imageJpeg);
         }
 
         db.insert("attendance_queue", null, contentValues);

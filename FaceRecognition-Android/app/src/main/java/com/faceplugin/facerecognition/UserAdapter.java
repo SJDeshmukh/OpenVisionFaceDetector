@@ -1,20 +1,33 @@
 package com.faceplugin.facerecognition;
 
+import android.graphics.Bitmap;
+import android.util.LruCache;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ImageView;
 import android.widget.TextView;
+
 import androidx.annotation.NonNull;
 import androidx.recyclerview.widget.RecyclerView;
+
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class UserAdapter extends RecyclerView.Adapter<UserAdapter.UserViewHolder> {
 
-    private List<Person> userList;
+    // RecyclerView must never observe DBManager.personList while a sync thread is
+    // replacing it. Keep an adapter-owned snapshot instead.
+    private final List<Person> userList = new ArrayList<>();
+    private final DBManager dbManager;
+    private final LruCache<String, Bitmap> faceCache;
+    private final ExecutorService imageLoader = Executors.newFixedThreadPool(2);
+    private volatile boolean released = false;
     private OnUserDeleteListener deleteListener;
-    private DBManager dbManager;
-    private android.util.LruCache<String, android.graphics.Bitmap> faceCache;
+    private OnUserClickListener clickListener;
 
     public interface OnUserDeleteListener {
         void onDeleteUser(Person person, int position);
@@ -24,7 +37,18 @@ public class UserAdapter extends RecyclerView.Adapter<UserAdapter.UserViewHolder
         void onClickUser(Person person, int position);
     }
 
-    private OnUserClickListener clickListener;
+    public UserAdapter(List<Person> users, DBManager dbManager) {
+        this.dbManager = dbManager;
+        int maxMemoryKb = (int) Math.min(Integer.MAX_VALUE, Runtime.getRuntime().maxMemory() / 1024L);
+        int cacheKb = Math.max(4 * 1024, Math.min(16 * 1024, maxMemoryKb / 16));
+        this.faceCache = new LruCache<String, Bitmap>(cacheKb) {
+            @Override
+            protected int sizeOf(@NonNull String key, @NonNull Bitmap bitmap) {
+                return Math.max(1, bitmap.getAllocationByteCount() / 1024);
+            }
+        };
+        replaceUsers(users);
+    }
 
     public void setOnUserDeleteListener(OnUserDeleteListener listener) {
         this.deleteListener = listener;
@@ -34,11 +58,42 @@ public class UserAdapter extends RecyclerView.Adapter<UserAdapter.UserViewHolder
         this.clickListener = listener;
     }
 
-    public UserAdapter(List<Person> userList, DBManager dbManager) {
-        this.userList = userList;
-        this.dbManager = dbManager;
-        // Optimization: 4MB cache for user face thumbnails (enough for ~80-100 thumbnails)
-        this.faceCache = new android.util.LruCache<>(4 * 1024 * 1024); 
+    public void replaceUsers(List<Person> users) {
+        List<Person> snapshot;
+        if (users == null) {
+            snapshot = new ArrayList<>();
+        } else {
+            synchronized (users) {
+                snapshot = new ArrayList<>(users);
+            }
+        }
+        userList.clear();
+        userList.addAll(snapshot);
+        notifyDataSetChanged();
+    }
+
+    public void removeUser(Person person) {
+        if (person == null) return;
+        for (int i = 0; i < userList.size(); i++) {
+            if (samePerson(userList.get(i), person)) {
+                userList.remove(i);
+                notifyItemRemoved(i);
+                return;
+            }
+        }
+    }
+
+    public void invalidateFace(Person person) {
+        if (person == null) return;
+        faceCache.remove(cacheKey(person));
+        int index = indexOf(person);
+        if (index >= 0) notifyItemChanged(index);
+    }
+
+    public void release() {
+        released = true;
+        imageLoader.shutdownNow();
+        faceCache.evictAll();
     }
 
     @NonNull
@@ -51,46 +106,60 @@ public class UserAdapter extends RecyclerView.Adapter<UserAdapter.UserViewHolder
     @Override
     public void onBindViewHolder(@NonNull UserViewHolder holder, int position) {
         Person person = userList.get(position);
-        holder.tvName.setText(person.name);
-        
-        android.graphics.Bitmap cachedFace = faceCache.get(person.localUid != null ? person.localUid : "null");
-        if (cachedFace != null) {
+        holder.tvName.setText(person.name == null ? "" : person.name);
+
+        String key = cacheKey(person);
+        holder.imgFace.setTag(key);
+        Bitmap cachedFace = faceCache.get(key);
+        if (cachedFace != null && !cachedFace.isRecycled()) {
             holder.imgFace.setImageBitmap(cachedFace);
-        } else if (dbManager != null && person.localUid != null) {
-            // Lazy load from DB if not in cache
-            android.graphics.Bitmap face = dbManager.getPersonFace(person.localUid);
-            if (face != null) {
-                faceCache.put(person.localUid, face);
-                holder.imgFace.setImageBitmap(face);
-            } else {
-                holder.imgFace.setImageResource(R.drawable.openvision_logo);
-            }
         } else {
             holder.imgFace.setImageResource(R.drawable.openvision_logo);
+            if (dbManager != null && person.localUid != null && !person.localUid.isEmpty() && !released) {
+                try {
+                    imageLoader.execute(() -> {
+                        Bitmap face = dbManager.getPersonFaceThumbnail(person.localUid, 256);
+                        if (face == null || released) return;
+                        faceCache.put(key, face);
+                        holder.imgFace.post(() -> {
+                            if (!released && key.equals(holder.imgFace.getTag()) && !face.isRecycled()) {
+                                holder.imgFace.setImageBitmap(face);
+                            }
+                        });
+                    });
+                } catch (java.util.concurrent.RejectedExecutionException ignored) {}
+            }
         }
-        
-        String idLabel = (person.displayId > 0) ? String.valueOf(person.displayId) : ((person.id != null && !person.id.isEmpty()) ? person.id : String.valueOf(position + 1));
-        String details = "ID: " + idLabel;
-        if (person.department != null && !person.department.isEmpty()) {
-            details += " • " + person.department;
-        }
-        if (person.designation != null && !person.designation.isEmpty()) {
-            details += " • " + person.designation;
-        }
-        holder.tvDetails.setText(details);
+
+        String idLabel = person.displayId > 0
+                ? String.valueOf(person.displayId)
+                : person.id != null && !person.id.isEmpty() ? person.id : String.valueOf(position + 1);
+        StringBuilder details = new StringBuilder("ID: ").append(idLabel);
+        if (person.department != null && !person.department.isEmpty()) details.append(" • ").append(person.department);
+        if (person.designation != null && !person.designation.isEmpty()) details.append(" • ").append(person.designation);
+        holder.tvDetails.setText(details.toString());
 
         holder.itemView.setOnClickListener(v -> {
-            if (clickListener != null) {
-                clickListener.onClickUser(person, holder.getAdapterPosition());
+            int adapterPosition = holder.getBindingAdapterPosition();
+            if (clickListener != null && adapterPosition != RecyclerView.NO_POSITION && adapterPosition < userList.size()) {
+                clickListener.onClickUser(userList.get(adapterPosition), adapterPosition);
             }
         });
 
         holder.itemView.setOnLongClickListener(v -> {
-            if (deleteListener != null) {
-                deleteListener.onDeleteUser(person, holder.getAdapterPosition());
+            int adapterPosition = holder.getBindingAdapterPosition();
+            if (deleteListener != null && adapterPosition != RecyclerView.NO_POSITION && adapterPosition < userList.size()) {
+                deleteListener.onDeleteUser(userList.get(adapterPosition), adapterPosition);
             }
             return true;
         });
+    }
+
+    @Override
+    public void onViewRecycled(@NonNull UserViewHolder holder) {
+        holder.imgFace.setTag(null);
+        holder.imgFace.setImageResource(R.drawable.openvision_logo);
+        super.onViewRecycled(holder);
     }
 
     @Override
@@ -98,11 +167,30 @@ public class UserAdapter extends RecyclerView.Adapter<UserAdapter.UserViewHolder
         return userList.size();
     }
 
-    static class UserViewHolder extends RecyclerView.ViewHolder {
-        ImageView imgFace;
-        TextView tvName, tvDetails;
+    private int indexOf(Person person) {
+        for (int i = 0; i < userList.size(); i++) if (samePerson(userList.get(i), person)) return i;
+        return -1;
+    }
 
-        public UserViewHolder(@NonNull View itemView) {
+    private static boolean samePerson(Person left, Person right) {
+        if (left == right) return true;
+        if (left == null || right == null) return false;
+        if (left.localUid != null && right.localUid != null && left.localUid.equals(right.localUid)) return true;
+        return left.id != null && right.id != null && !left.id.isEmpty() && left.id.equals(right.id);
+    }
+
+    private static String cacheKey(Person person) {
+        if (person.localUid != null && !person.localUid.isEmpty()) return "local:" + person.localUid;
+        if (person.id != null && !person.id.isEmpty()) return "id:" + person.id;
+        return "name:" + Objects.toString(person.name, "unknown");
+    }
+
+    static class UserViewHolder extends RecyclerView.ViewHolder {
+        final ImageView imgFace;
+        final TextView tvName;
+        final TextView tvDetails;
+
+        UserViewHolder(@NonNull View itemView) {
             super(itemView);
             imgFace = itemView.findViewById(R.id.img_face);
             tvName = itemView.findViewById(R.id.tv_name);

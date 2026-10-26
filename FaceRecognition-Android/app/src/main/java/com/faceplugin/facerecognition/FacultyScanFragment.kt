@@ -155,7 +155,9 @@ class FacultyScanFragment : Fragment() {
     override fun onDestroy() {
         super.onDestroy()
         cameraExecutor.shutdown()
-        photoCards.forEach { it.thumbnail?.recycle() }
+        // Let Android reclaim bitmaps after RecyclerView releases its drawables.
+        // Recycling here can race a final draw and crash with
+        // "Canvas: trying to use a recycled bitmap".
         photoCards.clear()
         allFaces.clear()
     }
@@ -349,7 +351,7 @@ class FacultyScanFragment : Fragment() {
                 if (bmp == null) return@Thread
                 val jpeg  = bitmapToJpeg(bmp)
                 val thumb = Bitmap.createScaledBitmap(bmp, 150, 150, true)
-                bmp.recycle()
+                if (thumb !== bmp) bmp.recycle()
                 val ts    = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
                 val file  = saveJpeg(jpeg, ts)
                 val db    = DBManager(requireContext())
@@ -485,7 +487,7 @@ class FacultyScanFragment : Fragment() {
             }
             val jpeg  = bitmapToJpeg(bmp)
             val thumb = Bitmap.createScaledBitmap(bmp, 150, 150, true)
-            bmp.recycle()
+            if (thumb !== bmp) bmp.recycle()
 
             val ts   = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
             val file = saveJpeg(jpeg, ts)
@@ -978,7 +980,6 @@ class FacultyScanFragment : Fragment() {
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private fun clearScanState() {
-        photoCards.forEach { it.thumbnail?.recycle() }
         photoCards.clear()
         allFaces.clear()
         photoAdapter.notifyDataSetChanged()

@@ -535,8 +535,19 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         GreetingService service = RetrofitClient.getService();
         // Downscale to 320px width to cut encoding time (~300ms -> ~25ms) and payload (~800KB -> ~25KB)
         Bitmap resized = Utils.resizeBitmap(bitmap, 320);
-        String imageBase64 = Utils.bitmapToBase64(resized);
-        if (resized != bitmap) resized.recycle();
+        byte[] attendanceImageJpeg = null;
+        String imageBase64 = null;
+        try {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            if (resized != null && !resized.isRecycled() && resized.compress(Bitmap.CompressFormat.JPEG, 80, output)) {
+                attendanceImageJpeg = output.toByteArray();
+                imageBase64 = Base64.encodeToString(attendanceImageJpeg, Base64.NO_WRAP);
+            }
+        } catch (Exception | OutOfMemoryError e) {
+            Log.e(TAG, "Unable to encode attendance thumbnail", e);
+        }
+        if (resized != null && resized != bitmap) resized.recycle();
+        final byte[] retryImageJpeg = attendanceImageJpeg;
 
         boolean isAttendance = true;
 
@@ -702,7 +713,10 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 // UI already updated optimistically; just queue for retry
                 if (isAttendance) {
                     try {
-                        dbManager.insertAttendanceQueue(finalPersonId, localUid, name, timestamp, optimisticStatus, bitmap, false);
+                        // The CameraX frame is recycled when analyzeImage returns.
+                        // Queue the compact immutable JPEG captured above instead of
+                        // retaining that recycled multi-megabyte Bitmap in Retrofit.
+                        dbManager.insertAttendanceQueueJpeg(finalPersonId, localUid, name, timestamp, optimisticStatus, retryImageJpeg, false);
                         SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
                     } catch (Exception ignored) {}
                 }
