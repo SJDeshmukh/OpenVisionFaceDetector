@@ -129,11 +129,14 @@ public class UsersFragment extends Fragment {
     }
 
     private void deleteUser(Person person, int position) {
-        // 1. Delete from Local DB
-        boolean hasId = person.id != null && !person.id.isEmpty();
-        if (hasId) {
+        // 1. Delete thoroughly from Local DB & in-memory cache
+        if (person.id != null && !person.id.isEmpty()) {
             dbManager.deletePersonById(person.id);
-        } else {
+        }
+        if (person.localUid != null && !person.localUid.isEmpty()) {
+            dbManager.deletePersonByLocalUid(person.localUid);
+        }
+        if ((person.id == null || person.id.isEmpty()) && (person.localUid == null || person.localUid.isEmpty())) {
             dbManager.deletePerson(person.name);
         }
         
@@ -165,6 +168,7 @@ public class UsersFragment extends Fragment {
         }
 
         GreetingService service = RetrofitClient.getService();
+        boolean hasId = person.id != null && !person.id.trim().isEmpty();
         Call<Void> call = hasId ? service.deleteFaceById(person.id) : service.deleteFace(person.name);
         call.enqueue(new Callback<Void>() {
             @Override
@@ -271,6 +275,7 @@ public class UsersFragment extends Fragment {
         synchronized (DBManager.personList) {
             people = DBManager.personList.toArray(new Person[0]);
         }
+        Person matchedPerson = null;
         for (Person p : people) {
             if (p == null) continue;
             if (p.localUid != null && p.localUid.equals(pendingPersonForRegistration.localUid)) continue;
@@ -278,13 +283,17 @@ public class UsersFragment extends Fragment {
             try {
                 if (p.templates != null && p.templates.length > 0) {
                     float s = LocalFaceEngineFacade.INSTANCE.similarityCalculation(templates, p.templates);
-                    if (s > maxSimilarity) maxSimilarity = s;
+                    if (s > maxSimilarity) {
+                        maxSimilarity = s;
+                        matchedPerson = p;
+                    }
                 }
             } catch (Exception ignored) {}
         }
 
         if (maxSimilarity > SettingsActivity.getIdentifyThreshold(requireContext())) {
-            Toast.makeText(getContext(), "This face is already registered to someone else.", Toast.LENGTH_SHORT).show();
+            String matchedName = (matchedPerson != null && matchedPerson.name != null) ? matchedPerson.name : "someone else";
+            Toast.makeText(getContext(), "This face is already registered to: " + matchedName, Toast.LENGTH_LONG).show();
             return;
         }
 

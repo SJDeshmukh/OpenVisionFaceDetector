@@ -719,7 +719,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
     public Integer deletePerson (String name) {
         synchronized (personList) {
             for (int i = 0; i < personList.size(); i++) {
-                if (personList.get(i).name.equals(name)) {
+                if (personList.get(i).name != null && personList.get(i).name.equals(name)) {
                     personList.remove(i);
                     i--;
                 }
@@ -733,9 +733,11 @@ import java.util.concurrent.CopyOnWriteArrayList;
     }
 
     public Integer deletePersonById (String id) {
+        if (id == null || id.isEmpty()) return 0;
         synchronized (personList) {
             for (int i = 0; i < personList.size(); i++) {
-                if (personList.get(i).id != null && personList.get(i).id.equals(id)) {
+                Person p = personList.get(i);
+                if ((p.id != null && p.id.equals(id)) || (p.localUid != null && p.localUid.equals(id))) {
                     personList.remove(i);
                     i--;
                 }
@@ -744,8 +746,26 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
         SQLiteDatabase db = this.getWritableDatabase();
         return db.delete("person",
-                "id = ? ",
-                new String[] { id });
+                "id = ? OR local_uid = ?",
+                new String[] { id, id });
+    }
+
+    public Integer deletePersonByLocalUid(String localUid) {
+        if (localUid == null || localUid.isEmpty()) return 0;
+        synchronized (personList) {
+            for (int i = 0; i < personList.size(); i++) {
+                Person p = personList.get(i);
+                if (p.localUid != null && p.localUid.equals(localUid)) {
+                    personList.remove(i);
+                    i--;
+                }
+            }
+        }
+
+        SQLiteDatabase db = this.getWritableDatabase();
+        return db.delete("person",
+                "local_uid = ?",
+                new String[] { localUid });
     }
 
     public Integer clearDB () {

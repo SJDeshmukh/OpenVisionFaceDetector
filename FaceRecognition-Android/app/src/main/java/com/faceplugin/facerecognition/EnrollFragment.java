@@ -314,18 +314,23 @@ public class EnrollFragment extends Fragment {
             synchronized (DBManager.personList) {
                 people = DBManager.personList.toArray(new Person[0]);
             }
+            Person matchedPerson = null;
             for (Person p : people) {
                 try {
                     if (p == null || p.templates == null || p.templates.length == 0) continue;
                     float s = LocalFaceEngineFacade.INSTANCE.similarityCalculation(templates, p.templates);
-                    if (s > maxSimilarity) maxSimilarity = s;
+                    if (s > maxSimilarity) {
+                        maxSimilarity = s;
+                        matchedPerson = p;
+                    }
                 } catch (Exception ignored) {}
             }
             Context context = getContext();
             if (context == null || !isAdded()) return;
 
             if (maxSimilarity > SettingsActivity.getIdentifyThreshold(context)) {
-                Toast.makeText(getContext(), "Already registered", Toast.LENGTH_SHORT).show();
+                String matchedName = (matchedPerson != null && matchedPerson.name != null) ? matchedPerson.name : "another user";
+                Toast.makeText(getContext(), "Already registered to: " + matchedName, Toast.LENGTH_LONG).show();
                 return;
             }
             
