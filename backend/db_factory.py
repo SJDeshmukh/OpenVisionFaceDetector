@@ -688,6 +688,7 @@ def _init_pg_schema_on_conn(conn):
         ("subscriptions", "xchat_tokens_billed", "BIGINT DEFAULT 0"),
         ("subscriptions", "xchat_price_per_1k_tokens", "REAL DEFAULT 0"),
         ("xchat_token_usage", "usage_type", "TEXT DEFAULT 'chat'"),
+        ("faces", "display_id", "INTEGER"),
         ("faces", "basic_salary", "REAL DEFAULT 0"),
         ("faces", "hra", "REAL DEFAULT 0"),
         ("faces", "conveyance", "REAL DEFAULT 0"),

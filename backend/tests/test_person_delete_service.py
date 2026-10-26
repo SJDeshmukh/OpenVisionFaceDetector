@@ -18,6 +18,7 @@ def test_delete_person_dependencies_removes_advances_before_face():
         CREATE TABLE advances (id INTEGER PRIMARY KEY, vendor_id INTEGER, person_id INTEGER REFERENCES faces(id));
         CREATE TABLE advance_revisions (id INTEGER PRIMARY KEY, advance_id INTEGER, vendor_id INTEGER, person_id INTEGER);
         CREATE TABLE attendance (id INTEGER PRIMARY KEY, vendor_id INTEGER, person_id INTEGER REFERENCES faces(id));
+        CREATE TABLE attendance_events (id TEXT PRIMARY KEY, vendor_id INTEGER, person_id INTEGER, legacy_attendance_id INTEGER);
         CREATE TABLE student_parents (id INTEGER PRIMARY KEY, vendor_id INTEGER, person_id INTEGER REFERENCES faces(id));
         CREATE TABLE parent_users (id INTEGER PRIMARY KEY, vendor_id INTEGER, selected_person_id INTEGER);
         CREATE TABLE leave_requests (id INTEGER PRIMARY KEY, vendor_id INTEGER, student_id INTEGER REFERENCES faces(id));
@@ -30,6 +31,7 @@ def test_delete_person_dependencies_removes_advances_before_face():
         INSERT INTO advances VALUES (11, 7, 1);
         INSERT INTO advance_revisions VALUES (12, 11, 7, 1);
         INSERT INTO attendance VALUES (13, 7, 1);
+        INSERT INTO attendance_events VALUES ('event-13', 7, 1, 13);
         INSERT INTO student_parents VALUES (14, 7, 1);
         INSERT INTO parent_users VALUES (15, 7, 1);
         INSERT INTO leave_requests VALUES (16, 7, 1);
@@ -43,7 +45,7 @@ def test_delete_person_dependencies_removes_advances_before_face():
     connection.execute("DELETE FROM faces WHERE id = 1 AND vendor_id = 7")
 
     for table in (
-        "faces", "advances", "advance_revisions", "attendance", "student_parents",
+        "faces", "advances", "advance_revisions", "attendance", "attendance_events", "student_parents",
         "leave_requests", "lecture_attendance", "person_embeddings", "system_users", "active_sessions",
     ):
         assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
@@ -57,6 +59,7 @@ def test_delete_person_dependencies_is_vendor_scoped():
         CREATE TABLE advances (id INTEGER PRIMARY KEY, vendor_id INTEGER, person_id INTEGER);
         CREATE TABLE advance_revisions (id INTEGER PRIMARY KEY, advance_id INTEGER, vendor_id INTEGER, person_id INTEGER);
         CREATE TABLE attendance (id INTEGER PRIMARY KEY, vendor_id INTEGER, person_id INTEGER);
+        CREATE TABLE attendance_events (id TEXT PRIMARY KEY, vendor_id INTEGER, person_id INTEGER, legacy_attendance_id INTEGER);
         CREATE TABLE student_parents (id INTEGER PRIMARY KEY, vendor_id INTEGER, person_id INTEGER);
         CREATE TABLE parent_users (id INTEGER PRIMARY KEY, vendor_id INTEGER, selected_person_id INTEGER);
         CREATE TABLE leave_requests (id INTEGER PRIMARY KEY, vendor_id INTEGER, student_id INTEGER);
@@ -68,6 +71,7 @@ def test_delete_person_dependencies_is_vendor_scoped():
         INSERT INTO advances VALUES (1, 8, 1);
         INSERT INTO advance_revisions VALUES (2, 1, 8, 1);
         INSERT INTO attendance VALUES (3, 8, 1);
+        INSERT INTO attendance_events VALUES ('event-3', 8, 1, 3);
         INSERT INTO student_parents VALUES (4, 8, 1);
         INSERT INTO parent_users VALUES (5, 8, 1);
         INSERT INTO leave_requests VALUES (6, 8, 1);
@@ -80,7 +84,7 @@ def test_delete_person_dependencies_is_vendor_scoped():
     delete_person_dependencies(connection.execute, 1, 7)
 
     for table in (
-        "advances", "advance_revisions", "attendance", "student_parents", "leave_requests",
+        "advances", "advance_revisions", "attendance", "attendance_events", "student_parents", "leave_requests",
         "lecture_attendance", "person_embeddings", "system_users", "active_sessions",
     ):
         assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 1

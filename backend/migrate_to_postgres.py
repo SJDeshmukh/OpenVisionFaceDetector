@@ -186,54 +186,19 @@ def run_safe_migration():
         ('person_embeddings', ['id', 'vendor_id', 'person_id', 'class_year', 'division', 'branch', 'vec', 'dim', 'struct_vec', 'landmarks_3d', 'created_at'], None, 'id')
     ]
 
-    # Re-indexing Logic (Gapless display_id)
+    # Repair vendor-visible serial numbers after importing legacy rows.
     try:
+        from services.display_id_service import compact_all_vendor_display_ids
+
         pg_conn = get_postgres_conn()
-        c_pg = pg_conn.cursor()
-        
-        logger.info("Starting global re-indexing of display_ids (Class-Aware)...")
-        c_pg.execute("SELECT DISTINCT vendor_id FROM faces")
-        vendor_ids = [r[0] for r in c_pg.fetchall() if r[0] is not None]
-        
-        for v_id in vendor_ids:
-            logger.info(f"  Re-indexing vendor {v_id}...")
-            
-            # 1. Get faculty IDs
-            c_pg.execute("SELECT person_id FROM system_users WHERE vendor_id = %s AND role = 'faculty'", (v_id,))
-            faculty_ids = {r[0] for r in c_pg.fetchall() if r[0]}
-            
-            # 2. Get all faces
-            c_pg.execute("SELECT id, custom_data FROM faces WHERE vendor_id = %s ORDER BY id ASC", (v_id,))
-            faces_rows = c_pg.fetchall()
-            
-            groups = {}
-            for fr in faces_rows:
-                fid = fr[0]
-                raw_cd = fr[1]
-                
-                if fid in faculty_ids:
-                    g_key = "faculty"
-                else:
-                    try:
-                        import json
-                        cd = raw_cd if isinstance(raw_cd, dict) else (json.loads(raw_cd) if raw_cd else {})
-                        y = str(cd.get('class_year') or cd.get('year') or '').strip().lower()
-                        d = str(cd.get('division') or cd.get('Division') or '').strip().lower()
-                        g_key = f"class:{y}:{d}" if (y or d) else "unassigned"
-                    except:
-                        g_key = "unassigned"
-                
-                if g_key not in groups: groups[g_key] = []
-                groups[g_key].append(fid)
-            
-            # 3. Apply Re-indexing
-            for gk, fids in groups.items():
-                for i, fid in enumerate(fids):
-                    c_pg.execute("UPDATE faces SET display_id = %s WHERE id = %s", (i + 1, fid))
-        
+        changed = compact_all_vendor_display_ids(pg_conn)
         pg_conn.commit()
         pg_conn.close()
-        logger.info("Re-indexing complete.")
+        logger.info(
+            "Display ID compaction complete: %s vendors, %s people updated.",
+            len(changed),
+            sum(len(items) for items in changed.values()),
+        )
     except Exception as e:
         logger.error(f"Re-indexing failed: {e}")
         success = False

@@ -33,6 +33,7 @@ from services.person_scope_service import (
     vendor_vertical,
 )
 from services.person_delete_service import delete_person_dependencies
+from services.display_id_service import compact_vendor_display_ids
 
 def _get_faculty_identifiers(c, username):
     """Fetch all possible strings that identify this faculty member (username, name, email)."""
@@ -143,93 +144,10 @@ def _unassign_faculty_from_classes(c, conn, vendor_id, usernames):
 
 
 def reindex_vendor_faces(conn, vendor_id):
-    """Re-assigns display_id for all faces in a vendor, grouped by class and faculty, starting from 1."""
-    if not vendor_id:
-        return
-    import json
-    c = conn.cursor()
-    
-    # 1. Get vendor vertical and faculty person_ids
-    is_pg = getattr(conn, "_is_pg", False)
-    placeholder = "%s" if is_pg else "?"
-    
-    c.execute(f"SELECT vertical FROM vendors WHERE id = {placeholder}", (vendor_id,))
-    vrow = c.fetchone()
-    vertical = (vrow['vertical'] if hasattr(vrow, 'keys') else vrow[0]) if vrow else ''
-    is_grouped_mode = (vertical == 'bulk_attendance_attendx')
-
-    c.execute(f"SELECT person_id FROM system_users WHERE vendor_id = {placeholder} AND role = 'faculty'", (vendor_id,))
-    faculty_person_ids = {r[0] for r in c.fetchall() if r[0]}
-    
-    # 2. Get all faces for this vendor
-    is_pg = getattr(conn, "_is_pg", False)
-    if is_pg:
-        c.execute("SELECT id, custom_data FROM faces WHERE vendor_id = %s ORDER BY id ASC", (vendor_id,))
-    else:
-        c.execute("SELECT id, custom_data FROM faces WHERE vendor_id = ? ORDER BY id ASC", (vendor_id,))
-    all_faces = c.fetchall()
-    
-    # Groups: { "faculty": [], "class:year:div": [], "unassigned": [] }
-    groups = {}
-    
-    for row in all_faces:
-        fid = row[0]
-        raw_cd = row[1]
-        
-        sort_val = ""
-        if fid in faculty_person_ids:
-            group_key = "faculty"
-        else:
-            # Extract a sort key for stability (Student ID, Roll Number, or Name)
-            try:
-                if not is_grouped_mode:
-                    group_key = "all_students"
-                else:
-                    if isinstance(raw_cd, str):
-                        cd = json.loads(raw_cd) if raw_cd else {}
-                    else:
-                        cd = raw_cd or {}
-                    
-                    # Extract year, division/section, and branch/course/department for grouping
-                    year = str(cd.get('class_year') or cd.get('year') or cd.get('Year') or cd.get('class') or '').strip().lower()
-                    div  = str(cd.get('division')  or cd.get('Division')  or cd.get('section') or cd.get('Section') or '').strip().lower()
-                    branch = str(cd.get('branch')  or cd.get('Branch') or cd.get('department') or cd.get('Department') or cd.get('course') or '').strip().lower()
-                    
-                    if year or div or branch:
-                        group_key = f"grp:{year}:{div}:{branch}"
-                    else:
-                        group_key = "unassigned"
-                
-                # Find a stable sort key inside the group (prefer Student ID/Roll Number)
-                if isinstance(raw_cd, str):
-                    cd = json.loads(raw_cd) if raw_cd else {}
-                else:
-                    cd = raw_cd or {}
-                
-                sort_val = str(cd.get('student_id') or cd.get('roll_number') or cd.get('roll_no') or cd.get('id_number') or cd.get('student_number') or '').strip()
-                # If it's numeric, pad it for correct string sorting
-                if sort_val.isdigit():
-                    sort_val = sort_val.zfill(10)
-            except:
-                group_key = "unassigned"
-        
-        if group_key not in groups:
-            groups[group_key] = []
-        # Store tuple of (sort_key, fid)
-        groups[group_key].append((sort_val, fid))
-
-    # 3. Re-index each group starting from 1
-    for group_key, items in groups.items():
-        # Sort by the extracted key, then by fid
-        sorted_items = sorted(items)
-        for idx, item in enumerate(sorted_items):
-            fid = item[1]
-            if is_pg:
-                c.execute("UPDATE faces SET display_id = %s WHERE id = %s", (idx + 1, fid))
-            else:
-                c.execute("UPDATE faces SET display_id = ? WHERE id = ?", (idx + 1, fid))
-            
+    """Backward-compatible entry point for gapless vendor display IDs."""
+    changed = compact_vendor_display_ids(conn, vendor_id)
     conn.commit()
+    return changed
 
 def vendor_required(f):
     from functools import wraps
@@ -1026,10 +944,9 @@ def upload_face():
             if custom_data is not None:
                 fields.append("custom_data=?"); params.append(custom_data)
             
-            # Allow manual override of display_id/Student ID
-            display_id = data.get("display_id")
-            if display_id is not None:
-                fields.append("display_id=?"); params.append(display_id)
+            # display_id is a server-managed serial number. External employee
+            # or student identifiers belong in custom_data and must not restore
+            # a stale serial after another device deletes/reorders the roster.
 
             if not fields:
                 new_id = person_id
@@ -1199,8 +1116,8 @@ def upload_face():
             if getattr(conn, "_is_pg", False):
                 c.execute("SELECT pg_advisory_xact_lock(481516, ?)", (int(vendor_id),))
 
-            # display_id is a stable vendor-visible identifier. It is never
-            # renumbered after assignment, so web and mobile clients agree.
+            # Allocate the next vendor-visible serial. Deletion compacts this
+            # sequence transactionally and syncs changed values to all clients.
             c.execute("SELECT COALESCE(MAX(display_id), 0) + 1 FROM faces WHERE vendor_id = ?", (vendor_id,))
             next_display_id = c.fetchone()[0]
             assigned_display_id = int(next_display_id)
@@ -1600,10 +1517,10 @@ def delete_face(name):
             c.execute("DELETE FROM faces WHERE name = ?", (name,))
         deleted_faces = c.rowcount
 
+        by_vendor = {}
+        student_numbers_by_vendor = {}
+        phones_by_vendor = {}
         try:
-            by_vendor = {}
-            student_numbers_by_vendor = {}
-            phones_by_vendor = {}
             for r in face_rows:
                 pid = r[0]
                 vid = r[1]
@@ -1693,7 +1610,13 @@ def delete_face(name):
                         pass
         except Exception:
             pass
-            
+
+        renumbered_by_vendor = {}
+        for affected_vendor_id in sorted(by_vendor):
+            changed = compact_vendor_display_ids(conn, affected_vendor_id)
+            if changed:
+                renumbered_by_vendor[int(affected_vendor_id)] = changed
+
         conn.commit()
 
         # Invalidate caches immediately
@@ -1713,13 +1636,21 @@ def delete_face(name):
                         'vendor_id': broadcast_vendor,
                         'action': 'delete',
                         'person_ids': [str(pid) for pid in by_vendor.get(int(broadcast_vendor), [])],
+                        'renumbered_person_ids': [
+                            str(item['person_id'])
+                            for item in renumbered_by_vendor.get(int(broadcast_vendor), [])
+                        ],
                     },
                     room=f"vendor_{broadcast_vendor}",
                 )
                 socketio.emit('attendance_updated', {'vendor_id': broadcast_vendor}, room=f"vendor_{broadcast_vendor}")
             socketio.emit('vendor_updated', {'vendor_id': broadcast_vendor}, room='super_admin')
 
-            return jsonify({"status": "success", "message": f"Face for {name} deleted."})
+            return jsonify({
+                "status": "success",
+                "message": f"Face for {name} deleted.",
+                "renumbered": renumbered_by_vendor,
+            })
         else:
             return jsonify({"error": "User not found"}), 404
     except Exception:
@@ -1859,6 +1790,13 @@ def delete_face_by_id(person_id):
             c.execute("DELETE FROM faces WHERE id = ?", (person_id,))
         deleted_faces = c.rowcount
 
+        # Keep the vendor-visible serial numbers gapless in the same transaction
+        # as deletion. The update trigger records every changed person for kiosk
+        # delta sync before the socket notification is emitted.
+        renumbered = []
+        if deleted_faces > 0 and target_vendor_id:
+            renumbered = compact_vendor_display_ids(conn, target_vendor_id)
+
         # 3. Commit first, then emit and clean up in background
         conn.commit()
 
@@ -1877,13 +1815,19 @@ def delete_face_by_id(person_id):
                         'vendor_id': effective_vendor_id,
                         'action': 'delete',
                         'person_id': str(person_id),
+                        'renumbered_person_ids': [str(item['person_id']) for item in renumbered],
                     },
                     room=f"vendor_{effective_vendor_id}",
                 )
                 socketio.emit('attendance_updated', {'vendor_id': effective_vendor_id}, room=f"vendor_{effective_vendor_id}")
             socketio.emit('vendor_updated', {'vendor_id': effective_vendor_id}, room='super_admin')
 
-            return jsonify({"status": "success", "message": f"Face for {name} deleted.", "person_id": person_id})
+            return jsonify({
+                "status": "success",
+                "message": f"Face for {name} deleted.",
+                "person_id": person_id,
+                "renumbered": renumbered,
+            })
         else:
             return jsonify({"error": "User not found"}), 404
     except Exception:

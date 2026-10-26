@@ -21,6 +21,7 @@ def bootstrap_db():
     
     # 4. Run schema migrations/checks for all database types
     add_missing_columns()
+    repair_face_display_ids()
     ensure_audit_logs_table()
     
     # 5. Legacy migration helpers for SQLite
@@ -134,6 +135,28 @@ def add_performance_indexes():
         except Exception: pass
     conn.commit()
     conn.close()
+
+
+def repair_face_display_ids():
+    """Repair legacy gaps once at startup so every client sees 1..N."""
+    from services.display_id_service import compact_all_vendor_display_ids
+
+    conn = get_db_connection()
+    try:
+        changed = compact_all_vendor_display_ids(conn)
+        conn.commit()
+        changed_count = sum(len(items) for items in changed.values())
+        if changed_count:
+            logger.info(
+                "Compacted display IDs for %s vendors (%s people updated)",
+                len(changed),
+                changed_count,
+            )
+    except Exception as exc:
+        conn.rollback()
+        logger.error("Display ID repair failed: %s", exc)
+    finally:
+        conn.close()
 
 def add_missing_columns():
     """Runs manual migrations to add missing columns to existing tables."""
