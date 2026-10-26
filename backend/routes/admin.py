@@ -14,7 +14,8 @@ from io import BytesIO
 from utils import (
     _run, log_audit, ALL_FEATURES, BUNDLE_FEATURES, REGISTRATION_TEMPLATES,
     cache_get, cache_set, cache_delete, cache_delete_vendor_prefix, reset_sequence,
-    create_job, complete_job, fail_job, get_db_connection, vendor_has_feature
+    create_job, complete_job, fail_job, get_db_connection, vendor_has_feature,
+    FEATURE_DEPENDENCIES, normalize_features, remove_feature_and_dependents
 )
 from db_factory import get_backup_db_connection, get_table_columns
 try:
@@ -1164,7 +1165,11 @@ def get_vendors():
 @super_admin_required
 def get_available_features():
     from app import socketio, is_testing
-    return jsonify({"features": ALL_FEATURES, "bundles": BUNDLE_FEATURES})
+    return jsonify({
+        "features": ALL_FEATURES,
+        "bundles": {key: normalize_features(value) for key, value in BUNDLE_FEATURES.items()},
+        "dependencies": FEATURE_DEPENDENCIES,
+    })
 
 
 @admin_bp.route("/vendors/<int:vendor_id>/automated-report-schedule", methods=["GET"])
@@ -1432,6 +1437,8 @@ def bulk_vendor_action():
         elif action == "toggle_feature":
             feature = payload.get("feature")
             enabled = payload.get("enabled", True)
+            if feature not in ALL_FEATURES:
+                return jsonify({"error": "Unknown feature"}), 400
             for vid in vendor_ids:
                 c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (vid,))
                 row = c.fetchone()
@@ -1443,19 +1450,14 @@ def bulk_vendor_action():
                         feats = []
                 if enabled and feature not in feats:
                     feats.append(feature)
-                if enabled and feature == "automated_email_reports":
-                    for dependency in ("reports", "report_detailed"):
-                        if dependency not in feats:
-                            feats.append(dependency)
-                if enabled and feature == "employee_reports":
-                    if "reports" not in feats:
-                        feats.append("reports")
                 if not enabled:
-                    feats = [f for f in feats if f != feature]
+                    feats = remove_feature_and_dependents(feats, feature)
+                else:
+                    feats = normalize_features(feats)
                 c.execute("UPDATE subscriptions SET features = ? WHERE vendor_id = ?", (json.dumps(feats), vid))
-                if feature == "automated_email_reports" and not enabled:
+                if "automated_email_reports" not in feats:
                     c.execute("UPDATE automated_report_schedules SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE vendor_id = ?", (vid,))
-                if feature == "hostel_attendance_alerts" and not enabled:
+                if "hostel_attendance_alerts" not in feats:
                     c.execute("UPDATE hostel_alert_settings SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE vendor_id = ?", (vid,))
                 log_audit("vendor_toggle_feature", {"feature": feature, "enabled": enabled}, target_vendor_id=vid)
                 try:
@@ -1625,15 +1627,8 @@ def create_vendor():
         cost_per_employee = data.get("cost_per_employee") or 0
         features = data.get("features")
         if features is None:
-            from utils import BUNDLE_FEATURES
             features = BUNDLE_FEATURES.get(frontend_bundle_id, [])
-        if "automated_email_reports" in features:
-            for dependency in ("reports", "report_detailed"):
-                if dependency not in features:
-                    features.append(dependency)
-        if "employee_reports" in features and "reports" not in features:
-            features.append("reports")
-        
+        features = normalize_features(features)
         features_json = json.dumps(features)
         
         # Get columns to handle schema variations
@@ -1789,6 +1784,9 @@ def create_vendor():
             "admin_credentials": {"username": admin_username, "password": admin_password},
             "user_credentials": {"username": user_username, "password": user_password}
         })
+    except ValueError as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         conn.rollback()
         import traceback
@@ -1949,8 +1947,7 @@ def update_vendor_subscription(vendor_id):
                 r = c.fetchone()
                 bundle = r[0] if r else "default_attendance"
                 features_val = BUNDLE_FEATURES.get(bundle, [])
-            if isinstance(features_val, list):
-                features_val = json.dumps(features_val)
+            features_val = json.dumps(normalize_features(features_val))
             setup_fee = data.get("setup_fee") or 0
             plan_type = data.get("plan_type") or "custom"
             subs_cols = get_table_columns(conn, "subscriptions")
@@ -1980,18 +1977,9 @@ def update_vendor_subscription(vendor_id):
         # Handle aliases or logic
         if 'features' in data:
             query += "features = ?, "
-            features_val = data['features']
-            if isinstance(features_val, list) and 'automated_email_reports' in features_val:
-                for dependency in ('reports', 'report_detailed'):
-                    if dependency not in features_val:
-                        features_val.append(dependency)
-                data['features'] = features_val
-            if isinstance(features_val, list) and 'employee_reports' in features_val:
-                if 'reports' not in features_val:
-                    features_val.append('reports')
-                data['features'] = features_val
-            if isinstance(features_val, list):
-                features_val = json.dumps(features_val)
+            normalized = normalize_features(data['features'])
+            data['features'] = normalized
+            features_val = json.dumps(normalized)
             params.append(features_val)
 
         if 'max_users' in data:
@@ -2118,6 +2106,9 @@ def update_vendor_subscription(vendor_id):
                 pass
             
         return jsonify({"success": True})
+    except ValueError as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
@@ -2300,11 +2291,10 @@ def update_vendor_details(vendor_id):
         # caller deliberately submits a feature list.
         features_json = None
         if 'features' in data:
-            features_val = data['features']
-            if isinstance(features_val, list):
-                # Trigger model download if new feature set includes bulk attendance
-                trigger_model_download_if_needed(features_val)
-                features_json = json.dumps(features_val)
+            features_val = normalize_features(data['features'])
+            data['features'] = features_val
+            trigger_model_download_if_needed(features_val)
+            features_json = json.dumps(features_val)
 
         if features_json:
             # Check if subscription exists
@@ -2316,6 +2306,8 @@ def update_vendor_details(vendor_id):
                 c.execute("INSERT INTO subscriptions (vendor_id, features) VALUES (?, ?)", (vendor_id, features_json))
             if "hostel_attendance_alerts" not in json.loads(features_json):
                 c.execute("UPDATE hostel_alert_settings SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE vendor_id = ?", (vendor_id,))
+            if "automated_email_reports" not in json.loads(features_json):
+                c.execute("UPDATE automated_report_schedules SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE vendor_id = ?", (vendor_id,))
         
         if 'config' in data:
             config = data['config']
@@ -2599,6 +2591,9 @@ def update_vendor_details(vendor_id):
 
         return jsonify({"success": True})
         
+    except ValueError as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 400
     except sqlite3.IntegrityError:
         return jsonify({"error": "Username or Company Name already exists"}), 400
     except Exception as e:

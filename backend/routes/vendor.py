@@ -546,7 +546,7 @@ def get_company_details(company_id):
 
 
 @vendor_bp.route("/companies/<int:company_id>/draft", methods=["PUT"])
-@require_feature("shifts")
+@require_feature("add_shift")
 def update_draft_timetable(company_id):
     from app import get_db_connection, socketio, is_testing
     from services.auth_service import extract_token, verify_token
@@ -589,7 +589,7 @@ def update_draft_timetable(company_id):
 
 
 @vendor_bp.route("/companies/<int:company_id>/publish", methods=["POST"])
-@require_feature("shifts")
+@require_feature("add_shift")
 def publish_timetable(company_id):
     from app import get_db_connection, socketio, is_testing
     from services.auth_service import extract_token, verify_token
@@ -624,7 +624,7 @@ def publish_timetable(company_id):
 
 
 @vendor_bp.route("/companies/<int:company_id>/shifts/<shift_id>", methods=["DELETE"])
-@require_feature("shifts")
+@require_feature("add_shift")
 def delete_company_shift(company_id, shift_id):
     vendor_id, error = authenticate_vendor_access()
     if error:
@@ -699,7 +699,7 @@ def delete_company_shift(company_id, shift_id):
 
 
 @vendor_bp.route("/companies/<int:company_id>/activities/<activity_id>", methods=["DELETE"])
-@require_feature("shifts")
+@require_feature("add_shift")
 def delete_company_activity(company_id, activity_id):
     vendor_id, error = authenticate_vendor_access()
     if error:
@@ -757,6 +757,7 @@ def delete_company_activity(company_id, activity_id):
 
 
 @vendor_bp.route("/classes", methods=["GET"])
+@require_feature("classes", "bulk_image_attendance", "lecture_wise_reports")
 def list_classes():
     from app import get_db_connection, socketio, is_testing
     vendor_id, error = authenticate_vendor_access()
@@ -815,6 +816,7 @@ def list_classes():
 
 
 @vendor_bp.route("/classes", methods=["POST"])
+@require_feature("classes", "bulk_image_attendance")
 def create_class():
     from app import get_db_connection, socketio, is_testing
     from services.auth_service import extract_token, verify_token
@@ -861,6 +863,7 @@ def create_class():
 
 
 @vendor_bp.route("/classes/<int:cid>", methods=["PUT"])
+@require_feature("classes", "bulk_image_attendance")
 def update_class(cid: int):
     from app import get_db_connection, socketio, is_testing
     from services.auth_service import extract_token, verify_token
@@ -951,6 +954,7 @@ def update_class(cid: int):
 
 
 @vendor_bp.route("/classes/<int:cid>", methods=["DELETE"])
+@require_feature("classes", "bulk_image_attendance")
 def delete_class(cid: int):
     from app import get_db_connection, socketio, is_testing
     from services.auth_service import extract_token, verify_token
@@ -1884,6 +1888,7 @@ def mobile_app_update_status():
         conn.close()
 
 @vendor_bp.route("/subject-master", methods=["GET"])
+@require_feature("classes", "bulk_image_attendance", "lecture_wise_reports")
 @vendor_required
 def get_subject_master():
     from app import get_db_connection
@@ -1902,6 +1907,7 @@ def get_subject_master():
         return jsonify({"error": str(e)}), 500
 
 @vendor_bp.route("/subject-master", methods=["POST"])
+@require_feature("classes", "bulk_image_attendance")
 @vendor_required
 def add_master_subject():
     from app import get_db_connection
@@ -1930,6 +1936,7 @@ def add_master_subject():
         return jsonify({"error": str(e)}), 500
 
 @vendor_bp.route("/subject-master/<int:sid>", methods=["DELETE"])
+@require_feature("classes", "bulk_image_attendance")
 @vendor_required
 def delete_master_subject(sid):
     from app import get_db_connection

@@ -9,9 +9,9 @@ except Exception:
     task_prerun = task_postrun = task_failure = task_retry = task_received = task_revoked = _DummySignal()
 
 try:
-    from backend.utils import get_db_connection, log_audit, BUNDLE_FEATURES, redis_client
+    from backend.utils import get_db_connection, log_audit, BUNDLE_FEATURES, redis_client, normalize_features
 except Exception:
-    from utils import get_db_connection, log_audit, BUNDLE_FEATURES, redis_client
+    from utils import get_db_connection, log_audit, BUNDLE_FEATURES, redis_client, normalize_features
 
 def _get_socketio():
     """Lazy-load socketio so the Celery worker doesn't bootstrap the full Flask app on import."""
@@ -103,7 +103,7 @@ if celery:
             max_web_sessions = 1
         cost_per_user = payload.get("cost_per_user") or 0
         cost_per_employee = payload.get("cost_per_employee") or 0
-        features = payload.get("features") or BUNDLE_FEATURES.get(frontend_bundle_id, [])
+        features = normalize_features(payload.get("features") or BUNDLE_FEATURES.get(frontend_bundle_id, []))
         features_json = json.dumps(features)
         try:
             # Use INSERT OR IGNORE for all three to ensure task is re-runnable/robust

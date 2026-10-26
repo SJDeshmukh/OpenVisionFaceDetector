@@ -337,16 +337,27 @@ const SuperAdminDashboard = () => {
     'reports', 'report_detailed', 'report_payroll', 'automated_email_reports', 'employee_reports', 'xchat_ai', 'mobile_app', 'payroll', 'shifts',
     'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 
     'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'hostel_attendance_alerts', 'hostel_allocation', 'api_access', 'white_labeling',
-    'late_mark', 'bulk_image_attendance', 'classes', 'leave_management'
+    'late_mark', 'bulk_image_attendance', 'classes', 'leave_management', 'parent_login',
+    'lecture_wise_reports', 'parent_alerts', 'checkin_checkout'
   ]);
   const [bundleConfig, setBundleConfig] = useState({
     'attendance_ui': ['reports', 'report_detailed', 'mobile_app', 'live_attendance', 'cameras', 'enable_attendance', 'geofencing'],
     'attendance_payroll_ui': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'whatsapp_alerts'],
-    'enterprise_custom_ui': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'api_access', 'white_labeling'],
+    'enterprise_custom_ui': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'api_access', 'white_labeling', 'employee_reports'],
     'default_attendance': ['reports', 'report_detailed', 'report_payroll', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing'],
     'class_attendance_ui': ['reports', 'report_detailed', 'bulk_image_attendance', 'live_attendance', 'cameras', 'enable_attendance', 'classes'],
-    'attendx_bulk_ui': ['reports', 'report_detailed', 'bulk_image_attendance', 'live_attendance', 'cameras', 'enable_attendance', 'classes', 'payroll', 'parent_login', 'lecture_wise_reports'],
-    'tapinx_ui': ['reports', 'report_detailed', 'mobile_app', 'live_attendance', 'cameras', 'enable_attendance', 'geofencing', 'parent_alerts', 'checkin_checkout']
+    'attendx_bulk_ui': ['reports', 'report_detailed', 'report_payroll', 'bulk_image_attendance', 'live_attendance', 'cameras', 'enable_attendance', 'classes', 'payroll', 'parent_login', 'lecture_wise_reports'],
+    'tapinx_ui': ['reports', 'report_detailed', 'mobile_app', 'live_attendance', 'cameras', 'enable_attendance', 'geofencing', 'parent_alerts', 'checkin_checkout', 'parent_login']
+  });
+  const [featureDependencies, setFeatureDependencies] = useState({
+    report_detailed: ['reports'], report_payroll: ['reports'],
+    automated_email_reports: ['reports', 'report_detailed'],
+    employee_reports: ['reports', 'report_detailed'],
+    payroll: ['reports', 'report_payroll'], payable_hours: ['payroll'],
+    add_shift: ['shifts'], night_shift_logic: ['shifts'], geofencing: ['mobile_app'],
+    whatsapp_alerts: ['reports'], hostel_attendance_alerts: ['whatsapp_alerts'],
+    late_mark: ['enable_attendance'], lecture_wise_reports: ['reports', 'classes'],
+    parent_alerts: ['parent_login'], checkin_checkout: ['enable_attendance', 'mobile_app']
   });
   const [registrationTemplates, setRegistrationTemplates] = useState({
      "school": [
@@ -1191,8 +1202,10 @@ const SuperAdminDashboard = () => {
       });
       const features = response.data.features || [];
       const bundles = response.data.bundles || {};
+      const dependencies = response.data.dependencies || {};
       setAvailableFeatures(features);
       setBundleConfig(bundles);
+      setFeatureDependencies(dependencies);
       
       // Persist to local storage as fallback
       if (features.length > 0) {
@@ -1201,13 +1214,18 @@ const SuperAdminDashboard = () => {
       if (Object.keys(bundles).length > 0) {
         localStorage.setItem('admin_bundle_config', JSON.stringify(bundles));
       }
+      if (Object.keys(dependencies).length > 0) {
+        localStorage.setItem('admin_feature_dependencies', JSON.stringify(dependencies));
+      }
     } catch (error) {
       console.error("Error fetching features:", error);
       // Try to load from local storage fallback
       const cachedFeatures = localStorage.getItem('admin_available_features');
       const cachedBundles = localStorage.getItem('admin_bundle_config');
+      const cachedDependencies = localStorage.getItem('admin_feature_dependencies');
       if (cachedFeatures) setAvailableFeatures(JSON.parse(cachedFeatures));
       if (cachedBundles) setBundleConfig(JSON.parse(cachedBundles));
+      if (cachedDependencies) setFeatureDependencies(JSON.parse(cachedDependencies));
     }
   };
 
@@ -4303,43 +4321,31 @@ const SuperAdminDashboard = () => {
                                 ? [...(prev.features || []), feature]
                                 : (prev.features || []).filter(f => f !== feature);
 
-                              // Auto-enable dependencies
+                              // Apply the dependency graph returned by the backend.
                               if (checked) {
-                                if (feature === 'payroll') {
-                                  if (!newFeatures.includes('report_payroll')) newFeatures.push('report_payroll');
-                                  if (!newFeatures.includes('reports')) newFeatures.push('reports');
+                                const pending = [feature];
+                                while (pending.length) {
+                                  const current = pending.pop();
+                                  (featureDependencies[current] || []).forEach(dependency => {
+                                    if (!newFeatures.includes(dependency)) {
+                                      newFeatures.push(dependency);
+                                      pending.push(dependency);
+                                    }
+                                  });
                                 }
-                                if (feature === 'report_payroll' || feature === 'report_detailed') {
-                                  if (!newFeatures.includes('reports')) newFeatures.push('reports');
+                              } else {
+                                const removed = new Set([feature]);
+                                let changed = true;
+                                while (changed) {
+                                  changed = false;
+                                  Object.entries(featureDependencies).forEach(([candidate, dependencies]) => {
+                                    if (!removed.has(candidate) && dependencies.some(dependency => removed.has(dependency))) {
+                                      removed.add(candidate);
+                                      changed = true;
+                                    }
+                                  });
                                 }
-                                if (feature === 'automated_email_reports') {
-                                  if (!newFeatures.includes('reports')) newFeatures.push('reports');
-                                  if (!newFeatures.includes('report_detailed')) newFeatures.push('report_detailed');
-                                }
-
-                                // New Feature Dependencies
-                                if (feature === 'payable_hours') {
-                                  if (!newFeatures.includes('payroll')) newFeatures.push('payroll');
-                                  if (!newFeatures.includes('report_payroll')) newFeatures.push('report_payroll');
-                                  if (!newFeatures.includes('reports')) newFeatures.push('reports');
-                                }
-
-                                if (feature === 'night_shift_logic' || feature === 'add_shift') {
-                                  if (!newFeatures.includes('shifts')) newFeatures.push('shifts');
-                                }
-
-                                // Additional Feature Dependencies
-                                if (feature === 'geofencing') {
-                                  if (!newFeatures.includes('mobile_app')) newFeatures.push('mobile_app');
-                                }
-
-                                if (feature === 'whatsapp_alerts') {
-                                  if (!newFeatures.includes('reports')) newFeatures.push('reports');
-                                }
-
-                                if (feature === 'employee_reports') {
-                                  if (!newFeatures.includes('reports')) newFeatures.push('reports');
-                                }
+                                newFeatures = newFeatures.filter(item => !removed.has(item));
                               }
                               if (!checked && feature === 'automated_email_reports') {
                                 setReportSchedule(current => ({ ...current, enabled: false }));

@@ -13,7 +13,7 @@ from utils import (
     get_db_connection, get_table_columns, parse_db_datetime, 
     cache_get, cache_set, cache_delete_vendor_prefix,
     vendor_has_feature, track_metrics, rate_limit,
-    check_vendor_status, _run
+    check_vendor_status, require_feature, _run
 )
 from db_factory import set_row_factory
 from services.attendance_service import (
@@ -68,6 +68,7 @@ def _person_scope_context(cursor, vendor_id, requested_type=None):
     return vertical, wanted_type, people
 
 @attendance_core_bp.route("/attendance/filters", methods=["GET"])
+@require_feature("enable_attendance", "checkin_checkout", "live_attendance", "reports")
 @require_auth()
 @validate_request(AttendanceFilterSchema)
 def get_attendance_filters(valid_data: AttendanceFilterSchema):
@@ -223,6 +224,7 @@ def get_attendance_filters(valid_data: AttendanceFilterSchema):
     return jsonify(result)
 
 @attendance_core_bp.route("/attendance/summary", methods=["GET"])
+@require_feature("enable_attendance", "checkin_checkout", "live_attendance", "reports")
 @require_auth()
 @validate_request(AttendanceFilterSchema)
 def get_attendance_summary(valid_data: AttendanceFilterSchema):
@@ -309,6 +311,7 @@ def get_attendance_summary(valid_data: AttendanceFilterSchema):
     return jsonify(result)
 
 @attendance_core_bp.route("/person-event", methods=["POST"])
+@require_feature("enable_attendance", "checkin_checkout", "mobile_app")
 @require_auth()
 @validate_request(PersonEventSchema)
 def person_event(valid_data: PersonEventSchema):
@@ -723,6 +726,7 @@ def person_event(valid_data: PersonEventSchema):
 @attendance_core_bp.route("/attendance", methods=["GET"], endpoint="attendance_list_route")
 @track_metrics("attendance_list")
 @rate_limit(limit=300, window=60)
+@require_feature("enable_attendance", "checkin_checkout", "live_attendance", "reports")
 @require_auth()
 @validate_request(AttendanceFilterSchema)
 def get_attendance(valid_data: AttendanceFilterSchema):
@@ -834,6 +838,7 @@ def get_attendance(valid_data: AttendanceFilterSchema):
     return jsonify(result)
 
 @attendance_core_bp.route("/public/attendance-by-student", methods=["GET"])
+@require_feature("parent_login", "reports")
 @require_auth()
 @validate_request(PublicAttendanceRequest)
 def public_attendance_by_student(valid_data: PublicAttendanceRequest):
@@ -867,6 +872,7 @@ def public_attendance_by_student(valid_data: PublicAttendanceRequest):
     conn.close(); return jsonify({"attendance": rows, "student_number": student_number})
 
 @attendance_core_bp.route("/public/register-token", methods=["POST"])
+@require_feature("parent_login")
 @require_auth()
 def public_register_token():
     data = request.json or {}

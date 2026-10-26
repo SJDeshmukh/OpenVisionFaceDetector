@@ -141,6 +141,12 @@ def authenticate_vendor_access():
     Returns (vendor_id, None) on success or (None, error_response) on failure.
     """
     try:
+        # Several endpoints compose authentication, role and feature decorators.
+        # Reuse a successful result within this request instead of repeating all
+        # user/session/subscription queries for every decorator layer.
+        if getattr(g, "_vendor_access_checked", False):
+            return getattr(g, "_authenticated_vendor_id", None), None
+
         auth_header = request.headers.get('Authorization')
         username = None
         role = None
@@ -211,6 +217,8 @@ def authenticate_vendor_access():
             if impersonate_id:
                 try: vendor_id = int(impersonate_id)
                 except: pass
+            g._authenticated_vendor_id = vendor_id
+            g._vendor_access_checked = True
             return vendor_id, None
 
         if not vendor_id:
@@ -220,6 +228,8 @@ def authenticate_vendor_access():
         if not is_allowed:
             return None, (jsonify({"error": f"Access Denied: {reason}", "code": "VENDOR_SUSPENDED"}), 403)
 
+        g._authenticated_vendor_id = vendor_id
+        g._vendor_access_checked = True
         return vendor_id, None
 
     except Exception as e:

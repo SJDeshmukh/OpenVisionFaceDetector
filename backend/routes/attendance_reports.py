@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 from utils import (
     get_db_connection, get_table_columns, parse_db_date, parse_db_datetime, cache_get, cache_set,
-    vendor_has_feature, _run
+    vendor_has_feature, require_feature, _run
 )
 from services.attendance_service import (
     calculate_daily_hours, calculate_expected_hours, calculate_arrival_status
@@ -173,6 +173,7 @@ def _parse_dynamic_args():
 # /reports/filters  –  mirrors /attendance/filters but under the reports prefix
 # ---------------------------------------------------------------------------
 @attendance_reports_bp.route("/reports/filters", methods=["GET"])
+@require_feature("reports", "report_detailed", "report_payroll", "lecture_wise_reports")
 @require_auth()
 def get_report_filters():
     vendor_id = g.vendor_id
@@ -278,6 +279,7 @@ def get_report_filters():
     })
 
 @attendance_reports_bp.route("/reports/analytics", methods=["GET"])
+@require_feature("reports", "report_detailed", "report_payroll", "lecture_wise_reports")
 @require_auth()
 @validate_request(PayrollReportRequest)
 def get_analytics(valid_data: PayrollReportRequest):
@@ -441,6 +443,7 @@ def get_analytics(valid_data: PayrollReportRequest):
     return jsonify(result)
 
 @attendance_reports_bp.route("/reports/export", methods=["GET"])
+@require_feature("reports", "report_detailed", "report_payroll", "lecture_wise_reports")
 @require_auth()
 @validate_request(PayrollReportRequest)
 def export_attendance(valid_data: PayrollReportRequest):
@@ -554,6 +557,7 @@ def export_attendance(valid_data: PayrollReportRequest):
     }
 
 @attendance_reports_bp.route("/reports/payroll", methods=["GET"])
+@require_feature("payroll", "report_payroll")
 @require_auth()
 @validate_request(PayrollReportRequest)
 def get_payroll_report(valid_data: PayrollReportRequest):
@@ -821,6 +825,7 @@ def get_payroll_report(valid_data: PayrollReportRequest):
     })
 
 @attendance_reports_bp.route("/reports/payroll/export-daily", methods=["GET"])
+@require_feature("payroll", "report_payroll")
 @require_auth()
 def export_payroll_daily():
     vendor_id  = g.vendor_id
@@ -967,6 +972,7 @@ def export_payroll_daily():
         conn.close()
 
 @attendance_reports_bp.route("/reports/payroll/export-excel", methods=["GET"])
+@require_feature("payroll", "report_payroll")
 @require_auth()
 def export_payroll_excel():
     vendor_id = g.vendor_id
@@ -1108,6 +1114,7 @@ def export_payroll_excel():
         conn.close()
 
 @attendance_reports_bp.route("/reports/payroll/import", methods=["POST"])
+@require_feature("payroll", "report_payroll")
 @require_auth()
 def import_payroll_adjustments():
     vendor_id = g.vendor_id

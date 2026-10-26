@@ -23,7 +23,8 @@ const SCHOOL_ACTIVITY_TYPES = ['College', 'Hostel', 'Meal', 'Break', 'Custom'];
 
 const Timetable = () => {
   const { user } = useAuth();
-  const canManageTimetable = ['super_admin', 'vendor_admin', 'admin', 'owner'].includes(user?.role);
+  const canManageTimetable = ['super_admin', 'vendor_admin', 'admin', 'owner'].includes(user?.role) &&
+    (user?.role === 'super_admin' || user?.features?.includes('add_shift'));
   const [vendors, setVendors] = useState([]);
   const [businessTypes, setBusinessTypes] = useState([]);
   const [selectedBusinessType, setSelectedBusinessType] = useState('all');

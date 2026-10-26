@@ -16,7 +16,7 @@ from flask import Blueprint, request, jsonify, g, current_app
 from datetime import datetime
 from services.auth_service import authenticate_vendor_access, require_auth, verify_token, extract_token
 from db_factory import get_db_connection, set_row_factory
-from utils import cache_delete_vendor_prefix
+from utils import cache_delete_vendor_prefix, require_feature, vendor_has_feature
 from services.person_scope_service import (
     class_scope_for,
     class_scope_matches,
@@ -204,6 +204,7 @@ def _upsert_config(c, vendor_id, fields_json, now):
 # ── Config endpoints (superadmin sets custom fields per vendor) ────────────────
 
 @bulk_attendance_bp.route("/bulk-attendance/config", methods=["GET"])
+@require_feature("bulk_image_attendance", "classes")
 @require_auth()
 def get_bulk_attendance_config():
     vendor_id = g.vendor_id
@@ -255,6 +256,7 @@ def get_bulk_attendance_config():
 
 
 @bulk_attendance_bp.route("/bulk-attendance/config", methods=["PUT"])
+@require_feature("bulk_image_attendance", "classes")
 @require_auth()
 def save_bulk_attendance_config():
     if g.user_role != 'super_admin':
@@ -339,6 +341,7 @@ def save_bulk_attendance_config():
 # ── Lecture CRUD ───────────────────────────────────────────────────────────────
 
 @bulk_attendance_bp.route("/bulk-attendance/lectures", methods=["GET"])
+@require_feature("bulk_image_attendance", "classes", "lecture_wise_reports")
 @require_auth()
 def list_lectures():
     vendor_id = g.vendor_id
@@ -377,6 +380,7 @@ def list_lectures():
 
 
 @bulk_attendance_bp.route("/bulk-attendance/lectures", methods=["POST"])
+@require_feature("bulk_image_attendance", "classes")
 @require_auth()
 def create_lecture():
     vendor_id = g.vendor_id
@@ -428,6 +432,7 @@ def create_lecture():
 
 
 @bulk_attendance_bp.route("/bulk-attendance/lectures/<int:lecture_id>", methods=["GET"])
+@require_feature("bulk_image_attendance", "classes", "lecture_wise_reports")
 @require_auth()
 def get_lecture(lecture_id):
     vendor_id = g.vendor_id
@@ -525,6 +530,7 @@ def get_lecture(lecture_id):
 
 
 @bulk_attendance_bp.route("/bulk-attendance/lectures/<int:lecture_id>", methods=["DELETE"])
+@require_feature("bulk_image_attendance", "classes")
 @require_auth()
 def delete_lecture(lecture_id):
     vendor_id = g.vendor_id
@@ -540,6 +546,7 @@ def delete_lecture(lecture_id):
 # ── Attendance marking ─────────────────────────────────────────────────────────
 
 @bulk_attendance_bp.route("/bulk-attendance/lectures/<int:lecture_id>/mark", methods=["POST"])
+@require_feature("bulk_image_attendance", "classes")
 @require_auth()
 def mark_lecture_attendance(lecture_id):
     vendor_id = g.vendor_id
@@ -713,6 +720,7 @@ def mark_lecture_attendance(lecture_id):
 # ── Per-student lecture history (vendor view) ──────────────────────────────────
 
 @bulk_attendance_bp.route("/bulk-attendance/student/<int:person_id>", methods=["GET"])
+@require_feature("bulk_image_attendance", "lecture_wise_reports")
 @require_auth()
 def get_student_lecture_history(person_id):
     vendor_id  = g.vendor_id
@@ -797,6 +805,12 @@ def get_parent_lecture_attendance():
         return jsonify({"error": "Session expired"}), 401
 
     vendor_id = pu['vendor_id']
+    if not (
+        vendor_has_feature(vendor_id, "parent_login")
+        and vendor_has_feature(vendor_id, "lecture_wise_reports")
+    ):
+        conn.close()
+        return jsonify({"error": "Parent lecture reports are not enabled"}), 403
     person_id = pu['selected_person_id']
     if not person_id:
         # Try to resolve from student_parents
@@ -869,6 +883,7 @@ def get_parent_lecture_attendance():
 # ── Faculty Mobile Sync ───────────────────────────────────────────────────────
 
 @bulk_attendance_bp.route("/bulk-attendance/faculty/classes", methods=["GET"])
+@require_feature("bulk_image_attendance", "classes")
 @require_auth()
 def faculty_assigned_classes():
     """Return classes (+ subjects) assigned to the logged-in faculty.
@@ -923,6 +938,7 @@ def faculty_assigned_classes():
 
 
 @bulk_attendance_bp.route("/bulk-attendance/faculty/sync", methods=["POST"])
+@require_feature("bulk_image_attendance", "classes")
 @require_auth()
 def faculty_sync_attendance():
     """Accept queued attendance records from AttendX faculty mobile app."""
@@ -1042,6 +1058,7 @@ def faculty_sync_attendance():
 
 
 @bulk_attendance_bp.route("/bulk-attendance/faculty/scan", methods=["POST"])
+@require_feature("bulk_image_attendance")
 @require_auth()
 def faculty_scan_image():
     """Faculty submits a photo; starts async detection, returns job_id immediately.
@@ -1108,6 +1125,7 @@ def faculty_scan_image():
 
 
 @bulk_attendance_bp.route("/bulk-attendance/faculty/scan/status/<job_id>", methods=["GET"])
+@require_feature("bulk_image_attendance")
 @require_auth()
 def faculty_scan_status(job_id):
     """Poll for async scan result.
@@ -1130,6 +1148,7 @@ def faculty_scan_status(job_id):
 
 
 @bulk_attendance_bp.route("/bulk-attendance/faculty/class-students", methods=["GET"])
+@require_feature("bulk_image_attendance", "classes")
 @require_auth()
 def faculty_class_students():
     """Return students in a specific class/division (for relabeling UI).
@@ -1182,6 +1201,7 @@ def faculty_class_students():
 
 
 @bulk_attendance_bp.route("/bulk-attendance/faculty/save-embedding", methods=["POST"])
+@require_feature("bulk_image_attendance")
 @require_auth()
 def faculty_save_embedding():
     """Store a corrected face embedding (faculty relabels a student).

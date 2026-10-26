@@ -53,6 +53,15 @@ const ProtectedRoute = ({ allowedRoles }) => {
   return <Outlet />;
 };
 
+const FeatureRoute = ({ anyOf, children }) => {
+  const { user } = useAuth();
+  if (user?.role === 'super_admin') return children;
+  const enabled = Array.isArray(user?.features) ? user.features : [];
+  return anyOf.some(feature => enabled.includes(feature))
+    ? children
+    : <Navigate to="/dashboard" replace />;
+};
+
 const FaceResetRoute = () => {
   const { user } = useAuth();
   const vertical = String(user?.vertical || '').trim().toLowerCase();
@@ -100,7 +109,7 @@ function App() {
               </Route>
 
               <Route element={<ProtectedRoute allowedRoles={['owner']} />}>
-                <Route path="/owner/advances" element={<OwnerAdvances />} />
+                <Route path="/owner/advances" element={<FeatureRoute anyOf={['payroll', 'report_payroll']}><OwnerAdvances /></FeatureRoute>} />
               </Route>
 
               {/* Admin/Rector/HOD/Faculty Routes */}
@@ -108,16 +117,16 @@ function App() {
                 <Route path="/" element={<Navigate to="/dashboard" replace />} />
                 <Route path="/dashboard" element={<Dashboard />} />
                 <Route path="/people" element={<People />} />
-                <Route path="/cameras" element={<Cameras />} />
-                <Route path="/reports" element={<Reports />} />
+                <Route path="/cameras" element={<FeatureRoute anyOf={['cameras']}><Cameras /></FeatureRoute>} />
+                <Route path="/reports" element={<FeatureRoute anyOf={['reports', 'report_detailed', 'report_payroll', 'lecture_wise_reports', 'parent_login']}><Reports /></FeatureRoute>} />
                 <Route path="/settings" element={<Settings />} />
-                <Route path="/timetable" element={<Timetable />} />
-                <Route path="/wages" element={<Wages />} />
-                <Route path="/live-attendance" element={<LiveAttendance />} />
-                <Route path="/bulk-image-attendance" element={<BulkImageAttendance />} />
-                <Route path="/classes" element={<Classes />} />
-                <Route path="/faces" element={<Faces />} />
-                <Route path="/leave-management" element={<LeaveManagement />} />
+                <Route path="/timetable" element={<FeatureRoute anyOf={['shifts', 'add_shift']}><Timetable /></FeatureRoute>} />
+                <Route path="/wages" element={<FeatureRoute anyOf={['payroll', 'report_payroll', 'payable_hours']}><Wages /></FeatureRoute>} />
+                <Route path="/live-attendance" element={<FeatureRoute anyOf={['live_attendance']}><LiveAttendance /></FeatureRoute>} />
+                <Route path="/bulk-image-attendance" element={<FeatureRoute anyOf={['bulk_image_attendance']}><BulkImageAttendance /></FeatureRoute>} />
+                <Route path="/classes" element={<FeatureRoute anyOf={['classes', 'bulk_image_attendance']}><Classes /></FeatureRoute>} />
+                <Route path="/faces" element={<FeatureRoute anyOf={['bulk_image_attendance', 'classes']}><Faces /></FeatureRoute>} />
+                <Route path="/leave-management" element={<FeatureRoute anyOf={['leave_management', 'parent_login']}><LeaveManagement /></FeatureRoute>} />
                 <Route path="/face-reset-requests" element={<FaceResetRoute />} />
                 <Route path="/hostel-alerts" element={<HostelAlertsRoute />} />
                 <Route path="/hostel-allocation" element={<HostelAllocationRoute />} />

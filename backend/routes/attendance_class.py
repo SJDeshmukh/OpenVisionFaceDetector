@@ -16,6 +16,7 @@ from services.face_service import (
     _ensure_vendor_emb_cache, _suggest_from_cache
 )
 from services.auth_service import require_auth
+from utils import require_feature
 from services.person_scope_service import class_scope_matches, person_type_for, vendor_vertical
 from middleware.validation import validate_request
 from schemas import (
@@ -28,6 +29,7 @@ attendance_class_bp = Blueprint('attendance_class_bp', __name__)
 logger = logging.getLogger(__name__)
 
 @attendance_class_bp.route("/class-batch/start", methods=["POST"])
+@require_feature("bulk_image_attendance")
 @require_auth()
 @validate_request(ClassBatchStartSchema)
 def class_batch_start(valid_data: ClassBatchStartSchema):
@@ -52,6 +54,7 @@ def class_batch_start(valid_data: ClassBatchStartSchema):
     return jsonify({"batch_id": bid})
 
 @attendance_class_bp.route("/class-batch/add", methods=["POST"])
+@require_feature("bulk_image_attendance")
 @require_auth()
 @validate_request(ClassBatchAddSchema)
 def class_batch_add(valid_data: ClassBatchAddSchema):
@@ -156,6 +159,7 @@ def class_batch_add(valid_data: ClassBatchAddSchema):
     return jsonify({"ok": True, "created": created})
 
 @attendance_class_bp.route("/class-batch/add-inferred", methods=["POST"])
+@require_feature("bulk_image_attendance")
 @require_auth()
 def class_batch_add_inferred():
     vendor_id = g.vendor_id
@@ -207,6 +211,7 @@ def class_batch_add_inferred():
     return jsonify({"ok": True, "created": created_ids})
 
 @attendance_class_bp.route("/class-batch/commit", methods=["POST"])
+@require_feature("bulk_image_attendance")
 @require_auth()
 @validate_request(ClassBatchCommitSchema)
 def class_batch_commit(valid_data: ClassBatchCommitSchema):
@@ -477,6 +482,7 @@ def class_batch_commit(valid_data: ClassBatchCommitSchema):
     })
 
 @attendance_class_bp.route("/class-batch/status", methods=["GET"])
+@require_feature("bulk_image_attendance")
 @require_auth()
 @validate_request(ClassBatchStatusSchema)
 def class_batch_status(valid_data: ClassBatchStatusSchema):
@@ -505,6 +511,7 @@ def class_batch_status(valid_data: ClassBatchStatusSchema):
     return jsonify({"batch": {"id": b[0], "class_year": b[1], "division": b[2], "branch": b[3], "status": b[4]}, "items": items})
 
 @attendance_class_bp.route("/class-batch/item-image/<item_id>", methods=["GET"])
+@require_feature("bulk_image_attendance")
 @require_auth()
 def class_batch_item_image(item_id):
     # Dashboard authentication is carried by the HttpOnly session cookie. Keep
@@ -552,6 +559,7 @@ def class_batch_item_image(item_id):
     return Response(raw_data, mimetype=mime_type)
 
 @attendance_class_bp.route("/class-batch/clear", methods=["POST"])
+@require_feature("bulk_image_attendance")
 @require_auth()
 def class_batch_clear():
     vendor_id = g.vendor_id
@@ -564,6 +572,7 @@ def class_batch_clear():
     return jsonify({"ok": True})
 
 @attendance_class_bp.route("/class-batch/refresh", methods=["POST"])
+@require_feature("bulk_image_attendance")
 @require_auth()
 def class_batch_refresh():
     vendor_id = g.vendor_id

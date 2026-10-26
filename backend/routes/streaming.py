@@ -4,6 +4,7 @@ import sqlite3
 import base64
 from datetime import datetime
 import time
+from utils import require_feature
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,7 @@ streaming_bp = Blueprint('streaming_bp', __name__)
 
 @streaming_bp.route("/stream/upload", methods=["POST"])
 @vendor_required
+@require_feature("cameras", "mobile_app")
 def upload_stream_frame():
     from app import get_db_connection, socketio, is_testing
     from utils import ALL_FEATURES
@@ -87,6 +89,7 @@ def upload_stream_frame():
 
 
 @streaming_bp.route("/stream/view", methods=["GET"])
+@require_feature("cameras", "live_attendance")
 def view_stream_frame():
     from app import get_db_connection, socketio, is_testing
     from utils import ALL_FEATURES
@@ -132,6 +135,7 @@ def view_stream_frame():
 
 
 @streaming_bp.route("/stream/active-devices", methods=["GET"])
+@require_feature("cameras", "live_attendance")
 def list_active_devices():
     from app import get_db_connection, socketio, is_testing, ALL_FEATURES
     from app import latest_frames

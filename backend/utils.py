@@ -16,6 +16,10 @@ import cachetools
 import logging
 from functools import wraps
 from flask import request, jsonify
+from feature_policy import (
+    ALL_FEATURES, FEATURE_DEPENDENCIES, normalize_features,
+    remove_feature_and_dependents,
+)
 
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO)
@@ -35,8 +39,6 @@ BUNDLE_FEATURES = {
     'attendx_bulk_ui': ['reports', 'report_detailed', 'bulk_image_attendance', 'live_attendance', 'cameras', 'enable_attendance', 'classes', 'payroll', 'parent_login', 'lecture_wise_reports'],
     'tapinx_ui': ['reports', 'report_detailed', 'mobile_app', 'live_attendance', 'cameras', 'enable_attendance', 'geofencing', 'parent_alerts', 'checkin_checkout', 'parent_login']
 }
-
-ALL_FEATURES = ['reports', 'report_detailed', 'report_payroll', 'automated_email_reports', 'employee_reports', 'xchat_ai', 'mobile_app', 'payroll', 'shifts', 'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'hostel_attendance_alerts', 'hostel_allocation', 'api_access', 'white_labeling', 'late_mark', 'bulk_image_attendance', 'classes', 'leave_management', 'parent_login', 'lecture_wise_reports', 'parent_alerts', 'checkin_checkout']
 
 REGISTRATION_TEMPLATES = {
     "school": [
@@ -687,10 +689,6 @@ def require_feature(*feature_names):
             
             # Check Feature (Only for Vendor Context)
             if vendor_id:
-                # Bypass for mobile_app (legacy/special case) if it's one of the requested features
-                if "mobile_app" in feature_names:
-                    return f(*args, **kwargs)
-                
                 conn = get_db_connection()
                 c = conn.cursor()
                 c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
