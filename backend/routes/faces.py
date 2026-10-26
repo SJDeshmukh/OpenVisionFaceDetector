@@ -1326,6 +1326,9 @@ def download_faces():
     include_assets = str(request.args.get("include_assets", "true")).strip().lower() not in {
         "0", "false", "no", "off"
     }
+    include_face_images = include_assets and str(
+        request.args.get("include_face_images", "true")
+    ).strip().lower() not in {"0", "false", "no", "off"}
 
     requested_cursor = request.args.get("cursor")
     delta_cursor = None
@@ -1371,10 +1374,9 @@ def download_faces():
             changed_ids = None
             deleted_ids = []
     
-    asset_columns = (
-        "f.templates, f.face_image" if include_assets
-        else "NULL AS templates, NULL AS face_image"
-    )
+    template_column = "f.templates" if include_assets else "NULL AS templates"
+    image_column = "f.face_image" if include_face_images else "NULL AS face_image"
+    asset_columns = f"{template_column}, {image_column}"
     query = f"""
         SELECT f.id, f.display_id, f.name, f.phone, f.department,
                f.designation, f.shift, f.vendor_id, f.custom_data,

@@ -90,7 +90,6 @@ public class UsersFragment extends Fragment {
         View view = inflater.inflate(R.layout.fragment_users, container, false);
         
         dbManager = new DBManager(requireContext().getApplicationContext());
-        dbManager.loadPerson(); // Ensure latest data is loaded
 
         recyclerView = view.findViewById(R.id.recycler_users);
         recyclerView.setLayoutManager(new GridLayoutManager(getContext(), 2));
@@ -219,11 +218,6 @@ public class UsersFragment extends Fragment {
     }
 
     public void refreshList() {
-        try {
-            if (dbManager != null) {
-                dbManager.loadPerson();
-            }
-        } catch (Exception ignored) {}
         if (adapter != null) adapter.replaceUsers(DBManager.personList);
     }
 

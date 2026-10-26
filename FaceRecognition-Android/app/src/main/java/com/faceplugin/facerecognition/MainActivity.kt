@@ -965,7 +965,7 @@ class MainActivity : AppCompatActivity() {
         try {
             val syncPrefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
             val syncCursor = if (syncPrefs.contains("face_sync_cursor")) syncPrefs.getLong("face_sync_cursor", 0L) else null
-            RetrofitClient.getService().downloadFaces(syncCursor).enqueue(object : Callback<SyncResponse> {
+            RetrofitClient.getService().downloadFaces(syncCursor, false).enqueue(object : Callback<SyncResponse> {
                 override fun onResponse(call: Call<SyncResponse>, response: Response<SyncResponse>) {
                     android.util.Log.e("AppCrash", "Sync Response: ${response.code()}")
                     try {
@@ -994,14 +994,14 @@ class MainActivity : AppCompatActivity() {
                                         }
                                     }
 
-                                    faces.forEach { faceData ->
-                                        try {
-                                            var existingPerson: com.faceplugin.facerecognition.Person? = null
-                                            synchronized(DBManager.personList) {
-                                                if (!faceData.id.isNullOrEmpty()) {
-                                                    existingPerson = DBManager.personList.find { it.id == faceData.id }
-                                                }
-                                            }
+                                    val peopleById = synchronized(DBManager.personList) {
+                                        DBManager.personList.filter { !it.id.isNullOrEmpty() }.associateBy { it.id }
+                                    }
+                                    val personBatchStarted = dbManager.beginPersonBatch()
+                                    try {
+                                        faces.forEach { faceData ->
+                                            try {
+                                            val existingPerson = faceData.id?.let { peopleById[it] }
 
                                             val phone = faceData.phone ?: ""
                                             val dept = faceData.department ?: ""
@@ -1082,22 +1082,25 @@ class MainActivity : AppCompatActivity() {
                                                     updatedFacesCount++
                                                 }
                                             }
-                                        } catch (_: Exception) {
-                                        }
-                                    }
-
-                                    // Cleanup phase: remove local persons that are no longer on server
-                                    if (fullSync) {
-                                        val localPersonsCopy = synchronized(DBManager.personList) {
-                                            ArrayList(DBManager.personList)
-                                        }
-                                        localPersonsCopy.forEach { localPerson ->
-                                            val localId = localPerson.id
-                                            if (!localId.isNullOrEmpty() && !serverIds.contains(localId)) {
-                                                dbManager.deletePersonById(localId)
-                                                android.util.Log.e("AppCrash", "Deleted person not on server: ${localPerson.name} (id: $localId)")
+                                            } catch (_: Exception) {
                                             }
                                         }
+
+                                        // Cleanup phase: remove local persons that are no longer on server
+                                        if (fullSync) {
+                                            val localPersonsCopy = synchronized(DBManager.personList) {
+                                                ArrayList(DBManager.personList)
+                                            }
+                                            localPersonsCopy.forEach { localPerson ->
+                                                val localId = localPerson.id
+                                                if (!localId.isNullOrEmpty() && !serverIds.contains(localId)) {
+                                                    dbManager.deletePersonById(localId)
+                                                    android.util.Log.e("AppCrash", "Deleted person not on server: ${localPerson.name} (id: $localId)")
+                                                }
+                                            }
+                                        }
+                                    } finally {
+                                        dbManager.commitPersonBatch(personBatchStarted)
                                     }
 
                                     prefs.edit().apply {
@@ -1106,10 +1109,6 @@ class MainActivity : AppCompatActivity() {
                                     }.apply()
 
                                     runOnUiThread {
-                                        try {
-                                            dbManager.loadPerson()
-                                        } catch (_: Exception) {
-                                        }
                                         val currentFragment = supportFragmentManager.findFragmentById(R.id.fragment_container)
                                         if (currentFragment is UsersFragment) {
                                             currentFragment.refreshList()

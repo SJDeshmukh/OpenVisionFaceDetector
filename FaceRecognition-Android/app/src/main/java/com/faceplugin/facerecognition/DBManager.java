@@ -24,7 +24,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
      public static CopyOnWriteArrayList<Person> personList = new CopyOnWriteArrayList<Person>();
 
     public DBManager(Context context) {
-        super(context, "mydb" , null, 17);
+        super(context, "mydb" , null, 18);
     }
 
     @Override
@@ -35,6 +35,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
                         "(local_uid text, id text, name text, face blob, templates blob, phone text, department text, designation text, shift text, custom_data text, synced integer default 1, display_id integer default 0)"
         );
         db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_person_local_uid ON person(local_uid)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_person_id ON person(id)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_person_display_id ON person(display_id)");
         db.execSQL(
                 "create table attendance_queue " +
                         "(id integer primary key autoincrement, person_id text, local_uid text, name text, timestamp text, status text, image blob, is_late integer)"
@@ -151,6 +153,10 @@ import java.util.concurrent.CopyOnWriteArrayList;
             try {
                 db.execSQL("ALTER TABLE person ADD COLUMN display_id integer default 0");
             } catch (Exception ignored) {}
+        }
+        if (oldVersion < 18) {
+            try { db.execSQL("CREATE INDEX IF NOT EXISTS idx_person_id ON person(id)"); } catch (Exception ignored) {}
+            try { db.execSQL("CREATE INDEX IF NOT EXISTS idx_person_display_id ON person(display_id)"); } catch (Exception ignored) {}
         }
     }
 
@@ -287,17 +293,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
                         break;
                     }
                 }
-                if (!exists && templates != null) {
-                    for (int i = 0; i < personList.size(); i++) {
-                        Person p = personList.get(i);
-                        if (p.templates != null && Arrays.equals(p.templates, templates)) {
-                            exists = true;
-                            existingLocalUid = p.localUid;
-                            personList.remove(i);
-                            break;
-                        }
-                    }
-                }
+                // Backend IDs are the canonical identity. Comparing every
+                // template against the growing gallery here made a 500-person
+                // first sync quadratic and could merge two distinct records.
             } else if (localUid != null && !localUid.isEmpty()) {
                 for (int i = 0; i < personList.size(); i++) {
                     Person p = personList.get(i);
@@ -340,8 +338,11 @@ import java.util.concurrent.CopyOnWriteArrayList;
         contentValues.put("local_uid", effectiveLocalUid);
         contentValues.put("id", id);
         contentValues.put("name", name);
-        contentValues.put("face", faceJpg);
-        contentValues.put("templates", templates);
+        // A metadata/template-only cloud sync must retain the existing photo.
+        // New remote rows may intentionally have no photo to keep a 500+ person
+        // sync response small; recognition only requires the template.
+        if (faceJpg != null || !exists) contentValues.put("face", faceJpg);
+        if (templates != null || !exists) contentValues.put("templates", templates);
         contentValues.put("phone", phone);
         contentValues.put("department", department);
         contentValues.put("designation", designation);
@@ -383,6 +384,31 @@ import java.util.concurrent.CopyOnWriteArrayList;
             cv.put("templates", templates);
             db.update("person", cv, "local_uid = ?", new String[]{localUid});
         } catch (Exception ignored) {}
+    }
+
+    /** Group a roster download into one SQLite transaction. */
+    public boolean beginPersonBatch() {
+        try {
+            SQLiteDatabase db = this.getWritableDatabase();
+            if (!db.inTransaction()) db.beginTransaction();
+            return db.inTransaction();
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    public void commitPersonBatch(boolean started) {
+        if (!started) return;
+        try {
+            SQLiteDatabase db = this.getWritableDatabase();
+            if (db.inTransaction()) db.setTransactionSuccessful();
+        } catch (Exception ignored) {
+        } finally {
+            try {
+                SQLiteDatabase db = this.getWritableDatabase();
+                if (db.inTransaction()) db.endTransaction();
+            } catch (Exception ignored) {}
+        }
     }
 
     /** Insert or update a person downloaded from the server, including their display_id. */
@@ -739,7 +765,14 @@ import java.util.concurrent.CopyOnWriteArrayList;
         java.util.Map<String, Integer> idMap = new java.util.HashMap<>();
 
         SQLiteDatabase db = this.getReadableDatabase();
-        Cursor res =  db.rawQuery( "select rowid, * from person", null );
+        // Never include the face BLOB in a roster load. A SELECT * forces
+        // SQLite/CursorWindow to materialize every enrolled photo even though
+        // list and recognition screens only need metadata and templates.
+        Cursor res = db.rawQuery(
+                "select rowid, local_uid, id, name, templates, phone, department, " +
+                        "designation, shift, custom_data, synced, display_id from person " +
+                        "order by case when display_id > 0 then display_id else 2147483647 end, rowid",
+                null);
         res.moveToFirst();
 
         while(res.isAfterLast() == false){
@@ -768,34 +801,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
                     db.update("person", cv, "rowid = ?", new String[]{String.valueOf(rid)});
                     localUid = newUid;
                 } catch (Exception ignored) {}
-            }
-
-            // AUTO-HEAL: If template is missing or cannot be decoded, regenerate from stored face photo
-            boolean isTemplateValid = (templates != null && com.faceplugin.faceengine.FaceTemplateCodec.decode(templates) != null);
-            if (!isTemplateValid) {
-                try {
-                    byte[] faceBlob = null;
-                    int faceIdx = res.getColumnIndex("face");
-                    if (faceIdx != -1) faceBlob = res.getBlob(faceIdx);
-                    if (faceBlob != null && faceBlob.length > 0) {
-                        Bitmap bmp = BitmapFactory.decodeByteArray(faceBlob, 0, faceBlob.length);
-                        if (bmp != null) {
-                            byte[] extracted = LocalFaceEngineFacade.extractTemplateFromBitmap(bmp);
-                            if (extracted != null && extracted.length > 0) {
-                                templates = extracted;
-                                try {
-                                    SQLiteDatabase writeDb = this.getWritableDatabase();
-                                    ContentValues cv = new ContentValues();
-                                    cv.put("templates", extracted);
-                                    if (localUid != null && !localUid.isEmpty()) {
-                                        writeDb.update("person", cv, "local_uid = ?", new String[]{localUid});
-                                    }
-                                } catch (Exception ignoredWrite) {}
-                            }
-                            bmp.recycle();
-                        }
-                    }
-                } catch (Exception ignoredExtraction) {}
             }
 
             String id = "";

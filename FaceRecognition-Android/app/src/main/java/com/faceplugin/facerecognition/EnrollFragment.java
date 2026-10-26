@@ -372,7 +372,6 @@ public class EnrollFragment extends Fragment {
 
             // NEW: Always save locally first with synced=false
             String localUid = dbManager.insertLocalPerson(name, faceImage, templates, phone, department, designation, shift, dynamicData.toString());
-            dbManager.loadPerson(); // Refresh to make recognizable immediately
 
             if (NetworkUtils.INSTANCE.isOnline(requireContext().getApplicationContext()) &&
                     "true".equalsIgnoreCase(requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE).getString("cloud_sync", "true"))) {
@@ -856,7 +855,6 @@ public class EnrollFragment extends Fragment {
                         } else {
                             dbManager.updatePersonAfterSyncByLocalUid(localUid, newId);
                         }
-                        try { dbManager.loadPerson(); } catch (Exception ignored) {}
                     }
                 } else {
                     String errorMsg = "Sync Failed: " + response.code();

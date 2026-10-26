@@ -168,7 +168,6 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         View view = inflater.inflate(R.layout.fragment_identify, container, false);
 
         dbManager = new DBManager(requireContext().getApplicationContext());
-        dbManager.loadPerson(); // Load faces when fragment is created
 
         // --- Socket.IO Init ---
         android.content.SharedPreferences sharedPref = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
@@ -307,11 +306,6 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     }
 
     private void resumeResources() {
-        try {
-            if (dbManager != null) {
-                dbManager.loadPerson();
-            }
-        } catch (Exception ignored) {}
         lastProcessedPersonId = null;
         hideScreenSaver(); // Start with screen active
         vendorVerifyOnlyMode = isVendorVerifyOnlyMode();
@@ -1142,19 +1136,9 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                             }
                             for (Person person : people) {
                                 if (person == null) continue;
-                                if (person.templates == null || person.templates.length == 0 || com.faceplugin.faceengine.FaceTemplateCodec.decode(person.templates) == null) {
-                                    if (dbManager != null) {
-                                        Bitmap face = dbManager.getPersonFace(person.localUid);
-                                        if (face != null) {
-                                            byte[] extracted = LocalFaceEngineFacade.extractTemplateFromBitmap(face);
-                                            if (extracted != null && extracted.length > 0) {
-                                                person.templates = extracted;
-                                                dbManager.updatePersonTemplates(person.localUid, extracted);
-                                            }
-                                            face.recycle();
-                                        }
-                                    }
-                                }
+                                // Template decoding is cached by LocalFaceEngine. Do not
+                                // validate or rebuild templates from SQLite photos inside
+                                // the per-frame, per-person attendance loop.
                                 if (person.templates == null || person.templates.length == 0) continue;
                                 float similarity = LocalFaceEngineFacade.INSTANCE.similarityCalculation(templates, person.templates);
                                 if (similarity > maxSimilarityForBox) {

@@ -26,7 +26,7 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
         val service: GreetingService = RetrofitClient.getService()
         val savedCursor = if (prefs.contains("face_sync_cursor")) prefs.getLong("face_sync_cursor", 0L) else null
         val resp = try {
-            service.downloadFaces(savedCursor).execute()
+            service.downloadFaces(savedCursor, false).execute()
         } catch (_: Exception) {
             return Result.retry()
         }
@@ -61,9 +61,11 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
         }
         val db = DBManager(applicationContext)
         var hadFailure = false
+        val personBatchStarted = db.beginPersonBatch()
         // Insert/update faces
-        for (faceData in faces) {
-            try {
+        try {
+            for (faceData in faces) {
+                try {
                 val id = faceData.id ?: ""
                 if (id.isBlank()) continue
                 val rawTemplatesB64 = faceData.templates?.trim()
@@ -141,9 +143,12 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
                 val displayId = faceData.displayId  // sequential number matching the web UI
 
                 db.insertPerson(id, name, faceBitmap, templates, phone, dept, desig, shift, customDataStr, true, displayId)
-            } catch (_: Exception) {
-                hadFailure = true
+                } catch (_: Exception) {
+                    hadFailure = true
+                }
             }
+        } finally {
+            db.commitPersonBatch(personBatchStarted)
         }
 
         if (hadFailure) return Result.retry()
