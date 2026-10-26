@@ -528,6 +528,21 @@ def _init_pg_schema_on_conn(conn):
         "CREATE TABLE IF NOT EXISTS app_update_device_status (id SERIAL PRIMARY KEY, vendor_id INTEGER NOT NULL REFERENCES vendors(id), device_id TEXT NOT NULL, release_id INTEGER, target_version_code INTEGER NOT NULL, installed_version_code INTEGER, installed_version_name TEXT, status TEXT NOT NULL, progress INTEGER, error_code TEXT, error_message TEXT, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, device_id, target_version_code))",
         "CREATE TABLE IF NOT EXISTS vendor_device_slots (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), slot_name TEXT, assigned_device_id TEXT, assigned_at TIMESTAMP, UNIQUE(vendor_id, slot_name))",
         "CREATE TABLE IF NOT EXISTS active_sessions (token TEXT PRIMARY KEY, username TEXT, vendor_id INTEGER, device_id TEXT, platform TEXT, last_active TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS face_sync_changes (seq BIGSERIAL PRIMARY KEY, vendor_id INTEGER NOT NULL, person_id INTEGER NOT NULL, operation TEXT NOT NULL, changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE INDEX IF NOT EXISTS idx_face_sync_changes_vendor_seq ON face_sync_changes(vendor_id, seq)",
+        """CREATE OR REPLACE FUNCTION record_face_sync_change() RETURNS trigger AS $$
+        BEGIN
+            IF TG_OP = 'DELETE' THEN
+                INSERT INTO face_sync_changes(vendor_id, person_id, operation)
+                VALUES (OLD.vendor_id, OLD.id, TG_OP);
+            ELSE
+                INSERT INTO face_sync_changes(vendor_id, person_id, operation)
+                VALUES (NEW.vendor_id, NEW.id, TG_OP);
+            END IF;
+            RETURN NULL;
+        END; $$ LANGUAGE plpgsql""",
+        "DROP TRIGGER IF EXISTS trg_faces_sync_change ON faces",
+        "CREATE TRIGGER trg_faces_sync_change AFTER INSERT OR UPDATE OR DELETE ON faces FOR EACH ROW EXECUTE FUNCTION record_face_sync_change()",
         "CREATE TABLE IF NOT EXISTS invoices (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), amount REAL, status TEXT DEFAULT 'generated', due_date DATE, generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, paid_at TIMESTAMP, invoice_date DATE, details TEXT)",
         "CREATE TABLE IF NOT EXISTS audit_logs (id SERIAL PRIMARY KEY, actor_username TEXT, actor_role TEXT, target_vendor_id INTEGER, action TEXT, details TEXT, ip TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT)",
@@ -580,9 +595,14 @@ def _init_pg_schema_on_conn(conn):
         "CREATE INDEX IF NOT EXISTS idx_shift_version_resolution ON shift_versions(vendor_id, shift_id, effective_from, effective_to)",
         "CREATE INDEX IF NOT EXISTS idx_person_org_resolution ON person_organization_assignments(vendor_id, person_id, effective_from, effective_to)",
         "CREATE INDEX IF NOT EXISTS idx_faces_vendor ON faces(vendor_id)",
+        "CREATE INDEX IF NOT EXISTS idx_faces_vendor_display ON faces(vendor_id, display_id)",
         "CREATE INDEX IF NOT EXISTS idx_system_users_vendor ON system_users(vendor_id)",
+        "CREATE INDEX IF NOT EXISTS idx_system_users_username_lower ON system_users(LOWER(username))",
         "CREATE INDEX IF NOT EXISTS idx_active_sessions_vendor ON active_sessions(vendor_id)",
         "CREATE INDEX IF NOT EXISTS idx_active_sessions_user ON active_sessions(username)",
+        "CREATE INDEX IF NOT EXISTS idx_active_sessions_user_platform_device ON active_sessions(username, platform, device_id)",
+        "CREATE INDEX IF NOT EXISTS idx_active_sessions_platform_last_active ON active_sessions(platform, last_active)",
+        "CREATE INDEX IF NOT EXISTS idx_vendor_devices_vendor_device ON vendor_devices(vendor_id, device_id)",
         "CREATE INDEX IF NOT EXISTS idx_app_update_status_target ON app_update_device_status(target_version_code, status)",
         "CREATE INDEX IF NOT EXISTS idx_lectures_vendor ON lectures(vendor_id, lecture_date)",
         "CREATE INDEX IF NOT EXISTS idx_lecture_attendance_lecture ON lecture_attendance(lecture_id)",
@@ -912,6 +932,11 @@ def init_sqlite_schema(conn):
         "CREATE TABLE IF NOT EXISTS app_update_device_status (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER NOT NULL, device_id TEXT NOT NULL, release_id INTEGER, target_version_code INTEGER NOT NULL, installed_version_code INTEGER, installed_version_name TEXT, status TEXT NOT NULL, progress INTEGER, error_code TEXT, error_message TEXT, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, device_id, target_version_code))",
         "CREATE TABLE IF NOT EXISTS vendor_device_slots (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, slot_name TEXT, assigned_device_id TEXT, assigned_at DATETIME, UNIQUE(vendor_id, slot_name))",
         "CREATE TABLE IF NOT EXISTS active_sessions (token TEXT PRIMARY KEY, username TEXT, vendor_id INTEGER, device_id TEXT, platform TEXT, last_active DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS face_sync_changes (seq INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER NOT NULL, person_id INTEGER NOT NULL, operation TEXT NOT NULL, changed_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE INDEX IF NOT EXISTS idx_face_sync_changes_vendor_seq ON face_sync_changes(vendor_id, seq)",
+        "CREATE TRIGGER IF NOT EXISTS trg_faces_sync_insert AFTER INSERT ON faces BEGIN INSERT INTO face_sync_changes(vendor_id, person_id, operation) VALUES (NEW.vendor_id, NEW.id, 'INSERT'); END",
+        "CREATE TRIGGER IF NOT EXISTS trg_faces_sync_update AFTER UPDATE ON faces BEGIN INSERT INTO face_sync_changes(vendor_id, person_id, operation) VALUES (NEW.vendor_id, NEW.id, 'UPDATE'); END",
+        "CREATE TRIGGER IF NOT EXISTS trg_faces_sync_delete AFTER DELETE ON faces BEGIN INSERT INTO face_sync_changes(vendor_id, person_id, operation) VALUES (OLD.vendor_id, OLD.id, 'DELETE'); END",
         "CREATE TABLE IF NOT EXISTS invoices (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, amount REAL, status TEXT DEFAULT 'generated', due_date DATE, generated_at DATETIME DEFAULT CURRENT_TIMESTAMP, paid_at DATETIME, invoice_date DATE, details TEXT)",
         "CREATE TABLE IF NOT EXISTS audit_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, actor_username TEXT, actor_role TEXT, target_vendor_id INTEGER, action TEXT, details TEXT, ip TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT)",
@@ -963,9 +988,14 @@ def init_sqlite_schema(conn):
         "CREATE INDEX IF NOT EXISTS idx_shift_version_resolution ON shift_versions(vendor_id, shift_id, effective_from, effective_to)",
         "CREATE INDEX IF NOT EXISTS idx_person_org_resolution ON person_organization_assignments(vendor_id, person_id, effective_from, effective_to)",
         "CREATE INDEX IF NOT EXISTS idx_faces_vendor ON faces(vendor_id)",
+        "CREATE INDEX IF NOT EXISTS idx_faces_vendor_display ON faces(vendor_id, display_id)",
         "CREATE INDEX IF NOT EXISTS idx_system_users_vendor ON system_users(vendor_id)",
+        "CREATE INDEX IF NOT EXISTS idx_system_users_username_lower ON system_users(LOWER(username))",
         "CREATE INDEX IF NOT EXISTS idx_active_sessions_vendor ON active_sessions(vendor_id)",
         "CREATE INDEX IF NOT EXISTS idx_active_sessions_user ON active_sessions(username)",
+        "CREATE INDEX IF NOT EXISTS idx_active_sessions_user_platform_device ON active_sessions(username, platform, device_id)",
+        "CREATE INDEX IF NOT EXISTS idx_active_sessions_platform_last_active ON active_sessions(platform, last_active)",
+        "CREATE INDEX IF NOT EXISTS idx_vendor_devices_vendor_device ON vendor_devices(vendor_id, device_id)",
         "CREATE INDEX IF NOT EXISTS idx_app_update_status_target ON app_update_device_status(target_version_code, status)",
         "CREATE INDEX IF NOT EXISTS idx_lectures_vendor ON lectures(vendor_id, lecture_date)",
         "CREATE INDEX IF NOT EXISTS idx_lecture_attendance_lecture ON lecture_attendance(lecture_id)",

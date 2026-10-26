@@ -29,7 +29,11 @@ class LivenessGate(
 ) {
     fun evaluate(v1seCrop4x: Bitmap, v2Crop2_7x: Bitmap): LivenessVerdict {
         val cnnResult = antiSpoof.check(v1seCrop4x, v2Crop2_7x)
-        val cnnLive = antiSpoof.isLive(cnnResult)
+        // Do not apply a second hidden 0.90 threshold here. FacePipeline applies
+        // the administrator-configured liveness threshold to liveScore. Keeping
+        // only the model's winning class here avoids rejecting genuine scores
+        // that already pass the configured threshold.
+        val cnnLive = cnnResult.label == LivenessLabel.LIVE
 
         val moireResult = moireDetector.score(v2Crop2_7x)
 

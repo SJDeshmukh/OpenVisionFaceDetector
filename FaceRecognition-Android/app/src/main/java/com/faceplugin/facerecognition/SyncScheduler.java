@@ -13,23 +13,12 @@ import java.util.concurrent.TimeUnit;
 
 public class SyncScheduler {
     public static void scheduleImmediate(Context ctx) {
-        // 1. Direct immediate background sync if currently online
-        AttendanceSyncWorker.syncNow(ctx);
-
         Constraints constraints = new Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.CONNECTED)
                 .build();
 
-        // 2. AttendanceSyncWorker runs independently with REPLACE policy
-        OneTimeWorkRequest attendanceSync = new OneTimeWorkRequest.Builder(AttendanceSyncWorker.class)
-                .setConstraints(constraints)
-                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
-                .build();
-
-        WorkManager.getInstance(ctx)
-                .enqueueUniqueWork("attendance-sync", ExistingWorkPolicy.REPLACE, attendanceSync);
-
-        // 3. Face download runs independently with REPLACE policy so latest gallery is fetched immediately
+        // Download immediately so a kiosk can recognize people enrolled on another
+        // vendor device as soon as connectivity returns.
         OneTimeWorkRequest faceDownload = new OneTimeWorkRequest.Builder(FaceDownloadWorker.class)
                 .setConstraints(constraints)
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.SECONDS)
@@ -38,10 +27,17 @@ public class SyncScheduler {
         WorkManager.getInstance(ctx)
                 .enqueueUniqueWork("face-download", ExistingWorkPolicy.REPLACE, faceDownload);
 
-        // 4. Heavy face upload runs in background chain
+        // Local faces must reach the server before attendance recorded against a
+        // local identity. DBManager then replaces local IDs in the attendance queue
+        // with the canonical server person ID.
         OneTimeWorkRequest faceSync = new OneTimeWorkRequest.Builder(FaceSyncWorker.class)
                 .setConstraints(constraints)
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.SECONDS)
+                .build();
+
+        OneTimeWorkRequest attendanceSync = new OneTimeWorkRequest.Builder(AttendanceSyncWorker.class)
+                .setConstraints(constraints)
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
                 .build();
 
         OneTimeWorkRequest deleteSync = new OneTimeWorkRequest.Builder(DeleteSyncWorker.class)
@@ -51,6 +47,7 @@ public class SyncScheduler {
 
         WorkManager.getInstance(ctx)
                 .beginUniqueWork("sync-chain", ExistingWorkPolicy.REPLACE, faceSync)
+                .then(attendanceSync)
                 .then(deleteSync)
                 .enqueue();
     }
@@ -60,7 +57,9 @@ public class SyncScheduler {
                 .setRequiredNetworkType(NetworkType.CONNECTED)
                 .build();
 
-        PeriodicWorkRequest faceDownload = new PeriodicWorkRequest.Builder(FaceDownloadWorker.class, 6, TimeUnit.HOURS)
+        // Socket events update connected kiosks immediately. This periodic download is the
+        // recovery path for a device that was offline or disconnected when an event occurred.
+        PeriodicWorkRequest faceDownload = new PeriodicWorkRequest.Builder(FaceDownloadWorker.class, 15, TimeUnit.MINUTES)
                 .setConstraints(constraints)
                 .build();
 

@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 from services.auth_service import authenticate_vendor_access, extract_token, verify_token, check_vendor_status, hash_password, login_email_from_profile
 import db_factory
 from db_factory import set_row_factory, get_table_columns
-from utils import get_db_connection, LOW_RAM_MODE, _VENDOR_EMB_CACHE, reset_sequence, ALL_FEATURES, cache_delete_vendor_prefix, cache_delete, require_feature, cache_get, cache_set, decode_image_to_bgr, decode_image_to_rgb, get_face_augmentations, vendor_has_feature
+from utils import get_db_connection, LOW_RAM_MODE, _VENDOR_EMB_CACHE, ALL_FEATURES, cache_delete_vendor_prefix, cache_delete, require_feature, cache_get, cache_set, decode_image_to_bgr, decode_image_to_rgb, get_face_augmentations, vendor_has_feature
 from services.face_service import _ensure_vendor_emb_cache, _normalize_vec, _suggest_from_cache
 from storage import upload_base64_image, presigned_url_for_key, OBJECT_STORAGE_ENABLED, compress_image
 import db_factory
@@ -1194,7 +1194,13 @@ def upload_face():
                 to_store_templates = json.dumps(templates_list)
             else:
                 to_store_templates = ""
-            # Get next display_id for this vendor
+            # Serialize per-vendor ID allocation on PostgreSQL so simultaneous
+            # enrollments from multiple kiosks cannot receive the same display ID.
+            if getattr(conn, "_is_pg", False):
+                c.execute("SELECT pg_advisory_xact_lock(481516, ?)", (int(vendor_id),))
+
+            # display_id is a stable vendor-visible identifier. It is never
+            # renumbered after assignment, so web and mobile clients agree.
             c.execute("SELECT COALESCE(MAX(display_id), 0) + 1 FROM faces WHERE vendor_id = ?", (vendor_id,))
             next_display_id = c.fetchone()[0]
             assigned_display_id = int(next_display_id)
@@ -1315,21 +1321,16 @@ def upload_face():
         cache_delete_vendor_prefix(vendor_id)
         cache_delete("admin_stats")
         if vendor_id:
-            socketio.emit('persons_updated', {'vendor_id': vendor_id}, room=f"vendor_{vendor_id}")
-            socketio.emit('persons_updated', {'vendor_id': vendor_id})
+            socketio.emit(
+                'persons_updated',
+                {
+                    'vendor_id': vendor_id,
+                    'action': 'upsert',
+                    'person_id': str(person_id or new_id),
+                },
+                room=f"vendor_{vendor_id}",
+            )
             socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
-
-        # Run heavy reindexing and sequence reset in background so HTTP response returns instantly
-        def _post_upload_cleanup(_vid):
-            try:
-                _c2 = get_db_connection()
-                reindex_vendor_faces(_c2, _vid)
-                reset_sequence("faces")
-                _c2.close()
-            except Exception:
-                logger.exception("Async post-upload cleanup failed for vendor %s", _vid)
-        import threading as _threading
-        _threading.Thread(target=_post_upload_cleanup, args=(vendor_id,), daemon=True).start()
 
         return jsonify({
             "status": "success",
@@ -1364,6 +1365,50 @@ def download_faces():
         return jsonify({"error": str(exc)}), 400
     if getattr(g, "user_role", None) == "faculty":
         wanted_type = "student"
+
+    requested_cursor = request.args.get("cursor")
+    delta_cursor = None
+    if requested_cursor is not None and vendor_id and getattr(g, "user_role", None) != "faculty":
+        try:
+            delta_cursor = max(0, int(requested_cursor))
+        except (TypeError, ValueError):
+            conn.close()
+            return jsonify({"error": "Invalid sync cursor"}), 400
+
+    current_cursor = 0
+    changed_ids = None
+    deleted_ids = []
+    if vendor_id:
+        try:
+            c.execute("SELECT COALESCE(MAX(seq), 0) FROM face_sync_changes WHERE vendor_id = ?", (vendor_id,))
+            current_cursor = int(c.fetchone()[0] or 0)
+            if delta_cursor is not None:
+                if delta_cursor > current_cursor:
+                    # The server ledger was rebuilt/restored. Force one complete
+                    # reconciliation instead of trusting an impossible cursor.
+                    delta_cursor = None
+                else:
+                    c.execute(
+                        "SELECT person_id, operation FROM face_sync_changes WHERE vendor_id = ? AND seq > ? ORDER BY seq ASC",
+                        (vendor_id, delta_cursor),
+                    )
+                    latest_operations = {}
+                    for change in c.fetchall() or []:
+                        latest_operations[int(change[0])] = str(change[1] or "").upper()
+                    deleted_ids = [person_id for person_id, op in latest_operations.items() if op == "DELETE"]
+                    changed_ids = [person_id for person_id, op in latest_operations.items() if op != "DELETE"]
+                    if not changed_ids:
+                        conn.close()
+                        return jsonify({
+                            "faces": [], "deleted_ids": deleted_ids,
+                            "cursor": current_cursor, "full_sync": False,
+                        })
+        except Exception:
+            # During a rolling deployment the schema may not exist yet. Serving a
+            # complete roster is safe and keeps old and new clients compatible.
+            delta_cursor = None
+            changed_ids = None
+            deleted_ids = []
     
     query = """
         SELECT f.*,
@@ -1431,7 +1476,14 @@ def download_faces():
                     rows.append(f)
         else:
             # For admin/owner, fetch all for vendor
-            c.execute(query + " WHERE f.vendor_id = ? ORDER BY f.display_id ASC", (vendor_id,))
+            if changed_ids is not None:
+                placeholders = ",".join(["?"] * len(changed_ids))
+                c.execute(
+                    query + f" WHERE f.vendor_id = ? AND f.id IN ({placeholders}) ORDER BY f.display_id ASC",
+                    [vendor_id, *changed_ids],
+                )
+            else:
+                c.execute(query + " WHERE f.vendor_id = ? ORDER BY f.display_id ASC", (vendor_id,))
             rows = c.fetchall()
     else:
         # No vendor_id (SuperAdmin), fetch all
@@ -1472,7 +1524,12 @@ def download_faces():
         
         resp_faces.append(face_item)
 
-    return jsonify({"faces": resp_faces})
+    return jsonify({
+        "faces": resp_faces,
+        "deleted_ids": deleted_ids,
+        "cursor": current_cursor,
+        "full_sync": delta_cursor is None,
+    })
 
 
 @faces_bp.route("/sync/delete/<name>", methods=["DELETE"])
@@ -1500,9 +1557,6 @@ def delete_face(name):
         if not face_rows:
             return jsonify({"error": "User not found"}), 404
 
-        # Track affected vendors and their deleted display_ids for re-indexing
-        affected_vendors = {} # vendor_id -> list of deleted_display_ids
-
         def _safe_execute(_sql, _args=()):
             is_pg = getattr(conn, "_is_pg", False)
             try:
@@ -1519,10 +1573,7 @@ def delete_face(name):
 
         for r in face_rows:
             v_id = r[1]
-            d_id = r[2]
             p_id = r[0]
-            if v_id not in affected_vendors: affected_vendors[v_id] = []
-            affected_vendors[v_id].append(d_id)
             # CRITICAL: Clean up embeddings for this person
             _safe_execute("DELETE FROM person_embeddings WHERE person_id = ?", (p_id,))
             # If this face is a faculty member, unassign from classes
@@ -1548,19 +1599,6 @@ def delete_face(name):
         else:
             c.execute("DELETE FROM faces WHERE name = ?", (name,))
         deleted_faces = c.rowcount
-
-        # Re-index for each affected vendor
-        for v_id, deleted_ids in affected_vendors.items():
-            # For each deleted ID, we shift everything above it down.
-            # Shifting in reverse order of deleted_ids (highest first) avoids double-counting if we do it one by one, 
-            # but it's simpler to just do a full re-index if multiple were deleted, or just loop correctly.
-            # Best way: for each vendor, we know which IDs were removed. 
-            # We can run a single query like:
-            # UPDATE faces SET display_id = (SELECT COUNT(*) FROM faces f2 WHERE f2.vendor_id = faces.vendor_id AND f2.id <= faces.id) WHERE vendor_id = ?
-            # But that's O(N^2). 
-            # Better: just decrement for each deleted ID.
-            for d_id in sorted(deleted_ids, reverse=True):
-                c.execute("UPDATE faces SET display_id = display_id - 1 WHERE vendor_id = ? AND display_id > ?", (v_id, d_id))
 
         try:
             by_vendor = {}
@@ -1669,24 +1707,17 @@ def delete_face(name):
             # Emit real-time updates NOW before any heavy background work
             broadcast_vendor = vendor_id or (list(by_vendor.keys())[0] if by_vendor else None)
             if broadcast_vendor:
-                socketio.emit('persons_updated', {'vendor_id': broadcast_vendor}, room=f"vendor_{broadcast_vendor}")
+                socketio.emit(
+                    'persons_updated',
+                    {
+                        'vendor_id': broadcast_vendor,
+                        'action': 'delete',
+                        'person_ids': [str(pid) for pid in by_vendor.get(int(broadcast_vendor), [])],
+                    },
+                    room=f"vendor_{broadcast_vendor}",
+                )
                 socketio.emit('attendance_updated', {'vendor_id': broadcast_vendor}, room=f"vendor_{broadcast_vendor}")
-            socketio.emit('persons_updated', {'vendor_id': broadcast_vendor})
             socketio.emit('vendor_updated', {'vendor_id': broadcast_vendor}, room='super_admin')
-
-            # Reindex off-thread — display_id gaps are cosmetic, don't block the response
-            _vids = list(by_vendor.keys())
-            def _post_delete_by_name_cleanup(_vids):
-                try:
-                    _c2 = get_db_connection()
-                    for _vid in _vids:
-                        reindex_vendor_faces(_c2, _vid)
-                    reset_sequence("faces")
-                    _c2.close()
-                except Exception:
-                    logger.exception("Async post-delete-by-name cleanup failed")
-            import threading as _threading
-            _threading.Thread(target=_post_delete_by_name_cleanup, args=(_vids,), daemon=True).start()
 
             return jsonify({"status": "success", "message": f"Face for {name} deleted."})
         else:
@@ -1840,23 +1871,17 @@ def delete_face_by_id(person_id):
         if deleted_faces > 0:
             # Emit socket NOW — before any blocking reindex/reset
             if effective_vendor_id:
-                socketio.emit('persons_updated', {'vendor_id': effective_vendor_id}, room=f"vendor_{effective_vendor_id}")
+                socketio.emit(
+                    'persons_updated',
+                    {
+                        'vendor_id': effective_vendor_id,
+                        'action': 'delete',
+                        'person_id': str(person_id),
+                    },
+                    room=f"vendor_{effective_vendor_id}",
+                )
                 socketio.emit('attendance_updated', {'vendor_id': effective_vendor_id}, room=f"vendor_{effective_vendor_id}")
-            socketio.emit('persons_updated', {'vendor_id': effective_vendor_id})
             socketio.emit('vendor_updated', {'vendor_id': effective_vendor_id}, room='super_admin')
-
-            # Heavy reindex and sequence reset run off the request thread
-            def _post_delete_cleanup(_vid):
-                try:
-                    _c2 = get_db_connection()
-                    reindex_vendor_faces(_c2, _vid)
-                    reset_sequence("faces")
-                    _c2.close()
-                except Exception:
-                    logger.exception("Async post-delete-by-id cleanup failed for vendor %s", _vid)
-            import threading as _threading
-            if effective_vendor_id:
-                _threading.Thread(target=_post_delete_cleanup, args=(effective_vendor_id,), daemon=True).start()
 
             return jsonify({"status": "success", "message": f"Face for {name} deleted.", "person_id": person_id})
         else:

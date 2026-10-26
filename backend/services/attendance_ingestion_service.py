@@ -18,14 +18,15 @@ from domain.attendance import AttendanceEventSource, AttendanceEventType
 
 
 logger = logging.getLogger(__name__)
-MAX_CLIENT_CLOCK_DRIFT = timedelta(hours=24)
+MAX_CLIENT_PAST_AGE = timedelta(days=31)
+MAX_CLIENT_FUTURE_DRIFT = timedelta(minutes=15)
 
 
 def resolve_client_event_time(
     timestamp: Optional[str],
     *,
     server_now: Optional[datetime] = None,
-    max_clock_drift: timedelta = MAX_CLIENT_CLOCK_DRIFT,
+    max_clock_drift: timedelta = MAX_CLIENT_PAST_AGE,
 ) -> datetime:
     """Resolve a bounded, timezone-naive legacy event timestamp.
 
@@ -47,7 +48,10 @@ def resolve_client_event_time(
         except (ValueError, TypeError):
             continue
 
-    if parsed is None or abs(now - parsed) > max_clock_drift:
+    if parsed is None:
+        logger.warning("Ignoring invalid attendance timestamp; using server time")
+        return now
+    if parsed - now > MAX_CLIENT_FUTURE_DRIFT or now - parsed > max_clock_drift:
         logger.warning("Ignoring implausible attendance timestamp; using server time")
         return now
     return parsed

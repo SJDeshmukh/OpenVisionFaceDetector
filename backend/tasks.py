@@ -63,6 +63,22 @@ def _event_json(value):
         return '"<unserializable>"'
 
 if celery:
+    @celery.task(name="tasks.cleanup_stale_web_sessions")
+    def cleanup_stale_web_sessions_task():
+        """Keep routine session maintenance out of the latency-sensitive login path."""
+        conn = get_db_connection()
+        try:
+            c = conn.cursor()
+            if getattr(conn, "_is_pg", False):
+                c.execute("DELETE FROM active_sessions WHERE platform = 'web' AND last_active < (NOW() - INTERVAL '1 hour')")
+            else:
+                c.execute("DELETE FROM active_sessions WHERE platform = 'web' AND last_active < datetime('now','-1 hour')")
+            deleted = c.rowcount
+            conn.commit()
+            return {"deleted": deleted}
+        finally:
+            conn.close()
+
     @celery.task(name="tasks.process_vendor_creation")
     def process_vendor_creation_task(payload):
         vendor_id = payload["vendor_id"]

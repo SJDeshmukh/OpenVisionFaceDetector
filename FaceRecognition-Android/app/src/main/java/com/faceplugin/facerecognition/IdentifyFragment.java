@@ -72,11 +72,6 @@ import java.util.List;
 import java.util.Map;
 import java.net.URISyntaxException;
 
-import androidx.work.Constraints;
-import androidx.work.ExistingWorkPolicy;
-import androidx.work.NetworkType;
-import androidx.work.OneTimeWorkRequest;
-import androidx.work.WorkManager;
 
 public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitListener {
 
@@ -194,19 +189,6 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 options.extraHeaders = headers;
                 if (serverUrl.endsWith("/")) serverUrl = serverUrl.substring(0, serverUrl.length() - 1);
                 mSocket = IO.socket(serverUrl, options);
-                mSocket.on("persons_updated", (Object... args) -> {
-                    try {
-                        Context ctx = requireContext().getApplicationContext();
-                        Constraints constraints = new Constraints.Builder()
-                                .setRequiredNetworkType(NetworkType.CONNECTED)
-                                .build();
-                        OneTimeWorkRequest req = new OneTimeWorkRequest.Builder(FaceDownloadWorker.class)
-                                .setConstraints(constraints)
-                                .build();
-                        WorkManager.getInstance(ctx)
-                                .enqueueUniqueWork("face-download", ExistingWorkPolicy.REPLACE, req);
-                    } catch (Exception ignored) {}
-                });
                 mSocket.connect();
 
                 // WebRTC Signaling initialization
@@ -1194,8 +1176,10 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                                 batchMatches.add(new RecognizedFaceMatch(bestForBox, faceBox, pid, luid, maxSimilarityForBox));
                             }
                         }
-                    } else if (faceBox.liveness < 0.8f) {
-                        Log.w(TAG, "Liveness failed: " + faceBox.liveness);
+                    } else if (!FacePipeline.isLive(requireContext(), faceBox, false)) {
+                        Log.w(TAG, "Liveness failed: score=" + faceBox.liveness
+                                + ", label=" + faceBox.livenessLabel
+                                + ", configuredThreshold=" + SettingsActivity.getLivenessThreshold(requireContext()));
                     }
 
                     namesForBoxes.add(nameForBox);

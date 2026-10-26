@@ -96,6 +96,8 @@ class MainActivity : AppCompatActivity() {
     private val networkStatusInterval: Long = 1500
     private val settingsInterval: Long = 60000
     private val heartbeatInterval: Long = 30000 // 30 seconds for responsive geofencing
+    private val personsSyncRunnable = Runnable { syncFacesFromBackend() }
+    private var lastNetworkOnline: Boolean? = null
 
     private val heartbeatRunnable = object : Runnable {
         override fun run() {
@@ -136,6 +138,17 @@ class MainActivity : AppCompatActivity() {
 
     private val networkStatusRunnable = object : Runnable {
         override fun run() {
+            val online = try {
+                NetworkUtils.isOnline(applicationContext)
+            } catch (_: Exception) {
+                false
+            }
+            if (online && lastNetworkOnline == false) {
+                // Activity-level fallback in addition to the IdentifyFragment network
+                // callback. This also covers reconnects while another tab is open.
+                SyncScheduler.scheduleImmediate(applicationContext)
+            }
+            lastNetworkOnline = online
             updateNetworkStatusBadge()
             handler.postDelayed(this, networkStatusInterval)
         }
@@ -439,9 +452,27 @@ class MainActivity : AppCompatActivity() {
             }
 
             mSocket?.on("persons_updated") { args ->
-                android.util.Log.i("MainActivity", "Real-time persons_updated broadcast received from server")
-                runOnUiThread {
-                    syncFacesFromBackend()
+                try {
+                    val payload = args.firstOrNull() as? JSONObject ?: return@on
+                    val targetVendorId = payload.optInt("vendor_id", -1)
+                    val myVendorId = getSharedPreferences("app_prefs", MODE_PRIVATE)
+                        .getInt("vendor_id", -1)
+                    if (targetVendorId == -1 || targetVendorId != myVendorId) {
+                        return@on
+                    }
+                    android.util.Log.i(
+                        "MainActivity",
+                        "Real-time persons_updated received: ${payload.optString("action", "refresh")}",
+                    )
+                    runOnUiThread {
+                        // Collapse rapid registration/deletion bursts into one authoritative
+                        // download. The server event is only a notification; the committed
+                        // database remains the source of truth.
+                        handler.removeCallbacks(personsSyncRunnable)
+                        handler.postDelayed(personsSyncRunnable, 350L)
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.w("MainActivity", "Invalid persons_updated payload", e)
                 }
             }
 
@@ -878,26 +909,36 @@ class MainActivity : AppCompatActivity() {
     private fun syncFacesFromBackend() {
         android.util.Log.e("AppCrash", "Starting syncFacesFromBackend")
         try {
-            RetrofitClient.getService().downloadFaces().enqueue(object : Callback<SyncResponse> {
+            val syncPrefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+            val syncCursor = if (syncPrefs.contains("face_sync_cursor")) syncPrefs.getLong("face_sync_cursor", 0L) else null
+            RetrofitClient.getService().downloadFaces(syncCursor).enqueue(object : Callback<SyncResponse> {
                 override fun onResponse(call: Call<SyncResponse>, response: Response<SyncResponse>) {
                     android.util.Log.e("AppCrash", "Sync Response: ${response.code()}")
                     try {
                         if (response.isSuccessful) {
-                            val faces = response.body()?.faces ?: emptyList()
+                            val syncBody = response.body() ?: return
+                            val faces = syncBody.faces ?: emptyList()
+                            val fullSync = syncBody.isFullSync
                             val serverIds = faces.mapNotNull { it.id }.toSet() // Track what's currently on server
 
                             val signature = facesSignature(faces)
                             val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
                             val lastSig = prefs.getString("last_faces_signature", null)
-                            if (lastSig != null && lastSig == signature && !DBManager.personList.isEmpty()) {
+                            if (fullSync && lastSig != null && lastSig == signature && !DBManager.personList.isEmpty()) {
+                                syncBody.cursor?.let { prefs.edit().putLong("face_sync_cursor", it).apply() }
                                 return
                             }
-                            prefs.edit().putString("last_faces_signature", signature).apply()
 
                             Thread {
                                 try {
                                     var newFacesCount = 0
                                     var updatedFacesCount = 0
+
+                                    if (!fullSync) {
+                                        for (deletedId in syncBody.deletedIds ?: emptyList()) {
+                                            if (deletedId.isNotBlank()) dbManager.deletePersonById(deletedId)
+                                        }
+                                    }
 
                                     faces.forEach { faceData ->
                                         try {
@@ -913,6 +954,7 @@ class MainActivity : AppCompatActivity() {
                                             val desig = faceData.designation ?: ""
                                             val shift = faceData.shift ?: ""
                                             val id = faceData.id ?: ""
+                                            val displayId = faceData.displayId
                                             val customDataObj = faceData.customData
                                             val customDataStr = if (customDataObj != null) customDataObj.toString() else ""
 
@@ -960,12 +1002,14 @@ class MainActivity : AppCompatActivity() {
 
                                             val currentPerson = existingPerson
                                             if (currentPerson == null) {
-                                                dbManager.insertPerson(id, faceData.name, faceBitmap, templates, phone, dept, desig, shift, customDataStr, true)
+                                                dbManager.insertPerson(id, faceData.name, faceBitmap, templates, phone, dept, desig, shift, customDataStr, true, displayId)
                                                 newFacesCount++
                                             } else {
                                                 val effectiveId = if (!id.isNullOrEmpty()) id else (currentPerson.id ?: "")
                                                 val needsMetadataUpdate =
                                                     currentPerson.phone != phone ||
+                                                        currentPerson.name != faceData.name ||
+                                                        currentPerson.displayId != displayId ||
                                                         currentPerson.department != dept ||
                                                         currentPerson.designation != desig ||
                                                         currentPerson.shift != shift ||
@@ -980,7 +1024,7 @@ class MainActivity : AppCompatActivity() {
                                                 } catch (_: Exception) {}
 
                                                 if (needsFaceUpdate || needsMetadataUpdate) {
-                                                    dbManager.insertPerson(effectiveId, faceData.name, faceBitmap, templates, phone, dept, desig, shift, customDataStr, true)
+                                                    dbManager.insertPerson(effectiveId, faceData.name, faceBitmap, templates, phone, dept, desig, shift, customDataStr, true, displayId)
                                                     updatedFacesCount++
                                                 }
                                             }
@@ -989,17 +1033,23 @@ class MainActivity : AppCompatActivity() {
                                     }
 
                                     // Cleanup phase: remove local persons that are no longer on server
-                                    val localPersonsCopy = synchronized(DBManager.personList) {
-                                        ArrayList(DBManager.personList)
-                                    }
-                                    localPersonsCopy.forEach { localPerson ->
-                                        val localId = localPerson.id
-                                        // Only delete if it has a server ID and that ID is not in the current server list
-                                        if (!localId.isNullOrEmpty() && !serverIds.contains(localId)) {
-                                            dbManager.deletePersonById(localId)
-                                            android.util.Log.e("AppCrash", "Deleted person not on server: ${localPerson.name} (id: $localId)")
+                                    if (fullSync) {
+                                        val localPersonsCopy = synchronized(DBManager.personList) {
+                                            ArrayList(DBManager.personList)
+                                        }
+                                        localPersonsCopy.forEach { localPerson ->
+                                            val localId = localPerson.id
+                                            if (!localId.isNullOrEmpty() && !serverIds.contains(localId)) {
+                                                dbManager.deletePersonById(localId)
+                                                android.util.Log.e("AppCrash", "Deleted person not on server: ${localPerson.name} (id: $localId)")
+                                            }
                                         }
                                     }
+
+                                    prefs.edit().apply {
+                                        if (fullSync) putString("last_faces_signature", signature)
+                                        syncBody.cursor?.let { putLong("face_sync_cursor", it) }
+                                    }.apply()
 
                                     runOnUiThread {
                                         try {
@@ -1197,13 +1247,27 @@ class MainActivity : AppCompatActivity() {
 
 
     private fun facesSignature(faces: List<com.faceplugin.facerecognition.api.SyncRequest>): String {
-        val sb = StringBuilder()
-        sb.append(faces.size).append('|')
-        for (i in 0 until faces.size) {
-            val f = faces[i]
-            sb.append(f.id ?: "").append(':').append(f.name ?: "").append('|')
+        val digest = MessageDigest.getInstance("SHA-256")
+        fun add(value: String?) {
+            digest.update((value ?: "").toByteArray(Charsets.UTF_8))
+            digest.update(0)
         }
-        val bytes = MessageDigest.getInstance("SHA-256").digest(sb.toString().toByteArray(Charsets.UTF_8))
+        add(faces.size.toString())
+        for (face in faces.sortedBy { it.id ?: "" }) {
+            add(face.id)
+            add(face.displayId.toString())
+            add(face.name)
+            add(face.templates)
+            // Presigned image URLs change even when the image does not. Hash only
+            // stable inline image data so equivalent downloads share a signature.
+            add(face.faceImage?.takeUnless { it.startsWith("http://") || it.startsWith("https://") })
+            add(face.phone)
+            add(face.department)
+            add(face.designation)
+            add(face.shift)
+            add(face.customData?.toString())
+        }
+        val bytes = digest.digest()
         val out = StringBuilder(bytes.size * 2)
         for (b in bytes) out.append(String.format("%02x", b))
         return out.toString()

@@ -28,7 +28,7 @@ public interface GreetingService {
     Call<com.google.gson.JsonObject> getSettings();
 
     @GET("api/sync/download")
-    Call<SyncResponse> downloadFaces();
+    Call<SyncResponse> downloadFaces(@Query("cursor") Long cursor);
 
     @GET("api/public/vendors")
     Call<com.google.gson.JsonObject> getPublicVendors();

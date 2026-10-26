@@ -97,6 +97,7 @@ TASK_ROUTES = {
     "tasks.bulk_vendor_action": {"queue": "bulk_jobs", "routing_key": "bulk_jobs"},
     "tasks.process_vendor_creation": {"queue": "maintenance", "routing_key": "maintenance"},
     "tasks.process_delete_vendor": {"queue": "maintenance", "routing_key": "maintenance"},
+    "tasks.cleanup_stale_web_sessions": {"queue": "maintenance", "routing_key": "maintenance"},
     # This must execute in the dedicated face worker, which owns the resident
     # detector/embedder memory. The I/O worker deliberately never preloads it.
     "tasks.reconcile_optional_models": {"queue": "face_priority", "routing_key": "face_priority"},
@@ -138,6 +139,11 @@ def make_celery():
         broker_pool_limit=int(os.environ.get("CELERY_BROKER_POOL_LIMIT", "10")),
         broker_transport_options={"confirm_publish": True} if BROKER_TYPE in {"amqp", "pyamqp"} else {},
         beat_schedule={
+            "cleanup-stale-web-sessions-every-five-minutes": {
+                "task": "tasks.cleanup_stale_web_sessions",
+                "schedule": 300.0,
+                "options": {"queue": "maintenance", "routing_key": "maintenance"},
+            },
             "dispatch-automated-reports-every-minute": {
                 "task": "tasks.dispatch_automated_reports",
                 "schedule": 60.0,

@@ -33,6 +33,8 @@ public class LoginResponse {
     private Boolean deviceSlotRequired;
     @SerializedName("available_slots")
     private JsonElement availableSlots;
+    @SerializedName("device_name")
+    private String deviceName;
 
     public String getStatus() { return status; }
     public String getRole() { return role; }
@@ -44,6 +46,7 @@ public class LoginResponse {
     public String getError() { return error; }
     public Boolean getDeviceSlotRequired() { return deviceSlotRequired; }
     public JsonElement getAvailableSlots() { return availableSlots; }
+    public String getDeviceName() { return deviceName; }
 
     @SerializedName("face_registered")
     private Boolean faceRegistered;

@@ -28,7 +28,10 @@ data class MoireResult(val score: Float, val flagged: Boolean)
  */
 class MoireDetector(
     private val size: Int = 128, // power of two, required by FFT.magnitude2D
-    private val threshold: Float = 1.8f
+    // 1.8 was too sensitive to hair, striped clothing, blinds, and sensor noise
+    // on production kiosk cameras. Screen captures produce stronger periodic
+    // peaks; 2.2 retains that signal while reducing genuine-face rejection.
+    private val threshold: Float = 2.2f
 ) {
 
     fun score(bitmap: Bitmap): MoireResult {

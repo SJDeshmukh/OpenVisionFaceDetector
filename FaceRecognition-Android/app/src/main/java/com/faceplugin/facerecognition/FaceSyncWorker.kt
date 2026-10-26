@@ -80,8 +80,9 @@ class FaceSyncWorker(appContext: Context, params: WorkerParameters) : Worker(app
                 val resp: Response<com.faceplugin.facerecognition.api.UploadFaceResponse> = service.uploadFace(json).execute()
                 if (resp.isSuccessful) {
                     val id = resp.body()?.personId?.toString()
+                    val displayId = resp.body()?.displayId ?: 0
                     if (!id.isNullOrBlank()) {
-                        db.updatePersonAfterSyncByLocalUid(p.localUid, id)
+                        db.updatePersonAfterSyncByLocalUid(p.localUid, id, displayId)
                         successCount++
                     } else {
                         // Server response missing canonical personId; keep record unsynced for retry.

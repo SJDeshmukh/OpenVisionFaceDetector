@@ -24,8 +24,9 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
         if (token.isNullOrBlank()) return Result.success()
 
         val service: GreetingService = RetrofitClient.getService()
+        val savedCursor = if (prefs.contains("face_sync_cursor")) prefs.getLong("face_sync_cursor", 0L) else null
         val resp = try {
-            service.downloadFaces().execute()
+            service.downloadFaces(savedCursor).execute()
         } catch (_: Exception) {
             return Result.retry()
         }
@@ -38,13 +39,20 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
         }
 
         val body = resp.body() ?: return Result.retry()
-        val faces = body.faces
-        // Treat an unexpected empty response as non-authoritative. A transient backend
-        // serialization/database failure must never erase the entire offline gallery.
-        if (faces.isEmpty() && hasLocalFaces()) return Result.retry()
+        val faces = body.faces ?: emptyList()
+        val fullSync = body.isFullSync
+        // A successful empty full response is authoritative: it means all people
+        // were deleted and the kiosk must clear its offline gallery as well.
+        if (!fullSync) {
+            try {
+                for (deletedId in body.deletedIds ?: emptyList()) {
+                    if (deletedId.isNotBlank()) DBManager(applicationContext).deletePersonById(deletedId)
+                }
+            } catch (_: Exception) {}
+        }
         val signature = facesSignature(faces)
         val lastSig = prefs.getString("last_faces_signature", null)
-        if (lastSig != null && lastSig == signature && hasLocalFaces()) {
+        if (fullSync && lastSig != null && lastSig == signature && hasLocalFaces()) {
             // Even if signature unchanged, perform reconciliation to remove deleted faces
             try {
                 reconcileLocalWithServer(faces)
@@ -141,11 +149,16 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
         if (hadFailure) return Result.retry()
 
         // Reconcile: delete any local person not present on server
-        try {
-            reconcileLocalWithServer(faces)
-        } catch (_: Exception) {}
+        if (fullSync) {
+            try {
+                reconcileLocalWithServer(faces)
+            } catch (_: Exception) {}
+        }
 
-        prefs.edit().putString("last_faces_signature", signature).apply()
+        prefs.edit().apply {
+            if (fullSync) putString("last_faces_signature", signature)
+            body.cursor?.let { putLong("face_sync_cursor", it) }
+        }.apply()
 
         return Result.success()
     }
@@ -159,9 +172,10 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
         add(faces.size.toString())
         for (face in faces.sortedBy { it.id ?: "" }) {
             add(face.id)
+            add(face.displayId.toString())
             add(face.name)
             add(face.templates)
-            add(face.faceImage)
+            add(face.faceImage?.takeUnless { it.startsWith("http://") || it.startsWith("https://") })
             add(face.phone)
             add(face.department)
             add(face.designation)

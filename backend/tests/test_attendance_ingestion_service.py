@@ -144,10 +144,14 @@ def test_unknown_event_type_is_rejected():
 def test_time_resolution_is_deterministic_with_injected_server_time():
     server_now = datetime(2026, 9, 15, 12, 0)
     recent = "2026-09-15T11:45:00"
-    stale = "2026-09-13T12:00:00"
+    offline = "2026-09-13T12:00:00"
+    stale = "2026-08-01T12:00:00"
+    future = "2026-09-15T12:30:00"
 
     assert resolve_client_event_time(recent, server_now=server_now) == datetime(2026, 9, 15, 11, 45)
+    assert resolve_client_event_time(offline, server_now=server_now) == datetime(2026, 9, 13, 12, 0)
     assert resolve_client_event_time(stale, server_now=server_now) == server_now
+    assert resolve_client_event_time(future, server_now=server_now) == server_now
     assert resolve_client_event_time(None, server_now=server_now) == server_now
 
 

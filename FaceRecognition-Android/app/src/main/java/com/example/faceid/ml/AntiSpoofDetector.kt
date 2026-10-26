@@ -107,10 +107,8 @@ class AntiSpoofDetector(
         return exps.map { it / sum }.toFloatArray()
     }
 
-    /** Simple threshold helper — tune experimentally per Section 14 of the design doc;
-     *  0.9 is a conservative starting point that favors rejecting borderline live faces
-     *  over letting spoofs through. */
-    fun isLive(result: LivenessResult, threshold: Float = 0.9f) =
+    /** Simple threshold helper aligned with the application's calibrated default. */
+    fun isLive(result: LivenessResult, threshold: Float = 0.78f) =
         result.label == LivenessLabel.LIVE && result.liveScore >= threshold
 
     fun close() {

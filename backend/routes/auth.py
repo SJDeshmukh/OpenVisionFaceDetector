@@ -10,6 +10,7 @@ import json
 import base64
 import sqlite3
 import logging
+import time
 from db_factory import get_table_columns
 from utils import error_logger
 
@@ -323,6 +324,7 @@ def get_current_user():
 @rate_limit(key_func=lambda: f"login:{get_client_ip()}:{str((request.json or {}).get('username', '')).strip().lower()}", limit=60, window=60)
 @error_logger
 def login():
+    login_started = time.perf_counter()
     from app import get_db_connection, socketio, is_testing, ALL_FEATURES
     data = request.json or {}
     username = str(data.get("username", "")).strip()
@@ -598,12 +600,13 @@ def login():
             c = conn.cursor()
             vcols = get_table_columns(conn, "vendors")
             reg_select = "registration_config" if "registration_config" in vcols else "NULL AS registration_config"
-            c.execute(f"SELECT web_login_enabled, frontend_bundle_id, backend_service_id, {reg_select} FROM vendors WHERE id = ?", (user_vendor_id,))
+            c.execute(f"SELECT web_login_enabled, frontend_bundle_id, backend_service_id, {reg_select}, vertical FROM vendors WHERE id = ?", (user_vendor_id,))
             row = c.fetchone()
             web_login_enabled = row[0] if row else 1
             frontend_bundle_id = row[1] if row and len(row) > 1 and row[1] else 'default_attendance'
             backend_service_id = row[2] if row and len(row) > 2 and row[2] else 'default_api'
             config_raw = json.loads(row[3]) if row and len(row) > 3 and row[3] else []
+            vendor_vertical = row[4] if row and len(row) > 4 else None
             if not config_raw:
                 try:
                     c.execute("SELECT fields FROM bulk_attendance_config WHERE vendor_id = ?", (user_vendor_id,))
@@ -633,13 +636,6 @@ def login():
             from services.config_utils import hydrate_registration_config
             vendor_config = hydrate_registration_config(user_vendor_id, config_raw, conn=conn)
             
-            try:
-                c.execute("SELECT vertical FROM vendors WHERE id = ?", (user['vendor_id'],))
-                vrow = c.fetchone()
-                vendor_vertical = vrow[0] if vrow else None
-            except Exception:
-                vendor_vertical = None
-
             # Brand segregation: reject cross-brand logins
             # (TapInX app must not access AttendX vendors and vice versa)
             app_brand = (request.headers.get('X-App-Brand') or '').strip().lower()
@@ -680,11 +676,6 @@ def login():
             
             if platform == 'web':
                 try:
-                    is_pg = getattr(conn, "_is_pg", False)
-                    if is_pg:
-                        c.execute("DELETE FROM active_sessions WHERE platform = 'web' AND last_active < (NOW() - INTERVAL '1 hour')")
-                    else:
-                        c.execute("DELETE FROM active_sessions WHERE platform = 'web' AND last_active < datetime('now','-1 hour')")
                     c.execute("DELETE FROM active_sessions WHERE username = ? AND platform = 'web' AND (device_id IS NULL OR device_id = '')", (username,))
                     # Faculty: single-session across ALL platforms — new login invalidates everything
                     if user.get('role') == 'faculty':
@@ -804,6 +795,7 @@ def login():
             
             device_slot_required = False
             available_slots = []
+            assigned_device_name = None
             try:
                 if platform == 'mobile':
                     c.execute("""
@@ -819,7 +811,9 @@ def login():
                     if device_id:
                         c.execute("SELECT slot_name FROM vendor_device_slots WHERE vendor_id = ? AND assigned_device_id = ? LIMIT 1", (user_vendor_id, device_id))
                         assigned_row = c.fetchone()
-                        if not assigned_row:
+                        if assigned_row:
+                            assigned_device_name = assigned_row[0] if not hasattr(assigned_row, 'keys') else assigned_row['slot_name']
+                        else:
                             c.execute("SELECT slot_name FROM vendor_device_slots WHERE vendor_id = ? AND (assigned_device_id IS NULL OR assigned_device_id = '') ORDER BY id ASC", (user_vendor_id,))
                             available_rows = c.fetchall() or []
                             available_slots = [r[0] if not hasattr(r, 'keys') else (r['slot_name']) for r in available_rows]
@@ -848,11 +842,12 @@ def login():
                         max_web = 1
                     try:
                         c.execute("DELETE FROM active_sessions WHERE username = ? AND platform = 'web' AND (device_id IS NULL OR device_id = '')", (username,))
-                        c.execute("SELECT COUNT(DISTINCT device_id) FROM active_sessions WHERE username = ? AND platform = 'web' AND device_id IS NOT NULL AND device_id != ''", (username,))
+                        active_cutoff = datetime.now() - timedelta(hours=1)
+                        c.execute("SELECT COUNT(DISTINCT device_id) FROM active_sessions WHERE username = ? AND platform = 'web' AND device_id IS NOT NULL AND device_id != '' AND last_active >= ?", (username, active_cutoff))
                         existing_count = c.fetchone()[0] or 0
                         if existing_count >= max_web:
                             if device_id:
-                                c.execute("SELECT COUNT(*) FROM active_sessions WHERE username = ? AND platform = 'web' AND device_id = ?", (username, device_id))
+                                c.execute("SELECT COUNT(*) FROM active_sessions WHERE username = ? AND platform = 'web' AND device_id = ? AND last_active >= ?", (username, device_id, active_cutoff))
                                 same = c.fetchone()[0]
                                 if same == 0:
                                     conn.close()
@@ -870,18 +865,6 @@ def login():
                 c.execute("DELETE FROM active_sessions WHERE platform = ? AND device_id = ?", (platform, device_id))
             except Exception:
                 pass
-
-            # Cleanup stale sessions (older than 12h instead of 24h for better rotation)
-            try:
-                is_pg = getattr(conn, "_is_pg", False)
-                # Only purge web sessions automatically; mobile sessions persist
-                # until explicit logout or admin force-logout.
-                if is_pg:
-                    c.execute("DELETE FROM active_sessions WHERE platform = 'web' AND last_active < (NOW() - INTERVAL '1 hour')")
-                else:
-                    c.execute("DELETE FROM active_sessions WHERE platform = 'web' AND last_active < datetime('now','-1 hour')")
-            except Exception as e:
-                logger.error(f"Error cleaning stale sessions: {e}")
 
             try:
                 c.execute("CREATE TABLE IF NOT EXISTS active_sessions (token TEXT PRIMARY KEY, username TEXT, vendor_id INTEGER, device_id TEXT, platform TEXT, last_active DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
@@ -937,6 +920,7 @@ def login():
             "vertical": vendor_vertical,
             "device_slot_required": bool(locals().get('device_slot_required', False)),
             "available_slots": locals().get('available_slots', []),
+            "device_name": locals().get('assigned_device_name'),
             "force_password_change": user.get('force_password_change', False),
             "faculty_display_name": faculty_display_name,
             "kiosk_pin": str(user.get("kiosk_pin") or "8888"),
@@ -954,6 +938,10 @@ def login():
                 max_age=WEB_TOKEN_TTL,
                 path='/'
             )
+
+        elapsed_ms = (time.perf_counter() - login_started) * 1000.0
+        resp.headers["Server-Timing"] = f"login;dur={elapsed_ms:.1f}"
+        logger.info("Login completed username=%s platform=%s duration_ms=%.1f", username, platform, elapsed_ms)
 
         return resp
     else:

@@ -381,6 +381,43 @@ class LoginActivity : AppCompatActivity() {
                             // If role is user (kiosk), we MUST have a place.
                             val role = prefs.getString("role", "user")
                             if (!alreadyPrompted || (role == "user" && cachedName.isNullOrBlank())) {
+                                // Login already contains the authoritative slot state. Avoid two
+                                // extra serial API round trips before opening the kiosk.
+                                val loginDeviceName = body?.deviceName?.trim()
+                                if (!loginDeviceName.isNullOrBlank()) {
+                                    prefs.edit()
+                                        .putString("device_name", loginDeviceName)
+                                        .putBoolean("place_onboarded", true)
+                                        .apply()
+                                    runLogoShineThenNavigate()
+                                    return
+                                }
+                                val loginSlots = mutableListOf<String>()
+                                try {
+                                    val arr = body?.availableSlots
+                                    if (arr != null && arr.isJsonArray) {
+                                        for (el in arr.asJsonArray) {
+                                            if (el != null && !el.isJsonNull) loginSlots.add(el.asString)
+                                        }
+                                    }
+                                } catch (_: Exception) {}
+                                if (body?.deviceSlotRequired == true && loginSlots.isNotEmpty()) {
+                                    showSlotSelectionDialog(loginSlots, { selected ->
+                                        val obj = com.google.gson.JsonObject()
+                                        obj.addProperty("device_id", deviceId)
+                                        obj.addProperty("slot_name", selected)
+                                        RetrofitClient.getService().assignMobileDeviceSlot(obj).enqueue(object: Callback<com.google.gson.JsonObject> {
+                                            override fun onResponse(call: Call<com.google.gson.JsonObject>, resp: Response<com.google.gson.JsonObject>) {
+                                                prefs.edit().putString("device_name", selected).putBoolean("place_onboarded", true).apply()
+                                                runLogoShineThenNavigate()
+                                            }
+                                            override fun onFailure(call: Call<com.google.gson.JsonObject>, t: Throwable) {
+                                                runLogoShineThenNavigate()
+                                            }
+                                        })
+                                    })
+                                    return
+                                }
                                 RetrofitClient.getService().getMobileDeviceInfo().enqueue(object: Callback<com.google.gson.JsonObject> {
                                     override fun onResponse(call: Call<com.google.gson.JsonObject>, infoResp: Response<com.google.gson.JsonObject>) {
                                         val body = infoResp.body()
@@ -497,11 +534,11 @@ class LoginActivity : AppCompatActivity() {
                 shine.translationX = startX
                 // Animations: alpha up, slide across, alpha down
                 val fadeIn = ObjectAnimator.ofFloat(shine, "alpha", 0f, 0.9f)
-                fadeIn.duration = 120
+                fadeIn.duration = 60
                 val slide = ObjectAnimator.ofFloat(shine, "translationX", startX, endX)
-                slide.duration = 420
+                slide.duration = 160
                 val fadeOut = ObjectAnimator.ofFloat(shine, "alpha", 0.9f, 0f)
-                fadeOut.duration = 120
+                fadeOut.duration = 60
                 val set = AnimatorSet()
                 set.playSequentially(fadeIn, slide, fadeOut)
                 set.start()
@@ -512,7 +549,7 @@ class LoginActivity : AppCompatActivity() {
                     val intent = Intent(this@LoginActivity, target)
                     startActivity(intent)
                     finish()
-                }, 650)
+                }, 280)
             } else {
                 val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
                 val target = getTargetActivity(prefs)

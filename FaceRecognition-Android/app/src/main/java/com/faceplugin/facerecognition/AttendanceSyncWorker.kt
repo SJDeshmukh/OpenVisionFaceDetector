@@ -141,9 +141,15 @@ class AttendanceSyncWorker(appContext: Context, params: WorkerParameters) : Work
                             val code = resp.code()
                             Log.w(TAG, "Item ${item.id} sync failed with HTTP $code: ${resp.message()}")
                             if (code == 400) {
-                                // 400 Bad Request: unresolvable person on server or duplicate/bad data
-                                // Delete to avoid permanently clogging the offline queue
-                                db.deleteQueueItem(item.id)
+                                if (effectivePid?.startsWith("local:") == true) {
+                                    // The face upload has not produced a canonical server ID yet.
+                                    // Preserve the attendance event and retry after face sync.
+                                    needsRetry = true
+                                } else {
+                                    // A canonical identity with a permanently malformed request
+                                    // should not block every later event in the queue.
+                                    db.deleteQueueItem(item.id)
+                                }
                             } else if (code == 401 || code == 403) {
                                 Log.e(TAG, "Auth error ($code) during sync; stopping further requests until re-authenticated")
                                 needsRetry = true

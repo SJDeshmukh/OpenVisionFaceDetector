@@ -13,7 +13,7 @@ class SettingsActivity : AppCompatActivity() {
     companion object {
         const val DEFAULT_CAMERA_LENS = "front"
         // Defaults from the in-repository FaceIDApp model contracts.
-        const val DEFAULT_LIVENESS_THRESHOLD = "0.82"
+        const val DEFAULT_LIVENESS_THRESHOLD = "0.78"
         const val DEFAULT_ENROLL_LIVENESS_THRESHOLD = "0.72"
         const val DEFAULT_IDENTIFY_THRESHOLD = "0.62"
         const val DEFAULT_LIVENESS_LEVEL = "0"
@@ -28,7 +28,7 @@ class SettingsActivity : AppCompatActivity() {
         const val DEFAULT_MAX_LUMINANCE = "0.90"
 
         private const val PREFS_SCHEMA = "facesdk_prefs_schema"
-        private const val PREFS_SCHEMA_CURRENT = 4
+        private const val PREFS_SCHEMA_CURRENT = 5
 
         /** Migrates thresholds that belonged to the earlier SDK generation. */
         @JvmStatic
@@ -63,6 +63,14 @@ class SettingsActivity : AppCompatActivity() {
             if (currentSchema < 4) {
                 editor.putString("liveness_threshold", DEFAULT_LIVENESS_THRESHOLD)
                 editor.putString("enroll_liveness_threshold", DEFAULT_ENROLL_LIVENESS_THRESHOLD)
+            }
+            if (currentSchema < 5) {
+                // Reduce genuine-face rejection from the old production default,
+                // but preserve thresholds that an administrator customized.
+                val existing = preferences.getString("liveness_threshold", null)
+                if (existing == null || existing == "0.82") {
+                    editor.putString("liveness_threshold", DEFAULT_LIVENESS_THRESHOLD)
+                }
             }
             editor.putInt(PREFS_SCHEMA, PREFS_SCHEMA_CURRENT).apply()
         }
