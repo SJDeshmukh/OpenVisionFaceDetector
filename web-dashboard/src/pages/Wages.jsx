@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { API_BASE_URL } from '../config';
 import { useAuth } from '../context/AuthContext';
 import { useSocket } from '../context/SocketContext';
@@ -63,6 +63,7 @@ const Wages = () => {
   const [disableStatutoryError, setDisableStatutoryError] = useState('');
   const [disableStatutoryLoading, setDisableStatutoryLoading] = useState(false);
   const lateMarkEnabled = Boolean(user?.features?.includes('late_mark'));
+  const payrollRequestRef = useRef(null);
 
   useEffect(() => {
     if (user) {
@@ -128,10 +129,24 @@ const Wages = () => {
 
 
   const fetchPayroll = async (isBackground = false) => {
-    if (!isBackground) setLoading(true);
+    const background = isBackground === true;
+    if (background && payrollRequestRef.current) return;
+    if (payrollRequestRef.current) payrollRequestRef.current.abort();
+    const controller = new AbortController();
+    payrollRequestRef.current = controller;
+    if (!background) setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE_URL}/reports/payroll?start_date=${startDate}&end_date=${endDate}&pf_percentage=${pfPercentage}&esi_percentage=${esiPercentage}&gratuity_percentage=${gratuityPercentage}`, {
+      const params = new URLSearchParams({
+        start_date: startDate,
+        end_date: endDate,
+        pf_percentage: String(pfPercentage),
+        esi_percentage: String(esiPercentage),
+        gratuity_percentage: String(gratuityPercentage),
+        include_images: 'false',
+      });
+      const res = await fetch(`${API_BASE_URL}/reports/payroll?${params.toString()}`, {
+        signal: controller.signal,
         headers: {
           'Authorization': `Bearer ${user?.token}`
         }
@@ -156,9 +171,12 @@ const Wages = () => {
         if (data.global_settings.gratuity_threshold_years) setGratuityYears(data.global_settings.gratuity_threshold_years);
       }
     } catch (error) {
-      console.error("Error fetching payroll:", error);
+      if (error.name !== 'AbortError') console.error("Error fetching payroll:", error);
     } finally {
-      if (!isBackground) setLoading(false);
+      if (payrollRequestRef.current === controller) {
+        payrollRequestRef.current = null;
+        if (!background) setLoading(false);
+      }
     }
   };
 
@@ -172,7 +190,7 @@ const Wages = () => {
       // Poll for updates (Disable polling if editing)
       const interval = setInterval(() => {
         if (!hasChanges && !workingHoursChanged) fetchPayroll(true);
-      }, 5000);
+      }, 30000);
       return () => clearInterval(interval);
     }
   }, [startDate, endDate, hasChanges, workingHoursChanged]);
@@ -198,6 +216,10 @@ const Wages = () => {
       socket.off('attendance_updated', onAttendanceUpdated);
     };
   }, [socket, user, hasChanges, workingHoursChanged, startDate, endDate]);
+
+  useEffect(() => () => {
+    if (payrollRequestRef.current) payrollRequestRef.current.abort();
+  }, []);
 
   const recalculatePayrollPerson = (person) => {
     const hourlyRate = (person.daily_wage || 0) / Math.max(parseFloat(workingHours) || 0, 0.01);

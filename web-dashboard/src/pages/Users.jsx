@@ -13,7 +13,7 @@ const Users = () => {
 
   const fetchData = useCallback(async () => {
     try {
-      const res = await axios.get(`${API_URL}/sync/download`);
+      const res = await axios.get(`${API_URL}/sync/download`, { params: { include_assets: false } });
       setUsers(res.data.faces || []);
     } catch (error) {
       console.error("Error fetching users:", error);
@@ -112,11 +112,19 @@ const Users = () => {
               
               <div className="flex justify-center mb-6 relative">
                 <div className="w-24 h-24 rounded-full p-1 bg-gradient-to-br from-blue-500/20 to-purple-500/20">
-                  <img 
-                    src={`data:image/jpeg;base64,${user.face_image}`} 
-                    alt={user.name} 
-                    className="w-full h-full rounded-full object-cover border-2 border-white/10 group-hover:border-blue-400/50 transition-colors"
-                  />
+                  {user.face_image ? (
+                    <img
+                      src={user.face_image.startsWith('data:') || user.face_image.startsWith('http')
+                        ? user.face_image
+                        : `data:image/jpeg;base64,${user.face_image}`}
+                      alt={user.name}
+                      className="w-full h-full rounded-full object-cover border-2 border-white/10 group-hover:border-blue-400/50 transition-colors"
+                    />
+                  ) : (
+                    <div className="w-full h-full rounded-full flex items-center justify-center text-xl font-bold text-blue-300 border-2 border-white/10">
+                      {(user.name || '?').slice(0, 1).toUpperCase()}
+                    </div>
+                  )}
                 </div>
                 <div className="absolute bottom-0 right-1/2 translate-x-10 translate-y-2 bg-green-500 text-black text-[10px] font-bold px-2 py-0.5 rounded-full border border-white/10">
                   ACTIVE

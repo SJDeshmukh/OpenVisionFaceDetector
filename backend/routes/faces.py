@@ -398,9 +398,13 @@ def get_persons():
     if getattr(g, "user_role", None) == "faculty":
         wanted_type = "student"
 
-    query = """
+    include_images = str(request.args.get("include_images", "true")).strip().lower() not in {
+        "0", "false", "no", "off"
+    }
+    image_column = "f.face_image" if include_images else "NULL AS face_image"
+    query = f"""
         SELECT f.id, f.display_id, f.name, f.department, f.designation,
-               f.shift, f.daily_wage, f.face_image, f.phone, f.custom_data,
+               f.shift, f.daily_wage, {image_column}, f.phone, f.custom_data,
                (SELECT su.role FROM system_users su
                 WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
                 ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
@@ -1319,6 +1323,10 @@ def download_faces():
     if getattr(g, "user_role", None) == "faculty":
         wanted_type = "student"
 
+    include_assets = str(request.args.get("include_assets", "true")).strip().lower() not in {
+        "0", "false", "no", "off"
+    }
+
     requested_cursor = request.args.get("cursor")
     delta_cursor = None
     if requested_cursor is not None and vendor_id and getattr(g, "user_role", None) != "faculty":
@@ -1363,8 +1371,14 @@ def download_faces():
             changed_ids = None
             deleted_ids = []
     
-    query = """
-        SELECT f.*,
+    asset_columns = (
+        "f.templates, f.face_image" if include_assets
+        else "NULL AS templates, NULL AS face_image"
+    )
+    query = f"""
+        SELECT f.id, f.display_id, f.name, f.phone, f.department,
+               f.designation, f.shift, f.vendor_id, f.custom_data,
+               {asset_columns},
                (SELECT su.role FROM system_users su
                 WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
                 ORDER BY CASE LOWER(su.role) WHEN 'faculty' THEN 0 WHEN 'student' THEN 1 ELSE 2 END

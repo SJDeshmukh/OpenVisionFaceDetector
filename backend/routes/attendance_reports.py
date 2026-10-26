@@ -18,7 +18,7 @@ from utils import (
 from services.attendance_service import (
     calculate_daily_hours, calculate_expected_hours, calculate_arrival_status
 )
-from services.payroll_service import calculate_salary_breakdown, get_approved_advances
+from services.payroll_service import calculate_salary_breakdown
 from services.auth_service import require_auth
 from services.report_filter_service import (
     STANDARD_FILTERS, custom_filter_values, face_matches, facet_options,
@@ -562,6 +562,9 @@ def export_attendance(valid_data: PayrollReportRequest):
 @validate_request(PayrollReportRequest)
 def get_payroll_report(valid_data: PayrollReportRequest):
     vendor_id = g.vendor_id
+    include_images = str(request.args.get("include_images", "true")).strip().lower() not in {
+        "0", "false", "no", "off"
+    }
 
     start_date = valid_data.start_date
     end_date = valid_data.end_date
@@ -639,8 +642,9 @@ def get_payroll_report(valid_data: PayrollReportRequest):
         payroll_fields = ["basic_salary", "hra", "conveyance", "special_allowance", "pf_enabled", "esi_enabled", "gratuity_enabled", "professional_tax", "joining_date"]
         extra = [col for col in (["late_allowance_days", "late_deduction_amount"] + payroll_fields) if col in fcols]
         extra_select = ", " + ", ".join(extra) if extra else ""
+        image_select = "f.face_image" if include_images else "NULL AS face_image"
         c.execute(f"""SELECT f.id, f.name, f.daily_wage, f.department, f.designation,
-                             f.face_image, f.phone, f.display_id, f.custom_data,
+                             {image_select}, f.phone, f.display_id, f.custom_data,
                              (SELECT su.role FROM system_users su
                               WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
                               ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
@@ -648,8 +652,9 @@ def get_payroll_report(valid_data: PayrollReportRequest):
                       FROM faces f WHERE f.vendor_id = ? ORDER BY f.id ASC""", (vendor_id,))
     except Exception:
         logger.debug("Extended faces columns unavailable, falling back to base columns", exc_info=True)
-        c.execute("""SELECT f.id, f.name, f.daily_wage, f.department, f.designation,
-                            f.face_image, f.phone, f.custom_data,
+        image_select = "f.face_image" if include_images else "NULL AS face_image"
+        c.execute(f"""SELECT f.id, f.name, f.daily_wage, f.department, f.designation,
+                            {image_select}, f.phone, f.custom_data,
                             (SELECT su.role FROM system_users su
                              WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
                              ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
@@ -680,8 +685,16 @@ def get_payroll_report(valid_data: PayrollReportRequest):
     except ValueError:
         conn.close(); return jsonify({"error": "Invalid date format"}), 400
 
-    query = "SELECT * FROM attendance WHERE date(timestamp) BETWEEN ? AND ? AND vendor_id = ? ORDER BY timestamp ASC"
-    c.execute(query, (s_dt.strftime('%Y-%m-%d'), e_dt.strftime('%Y-%m-%d'), vendor_id))
+    # Keep timestamp bare so PostgreSQL can use idx_attendance_vendor_time.
+    # The former date(timestamp) expression forced a scan of the vendor's
+    # attendance history on every payroll refresh.
+    range_start = s_dt.strftime('%Y-%m-%d 00:00:00')
+    range_end_exclusive = (e_dt + timedelta(days=1)).strftime('%Y-%m-%d 00:00:00')
+    query = """SELECT person_id, status, activity, timestamp, is_late
+                 FROM attendance
+                WHERE vendor_id = ? AND timestamp >= ? AND timestamp < ?
+                ORDER BY timestamp ASC"""
+    c.execute(query, (vendor_id, range_start, range_end_exclusive))
     rows = c.fetchall()
     
     user_records = defaultdict(list)
@@ -698,6 +711,21 @@ def get_payroll_report(valid_data: PayrollReportRequest):
     end_dt_req = datetime.strptime(end_date, '%Y-%m-%d').date()
 
     missing_deduction_pct = float(stored_settings.get('missing_checkout_deduction_percent', 50.0))
+
+    # Load approved deductions once for the whole payroll. The old loop issued
+    # one database query per employee.
+    target_month = end_dt_req.strftime('%Y-%m')
+    c.execute(
+        """SELECT person_id, COALESCE(SUM(amount), 0)
+             FROM advances
+            WHERE vendor_id = ? AND deduction_month = ? AND status = 'approved'
+            GROUP BY person_id""",
+        (vendor_id, target_month),
+    )
+    advance_totals = {
+        row[0]: float(row[1] or 0)
+        for row in (c.fetchall() or [])
+    }
 
     for pid, person_info in persons.items():
         total_seconds = 0.0
@@ -744,9 +772,6 @@ def get_payroll_report(valid_data: PayrollReportRequest):
         deductable_lates = max(0, late_marks_count - allowance)
         total_deduction = round(deductable_lates * deduction_amt, 2)
         
-        # Get Month for advances (using end_date if it covers the month)
-        target_month = end_dt_req.strftime('%Y-%m')
-        
         # Determine Tenure (Years) for Gratuity Threshold
         tenure_years = 0
         if person_info.get('joining_date'):
@@ -778,9 +803,7 @@ def get_payroll_report(valid_data: PayrollReportRequest):
             gratuity_threshold_years=grat_years_threshold
         )
         
-        # Fetch and process advances
-        advances = get_approved_advances(conn, pid, target_month)
-        advance_total = sum(adv[1] for adv in advances)
+        advance_total = advance_totals.get(pid, 0.0)
         
         final_payout = round(breakdown['net_before_advances'] - total_deduction - advance_total, 2)
         

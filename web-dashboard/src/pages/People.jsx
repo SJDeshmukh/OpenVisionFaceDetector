@@ -230,8 +230,16 @@ const People = () => {
       // Faculty uses /persons which filters to their assigned classes server-side
       const isFaculty = user?.role === 'faculty';
       const response = isFaculty
-        ? await axios.get(`${API_URL}/persons`, { params: { person_type: 'student' } })
-        : await axios.get(`${API_URL}/sync/download`, { params: { limit: 200, ...(schoolFlow ? { person_type: 'student' } : {}) } });
+        ? await axios.get(`${API_URL}/persons`, {
+            params: { person_type: 'student', include_images: false }
+          })
+        : await axios.get(`${API_URL}/sync/download`, {
+            params: {
+              limit: 200,
+              include_assets: false,
+              ...(schoolFlow ? { person_type: 'student' } : {})
+            }
+          });
       const receivedFaces = isFaculty ? (response.data.persons || []) : (response.data.faces || []);
       const faces = schoolFlow
         ? receivedFaces.filter(face => (face.person_type || face.custom_data?.person_type || 'student') === 'student' && face.role !== 'faculty')
