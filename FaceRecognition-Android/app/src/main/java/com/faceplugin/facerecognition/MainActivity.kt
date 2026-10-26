@@ -338,7 +338,7 @@ class MainActivity : AppCompatActivity() {
         try {
             val serverUrl = RetrofitClient.getBaseUrl()
             val options = IO.Options()
-            options.transports = arrayOf("polling")
+            options.transports = arrayOf("websocket", "polling")
             options.path = "/socket.io"
             val authToken = getSharedPreferences("app_prefs", MODE_PRIVATE).getString("token", null)
             if (!authToken.isNullOrBlank()) {

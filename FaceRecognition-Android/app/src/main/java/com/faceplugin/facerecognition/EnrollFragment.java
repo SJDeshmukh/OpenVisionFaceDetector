@@ -815,7 +815,24 @@ public class EnrollFragment extends Fragment {
     private void syncToBackend(String name, byte[] templates, Bitmap faceImage, String phone, String department, String designation, String shift, JsonObject dynamicData, String localUid) {
         String templatesBase64 = Base64.encodeToString(templates, Base64.NO_WRAP);
         ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
-        faceImage.compress(Bitmap.CompressFormat.JPEG, 100, byteArrayOutputStream);
+        
+        // Fast upload optimization: downscale to max 480px and compress at 80% JPEG
+        Bitmap uploadBmp = faceImage;
+        boolean needsRecycle = false;
+        if (faceImage != null) {
+            int maxDim = Math.max(faceImage.getWidth(), faceImage.getHeight());
+            if (maxDim > 480) {
+                float scale = 480f / maxDim;
+                int w = Math.round(faceImage.getWidth() * scale);
+                int h = Math.round(faceImage.getHeight() * scale);
+                uploadBmp = Bitmap.createScaledBitmap(faceImage, w, h, true);
+                needsRecycle = true;
+            }
+            uploadBmp.compress(Bitmap.CompressFormat.JPEG, 80, byteArrayOutputStream);
+            if (needsRecycle && uploadBmp != faceImage) {
+                uploadBmp.recycle();
+            }
+        }
         String faceImageBase64 = Base64.encodeToString(byteArrayOutputStream.toByteArray(), Base64.NO_WRAP);
 
         JsonObject json = new JsonObject();
