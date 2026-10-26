@@ -1717,6 +1717,7 @@ def delete_face(name):
 def delete_face_by_id(person_id):
     from app import get_db_connection, socketio, is_testing
     from services.auth_service import extract_token, verify_token
+    delete_started = time.perf_counter()
     vendor_id, error = authenticate_vendor_access()
     if error: return error
     conn = get_db_connection()
@@ -1760,6 +1761,7 @@ def delete_face_by_id(person_id):
         del_row = c.fetchone()
         deleted_display_id = del_row[0] if del_row else None
         target_vendor_id = del_row[1] if del_row else None
+        lookup_finished = time.perf_counter()
 
         logger.info(f"Cleaning up associated records for person_id={person_id}")
 
@@ -1834,12 +1836,15 @@ def delete_face_by_id(person_id):
                 if getattr(conn, "_is_pg", False): c.execute("ROLLBACK TO SAVEPOINT sp_ph")
                 logger.warning(f"Phone-based parent cleanup skipped for person_id={person_id}: {e}")
 
+        dependencies_finished = time.perf_counter()
+
         # 2. Delete the face record itself
         if vendor_id:
             c.execute("DELETE FROM faces WHERE id = ? AND vendor_id = ?", (person_id, vendor_id))
         else:
             c.execute("DELETE FROM faces WHERE id = ?", (person_id,))
         deleted_faces = c.rowcount
+        face_delete_finished = time.perf_counter()
 
         # Keep the vendor-visible serial numbers gapless in the same transaction
         # as deletion. The update trigger records every changed person for kiosk
@@ -1847,9 +1852,26 @@ def delete_face_by_id(person_id):
         renumbered = []
         if deleted_faces > 0 and target_vendor_id:
             renumbered = compact_vendor_display_ids(conn, target_vendor_id)
+        compaction_finished = time.perf_counter()
 
         # 3. Commit first, then emit and clean up in background
         conn.commit()
+        commit_finished = time.perf_counter()
+
+        logger.info(
+            "Employee delete timing person_id=%s vendor_id=%s lookup_ms=%.1f "
+            "dependencies_ms=%.1f face_delete_ms=%.1f compaction_ms=%.1f "
+            "commit_ms=%.1f total_db_ms=%.1f renumbered=%s",
+            person_id,
+            target_vendor_id,
+            (lookup_finished - delete_started) * 1000,
+            (dependencies_finished - lookup_finished) * 1000,
+            (face_delete_finished - dependencies_finished) * 1000,
+            (compaction_finished - face_delete_finished) * 1000,
+            (commit_finished - compaction_finished) * 1000,
+            (commit_finished - delete_started) * 1000,
+            len(renumbered),
+        )
 
         effective_vendor_id = vendor_id or target_vendor_id
         # Invalidate vendor-specific caches and global stats immediately
