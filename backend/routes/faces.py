@@ -1225,7 +1225,41 @@ def upload_face():
             except Exception:
                 pass
 
+        # Send a lightweight authoritative row with the socket event. Web and
+        # kiosk clients can update metadata immediately without downloading
+        # every employee's image and face template again.
+        c.execute(
+            """SELECT id, name, phone, department, designation, shift,
+                      vendor_id, custom_data, display_id
+                 FROM faces WHERE id = ?""",
+            (new_id,),
+        )
+        committed_row = c.fetchone()
+        committed_person = None
+        if committed_row:
+            committed_person = {
+                "id": str(committed_row[0]),
+                "person_id": str(committed_row[0]),
+                "name": committed_row[1] or "",
+                "phone": committed_row[2] or "",
+                "department": committed_row[3] or "",
+                "designation": committed_row[4] or "",
+                "shift": committed_row[5] or "",
+                "vendor_id": committed_row[6],
+                "custom_data": parse_custom_data(committed_row[7]),
+                "display_id": committed_row[8],
+            }
+
         conn.commit()
+
+        face_assets_changed = bool(
+            face_image or templates or
+            (templates_list and isinstance(templates_list, list))
+        )
+        realtime_action = (
+            "insert" if not person_id else
+            ("face_update" if face_assets_changed else "metadata_update")
+        )
 
         # Schedule async metric projection retrain (3-second debounce).
         try:
@@ -1242,8 +1276,9 @@ def upload_face():
                 'persons_updated',
                 {
                     'vendor_id': vendor_id,
-                    'action': 'upsert',
+                    'action': realtime_action,
                     'person_id': str(person_id or new_id),
+                    'person': committed_person,
                 },
                 room=f"vendor_{vendor_id}",
             )
@@ -1255,6 +1290,7 @@ def upload_face():
             "person_id": new_id,
             "display_id": assigned_display_id,
             "vendor_id": vendor_id,
+            "person": committed_person,
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1636,6 +1672,7 @@ def delete_face(name):
                         'vendor_id': broadcast_vendor,
                         'action': 'delete',
                         'person_ids': [str(pid) for pid in by_vendor.get(int(broadcast_vendor), [])],
+                        'renumbered': renumbered_by_vendor.get(int(broadcast_vendor), []),
                         'renumbered_person_ids': [
                             str(item['person_id'])
                             for item in renumbered_by_vendor.get(int(broadcast_vendor), [])
@@ -1815,6 +1852,7 @@ def delete_face_by_id(person_id):
                         'vendor_id': effective_vendor_id,
                         'action': 'delete',
                         'person_id': str(person_id),
+                        'renumbered': renumbered,
                         'renumbered_person_ids': [str(item['person_id']) for item in renumbered],
                     },
                     room=f"vendor_{effective_vendor_id}",

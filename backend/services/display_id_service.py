@@ -30,6 +30,41 @@ def compact_vendor_display_ids(conn, vendor_id):
             (int(vendor_id),),
         )
 
+        # PostgreSQL can rank and update the whole vendor roster in one
+        # statement.  The previous row-by-row loop added one database round
+        # trip per employee, which made deleting an early serial increasingly
+        # slow as a vendor's roster grew.
+        cursor.execute(
+            """
+            WITH ranked AS (
+                SELECT id,
+                       ROW_NUMBER() OVER (
+                           ORDER BY CASE WHEN display_id IS NULL THEN 1 ELSE 0 END,
+                                    display_id ASC,
+                                    id ASC
+                       )::integer AS expected_display_id
+                FROM faces
+                WHERE vendor_id = %s
+            ), updated AS (
+                UPDATE faces AS f
+                   SET display_id = ranked.expected_display_id
+                  FROM ranked
+                 WHERE f.id = ranked.id
+                   AND f.vendor_id = %s
+                   AND f.display_id IS DISTINCT FROM ranked.expected_display_id
+                RETURNING f.id, f.display_id
+            )
+            SELECT id, display_id FROM updated ORDER BY display_id ASC, id ASC
+            """,
+            (vendor_id, vendor_id),
+        )
+        changed = [
+            {"person_id": int(row[0]), "display_id": int(row[1])}
+            for row in (cursor.fetchall() or [])
+        ]
+        cursor.close()
+        return changed
+
     cursor.execute(
         "SELECT id, display_id FROM faces "
         f"WHERE vendor_id = {placeholder} "

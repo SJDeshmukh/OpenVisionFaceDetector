@@ -640,6 +640,56 @@ import java.util.concurrent.CopyOnWriteArrayList;
         updatePerson("", name, phone, department, designation, "", "");
     }
 
+    /** Apply lightweight metadata received over the authenticated vendor socket. */
+    public void applyRealtimePerson(String id, String name, String phone, String department,
+                                    String designation, String shift, String customData,
+                                    int displayId) {
+        if (id == null || id.isEmpty()) return;
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues values = new ContentValues();
+        values.put("name", name != null ? name : "");
+        values.put("phone", phone != null ? phone : "");
+        values.put("department", department != null ? department : "");
+        values.put("designation", designation != null ? designation : "");
+        values.put("shift", shift != null ? shift : "");
+        values.put("custom_data", customData != null ? customData : "");
+        values.put("display_id", displayId);
+        db.update("person", values, "id = ?", new String[]{id});
+
+        synchronized (personList) {
+            for (Person p : personList) {
+                if (id.equals(p.id)) {
+                    p.name = name != null ? name : "";
+                    p.phone = phone != null ? phone : "";
+                    p.department = department != null ? department.intern() : "";
+                    p.designation = designation != null ? designation.intern() : "";
+                    p.shift = shift != null ? shift.intern() : "";
+                    p.customData = customData != null ? customData : "";
+                    p.displayId = displayId;
+                    break;
+                }
+            }
+        }
+    }
+
+    /** Update a server-managed serial without replacing face recognition data. */
+    public void updatePersonDisplayId(String id, int displayId) {
+        if (id == null || id.isEmpty()) return;
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues values = new ContentValues();
+        values.put("display_id", displayId);
+        db.update("person", values, "id = ?", new String[]{id});
+
+        synchronized (personList) {
+            for (Person p : personList) {
+                if (id.equals(p.id)) {
+                    p.displayId = displayId;
+                    break;
+                }
+            }
+        }
+    }
+
     public Integer deletePerson (String name) {
         synchronized (personList) {
             for (int i = 0; i < personList.size(); i++) {

@@ -67,6 +67,12 @@ const normalizedFieldIdentity = (field) => normalizedFieldKey(field).toLowerCase
 const isNameField = (field) => field?.is_name || ['name', 'full_name', 'student_name', 'employee_name'].includes(normalizedFieldIdentity(field));
 const isPhoneField = (field) => field?.is_phone || ['phone', 'mobile', 'mobile_number', 'phone_number', 'contact_number'].includes(normalizedFieldIdentity(field));
 const isClassField = (field) => ['class', 'class_id', 'class_section'].includes(normalizedFieldIdentity(field));
+const peopleCachePayload = (people) => people.map((person) => {
+  const cached = { ...person };
+  delete cached.templates;
+  delete cached.face_image;
+  return cached;
+});
 
 const People = () => {
   const { user } = useAuth();
@@ -88,6 +94,7 @@ const People = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [formData, setFormData] = useState(() => emptyPersonForm());
+  const [faceChanged, setFaceChanged] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [vendorConfig, setVendorConfig] = useState([]);
   const [vendorDepartments, setVendorDepartments] = useState([]);
@@ -139,6 +146,16 @@ const People = () => {
   const isBulkAttendanceEnabled = user?.features?.includes('bulk_image_attendance');
 
   const { socket, joinVendor } = useSocket();
+  const updateUsersAndCache = (updater) => {
+    setUsers((current) => {
+      const next = typeof updater === 'function' ? updater(current) : updater;
+      if (user?.role !== 'faculty') {
+        localStorage.setItem(peopleCacheKey, JSON.stringify(peopleCachePayload(next)));
+      }
+      return next;
+    });
+  };
+
   useEffect(() => {
     if (user) {
       // Load initial data from localStorage for instant loading
@@ -157,21 +174,54 @@ const People = () => {
       fetchConfig();
 
       if (socket) {
-        socket.on('connect', () => {
+        const handleConnect = () => {
           if (user.vendor_id) {
             joinVendor(user.vendor_id);
           }
-        });
+        };
 
-        socket.on('persons_updated', (data) => {
-          if (String(data.vendor_id) === String(user.vendor_id)) {
-            console.log("Person updated, refreshing list...");
-            fetchUsers();
+        const handlePersonsUpdated = (data) => {
+          if (String(data?.vendor_id) !== String(user.vendor_id)) return;
+
+          if (data.action === 'delete') {
+            const deletedIds = new Set(
+              [data.person_id, ...(data.person_ids || [])]
+                .filter(Boolean)
+                .map(String)
+            );
+            const displayIds = new Map(
+              (data.renumbered || []).map((item) => [String(item.person_id), item.display_id])
+            );
+            updateUsersAndCache((current) => current
+              .filter((person) => !deletedIds.has(String(person.id || person.person_id)))
+              .map((person) => {
+                const id = String(person.id || person.person_id);
+                return displayIds.has(id) ? { ...person, display_id: displayIds.get(id) } : person;
+              }));
+            return;
           }
-        });
-      }
 
-      return () => { };
+          if (data.action === 'metadata_update' && data.person) {
+            updateUsersAndCache((current) => current.map((person) =>
+              String(person.id || person.person_id) === String(data.person.id || data.person.person_id)
+                ? { ...person, ...data.person }
+                : person
+            ));
+            return;
+          }
+
+          // A new or replaced face needs its recognition assets exactly once.
+          fetchUsers();
+        };
+
+        socket.on('connect', handleConnect);
+        socket.on('persons_updated', handlePersonsUpdated);
+
+        return () => {
+          socket.off('connect', handleConnect);
+          socket.off('persons_updated', handlePersonsUpdated);
+        };
+      }
     }
   }, [user, socket]);
 
@@ -189,7 +239,10 @@ const People = () => {
       setUsers(faces);
       setLoading(false);
       if (!isFaculty) {
-        localStorage.setItem(peopleCacheKey, JSON.stringify(faces));
+        // Face images and templates can make this synchronous browser write
+        // several megabytes. Cache the list metadata used for the first paint;
+        // the authoritative fetch fills recognition assets afterward.
+        localStorage.setItem(peopleCacheKey, JSON.stringify(peopleCachePayload(faces)));
       }
     } catch (error) {
       console.error("Error fetching users:", error);
@@ -284,6 +337,7 @@ const People = () => {
       });
 
       setFormData({ ...formData, photo: compressedDataUrl, photoPreview: compressedDataUrl });
+      setFaceChanged(true);
     } catch (error) {
       console.error("Error compressing image:", error);
       alert("Failed to process image. Please try a different photo.");
@@ -292,12 +346,14 @@ const People = () => {
 
   const openAddModal = () => {
     setIsEditing(false);
+    setFaceChanged(false);
     setFormData(emptyPersonForm(registrationColumns));
     setIsModalOpen(true);
   };
 
   const handleEdit = (user) => {
     setIsEditing(true);
+    setFaceChanged(false);
     const dynamicFields = user.custom_data || {};
 
     // Find class_id if missing but class scope exists (Backward compatibility for bulk imports)
@@ -338,17 +394,28 @@ const People = () => {
 
   const handleDelete = async (id, name) => {
     if (window.confirm(`Are you sure you want to delete ${name}?`)) {
+      const previousUsers = users;
+      updateUsersAndCache((current) => current
+        .filter((person) => String(person.id || person.person_id) !== String(id))
+        .map((person, index) => ({ ...person, display_id: index + 1 })));
       try {
         const resp = await axios.delete(`${API_URL}/sync/delete/id/${id}`);
         if (resp.data && resp.data.status === 'success') {
-          setUsers(prev => prev.filter(u => u.id !== id));
-          fetchUsers(); // Re-fetch to pull newly calculated display_ids
+          const displayIds = new Map(
+            (resp.data.renumbered || []).map((item) => [String(item.person_id), item.display_id])
+          );
+          updateUsersAndCache((current) => current.map((person) => {
+            const personId = String(person.id || person.person_id);
+            return displayIds.has(personId) ? { ...person, display_id: displayIds.get(personId) } : person;
+          }));
           addToast(`${personLabel} deleted successfully.`, 'success');
         } else {
+          updateUsersAndCache(previousUsers);
           const msg = resp.data?.error || 'Failed to delete';
           alert(msg);
         }
       } catch (error) {
+        updateUsersAndCache(previousUsers);
         console.error("Error deleting user:", error);
         const msg = error.response?.data?.error || "Failed to delete user";
         alert(msg);
@@ -475,12 +542,10 @@ const People = () => {
         return;
       }
       const payload = {
+        ...formData,
         person_id: formData.id,
         name: formData.name,
-        face_image: formData.photo,
-        templates: formData.templates,
         display_id: formData.display_id,
-        ...formData, // Spread all other dynamic fields
         ...(schoolFlow ? { person_type: 'student' } : {}),
       };
 
@@ -488,6 +553,16 @@ const People = () => {
       delete payload.photoPreview;
       delete payload.photo;
       delete payload.id;
+
+      // Text-only edits must not upload and re-run face extraction. That work
+      // takes several seconds and is only required when the photo changed.
+      if (!formData.id || faceChanged) {
+        payload.face_image = formData.photo;
+        payload.templates = formData.templates;
+      } else {
+        delete payload.face_image;
+        delete payload.templates;
+      }
 
       // Map class_id to scope fields if selected (Prefer these over manual Year/Div inputs)
       if (formData.class_id) {
@@ -513,9 +588,20 @@ const People = () => {
 
       const response = await axios.post(`${API_URL}/sync/upload`, payload);
       if (response.data.status === 'success') {
+        const committedPerson = response.data.person;
+        if (formData.id && committedPerson) {
+          updateUsersAndCache((current) => current.map((person) =>
+            String(person.id || person.person_id) === String(committedPerson.id || committedPerson.person_id)
+              ? { ...person, ...committedPerson }
+              : person
+          ));
+        } else {
+          // New registrations need the server-generated face assets.
+          fetchUsers();
+        }
         setIsModalOpen(false);
         setFormData(emptyPersonForm(registrationColumns));
-        fetchUsers();
+        setFaceChanged(false);
       }
     } catch (error) {
       console.error("Error registering user:", error);

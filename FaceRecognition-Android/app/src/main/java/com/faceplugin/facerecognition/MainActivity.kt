@@ -464,12 +464,66 @@ class MainActivity : AppCompatActivity() {
                         "MainActivity",
                         "Real-time persons_updated received: ${payload.optString("action", "refresh")}",
                     )
-                    runOnUiThread {
-                        // Collapse rapid registration/deletion bursts into one authoritative
-                        // download. The server event is only a notification; the committed
-                        // database remains the source of truth.
-                        handler.removeCallbacks(personsSyncRunnable)
-                        handler.postDelayed(personsSyncRunnable, 350L)
+                    val action = payload.optString("action", "refresh")
+                    if (action == "delete" || action == "metadata_update") {
+                        // These events contain all fields needed for an immediate local
+                        // update. Avoid downloading and decoding every face/template merely
+                        // to remove a row, renumber IDs, or edit text.
+                        Thread {
+                            try {
+                                if (action == "delete") {
+                                    val deletedIds = linkedSetOf<String>()
+                                    payload.optString("person_id", "").takeIf { it.isNotBlank() }?.let(deletedIds::add)
+                                    payload.optJSONArray("person_ids")?.let { ids ->
+                                        for (i in 0 until ids.length()) {
+                                            ids.optString(i, "").takeIf { it.isNotBlank() }?.let(deletedIds::add)
+                                        }
+                                    }
+                                    deletedIds.forEach { dbManager.deletePersonById(it) }
+                                    payload.optJSONArray("renumbered")?.let { rows ->
+                                        for (i in 0 until rows.length()) {
+                                            val row = rows.optJSONObject(i) ?: continue
+                                            val id = row.optString("person_id", "")
+                                            if (id.isNotBlank()) {
+                                                dbManager.updatePersonDisplayId(id, row.optInt("display_id", 0))
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    payload.optJSONObject("person")?.let { person ->
+                                        val customData = person.optJSONObject("custom_data")?.toString()
+                                            ?: person.optString("custom_data", "")
+                                        dbManager.applyRealtimePerson(
+                                            person.optString("id", person.optString("person_id", "")),
+                                            person.optString("name", ""),
+                                            person.optString("phone", ""),
+                                            person.optString("department", ""),
+                                            person.optString("designation", ""),
+                                            person.optString("shift", ""),
+                                            customData,
+                                            person.optInt("display_id", 0),
+                                        )
+                                    }
+                                }
+                                runOnUiThread {
+                                    val currentFragment = supportFragmentManager.findFragmentById(R.id.fragment_container)
+                                    if (currentFragment is UsersFragment) currentFragment.refreshList()
+                                }
+                            } catch (e: Exception) {
+                                android.util.Log.w("MainActivity", "Unable to apply realtime person update", e)
+                                runOnUiThread {
+                                    handler.removeCallbacks(personsSyncRunnable)
+                                    handler.postDelayed(personsSyncRunnable, 100L)
+                                }
+                            }
+                        }.start()
+                    } else {
+                        runOnUiThread {
+                            // New or replaced faces require recognition assets from the
+                            // server; collapse bursts into one delta download.
+                            handler.removeCallbacks(personsSyncRunnable)
+                            handler.postDelayed(personsSyncRunnable, 350L)
+                        }
                     }
                 } catch (e: Exception) {
                     android.util.Log.w("MainActivity", "Invalid persons_updated payload", e)

@@ -27,7 +27,27 @@ const Users = () => {
   useEffect(() => {
     if (!user || !socket) return;
     const handlePersonsUpdated = (data) => {
-      if (String(data.vendor_id) === String(user.vendor_id)) {
+      if (String(data.vendor_id) !== String(user.vendor_id)) return;
+      if (data.action === 'delete') {
+        const deletedIds = new Set(
+          [data.person_id, ...(data.person_ids || [])].filter(Boolean).map(String)
+        );
+        const displayIds = new Map(
+          (data.renumbered || []).map((item) => [String(item.person_id), item.display_id])
+        );
+        setUsers((current) => current
+          .filter((entry) => !deletedIds.has(String(entry.id || entry.person_id)))
+          .map((entry) => {
+            const id = String(entry.id || entry.person_id);
+            return displayIds.has(id) ? { ...entry, display_id: displayIds.get(id) } : entry;
+          }));
+      } else if (data.action === 'metadata_update' && data.person) {
+        setUsers((current) => current.map((entry) =>
+          String(entry.id || entry.person_id) === String(data.person.id || data.person.person_id)
+            ? { ...entry, ...data.person }
+            : entry
+        ));
+      } else {
         fetchData();
       }
     };
@@ -39,10 +59,21 @@ const Users = () => {
 
   const deleteUser = async (person) => {
     if (!person.id || !window.confirm(`Delete ${person.name || 'this user'}?`)) return;
+    const previousUsers = users;
+    setUsers((current) => current
+      .filter((entry) => String(entry.id) !== String(person.id))
+      .map((entry, index) => ({ ...entry, display_id: index + 1 })));
     try {
-      await axios.delete(`${API_URL}/sync/delete/id/${person.id}`);
-      setUsers((current) => current.filter((entry) => String(entry.id) !== String(person.id)));
+      const response = await axios.delete(`${API_URL}/sync/delete/id/${person.id}`);
+      const displayIds = new Map(
+        (response.data.renumbered || []).map((item) => [String(item.person_id), item.display_id])
+      );
+      setUsers((current) => current.map((entry) => {
+        const id = String(entry.id || entry.person_id);
+        return displayIds.has(id) ? { ...entry, display_id: displayIds.get(id) } : entry;
+      }));
     } catch (error) {
+      setUsers(previousUsers);
       console.error("Error deleting user:", error);
     }
   };
