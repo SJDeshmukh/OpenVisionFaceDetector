@@ -15,6 +15,8 @@ import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.MalformedURLException;
+import java.net.URL;
 
 public class RetrofitClient {
     private static volatile String BASE_URL = BuildConfig.BASE_URL;
@@ -87,6 +89,14 @@ public class RetrofitClient {
     /** Download an authenticated image with a strict size cap for list thumbnails. */
     public static byte[] downloadImage(String url, int maxBytes) throws IOException {
         if (url == null || url.isEmpty()) return null;
+        String resolvedUrl = url;
+        if (url.startsWith("/")) {
+            try {
+                resolvedUrl = new URL(new URL(getBaseUrl()), url).toString();
+            } catch (MalformedURLException error) {
+                throw new IOException("Invalid image URL", error);
+            }
+        }
         if (authToken == null && MyGlobal.context != null) {
             try {
                 android.content.SharedPreferences prefs = MyGlobal.context.getSharedPreferences(
@@ -99,7 +109,7 @@ public class RetrofitClient {
                 if (imageClient == null) imageClient = buildHttpClient(10, 20, 20);
             }
         }
-        Request request = new Request.Builder().url(url).get().build();
+        Request request = new Request.Builder().url(resolvedUrl).get().build();
         try (Response response = imageClient.newCall(request).execute()) {
             if (!response.isSuccessful() || response.body() == null) return null;
             long declaredLength = response.body().contentLength();

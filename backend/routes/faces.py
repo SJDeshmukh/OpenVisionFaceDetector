@@ -117,8 +117,8 @@ faces_bp = Blueprint('faces_bp', __name__)
 
 
 def _person_image_url(person_id, version=None):
-    """Return an authenticated, tenant-scoped URL without embedding image data in lists."""
-    values = {"person_id": int(person_id), "_external": True}
+    """Return a same-origin URL so the browser includes its HttpOnly session cookie."""
+    values = {"person_id": int(person_id)}
     if version is not None:
         values["v"] = int(version)
     return url_for("faces_bp.person_image", **values)
