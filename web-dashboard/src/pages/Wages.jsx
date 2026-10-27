@@ -8,7 +8,7 @@ const Wages = () => {
   const { socket } = useSocket();
   const imageSource = (value) => {
     if (!value) return '';
-    if (value.startsWith('data:') || value.startsWith('http://') || value.startsWith('https://')) return value;
+    if (value.startsWith('/') || value.startsWith('data:') || value.startsWith('http://') || value.startsWith('https://')) return value;
     return `data:image/jpeg;base64,${value}`;
   };
 
@@ -875,18 +875,18 @@ const Wages = () => {
                   <tr key={person.name} className="hover:bg-slate-50 transition-colors">
                     <td className="py-3 px-4">
                       <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-full bg-slate-200 overflow-hidden flex-shrink-0 border border-slate-300">
-                          {person.face_image ? (
+                        <div className="relative w-10 h-10 rounded-full bg-slate-200 overflow-hidden flex-shrink-0 border border-slate-300">
+                          <div className="absolute inset-0 flex items-center justify-center text-slate-400 font-bold text-xs">
+                            {person.name.substring(0, 2).toUpperCase()}
+                          </div>
+                          {person.face_image || person.image_url ? (
                             <img
-                              src={imageSource(person.face_image)}
+                              src={imageSource(person.image_url || person.face_image)}
                               alt={person.name}
-                              className="w-full h-full object-cover"
+                              className="relative z-10 w-full h-full object-cover"
+                              onError={(event) => { event.currentTarget.style.display = 'none'; }}
                             />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center text-slate-400 font-bold text-xs">
-                              {person.name.substring(0, 2).toUpperCase()}
-                            </div>
-                          )}
+                          ) : null}
                         </div>
                         <div onClick={() => { setDetailsPerson(person); setDetailsOpen(true); }} className="cursor-pointer">
                           <p className="font-medium text-slate-900 text-sm">{person.name}</p>

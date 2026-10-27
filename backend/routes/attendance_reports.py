@@ -37,6 +37,11 @@ from services.person_scope_service import (
 attendance_reports_bp = Blueprint('attendance_reports_bp', __name__)
 
 
+def _payroll_person_image_url(person_id, version=None):
+    url = f"/api/persons/{int(person_id)}/image"
+    return f"{url}?v={int(version)}" if version is not None else url
+
+
 @attendance_reports_bp.route("/reports/email-employees", methods=["POST"])
 @require_auth(roles=["super_admin", "vendor_admin", "admin", "owner"])
 def email_employee_monthly_reports():
@@ -645,6 +650,7 @@ def get_payroll_report(valid_data: PayrollReportRequest):
         image_select = "f.face_image" if include_images else "NULL AS face_image"
         c.execute(f"""SELECT f.id, f.name, f.daily_wage, f.department, f.designation,
                              {image_select}, f.phone, f.display_id, f.custom_data,
+                             CASE WHEN f.face_image IS NOT NULL AND f.face_image <> '' THEN 1 ELSE 0 END AS has_face_image,
                              (SELECT su.role FROM system_users su
                               WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
                               ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
@@ -655,6 +661,7 @@ def get_payroll_report(valid_data: PayrollReportRequest):
         image_select = "f.face_image" if include_images else "NULL AS face_image"
         c.execute(f"""SELECT f.id, f.name, f.daily_wage, f.department, f.designation,
                             {image_select}, f.phone, f.custom_data,
+                            CASE WHEN f.face_image IS NOT NULL AND f.face_image <> '' THEN 1 ELSE 0 END AS has_face_image,
                             (SELECT su.role FROM system_users su
                              WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
                              ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
@@ -674,6 +681,30 @@ def get_payroll_report(valid_data: PayrollReportRequest):
             continue
         person['person_type'] = resolved_type
         persons[person['id']] = person
+
+    image_version = None
+    image_version_savepoint = bool(getattr(conn, "_is_pg", False))
+    try:
+        if image_version_savepoint:
+            c.execute("SAVEPOINT payroll_image_version")
+        c.execute(
+            "SELECT COALESCE(MAX(seq), 0) FROM face_sync_changes WHERE vendor_id = ?",
+            (vendor_id,),
+        )
+        version_row = c.fetchone()
+        image_version = int(version_row[0] or 0) if version_row else 0
+        if image_version_savepoint:
+            c.execute("RELEASE SAVEPOINT payroll_image_version")
+    except Exception:
+        # Older databases without the change ledger can still serve stable,
+        # revalidated image URLs.
+        if image_version_savepoint:
+            try:
+                c.execute("ROLLBACK TO SAVEPOINT payroll_image_version")
+                c.execute("RELEASE SAVEPOINT payroll_image_version")
+            except Exception:
+                pass
+        image_version = None
     
     global_allowance = int(stored_settings.get('global_late_allowance', 7))
     global_deduction = float(stored_settings.get('global_late_deduction', 0.0))
@@ -814,6 +845,8 @@ def get_payroll_report(valid_data: PayrollReportRequest):
             "department": person_info.get('department'),
             "designation": person_info.get('designation'),
             "face_image": compact_image_data_url(person_info.get('face_image')),
+            "image_url": _payroll_person_image_url(pid, image_version)
+                if person_info.get('has_face_image') else None,
             "phone": person_info.get('phone'),
             "daily_wage": daily_wage,
             "total_hours": round(total_hours, 2),
