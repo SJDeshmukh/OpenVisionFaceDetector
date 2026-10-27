@@ -536,6 +536,7 @@ def upload_face():
 
     data = request.get_json(silent=True) or {}
     person_id = data.get("person_id")
+    local_uid = str(data.get("local_uid") or "").strip() or None
     name = data.get("name")
     templates = data.get("templates")
     templates_list = data.get("templates_list")
@@ -556,7 +557,7 @@ def upload_face():
     
     # Extract Custom Data (Dynamic Fields)
     standard_fields = {
-        'person_id', 'name', 'templates', 'templates_list', 'face_image', 'phone', 
+        'person_id', 'local_uid', 'name', 'templates', 'templates_list', 'face_image', 'phone',
         'department', 'designation', 'shift', 'vendor_id', 'display_id', 'custom_data',
         'landmarks_3d', 'landmarks_3d_list', 'struct_vec', 'struct_vec_list'
         # 'class_year', 'division', 'branch' are intentional kept out here to be part of custom_dict
@@ -639,9 +640,10 @@ def upload_face():
                            custom_data::jsonb->>'faculty_email',
                            ''
                        )) = LOWER(%s)
+                         AND vendor_id = %s
                          AND (%s IS NULL OR id <> %s)
                        LIMIT 1""",
-                    (profile_email, person_id, person_id),
+                    (profile_email, vendor_id, person_id, person_id),
                 )
             else:
                 email_cursor.execute(
@@ -654,9 +656,10 @@ def upload_face():
                            json_extract(custom_data, '$.faculty_email'),
                            ''
                        )) = LOWER(?)
+                         AND vendor_id = ?
                          AND (? IS NULL OR id <> ?)
                        LIMIT 1""",
-                    (profile_email, person_id, person_id),
+                    (profile_email, vendor_id, person_id, person_id),
                 )
             if email_cursor.fetchone():
                 return jsonify({"error": "This email address is already registered to another person"}), 409
@@ -729,11 +732,6 @@ def upload_face():
     custom_data = json.dumps(custom_dict, separators=(',', ':')) if custom_dict else None
 
     try:
-        c = get_db_connection().cursor()
-    except Exception:
-        pass
-
-    try:
         conn_check = get_db_connection()
         cc = conn_check.cursor()
         # Identify Student Number
@@ -743,42 +741,47 @@ def upload_face():
         except Exception:
             student_number = None
 
-        # Idempotency duplicate check: if no person_id, check if local_uid was already uploaded
-        local_uid = data.get("local_uid") or custom_dict.get("local_uid")
-        if local_uid:
-            local_uid = str(local_uid).strip()
-            custom_dict["local_uid"] = local_uid
-            if not person_id and vendor_id:
+        if local_uid and vendor_id:
+            cc.execute(
+                "SELECT id FROM faces WHERE vendor_id = ? AND local_uid = ? LIMIT 1",
+                (vendor_id, local_uid),
+            )
+            local_match = cc.fetchone()
+            # Older clients stored this key inside custom_data. Match that row
+            # once and migrate it through the normal update path.
+            if not local_match:
                 if getattr(conn_check, "_is_pg", False):
                     cc.execute(
-                        "SELECT id, display_id FROM faces WHERE vendor_id = %s AND custom_data::jsonb->>'local_uid' = %s LIMIT 1",
-                        (vendor_id, local_uid)
+                        "SELECT id FROM faces WHERE vendor_id = %s "
+                        "AND custom_data::jsonb->>'local_uid' = %s LIMIT 1",
+                        (vendor_id, local_uid),
                     )
                 else:
                     cc.execute(
-                        "SELECT id, display_id FROM faces WHERE vendor_id = ? AND (json_extract(custom_data, '$.local_uid') = ? OR custom_data LIKE ?) LIMIT 1",
-                        (vendor_id, local_uid, f'%"local_uid":"{local_uid}"%')
+                        "SELECT id FROM faces WHERE vendor_id = ? "
+                        "AND (json_extract(custom_data, '$.local_uid') = ? OR custom_data LIKE ?) LIMIT 1",
+                        (vendor_id, local_uid, f'%"local_uid":"{local_uid}"%'),
                     )
-                idemp_row = cc.fetchone()
-                if idemp_row:
-                    idemp_id = idemp_row[0] if not isinstance(idemp_row, dict) else idemp_row.get("id")
-                    idemp_disp = idemp_row[1] if not isinstance(idemp_row, dict) else idemp_row.get("display_id")
+                local_match = cc.fetchone()
+            if local_match:
+                matched_person_id = str(local_match[0])
+                if person_id and str(person_id) != matched_person_id:
                     conn_check.close()
-                    logger.info(f"[UPLOAD] Idempotent retry matched existing face ID {idemp_id} (display_id={idemp_disp}) for local_uid {local_uid}")
                     return jsonify({
-                        "status": "success",
-                        "message": "Face already registered (idempotent)",
-                        "person_id": idemp_id,
-                        "display_id": idemp_disp,
-                        "vendor_id": vendor_id
-                    }), 200
+                        "error": "This device registration ID is already assigned to another person"
+                    }), 409
+                person_id = matched_person_id
 
         # 0. Automatic Finding/Merging Fallback
         # If person_id is NOT provided (e.g. registration from generic screen), 
         # try to find a person with matching identifiers to "add up" instead of creating a new row.
         if not person_id and vendor_id:
+            # The device-local enrollment UUID is the idempotency key for a
+            # registration.  If the server committed but the response was
+            # lost, a retry updates the same person instead of creating a
+            # duplicate (especially important when names are not unique).
             # A) Try match by Student ID / Number in custom_data
-            if student_number:
+            if not person_id and student_number:
                 if getattr(conn_check, "_is_pg", False):
                     # Postgres JSONB search
                     cc.execute("""SELECT f.id FROM faces f WHERE f.vendor_id = %s
@@ -870,13 +873,6 @@ def upload_face():
         conn_check.close()
     except Exception:
         pass
-
-    # 1. Vendor Status Check
-    if vendor_id:
-        allowed, reason = check_vendor_status(vendor_id)
-        if not allowed:
-            logger.warning(f"[UPLOAD] Access Denied for Vendor {vendor_id} during registration: {reason}")
-            return jsonify({"error": f"Access Denied: {reason}"}), 403
 
     conn = get_db_connection()
     c = conn.cursor()
@@ -988,6 +984,8 @@ def upload_face():
                 fields.append("vendor_id=?"); params.append(vendor_id)
             if custom_data is not None:
                 fields.append("custom_data=?"); params.append(custom_data)
+            if local_uid:
+                fields.append("local_uid=?"); params.append(local_uid)
             
             # display_id is a server-managed serial number. External employee
             # or student identifiers belong in custom_data and must not restore
@@ -1167,8 +1165,8 @@ def upload_face():
             next_display_id = c.fetchone()[0]
             assigned_display_id = int(next_display_id)
 
-            c.execute("INSERT INTO faces (name, templates, face_image, phone, department, designation, shift, vendor_id, custom_data, display_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                      (name, to_store_templates, face_image, phone or "", department or "", designation or "", shift or "", vendor_id, custom_data, next_display_id))
+            c.execute("INSERT INTO faces (local_uid, name, templates, face_image, phone, department, designation, shift, vendor_id, custom_data, display_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                      (local_uid, name, to_store_templates, face_image, phone or "", department or "", designation or "", shift or "", vendor_id, custom_data, next_display_id))
             new_id = c.lastrowid
             
             # --- Automated Student Login Creation ("Inking") ---
@@ -1338,7 +1336,10 @@ def upload_face():
             "status": "success",
             "message": f"Face for {name} saved.",
             "person_id": new_id,
-            "display_id": assigned_display_id,
+            "display_id": (
+                committed_person.get("display_id")
+                if committed_person else assigned_display_id
+            ),
             "vendor_id": vendor_id,
             "person": committed_person,
         })

@@ -8,11 +8,13 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.Constraints
 import androidx.work.NetworkType
+import androidx.work.BackoffPolicy
 import com.faceplugin.facerecognition.api.PersonEventRequest
 import com.faceplugin.facerecognition.api.RetrofitClient
 import com.faceplugin.facerecognition.api.GreetingService
 import retrofit2.Response
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class AttendanceSyncWorker(appContext: Context, params: WorkerParameters) : Worker(appContext, params) {
 
@@ -57,7 +59,7 @@ class AttendanceSyncWorker(appContext: Context, params: WorkerParameters) : Work
                     return Pair(0, false)
                 }
 
-                val service: GreetingService = RetrofitClient.getService()
+                val service: GreetingService = RetrofitClient.getAttendanceService()
                 val db = DBManager(context)
                 val queue = db.attendanceQueue
                 if (queue.isEmpty()) {
@@ -122,6 +124,9 @@ class AttendanceSyncWorker(appContext: Context, params: WorkerParameters) : Work
                         req.status = item.status
                         req.deviceId = deviceId
                         req.deviceName = deviceName
+                        req.sourceEventId = PersonEventRequest.buildSourceEventId(
+                            deviceId, pid, item.localUid, item.timestamp
+                        )
                         if (vendorId > 0) req.vendorId = vendorId
                         if (!btype.isNullOrBlank()) req.businessType = btype.lowercase()
 
@@ -129,38 +134,50 @@ class AttendanceSyncWorker(appContext: Context, params: WorkerParameters) : Work
                             service.sendPersonEvent(req).execute()
 
                         if (resp.isSuccessful) {
-                            try {
-                                val status = resp.body()?.status ?: item.status ?: ""
-                                val confirmedPid = resp.body()?.personId?.toString() ?: pid
-                                db.upsertAttendanceState(confirmedPid, item.localUid, item.name, status, item.timestamp)
-                            } catch (_: Exception) {}
-                            db.deleteQueueItem(item.id)
-                            successCount++
-                            Log.i(TAG, "Synced item ${item.id} successfully: person=$personName, status=${item.status}")
+                            val body = resp.body()
+                            val status = body?.status?.uppercase()
+                            val confirmed = body != null && body.accepted != false &&
+                                (status == "CHECK_IN" || status == "CHECK_OUT")
+                            if (confirmed) {
+                                try {
+                                    val confirmedPid = body?.personId?.toString() ?: pid
+                                    db.upsertAttendanceState(confirmedPid, item.localUid, item.name, status, item.timestamp)
+                                } catch (_: Exception) {}
+                                db.deleteQueueItem(item.id)
+                                successCount++
+                                Log.i(TAG, "Synced item ${item.id} successfully: person=$personName, status=$status")
+                            } else if (body?.accepted == false && body.reason == "cooldown") {
+                                // An explicit server no-op is final and safe to remove.
+                                db.deleteQueueItem(item.id)
+                            } else {
+                                val retrying = db.markQueueItemRetry(item.id, "HTTP 2xx without confirmed attendance status")
+                                needsRetry = needsRetry || retrying
+                                Log.w(TAG, "Item ${item.id} received an unconfirmed success response")
+                            }
                         } else {
                             val code = resp.code()
                             Log.w(TAG, "Item ${item.id} sync failed with HTTP $code: ${resp.message()}")
-                            if (code == 400) {
+                            if (code == 400 || code == 409) {
                                 if (effectivePid?.startsWith("local:") == true) {
                                     // The face upload has not produced a canonical server ID yet.
                                     // Preserve the attendance event and retry after face sync.
-                                    needsRetry = true
+                                    needsRetry = db.markQueueItemRetry(item.id, "Person registration is still pending") || needsRetry
                                 } else {
-                                    // A canonical identity with a permanently malformed request
-                                    // should not block every later event in the queue.
-                                    db.deleteQueueItem(item.id)
+                                    db.markQueueItemFailed(item.id, "HTTP 400: malformed attendance request")
                                 }
                             } else if (code == 401 || code == 403) {
                                 Log.e(TAG, "Auth error ($code) during sync; stopping further requests until re-authenticated")
                                 needsRetry = true
                                 break
                             } else if (code == 408 || code == 429 || code in 500..599) {
-                                needsRetry = true
+                                needsRetry = db.markQueueItemRetry(item.id, "HTTP $code") || needsRetry
+                            } else {
+                                db.markQueueItemFailed(item.id, "HTTP $code")
                             }
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "Exception syncing queue item ${item.id}", e)
-                        needsRetry = true
+                        needsRetry = db.markQueueItemRetry(item.id, e.javaClass.simpleName) || needsRetry
                     }
                 }
 
@@ -199,9 +216,10 @@ class AttendanceSyncWorker(appContext: Context, params: WorkerParameters) : Work
                 .build()
             val req = OneTimeWorkRequestBuilder<AttendanceSyncWorker>()
                 .setConstraints(constraints)
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
                 .build()
             androidx.work.WorkManager.getInstance(context)
-                .enqueueUniqueWork(UNIQUE_WORK_NAME, ExistingWorkPolicy.REPLACE, req)
+                .enqueueUniqueWork(UNIQUE_WORK_NAME, ExistingWorkPolicy.KEEP, req)
         }
     }
 }

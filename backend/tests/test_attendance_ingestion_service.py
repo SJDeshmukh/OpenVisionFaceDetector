@@ -185,3 +185,50 @@ def test_ingest_dual_writes_and_deduplicates_source_event():
     assert ledger["event_timezone"] == "Asia/Kolkata"
     assert ledger["verification_method"] == "FACE"
     assert ledger["verification_score"] == pytest.approx(0.91)
+
+
+def test_ingest_references_captured_image_without_duplicating_payload():
+    conn = attendance_db()
+    image_payload = "data:image/jpeg;base64," + ("A" * 10000)
+    result = AttendanceEventIngestionService.ingest(
+        conn.cursor(),
+        LegacyAttendanceEvent(
+            name="Image Worker",
+            timestamp="2026-09-15T09:00:00",
+            status="CHECK_IN",
+            vendor_id=4,
+            person_id=15,
+            captured_image=image_payload,
+            source="KIOSK",
+            source_event_id="android-1:image-event",
+            source_timezone="Asia/Kolkata",
+        ),
+    )
+
+    legacy = conn.execute("SELECT captured_image FROM attendance").fetchone()[0]
+    ledger = conn.execute("SELECT captured_image_reference FROM attendance_events").fetchone()[0]
+    assert legacy == image_payload
+    assert ledger == f"attendance:{result.legacy_attendance_id}"
+
+
+def test_same_source_event_id_is_isolated_by_vendor():
+    conn = attendance_db()
+    cursor = conn.cursor()
+    for vendor_id, person_id in ((1, 11), (2, 22)):
+        result = AttendanceEventIngestionService.ingest(
+            cursor,
+            LegacyAttendanceEvent(
+                name=f"Worker {vendor_id}",
+                timestamp="2026-09-15T09:00:00",
+                status="CHECK_IN",
+                vendor_id=vendor_id,
+                person_id=person_id,
+                source="KIOSK",
+                source_event_id="shared-device-event",
+                source_timezone="Asia/Kolkata",
+            ),
+        )
+        assert result.duplicate is False
+
+    assert conn.execute("SELECT COUNT(*) FROM attendance").fetchone()[0] == 2
+    assert conn.execute("SELECT COUNT(*) FROM attendance_events").fetchone()[0] == 2

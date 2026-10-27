@@ -5,7 +5,7 @@ import numpy as np
 import base64
 from datetime import datetime, timedelta
 from collections import defaultdict
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, g
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +13,7 @@ from utils import (
     get_db_connection, get_table_columns, parse_db_datetime, 
     cache_get, cache_set, cache_delete_vendor_prefix,
     vendor_has_feature, track_metrics, rate_limit,
-    check_vendor_status, require_feature, _run
+    require_feature, _run
 )
 from db_factory import set_row_factory
 from services.attendance_service import (
@@ -26,7 +26,7 @@ from services.attendance_ingestion_service import (
 )
 from services.attendance_state_service import next_attendance_status
 from domain.attendance import AttendanceEventSource
-from services.auth_service import require_auth, verify_token, extract_token
+from services.auth_service import require_auth, extract_token
 from middleware.validation import validate_request
 from schemas import AttendanceFilterSchema, PersonEventSchema, PublicAttendanceRequest
 from storage import compact_image_data_url
@@ -38,8 +38,6 @@ from services.person_scope_service import (
     vendor_vertical,
 )
 from services.report_filter_service import custom_value
-from flask import Blueprint, request, jsonify, g
-
 attendance_core_bp = Blueprint('attendance_core_bp', __name__)
 
 def _resolve_event_time(timestamp):
@@ -319,48 +317,43 @@ def person_event(valid_data: PersonEventSchema):
     detected, recognized = valid_data.detected, valid_data.recognized
     name, person_id = valid_data.name, valid_data.person_id
     
+    # require_auth already verified the token, active session and subscription.
+    # The authenticated tenant is authoritative; never accept a request-body
+    # vendor_id as a substitute and never repeat the authentication DB lookup.
     kiosk_vendor_id, person_vendor_id = g.vendor_id, None
-    if not kiosk_vendor_id and getattr(valid_data, 'vendor_id', None):
-        kiosk_vendor_id = valid_data.vendor_id
-
-    auth_header = request.headers.get('Authorization')
-    if auth_header:
-        try:
-            ud = verify_token(auth_header.split(" ")[1])
-            if ud:
-                conn_a = get_db_connection(); ca = conn_a.cursor()
-                ca.execute("SELECT vendor_id FROM system_users WHERE username = ?", (ud['username'],))
-                ur = ca.fetchone(); conn_a.close()
-                if ur and ur[0]: kiosk_vendor_id = ur[0]
-        except Exception:
-            logger.debug("Auth token lookup failed in person-event", exc_info=True)
 
     if recognized:
          conn_c = get_db_connection(); cc = conn_c.cursor(); fr = None
          if person_id:
              if isinstance(person_id, str) and person_id.startswith("local:"):
                  luid = person_id.replace("local:", "")
-                 cc.execute("SELECT vendor_id FROM faces WHERE local_uid = ? LIMIT 1", (luid,))
+                 cc.execute(
+                     "SELECT vendor_id FROM faces WHERE local_uid = ? AND vendor_id = ? LIMIT 1",
+                     (luid, kiosk_vendor_id),
+                 )
                  fr = cc.fetchone()
              else:
-                 cc.execute("SELECT vendor_id FROM faces WHERE id = ?", (person_id,))
+                 cc.execute(
+                     "SELECT vendor_id FROM faces WHERE id = ? AND vendor_id = ?",
+                     (person_id, kiosk_vendor_id),
+                 )
                  fr = cc.fetchone()
-         if not fr and name and kiosk_vendor_id:
+         if not fr and not person_id and name and kiosk_vendor_id:
              cc.execute("SELECT vendor_id FROM faces WHERE name = ? AND vendor_id = ? LIMIT 1", (name, kiosk_vendor_id))
              fr = cc.fetchone()
          conn_c.close()
          if fr: person_vendor_id = fr[0]
 
     if kiosk_vendor_id and person_vendor_id and kiosk_vendor_id != person_vendor_id:
-         return jsonify({"speak": True, "text": "Access Denied: Person belongs to another organization."})
+         return jsonify({
+             "error": "Person does not belong to the authenticated vendor",
+             "code": "CROSS_TENANT_PERSON",
+             "speak": False,
+         }), 403
 
     vendor_id_to_check = kiosk_vendor_id if kiosk_vendor_id else person_vendor_id
     if recognized and not person_id and not vendor_id_to_check and name:
         return jsonify({"speak": True, "text": "Registration must be vendor-wise. Missing person_id."})
-
-    if vendor_id_to_check:
-        is_allowed, reason = check_vendor_status(vendor_id_to_check)
-        if not is_allowed: return jsonify({"speak": True, "text": f"Service Suspended: {reason}."})
 
     captured_image = valid_data.image
     is_attendance = valid_data.is_attendance
@@ -376,14 +369,17 @@ def person_event(valid_data: PersonEventSchema):
         conn_r = get_db_connection(); cr = conn_r.cursor()
         if isinstance(resolved_pid, str) and resolved_pid.startswith("local:"):
             luid = resolved_pid.replace("local:", "")
-            cr.execute("SELECT id, name FROM faces WHERE local_uid = ? LIMIT 1", (luid,))
+            cr.execute(
+                "SELECT id, name FROM faces WHERE local_uid = ? AND vendor_id = ? LIMIT 1",
+                (luid, vendor_id_to_check),
+            )
             rr = cr.fetchone()
             if rr:
                 resolved_pid = rr[0]
                 name = rr[1] if not name else name
             else:
                 resolved_pid = None
-        if not resolved_pid and name and vendor_id_to_check:
+        if not resolved_pid and not person_id and name and vendor_id_to_check:
             cr.execute("SELECT id FROM faces WHERE name = ? AND vendor_id = ? LIMIT 1", (name, vendor_id_to_check))
             rr = cr.fetchone()
             if rr: resolved_pid = rr[0]
@@ -396,7 +392,7 @@ def person_event(valid_data: PersonEventSchema):
             )
             rr = cr.fetchone()
             if rr:
-                name = rr[0] if not name else name
+                name = rr[0]
                 vendor_id_to_check = rr[1] if not vendor_id_to_check else vendor_id_to_check
                 resolved_scope = class_scope_for(rr[2])
                 try:
@@ -404,7 +400,7 @@ def person_event(valid_data: PersonEventSchema):
                 except Exception:
                     assigned_shift = None
             else:
-                if name and vendor_id_to_check:
+                if not valid_data.person_id and name and vendor_id_to_check:
                     cr.execute(
                         """SELECT id, name, vendor_id, custom_data, shift FROM faces
                            WHERE name = ? AND vendor_id = ? LIMIT 1""",
@@ -429,7 +425,18 @@ def person_event(valid_data: PersonEventSchema):
     person_id = resolved_pid
     if not is_attendance: return jsonify({"speak": True, "text": f"Identified: {name} (Admin Mode)"})
     if recognized and not person_id:
-        return jsonify({"error": "person_id required", "speak": True, "text": "Missing person_id."}), 400
+        requested_id = str(valid_data.person_id or "")
+        if requested_id.startswith("local:"):
+            return jsonify({
+                "error": "Person registration has not synchronized yet",
+                "code": "PERSON_NOT_SYNCED",
+                "speak": False,
+            }), 409
+        return jsonify({
+            "error": "Person was not found for the authenticated vendor",
+            "code": "PERSON_NOT_FOUND",
+            "speak": False,
+        }), 404
 
     conn = get_db_connection(); conn.row_factory = sqlite3.Row; c = conn.cursor()
     curr_dev_id = None
@@ -443,8 +450,27 @@ def person_event(valid_data: PersonEventSchema):
         logger.debug("Device ID lookup from session failed", exc_info=True)
     if not curr_dev_id: curr_dev_id = str(valid_data.device_id or '').strip() or None
 
+    # Serialize state derivation only for this tenant/person. PostgreSQL uses a
+    # row lock, so different people and vendors continue concurrently. SQLite
+    # is a local/dev fallback and needs an immediate write transaction to avoid
+    # two requests both deriving CHECK_IN from the same prior state.
+    if person_id and vendor_id_to_check:
+        if getattr(conn, "_is_pg", False):
+            c.execute(
+                "SELECT id FROM faces WHERE id = ? AND vendor_id = ? FOR UPDATE",
+                (person_id, vendor_id_to_check),
+            )
+        else:
+            try:
+                c.execute("BEGIN IMMEDIATE")
+            except Exception:
+                # Some SQLite connection factories begin a transaction eagerly.
+                # In that case the existing transaction remains authoritative.
+                pass
+
     event_source = str(valid_data.event_source or AttendanceEventSource.KIOSK.value).strip().upper()
     if event_source not in {item.value for item in AttendanceEventSource}:
+        conn.close()
         return jsonify({"error": "Unsupported event_source"}), 400
 
     # Resolve idempotent retries before deriving the next IN/OUT state. Without
@@ -463,6 +489,7 @@ def person_event(valid_data: PersonEventSchema):
                 "status": existing_status,
                 "person_id": person_id,
                 "duplicate": True,
+                "accepted": True,
                 "event_id": existing_event.event_id,
             })
 
@@ -479,8 +506,6 @@ def person_event(valid_data: PersonEventSchema):
             p = [person_id]
             if vendor_id_to_check:
                 q += " AND vendor_id = ?"; p.append(vendor_id_to_check)
-            if curr_dev_id and not hostel_movement_mode:
-                q += " AND device_id = ?"; p.append(curr_dev_id)
             if valid_data.timestamp and current_time_obj:
                 q += " AND timestamp < ?"; p.append(current_time_obj.isoformat(sep=" "))
             c.execute(q + " ORDER BY timestamp DESC LIMIT 1", p)
@@ -496,19 +521,12 @@ def person_event(valid_data: PersonEventSchema):
             if vendor_id_to_check:
                 q = "SELECT * FROM attendance WHERE person_id = ? AND vendor_id = ?"
                 p = [person_id, vendor_id_to_check]
-                # Hostel entry/exit is a person-wide state. A resident may leave
-                # through one gate and return through another, so do not scope the
-                # previous event to the current device in hostel movement mode.
-                if curr_dev_id and not hostel_movement_mode:
-                    q += " AND device_id = ?"; p.append(curr_dev_id)
                 if valid_data.timestamp and current_time_obj:
                     q += " AND timestamp < ?"; p.append(current_time_obj.isoformat(sep=" "))
                 c.execute(q + " ORDER BY timestamp DESC LIMIT 1", p)
             else:
                 q = "SELECT * FROM attendance WHERE person_id = ?"
                 p = [person_id]
-                if curr_dev_id and not hostel_movement_mode:
-                    q += " AND device_id = ?"; p.append(curr_dev_id)
                 if valid_data.timestamp and current_time_obj:
                     q += " AND timestamp < ?"; p.append(current_time_obj.isoformat(sep=" "))
                 c.execute(q + " ORDER BY timestamp DESC LIMIT 1", p)
@@ -559,7 +577,12 @@ def person_event(valid_data: PersonEventSchema):
             else:
                 cd_sec = 30
             if 0 <= (datetime.now() - lts).total_seconds() < cd_sec:
-                conn.close(); return jsonify({"speak": False})
+                conn.close(); return jsonify({
+                    "speak": False,
+                    "accepted": False,
+                    "reason": "cooldown",
+                    "status": last_record['status'] if last_record else None,
+                })
         except Exception:
             logger.debug("Cooldown check failed", exc_info=True)
 
@@ -691,7 +714,10 @@ def person_event(valid_data: PersonEventSchema):
             socketio.emit('attendance_updated', ev, room=f"vendor_{vendor_id_to_check}")
 
         # Push notification to parent (fire-and-forget, never blocks response)
-        if person_id and vendor_id_to_check:
+        if (
+            person_id and vendor_id_to_check
+            and vendor_has_feature(vendor_id_to_check, "parent_alerts")
+        ):
             try:
                 from notifications import notify_parent_async
                 _ts_label = current_time_obj.strftime('%I:%M %p')
@@ -705,7 +731,9 @@ def person_event(valid_data: PersonEventSchema):
             except Exception:
                 pass
 
-            # Trigger WhatsApp Real-Time Punch Alert (fire-and-forget async thread)
+        # WhatsApp dispatcher checks the vendor feature and settings inside its
+        # background thread, so it cannot delay the attendance response.
+        if person_id and vendor_id_to_check:
             try:
                 from services.evolution_whatsapp_service import notify_punch_event_async
                 notify_punch_event_async(
@@ -719,7 +747,7 @@ def person_event(valid_data: PersonEventSchema):
                 pass
 
         conn.close()
-        return jsonify({"speak": True, "text": f"{name}: {new_status.title()}", "status": new_status, "is_late": is_late, "activity": activity_name, "person_id": person_id, "event_id": ingestion.event_id, "duplicate": ingestion.duplicate})
+        return jsonify({"speak": True, "text": f"{name}: {new_status.title()}", "status": new_status, "is_late": is_late, "activity": activity_name, "person_id": person_id, "event_id": ingestion.event_id, "duplicate": ingestion.duplicate, "accepted": True})
     except Exception as e:
         conn.rollback(); conn.close(); return jsonify({"error": str(e)}), 500
 

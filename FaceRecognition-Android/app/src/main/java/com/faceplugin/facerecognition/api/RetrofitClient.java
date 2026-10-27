@@ -16,6 +16,7 @@ public class RetrofitClient {
     private static volatile String BASE_URL = BuildConfig.BASE_URL;
     
     private static volatile Retrofit retrofit = null;
+    private static volatile Retrofit attendanceRetrofit = null;
     private static volatile String authToken = null;
 
     public static synchronized void setBaseUrl(String url) {
@@ -25,6 +26,7 @@ public class RetrofitClient {
             }
             BASE_URL = url;
             retrofit = null; // Reset retrofit to force rebuild with new URL
+            attendanceRetrofit = null;
         }
     }
 
@@ -49,58 +51,68 @@ public class RetrofitClient {
                 } catch (Exception ignored) {}
             }
 
-            OkHttpClient.Builder httpClient = new OkHttpClient.Builder()
-                    .connectTimeout(10, TimeUnit.SECONDS)
-                    .readTimeout(30, TimeUnit.SECONDS)
-                    .writeTimeout(30, TimeUnit.SECONDS);  // large base64 image uploads
-
-            // Global Headers
-            httpClient.addInterceptor(chain -> {
-                Request original = chain.request();
-                Request.Builder builder = original.newBuilder()
-                        .header("User-Agent", "openvisionx-android")
-                        .header("X-App-Brand", BuildConfig.IS_ATTENDX ? "AttendX" : "TapInX");
-                
-                // Always add Authorization if token is available
-                if (authToken != null && !authToken.isEmpty()) {
-                    builder.header("Authorization", "Bearer " + authToken);
-                }
-                
-                okhttp3.Response response = chain.proceed(builder.build());
-                
-                // A 403 is a valid authorization/feature response and must not log the
-                // user out. Only an actual authentication failure invalidates a session.
-                if (response.code() == 401 && authToken != null && !authToken.isEmpty()) {
-                     authToken = null;
-                     if (MyGlobal.context != null) {
-                         String errorMessage = null;
-                         try {
-                             // Peaking into the response body without consuming it
-                             okhttp3.ResponseBody body = response.peekBody(2048); 
-                             String bodyStr = body.string();
-                             JSONObject json = new JSONObject(bodyStr);
-                             if (json.has("error")) {
-                                 errorMessage = json.getString("error");
-                             }
-                         } catch (Exception ignored) {}
-
-                         Intent intent = new Intent(MyGlobal.ACTION_AUTH_FAILURE);
-                         intent.setPackage(MyGlobal.context.getPackageName());
-                         if (errorMessage != null && !errorMessage.isEmpty()) {
-                             intent.putExtra("message", errorMessage);
-                         }
-                         MyGlobal.context.sendBroadcast(intent);
-                     }
-                }
-                return response;
-            });
+            OkHttpClient httpClient = buildHttpClient(10, 30, 30);
 
             retrofit = new Retrofit.Builder()
                     .baseUrl(BASE_URL)
                     .addConverterFactory(GsonConverterFactory.create())
-                    .client(httpClient.build())
+                    .client(httpClient)
                     .build();
         }
         return retrofit.create(GreetingService.class);
+    }
+
+    /** Attendance gets a short, isolated timeout so face uploads cannot delay durable fallback. */
+    public static synchronized GreetingService getAttendanceService() {
+        if (attendanceRetrofit == null) {
+            attendanceRetrofit = new Retrofit.Builder()
+                    .baseUrl(getBaseUrl())
+                    .addConverterFactory(GsonConverterFactory.create())
+                    .client(buildHttpClient(10, 20, 20))
+                    .build();
+        }
+        return attendanceRetrofit.create(GreetingService.class);
+    }
+
+    /** Short-timeout client for interactive control calls such as attendance and deletion. */
+    public static GreetingService getInteractiveService() {
+        return getAttendanceService();
+    }
+
+    private static OkHttpClient buildHttpClient(long connectSeconds, long readSeconds, long writeSeconds) {
+        OkHttpClient.Builder httpClient = new OkHttpClient.Builder()
+                .connectTimeout(connectSeconds, TimeUnit.SECONDS)
+                .readTimeout(readSeconds, TimeUnit.SECONDS)
+                .writeTimeout(writeSeconds, TimeUnit.SECONDS);
+
+        httpClient.addInterceptor(chain -> {
+            Request original = chain.request();
+            Request.Builder builder = original.newBuilder()
+                    .header("User-Agent", "openvisionx-android")
+                    .header("X-App-Brand", BuildConfig.IS_ATTENDX ? "AttendX" : "TapInX");
+            if (authToken != null && !authToken.isEmpty()) {
+                builder.header("Authorization", "Bearer " + authToken);
+            }
+
+            okhttp3.Response response = chain.proceed(builder.build());
+            if (response.code() == 401 && authToken != null && !authToken.isEmpty()) {
+                authToken = null;
+                if (MyGlobal.context != null) {
+                    String errorMessage = null;
+                    try {
+                        okhttp3.ResponseBody body = response.peekBody(2048);
+                        JSONObject json = new JSONObject(body.string());
+                        if (json.has("error")) errorMessage = json.getString("error");
+                    } catch (Exception ignored) {}
+
+                    Intent intent = new Intent(MyGlobal.ACTION_AUTH_FAILURE);
+                    intent.setPackage(MyGlobal.context.getPackageName());
+                    if (errorMessage != null && !errorMessage.isEmpty()) intent.putExtra("message", errorMessage);
+                    MyGlobal.context.sendBroadcast(intent);
+                }
+            }
+            return response;
+        });
+        return httpClient.build();
     }
 }

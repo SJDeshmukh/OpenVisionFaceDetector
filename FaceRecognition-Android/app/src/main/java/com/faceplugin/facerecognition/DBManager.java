@@ -24,7 +24,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
      public static CopyOnWriteArrayList<Person> personList = new CopyOnWriteArrayList<Person>();
 
     public DBManager(Context context) {
-        super(context, "mydb" , null, 18);
+        super(context, "mydb" , null, 19);
     }
 
     @Override
@@ -39,16 +39,18 @@ import java.util.concurrent.CopyOnWriteArrayList;
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_person_display_id ON person(display_id)");
         db.execSQL(
                 "create table attendance_queue " +
-                        "(id integer primary key autoincrement, person_id text, local_uid text, name text, timestamp text, status text, image blob, is_late integer)"
+                        "(id integer primary key autoincrement, person_id text, local_uid text, name text, timestamp text, status text, image blob, is_late integer, sync_state text default 'pending', attempts integer default 0, last_error text)"
         );
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_attendance_queue_event ON attendance_queue(ifnull(person_id, ''), ifnull(local_uid, ''), timestamp)");
         db.execSQL(
                 "create table attendance_state " +
                         "(id_key text primary key, person_id text, local_uid text, name text, last_status text, last_timestamp text, operational_date text)"
         );
         db.execSQL(
                 "create table delete_queue " +
-                        "(id integer primary key autoincrement, person_id text, local_uid text, name text, created_at text)"
+                        "(id integer primary key autoincrement, person_id text, local_uid text, name text, created_at text, sync_state text default 'pending', attempts integer default 0, last_error text)"
         );
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_delete_queue_target ON delete_queue(ifnull(person_id, ''), ifnull(local_uid, ''), ifnull(name, ''))");
         db.execSQL(
                 "create table faculty_attendance_queue " +
                         "(id integer primary key autoincrement, lecture_id integer, person_id text, student_name text, " +
@@ -157,6 +159,26 @@ import java.util.concurrent.CopyOnWriteArrayList;
         if (oldVersion < 18) {
             try { db.execSQL("CREATE INDEX IF NOT EXISTS idx_person_id ON person(id)"); } catch (Exception ignored) {}
             try { db.execSQL("CREATE INDEX IF NOT EXISTS idx_person_display_id ON person(display_id)"); } catch (Exception ignored) {}
+        }
+        if (oldVersion < 19) {
+            try { db.execSQL("ALTER TABLE attendance_queue ADD COLUMN sync_state text default 'pending'"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE attendance_queue ADD COLUMN attempts integer default 0"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE attendance_queue ADD COLUMN last_error text"); } catch (Exception ignored) {}
+            try {
+                db.execSQL("DELETE FROM attendance_queue WHERE id NOT IN (SELECT MIN(id) FROM attendance_queue GROUP BY ifnull(person_id, ''), ifnull(local_uid, ''), timestamp)");
+            } catch (Exception ignored) {}
+            try {
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_attendance_queue_event ON attendance_queue(ifnull(person_id, ''), ifnull(local_uid, ''), timestamp)");
+            } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE delete_queue ADD COLUMN sync_state text default 'pending'"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE delete_queue ADD COLUMN attempts integer default 0"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE delete_queue ADD COLUMN last_error text"); } catch (Exception ignored) {}
+            try {
+                db.execSQL("DELETE FROM delete_queue WHERE id NOT IN (SELECT MIN(id) FROM delete_queue GROUP BY ifnull(person_id, ''), ifnull(local_uid, ''), ifnull(name, ''))");
+            } catch (Exception ignored) {}
+            try {
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_delete_queue_target ON delete_queue(ifnull(person_id, ''), ifnull(local_uid, ''), ifnull(name, ''))");
+            } catch (Exception ignored) {}
         }
     }
 
@@ -960,11 +982,11 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
     // --- Offline Attendance Queue Methods ---
 
-    public void insertAttendanceQueue(String personId, String name, String timestamp, String status, Bitmap image, boolean isLate) {
-        insertAttendanceQueue(personId, null, name, timestamp, status, image, isLate);
+    public long insertAttendanceQueue(String personId, String name, String timestamp, String status, Bitmap image, boolean isLate) {
+        return insertAttendanceQueue(personId, null, name, timestamp, status, image, isLate);
     }
 
-    public void insertAttendanceQueue(String personId, String localUid, String name, String timestamp, String status, Bitmap image, boolean isLate) {
+    public long insertAttendanceQueue(String personId, String localUid, String name, String timestamp, String status, Bitmap image, boolean isLate) {
         byte[] imageJpeg = null;
         if (image != null && !image.isRecycled()) {
             try {
@@ -973,10 +995,10 @@ import java.util.concurrent.CopyOnWriteArrayList;
                 imageJpeg = output.toByteArray();
             } catch (Exception | OutOfMemoryError ignored) {}
         }
-        insertAttendanceQueueJpeg(personId, localUid, name, timestamp, status, imageJpeg, isLate);
+        return insertAttendanceQueueJpeg(personId, localUid, name, timestamp, status, imageJpeg, isLate);
     }
 
-    public void insertAttendanceQueueJpeg(String personId, String localUid, String name, String timestamp, String status, byte[] imageJpeg, boolean isLate) {
+    public long insertAttendanceQueueJpeg(String personId, String localUid, String name, String timestamp, String status, byte[] imageJpeg, boolean isLate) {
         SQLiteDatabase db = this.getWritableDatabase();
         String effectivePersonId = personId;
         if ((effectivePersonId == null || effectivePersonId.isEmpty() || effectivePersonId.startsWith("local:")) && localUid != null && !localUid.isEmpty()) {
@@ -992,13 +1014,29 @@ import java.util.concurrent.CopyOnWriteArrayList;
         contentValues.put("timestamp", timestamp);
         contentValues.put("status", status);
         contentValues.put("is_late", isLate ? 1 : 0);
+        contentValues.put("sync_state", "pending");
+        contentValues.put("attempts", 0);
+        contentValues.putNull("last_error");
 
         if (imageJpeg != null && imageJpeg.length > 0) {
             contentValues.put("image", imageJpeg);
         }
 
-        db.insert("attendance_queue", null, contentValues);
+        long rowId = db.insertWithOnConflict("attendance_queue", null, contentValues, SQLiteDatabase.CONFLICT_IGNORE);
+        if (rowId == -1) {
+            Cursor existing = null;
+            try {
+                existing = db.rawQuery(
+                        "SELECT id FROM attendance_queue WHERE ifnull(person_id, '') = ifnull(?, '') AND ifnull(local_uid, '') = ifnull(?, '') AND timestamp = ? LIMIT 1",
+                        new String[]{effectivePersonId, localUid, timestamp});
+                if (existing.moveToFirst()) rowId = existing.getLong(0);
+            } catch (Exception ignored) {
+            } finally {
+                if (existing != null) existing.close();
+            }
+        }
         upsertAttendanceState(effectivePersonId, localUid, name, status, timestamp);
+        return rowId;
     }
 
     public String predictNextAttendanceStatus(String personId, String localUid) {
@@ -1231,7 +1269,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
         ArrayList<QueueItem> list = new ArrayList<>();
         SQLiteDatabase db = this.getReadableDatabase();
         try {
-            Cursor res = db.rawQuery("select * from attendance_queue order by id asc, timestamp asc", null);
+            Cursor res = db.rawQuery(
+                    "select * from attendance_queue where ifnull(sync_state, 'pending') in ('pending', 'retry') order by timestamp asc, id asc",
+                    null);
             res.moveToFirst();
 
             while (!res.isAfterLast()) {
@@ -1248,6 +1288,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
                 item.timestamp = res.getString(res.getColumnIndexOrThrow("timestamp"));
                 item.status = res.getString(res.getColumnIndexOrThrow("status"));
                 item.isLate = res.getInt(res.getColumnIndexOrThrow("is_late")) == 1;
+                int attemptsIdx = res.getColumnIndex("attempts");
+                if (attemptsIdx != -1) item.attempts = res.getInt(attemptsIdx);
                 
                 byte[] img = res.getBlob(res.getColumnIndexOrThrow("image"));
                 if (img != null) {
@@ -1269,6 +1311,50 @@ import java.util.concurrent.CopyOnWriteArrayList;
         db.delete("attendance_queue", "id = ?", new String[]{String.valueOf(id)});
     }
 
+    public boolean markQueueItemRetry(int id, String error) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        db.execSQL(
+                "UPDATE attendance_queue SET attempts = ifnull(attempts, 0) + 1, last_error = ?, " +
+                        "sync_state = CASE WHEN ifnull(attempts, 0) + 1 >= 10 THEN 'failed' ELSE 'retry' END WHERE id = ?",
+                new Object[]{error, id});
+        Cursor c = null;
+        try {
+            c = db.rawQuery("SELECT sync_state FROM attendance_queue WHERE id = ?", new String[]{String.valueOf(id)});
+            return c.moveToFirst() && !"failed".equalsIgnoreCase(c.getString(0));
+        } finally {
+            if (c != null) c.close();
+        }
+    }
+
+    public void markQueueItemFailed(int id, String error) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues cv = new ContentValues();
+        cv.put("sync_state", "failed");
+        cv.put("last_error", error);
+        db.update("attendance_queue", cv, "id = ?", new String[]{String.valueOf(id)});
+    }
+
+    /** Restore the previous local toggle only when the rejected event is still the newest state. */
+    public void restoreAttendanceState(String personId, String localUid, String name,
+                                       String rejectedTimestamp, String previousStatus,
+                                       String previousTimestamp) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        String key = makeAttendanceStateKey(personId, localUid, name);
+        if (key == null) return;
+        Cursor c = null;
+        try {
+            c = db.rawQuery("SELECT last_timestamp FROM attendance_state WHERE id_key = ? LIMIT 1", new String[]{key});
+            if (!c.moveToFirst() || !java.util.Objects.equals(rejectedTimestamp, c.getString(0))) return;
+        } finally {
+            if (c != null) c.close();
+        }
+        if (previousStatus == null || previousTimestamp == null) {
+            db.delete("attendance_state", "id_key = ?", new String[]{key});
+        } else {
+            upsertAttendanceState(personId, localUid, name, previousStatus, previousTimestamp);
+        }
+    }
+
     public static class QueueItem {
         public int id;
         public String personId;
@@ -1277,6 +1363,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
         public String timestamp;
         public String status;
         public boolean isLate;
+        public int attempts;
         public String image; // Base64
     }
 
@@ -1374,7 +1461,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
         cv.put("local_uid", localUid);
         cv.put("name", name);
         cv.put("created_at", createdAt);
-        db.insert("delete_queue", null, cv);
+        cv.put("sync_state", "pending");
+        cv.put("attempts", 0);
+        db.insertWithOnConflict("delete_queue", null, cv, SQLiteDatabase.CONFLICT_IGNORE);
     }
 
     public ArrayList<DeleteQueueItem> getDeleteQueue() {
@@ -1382,7 +1471,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
         SQLiteDatabase db = this.getReadableDatabase();
         Cursor res = null;
         try {
-            res = db.rawQuery("select * from delete_queue", null);
+            res = db.rawQuery("select * from delete_queue where ifnull(sync_state, 'pending') in ('pending', 'retry') order by created_at asc, id asc", null);
             if (res.moveToFirst()) {
                 while (!res.isAfterLast()) {
                     DeleteQueueItem item = new DeleteQueueItem();
@@ -1395,6 +1484,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
                     if (nameIdx != -1) item.name = res.getString(nameIdx);
                     int caIdx = res.getColumnIndex("created_at");
                     if (caIdx != -1) item.createdAt = res.getString(caIdx);
+                    int attemptsIdx = res.getColumnIndex("attempts");
+                    if (attemptsIdx != -1) item.attempts = res.getInt(attemptsIdx);
                     list.add(item);
                     res.moveToNext();
                 }
@@ -1413,12 +1504,37 @@ import java.util.concurrent.CopyOnWriteArrayList;
         db.delete("delete_queue", "id = ?", new String[]{String.valueOf(id)});
     }
 
+    public boolean markDeleteQueueItemRetry(int id, String error) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        db.execSQL(
+                "UPDATE delete_queue SET attempts = ifnull(attempts, 0) + 1, last_error = ?, " +
+                        "sync_state = CASE WHEN ifnull(attempts, 0) + 1 >= 10 THEN 'failed' ELSE 'retry' END WHERE id = ?",
+                new Object[]{error, id}
+        );
+        Cursor c = null;
+        try {
+            c = db.rawQuery("SELECT sync_state FROM delete_queue WHERE id = ?", new String[]{String.valueOf(id)});
+            return c.moveToFirst() && "retry".equals(c.getString(0));
+        } finally {
+            if (c != null) c.close();
+        }
+    }
+
+    public void markDeleteQueueItemFailed(int id, String error) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues cv = new ContentValues();
+        cv.put("sync_state", "failed");
+        cv.put("last_error", error);
+        db.update("delete_queue", cv, "id = ?", new String[]{String.valueOf(id)});
+    }
+
     public static class DeleteQueueItem {
         public int id;
         public String personId;
         public String localUid;
         public String name;
         public String createdAt;
+        public int attempts;
     }
 
     public void runInTransaction(Runnable action) {

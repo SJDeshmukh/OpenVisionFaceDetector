@@ -4,7 +4,8 @@ import sqlite3
 import json
 import os
 import time
-from app import app, generate_token
+from app import app
+from services.auth_service import generate_token, hash_password
 
 class TestVendorFeatures(unittest.TestCase):
     
@@ -30,6 +31,9 @@ class TestVendorFeatures(unittest.TestCase):
                       status TEXT DEFAULT 'active', 
                       web_login_enabled INTEGER DEFAULT 1,
                       frontend_bundle_id TEXT, backend_service_id TEXT,
+                      attendance_type TEXT, retention_days INTEGER,
+                      registration_config TEXT, kiosk_pin TEXT,
+                      vertical TEXT,
                       config TEXT DEFAULT '{}',
                       created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
         
@@ -39,6 +43,7 @@ class TestVendorFeatures(unittest.TestCase):
                       max_employees INTEGER, max_mobile_devices INTEGER, 
                       cost_per_user REAL, cost_per_employee REAL, setup_fee REAL,
                       setup_fee_paid BOOLEAN,
+                      status TEXT DEFAULT 'active',
                       grace_period_days INTEGER,
                       features TEXT DEFAULT '[]')''')
         
@@ -46,7 +51,8 @@ class TestVendorFeatures(unittest.TestCase):
                      (id INTEGER PRIMARY KEY, username TEXT, password TEXT,
             password_plain TEXT,
             person_id INTEGER,
-            has_set_password INTEGER DEFAULT 0, role TEXT, vendor_id INTEGER)''')
+            has_set_password INTEGER DEFAULT 0, role TEXT, vendor_id INTEGER,
+            kiosk_pin TEXT)''')
                      
         c.execute('''CREATE TABLE IF NOT EXISTS companies 
                      (id INTEGER PRIMARY KEY, name TEXT, shifts TEXT, draft_timetable TEXT, 
@@ -62,16 +68,24 @@ class TestVendorFeatures(unittest.TestCase):
                      (id INTEGER PRIMARY KEY, name TEXT, vendor_id INTEGER, daily_wage REAL, 
                       department TEXT, designation TEXT, face_image TEXT, phone TEXT,
                       late_allowance_days INTEGER, late_deduction_amount REAL,
-                      shift TEXT)''')
+                      shift TEXT, display_id INTEGER, custom_data TEXT, templates TEXT)''')
         
         # Add attendance table
         c.execute('''CREATE TABLE IF NOT EXISTS attendance
-                     (id INTEGER PRIMARY KEY, name TEXT, timestamp TEXT, status TEXT, 
+                     (id INTEGER PRIMARY KEY, person_id INTEGER, name TEXT, timestamp TEXT, status TEXT,
                       activity TEXT, is_late INTEGER, vendor_id INTEGER)''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS advances
+                     (id INTEGER PRIMARY KEY, person_id INTEGER, vendor_id INTEGER,
+                      amount REAL, deduction_month TEXT, status TEXT)''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS classes
+                     (id INTEGER PRIMARY KEY, vendor_id INTEGER, class_year TEXT,
+                      division TEXT, branch TEXT, label TEXT)''')
 
         # SuperAdmin
         c.execute("INSERT INTO system_users (username, password, role) VALUES (?, ?, ?)",
-                  ('superadmin_test', 'test1234', 'super_admin'))
+                  ('superadmin_test', hash_password('test1234'), 'super_admin'))
                   
         # Active Sessions
         c.execute('''CREATE TABLE IF NOT EXISTS active_sessions
@@ -120,6 +134,11 @@ class TestVendorFeatures(unittest.TestCase):
                 vendor_data = {
                     "company_name": f"Feature Test Co {unique_suffix}",
                     "contact_person": "Tester",
+                    "email": f"company-{unique_suffix}@example.com",
+                    "admin_username": f"admin-{unique_suffix}@example.com",
+                    "admin_password": "AdminPass123!",
+                    "user_username": f"kiosk-{unique_suffix}@example.com",
+                    "user_password": "KioskPass123!",
                     "features": ["payroll", "mobile_app"]
                 }
                 
@@ -161,7 +180,9 @@ class TestVendorFeatures(unittest.TestCase):
                 # 7. Access Payroll (Should Fail with 403)
                 res = client.get('/api/reports/payroll?start_date=2023-01-01&end_date=2023-01-31', headers=vendor_headers)
                 self.assertEqual(res.status_code, 403)
-                self.assertIn("Feature 'payroll' is not enabled", res.get_json()['error'])
+                error = res.get_json()['error'].lower()
+                self.assertIn("payroll", error)
+                self.assertIn("not enabled", error)
                 
                 # 8. Re-enable Payroll
                 res = client.put(f'/api/admin/vendors/{vendor_id}/subscription', json={
@@ -177,10 +198,10 @@ class TestVendorFeatures(unittest.TestCase):
                 res = client.put('/api/persons/wages', json={"updates": []}, headers=vendor_headers)
                 self.assertEqual(res.status_code, 200)
 
-                # 11. Check /reports/analytics (Requires 'reports') - Should Fail (not enabled)
+                # 11. Payroll subscriptions may access analytics through the
+                # report_payroll alias used by the endpoint.
                 res = client.get('/api/reports/analytics', headers=vendor_headers)
-                self.assertEqual(res.status_code, 403)
-                self.assertIn("Feature 'reports' is not enabled", res.get_json()['error'])
+                self.assertEqual(res.status_code, 200)
 
                 # 12. Enable 'reports' feature
                 res = client.put(f'/api/admin/vendors/{vendor_id}/subscription', json={
@@ -216,6 +237,11 @@ class TestVendorFeatures(unittest.TestCase):
                 vendor_data = {
                     "company_name": f"Feature Test Ext {unique_suffix}",
                     "contact_person": "Tester",
+                    "email": f"company-ext-{unique_suffix}@example.com",
+                    "admin_username": f"admin-ext-{unique_suffix}@example.com",
+                    "admin_password": "AdminPass123!",
+                    "user_username": f"kiosk-ext-{unique_suffix}@example.com",
+                    "user_password": "KioskPass123!",
                     "features": []
                 }
                 
@@ -286,9 +312,9 @@ class TestVendorFeatures(unittest.TestCase):
                 res = client.put(f'/api/companies/{company_id}/draft', json={"draft_timetable": []}, headers=vendor_headers)
                 self.assertEqual(res.status_code, 403)
                 
-                # 13. Enable 'shifts' feature
+                # 13. Enable shift viewing and timetable editing.
                 res = client.put(f'/api/admin/vendors/{vendor_id}/subscription', json={
-                    "features": ["reports", "mobile_app", "shifts"]
+                    "features": ["reports", "mobile_app", "shifts", "add_shift"]
                 }, headers=headers)
                 self.assertEqual(res.status_code, 200)
                 

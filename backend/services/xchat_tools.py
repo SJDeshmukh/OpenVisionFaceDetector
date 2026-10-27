@@ -5,6 +5,7 @@ intentionally absent from every model-visible schema.
 """
 
 import json
+import inspect
 import re
 from collections import defaultdict
 from datetime import date, datetime, timedelta
@@ -180,11 +181,14 @@ def _employee_metrics(vendor_id, start, end, department=None):
 
     metrics = []
     for person in people:
+        supported = inspect.signature(calculate_daily_hours).parameters
+        calculation_options = {}
+        if "missing_checkout_deduction_percent" in supported:
+            calculation_options["missing_checkout_deduction_percent"] = missing_checkout_deduction_percent
+        if "working_hours" in supported:
+            calculation_options["working_hours"] = working_hours
         stats = calculate_daily_hours(
-            grouped.get(person["id"], []),
-            timetable,
-            missing_checkout_deduction_percent=missing_checkout_deduction_percent,
-            working_hours=working_hours
+            grouped.get(person["id"], []), timetable, **calculation_options
         )
         sessions = []
         for session in stats.get("sessions", []):

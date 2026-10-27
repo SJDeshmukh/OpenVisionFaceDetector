@@ -526,7 +526,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     }
 
     private void sendPersonEvent(boolean detected, boolean recognized, String personId, String localUid, String name, float confidence, Bitmap bitmap, boolean triggerUiEffects) {
-        GreetingService service = RetrofitClient.getService();
+        GreetingService service = RetrofitClient.getAttendanceService();
         // Downscale to 320px width to cut encoding time (~300ms -> ~25ms) and payload (~800KB -> ~25KB)
         Bitmap resized = Utils.resizeBitmap(bitmap, 320);
         byte[] attendanceImageJpeg = null;
@@ -605,9 +605,10 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         // or deliberately adjusted for an unrelated SDK/license check; forwarding
         // it would save today's attendance under the wrong calendar date.
         PersonEventRequest request = new PersonEventRequest(detected, recognized, finalPersonId, name, confidence, imageBase64, isAttendance, null);
-        request.setSourceEventId((finalPersonId != null ? finalPersonId : "unknown") + ":" + timestamp);
+        String requestDeviceId = null;
         try {
             String deviceId = Settings.Secure.getString(requireContext().getContentResolver(), Settings.Secure.ANDROID_ID);
+            requestDeviceId = deviceId;
             android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
             String deviceName = prefs.getString("device_name", null);
             if (deviceName == null || deviceName.isEmpty()) {
@@ -629,9 +630,17 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 request.setBusinessType(btype.toLowerCase());
             }
         } catch (Exception ignored) {}
+        request.setSourceEventId(PersonEventRequest.buildSourceEventId(
+                requestDeviceId, finalPersonId, localUid, timestamp));
 
         // Optimistic UI: predict and show result immediately without waiting for the API
+        final String previousStatus = dbManager.getAttendanceStateStatus(finalPersonId, localUid, name);
+        final String previousTimestamp = dbManager.getLastAttendanceTimestamp(finalPersonId, localUid, name);
         final String optimisticStatus = dbManager.predictNextAttendanceStatus(finalPersonId, localUid, name);
+        // Persist before the request. If the process dies or the response is lost,
+        // WorkManager retries the exact same idempotency key.
+        final long pendingQueueId = dbManager.insertAttendanceQueueJpeg(
+                finalPersonId, localUid, name, timestamp, optimisticStatus, retryImageJpeg, false);
         if (triggerUiEffects && getActivity() != null) {
             getActivity().runOnUiThread(() -> {
                 playAttendanceSound(optimisticStatus);
@@ -647,55 +656,69 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             public void onResponse(Call<GreetingResponse> call, Response<GreetingResponse> response) {
                 if (response.isSuccessful() && response.body() != null) {
                     GreetingResponse greeting = response.body();
-                    if (greeting.isSpeak()) {
-                        String status = greeting.getStatus();
-                        if (status != null) {
-                            try {
-                                if (isAttendance) {
-                                    dbManager.upsertAttendanceState(finalPersonId, localUid, name, status, timestamp);
-                                }
-                            } catch (Exception ignored) {}
-                            // Correct UI only if server disagrees with our prediction
-                            if (triggerUiEffects && !status.equalsIgnoreCase(optimisticStatus)) {
-                                if (getActivity() != null) {
-                                    getActivity().runOnUiThread(() -> {
-                                        playAttendanceSound(status);
-                                        showStatusOverlay(status);
-                                        showAttendanceToast(name, status);
-                                        if (statusText != null) statusText.setText(name + " " + status);
-                                    });
-                                }
-                            }
+                    String status = greeting.getStatus();
+                    boolean confirmed = !Boolean.FALSE.equals(greeting.getAccepted()) &&
+                            ("CHECK_IN".equalsIgnoreCase(status) || "CHECK_OUT".equalsIgnoreCase(status));
+                    if (confirmed) {
+                        try {
+                            dbManager.upsertAttendanceState(finalPersonId, localUid, name, status, timestamp);
+                            if (pendingQueueId > 0) dbManager.deleteQueueItem((int) pendingQueueId);
+                        } catch (Exception ignored) {}
+                        // Correct UI only if server disagrees with our prediction
+                        if (triggerUiEffects && !status.equalsIgnoreCase(optimisticStatus) && getActivity() != null) {
+                            getActivity().runOnUiThread(() -> {
+                                playAttendanceSound(status);
+                                showStatusOverlay(status);
+                                showAttendanceToast(name, status);
+                                if (statusText != null) statusText.setText(name + " " + status);
+                            });
+                        }
+                    } else if (Boolean.FALSE.equals(greeting.getAccepted()) && "cooldown".equals(greeting.getReason())) {
+                        try {
+                            if (pendingQueueId > 0) dbManager.deleteQueueItem((int) pendingQueueId);
+                            dbManager.restoreAttendanceState(finalPersonId, localUid, name, timestamp,
+                                    previousStatus, previousTimestamp);
+                        } catch (Exception ignored) {}
+                        if (triggerUiEffects && getActivity() != null) {
+                            getActivity().runOnUiThread(() -> {
+                                Toast.makeText(getContext(), "Attendance was already marked recently", Toast.LENGTH_SHORT).show();
+                                if (statusText != null) statusText.setText("Already marked recently");
+                            });
+                        }
+                    } else {
+                        try {
+                            if (pendingQueueId > 0) dbManager.markQueueItemRetry((int) pendingQueueId, "Unconfirmed server response");
+                            AttendanceSyncWorker.scheduleImmediate(requireContext().getApplicationContext());
+                        } catch (Exception ignored) {}
+                        if (triggerUiEffects && getActivity() != null) {
+                            getActivity().runOnUiThread(() ->
+                                    Toast.makeText(getContext(), "Attendance saved; cloud confirmation pending", Toast.LENGTH_LONG).show());
                         }
                     }
                 } else {
-                    // Handle API Errors (e.g., 403 Suspended)
+                    int code = response.code();
+                    boolean retryable = code == 401 || code == 403 || code == 408 || code == 429 || code >= 500;
+                    try {
+                        if (pendingQueueId > 0) {
+                            if (retryable) {
+                                dbManager.markQueueItemRetry((int) pendingQueueId, "HTTP " + code);
+                            } else {
+                                dbManager.markQueueItemFailed((int) pendingQueueId, "HTTP " + code);
+                                dbManager.restoreAttendanceState(finalPersonId, localUid, name, timestamp,
+                                        previousStatus, previousTimestamp);
+                            }
+                        }
+                        if (retryable && code != 401 && code != 403) {
+                            AttendanceSyncWorker.scheduleImmediate(requireContext().getApplicationContext());
+                        }
+                    } catch (Exception ignored) {}
                     if (triggerUiEffects && getActivity() != null) {
                         getActivity().runOnUiThread(() -> {
-                            String errorMsg = "Attendance Failed";
-                            try {
-                                if (response.errorBody() != null) {
-                                    // Simple parsing of JSON error {"error": "..."}
-                                    String errorBody = response.errorBody().string();
-                                    if (errorBody.contains("error")) {
-                                        // Extract value after "error": "
-                                        int start = errorBody.indexOf("\"error\"") + 9;
-                                        int end = errorBody.indexOf("\"", start);
-                                        // Adjust parsing if needed, or just show generic if complex
-                                        if (start > 8 && end > start) {
-                                            errorMsg = errorBody.substring(start, end);
-                                            // Cleanup escaped chars if any
-                                            errorMsg = errorMsg.replace("\\", "");
-                                        }
-                                    }
-                                }
-                            } catch (Exception e) {
-                                e.printStackTrace();
-                            }
-                            
+                            String errorMsg = retryable
+                                    ? "Attendance saved; cloud sync pending"
+                                    : "Attendance rejected by server";
                             Toast.makeText(getContext(), errorMsg, Toast.LENGTH_LONG).show();
-                            // Optional: Play error sound
-                            // playAttendanceSound("ERROR"); 
+                            if (!retryable && statusText != null) statusText.setText("Attendance failed");
                         });
                     }
                 }
@@ -704,14 +727,12 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             @Override
             public void onFailure(Call<GreetingResponse> call, Throwable t) {
                 Log.e(TAG, "API Error", t);
-                // UI already updated optimistically; just queue for retry
+                // The event was persisted before the request; retain that exact
+                // queue row and idempotency key for retry.
                 if (isAttendance) {
                     try {
-                        // The CameraX frame is recycled when analyzeImage returns.
-                        // Queue the compact immutable JPEG captured above instead of
-                        // retaining that recycled multi-megabyte Bitmap in Retrofit.
-                        dbManager.insertAttendanceQueueJpeg(finalPersonId, localUid, name, timestamp, optimisticStatus, retryImageJpeg, false);
-                        SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
+                        if (pendingQueueId > 0) dbManager.markQueueItemRetry((int) pendingQueueId, t.getClass().getSimpleName());
+                        AttendanceSyncWorker.scheduleImmediate(requireContext().getApplicationContext());
                     } catch (Exception ignored) {}
                 }
             }

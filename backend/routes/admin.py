@@ -310,6 +310,11 @@ def update_vendor_device_name(vendor_id, device_id):
 @admin_bp.route("/vendors/<int:vendor_id>/devices/<device_id>/geofence", methods=["PUT"])
 @super_admin_required
 def update_device_geofence(vendor_id, device_id):
+    # Resolve these lazily from the running application so tests, maintenance
+    # commands and alternate app factories use the same configured database
+    # and Socket.IO instance as the rest of the request.
+    from app import get_db_connection, socketio
+
     data = request.json or {}
     radius = data.get("radius_meters")
     lat = data.get("latitude")
@@ -428,7 +433,6 @@ def update_device_geofence(vendor_id, device_id):
         # Tell an online kiosk to discard its old local anchor immediately.  Offline
         # kiosks are still protected by the first-heartbeat confirmation in the app.
         try:
-            from app import socketio
             socketio.emit("geofence_config_updated", payload, room=f"vendor_{vendor_id}")
         except Exception as emit_error:
             logger.warning("Unable to broadcast geofence update for device %s: %s", device_id, emit_error)
@@ -2069,9 +2073,11 @@ def update_vendor_subscription(vendor_id):
                     except Exception:
                         current_features = []
                 if 'automated_email_reports' not in current_features:
-                    c.execute("UPDATE automated_report_schedules SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE vendor_id = ?", (vendor_id,))
+                    if get_table_columns(conn, "automated_report_schedules"):
+                        c.execute("UPDATE automated_report_schedules SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE vendor_id = ?", (vendor_id,))
                 if 'hostel_attendance_alerts' not in current_features:
-                    c.execute("UPDATE hostel_alert_settings SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE vendor_id = ?", (vendor_id,))
+                    if get_table_columns(conn, "hostel_alert_settings"):
+                        c.execute("UPDATE hostel_alert_settings SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE vendor_id = ?", (vendor_id,))
             conn.commit()
             if 'features' in data:
                 cache_delete_vendor_prefix(vendor_id)

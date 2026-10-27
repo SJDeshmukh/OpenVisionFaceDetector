@@ -42,6 +42,7 @@ class FaceSyncWorker(appContext: Context, params: WorkerParameters) : Worker(app
                 }
                 
                 val json = JsonObject()
+                json.addProperty("local_uid", p.localUid)
                 json.addProperty("name", p.name ?: "")
                 json.addProperty("templates", Base64.encodeToString(p.templates, Base64.NO_WRAP))
 

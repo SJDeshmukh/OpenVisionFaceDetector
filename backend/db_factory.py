@@ -507,7 +507,8 @@ def _init_pg_schema_on_conn(conn):
     queries = [
         "CREATE TABLE IF NOT EXISTS vendors (id SERIAL PRIMARY KEY, company_name TEXT NOT NULL, email TEXT, phone TEXT, address TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, status TEXT DEFAULT 'active', registration_config TEXT, contact_person TEXT, web_login_enabled INTEGER DEFAULT 1, frontend_bundle_id TEXT, backend_service_id TEXT, vertical TEXT, attendance_type TEXT DEFAULT 'total_time', retention_days INTEGER DEFAULT 90, num_rectors INTEGER DEFAULT 0, num_hods INTEGER DEFAULT 0, departments TEXT)",
         "CREATE TABLE IF NOT EXISTS companies (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), name TEXT, working_hours REAL, shifts TEXT, draft_timetable TEXT, live_timetable TEXT, last_modified_by TEXT, last_modified_at TIMESTAMP, published_by TEXT, published_at TIMESTAMP)",
-        "CREATE TABLE IF NOT EXISTS faces (id SERIAL PRIMARY KEY, name TEXT, templates TEXT, face_image TEXT, department TEXT, designation TEXT, phone TEXT, shift TEXT, daily_wage REAL DEFAULT 0, basic_salary REAL DEFAULT 0, hra REAL DEFAULT 0, conveyance REAL DEFAULT 0, special_allowance REAL DEFAULT 0, pf_enabled INTEGER DEFAULT 0, esi_enabled INTEGER DEFAULT 0, gratuity_enabled INTEGER DEFAULT 0, professional_tax REAL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount REAL DEFAULT 0, vendor_id INTEGER REFERENCES vendors(id), custom_data TEXT, display_id INTEGER, joining_date DATE)",
+        "CREATE TABLE IF NOT EXISTS faces (id SERIAL PRIMARY KEY, local_uid TEXT, name TEXT, templates TEXT, face_image TEXT, department TEXT, designation TEXT, phone TEXT, shift TEXT, daily_wage REAL DEFAULT 0, basic_salary REAL DEFAULT 0, hra REAL DEFAULT 0, conveyance REAL DEFAULT 0, special_allowance REAL DEFAULT 0, pf_enabled INTEGER DEFAULT 0, esi_enabled INTEGER DEFAULT 0, gratuity_enabled INTEGER DEFAULT 0, professional_tax REAL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount REAL DEFAULT 0, vendor_id INTEGER REFERENCES vendors(id), custom_data TEXT, display_id INTEGER, joining_date DATE)",
+        "ALTER TABLE faces ADD COLUMN IF NOT EXISTS local_uid TEXT",
         "CREATE TABLE IF NOT EXISTS advances (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id), amount REAL, amount_cash REAL DEFAULT 0, amount_online REAL DEFAULT 0, date DATE, status TEXT DEFAULT 'pending', approved_by TEXT, approved_at TIMESTAMP, rejection_reason TEXT, deduction_month TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS advance_revisions (id SERIAL PRIMARY KEY, advance_id INTEGER NOT NULL, vendor_id INTEGER NOT NULL, person_id INTEGER NOT NULL, old_amount REAL, new_amount REAL, old_amount_cash REAL, new_amount_cash REAL, old_amount_online REAL, new_amount_online REAL, old_date DATE, new_date DATE, old_deduction_month TEXT, new_deduction_month TEXT, edited_by TEXT, edited_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS attendance (id SERIAL PRIMARY KEY, name TEXT, timestamp TIMESTAMP, status TEXT, captured_image TEXT, activity TEXT, is_late INTEGER DEFAULT 0, device_id TEXT, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id), attendance_date DATE, class_year TEXT, division TEXT, branch TEXT, subject TEXT, lecture_id INTEGER)",
@@ -599,6 +600,7 @@ def _init_pg_schema_on_conn(conn):
         "CREATE INDEX IF NOT EXISTS idx_person_org_resolution ON person_organization_assignments(vendor_id, person_id, effective_from, effective_to)",
         "CREATE INDEX IF NOT EXISTS idx_faces_vendor ON faces(vendor_id)",
         "CREATE INDEX IF NOT EXISTS idx_faces_vendor_display ON faces(vendor_id, display_id)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_faces_vendor_local_uid ON faces(vendor_id, local_uid) WHERE local_uid IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_system_users_vendor ON system_users(vendor_id)",
         "CREATE INDEX IF NOT EXISTS idx_system_users_vendor_person_role ON system_users(vendor_id, person_id, role)",
         "CREATE INDEX IF NOT EXISTS idx_advances_vendor_month_status_person ON advances(vendor_id, deduction_month, status, person_id)",
@@ -703,6 +705,7 @@ def _init_pg_schema_on_conn(conn):
         ("subscriptions", "xchat_price_per_1k_tokens", "REAL DEFAULT 0"),
         ("xchat_token_usage", "usage_type", "TEXT DEFAULT 'chat'"),
         ("faces", "display_id", "INTEGER"),
+        ("faces", "local_uid", "TEXT"),
         ("faces", "basic_salary", "REAL DEFAULT 0"),
         ("faces", "hra", "REAL DEFAULT 0"),
         ("faces", "conveyance", "REAL DEFAULT 0"),
@@ -926,7 +929,7 @@ def init_sqlite_schema(conn):
     queries = [
         "CREATE TABLE IF NOT EXISTS vendors (id INTEGER PRIMARY KEY AUTOINCREMENT, company_name TEXT NOT NULL, email TEXT, phone TEXT, address TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, status TEXT DEFAULT 'active', registration_config TEXT, contact_person TEXT, web_login_enabled INTEGER DEFAULT 1, frontend_bundle_id TEXT, backend_service_id TEXT, vertical TEXT, attendance_type TEXT DEFAULT 'total_time', retention_days INTEGER DEFAULT 90, num_rectors INTEGER DEFAULT 0, num_hods INTEGER DEFAULT 0, departments TEXT)",
         "CREATE TABLE IF NOT EXISTS companies (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, name TEXT, working_hours REAL, shifts TEXT, draft_timetable TEXT, live_timetable TEXT, last_modified_by TEXT, last_modified_at DATETIME, published_by TEXT, published_at DATETIME)",
-        "CREATE TABLE IF NOT EXISTS faces (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, templates TEXT, face_image TEXT, department TEXT, designation TEXT, phone TEXT, shift TEXT, daily_wage REAL DEFAULT 0, basic_salary REAL DEFAULT 0, hra REAL DEFAULT 0, conveyance REAL DEFAULT 0, special_allowance REAL DEFAULT 0, pf_enabled INTEGER DEFAULT 0, esi_enabled INTEGER DEFAULT 0, gratuity_enabled INTEGER DEFAULT 0, professional_tax REAL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount REAL DEFAULT 0, vendor_id INTEGER, custom_data TEXT, display_id INTEGER, joining_date DATE)",
+        "CREATE TABLE IF NOT EXISTS faces (id INTEGER PRIMARY KEY AUTOINCREMENT, local_uid TEXT, name TEXT, templates TEXT, face_image TEXT, department TEXT, designation TEXT, phone TEXT, shift TEXT, daily_wage REAL DEFAULT 0, basic_salary REAL DEFAULT 0, hra REAL DEFAULT 0, conveyance REAL DEFAULT 0, special_allowance REAL DEFAULT 0, pf_enabled INTEGER DEFAULT 0, esi_enabled INTEGER DEFAULT 0, gratuity_enabled INTEGER DEFAULT 0, professional_tax REAL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount REAL DEFAULT 0, vendor_id INTEGER, custom_data TEXT, display_id INTEGER, joining_date DATE)",
         "CREATE TABLE IF NOT EXISTS advances (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, person_id INTEGER, amount REAL, amount_cash REAL DEFAULT 0, amount_online REAL DEFAULT 0, date DATE, status TEXT DEFAULT 'pending', approved_by TEXT, approved_at DATETIME, rejection_reason TEXT, deduction_month TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS advance_revisions (id INTEGER PRIMARY KEY AUTOINCREMENT, advance_id INTEGER NOT NULL, vendor_id INTEGER NOT NULL, person_id INTEGER NOT NULL, old_amount REAL, new_amount REAL, old_amount_cash REAL, new_amount_cash REAL, old_amount_online REAL, new_amount_online REAL, old_date DATE, new_date DATE, old_deduction_month TEXT, new_deduction_month TEXT, edited_by TEXT, edited_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS attendance (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, timestamp DATETIME, status TEXT, captured_image TEXT, activity TEXT, is_late INTEGER DEFAULT 0, device_id TEXT, vendor_id INTEGER, person_id INTEGER, attendance_date DATE, class_year TEXT, division TEXT, branch TEXT, subject TEXT, lecture_id INTEGER)",
@@ -1007,6 +1010,7 @@ def init_sqlite_schema(conn):
         "CREATE INDEX IF NOT EXISTS idx_person_org_resolution ON person_organization_assignments(vendor_id, person_id, effective_from, effective_to)",
         "CREATE INDEX IF NOT EXISTS idx_faces_vendor ON faces(vendor_id)",
         "CREATE INDEX IF NOT EXISTS idx_faces_vendor_display ON faces(vendor_id, display_id)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_faces_vendor_local_uid ON faces(vendor_id, local_uid) WHERE local_uid IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_system_users_vendor ON system_users(vendor_id)",
         "CREATE INDEX IF NOT EXISTS idx_system_users_vendor_person_role ON system_users(vendor_id, person_id, role)",
         "CREATE INDEX IF NOT EXISTS idx_advances_vendor_month_status_person ON advances(vendor_id, deduction_month, status, person_id)",
@@ -1042,7 +1046,7 @@ def init_sqlite_schema(conn):
     # supplied every indexed column.
     deferred_indexes = []
     for q in queries:
-        if q.lstrip().upper().startswith("CREATE INDEX"):
+        if q.lstrip().upper().startswith(("CREATE INDEX", "CREATE UNIQUE INDEX")):
             deferred_indexes.append(q)
         else:
             cur.execute(q)
@@ -1112,7 +1116,7 @@ def init_sqlite_schema(conn):
     except Exception:
         pass
             
-    for col in ["display_id INTEGER", "basic_salary REAL DEFAULT 0", "hra REAL DEFAULT 0", "conveyance REAL DEFAULT 0", "special_allowance REAL DEFAULT 0", "pf_enabled INTEGER DEFAULT 0", "esi_enabled INTEGER DEFAULT 0", "gratuity_enabled INTEGER DEFAULT 0", "professional_tax REAL DEFAULT 0", "joining_date DATE"]:
+    for col in ["display_id INTEGER", "local_uid TEXT", "basic_salary REAL DEFAULT 0", "hra REAL DEFAULT 0", "conveyance REAL DEFAULT 0", "special_allowance REAL DEFAULT 0", "pf_enabled INTEGER DEFAULT 0", "esi_enabled INTEGER DEFAULT 0", "gratuity_enabled INTEGER DEFAULT 0", "professional_tax REAL DEFAULT 0", "joining_date DATE"]:
         try:
             cur.execute(f"ALTER TABLE faces ADD COLUMN {col}")
         except Exception:
@@ -1149,6 +1153,14 @@ def init_sqlite_schema(conn):
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_person_embeddings_gallery "
             "ON person_embeddings(vendor_id, status, model_version, person_id)"
+        )
+    except Exception:
+        pass
+
+    try:
+        cur.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_faces_vendor_local_uid "
+            "ON faces(vendor_id, local_uid) WHERE local_uid IS NOT NULL"
         )
     except Exception:
         pass

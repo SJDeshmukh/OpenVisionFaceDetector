@@ -75,7 +75,6 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var dbManager: DBManager
     private val handler = Handler(Looper.getMainLooper())
-    private val syncInterval: Long = 30000
     private var tvNetworkStatus: TextView? = null
     private var tvGeofenceStatus: TextView? = null
     private var ivGeoIcon: ImageView? = null
@@ -118,23 +117,6 @@ class MainActivity : AppCompatActivity() {
     private var activeFragment: Fragment? = null
     private var lastClickTime: Long = 0
     private val clickDebounce: Long = 400 // ms
-
-    private val syncRunnable = object : Runnable {
-        override fun run() {
-            try {
-                if (NetworkUtils.isOnline(applicationContext)) {
-                    val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
-                    val token = prefs.getString("token", null)
-                    if (!token.isNullOrBlank()) {
-                        syncFacesFromBackend()
-                    }
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-            handler.postDelayed(this, syncInterval)
-        }
-    }
 
     private val networkStatusRunnable = object : Runnable {
         override fun run() {
@@ -640,9 +622,11 @@ class MainActivity : AppCompatActivity() {
         val filter = IntentFilter(MyGlobal.ACTION_AUTH_FAILURE)
         ContextCompat.registerReceiver(this, authFailureReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
 
-        handler.removeCallbacks(syncRunnable) // Prevent duplicates
-        handler.post(syncRunnable) // Start sync immediately
         try {
+            // One coalesced sync on resume, socket-triggered deltas while
+            // connected, and WorkManager's periodic job for missed events.
+            // A 30-second foreground poll duplicated downloads and could race
+            // with the same socket/reconnect work.
             SyncScheduler.scheduleImmediate(applicationContext)
             SyncScheduler.schedulePeriodic(applicationContext)
         } catch (_: Exception) {
@@ -845,7 +829,6 @@ class MainActivity : AppCompatActivity() {
             e.printStackTrace()
         }
 
-        handler.removeCallbacks(syncRunnable) // Stop sync when backgrounded
         handler.removeCallbacks(networkStatusRunnable)
         handler.removeCallbacks(settingsRunnable)
         handler.removeCallbacks(heartbeatRunnable)
@@ -892,7 +875,6 @@ class MainActivity : AppCompatActivity() {
                 } catch (_: Exception) {}
 
                 // 2. Stop all background runners and location tracking immediately
-                handler.removeCallbacks(syncRunnable)
                 handler.removeCallbacks(networkStatusRunnable)
                 handler.removeCallbacks(settingsRunnable)
                 handler.removeCallbacks(heartbeatRunnable)
@@ -1128,8 +1110,6 @@ class MainActivity : AppCompatActivity() {
                              try {
                                 val errorBody = response.errorBody()?.string()
                                 if (response.code() == 403 || (errorBody != null && errorBody.contains("Access Denied"))) {
-                                     handler.removeCallbacks(syncRunnable) // Stop syncing
-                                     
                                      performLogout("Access denied. Please login again.")
                                 }
                             } catch (e: Exception) {

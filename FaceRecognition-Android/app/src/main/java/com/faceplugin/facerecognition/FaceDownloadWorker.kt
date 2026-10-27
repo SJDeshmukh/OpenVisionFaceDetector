@@ -57,6 +57,10 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
             try {
                 reconcileLocalWithServer(faces)
             } catch (_: Exception) {}
+            prefs.edit().apply {
+                putString("last_faces_signature", signature)
+                body.cursor?.let { putLong("face_sync_cursor", it) }
+            }.apply()
             return Result.success()
         }
         val db = DBManager(applicationContext)

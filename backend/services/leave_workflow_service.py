@@ -217,14 +217,42 @@ def replace_workflow(conn, vendor_id, name, stages, created_by):
 def snapshot_request(conn, vendor_id, request_id, legacy_request=None):
     """Create or return the immutable ordered stages for a leave request."""
     cursor = conn.cursor()
-    cursor.execute(
-        """SELECT id, request_id, vendor_id, workflow_id, workflow_version,
-                  stage_key, display_name, actor_type, role_key, sequence,
-                  department_scoped, auth_method, status, actor_id, actor_name,
-                  decided_at, decision_metadata
-           FROM leave_request_stages WHERE request_id = ? ORDER BY sequence""",
-        (request_id,),
-    )
+    try:
+        cursor.execute(
+            """SELECT id, request_id, vendor_id, workflow_id, workflow_version,
+                      stage_key, display_name, actor_type, role_key, sequence,
+                      department_scoped, auth_method, status, actor_id, actor_name,
+                      decided_at, decision_metadata
+               FROM leave_request_stages WHERE request_id = ? ORDER BY sequence""",
+            (request_id,),
+        )
+    except Exception:
+        # Read-only consumers must remain compatible during rolling upgrades
+        # and with archived SQLite databases created before workflow tables
+        # existed.  Preserve the legacy approval columns instead of failing the
+        # whole leave report.
+        legacy_request = legacy_request or {}
+        final_status = str(legacy_request.get("final_status") or "pending").lower()
+        fallback = []
+        for sequence, stage in enumerate(DEFAULT_STAGES, start=1):
+            status = legacy_request.get(f"{stage['stage_key']}_status")
+            if status is None:
+                status = "approved" if final_status == "approved" else "pending"
+            fallback.append({
+                **stage,
+                "id": None,
+                "request_id": request_id,
+                "vendor_id": vendor_id,
+                "workflow_id": None,
+                "workflow_version": 0,
+                "sequence": sequence,
+                "status": str(status).lower(),
+                "actor_id": None,
+                "actor_name": None,
+                "decided_at": None,
+                "decision_metadata": None,
+            })
+        return fallback
     columns = (
         "id", "request_id", "vendor_id", "workflow_id", "workflow_version",
         "stage_key", "display_name", "actor_type", "role_key", "sequence",

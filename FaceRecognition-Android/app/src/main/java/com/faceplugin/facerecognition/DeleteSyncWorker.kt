@@ -5,10 +5,12 @@ import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.BackoffPolicy
 import androidx.work.Worker
 import androidx.work.WorkerParameters
 import com.faceplugin.facerecognition.api.GreetingService
 import com.faceplugin.facerecognition.api.RetrofitClient
+import java.util.concurrent.TimeUnit
 
 class DeleteSyncWorker(appContext: Context, params: WorkerParameters) : Worker(appContext, params) {
     override fun doWork(): Result {
@@ -19,7 +21,7 @@ class DeleteSyncWorker(appContext: Context, params: WorkerParameters) : Worker(a
         if (token != null) RetrofitClient.setAuthToken(token)
         if (token.isNullOrBlank()) return Result.success()
 
-        val service: GreetingService = RetrofitClient.getService()
+        val service: GreetingService = RetrofitClient.getInteractiveService()
         val db = DBManager(applicationContext)
         val queue = db.deleteQueue
         var needsRetry = false
@@ -48,11 +50,13 @@ class DeleteSyncWorker(appContext: Context, params: WorkerParameters) : Worker(a
                         return Result.success()
                     }
                     if (code == 408 || code == 429 || (code in 500..599)) {
-                        needsRetry = true
+                        needsRetry = db.markDeleteQueueItemRetry(item.id, "HTTP $code") || needsRetry
+                    } else {
+                        db.markDeleteQueueItemFailed(item.id, "HTTP $code")
                     }
                 }
-            } catch (_: Exception) {
-                needsRetry = true
+            } catch (exc: Exception) {
+                needsRetry = db.markDeleteQueueItemRetry(item.id, exc.javaClass.simpleName) || needsRetry
             }
         }
 
@@ -67,6 +71,7 @@ class DeleteSyncWorker(appContext: Context, params: WorkerParameters) : Worker(a
                 .build()
             val req = OneTimeWorkRequestBuilder<DeleteSyncWorker>()
                 .setConstraints(constraints)
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
                 .build()
             androidx.work.WorkManager.getInstance(context)
                 .enqueueUniqueWork(UNIQUE_WORK_NAME, ExistingWorkPolicy.REPLACE, req)

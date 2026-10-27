@@ -259,7 +259,8 @@ class AttendanceEventIngestionService:
                 received_at_utc.isoformat(sep=" "), event.source,
                 resolved_source_event_id, event.device_id, event.activity,
                 event.verification_method, event.verification_score,
-                event.captured_image, metadata, "ACCEPTED",
+                (f"attendance:{legacy_attendance_id}" if event.captured_image else None),
+                metadata, "ACCEPTED",
                 received_at_utc.isoformat(sep=" "),
             ),
         )

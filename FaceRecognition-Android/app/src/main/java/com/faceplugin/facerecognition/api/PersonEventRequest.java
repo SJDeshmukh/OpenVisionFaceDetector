@@ -141,6 +141,22 @@ public class PersonEventRequest {
         this.sourceEventId = sourceEventId;
     }
 
+    /** Stable across the direct request and a later offline-queue retry. */
+    public static String buildSourceEventId(String deviceId, String personId, String localUid, String timestamp) {
+        String deviceKey = deviceId == null || deviceId.trim().isEmpty() ? "unknown-device" : deviceId.trim();
+        String personKey;
+        if (personId != null && !personId.trim().isEmpty()) {
+            personKey = personId.trim();
+        } else if (localUid != null && !localUid.trim().isEmpty()) {
+            personKey = "local:" + localUid.trim();
+        } else {
+            personKey = "unknown-person";
+        }
+        String timeKey = timestamp == null || timestamp.trim().isEmpty()
+                ? String.valueOf(System.currentTimeMillis()) : timestamp.trim();
+        return deviceKey + ":" + personKey + ":" + timeKey;
+    }
+
     public String getSourceTimezone() {
         return sourceTimezone;
     }

@@ -25,11 +25,11 @@ public class SyncScheduler {
                 .build();
 
         WorkManager.getInstance(ctx)
-                .enqueueUniqueWork("face-download", ExistingWorkPolicy.REPLACE, faceDownload);
+                .enqueueUniqueWork("face-download", ExistingWorkPolicy.KEEP, faceDownload);
 
-        // Local faces must reach the server before attendance recorded against a
-        // local identity. DBManager then replaces local IDs in the attendance queue
-        // with the canonical server person ID.
+        // Run independent queues independently. Attendance entries for a local
+        // identity remain durable and retry after face registration resolves the
+        // canonical ID; they must not hold deletion work behind them.
         OneTimeWorkRequest faceSync = new OneTimeWorkRequest.Builder(FaceSyncWorker.class)
                 .setConstraints(constraints)
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.SECONDS)
@@ -45,11 +45,10 @@ public class SyncScheduler {
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.SECONDS)
                 .build();
 
-        WorkManager.getInstance(ctx)
-                .beginUniqueWork("sync-chain", ExistingWorkPolicy.REPLACE, faceSync)
-                .then(attendanceSync)
-                .then(deleteSync)
-                .enqueue();
+        WorkManager workManager = WorkManager.getInstance(ctx);
+        workManager.enqueueUniqueWork("face-sync", ExistingWorkPolicy.KEEP, faceSync);
+        workManager.enqueueUniqueWork("attendance-sync", ExistingWorkPolicy.KEEP, attendanceSync);
+        workManager.enqueueUniqueWork("delete-sync", ExistingWorkPolicy.KEEP, deleteSync);
     }
 
     public static void schedulePeriodic(Context ctx) {

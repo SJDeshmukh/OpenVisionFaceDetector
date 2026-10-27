@@ -1,4 +1,5 @@
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,11 +10,13 @@ if BACKEND_DIR not in sys.path:
 
 def test_parent_notification_is_dispatched_to_notification_queue(monkeypatch):
     calls = []
+    dispatched = threading.Event()
 
     class FakeTask:
         @staticmethod
-        def apply_async(*, args, queue):
-            calls.append((args, queue))
+        def apply_async(*, args, queue, ignore_result, retry):
+            calls.append((args, queue, ignore_result, retry))
+            dispatched.set()
             return SimpleNamespace(id="notification-task-1")
 
     monkeypatch.setitem(
@@ -24,5 +27,6 @@ def test_parent_notification_is_dispatched_to_notification_queue(monkeypatch):
     from notifications import notify_parent_async
     result = notify_parent_async(10, 20, "Checked In", "At 09:00", {"status": "CHECK_IN"})
 
-    assert result == {"queued": True, "task_id": "notification-task-1"}
-    assert calls == [([10, 20, "Checked In", "At 09:00", {"status": "CHECK_IN"}], "notifications")]
+    assert result == {"queued": True}
+    assert dispatched.wait(1)
+    assert calls == [([10, 20, "Checked In", "At 09:00", {"status": "CHECK_IN"}], "notifications", True, False)]

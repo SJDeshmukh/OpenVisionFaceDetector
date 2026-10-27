@@ -266,18 +266,6 @@ def notify_parent_async(
       1. Socket.IO  — instant when app is open / service running
       2. FCM push   — reaches device even when app is fully closed (requires Firebase setup)
     """
-    if not _local:
-        try:
-            from tasks import deliver_parent_notification_task
-            if hasattr(deliver_parent_notification_task, "apply_async"):
-                result = deliver_parent_notification_task.apply_async(
-                    args=[person_id, vendor_id, title, body, data or {}],
-                    queue="notifications",
-                )
-                return {"queued": True, "task_id": result.id}
-        except Exception as exc:
-            logger.warning("Notification queue unavailable; using local fallback: %s", exc)
-
     outcome = {"delivered": False, "error": None}
 
     def _worker():
@@ -305,7 +293,10 @@ def notify_parent_async(
                 c.execute(f"SELECT phone, custom_data FROM faces WHERE id = {ph}", (person_id,))
                 found = c.fetchone()
                 if found:
-                    s_cd = found[1] if isinstance(found, (list, tuple)) else found.get("custom_data")
+                    # sqlite3.Row is indexable but does not implement dict.get().
+                    # Both SQLite rows and psycopg2 DictRows preserve this
+                    # query's column order.
+                    s_cd = found[1]
                     try:
                         from utils import extract_student_number_from_custom_data
                     except ImportError:
@@ -320,9 +311,7 @@ def notify_parent_async(
 
             parent_ids, fcm_tokens, student_numbers = [], [], []
             for row in links:
-                pid   = row[0] if isinstance(row, (list, tuple)) else row.get("id")
-                token = row[1] if isinstance(row, (list, tuple)) else row.get("fcm_token")
-                sn    = row[2] if isinstance(row, (list, tuple)) else row.get("student_number")
+                pid, token, sn = row[0], row[1], row[2]
                 if pid:   parent_ids.append(pid)
                 if token: fcm_tokens.append(token)
                 if sn:    student_numbers.append(sn)
@@ -359,10 +348,30 @@ def notify_parent_async(
             outcome["error"] = str(e)
             logger.warning("notify_parent_async error: %s", e)
 
-    thread = threading.Thread(target=_worker, daemon=not _wait)
+    def _dispatch():
+        if not _local:
+            try:
+                from tasks import deliver_parent_notification_task
+                if hasattr(deliver_parent_notification_task, "apply_async"):
+                    # Broker connection establishment can block for many
+                    # seconds during an outage.  It therefore belongs in this
+                    # background thread, never in an attendance HTTP request.
+                    deliver_parent_notification_task.apply_async(
+                        args=[person_id, vendor_id, title, body, data or {}],
+                        queue="notifications",
+                        ignore_result=True,
+                        retry=False,
+                    )
+                    outcome["queued"] = True
+                    return
+            except Exception as exc:
+                logger.warning("Notification queue unavailable; using local fallback: %s", exc)
+        _worker()
+
+    thread = threading.Thread(target=_dispatch, daemon=not _wait)
     thread.start()
     if _wait:
         thread.join()
         if outcome["error"]:
             raise RuntimeError(outcome["error"])
-    return outcome
+    return {"queued": True} if not _wait else outcome
