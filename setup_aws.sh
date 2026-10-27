@@ -1600,7 +1600,7 @@ WorkingDirectory=${SCRIPT_DIR}/backend
 Environment="PATH=${SCRIPT_DIR}/backend/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Environment="PYTHONPATH=${SCRIPT_DIR}/backend:${SCRIPT_DIR}"
 EnvironmentFile=${ENV_FILE}
-ExecStart=${SCRIPT_DIR}/backend/.venv/bin/gunicorn --worker-class gthread --workers 1 --threads 4 --bind 127.0.0.1:5001 app:app --timeout 600
+ExecStart=${SCRIPT_DIR}/backend/.venv/bin/gunicorn --worker-class gthread --workers 1 --threads 32 --bind 127.0.0.1:5001 app:app --timeout 600
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30

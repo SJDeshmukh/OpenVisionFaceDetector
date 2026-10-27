@@ -211,7 +211,7 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
                 .setConstraints(constraints)
                 .build()
             androidx.work.WorkManager.getInstance(context)
-                .enqueueUniqueWork(UNIQUE_WORK_NAME, ExistingWorkPolicy.KEEP, req)
+                .enqueueUniqueWork(UNIQUE_WORK_NAME, ExistingWorkPolicy.REPLACE, req)
         }
     }
 

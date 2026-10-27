@@ -37,14 +37,27 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
         super.onNewToken(token)
         val prefs = getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
         prefs.edit().putString("fcm_token", token).apply()
-        uploadTokenIfParent(token)
+        uploadToken(token)
+    }
+
+    override fun onDeletedMessages() {
+        super.onDeletedMessages()
+        android.util.Log.i("AppFCM", "FCM server deleted pending messages; scheduling immediate reconciliation sync")
+        FaceDownloadWorker.scheduleImmediate(applicationContext)
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
         super.onMessageReceived(message)
 
-        // Check if message is an OTA update command from SuperAdmin
+        // Check if message is a face sync trigger (action: insert / delete / update / sync)
         val action = message.data["action"]
+        if (action == "insert" || action == "delete" || action == "update" || action == "sync") {
+            android.util.Log.i("AppFCM", "FCM trigger for face sync received: action=$action person_id=${message.data["person_id"]}")
+            FaceDownloadWorker.scheduleImmediate(applicationContext)
+            return
+        }
+
+        // Check if message is an OTA update command from SuperAdmin
         if (action == "APP_UPDATE" || action == "INSTALL_UPDATE") {
             android.util.Log.i("AppFCM", "FCM trigger for OTA update received")
             com.faceplugin.facerecognition.update.AppUpdateManager.checkAndUpdateInBackground(applicationContext, quiet = false)
@@ -59,17 +72,26 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
         showNotification(title, body)
     }
 
-    private fun uploadTokenIfParent(token: String) {
+    private fun uploadToken(token: String) {
         val prefs = getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
         val authToken = prefs.getString("token", null)
-        val role = prefs.getString("role", null)
-        if (authToken.isNullOrBlank() || role != "parent") return
+        if (authToken.isNullOrBlank()) return
 
         RetrofitClient.setAuthToken(authToken)
-        val body = JsonObject().apply { addProperty("fcm_token", token) }
+        val deviceId = try {
+            android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.ANDROID_ID)
+        } catch (_: Exception) { "" }
+        val body = JsonObject().apply {
+            addProperty("fcm_token", token)
+            if (!deviceId.isNullOrBlank()) addProperty("device_id", deviceId)
+        }
         RetrofitClient.getService().updateFcmToken(body).enqueue(object : Callback<JsonObject> {
-            override fun onResponse(call: Call<JsonObject>, response: Response<JsonObject>) {}
-            override fun onFailure(call: Call<JsonObject>, t: Throwable) {}
+            override fun onResponse(call: Call<JsonObject>, response: Response<JsonObject>) {
+                android.util.Log.i("AppFCM", "FCM token registered with backend (code: ${response.code()})")
+            }
+            override fun onFailure(call: Call<JsonObject>, t: Throwable) {
+                android.util.Log.w("AppFCM", "Failed to register FCM token with backend", t)
+            }
         })
     }
 
@@ -139,15 +161,24 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                     prefs.edit().putString("fcm_token", token).apply()
 
                     val authToken = prefs.getString("token", null)
-                    val role = prefs.getString("role", null)
-                    if (authToken.isNullOrBlank() || role != "parent") return@addOnSuccessListener
+                    if (authToken.isNullOrBlank()) return@addOnSuccessListener
 
                     RetrofitClient.setAuthToken(authToken)
-                    val body = JsonObject().apply { addProperty("fcm_token", token) }
+                    val deviceId = try {
+                        android.provider.Settings.Secure.getString(context.contentResolver, android.provider.Settings.Secure.ANDROID_ID)
+                    } catch (_: Exception) { "" }
+                    val body = JsonObject().apply {
+                        addProperty("fcm_token", token)
+                        if (!deviceId.isNullOrBlank()) addProperty("device_id", deviceId)
+                    }
                     RetrofitClient.getService().updateFcmToken(body)
                         .enqueue(object : Callback<JsonObject> {
-                            override fun onResponse(call: Call<JsonObject>, response: Response<JsonObject>) {}
-                            override fun onFailure(call: Call<JsonObject>, t: Throwable) {}
+                            override fun onResponse(call: Call<JsonObject>, response: Response<JsonObject>) {
+                                android.util.Log.i("AppFCM", "FCM token registered with backend on start (code: ${response.code()})")
+                            }
+                            override fun onFailure(call: Call<JsonObject>, t: Throwable) {
+                                android.util.Log.w("AppFCM", "Failed to register FCM token on start", t)
+                            }
                         })
                 }
                 .addOnFailureListener {}

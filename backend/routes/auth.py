@@ -1324,7 +1324,7 @@ def parent_update_fcm_token():
     if not token:
         return jsonify({"error": "Invalid token"}), 401
     data_jwt = verify_token(token)
-    if not data_jwt or data_jwt.get('role') != 'parent':
+    if not data_jwt:
         return jsonify({"error": "Unauthorized"}), 401
     fcm_token = (request.get_json(silent=True) or {}).get('fcm_token', '')
     if not fcm_token:
@@ -1332,8 +1332,30 @@ def parent_update_fcm_token():
     conn = get_db_connection()
     c = conn.cursor()
     try:
-        ph = "%s" if getattr(conn, "_is_pg", False) else "?"
-        c.execute(f"UPDATE parent_users SET fcm_token = {ph} WHERE username = {ph}", (fcm_token, data_jwt['username']))
+        is_pg = getattr(conn, "_is_pg", False)
+        ph = "%s" if is_pg else "?"
+        if data_jwt.get('role') == 'parent':
+            c.execute(f"UPDATE parent_users SET fcm_token = {ph} WHERE username = {ph}", (fcm_token, data_jwt['username']))
+        else:
+            vendor_id = data_jwt.get('vendor_id')
+            if vendor_id:
+                device_id = (request.get_json(silent=True) or {}).get('device_id')
+                if is_pg:
+                    c.execute(
+                        """INSERT INTO vendor_device_tokens (vendor_id, device_id, fcm_token, updated_at)
+                           VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+                           ON CONFLICT (vendor_id, fcm_token)
+                           DO UPDATE SET device_id = EXCLUDED.device_id, updated_at = CURRENT_TIMESTAMP""",
+                        (vendor_id, device_id, fcm_token)
+                    )
+                else:
+                    c.execute(
+                        """INSERT INTO vendor_device_tokens (vendor_id, device_id, fcm_token, updated_at)
+                           VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                           ON CONFLICT(vendor_id, fcm_token)
+                           DO UPDATE SET device_id = excluded.device_id, updated_at = CURRENT_TIMESTAMP""",
+                        (vendor_id, device_id, fcm_token)
+                    )
         conn.commit()
         return jsonify({"ok": True})
     except Exception as e:

@@ -85,6 +85,9 @@ public interface GreetingService {
     @POST("api/parents/update-fcm-token")
     Call<com.google.gson.JsonObject> updateFcmToken(@Body com.google.gson.JsonObject body);
 
+    @POST("api/sync/device-token")
+    Call<com.google.gson.JsonObject> registerDeviceToken(@Body com.google.gson.JsonObject body);
+
     @POST("api/leave/parent/register-face")
     Call<com.google.gson.JsonObject> parentRegisterFace(@Body ParentRegisterFaceRequest request);
 

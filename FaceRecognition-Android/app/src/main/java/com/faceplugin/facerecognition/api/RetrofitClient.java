@@ -50,9 +50,9 @@ public class RetrofitClient {
             }
 
             OkHttpClient.Builder httpClient = new OkHttpClient.Builder()
-                    .connectTimeout(30, TimeUnit.SECONDS)
-                    .readTimeout(120, TimeUnit.SECONDS)   // face detection can take 15-30s
-                    .writeTimeout(60, TimeUnit.SECONDS);  // large base64 image uploads
+                    .connectTimeout(10, TimeUnit.SECONDS)
+                    .readTimeout(30, TimeUnit.SECONDS)
+                    .writeTimeout(30, TimeUnit.SECONDS);  // large base64 image uploads
 
             // Global Headers
             httpClient.addInterceptor(chain -> {

@@ -212,6 +212,11 @@ class MainActivity : AppCompatActivity() {
         } catch (_: Exception) {
         }
 
+        // Register FCM device token for background face sync pushes
+        try {
+            AppFirebaseMessagingService.registerCurrentToken(this)
+        } catch (_: Exception) {}
+
         // Keep Screen On Always
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 

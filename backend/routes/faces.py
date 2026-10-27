@@ -743,6 +743,36 @@ def upload_face():
         except Exception:
             student_number = None
 
+        # Idempotency duplicate check: if no person_id, check if local_uid was already uploaded
+        local_uid = data.get("local_uid") or custom_dict.get("local_uid")
+        if local_uid:
+            local_uid = str(local_uid).strip()
+            custom_dict["local_uid"] = local_uid
+            if not person_id and vendor_id:
+                if getattr(conn_check, "_is_pg", False):
+                    cc.execute(
+                        "SELECT id, display_id FROM faces WHERE vendor_id = %s AND custom_data::jsonb->>'local_uid' = %s LIMIT 1",
+                        (vendor_id, local_uid)
+                    )
+                else:
+                    cc.execute(
+                        "SELECT id, display_id FROM faces WHERE vendor_id = ? AND (json_extract(custom_data, '$.local_uid') = ? OR custom_data LIKE ?) LIMIT 1",
+                        (vendor_id, local_uid, f'%"local_uid":"{local_uid}"%')
+                    )
+                idemp_row = cc.fetchone()
+                if idemp_row:
+                    idemp_id = idemp_row[0] if not isinstance(idemp_row, dict) else idemp_row.get("id")
+                    idemp_disp = idemp_row[1] if not isinstance(idemp_row, dict) else idemp_row.get("display_id")
+                    conn_check.close()
+                    logger.info(f"[UPLOAD] Idempotent retry matched existing face ID {idemp_id} (display_id={idemp_disp}) for local_uid {local_uid}")
+                    return jsonify({
+                        "status": "success",
+                        "message": "Face already registered (idempotent)",
+                        "person_id": idemp_id,
+                        "display_id": idemp_disp,
+                        "vendor_id": vendor_id
+                    }), 200
+
         # 0. Automatic Finding/Merging Fallback
         # If person_id is NOT provided (e.g. registration from generic screen), 
         # try to find a person with matching identifiers to "add up" instead of creating a new row.
@@ -1298,6 +1328,11 @@ def upload_face():
                 room=f"vendor_{vendor_id}",
             )
             socketio.emit('vendor_updated', {'vendor_id': vendor_id}, room='super_admin')
+            try:
+                from notifications import send_face_sync_fcm
+                send_face_sync_fcm(vendor_id, "insert" if not person_id else "update", person_id or new_id)
+            except Exception:
+                pass
 
         return jsonify({
             "status": "success",
@@ -1307,6 +1342,49 @@ def upload_face():
             "vendor_id": vendor_id,
             "person": committed_person,
         })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@faces_bp.route("/sync/device-token", methods=["POST"], endpoint="sync_device_token_route")
+def register_device_token():
+    from app import get_db_connection
+    vendor_id, error = authenticate_vendor_access()
+    data = request.get_json(silent=True) or {}
+    if not vendor_id:
+        vendor_id = data.get("vendor_id")
+    if not vendor_id:
+        return jsonify({"error": "Unauthorized"}), 401
+    
+    fcm_token = str(data.get("fcm_token") or "").strip()
+    if not fcm_token:
+        return jsonify({"error": "fcm_token is required"}), 400
+    device_id = str(data.get("device_id") or "").strip() or None
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        is_pg = getattr(conn, "_is_pg", False)
+        if is_pg:
+            c.execute(
+                """INSERT INTO vendor_device_tokens (vendor_id, device_id, fcm_token, updated_at)
+                   VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+                   ON CONFLICT (vendor_id, fcm_token)
+                   DO UPDATE SET device_id = EXCLUDED.device_id, updated_at = CURRENT_TIMESTAMP""",
+                (vendor_id, device_id, fcm_token)
+            )
+        else:
+            c.execute(
+                """INSERT INTO vendor_device_tokens (vendor_id, device_id, fcm_token, updated_at)
+                   VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(vendor_id, fcm_token)
+                   DO UPDATE SET device_id = excluded.device_id, updated_at = CURRENT_TIMESTAMP""",
+                (vendor_id, device_id, fcm_token)
+            )
+        conn.commit()
+        return jsonify({"status": "success", "message": "Device token registered"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
@@ -1355,12 +1433,14 @@ def download_faces():
     deleted_ids = []
     if vendor_id:
         try:
-            c.execute("SELECT COALESCE(MAX(seq), 0) FROM face_sync_changes WHERE vendor_id = ?", (vendor_id,))
-            current_cursor = int(c.fetchone()[0] or 0)
+            c.execute("SELECT COALESCE(MIN(seq), 0), COALESCE(MAX(seq), 0) FROM face_sync_changes WHERE vendor_id = ?", (vendor_id,))
+            seq_row = c.fetchone()
+            min_seq = int(seq_row[0] or 0)
+            current_cursor = int(seq_row[1] or 0)
             if delta_cursor is not None:
-                if delta_cursor > current_cursor:
-                    # The server ledger was rebuilt/restored. Force one complete
-                    # reconciliation instead of trusting an impossible cursor.
+                if delta_cursor > current_cursor or (min_seq > 1 and delta_cursor < (min_seq - 1)):
+                    # The server ledger was rebuilt/restored, or change log was pruned past retention window.
+                    # Force one complete reconciliation instead of trusting an expired cursor.
                     delta_cursor = None
                 else:
                     c.execute(
@@ -1709,6 +1789,13 @@ def delete_face(name):
                 )
                 socketio.emit('attendance_updated', {'vendor_id': broadcast_vendor}, room=f"vendor_{broadcast_vendor}")
             socketio.emit('vendor_updated', {'vendor_id': broadcast_vendor}, room='super_admin')
+            try:
+                from notifications import send_face_sync_fcm
+                for vid, pids in by_vendor.items():
+                    for pid in pids:
+                        send_face_sync_fcm(vid, "delete", pid)
+            except Exception:
+                pass
 
             return jsonify({
                 "status": "success",
@@ -1908,6 +1995,12 @@ def delete_face_by_id(person_id):
                 )
                 socketio.emit('attendance_updated', {'vendor_id': effective_vendor_id}, room=f"vendor_{effective_vendor_id}")
             socketio.emit('vendor_updated', {'vendor_id': effective_vendor_id}, room='super_admin')
+            if effective_vendor_id:
+                try:
+                    from notifications import send_face_sync_fcm
+                    send_face_sync_fcm(effective_vendor_id, "delete", person_id)
+                except Exception:
+                    pass
 
             return jsonify({
                 "status": "success",

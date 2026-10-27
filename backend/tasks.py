@@ -74,6 +74,16 @@ if celery:
             else:
                 c.execute("DELETE FROM active_sessions WHERE platform = 'web' AND last_active < datetime('now','-1 hour')")
             deleted = c.rowcount
+
+            # Change-log retention policy: prune change log entries older than 90 days
+            try:
+                if getattr(conn, "_is_pg", False):
+                    c.execute("DELETE FROM face_sync_changes WHERE changed_at < (NOW() - INTERVAL '90 days')")
+                else:
+                    c.execute("DELETE FROM face_sync_changes WHERE changed_at < datetime('now','-90 days')")
+            except Exception:
+                pass
+
             conn.commit()
             return {"deleted": deleted}
         finally:

@@ -162,6 +162,100 @@ def send_fcm_notification(fcm_token: str, title: str, body: str, data: dict = No
     return False
 
 
+def send_fcm_data_only(fcm_token: str, data: dict = None) -> bool:
+    """Send high-priority data-only message to wake up background service on Android."""
+    if not fcm_token:
+        return False
+    data_payload = {str(k): str(v) for k, v in (data or {}).items()}
+    # Try FCM v1 first
+    app = _try_init_firebase()
+    if app:
+        try:
+            from firebase_admin import messaging
+            import datetime
+            android_config = messaging.AndroidConfig(
+                priority="high",
+                ttl=datetime.timedelta(days=1),
+            )
+            msg = messaging.Message(
+                android=android_config,
+                data=data_payload,
+                token=fcm_token,
+            )
+            messaging.send(msg)
+            logger.info("FCM v1 data-only sent to %s...", fcm_token[:10])
+            return True
+        except Exception as e:
+            logger.warning("FCM v1 data-only failed: %s", e)
+
+    # Legacy fallback
+    if FIREBASE_SERVER_KEY:
+        try:
+            import requests as _req
+            payload = {
+                "to": fcm_token,
+                "priority": "high",
+                "time_to_live": 86400,
+                "data": data_payload,
+            }
+            resp = _req.post(
+                "https://fcm.googleapis.com/fcm/send",
+                headers={
+                    "Authorization": f"key={FIREBASE_SERVER_KEY}",
+                    "Content-Type": "application/json",
+                },
+                data=json.dumps(payload),
+                timeout=8,
+            )
+            return resp.status_code == 200
+        except Exception as e:
+            logger.warning("FCM legacy data-only failed: %s", e)
+    return False
+
+
+def send_face_sync_fcm(vendor_id, action: str, person_id=None, seq=None):
+    """Notify vendor devices via high-priority FCM data message that faces changed.
+    
+    Spawns background thread to avoid blocking HTTP response.
+    """
+    if not vendor_id:
+        return
+
+    def _worker():
+        try:
+            try:
+                from utils import get_db_connection
+            except ImportError:
+                from .utils import get_db_connection
+            conn = get_db_connection()
+            c = conn.cursor()
+            is_pg = getattr(conn, "_is_pg", False)
+            ph = "%s" if is_pg else "?"
+            
+            # Query registered device tokens for this vendor
+            c.execute(f"SELECT DISTINCT fcm_token FROM vendor_device_tokens WHERE vendor_id = {ph} AND fcm_token IS NOT NULL AND fcm_token != ''", (vendor_id,))
+            rows = c.fetchall() or []
+            tokens = [r[0] if isinstance(r, (list, tuple)) else r.get("fcm_token") for r in rows]
+            conn.close()
+
+            if not tokens:
+                return
+
+            data = {
+                "action": str(action),
+                "person_id": str(person_id or ""),
+                "seq": str(seq or ""),
+                "vendor_id": str(vendor_id),
+            }
+            for tok in set(tokens):
+                if tok:
+                    send_fcm_data_only(tok, data)
+        except Exception as exc:
+            logger.warning("[FCM_SYNC] send_face_sync_fcm failed for vendor %s: %s", vendor_id, exc)
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
 def notify_parent_async(
     person_id, vendor_id, title: str, body: str, data: dict = None,
     *, _local=False, _wait=False,

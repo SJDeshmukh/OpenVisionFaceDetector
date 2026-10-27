@@ -848,6 +848,7 @@ public class EnrollFragment extends Fragment {
         json.addProperty("department", department);
         json.addProperty("designation", designation);
         json.addProperty("shift", shift);
+        json.addProperty("local_uid", localUid);
         
         // Add dynamic fields
         for (String key : dynamicData.keySet()) {
@@ -890,7 +891,13 @@ public class EnrollFragment extends Fragment {
                             }
                         }
                     } catch (Exception ignored) {}
-                    Toast.makeText(getContext(), errorMsg, Toast.LENGTH_LONG).show();
+                    Toast.makeText(getContext(), errorMsg + " (will sync in background)", Toast.LENGTH_LONG).show();
+                    try {
+                        Context ctx = getContext();
+                        if (ctx != null) {
+                            SyncScheduler.scheduleImmediate(ctx.getApplicationContext());
+                        }
+                    } catch (Exception ignored) {}
                 }
             }
 

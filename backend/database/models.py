@@ -611,3 +611,12 @@ class VendorWhatsAppSetting(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     vendor = relationship("Vendor", back_populates="whatsapp_setting")
+
+class VendorDeviceToken(Base):
+    __tablename__ = 'vendor_device_tokens'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    vendor_id = Column(Integer, ForeignKey('vendors.id'), nullable=False)
+    device_id = Column(String(255))
+    fcm_token = Column(String(255), nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+

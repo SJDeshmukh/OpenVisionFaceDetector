@@ -365,6 +365,9 @@ public class UsersFragment extends Fragment {
         json.addProperty("department", person.department != null ? person.department : "");
         json.addProperty("designation", person.designation != null ? person.designation : "");
         json.addProperty("shift", person.shift != null ? person.shift : "");
+        if (person.localUid != null && !person.localUid.isEmpty()) {
+            json.addProperty("local_uid", person.localUid);
+        }
 
         RetrofitClient.getService().uploadFace(json).enqueue(new Callback<UploadFaceResponse>() {
             @Override
@@ -372,16 +375,22 @@ public class UsersFragment extends Fragment {
                 if (response.isSuccessful()) {
                     if (getContext() != null) Toast.makeText(getContext(), "Face Synced to Cloud", Toast.LENGTH_SHORT).show();
                     String newId = null;
+                    Integer assignedDisplayId = null;
                     try {
                         UploadFaceResponse body = response.body();
                         if (body != null && body.getPersonId() != null) {
                             newId = String.valueOf(body.getPersonId());
                         }
+                        if (body != null) assignedDisplayId = body.getDisplayId();
                     } catch (Exception ignored) {}
                     if (newId != null && !newId.isEmpty()) {
-                         dbManager.updatePersonAfterSyncByLocalUid(person.localUid, newId);
+                        if (assignedDisplayId != null && assignedDisplayId > 0) {
+                            dbManager.updatePersonAfterSyncByLocalUid(person.localUid, newId, assignedDisplayId);
+                        } else {
+                            dbManager.updatePersonAfterSyncByLocalUid(person.localUid, newId);
+                        }
                     } else {
-                         dbManager.updatePersonStatusByLocalUid(person.localUid, true);
+                        dbManager.updatePersonStatusByLocalUid(person.localUid, true);
                     }
                 } else {
                     if (getContext() != null) Toast.makeText(getContext(), "Sync Failed: " + response.code(), Toast.LENGTH_SHORT).show();

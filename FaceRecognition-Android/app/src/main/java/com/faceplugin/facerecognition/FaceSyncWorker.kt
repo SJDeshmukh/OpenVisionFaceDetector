@@ -63,6 +63,9 @@ class FaceSyncWorker(appContext: Context, params: WorkerParameters) : Worker(app
                 json.addProperty("department", p.department ?: "")
                 json.addProperty("designation", p.designation ?: "")
                 json.addProperty("shift", p.shift ?: "")
+                if (!p.localUid.isNullOrBlank()) {
+                    json.addProperty("local_uid", p.localUid)
+                }
 
                 val customRaw = p.customData
                 if (!customRaw.isNullOrBlank()) {
