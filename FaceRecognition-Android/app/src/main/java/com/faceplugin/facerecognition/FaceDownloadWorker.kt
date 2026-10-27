@@ -52,7 +52,18 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
         }
         val signature = facesSignature(faces)
         val lastSig = prefs.getString("last_faces_signature", null)
+        val db = DBManager(applicationContext)
         if (fullSync && lastSig != null && lastSig == signature && hasLocalFaces()) {
+            val imageBatch = db.beginPersonBatch()
+            try {
+                for (face in faces) {
+                    face.id?.takeIf { it.isNotBlank() }?.let {
+                        db.updatePersonImageUrlById(it, face.imageUrl?.takeIf { url -> url.isNotBlank() })
+                    }
+                }
+            } finally {
+                db.commitPersonBatch(imageBatch)
+            }
             // Even if signature unchanged, perform reconciliation to remove deleted faces
             try {
                 reconcileLocalWithServer(faces)
@@ -63,7 +74,6 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
             }.apply()
             return Result.success()
         }
-        val db = DBManager(applicationContext)
         var hadFailure = false
         val personBatchStarted = db.beginPersonBatch()
         // Insert/update faces
@@ -83,7 +93,7 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
                     } catch (_: Exception) {}
                 }
 
-                val rawFaceImage = faceData.imageUrl?.takeIf { it.isNotBlank() } ?: faceData.faceImage
+                val rawFaceImage = faceData.faceImage
                 var templates = if (templatesB64.isNullOrBlank()) null else {
                     try {
                         Base64.decode(templatesB64, Base64.NO_WRAP)
@@ -148,6 +158,7 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
                 val displayId = faceData.displayId  // sequential number matching the web UI
 
                 db.insertPerson(id, name, faceBitmap, templates, phone, dept, desig, shift, customDataStr, true, displayId)
+                db.updatePersonImageUrlById(id, faceData.imageUrl?.takeIf { it.isNotBlank() })
                 } catch (_: Exception) {
                     hadFailure = true
                 }

@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify, send_file, g
+from flask import Blueprint, request, jsonify, send_file, g, redirect, url_for
 import logging
 import sqlite3
 import json
@@ -8,6 +8,7 @@ import hashlib
 import io
 import time
 from datetime import datetime
+from urllib.parse import unquote, urlparse
 import numpy as np
 import cv2
 
@@ -113,6 +114,104 @@ def rate_limit(*args, **kwargs):
     return decorator
 
 faces_bp = Blueprint('faces_bp', __name__)
+
+
+def _person_image_url(person_id, version=None):
+    """Return an authenticated, tenant-scoped URL without embedding image data in lists."""
+    values = {"person_id": int(person_id), "_external": True}
+    if version is not None:
+        values["v"] = int(version)
+    return url_for("faces_bp.person_image", **values)
+
+
+def _renew_object_storage_url(image_value):
+    """Renew legacy presigned S3 URLs that older uploads stored in the database."""
+    try:
+        from storage import S3_BUCKET
+        if not S3_BUCKET:
+            return None
+        parsed = urlparse(image_value)
+        host = (parsed.hostname or "").lower()
+        key = unquote(parsed.path.lstrip("/"))
+        bucket_host = f"{S3_BUCKET}.s3"
+        if key and (host == f"{S3_BUCKET}.s3.amazonaws.com" or host.startswith(bucket_host + ".")):
+            return presigned_url_for_key(f"s3://{S3_BUCKET}/{key}")
+    except Exception:
+        pass
+    return None
+
+
+def _detected_image_mime(image_bytes, fallback="image/jpeg"):
+    if image_bytes.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    return fallback
+
+
+@faces_bp.route("/persons/<int:person_id>/image", methods=["GET"])
+def person_image(person_id):
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        if vendor_id:
+            c.execute(
+                "SELECT face_image FROM faces WHERE id = ? AND vendor_id = ?",
+                (person_id, vendor_id),
+            )
+        else:
+            c.execute("SELECT face_image FROM faces WHERE id = ?", (person_id,))
+        row = c.fetchone()
+    finally:
+        conn.close()
+
+    image_value = row[0] if row else None
+    if not image_value or not isinstance(image_value, str):
+        return jsonify({"error": "Face image not found"}), 404
+
+    if image_value.startswith("s3://"):
+        try:
+            return redirect(presigned_url_for_key(image_value), code=302)
+        except Exception:
+            logger.warning("Could not create face image URL for person_id=%s", person_id, exc_info=True)
+            return jsonify({"error": "Face image is unavailable"}), 503
+    if image_value.startswith(("http://", "https://")):
+        return redirect(_renew_object_storage_url(image_value) or image_value, code=302)
+
+    mime_type = "image/jpeg"
+    encoded = image_value
+    if image_value.startswith("data:"):
+        try:
+            header, encoded = image_value.split(",", 1)
+            declared_type = header[5:].split(";", 1)[0].strip().lower()
+            if declared_type in {"image/jpeg", "image/png", "image/webp"}:
+                mime_type = declared_type
+        except ValueError:
+            return jsonify({"error": "Invalid face image"}), 422
+
+    try:
+        image_bytes = base64.b64decode(encoded, validate=True)
+    except (ValueError, TypeError):
+        return jsonify({"error": "Invalid face image"}), 422
+    if not image_bytes:
+        return jsonify({"error": "Face image not found"}), 404
+    mime_type = _detected_image_mime(image_bytes, mime_type)
+
+    response = send_file(
+        io.BytesIO(image_bytes),
+        mimetype=mime_type,
+        conditional=True,
+        etag=hashlib.sha256(image_bytes).hexdigest(),
+        max_age=0,
+    )
+    response.headers["Cache-Control"] = "private, no-cache"
+    return response
 
 def _unassign_faculty_from_classes(c, conn, vendor_id, usernames):
     """Remove faculty assignments from classes.mapped_subjects for the given usernames."""
@@ -405,6 +504,7 @@ def get_persons():
     query = f"""
         SELECT f.id, f.display_id, f.name, f.department, f.designation,
                f.shift, f.daily_wage, {image_column}, f.phone, f.custom_data,
+               CASE WHEN f.face_image IS NOT NULL AND f.face_image <> '' THEN 1 ELSE 0 END AS has_face_image,
                (SELECT su.role FROM system_users su
                 WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
                 ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
@@ -491,7 +591,11 @@ def get_persons():
             division=division, branch=branch,
         ):
             continue
-        # Format face_image for web dashboard (data:image/jpeg;base64, or presigned URL)
+        has_face_image = bool(r.pop("has_face_image", 0))
+        if has_face_image:
+            r["image_url"] = _person_image_url(r["id"])
+
+        # Preserve inline-image compatibility for clients that explicitly request it.
         img = r.get("face_image")
         if img and isinstance(img, str):
             if img.startswith("s3://"):
@@ -912,8 +1016,9 @@ def upload_face():
                 if OBJECT_STORAGE_ENABLED:
                     s3_url = upload_base64_image(name or f"face_{datetime.now().timestamp()}", face_image)
                     if s3_url:
-                        image_url = presigned_url_for_key(s3_url, expires_seconds=3600)
-                        face_image = image_url
+                        # Store the durable object key. Presigned URLs expire and
+                        # are generated only when an authenticated client asks.
+                        face_image = s3_url
             except Exception as e:
                 print(f"Image processing error: {e}")
                 pass
@@ -1473,6 +1578,7 @@ def download_faces():
         SELECT f.id, f.display_id, f.name, f.phone, f.department,
                f.designation, f.shift, f.vendor_id, f.custom_data,
                {asset_columns},
+               CASE WHEN f.face_image IS NOT NULL AND f.face_image <> '' THEN 1 ELSE 0 END AS has_face_image,
                (SELECT su.role FROM system_users su
                 WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
                 ORDER BY CASE LOWER(su.role) WHEN 'faculty' THEN 0 WHEN 'student' THEN 1 ELSE 2 END
@@ -1575,6 +1681,9 @@ def download_faces():
             "person_type": resolved_type,
             "custom_data": custom,
         }
+
+        if bool(r.get("has_face_image", 0)):
+            face_item["image_url"] = _person_image_url(r.get("id"), current_cursor)
         
         try:
             if face_item["face_image"] and isinstance(face_item["face_image"], str) and face_item["face_image"].startswith("s3://"):

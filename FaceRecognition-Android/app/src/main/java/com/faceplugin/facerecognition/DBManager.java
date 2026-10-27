@@ -24,7 +24,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
      public static CopyOnWriteArrayList<Person> personList = new CopyOnWriteArrayList<Person>();
 
     public DBManager(Context context) {
-        super(context, "mydb" , null, 19);
+        super(context, "mydb" , null, 20);
     }
 
     @Override
@@ -32,7 +32,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
         // TODO Auto-generated method stub
         db.execSQL(
                 "create table person " +
-                        "(local_uid text, id text, name text, face blob, templates blob, phone text, department text, designation text, shift text, custom_data text, synced integer default 1, display_id integer default 0)"
+                        "(local_uid text, id text, name text, face blob, templates blob, phone text, department text, designation text, shift text, custom_data text, synced integer default 1, display_id integer default 0, image_url text)"
         );
         db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_person_local_uid ON person(local_uid)");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_person_id ON person(id)");
@@ -179,6 +179,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
             try {
                 db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_delete_queue_target ON delete_queue(ifnull(person_id, ''), ifnull(local_uid, ''), ifnull(name, ''))");
             } catch (Exception ignored) {}
+        }
+        if (oldVersion < 20) {
+            try { db.execSQL("ALTER TABLE person ADD COLUMN image_url text"); } catch (Exception ignored) {}
         }
     }
 
@@ -522,6 +525,56 @@ import java.util.concurrent.CopyOnWriteArrayList;
                 }
             }
         }
+    }
+
+    /** Store the lightweight server image reference and invalidate a stale local photo. */
+    public void updatePersonImageUrlById(String id, String imageUrl) {
+        if (id == null || id.isEmpty()) return;
+        SQLiteDatabase db = this.getWritableDatabase();
+        Cursor cursor = null;
+        try {
+            cursor = db.rawQuery("select image_url from person where id = ? limit 1", new String[]{id});
+            String existing = cursor.moveToFirst() ? cursor.getString(0) : null;
+            if (java.util.Objects.equals(existing, imageUrl)) return;
+
+            ContentValues values = new ContentValues();
+            if (imageUrl == null || imageUrl.isEmpty()) values.putNull("image_url");
+            else values.put("image_url", imageUrl);
+            // The versioned URL changes when the server record changes. Clear
+            // the old thumbnail so the next visible bind fetches fresh data.
+            // On the v19 -> v20 migration there is no previous URL, so retain
+            // the photo already stored by older app versions.
+            if (existing != null) values.putNull("face");
+            db.update("person", values, "id = ?", new String[]{id});
+        } catch (Exception ignored) {
+        } finally {
+            if (cursor != null) cursor.close();
+        }
+    }
+
+    public String getPersonImageUrl(String localUid) {
+        if (localUid == null || localUid.isEmpty()) return null;
+        SQLiteDatabase db = this.getReadableDatabase();
+        try (Cursor cursor = db.rawQuery(
+                "select image_url from person where local_uid = ? limit 1",
+                new String[]{localUid})) {
+            return cursor.moveToFirst() ? cursor.getString(0) : null;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    /** Save a remotely loaded photo without changing sync or recognition state. */
+    public void updatePersonPhotoByLocalUid(String localUid, Bitmap face) {
+        if (localUid == null || localUid.isEmpty() || face == null || face.isRecycled()) return;
+        try {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            face.compress(Bitmap.CompressFormat.JPEG, 80, output);
+            ContentValues values = new ContentValues();
+            values.put("face", output.toByteArray());
+            this.getWritableDatabase().update("person", values, "local_uid = ?", new String[]{localUid});
+            output.close();
+        } catch (Exception | OutOfMemoryError ignored) {}
     }
 
     public void updatePersonIdByName(String name, String id) {

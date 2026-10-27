@@ -2,6 +2,7 @@ package com.faceplugin.facerecognition.api;
 
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
+import okhttp3.Response;
 import retrofit2.Retrofit;
 import retrofit2.converter.gson.GsonConverterFactory;
 import java.util.concurrent.TimeUnit;
@@ -11,12 +12,16 @@ import android.util.Base64;
 import com.faceplugin.facerecognition.MyGlobal;
 import com.faceplugin.facerecognition.BuildConfig;
 import org.json.JSONObject;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 
 public class RetrofitClient {
     private static volatile String BASE_URL = BuildConfig.BASE_URL;
     
     private static volatile Retrofit retrofit = null;
     private static volatile Retrofit attendanceRetrofit = null;
+    private static volatile OkHttpClient imageClient = null;
     private static volatile String authToken = null;
 
     public static synchronized void setBaseUrl(String url) {
@@ -77,6 +82,41 @@ public class RetrofitClient {
     /** Short-timeout client for interactive control calls such as attendance and deletion. */
     public static GreetingService getInteractiveService() {
         return getAttendanceService();
+    }
+
+    /** Download an authenticated image with a strict size cap for list thumbnails. */
+    public static byte[] downloadImage(String url, int maxBytes) throws IOException {
+        if (url == null || url.isEmpty()) return null;
+        if (authToken == null && MyGlobal.context != null) {
+            try {
+                android.content.SharedPreferences prefs = MyGlobal.context.getSharedPreferences(
+                        "app_prefs", android.content.Context.MODE_PRIVATE);
+                authToken = prefs.getString("token", null);
+            } catch (Exception ignored) {}
+        }
+        if (imageClient == null) {
+            synchronized (RetrofitClient.class) {
+                if (imageClient == null) imageClient = buildHttpClient(10, 20, 20);
+            }
+        }
+        Request request = new Request.Builder().url(url).get().build();
+        try (Response response = imageClient.newCall(request).execute()) {
+            if (!response.isSuccessful() || response.body() == null) return null;
+            long declaredLength = response.body().contentLength();
+            if (declaredLength > maxBytes) return null;
+            try (InputStream input = response.body().byteStream();
+                 ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+                byte[] buffer = new byte[8192];
+                int total = 0;
+                int read;
+                while ((read = input.read(buffer)) != -1) {
+                    total += read;
+                    if (total > maxBytes) return null;
+                    output.write(buffer, 0, read);
+                }
+                return output.toByteArray();
+            }
+        }
     }
 
     private static OkHttpClient buildHttpClient(long connectSeconds, long readSeconds, long writeSeconds) {

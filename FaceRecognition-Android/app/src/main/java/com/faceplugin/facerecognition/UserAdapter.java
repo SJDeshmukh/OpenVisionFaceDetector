@@ -1,6 +1,7 @@
 package com.faceplugin.facerecognition;
 
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.util.LruCache;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -16,6 +17,10 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+
+import com.faceplugin.facerecognition.api.RetrofitClient;
 
 public class UserAdapter extends RecyclerView.Adapter<UserAdapter.UserViewHolder> {
 
@@ -25,6 +30,7 @@ public class UserAdapter extends RecyclerView.Adapter<UserAdapter.UserViewHolder
     private final DBManager dbManager;
     private final LruCache<String, Bitmap> faceCache;
     private final ExecutorService imageLoader = Executors.newFixedThreadPool(2);
+    private final Set<String> imageLoadsInFlight = ConcurrentHashMap.newKeySet();
     private volatile boolean released = false;
     private OnUserDeleteListener deleteListener;
     private OnUserClickListener clickListener;
@@ -115,19 +121,49 @@ public class UserAdapter extends RecyclerView.Adapter<UserAdapter.UserViewHolder
             holder.imgFace.setImageBitmap(cachedFace);
         } else {
             holder.imgFace.setImageResource(R.drawable.openvision_logo);
-            if (dbManager != null && person.localUid != null && !person.localUid.isEmpty() && !released) {
+            if (dbManager != null && person.localUid != null && !person.localUid.isEmpty() &&
+                    !released && imageLoadsInFlight.add(key)) {
+                final String localUid = person.localUid;
                 try {
                     imageLoader.execute(() -> {
-                        Bitmap face = dbManager.getPersonFaceThumbnail(person.localUid, 256);
-                        if (face == null || released) return;
-                        faceCache.put(key, face);
-                        holder.imgFace.post(() -> {
-                            if (!released && key.equals(holder.imgFace.getTag()) && !face.isRecycled()) {
-                                holder.imgFace.setImageBitmap(face);
+                        try {
+                            Bitmap face = dbManager.getPersonFaceThumbnail(localUid, 256);
+                            if (face == null) {
+                                String imageUrl = dbManager.getPersonImageUrl(localUid);
+                                if (imageUrl != null && !imageUrl.isEmpty()) {
+                                    String token = holder.itemView.getContext().getApplicationContext()
+                                            .getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE)
+                                            .getString("token", null);
+                                    if (token != null && !token.isEmpty()) RetrofitClient.setAuthToken(token);
+                                    byte[] bytes = RetrofitClient.downloadImage(imageUrl, 5 * 1024 * 1024);
+                                    face = decodeThumbnail(bytes, 256);
+                                    // Do not store a response that arrived after a newer sync URL.
+                                    if (face != null) {
+                                        if (!imageUrl.equals(dbManager.getPersonImageUrl(localUid))) {
+                                            if (!face.isRecycled()) face.recycle();
+                                            face = null;
+                                        } else {
+                                            dbManager.updatePersonPhotoByLocalUid(localUid, face);
+                                        }
+                                    }
+                                }
                             }
-                        });
+                            if (face == null || released) return;
+                            faceCache.put(key, face);
+                            Bitmap loadedFace = face;
+                            holder.imgFace.post(() -> {
+                                if (!released && key.equals(holder.imgFace.getTag()) && !loadedFace.isRecycled()) {
+                                    holder.imgFace.setImageBitmap(loadedFace);
+                                }
+                            });
+                        } catch (Exception | OutOfMemoryError ignored) {
+                        } finally {
+                            imageLoadsInFlight.remove(key);
+                        }
                     });
-                } catch (java.util.concurrent.RejectedExecutionException ignored) {}
+                } catch (java.util.concurrent.RejectedExecutionException ignored) {
+                    imageLoadsInFlight.remove(key);
+                }
             }
         }
 
@@ -183,6 +219,27 @@ public class UserAdapter extends RecyclerView.Adapter<UserAdapter.UserViewHolder
         if (person.localUid != null && !person.localUid.isEmpty()) return "local:" + person.localUid;
         if (person.id != null && !person.id.isEmpty()) return "id:" + person.id;
         return "name:" + Objects.toString(person.name, "unknown");
+    }
+
+    private static Bitmap decodeThumbnail(byte[] bytes, int maxDimension) {
+        if (bytes == null || bytes.length == 0) return null;
+        try {
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.length, bounds);
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null;
+            int sample = 1;
+            int target = Math.max(64, maxDimension);
+            while (bounds.outWidth / (sample * 2) >= target && bounds.outHeight / (sample * 2) >= target) {
+                sample *= 2;
+            }
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inSampleSize = sample;
+            options.inPreferredConfig = Bitmap.Config.RGB_565;
+            return BitmapFactory.decodeByteArray(bytes, 0, bytes.length, options);
+        } catch (Exception | OutOfMemoryError ignored) {
+            return null;
+        }
     }
 
     static class UserViewHolder extends RecyclerView.ViewHolder {

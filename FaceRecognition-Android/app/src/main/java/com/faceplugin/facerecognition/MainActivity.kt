@@ -968,7 +968,22 @@ class MainActivity : AppCompatActivity() {
                             val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
                             val lastSig = prefs.getString("last_faces_signature", null)
                             if (fullSync && lastSig != null && lastSig == signature && !DBManager.personList.isEmpty()) {
-                                syncBody.cursor?.let { prefs.edit().putLong("face_sync_cursor", it).apply() }
+                                Thread {
+                                    val imageBatch = dbManager.beginPersonBatch()
+                                    try {
+                                        faces.forEach { face ->
+                                            face.id?.takeIf { it.isNotBlank() }?.let {
+                                                dbManager.updatePersonImageUrlById(it, face.imageUrl?.takeIf { url -> url.isNotBlank() })
+                                            }
+                                        }
+                                    } finally {
+                                        dbManager.commitPersonBatch(imageBatch)
+                                    }
+                                    syncBody.cursor?.let { prefs.edit().putLong("face_sync_cursor", it).apply() }
+                                    runOnUiThread {
+                                        (supportFragmentManager.findFragmentById(R.id.fragment_container) as? UsersFragment)?.refreshList()
+                                    }
+                                }.start()
                                 return
                             }
 
@@ -1012,7 +1027,7 @@ class MainActivity : AppCompatActivity() {
                                                 } catch (_: Exception) {}
                                             }
 
-                                            val rawFaceImage = faceData.imageUrl?.takeIf { it.isNotBlank() } ?: faceData.faceImage
+                                            val rawFaceImage = faceData.faceImage
                                             var templates = if (templatesB64.isNullOrEmpty()) null else try { Base64.decode(templatesB64, Base64.NO_WRAP) } catch (e: Exception) { null }
 
                                             var faceBitmap: Bitmap? = null
@@ -1071,6 +1086,9 @@ class MainActivity : AppCompatActivity() {
                                                     dbManager.insertPerson(effectiveId, faceData.name, faceBitmap, templates, phone, dept, desig, shift, customDataStr, true, displayId)
                                                     updatedFacesCount++
                                                 }
+                                            }
+                                            if (id.isNotBlank()) {
+                                                dbManager.updatePersonImageUrlById(id, faceData.imageUrl?.takeIf { it.isNotBlank() })
                                             }
                                             } catch (_: Exception) {
                                             }
