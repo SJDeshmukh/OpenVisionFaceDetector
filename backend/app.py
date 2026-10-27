@@ -148,6 +148,7 @@ from middleware.handlers import setup_middleware, track_metrics, rate_limit
 
 from db_factory import init_db_sqlalchemy
 from werkzeug.middleware.proxy_fix import ProxyFix
+_APP_STARTED_MONOTONIC = time.monotonic()
 app = Flask(__name__) 
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 init_db_sqlalchemy(app)
@@ -279,7 +280,7 @@ def health_check():
 
         return jsonify({
             "status": "healthy",
-            "uptime_seconds": time.time() - getattr(app, "_start_time", time.time()),
+            "uptime_seconds": max(0.0, time.monotonic() - _APP_STARTED_MONOTONIC),
             "runtime": {
                 "os_threads": process.num_threads(),
                 "connected_socket_clients": _connected_socket_client_count(),
