@@ -9,7 +9,9 @@ port = os.environ.get("PORT", "5001")
 bind = f"0.0.0.0:{port}"
 workers = 1
 worker_class = "gthread"
-threads = 8          # increased from 4 — allows background daemon threads + socket events to coexist
+# Native Flask-SocketIO connections occupy worker threads for their lifetime.
+# Leave capacity for API traffic when many kiosks remain connected.
+threads = max(32, int(os.environ.get("GUNICORN_THREADS", "192")))
 timeout = 120
 keepalive = 5
 loglevel = "info"

@@ -16,6 +16,7 @@ import com.faceplugin.facerecognition.api.RetrofitClient
 import io.socket.client.IO
 import io.socket.client.Socket
 import org.json.JSONObject
+import java.net.URLEncoder
 
 class AttendanceListenerService : Service() {
 
@@ -65,22 +66,23 @@ class AttendanceListenerService : Service() {
 
         val serverUrl = prefs.getString("server_url", RetrofitClient.getBaseUrl()) ?: RetrofitClient.getBaseUrl()
         RetrofitClient.setAuthToken(token)
-        connectSocket(serverUrl, studentNumber!!)
+        connectSocket(serverUrl, studentNumber!!, token)
 
         // START_STICKY: Android restarts this service automatically if killed
         return START_STICKY
     }
 
-    private fun connectSocket(serverUrl: String, sn: String) {
+    private fun connectSocket(serverUrl: String, sn: String, token: String) {
         try {
             mSocket?.disconnect()
             val opts = IO.Options().apply {
                 reconnection = true
                 reconnectionAttempts = Int.MAX_VALUE
                 reconnectionDelay = 2000
+                transports = arrayOf("websocket")
+                query = "token=${URLEncoder.encode(token, "UTF-8")}"
             }
             mSocket = IO.socket(serverUrl, opts)
-            mSocket?.connect()
 
             val data = JSONObject().apply { put("student_number", sn) }
             mSocket?.on(Socket.EVENT_CONNECT) {
@@ -99,7 +101,6 @@ class AttendanceListenerService : Service() {
                     }
                 } catch (_: Exception) {}
             }
-
             // Primary notification event emitted by notify_parent_async() on the server
             mSocket?.on("new_notification") { args ->
                 try {
@@ -114,6 +115,7 @@ class AttendanceListenerService : Service() {
                     }
                 } catch (_: Exception) {}
             }
+            mSocket?.connect()
         } catch (_: Exception) {}
     }
 

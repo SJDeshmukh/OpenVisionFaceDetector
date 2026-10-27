@@ -228,6 +228,16 @@ def metrics():
     except ImportError:
         return jsonify({"error": "metrics not available"}), 501
 
+
+def _connected_socket_client_count():
+    """Return an inexpensive connection count for deployment diagnostics."""
+    try:
+        from socket_handlers import socket_identities
+        return len(socket_identities)
+    except Exception:
+        return 0
+
+
 @app.route("/api/health")
 def health_check():
     try:
@@ -270,6 +280,10 @@ def health_check():
         return jsonify({
             "status": "healthy",
             "uptime_seconds": time.time() - getattr(app, "_start_time", time.time()),
+            "runtime": {
+                "os_threads": process.num_threads(),
+                "connected_socket_clients": _connected_socket_client_count(),
+            },
             "memory": {
                 "rss_mb": mem_info.rss / (1024 * 1024),
                 "vms_mb": mem_info.vms / (1024 * 1024),

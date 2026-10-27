@@ -70,7 +70,6 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.net.URISyntaxException;
 
 
 public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitListener {
@@ -179,6 +178,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             try {
                 IO.Options options = new IO.Options();
                 options.reconnection = true;
+                options.transports = new String[]{"websocket"};
                 Map<String, List<String>> headers = new HashMap<>();
                 headers.put("User-Agent", Collections.singletonList("openvisionx-android"));
                 String socketToken = sharedPref.getString("token", null);

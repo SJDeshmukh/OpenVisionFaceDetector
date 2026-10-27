@@ -65,20 +65,11 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.net.URISyntaxException;
 
 public class CameraActivity extends AppCompatActivity implements TextToSpeech.OnInitListener {
 
     public static String BASE_URL = BuildConfig.BASE_URL; 
     private Socket mSocket;
-    {
-        try {
-            // Need to get this from preferences ideally
-            mSocket = IO.socket(BASE_URL);
-        } catch (URISyntaxException e) {
-            e.printStackTrace();
-        }
-    }
 
     static String TAG = CameraActivity.class.getSimpleName();
     static int PREVIEW_WIDTH = 720;
@@ -133,6 +124,7 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
             try {
                 IO.Options options = new IO.Options();
                 options.reconnection = true;
+                options.transports = new String[]{"websocket"};
                 Map<String, List<String>> headers = new HashMap<>();
                 headers.put("ngrok-skip-browser-warning", Collections.singletonList("1"));
                 headers.put("User-Agent", Collections.singletonList("openvisionx-android"));

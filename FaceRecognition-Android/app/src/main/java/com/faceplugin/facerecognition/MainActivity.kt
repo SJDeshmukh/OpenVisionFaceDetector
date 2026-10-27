@@ -325,7 +325,9 @@ class MainActivity : AppCompatActivity() {
         try {
             val serverUrl = RetrofitClient.getBaseUrl()
             val options = IO.Options()
-            options.transports = arrayOf("websocket", "polling")
+            // The production proxy supports WebSocket directly. Avoid a
+            // long-poll request occupying a backend worker thread per kiosk.
+            options.transports = arrayOf("websocket")
             options.path = "/socket.io"
             val authToken = getSharedPreferences("app_prefs", MODE_PRIVATE).getString("token", null)
             if (!authToken.isNullOrBlank()) {

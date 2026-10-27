@@ -428,9 +428,16 @@ class ParentHomeFragment : Fragment() {
         try {
             val prefs = requireActivity().getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
             val serverUrl = prefs.getString("server_url", RetrofitClient.getBaseUrl())
-            mSocket = IO.socket(serverUrl, IO.Options().apply { reconnection = true })
-            mSocket?.connect()
-            mSocket?.emit("join_student_number", org.json.JSONObject().apply { put("student_number", studentNumber) })
+            val token = prefs.getString("token", null) ?: return
+            val options = IO.Options().apply {
+                reconnection = true
+                transports = arrayOf("websocket")
+                query = "token=${java.net.URLEncoder.encode(token, "UTF-8")}"
+            }
+            mSocket = IO.socket(serverUrl, options)
+            mSocket?.on(Socket.EVENT_CONNECT) {
+                mSocket?.emit("join_student_number", org.json.JSONObject().apply { put("student_number", studentNumber) })
+            }
             mSocket?.on("student_attendance") { args ->
                 activity?.runOnUiThread {
                     if (!isAdded) return@runOnUiThread
@@ -457,6 +464,7 @@ class ParentHomeFragment : Fragment() {
                     } catch (_: Exception) {}
                 }
             }
+            mSocket?.connect()
         } catch (_: Exception) {}
     }
 

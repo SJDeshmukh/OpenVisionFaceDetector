@@ -116,6 +116,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
             try {
                 io.socket.client.IO.Options options = new io.socket.client.IO.Options();
                 options.reconnection = true;
+                options.transports = new String[]{"websocket"};
                 java.util.Map<String, java.util.List<String>> headers = new java.util.HashMap<>();
                 headers.put("User-Agent", java.util.Collections.singletonList("openvisionx-android"));
                 String socketToken = sharedPref.getString("token", null);
