@@ -6,31 +6,39 @@ import { useAuth } from './AuthContext';
 const SocketContext = createContext(null);
 
 export const SocketProvider = ({ children }) => {
-  const { user, logout, refreshFeatures, refreshUserData } = useAuth();
+  const { user, logout, refreshFeatures } = useAuth();
   const [socket, setSocket] = useState(null);
   const [toastMsg, setToastMsg] = useState(null);
+  const userRole = user?.role;
+  const vendorId = user?.vendor_id;
+  const isAuthenticated = Boolean(user);
 
   useEffect(() => {
-    if (!user) {
-      if (socket) {
-        socket.disconnect();
-        setSocket(null);
-      }
+    if (!isAuthenticated) {
+      setSocket((current) => {
+        current?.disconnect();
+        return null;
+      });
       return;
     }
-    const s = io(BASE_URL, { 
-      transports: ['polling'],
-      upgrade: false,
+    const s = io(BASE_URL, {
+      // Never fall back to long polling here. On a small Gunicorn instance,
+      // failed polling sessions can occupy every request thread and hold API
+      // mutations until the polling timeout expires.
+      transports: ['websocket'],
       path: '/socket.io/',
       withCredentials: true,
       reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 10000,
       auth: {}
     });
     setSocket(s);
 
     s.on('force_logout', (data) => {
-      if (user.role === 'vendor' || user.role === 'vendor_admin' || user.role === 'admin') {
-        if (String(data.vendor_id) === String(user.vendor_id)) {
+      if (userRole === 'vendor' || userRole === 'vendor_admin' || userRole === 'admin') {
+        if (String(data.vendor_id) === String(vendorId)) {
           console.log("Force logout received via Socket.IO:", data.reason);
           logout();
           window.location.href = '/login';
@@ -39,8 +47,8 @@ export const SocketProvider = ({ children }) => {
     });
     
     s.on('force_logout_web', (data) => {
-      if (user.role === 'vendor' || user.role === 'vendor_admin' || user.role === 'admin') {
-        if (String(data.vendor_id) === String(user.vendor_id)) {
+      if (userRole === 'vendor' || userRole === 'vendor_admin' || userRole === 'admin') {
+        if (String(data.vendor_id) === String(vendorId)) {
           console.log("Force logout (web) via Socket.IO:", data.reason);
           logout();
           window.location.href = '/login';
@@ -51,36 +59,28 @@ export const SocketProvider = ({ children }) => {
     s.on('features_updated', async (data) => {
       try {
         if (!data || !data.vendor_id) return;
-        if (String(data.vendor_id) !== String(user.vendor_id)) return;
+        if (String(data.vendor_id) !== String(vendorId)) return;
         await refreshFeatures();
         setToastMsg("Plan updated");
         setTimeout(() => setToastMsg(null), 3000);
       } catch (e) {}
     });
 
-    s.on('vendor_updated', async (data) => {
-      try {
-        if (!data || !data.vendor_id) return;
-        if (String(data.vendor_id) !== String(user.vendor_id)) return;
-        await refreshUserData();
-      } catch (e) {}
-    });
-
     return () => {
       if (s) s.disconnect();
     };
-  }, [user]);
+  }, [isAuthenticated, userRole, vendorId, logout, refreshFeatures]);
 
   useEffect(() => {
-    if (!socket || !user) return;
+    if (!socket || !isAuthenticated) return;
 
     const joinRooms = () => {
-      if (user.role === 'super_admin') {
+      if (userRole === 'super_admin') {
         socket.emit('join_super_admin');
         return;
       }
-      if (user.vendor_id) {
-        socket.emit('join_vendor', { vendor_id: user.vendor_id });
+      if (vendorId) {
+        socket.emit('join_vendor', { vendor_id: vendorId });
       }
     };
 
@@ -92,7 +92,7 @@ export const SocketProvider = ({ children }) => {
     return () => {
       socket.off('connect', joinRooms);
     };
-  }, [socket, user]);
+  }, [socket, isAuthenticated, userRole, vendorId]);
 
   const value = useMemo(() => {
     const joinVendor = (vendor_id) => {
