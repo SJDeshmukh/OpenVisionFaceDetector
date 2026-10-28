@@ -633,7 +633,10 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         request.setSourceEventId(PersonEventRequest.buildSourceEventId(
                 requestDeviceId, finalPersonId, localUid, timestamp));
 
-        // Optimistic UI: predict and show result immediately without waiting for the API
+        // Persist an optimistic queue entry so a lost response can be retried,
+        // but do not announce that prediction. Another kiosk may have changed
+        // this person's vendor-wide state; only the server response is
+        // authoritative for CHECK_IN versus CHECK_OUT.
         final String previousStatus = dbManager.getAttendanceStateStatus(finalPersonId, localUid, name);
         final String previousTimestamp = dbManager.getLastAttendanceTimestamp(finalPersonId, localUid, name);
         final String optimisticStatus = dbManager.predictNextAttendanceStatus(finalPersonId, localUid, name);
@@ -643,11 +646,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 finalPersonId, localUid, name, timestamp, optimisticStatus, retryImageJpeg, false);
         if (triggerUiEffects && getActivity() != null) {
             getActivity().runOnUiThread(() -> {
-                playAttendanceSound(optimisticStatus);
-                speakAttendanceGreeting(name, optimisticStatus);
-                showStatusOverlay(optimisticStatus);
-                showAttendanceToast(name, optimisticStatus);
-                if (statusText != null) statusText.setText(name + " " + optimisticStatus);
+                if (statusText != null) statusText.setText("Confirming attendance for " + name + "…");
             });
         }
 
@@ -661,13 +660,19 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                             ("CHECK_IN".equalsIgnoreCase(status) || "CHECK_OUT".equalsIgnoreCase(status));
                     if (confirmed) {
                         try {
-                            dbManager.upsertAttendanceState(finalPersonId, localUid, name, status, timestamp);
+                            String confirmedTimestamp = greeting.getTimestamp();
+                            if (confirmedTimestamp == null || confirmedTimestamp.isEmpty()) {
+                                confirmedTimestamp = timestamp;
+                            }
+                            dbManager.upsertAttendanceState(finalPersonId, localUid, name, status, confirmedTimestamp);
                             if (pendingQueueId > 0) dbManager.deleteQueueItem((int) pendingQueueId);
                         } catch (Exception ignored) {}
-                        // Correct UI only if server disagrees with our prediction
-                        if (triggerUiEffects && !status.equalsIgnoreCase(optimisticStatus) && getActivity() != null) {
+                        // Announce only the backend-confirmed result, on this
+                        // scanning kiosk. Socket updates on other kiosks are silent.
+                        if (triggerUiEffects && getActivity() != null) {
                             getActivity().runOnUiThread(() -> {
                                 playAttendanceSound(status);
+                                speakAttendanceGreeting(name, status);
                                 showStatusOverlay(status);
                                 showAttendanceToast(name, status);
                                 if (statusText != null) statusText.setText(name + " " + status);

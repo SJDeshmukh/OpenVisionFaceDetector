@@ -519,6 +519,45 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
+            // Keep the next CHECK_IN/CHECK_OUT decision consistent across all
+            // kiosks for this vendor. This update is deliberately silent: only
+            // the kiosk that scanned the face speaks its confirmed API result.
+            mSocket?.on("attendance_updated") { args ->
+                try {
+                    val payload = args.firstOrNull() as? JSONObject ?: return@on
+                    val myVendorId = getSharedPreferences("app_prefs", MODE_PRIVATE)
+                        .getInt("vendor_id", -1)
+                    val targetVendorId = payload.optInt("vendor_id", -1)
+                    val personId = payload.optString("person_id", "")
+                    val status = payload.optString("status", "").uppercase()
+                    if (targetVendorId != myVendorId || personId.isBlank() ||
+                        (status != "CHECK_IN" && status != "CHECK_OUT")) {
+                        return@on
+                    }
+                    val name = payload.optString("name", "")
+                    val timestamp = payload.optString("timestamp", "")
+                    Thread {
+                        try {
+                            dbManager.upsertAttendanceState(
+                                personId,
+                                null,
+                                name,
+                                status,
+                                timestamp,
+                            )
+                        } catch (e: Exception) {
+                            android.util.Log.w(
+                                "MainActivity",
+                                "Unable to apply realtime attendance state",
+                                e,
+                            )
+                        }
+                    }.start()
+                } catch (e: Exception) {
+                    android.util.Log.w("MainActivity", "Invalid attendance_updated payload", e)
+                }
+            }
+
             mSocket?.on("app_update_available") { args ->
                 android.util.Log.i("MainActivity", "Real-time OTA update broadcast received from SuperAdmin")
                 runOnUiThread {

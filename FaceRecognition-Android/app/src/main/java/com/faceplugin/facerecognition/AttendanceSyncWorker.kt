@@ -141,7 +141,15 @@ class AttendanceSyncWorker(appContext: Context, params: WorkerParameters) : Work
                             if (confirmed) {
                                 try {
                                     val confirmedPid = body?.personId?.toString() ?: pid
-                                    db.upsertAttendanceState(confirmedPid, item.localUid, item.name, status, item.timestamp)
+                                    val confirmedTimestamp = body?.timestamp
+                                        ?.takeIf { it.isNotBlank() } ?: item.timestamp
+                                    db.upsertAttendanceState(
+                                        confirmedPid,
+                                        item.localUid,
+                                        item.name,
+                                        status,
+                                        confirmedTimestamp,
+                                    )
                                 } catch (_: Exception) {}
                                 db.deleteQueueItem(item.id)
                                 successCount++

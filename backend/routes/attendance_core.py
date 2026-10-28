@@ -710,7 +710,18 @@ def person_event(valid_data: PersonEventSchema):
         conn.commit()
         if vendor_id_to_check: cache_delete_vendor_prefix(vendor_id_to_check)
         if vendor_id_to_check and socketio:
-            ev = {"name": name, "timestamp": current_time_obj.strftime('%Y-%m-%d %H:%M:%S'), "status": new_status, "is_late": is_late, "activity": activity_name, "vendor_id": vendor_id_to_check, "device_id": curr_dev_id, "captured_image": captured_image}
+            ev = {
+                "name": name,
+                "person_id": person_id,
+                "timestamp": current_time_obj.isoformat(timespec="milliseconds"),
+                "status": new_status,
+                "is_late": is_late,
+                "activity": activity_name,
+                "vendor_id": vendor_id_to_check,
+                "device_id": curr_dev_id,
+                "event_id": ingestion.event_id,
+                "captured_image": captured_image,
+            }
             socketio.emit('attendance_updated', ev, room=f"vendor_{vendor_id_to_check}")
 
         # Push notification to parent (fire-and-forget, never blocks response)
@@ -747,7 +758,18 @@ def person_event(valid_data: PersonEventSchema):
                 pass
 
         conn.close()
-        return jsonify({"speak": True, "text": f"{name}: {new_status.title()}", "status": new_status, "is_late": is_late, "activity": activity_name, "person_id": person_id, "event_id": ingestion.event_id, "duplicate": ingestion.duplicate, "accepted": True})
+        return jsonify({
+            "speak": True,
+            "text": f"{name}: {new_status.title()}",
+            "status": new_status,
+            "timestamp": current_time_obj.isoformat(timespec="milliseconds"),
+            "is_late": is_late,
+            "activity": activity_name,
+            "person_id": person_id,
+            "event_id": ingestion.event_id,
+            "duplicate": ingestion.duplicate,
+            "accepted": True,
+        })
     except Exception as e:
         conn.rollback(); conn.close(); return jsonify({"error": str(e)}), 500
 

@@ -1192,9 +1192,20 @@ import java.util.concurrent.CopyOnWriteArrayList;
         String opDate;
         try {
             if (timestamp != null && !timestamp.isEmpty()) {
-                // Parse ISO timestamp to epoch ms
-                java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US);
-                Date d = sdf.parse(timestamp);
+                // Socket events and legacy queue rows use a few compatible
+                // timestamp shapes. Preserve their original operational day.
+                Date d = null;
+                for (String format : new String[]{
+                        "yyyy-MM-dd'T'HH:mm:ss.SSS",
+                        "yyyy-MM-dd'T'HH:mm:ss",
+                        "yyyy-MM-dd HH:mm:ss"
+                }) {
+                    try {
+                        d = new java.text.SimpleDateFormat(format, Locale.US).parse(timestamp);
+                        if (d != null) break;
+                    } catch (Exception ignored) {
+                    }
+                }
                 opDate = getOperationalDate(d != null ? d.getTime() : System.currentTimeMillis());
             } else {
                 opDate = getOperationalDate(System.currentTimeMillis());

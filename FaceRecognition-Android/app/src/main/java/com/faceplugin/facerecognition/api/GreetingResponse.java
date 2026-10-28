@@ -4,6 +4,7 @@ public class GreetingResponse {
     private boolean speak;
     private String text;
     private String status; // CHECK_IN, CHECK_OUT
+    private String timestamp; // Server-authoritative attendance time
     private String display_status; // "Check In: 9:00 AM"
     private Boolean accepted;
     private String reason;
@@ -33,6 +34,14 @@ public class GreetingResponse {
 
     public void setStatus(String status) {
         this.status = status;
+    }
+
+    public String getTimestamp() {
+        return timestamp;
+    }
+
+    public void setTimestamp(String timestamp) {
+        this.timestamp = timestamp;
     }
 
     public String getDisplayStatus() {
