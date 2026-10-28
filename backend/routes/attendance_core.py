@@ -499,7 +499,14 @@ def person_event(valid_data: PersonEventSchema):
     )
 
     provided_status = str(valid_data.status or "").strip().upper()
-    if provided_status in ("CHECK_IN", "CHECK_OUT"):
+    # A kiosk timestamp means this is an offline replay (live Identify requests
+    # omit it). The device's status was predicted from its local cache and may
+    # be stale if another kiosk marked this person while it was disconnected.
+    # Re-derive replayed kiosk status from the vendor-wide chronological state.
+    is_offline_kiosk_replay = bool(
+        valid_data.timestamp and event_source == AttendanceEventSource.KIOSK.value
+    )
+    if provided_status in ("CHECK_IN", "CHECK_OUT") and not is_offline_kiosk_replay:
         new_status = provided_status
         if person_id:
             q = "SELECT * FROM attendance WHERE person_id = ?"

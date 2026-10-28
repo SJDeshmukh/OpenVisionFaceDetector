@@ -121,7 +121,9 @@ class AttendanceSyncWorker(appContext: Context, params: WorkerParameters) : Work
                             true,
                             item.timestamp
                         )
-                        req.status = item.status
+                        // The offline label is only a local prediction. Let the
+                        // backend derive CHECK_IN/CHECK_OUT from the complete
+                        // vendor timeline when this event is replayed.
                         req.deviceId = deviceId
                         req.deviceName = deviceName
                         req.sourceEventId = PersonEventRequest.buildSourceEventId(

@@ -186,6 +186,10 @@ class TestVendorIsolation(unittest.TestCase):
                 "name": "Another Wrong Name",
                 "confidence": 0.92,
                 "is_attendance": True,
+                # Simulate an offline kiosk whose stale local cache predicted
+                # another CHECK_IN. The backend must correct it from the shared
+                # chronological timeline when the event is replayed.
+                "status": "CHECK_IN",
                 "timestamp": second_timestamp,
                 "source_event_id": f"device-b:101:{second_timestamp}",
                 "source_timezone": "Asia/Kolkata",
