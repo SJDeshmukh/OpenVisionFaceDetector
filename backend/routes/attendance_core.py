@@ -24,7 +24,11 @@ from services.attendance_ingestion_service import (
     LegacyAttendanceEvent,
     resolve_client_event_time,
 )
-from services.attendance_state_service import next_attendance_status
+from services.attendance_state_service import (
+    latest_person_state,
+    next_attendance_status,
+    reconcile_person_timeline,
+)
 from domain.attendance import AttendanceEventSource
 from services.auth_service import require_auth, extract_token
 from middleware.validation import validate_request
@@ -43,6 +47,47 @@ attendance_core_bp = Blueprint('attendance_core_bp', __name__)
 def _resolve_event_time(timestamp):
     """Backward-compatible wrapper for the canonical time resolver."""
     return resolve_client_event_time(timestamp)
+
+
+@attendance_core_bp.route("/attendance/latest-states", methods=["GET"])
+@require_feature("enable_attendance", "checkin_checkout", "mobile_app")
+@require_auth()
+def latest_attendance_states():
+    """Return one authoritative attendance state per person for kiosk recovery."""
+
+    vendor_id = g.vendor_id
+    conn = get_db_connection()
+    set_row_factory(conn)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT person_id, name, status, timestamp
+               FROM (
+                   SELECT person_id, name, status, timestamp, id,
+                          ROW_NUMBER() OVER (
+                              PARTITION BY person_id
+                              ORDER BY timestamp DESC, id DESC
+                          ) AS row_number
+                   FROM attendance
+                   WHERE vendor_id = ? AND person_id IS NOT NULL
+               ) ranked
+               WHERE row_number = 1
+               ORDER BY person_id""",
+            (vendor_id,),
+        )
+        states = [
+            {
+                "person_id": row[0],
+                "name": row[1],
+                "status": row[2],
+                "timestamp": row[3].isoformat(timespec="milliseconds")
+                if isinstance(row[3], datetime) else row[3],
+            }
+            for row in cursor.fetchall() or []
+        ]
+        return jsonify({"states": states})
+    finally:
+        conn.close()
 
 
 def _person_scope_context(cursor, vendor_id, requested_type=None):
@@ -473,6 +518,17 @@ def person_event(valid_data: PersonEventSchema):
         conn.close()
         return jsonify({"error": "Unsupported event_source"}), 400
 
+    hostel_movement_mode = bool(
+        person_id and vendor_id_to_check and
+        vendor_has_feature(vendor_id_to_check, "hostel_attendance_alerts")
+    )
+    # A kiosk timestamp means this is an offline replay (live Identify requests
+    # omit it). The device's status was predicted from its local cache and may
+    # be stale if another kiosk marked this person while it was disconnected.
+    is_offline_kiosk_replay = bool(
+        valid_data.timestamp and event_source == AttendanceEventSource.KIOSK.value
+    )
+
     # Resolve idempotent retries before deriving the next IN/OUT state. Without
     # this early lookup, retrying a successful CHECK_IN would be reported as a
     # CHECK_OUT even if persistence correctly rejected the duplicate.
@@ -481,31 +537,44 @@ def person_event(valid_data: PersonEventSchema):
             c, vendor_id_to_check, event_source, valid_data.source_event_id
         )
         if existing_event:
+            timeline = None
+            if is_offline_kiosk_replay and existing_event.legacy_attendance_id:
+                timeline = reconcile_person_timeline(
+                    c,
+                    vendor_id_to_check,
+                    person_id,
+                    target_attendance_id=existing_event.legacy_attendance_id,
+                    hostel_mode=hostel_movement_mode,
+                )
+                if timeline.changed_count:
+                    conn.commit()
+                    cache_delete_vendor_prefix(vendor_id_to_check)
+            existing_status = (
+                timeline.target_status if timeline and timeline.target_status
+                else existing_event.event_type or "CHECK_IN"
+            )
+            latest_status, latest_timestamp = latest_person_state(
+                c, vendor_id_to_check, person_id
+            )
+            event_timestamp = (
+                timeline.target_timestamp if timeline and timeline.target_timestamp
+                else existing_event.event_timestamp
+            )
             conn.close()
-            existing_status = existing_event.event_type or "CHECK_IN"
             return jsonify({
                 "speak": True,
                 "text": f"{name}: {existing_status.title()}",
                 "status": existing_status,
+                "timestamp": event_timestamp,
+                "latest_status": latest_status or existing_status,
+                "latest_timestamp": latest_timestamp or event_timestamp,
                 "person_id": person_id,
                 "duplicate": True,
                 "accepted": True,
                 "event_id": existing_event.event_id,
             })
 
-    hostel_movement_mode = bool(
-        person_id and vendor_id_to_check and
-        vendor_has_feature(vendor_id_to_check, "hostel_attendance_alerts")
-    )
-
     provided_status = str(valid_data.status or "").strip().upper()
-    # A kiosk timestamp means this is an offline replay (live Identify requests
-    # omit it). The device's status was predicted from its local cache and may
-    # be stale if another kiosk marked this person while it was disconnected.
-    # Re-derive replayed kiosk status from the vendor-wide chronological state.
-    is_offline_kiosk_replay = bool(
-        valid_data.timestamp and event_source == AttendanceEventSource.KIOSK.value
-    )
     if provided_status in ("CHECK_IN", "CHECK_OUT") and not is_offline_kiosk_replay:
         new_status = provided_status
         if person_id:
@@ -714,14 +783,52 @@ def person_event(valid_data: PersonEventSchema):
                 verification_score=valid_data.confidence,
             ),
         )
+        event_timestamp = current_time_obj.isoformat(timespec="milliseconds")
+        latest_status = new_status
+        latest_timestamp = event_timestamp
+        reconciled_count = 0
+        if is_offline_kiosk_replay:
+            timeline = reconcile_person_timeline(
+                c,
+                vendor_id_to_check,
+                person_id,
+                target_attendance_id=ingestion.legacy_attendance_id,
+                hostel_mode=hostel_movement_mode,
+            )
+            if timeline.target_status:
+                new_status = timeline.target_status
+            if timeline.target_timestamp:
+                event_timestamp = timeline.target_timestamp
+            if timeline.latest_status:
+                latest_status = timeline.latest_status
+            if timeline.latest_timestamp:
+                latest_timestamp = timeline.latest_timestamp
+            if timeline.changed_count:
+                reconciled_count = timeline.changed_count
+                logger.info(
+                    "Reconciled offline attendance timeline vendor_id=%s person_id=%s changed=%s",
+                    vendor_id_to_check,
+                    person_id,
+                    timeline.changed_count,
+                )
+        else:
+            latest_status, latest_timestamp = latest_person_state(
+                c, vendor_id_to_check, person_id
+            )
+            latest_status = latest_status or new_status
+            latest_timestamp = latest_timestamp or event_timestamp
         conn.commit()
         if vendor_id_to_check: cache_delete_vendor_prefix(vendor_id_to_check)
         if vendor_id_to_check and socketio:
             ev = {
                 "name": name,
                 "person_id": person_id,
-                "timestamp": current_time_obj.isoformat(timespec="milliseconds"),
+                "timestamp": event_timestamp,
                 "status": new_status,
+                "latest_status": latest_status,
+                "latest_timestamp": latest_timestamp,
+                "timeline_reconciled": reconciled_count > 0,
+                "reconciled_count": reconciled_count,
                 "is_late": is_late,
                 "activity": activity_name,
                 "vendor_id": vendor_id_to_check,
@@ -769,7 +876,11 @@ def person_event(valid_data: PersonEventSchema):
             "speak": True,
             "text": f"{name}: {new_status.title()}",
             "status": new_status,
-            "timestamp": current_time_obj.isoformat(timespec="milliseconds"),
+            "timestamp": event_timestamp,
+            "latest_status": latest_status,
+            "latest_timestamp": latest_timestamp,
+            "timeline_reconciled": reconciled_count > 0,
+            "reconciled_count": reconciled_count,
             "is_late": is_late,
             "activity": activity_name,
             "person_id": person_id,

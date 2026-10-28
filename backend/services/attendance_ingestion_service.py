@@ -106,6 +106,7 @@ class IngestionResult:
     legacy_attendance_id: Optional[int]
     duplicate: bool = False
     event_type: Optional[str] = None
+    event_timestamp: Optional[Any] = None
 
 
 class AttendanceEventIngestionService:
@@ -185,9 +186,11 @@ class AttendanceEventIngestionService:
         if not source_event_id:
             return None
         cursor.execute(
-            """SELECT id, legacy_attendance_id, event_type
-               FROM attendance_events
-               WHERE vendor_id = ? AND source = ? AND source_event_id = ?
+            """SELECT e.id, e.legacy_attendance_id,
+                      COALESCE(a.status, e.event_type), a.timestamp
+               FROM attendance_events e
+               LEFT JOIN attendance a ON a.id = e.legacy_attendance_id
+               WHERE e.vendor_id = ? AND e.source = ? AND e.source_event_id = ?
                LIMIT 1""",
             (vendor_id, source, source_event_id),
         )
@@ -199,6 +202,7 @@ class AttendanceEventIngestionService:
             legacy_attendance_id=row[1],
             duplicate=True,
             event_type=row[2],
+            event_timestamp=row[3],
         )
 
     @classmethod

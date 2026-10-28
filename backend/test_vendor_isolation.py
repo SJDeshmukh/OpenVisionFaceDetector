@@ -230,6 +230,65 @@ class TestVendorIsolation(unittest.TestCase):
         conn.close()
         self.assertEqual(count, 0)
 
+    def test_backdated_offline_replay_reconciles_the_complete_device_timeline(self):
+        later_time = datetime.now().replace(microsecond=0)
+        earlier_time = later_time - timedelta(hours=1)
+        later_timestamp = later_time.isoformat(timespec="milliseconds")
+        earlier_timestamp = earlier_time.isoformat(timespec="milliseconds")
+
+        online = self.client.post(
+            "/api/person-event",
+            headers={"Authorization": f"Bearer {self.v1_token}"},
+            json={
+                "detected": True,
+                "recognized": True,
+                "person_id": "101",
+                "name": "Alex",
+                "is_attendance": True,
+                "timestamp": later_timestamp,
+                "source_event_id": f"device-a:101:{later_timestamp}",
+                "source_timezone": "Asia/Kolkata",
+                "device_id": "device-a",
+            },
+        )
+        self.assertEqual(online.status_code, 200, online.data.decode())
+        self.assertEqual(online.get_json()["status"], "CHECK_IN")
+
+        replay = self.client.post(
+            "/api/person-event",
+            headers={"Authorization": f"Bearer {self.v1_token}"},
+            json={
+                "detected": True,
+                "recognized": True,
+                "person_id": "101",
+                "name": "Alex",
+                "is_attendance": True,
+                "status": "CHECK_IN",
+                "timestamp": earlier_timestamp,
+                "source_event_id": f"device-b:101:{earlier_timestamp}",
+                "source_timezone": "Asia/Kolkata",
+                "device_id": "device-b",
+            },
+        )
+        self.assertEqual(replay.status_code, 200, replay.data.decode())
+        body = replay.get_json()
+        self.assertEqual(body["status"], "CHECK_IN")
+        self.assertEqual(body["latest_status"], "CHECK_OUT")
+        self.assertEqual(body["latest_timestamp"], later_timestamp)
+
+        conn = sqlite3.connect(self.db_path)
+        rows = conn.execute(
+            """SELECT status, device_id
+               FROM attendance
+               WHERE vendor_id = 1 AND person_id = 101
+               ORDER BY timestamp, id"""
+        ).fetchall()
+        conn.close()
+        self.assertEqual(rows, [
+            ("CHECK_IN", "device-b"),
+            ("CHECK_OUT", "device-a"),
+        ])
+
     def test_concurrent_live_attendance_is_serialized_per_person(self):
         barrier = Barrier(2)
 

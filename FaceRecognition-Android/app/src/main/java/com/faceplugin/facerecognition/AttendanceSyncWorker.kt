@@ -143,13 +143,16 @@ class AttendanceSyncWorker(appContext: Context, params: WorkerParameters) : Work
                             if (confirmed) {
                                 try {
                                     val confirmedPid = body?.personId?.toString() ?: pid
-                                    val confirmedTimestamp = body?.timestamp
+                                    val confirmedStatus = body?.latestStatus
+                                        ?.takeIf { it.isNotBlank() } ?: status ?: "CHECK_IN"
+                                    val confirmedTimestamp = body?.latestTimestamp
+                                        ?.takeIf { it.isNotBlank() } ?: body?.timestamp
                                         ?.takeIf { it.isNotBlank() } ?: item.timestamp
                                     db.upsertAttendanceState(
                                         confirmedPid,
                                         item.localUid,
                                         item.name,
-                                        status,
+                                        confirmedStatus,
                                         confirmedTimestamp,
                                     )
                                 } catch (_: Exception) {}

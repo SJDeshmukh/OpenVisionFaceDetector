@@ -108,6 +108,11 @@ def register_socket_handlers(socketio):
             {'vendor_id': vendor_id, 'action': 'reconcile'},
             room=request.sid,
         )
+        socketio.emit(
+            'attendance_state_sync_required',
+            {'vendor_id': vendor_id},
+            room=request.sid,
+        )
         return {'status': 'joined', 'room': f'vendor_{vendor_id}'}
 
     @socketio.on('join_stream')

@@ -18,6 +18,9 @@ public interface GreetingService {
     @POST("api/person-event")
     Call<GreetingResponse> sendPersonEvent(@Body PersonEventRequest request);
 
+    @GET("api/attendance/latest-states")
+    Call<com.google.gson.JsonObject> getLatestAttendanceStates();
+
     @POST("api/sync/upload")
     Call<UploadFaceResponse> uploadFace(@Body com.google.gson.JsonObject request);
 

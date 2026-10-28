@@ -5,6 +5,10 @@ public class GreetingResponse {
     private String text;
     private String status; // CHECK_IN, CHECK_OUT
     private String timestamp; // Server-authoritative attendance time
+    @com.google.gson.annotations.SerializedName("latest_status")
+    private String latestStatus;
+    @com.google.gson.annotations.SerializedName("latest_timestamp")
+    private String latestTimestamp;
     private String display_status; // "Check In: 9:00 AM"
     private Boolean accepted;
     private String reason;
@@ -42,6 +46,22 @@ public class GreetingResponse {
 
     public void setTimestamp(String timestamp) {
         this.timestamp = timestamp;
+    }
+
+    public String getLatestStatus() {
+        return latestStatus;
+    }
+
+    public void setLatestStatus(String latestStatus) {
+        this.latestStatus = latestStatus;
+    }
+
+    public String getLatestTimestamp() {
+        return latestTimestamp;
+    }
+
+    public void setLatestTimestamp(String latestTimestamp) {
+        this.latestTimestamp = latestTimestamp;
     }
 
     public String getDisplayStatus() {

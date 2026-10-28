@@ -529,13 +529,19 @@ class MainActivity : AppCompatActivity() {
                         .getInt("vendor_id", -1)
                     val targetVendorId = payload.optInt("vendor_id", -1)
                     val personId = payload.optString("person_id", "")
-                    val status = payload.optString("status", "").uppercase()
+                    val status = payload.optString(
+                        "latest_status",
+                        payload.optString("status", ""),
+                    ).uppercase()
                     if (targetVendorId != myVendorId || personId.isBlank() ||
                         (status != "CHECK_IN" && status != "CHECK_OUT")) {
                         return@on
                     }
                     val name = payload.optString("name", "")
-                    val timestamp = payload.optString("timestamp", "")
+                    val timestamp = payload.optString(
+                        "latest_timestamp",
+                        payload.optString("timestamp", ""),
+                    )
                     Thread {
                         try {
                             dbManager.upsertAttendanceState(
@@ -558,6 +564,24 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
+            // A reconnect may have missed attendance broadcasts while this
+            // kiosk was offline. Refresh every person's latest state silently;
+            // queued offline punches continue through the normal worker.
+            mSocket?.on("attendance_state_sync_required") { args ->
+                try {
+                    val payload = args.firstOrNull() as? JSONObject
+                    val myVendorId = getSharedPreferences("app_prefs", MODE_PRIVATE)
+                        .getInt("vendor_id", -1)
+                    val targetVendorId = payload?.optInt("vendor_id", -1) ?: -1
+                    if (targetVendorId == myVendorId) {
+                        SyncScheduler.scheduleImmediate(applicationContext)
+                        syncLatestAttendanceStates()
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.w("MainActivity", "Unable to start attendance state sync", e)
+                }
+            }
+
             mSocket?.on("app_update_available") { args ->
                 android.util.Log.i("MainActivity", "Real-time OTA update broadcast received from SuperAdmin")
                 runOnUiThread {
@@ -568,6 +592,51 @@ class MainActivity : AppCompatActivity() {
             mSocket?.connect()
         } catch (e: Exception) {
             e.printStackTrace()
+        }
+    }
+
+    private fun syncLatestAttendanceStates() {
+        try {
+            RetrofitClient.getService().getLatestAttendanceStates().enqueue(
+                object : Callback<JsonObject> {
+                    override fun onResponse(call: Call<JsonObject>, response: Response<JsonObject>) {
+                        if (!response.isSuccessful) return
+                        val states = response.body()?.getAsJsonArray("states") ?: return
+                        Thread {
+                            try {
+                                for (index in 0 until states.size()) {
+                                    val state = states[index]?.asJsonObject ?: continue
+                                    val personId = state.get("person_id")?.asString ?: continue
+                                    val status = state.get("status")?.asString ?: continue
+                                    if (status != "CHECK_IN" && status != "CHECK_OUT") continue
+                                    val name = state.get("name")?.takeUnless { it.isJsonNull }?.asString ?: ""
+                                    val timestamp = state.get("timestamp")
+                                        ?.takeUnless { it.isJsonNull }?.asString ?: ""
+                                    dbManager.upsertAttendanceState(
+                                        personId,
+                                        null,
+                                        name,
+                                        status,
+                                        timestamp,
+                                    )
+                                }
+                            } catch (e: Exception) {
+                                android.util.Log.w(
+                                    "MainActivity",
+                                    "Unable to apply attendance state recovery",
+                                    e,
+                                )
+                            }
+                        }.start()
+                    }
+
+                    override fun onFailure(call: Call<JsonObject>, error: Throwable) {
+                        android.util.Log.w("MainActivity", "Attendance state recovery failed", error)
+                    }
+                },
+            )
+        } catch (e: Exception) {
+            android.util.Log.w("MainActivity", "Unable to request attendance state recovery", e)
         }
     }
 

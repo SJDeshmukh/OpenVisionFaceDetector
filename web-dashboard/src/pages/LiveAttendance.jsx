@@ -216,14 +216,18 @@ useEffect(() => {
     if (!user || !socket) return;
     const handleAttendanceUpdated = (ev) => {
       if (String(ev.vendor_id) === String(user.vendor_id)) {
-        setLogs((prev) => [ev, ...prev].slice(0, 50));
+        if (ev.timeline_reconciled) {
+          fetchLogs();
+        } else {
+          setLogs((prev) => [ev, ...prev].slice(0, 50));
+        }
       }
     };
     socket.on('attendance_updated', handleAttendanceUpdated);
     return () => { 
       socket.off('attendance_updated', handleAttendanceUpdated); 
     };
-  }, [user, socket]);
+  }, [user, socket, selectedDeviceId]);
 
   const getStatusColor = (status, isLate) => {
     if (status === 'CHECK_OUT') return 'text-slate-500 bg-slate-100 border-slate-200';

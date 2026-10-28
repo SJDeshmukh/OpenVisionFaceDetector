@@ -577,16 +577,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 if (isAttendance) {
                     String predicted = dbManager.predictNextAttendanceStatus(resolvedBackendId, localUid, name);
                     dbManager.insertAttendanceQueue(resolvedBackendId, localUid, name, timestamp, predicted, bitmap, false);
-                    playAttendanceSound(predicted);
-                    speakAttendanceGreeting(name, predicted);
-                    showStatusOverlay(predicted);
-                    showAttendanceToast(name, predicted);
-                    if (getActivity() != null) {
-                        String finalPredicted = predicted;
-                        getActivity().runOnUiThread(() -> {
-                            if (statusText != null) statusText.setText(name + " " + finalPredicted);
-                        });
-                    }
+                    announceAttendanceSavedOffline(name);
                     try { SyncScheduler.scheduleImmediate(requireContext().getApplicationContext()); } catch (Exception ignored) {}
                 }
             } else {
@@ -660,11 +651,18 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                             ("CHECK_IN".equalsIgnoreCase(status) || "CHECK_OUT".equalsIgnoreCase(status));
                     if (confirmed) {
                         try {
-                            String confirmedTimestamp = greeting.getTimestamp();
-                            if (confirmedTimestamp == null || confirmedTimestamp.isEmpty()) {
-                                confirmedTimestamp = timestamp;
+                            String stateStatus = greeting.getLatestStatus();
+                            if (stateStatus == null || stateStatus.isEmpty()) {
+                                stateStatus = status;
                             }
-                            dbManager.upsertAttendanceState(finalPersonId, localUid, name, status, confirmedTimestamp);
+                            String stateTimestamp = greeting.getLatestTimestamp();
+                            if (stateTimestamp == null || stateTimestamp.isEmpty()) {
+                                stateTimestamp = greeting.getTimestamp();
+                            }
+                            if (stateTimestamp == null || stateTimestamp.isEmpty()) {
+                                stateTimestamp = timestamp;
+                            }
+                            dbManager.upsertAttendanceState(finalPersonId, localUid, name, stateStatus, stateTimestamp);
                             if (pendingQueueId > 0) dbManager.deleteQueueItem((int) pendingQueueId);
                         } catch (Exception ignored) {}
                         // Announce only the backend-confirmed result, on this
@@ -776,6 +774,25 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                     : "Welcome " + name;
             tts.speak(greeting, TextToSpeech.QUEUE_FLUSH, null, "attendance_greeting");
         } catch (Exception ignored) {}
+    }
+
+    private void announceAttendanceSavedOffline(String names) {
+        try {
+            android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
+            if (prefs.getBoolean("voice_greeting_enabled", true) && tts != null) {
+                tts.speak(
+                        "Attendance saved offline for " + names,
+                        TextToSpeech.QUEUE_FLUSH,
+                        null,
+                        "attendance_offline_saved");
+            }
+        } catch (Exception ignored) {}
+        if (getActivity() != null) {
+            getActivity().runOnUiThread(() -> {
+                Toast.makeText(getContext(), "Attendance saved offline for " + names, Toast.LENGTH_SHORT).show();
+                if (statusText != null) statusText.setText("Saved offline: " + names);
+            });
+        }
     }
 
     private void showStatusOverlay(String status) {
@@ -1316,44 +1333,15 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                         if (!markedNames.isEmpty()) {
                             if (markedNames.size() == 1) {
                                 String singleName = markedNames.get(0);
-                                // Re-fetch status AFTER insertAttendanceQueue updated the state
-                                String confirmedStatus = dbManager.getAttendanceStateStatus(
-                                        readyToMark.get(0).personId, readyToMark.get(0).localUid, singleName);
-                                if (confirmedStatus == null) confirmedStatus = "CHECK_IN";
-                                final String fStatus = confirmedStatus;
-                                playAttendanceSound(fStatus);
-                                speakAttendanceGreeting(singleName, fStatus);
-                                showStatusOverlay(fStatus);
-                                if (getActivity() != null) {
-                                    getActivity().runOnUiThread(() -> {
-                                        if (statusText != null) statusText.setText(singleName + " " + fStatus);
-                                    });
-                                }
+                                announceAttendanceSavedOffline(singleName);
                             } else {
-                                // Multi-face offline batch: collect per-person predicted statuses
-                                // (statuses were already written by insertAttendanceQueue above)
-                                int checkInCount = 0;
-                                for (RecognizedFaceMatch match : readyToMark) {
-                                    String s = dbManager.getAttendanceStateStatus(match.personId, match.localUid, match.person.name);
-                                    if ("CHECK_IN".equalsIgnoreCase(s)) checkInCount++;
-                                }
-                                // Majority vote for sound/overlay
-                                String batchStatus = checkInCount >= readyToMark.size() / 2.0 ? "CHECK_IN" : "CHECK_OUT";
-
                                 StringBuilder sb = new StringBuilder();
                                 for (int k = 0; k < markedNames.size(); k++) {
                                     if (k > 0) sb.append(k == markedNames.size() - 1 ? " & " : ", ");
                                     sb.append(markedNames.get(k));
                                 }
                                 String batchNamesStr = sb.toString();
-                                playAttendanceSound(batchStatus);
-                                speakAttendanceGreeting(batchNamesStr, batchStatus);
-                                showStatusOverlay(batchStatus);
-                                if (getActivity() != null) {
-                                    getActivity().runOnUiThread(() -> {
-                                        if (statusText != null) statusText.setText("Marked: " + batchNamesStr);
-                                    });
-                                }
+                                announceAttendanceSavedOffline(batchNamesStr);
                             }
                             try {
                                 SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
