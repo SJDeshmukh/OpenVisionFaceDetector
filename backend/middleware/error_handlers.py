@@ -2,10 +2,22 @@ import logging
 from flask import jsonify
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
+from db_factory import PostgresPoolTimeoutError
 
 logger = logging.getLogger(__name__)
 
 def register_error_handlers(app):
+    @app.errorhandler(PostgresPoolTimeoutError)
+    def handle_postgres_pool_timeout(e):
+        logger.warning("Database request delayed because the PostgreSQL pool is busy")
+        response = jsonify({
+            "error": "The database is temporarily busy. Please retry.",
+            "code": "DATABASE_BUSY",
+            "retryable": True,
+        })
+        response.headers["Retry-After"] = "1"
+        return response, 503
+
     @app.errorhandler(ValidationError)
     def handle_pydantic_validation_error(e):
         logger.warning(f"Validation error: {e.errors()}")
