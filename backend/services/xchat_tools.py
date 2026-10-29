@@ -152,11 +152,17 @@ def _company_settings(c, vendor_id):
 
 def _employee_metrics(vendor_id, start, end, department=None):
     from services.attendance_service import calculate_daily_hours
+    from services.attendance_shift_service import (
+        calculate_shift_wage, choose_shift_policy, parse_shift_list, scheduled_payable_hours,
+    )
     conn = _db()
     c = conn.cursor()
     try:
         timetable, working_hours, missing_checkout_deduction_percent = _company_settings(c, vendor_id)
-        query = "SELECT id, name, department, designation, daily_wage FROM faces WHERE vendor_id = ?"
+        c.execute("SELECT shifts FROM companies WHERE vendor_id = ? LIMIT 1", (vendor_id,))
+        shift_row = c.fetchone()
+        company_shifts = parse_shift_list(shift_row[0] if shift_row else None)
+        query = "SELECT id, name, department, designation, daily_wage, shift FROM faces WHERE vendor_id = ?"
         params = [vendor_id]
         if department:
             query += " AND department = ?"
@@ -181,19 +187,27 @@ def _employee_metrics(vendor_id, start, end, department=None):
 
     metrics = []
     for person in people:
+        shift_policy = choose_shift_policy(company_shifts, person.get("shift"))
+        scheduled_hours = scheduled_payable_hours(shift_policy, working_hours)
         supported = inspect.signature(calculate_daily_hours).parameters
         calculation_options = {}
         if "missing_checkout_deduction_percent" in supported:
             calculation_options["missing_checkout_deduction_percent"] = missing_checkout_deduction_percent
         if "working_hours" in supported:
-            calculation_options["working_hours"] = working_hours
+            calculation_options["working_hours"] = scheduled_hours
+        if "shift_policy" in supported:
+            calculation_options["shift_policy"] = shift_policy
         stats = calculate_daily_hours(
             grouped.get(person["id"], []), timetable, **calculation_options
         )
         sessions = []
         for session in stats.get("sessions", []):
             try:
-                session_day = datetime.fromisoformat(session["start_ts"]).date()
+                session_day = (
+                    date.fromisoformat(session["attendance_date"])
+                    if session.get("attendance_date")
+                    else shift_policy.attendance_date(datetime.fromisoformat(session["start_ts"]))
+                )
             except (KeyError, TypeError, ValueError):
                 continue
             if start <= session_day <= end and session.get("is_payable", True):
@@ -204,11 +218,21 @@ def _employee_metrics(vendor_id, start, end, department=None):
         )
         hours = round(total_sec / 3600.0, 2)
         daily_wage = float(person.get("daily_wage") or 0)
-        estimated_wages = round(hours * (daily_wage / working_hours), 2) if daily_wage else 0.0
+        per_day_seconds = defaultdict(float)
+        for item in sessions:
+            try:
+                attendance_day = date.fromisoformat(item["attendance_date"])
+                per_day_seconds[attendance_day] += float(item.get("duration_seconds") or 0)
+            except (KeyError, TypeError, ValueError):
+                continue
+        wage_result = calculate_shift_wage(daily_wage, per_day_seconds, scheduled_hours)
+        estimated_wages = wage_result["gross_wage"]
         metrics.append({
             "person_id": person["id"], "name": person.get("name"),
             "department": person.get("department"), "designation": person.get("designation"),
-            "hours": hours, "estimated_wages": estimated_wages,
+            "hours": hours, "regular_hours": wage_result["regular_hours"],
+            "overtime_hours": wage_result["overtime_hours"],
+            "estimated_wages": estimated_wages,
         })
     return metrics
 
@@ -469,6 +493,13 @@ def get_employee_attendance(vendor_id, query, start_date=None, end_date=None, li
 
         person = matches[0]
         person_id = person["id"]
+        from services.attendance_shift_service import choose_shift_policy, parse_shift_list
+        c.execute("SELECT shifts FROM companies WHERE vendor_id = ? LIMIT 1", (vendor_id,))
+        shift_row = c.fetchone()
+        shift_policy = choose_shift_policy(
+            parse_shift_list(shift_row[0] if shift_row else None),
+            person.get("shift"),
+        )
 
         roll_no = None
         if person.get("custom_data"):
@@ -499,8 +530,10 @@ def get_employee_attendance(vendor_id, query, start_date=None, end_date=None, li
     day_groups = defaultdict(list)
     for p in punches:
         try:
-            day = str(p.get("timestamp"))[:10]
-            day_groups[day].append(p)
+            stamp = datetime.fromisoformat(str(p.get("timestamp")).replace("Z", "+00:00"))
+            attendance_day = shift_policy.attendance_date(stamp)
+            if start <= attendance_day <= end:
+                day_groups[attendance_day.isoformat()].append(p)
         except Exception:
             continue
 

@@ -19,6 +19,12 @@ from services.attendance_service import (
     calculate_daily_hours, calculate_expected_hours, calculate_arrival_status
 )
 from services.payroll_service import calculate_salary_breakdown
+from services.attendance_shift_service import (
+    calculate_shift_wage,
+    choose_shift_policy,
+    parse_shift_list,
+    scheduled_payable_hours,
+)
 from services.auth_service import require_auth
 from services.report_filter_service import (
     STANDARD_FILTERS, custom_filter_values, face_matches, facet_options,
@@ -304,16 +310,20 @@ def get_analytics(valid_data: PayrollReportRequest):
     
     # 1. Fetch Timetable
     timetable = []
-    c.execute("SELECT live_timetable FROM companies WHERE vendor_id = ?", (vendor_id,))
+    company_shifts = []
+    c.execute("SELECT live_timetable, shifts, working_hours FROM companies WHERE vendor_id = ?", (vendor_id,))
     company_row = c.fetchone()
     if company_row and company_row['live_timetable']:
         try: timetable = json.loads(company_row['live_timetable'])
         except (json.JSONDecodeError, ValueError): pass
+    if company_row:
+        company_shifts = parse_shift_list(company_row['shifts'])
+    analytics_working_hours = float(company_row['working_hours'] or 8.0) if company_row else 8.0
 
     # 2. Fetch all faces, then separate faculty from students.
     #    Faculty upload creates face records too, so we must exclude them from
     #    the student attendance denominator (absent/present calculations).
-    c.execute("""SELECT f.id, f.name, f.department, f.designation, f.custom_data,
+    c.execute("""SELECT f.id, f.name, f.department, f.designation, f.shift, f.custom_data,
                         (SELECT su.role FROM system_users su
                          WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
                          ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
@@ -344,8 +354,9 @@ def get_analytics(valid_data: PayrollReportRequest):
     except ValueError:
         conn.close(); return jsonify({"error": "Invalid date format"}), 400
 
-    query = "SELECT * FROM attendance WHERE date(timestamp) BETWEEN ? AND ? AND vendor_id = ? ORDER BY timestamp ASC"
-    c.execute(query, (start_date, end_date, vendor_id))
+    fetch_end = (e_dt + timedelta(days=2)).strftime('%Y-%m-%d')
+    query = "SELECT * FROM attendance WHERE timestamp >= ? AND timestamp < ? AND vendor_id = ? ORDER BY timestamp ASC"
+    c.execute(query, (f"{start_date} 00:00:00", f"{fetch_end} 00:00:00", vendor_id))
     rows = c.fetchall()
     conn.close()
     
@@ -368,17 +379,24 @@ def get_analytics(valid_data: PayrollReportRequest):
         p_present_days = 0
         p_late_count = 0
         
-        # Group records by date for this person
+        shift_policy = choose_shift_policy(company_shifts, person_info.get('shift'))
+        # Group records by assigned shift day, not calendar date.
         p_date_records = defaultdict(list)
         for r in records:
-            d_str = parse_db_date(r['timestamp'])
-            if d_str: p_date_records[d_str.strftime('%Y-%m-%d')].append(r)
+            timestamp = parse_db_datetime(r['timestamp'])
+            if timestamp:
+                attendance_day = shift_policy.attendance_date(timestamp).isoformat()
+                if start_date <= attendance_day <= end_date:
+                    p_date_records[attendance_day].append(r)
             
         for d_str in all_dates:
             d_records = p_date_records.get(d_str, [])
             if not d_records: continue
             
-            stats = calculate_daily_hours(d_records, timetable, date_str=d_str)
+            stats = calculate_daily_hours(
+                d_records, timetable, date_str=d_str, shift_policy=shift_policy,
+                working_hours=scheduled_payable_hours(shift_policy, analytics_working_hours),
+            )
             p_total_hours += stats['total_hours']
             p_present_days += 1
             
@@ -579,11 +597,12 @@ def get_payroll_report(valid_data: PayrollReportRequest):
     c = conn.cursor()
     
     # 1. Fetch Timetable and Working Hours
-    c.execute("SELECT live_timetable, working_hours FROM companies WHERE vendor_id = ?", (vendor_id,))
+    c.execute("SELECT live_timetable, working_hours, shifts FROM companies WHERE vendor_id = ?", (vendor_id,))
     company_row = c.fetchone()
 
     timetable = []
     company_working_hours = 8.0 # Default
+    company_shifts = []
     if company_row:
         if company_row['live_timetable']:
             try: timetable = json.loads(company_row['live_timetable'])
@@ -591,6 +610,7 @@ def get_payroll_report(valid_data: PayrollReportRequest):
         try:
             if company_row['working_hours']: company_working_hours = float(company_row['working_hours'])
         except (ValueError, TypeError): pass
+        company_shifts = parse_shift_list(company_row['shifts'])
 
     late_enabled = vendor_has_feature(vendor_id, "late_mark")
     
@@ -604,7 +624,8 @@ def get_payroll_report(valid_data: PayrollReportRequest):
         'global_gratuity_percentage',
         'global_gratuity_threshold_years',
         'global_timezone_offset',
-        'missing_checkout_deduction_percent'
+        'missing_checkout_deduction_percent',
+        'overtime_multiplier',
     ]
     try:
         # DB Factory handles the ? placeholder correctly for both PG and SQLite
@@ -640,6 +661,10 @@ def get_payroll_report(valid_data: PayrollReportRequest):
         pf_pct = 12.0
         esi_pct = 0.75
         gratuity_pct = 4.81
+    try:
+        overtime_multiplier = max(0.0, float(stored_settings.get('overtime_multiplier', 1.0)))
+    except (TypeError, ValueError):
+        overtime_multiplier = 1.0
 
     # 2. Fetch Persons
     try:
@@ -648,7 +673,7 @@ def get_payroll_report(valid_data: PayrollReportRequest):
         extra = [col for col in (["late_allowance_days", "late_deduction_amount"] + payroll_fields) if col in fcols]
         extra_select = ", " + ", ".join(extra) if extra else ""
         image_select = "f.face_image" if include_images else "NULL AS face_image"
-        c.execute(f"""SELECT f.id, f.name, f.daily_wage, f.department, f.designation,
+        c.execute(f"""SELECT f.id, f.name, f.daily_wage, f.department, f.designation, f.shift,
                              {image_select}, f.phone, f.display_id, f.custom_data,
                              CASE WHEN f.face_image IS NOT NULL AND f.face_image <> '' THEN 1 ELSE 0 END AS has_face_image,
                              (SELECT su.role FROM system_users su
@@ -659,7 +684,7 @@ def get_payroll_report(valid_data: PayrollReportRequest):
     except Exception:
         logger.debug("Extended faces columns unavailable, falling back to base columns", exc_info=True)
         image_select = "f.face_image" if include_images else "NULL AS face_image"
-        c.execute(f"""SELECT f.id, f.name, f.daily_wage, f.department, f.designation,
+        c.execute(f"""SELECT f.id, f.name, f.daily_wage, f.department, f.designation, f.shift,
                             {image_select}, f.phone, f.custom_data,
                             CASE WHEN f.face_image IS NOT NULL AND f.face_image <> '' THEN 1 ELSE 0 END AS has_face_image,
                             (SELECT su.role FROM system_users su
@@ -762,18 +787,22 @@ def get_payroll_report(valid_data: PayrollReportRequest):
         total_seconds = 0.0
         present_dates = set()
         late_dates = set()
+        shift_policy = choose_shift_policy(company_shifts, person_info.get('shift'))
+        scheduled_hours = scheduled_payable_hours(shift_policy, company_working_hours)
         
         records = user_records.get(pid, [])
         stats = calculate_daily_hours(
             records,
             timetable,
             missing_checkout_deduction_percent=missing_deduction_pct,
-            working_hours=company_working_hours
+            working_hours=scheduled_hours,
+            shift_policy=shift_policy,
         )
         
         for r in records:
             if r.get('is_late') == 1:
-                r_dt = parse_db_date(r['timestamp'])
+                r_timestamp = parse_db_datetime(r['timestamp'])
+                r_dt = shift_policy.attendance_date(r_timestamp) if r_timestamp else None
                 if r_dt and start_dt_req <= r_dt <= end_dt_req:
                     late_dates.add(r_dt)
         
@@ -783,7 +812,11 @@ def get_payroll_report(valid_data: PayrollReportRequest):
             if session.get('start_ts'):
                 try:
                     sess_start = datetime.fromisoformat(session['start_ts'])
-                    sess_date = sess_start.date()
+                    sess_date = (
+                        date.fromisoformat(session['attendance_date'])
+                        if session.get('attendance_date')
+                        else shift_policy.attendance_date(sess_start)
+                    )
                     if start_dt_req <= sess_date <= end_dt_req and session.get('is_payable', False):
                         dur_sec = session.get('duration_seconds')
                         if dur_sec is None:
@@ -792,10 +825,27 @@ def get_payroll_report(valid_data: PayrollReportRequest):
                         present_dates.add(sess_date)
                 except (ValueError, TypeError): continue
 
+        per_day_seconds = defaultdict(float)
+        for session in stats.get('sessions', []):
+            if not session.get('is_payable', False):
+                continue
+            try:
+                attendance_day = date.fromisoformat(session['attendance_date'])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if start_dt_req <= attendance_day <= end_dt_req:
+                per_day_seconds[attendance_day] += float(session.get('duration_seconds') or 0)
         total_hours = round(total_seconds / 3600.0, 2)
         daily_wage = person_info.get('daily_wage') or 0
-        hourly_rate = daily_wage / company_working_hours if daily_wage and company_working_hours > 0 else 0
-        base_cost = round(total_hours * hourly_rate, 2)
+        wage_result = calculate_shift_wage(
+            daily_wage,
+            per_day_seconds,
+            scheduled_hours,
+            overtime_multiplier=overtime_multiplier,
+        )
+        regular_hours = wage_result['regular_hours']
+        overtime_hours = wage_result['overtime_hours']
+        base_cost = wage_result['gross_wage']
         
         allowance = person_info.get('late_allowance_days') if person_info.get('late_allowance_days') is not None else global_allowance
         deduction_amt = person_info.get('late_deduction_amount') if person_info.get('late_deduction_amount') is not None else global_deduction
@@ -850,6 +900,11 @@ def get_payroll_report(valid_data: PayrollReportRequest):
             "phone": person_info.get('phone'),
             "daily_wage": daily_wage,
             "total_hours": round(total_hours, 2),
+            "regular_hours": regular_hours,
+            "overtime_hours": overtime_hours,
+            "overtime_wage": wage_result['overtime_wage'],
+            "scheduled_hours_per_day": round(scheduled_hours, 2),
+            "shift": shift_policy.name,
             "total_hours_str": f"{int(total_seconds // 3600)}h {int((total_seconds % 3600) // 60)}m",
             "days_present": len(present_dates),
             "base_cost": base_cost,
@@ -876,7 +931,8 @@ def get_payroll_report(valid_data: PayrollReportRequest):
             "pf_percentage": pf_pct, 
             "esi_percentage": esi_pct, 
             "gratuity_percentage": gratuity_pct,
-            "gratuity_threshold_years": grat_years_threshold
+            "gratuity_threshold_years": grat_years_threshold,
+            "overtime_multiplier": overtime_multiplier,
         }
     })
 
@@ -902,9 +958,10 @@ def export_payroll_daily():
     c = conn.cursor()
 
     try:
-        c.execute("SELECT working_hours FROM companies WHERE vendor_id = ?", (vendor_id,))
+        c.execute("SELECT working_hours, shifts FROM companies WHERE vendor_id = ?", (vendor_id,))
         v_row = c.fetchone()
         company_working_hours = float(v_row['working_hours']) if v_row and v_row['working_hours'] else 8.0
+        company_shifts = parse_shift_list(v_row['shifts'] if v_row else None)
 
         # Add a 1-day buffer on each side to capture timezone-shifted timestamps
         start_dt_req = datetime.strptime(start_date, '%Y-%m-%d').date()
@@ -960,20 +1017,23 @@ def export_payroll_daily():
             persons[rd['id']] = rd
 
         setting_suffix = f'_vendor_{vendor_id}'
-        c.execute("SELECT key, value FROM system_settings WHERE key IN (?, ?, ?)",
-                  (f'global_late_allowance{setting_suffix}', f'global_late_deduction{setting_suffix}', f'missing_checkout_deduction_percent{setting_suffix}'))
+        c.execute("SELECT key, value FROM system_settings WHERE key IN (?, ?, ?, ?)",
+                  (f'global_late_allowance{setting_suffix}', f'global_late_deduction{setting_suffix}', f'missing_checkout_deduction_percent{setting_suffix}', f'overtime_multiplier{setting_suffix}'))
         s_map = {r['key'].removesuffix(setting_suffix): r['value'] for r in c.fetchall()}
         global_allowance = int(s_map.get('global_late_allowance', 7))
         global_deduction = float(s_map.get('global_late_deduction', 0.0))
         missing_deduction_pct = float(s_map.get('missing_checkout_deduction_percent', 50.0))
+        overtime_multiplier = float(s_map.get('overtime_multiplier', 1.0))
 
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["Employee ID", "Name", "Date", "Daily Wage Rate", "Working Hours", "Base Wage", "Late Penalty", "PF", "ESI", "PT", "Net Wage"])
+        writer.writerow(["Employee ID", "Name", "Date", "Daily Wage Rate", "Working Hours", "Overtime Hours", "Overtime Wage", "Base Wage", "Late Penalty", "PF", "ESI", "PT", "Net Wage"])
 
         for pid, records in user_records.items():
             if pid not in persons: continue
             info = persons[pid]
+            shift_policy = choose_shift_policy(company_shifts, info.get('shift'))
+            scheduled_hours = scheduled_payable_hours(shift_policy, company_working_hours)
             # Simple fallback for timetable if needed (would ideally use company timetable)
             timetable = []
             try:
@@ -985,12 +1045,13 @@ def export_payroll_daily():
                 records,
                 timetable,
                 missing_checkout_deduction_percent=missing_deduction_pct,
-                working_hours=company_working_hours
+                working_hours=scheduled_hours,
+                shift_policy=shift_policy,
             )
             per_day_seconds = defaultdict(float)
             for s in stats.get('sessions', []):
                 try:
-                    sd = datetime.fromisoformat(s['start_ts']).date()
+                    sd = date.fromisoformat(s['attendance_date']) if s.get('attendance_date') else shift_policy.attendance_date(datetime.fromisoformat(s['start_ts']))
                     if start_dt_req <= sd <= end_dt_req and s.get('is_payable', False):
                         dur_sec = s.get('duration_seconds')
                         if dur_sec is None:
@@ -998,7 +1059,12 @@ def export_payroll_daily():
                         per_day_seconds[sd] += float(dur_sec)
                 except (ValueError, TypeError): continue
 
-            late_dates = sorted(set(parse_db_date(r['timestamp']) for r in records if r.get('is_late') == 1 and parse_db_date(r['timestamp']) and start_dt_req <= parse_db_date(r['timestamp']) <= end_dt_req))
+            late_dates = sorted({
+                shift_policy.attendance_date(timestamp)
+                for r in records if r.get('is_late') == 1
+                for timestamp in [parse_db_datetime(r.get('timestamp'))]
+                if timestamp and start_dt_req <= shift_policy.attendance_date(timestamp) <= end_dt_req
+            })
             allowance = info.get('late_allowance_days') if info.get('late_allowance_days') is not None else global_allowance
             deduction_amt = info.get('late_deduction_amount') if info.get('late_deduction_amount') is not None else global_deduction
 
@@ -1007,9 +1073,14 @@ def export_payroll_daily():
                 idx = late_dates.index(d) + 1 if d in late_dates else 0
                 deduct = deduction_amt if (lm == 1 and idx > allowance) else 0.0
                 daily_wage = float(info.get('daily_wage') or 0.0)
-                hourly_rate = daily_wage / company_working_hours if daily_wage and company_working_hours > 0 else 0
                 day_hours = round(secs / 3600.0, 2)
-                base_wage_for_day = round(day_hours * hourly_rate, 2)
+                wage_result = calculate_shift_wage(
+                    daily_wage, {d: secs}, scheduled_hours,
+                    overtime_multiplier=overtime_multiplier,
+                )
+                overtime_hours = wage_result['overtime_hours']
+                overtime_wage = wage_result['overtime_wage']
+                base_wage_for_day = wage_result['gross_wage']
                 
                 # Breakdown for this day's portion
                 breakdown = calculate_salary_breakdown(base_wage_for_day, info)
@@ -1019,7 +1090,7 @@ def export_payroll_daily():
                 
                 net_wage = round(breakdown['net_before_advances'] - deduct, 2)
                 d_id = info.get('display_id') or pid
-                writer.writerow([d_id, info.get('name'), d.isoformat(), daily_wage, day_hours, base_wage_for_day, deduct, pf, esi, round(pt, 2), net_wage])
+                writer.writerow([d_id, info.get('name'), d.isoformat(), daily_wage, day_hours, overtime_hours, overtime_wage, base_wage_for_day, deduct, pf, esi, round(pt, 2), net_wage])
         
         return output.getvalue(), 200, {"Content-Type": "text/csv"}
     except Exception as e:
@@ -1048,9 +1119,10 @@ def export_payroll_excel():
     c = conn.cursor()
 
     try:
-        c.execute("SELECT working_hours FROM companies WHERE vendor_id = ?", (vendor_id,))
+        c.execute("SELECT working_hours, shifts FROM companies WHERE vendor_id = ?", (vendor_id,))
         v_row = c.fetchone()
         company_working_hours = float(v_row['working_hours']) if v_row and v_row['working_hours'] else 8.0
+        company_shifts = parse_shift_list(v_row['shifts'] if v_row else None)
 
         # Add a 1-day buffer on each side to capture timezone-shifted timestamps
         start_dt_req = datetime.strptime(start_date, '%Y-%m-%d').date()
@@ -1099,17 +1171,18 @@ def export_payroll_excel():
             persons[person['id']] = person
 
         setting_suffix = f'_vendor_{vendor_id}'
-        c.execute("SELECT key, value FROM system_settings WHERE key IN (?, ?, ?)",
-                  (f'global_late_allowance{setting_suffix}', f'global_late_deduction{setting_suffix}', f'missing_checkout_deduction_percent{setting_suffix}'))
+        c.execute("SELECT key, value FROM system_settings WHERE key IN (?, ?, ?, ?)",
+                  (f'global_late_allowance{setting_suffix}', f'global_late_deduction{setting_suffix}', f'missing_checkout_deduction_percent{setting_suffix}', f'overtime_multiplier{setting_suffix}'))
         s_map = {r['key'].removesuffix(setting_suffix): r['value'] for r in c.fetchall()}
         global_allowance = int(s_map.get('global_late_allowance', 7))
         global_deduction = float(s_map.get('global_late_deduction', 0.0))
         missing_deduction_pct = float(s_map.get('missing_checkout_deduction_percent', 50.0))
+        overtime_multiplier = float(s_map.get('overtime_multiplier', 1.0))
 
         wb = Workbook()
         ws = wb.active
         ws.title = "Daily Payroll"
-        headers = ["Employee ID", "Name", "Date", "Daily Wage Rate", "Working Hours", "Base Wage", "Late Penalty", "PF", "ESI", "PT", "Net Wage"]
+        headers = ["Employee ID", "Name", "Date", "Daily Wage Rate", "Working Hours", "Overtime Hours", "Overtime Wage", "Base Wage", "Late Penalty", "PF", "ESI", "PT", "Net Wage"]
         ws.append(headers)
         for cell in ws[1]:
             cell.font = Font(bold=True)
@@ -1121,15 +1194,18 @@ def export_payroll_excel():
         for pid, records in user_records.items():
             if pid not in persons: continue
             info = persons[pid]
+            shift_policy = choose_shift_policy(company_shifts, info.get('shift'))
+            scheduled_hours = scheduled_payable_hours(shift_policy, company_working_hours)
             stats = calculate_daily_hours(
                 records,
                 missing_checkout_deduction_percent=missing_deduction_pct,
-                working_hours=company_working_hours
+                working_hours=scheduled_hours,
+                shift_policy=shift_policy,
             )
             per_day_seconds = defaultdict(float)
             for s in stats.get('sessions', []):
                 try:
-                    sd = datetime.fromisoformat(s['start_ts']).date()
+                    sd = date.fromisoformat(s['attendance_date']) if s.get('attendance_date') else shift_policy.attendance_date(datetime.fromisoformat(s['start_ts']))
                     if start_dt_req <= sd <= end_dt_req and s.get('is_payable', False):
                         dur_sec = s.get('duration_seconds')
                         if dur_sec is None:
@@ -1137,7 +1213,12 @@ def export_payroll_excel():
                         per_day_seconds[sd] += float(dur_sec)
                 except (ValueError, TypeError): continue
 
-            late_dates = sorted(set(parse_db_date(r['timestamp']) for r in records if r.get('is_late') == 1 and parse_db_date(r['timestamp']) and start_dt_req <= parse_db_date(r['timestamp']) <= end_dt_req))
+            late_dates = sorted({
+                shift_policy.attendance_date(timestamp)
+                for r in records if r.get('is_late') == 1
+                for timestamp in [parse_db_datetime(r.get('timestamp'))]
+                if timestamp and start_dt_req <= shift_policy.attendance_date(timestamp) <= end_dt_req
+            })
             allowance = info.get('late_allowance_days') if info.get('late_allowance_days') is not None else global_allowance
             deduction_amt = info.get('late_deduction_amount') if info.get('late_deduction_amount') is not None else global_deduction
 
@@ -1146,9 +1227,14 @@ def export_payroll_excel():
                 idx = late_dates.index(d) + 1 if d in late_dates else 0
                 deduct = deduction_amt if (lm == 1 and idx > allowance) else 0.0
                 daily_wage = float(info.get('daily_wage') or 0.0)
-                hourly_rate = daily_wage / company_working_hours if daily_wage and company_working_hours > 0 else 0
                 day_hours = round(secs / 3600.0, 2)
-                base_wage_for_day = round(day_hours * hourly_rate, 2)
+                wage_result = calculate_shift_wage(
+                    daily_wage, {d: secs}, scheduled_hours,
+                    overtime_multiplier=overtime_multiplier,
+                )
+                overtime_hours = wage_result['overtime_hours']
+                overtime_wage = wage_result['overtime_wage']
+                base_wage_for_day = wage_result['gross_wage']
                 
                 # Breakdown
                 breakdown = calculate_salary_breakdown(base_wage_for_day, info)
@@ -1158,7 +1244,7 @@ def export_payroll_excel():
                 
                 net_wage = round(breakdown['net_before_advances'] - deduct, 2)
                 d_id = info.get('display_id') or pid
-                ws.append([d_id, info.get('name'), d.isoformat(), daily_wage, day_hours, base_wage_for_day, deduct, pf, esi, round(pt, 2), net_wage])
+                ws.append([d_id, info.get('name'), d.isoformat(), daily_wage, day_hours, overtime_hours, overtime_wage, base_wage_for_day, deduct, pf, esi, round(pt, 2), net_wage])
 
         out = io.BytesIO()
         wb.save(out)

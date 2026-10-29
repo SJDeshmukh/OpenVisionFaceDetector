@@ -18,11 +18,20 @@ class TimelineReconciliation:
     changed_count: int = 0
 
 
-def next_attendance_status(last_status=None, hours_since_last=None, hostel_mode=False):
+def next_attendance_status(
+    last_status=None,
+    hours_since_last=None,
+    hostel_mode=False,
+    *,
+    last_attendance_date=None,
+    current_attendance_date=None,
+):
     """Return the next punch status without coupling it to a device or database.
 
-    Normal attendance starts with CHECK_IN and treats an open session older than
-    16 hours as a fresh CHECK_IN. Hostel movement starts with CHECK_OUT because
+    Normal attendance starts with CHECK_IN. When shift-day keys are supplied,
+    an open session closes anywhere inside the same assigned shift day and resets
+    only at the next shift boundary. The 16-hour rule remains solely as a legacy
+    fallback for callers without shift context. Hostel movement starts with CHECK_OUT because
     a resident is assumed to be inside before their first exit scan. Hostel
     movement always alternates globally and deliberately ignores the 16-hour
     work-session reset.
@@ -36,6 +45,10 @@ def next_attendance_status(last_status=None, hours_since_last=None, hostel_mode=
 
     if normalized != CHECK_IN:
         return CHECK_IN
+    if last_attendance_date is not None and current_attendance_date is not None:
+        # An open check-in remains open for the complete assigned shift day,
+        # even when its duration exceeds the old 16-hour safety threshold.
+        return CHECK_OUT if last_attendance_date == current_attendance_date else CHECK_IN
     try:
         if hours_since_last is not None and float(hours_since_last) > 16:
             return CHECK_IN
@@ -70,6 +83,7 @@ def reconcile_person_timeline(
     *,
     target_attendance_id=None,
     hostel_mode=False,
+    shift_policy=None,
 ):
     """Rebuild the mutable attendance projection in chronological order.
 
@@ -91,6 +105,7 @@ def reconcile_person_timeline(
 
     last_status = None
     last_time = None
+    last_attendance_date = None
     target_status = None
     target_timestamp = None
     latest_status = None
@@ -102,6 +117,11 @@ def reconcile_person_timeline(
         parsed_time = _as_datetime(timestamp)
         normalized_stored = str(stored_status or "").strip().upper()
         source = str(source or "").strip().upper()
+        attendance_date = (
+            shift_policy.attendance_date(parsed_time)
+            if shift_policy is not None and parsed_time is not None
+            else None
+        )
 
         # Kiosk punches are automatic face events. Other sources may contain a
         # deliberate status and therefore remain authoritative timeline anchors.
@@ -116,6 +136,8 @@ def reconcile_person_timeline(
                 last_status,
                 hours_since_last=hours_since_last,
                 hostel_mode=hostel_mode,
+                last_attendance_date=last_attendance_date,
+                current_attendance_date=attendance_date,
             )
         else:
             resolved_status = normalized_stored
@@ -127,6 +149,11 @@ def reconcile_person_timeline(
             )
             changed_count += 1
 
+        if attendance_date is not None:
+            cursor.execute(
+                "UPDATE attendance SET attendance_date = ? WHERE id = ? AND vendor_id = ? AND person_id = ?",
+                (attendance_date.isoformat(), attendance_id, vendor_id, person_id),
+            )
         rendered_timestamp = _as_timestamp(timestamp)
         if target_attendance_id is not None and str(attendance_id) == str(target_attendance_id):
             target_status = resolved_status
@@ -135,6 +162,7 @@ def reconcile_person_timeline(
         last_status = resolved_status
         if parsed_time is not None:
             last_time = parsed_time
+            last_attendance_date = attendance_date
         latest_status = resolved_status
         latest_timestamp = rendered_timestamp
 

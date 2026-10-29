@@ -503,7 +503,18 @@ def update_company_settings(company_id):
         c.execute("UPDATE companies SET working_hours = ? WHERE id = ?", (working_hours, company_id))
 
     conn.commit()
+    cache_delete_vendor_prefix(vendor_id)
     conn.close()
+    if shifts is not None:
+        try:
+            from app import socketio
+            socketio.emit(
+                'timetable_updated',
+                {'vendor_id': vendor_id, 'company_id': company_id, 'kind': 'shifts_updated'},
+                room=f"vendor_{vendor_id}",
+            )
+        except Exception:
+            pass
     return jsonify({"success": True})
 
 
@@ -647,6 +658,11 @@ def delete_company_shift(company_id, shift_id):
         if password_error:
             return jsonify({"error": password_error[0]}), password_error[1]
 
+        existing_shifts = json_list(company[0])
+        deleted_shift = next(
+            (item for item in existing_shifts if str(item.get("id")) == str(shift_id)),
+            None,
+        )
         updated_shifts, updated_activities = remove_shift(company[0], company[1], shift_id)
         if updated_shifts is None:
             return jsonify({"error": "Shift not found"}), 404
@@ -662,6 +678,11 @@ def delete_company_shift(company_id, shift_id):
              json.dumps(updated_live_activities), g.username, datetime.now(),
              company_id, vendor_id),
         )
+        if deleted_shift:
+            c.execute(
+                "UPDATE faces SET shift = '' WHERE vendor_id = ? AND (shift = ? OR shift = ?)",
+                (vendor_id, str(deleted_shift.get("name") or ""), str(shift_id)),
+            )
         conn.commit()
         cache_delete_vendor_prefix(vendor_id)
         log_audit(

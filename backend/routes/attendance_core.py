@@ -29,6 +29,12 @@ from services.attendance_state_service import (
     next_attendance_status,
     reconcile_person_timeline,
 )
+from services.attendance_shift_service import (
+    choose_shift_policy,
+    load_person_shift_policy,
+    parse_shift_list,
+    scheduled_payable_hours,
+)
 from domain.attendance import AttendanceEventSource
 from services.auth_service import require_auth, extract_token
 from middleware.validation import validate_request
@@ -94,7 +100,7 @@ def _person_scope_context(cursor, vendor_id, requested_type=None):
     vertical = vendor_vertical(cursor, vendor_id)
     wanted_type = requested_person_type(requested_type, vertical)
     cursor.execute("""
-        SELECT f.id, f.name, f.custom_data,
+        SELECT f.id, f.name, f.custom_data, f.shift,
                (SELECT su.role FROM system_users su
                 WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
                 ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
@@ -103,10 +109,10 @@ def _person_scope_context(cursor, vendor_id, requested_type=None):
     """, (vendor_id,))
     people = {}
     for row in cursor.fetchall() or []:
-        resolved = person_type_for(row[2], row[3], vertical)
+        resolved = person_type_for(row[2], row[4], vertical)
         people[int(row[0])] = {
             "name": row[1], "custom_data": parse_custom_data(row[2]),
-            "person_type": resolved,
+            "person_type": resolved, "shift": row[3],
         }
     return vertical, wanted_type, people
 
@@ -284,10 +290,11 @@ def get_attendance_summary(valid_data: AttendanceFilterSchema):
     c = conn.cursor()
     _vertical, wanted_type, people = _person_scope_context(c, vendor_id, valid_data.person_type)
     
-    c.execute("SELECT live_timetable, working_hours FROM companies WHERE vendor_id = ?", (vendor_id,))
+    c.execute("SELECT live_timetable, working_hours, shifts FROM companies WHERE vendor_id = ?", (vendor_id,))
     crow = c.fetchone()
     timetable = json.loads(crow['live_timetable']) if crow and crow['live_timetable'] else []
     company_working_hours = float(crow['working_hours']) if crow and crow.get('working_hours') else 8.0
+    company_shifts = parse_shift_list(crow['shifts'] if crow else None)
 
     c.execute("SELECT value FROM system_settings WHERE key = ?", (f'missing_checkout_deduction_percent_vendor_{vendor_id}',))
     srow = c.fetchone()
@@ -301,7 +308,11 @@ def get_attendance_summary(valid_data: AttendanceFilterSchema):
     exp_start = day_acts[0]['start_time'] if day_acts else None
     exp_end = day_acts[-1]['end_time'] if day_acts else None
 
-    c.execute("SELECT * FROM attendance WHERE date(timestamp) = ? AND vendor_id = ? ORDER BY timestamp ASC", (date_str, vendor_id))
+    range_end = (target_date + timedelta(days=2)).strftime('%Y-%m-%d 00:00:00')
+    c.execute(
+        "SELECT * FROM attendance WHERE timestamp >= ? AND timestamp < ? AND vendor_id = ? ORDER BY timestamp ASC",
+        (f"{date_str} 00:00:00", range_end, vendor_id),
+    )
     rows = c.fetchall()
     conn.close()
 
@@ -320,6 +331,10 @@ def get_attendance_summary(valid_data: AttendanceFilterSchema):
                 continue
         elif wanted_type and row_dict.get("name") not in allowed_names:
             continue
+        person_policy = choose_shift_policy(company_shifts, person.get('shift') if person else None)
+        row_timestamp = parse_db_datetime(row_dict.get('timestamp'))
+        if row_timestamp is None or person_policy.attendance_date(row_timestamp).isoformat() != date_str:
+            continue
         group_key = f"id:{row_dict['person_id']}" if row_dict.get("person_id") else f"name:{row_dict['name']}"
         user_names[group_key] = person["name"] if person else row_dict["name"]
         user_person_ids[group_key] = row_dict.get("person_id")
@@ -327,25 +342,35 @@ def get_attendance_summary(valid_data: AttendanceFilterSchema):
 
     summary = []
     for user_key, records in user_recs.items():
+        person_id = user_person_ids[user_key]
+        person = people.get(int(person_id)) if person_id else None
+        shift_policy = choose_shift_policy(company_shifts, person.get('shift') if person else None)
+        expected_hours = scheduled_payable_hours(shift_policy, company_working_hours)
         stats = calculate_daily_hours(
             records,
             timetable,
             date_str=date_str,
             missing_checkout_deduction_percent=missing_deduction_pct,
-            working_hours=company_working_hours
+            working_hours=expected_hours,
+            shift_policy=shift_policy,
         )
         status = "Present"
         if stats['total_hours'] == 0: status = "Absent"
-        elif exp_hours > 0:
-            if stats['total_hours'] < (exp_hours - 0.5): status = "Undertime"
-            elif stats['total_hours'] > (exp_hours + 1): status = "Overtime"
+        elif expected_hours > 0:
+            if stats['total_hours'] < (expected_hours - 0.5): status = "Undertime"
+            elif stats['total_hours'] > (expected_hours + 1): status = "Overtime"
             else: status = "On Track"
         
         arr_status = calculate_arrival_status(exp_start, stats['sessions'], day_acts) if late_enabled else None
         summary.append({
             "name": user_names[user_key], "person_id": user_person_ids[user_key],
             "date": date_str, "status": status, "arrival_status": arr_status,
-            "schedule": {"expected_hours": round(exp_hours, 2), "expected_start": exp_start, "expected_end": exp_end},
+            "schedule": {
+                "expected_hours": round(expected_hours, 2),
+                "expected_start": shift_policy.start_time,
+                "expected_end": shift_policy.end_time,
+                "shift": shift_policy.name,
+            },
             **stats
         })
 
@@ -513,6 +538,8 @@ def person_event(valid_data: PersonEventSchema):
                 # In that case the existing transaction remains authoritative.
                 pass
 
+    shift_policy = load_person_shift_policy(c, vendor_id_to_check, person_id)
+
     event_source = str(valid_data.event_source or AttendanceEventSource.KIOSK.value).strip().upper()
     if event_source not in {item.value for item in AttendanceEventSource}:
         conn.close()
@@ -545,6 +572,7 @@ def person_event(valid_data: PersonEventSchema):
                     person_id,
                     target_attendance_id=existing_event.legacy_attendance_id,
                     hostel_mode=hostel_movement_mode,
+                    shift_policy=shift_policy,
                 )
                 if timeline.changed_count:
                     conn.commit()
@@ -575,7 +603,11 @@ def person_event(valid_data: PersonEventSchema):
             })
 
     provided_status = str(valid_data.status or "").strip().upper()
-    if provided_status in ("CHECK_IN", "CHECK_OUT") and not is_offline_kiosk_replay:
+    if (
+        provided_status in ("CHECK_IN", "CHECK_OUT")
+        and event_source != AttendanceEventSource.KIOSK.value
+        and not is_offline_kiosk_replay
+    ):
         new_status = provided_status
         if person_id:
             q = "SELECT * FROM attendance WHERE person_id = ?"
@@ -617,6 +649,7 @@ def person_event(valid_data: PersonEventSchema):
         last_record = c.fetchone()
         last_status = last_record['status'] if last_record else None
         hours_since_last = None
+        lts = None
         if last_record:
             try:
                 lts = parse_db_datetime(last_record['timestamp'])
@@ -628,9 +661,13 @@ def person_event(valid_data: PersonEventSchema):
             last_status,
             hours_since_last=hours_since_last,
             hostel_mode=hostel_movement_mode,
+            last_attendance_date=(
+                shift_policy.attendance_date(lts) if last_record and lts else None
+            ),
+            current_attendance_date=shift_policy.attendance_date(current_time_obj),
         )
 
-    activity_name, activity_type = "Work", "Work"
+    activity_name, activity_type = shift_policy.name or "Work", "Work"
     # (Simplified activity/shift logic for core split - should be fully migrated from monolithic)
     # Full shift matching logic here...
     
@@ -773,6 +810,7 @@ def person_event(valid_data: PersonEventSchema):
                 vendor_id=vendor_id_to_check,
                 person_id=person_id,
                 device_id=curr_dev_id,
+                attendance_date=shift_policy.attendance_date(current_time_obj).isoformat(),
                 class_year=resolved_scope.get("class_year", ""),
                 division=resolved_scope.get("division", ""),
                 branch=resolved_scope.get("branch", ""),
@@ -794,6 +832,7 @@ def person_event(valid_data: PersonEventSchema):
                 person_id,
                 target_attendance_id=ingestion.legacy_attendance_id,
                 hostel_mode=hostel_movement_mode,
+                shift_policy=shift_policy,
             )
             if timeline.target_status:
                 new_status = timeline.target_status
@@ -939,13 +978,21 @@ def get_attendance(valid_data: AttendanceFilterSchema):
         elif getattr(g, "username", None):
             query += " AND a.name = ?"
             params.append(g.username)
-    if s_date: query += " AND date(a.timestamp) >= ?"; params.append(s_date)
-    if e_date: query += " AND date(a.timestamp) <= ?"; params.append(e_date)
+    if s_date:
+        query += " AND a.timestamp >= ?"
+        params.append(f"{s_date} 00:00:00")
+    if e_date:
+        query += " AND a.timestamp < ?"
+        params.append((datetime.strptime(e_date, '%Y-%m-%d') + timedelta(days=2)).strftime('%Y-%m-%d 00:00:00'))
     if name: query += " AND a.name LIKE ?"; params.append(f"%{name}%")
     query += " ORDER BY a.timestamp DESC"
     c.execute(query, params)
     columns = [description[0] for description in c.description]
-    rows = c.fetchall(); conn.close()
+    rows = c.fetchall()
+    c.execute("SELECT shifts FROM companies WHERE vendor_id = ? LIMIT 1", (vendor_id,))
+    company_row = c.fetchone()
+    company_shifts = parse_shift_list(company_row[0] if company_row else None)
+    conn.close()
 
     attendance = []
     dynamic_filters = {
@@ -959,6 +1006,13 @@ def get_attendance(valid_data: AttendanceFilterSchema):
     requested_device = str(request.args.get("device_name") or "").strip()
     for row in rows:
         r = dict(row) if hasattr(row, "keys") else dict(zip(columns, row))
+        row_timestamp = parse_db_datetime(r.get("timestamp"))
+        shift_policy = choose_shift_policy(company_shifts, r.get("shift"))
+        attendance_day = shift_policy.attendance_date(row_timestamp) if row_timestamp else None
+        if s_date and (attendance_day is None or attendance_day.isoformat() < s_date):
+            continue
+        if e_date and (attendance_day is None or attendance_day.isoformat() > e_date):
+            continue
         custom = parse_custom_data(r.get("face_custom_data"))
         resolved_type = person_type_for(custom, r.get("system_role"), vertical)
         if wanted_type and resolved_type != wanted_type:
@@ -985,6 +1039,7 @@ def get_attendance(valid_data: AttendanceFilterSchema):
             "id": r["id"], "person_id": r.get("person_id"),
             "vendor_id": r.get("vendor_id"), "name": r["name"],
             "timestamp": str(r["timestamp"]),
+            "attendance_date": attendance_day.isoformat() if attendance_day else None,
             "status": r["status"], "activity": r["activity"],
             "is_late": r.get("is_late", 0) if late_enabled else 0,
             "department": r["department"], "designation": r["designation"],

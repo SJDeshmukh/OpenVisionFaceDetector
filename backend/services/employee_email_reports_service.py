@@ -10,6 +10,12 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 
 from services.payroll_service import calculate_salary_breakdown, get_approved_advances
+from services.attendance_shift_service import (
+    calculate_shift_wage,
+    choose_shift_policy,
+    parse_shift_list,
+    scheduled_payable_hours,
+)
 from services.person_scope_service import person_type_for, requested_person_type, vendor_vertical
 
 
@@ -177,6 +183,7 @@ def _settings(cursor, vendor_id):
         "global_esi_percentage": 0.75,
         "global_gratuity_percentage": 4.81,
         "global_gratuity_threshold_years": 5,
+        "overtime_multiplier": 1.0,
     }
     keys = [f"{key}_vendor_{vendor_id}" for key in defaults]
     placeholders = ", ".join("?" for _ in keys)
@@ -253,13 +260,14 @@ def build_employee_monthly_deliveries(vendor_id, month, person_type=None, filter
         cursor.execute("SELECT company_name FROM vendors WHERE id = ?", (vendor_id,))
         vendor = cursor.fetchone()
         vendor_name = vendor[0] if vendor else f"Vendor {vendor_id}"
-        cursor.execute("SELECT live_timetable, working_hours FROM companies WHERE vendor_id = ? LIMIT 1", (vendor_id,))
+        cursor.execute("SELECT live_timetable, working_hours, shifts FROM companies WHERE vendor_id = ? LIMIT 1", (vendor_id,))
         company = cursor.fetchone()
         try:
             timetable = json.loads(company[0] or "[]") if company else []
         except (TypeError, ValueError):
             timetable = []
         working_hours = max(0.25, _as_float(company[1] if company else 8, 8))
+        company_shifts = parse_shift_list(company[2] if company else None)
         settings = _settings(cursor, vendor_id)
         people = _load_people(cursor, vendor_id, person_type, filters=filters)
         person_ids = {person["id"] for person in people}
@@ -283,21 +291,37 @@ def build_employee_monthly_deliveries(vendor_id, month, person_type=None, filter
                 skipped_without_email += 1
                 continue
             records = grouped.get(person["id"], [])
-            sessions = calculate_daily_hours(records, timetable).get("sessions", [])
+            shift_policy = choose_shift_policy(company_shifts, person.get('shift'))
+            scheduled_hours = scheduled_payable_hours(shift_policy, working_hours)
+            sessions = calculate_daily_hours(
+                records,
+                timetable,
+                working_hours=scheduled_hours,
+                shift_policy=shift_policy,
+            ).get("sessions", [])
             total_hours = 0.0
             present_dates = set()
+            worked_seconds_by_day = defaultdict(float)
             for session in sessions:
                 stamp = _timestamp(session.get("start_ts"))
-                if stamp and start <= stamp.date() <= end and session.get("is_payable", False):
+                attendance_day = None
+                try:
+                    attendance_day = date.fromisoformat(session.get("attendance_date"))
+                except (TypeError, ValueError):
+                    if stamp:
+                        attendance_day = shift_policy.attendance_date(stamp)
+                if attendance_day and start <= attendance_day <= end and session.get("is_payable", False):
                     dur_sec = session.get("duration_seconds")
                     if dur_sec is None:
                         dur_sec = _as_float(session.get("duration_mins")) * 60.0
                     total_hours += _as_float(dur_sec) / 3600.0
-                    present_dates.add(stamp.date())
+                    present_dates.add(attendance_day)
+                    worked_seconds_by_day[attendance_day] += _as_float(dur_sec)
 
             late_dates = {
-                stamp.date() for record in records
-                if record.get("is_late") and (stamp := _timestamp(record.get("timestamp"))) and start <= stamp.date() <= end
+                shift_policy.attendance_date(stamp) for record in records
+                if record.get("is_late") and (stamp := _timestamp(record.get("timestamp")))
+                and start <= shift_policy.attendance_date(stamp) <= end
             }
             allowance = person.get("late_allowance_days")
             allowance = _as_int(allowance, settings["global_late_allowance"]) if allowance is not None else _as_int(settings["global_late_allowance"], 7)
@@ -305,7 +329,13 @@ def build_employee_monthly_deliveries(vendor_id, month, person_type=None, filter
             late_rate = _as_float(late_rate, settings["global_late_deduction"]) if late_rate is not None else _as_float(settings["global_late_deduction"])
             late_deduction = round(max(0, len(late_dates) - allowance) * late_rate, 2)
             daily_wage = _as_float(person.get("daily_wage"))
-            base_cost = round(total_hours * (daily_wage / working_hours), 2)
+            wage_result = calculate_shift_wage(
+                daily_wage,
+                worked_seconds_by_day,
+                scheduled_hours,
+                overtime_multiplier=_as_float(settings.get("overtime_multiplier"), 1.0),
+            )
+            base_cost = wage_result["gross_wage"]
 
             tenure_years = 0.0
             if person.get("joining_date"):
@@ -328,6 +358,8 @@ def build_employee_monthly_deliveries(vendor_id, month, person_type=None, filter
             net_payable = round(breakdown["net_before_advances"] - late_deduction - approved_advance, 2)
             payroll = {
                 "days_present": len(present_dates), "total_hours": round(total_hours, 2),
+                "regular_hours": wage_result["regular_hours"],
+                "overtime_hours": wage_result["overtime_hours"],
                 "daily_wage": daily_wage, "gross": round(breakdown["gross"], 2),
                 "pf": breakdown["deductions"]["pf"], "esi": breakdown["deductions"]["esi"],
                 "professional_tax": breakdown["deductions"]["pt"], "late_deduction": late_deduction,

@@ -1,6 +1,8 @@
 import json
 from datetime import datetime, date, timedelta
 
+from services.attendance_shift_service import attendance_date_for
+
 try:
     from utils import parse_db_datetime
 except ImportError:
@@ -16,7 +18,7 @@ except ImportError:
         except (TypeError, ValueError):
             return None
 
-def get_operational_date(dt, cutoff_hour=6):
+def get_operational_date(dt, cutoff_hour=6, shift_policy=None):
     """
     Returns the operational date for a given datetime based on a 06:00 AM shift start.
     Punches between 00:00 and 05:59:59 count toward the previous calendar day's shift.
@@ -24,6 +26,8 @@ def get_operational_date(dt, cutoff_hour=6):
     if dt is None:
         return None
     if isinstance(dt, datetime):
+        if shift_policy is not None:
+            return attendance_date_for(dt, shift_policy)
         if dt.hour < cutoff_hour:
             return (dt - timedelta(days=1)).date()
         return dt.date()
@@ -32,7 +36,8 @@ def get_operational_date(dt, cutoff_hour=6):
     return None
 
 def calculate_daily_hours(records, timetable=None, date_str=None, attendance_type='total_time',
-                          missing_checkout_deduction_percent=50, working_hours=8.0):
+                          missing_checkout_deduction_percent=50, working_hours=8.0,
+                          shift_policy=None):
     """
     Calculate work hours from a list of attendance records for a single user.
     Records must be sorted by timestamp ASC.
@@ -70,9 +75,9 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
             last_record = sorted_records[-1]
             if last_record['status'] == 'CHECK_IN':
                 now_dt = datetime.now()
-                now_op_date = get_operational_date(now_dt)
+                now_op_date = get_operational_date(now_dt, shift_policy=shift_policy)
                 last_ts = parse_db_datetime(last_record['timestamp'])
-                last_op_date = get_operational_date(last_ts) if last_ts else now_op_date
+                last_op_date = get_operational_date(last_ts, shift_policy=shift_policy) if last_ts else now_op_date
                 
                 is_current_shift = (last_op_date == now_op_date)
                 if date_str:
@@ -96,6 +101,7 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
                                 "activity": "Work",
                                 "is_payable": True,
                                 "start_ts": first_in.isoformat(),
+                                "attendance_date": get_operational_date(first_in, shift_policy=shift_policy).isoformat(),
                                 "end_ts": None,
                                 "start": first_in.strftime('%H:%M'),
                                 "end": "—",
@@ -115,6 +121,7 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
                     "activity": "Work",
                     "is_payable": True,
                     "start_ts": first_in.isoformat(),
+                    "attendance_date": get_operational_date(first_in, shift_policy=shift_policy).isoformat(),
                     "end_ts": effective_last_out.isoformat(),
                     "start": first_in.strftime('%H:%M'),
                     "end": effective_last_out.strftime('%H:%M'),
@@ -150,11 +157,11 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
         if not ts:
             continue # Skip invalid
 
-        record_op_date = get_operational_date(ts)
+        record_op_date = get_operational_date(ts, shift_policy=shift_policy)
 
         # If we have an open check-in from a previous operational day,
         # close it as a forgotten checkout before processing this new day.
-        if current_checkin is not None and get_operational_date(current_checkin) != record_op_date:
+        if current_checkin is not None and get_operational_date(current_checkin, shift_policy=shift_policy) != record_op_date:
             try:
                 deduction_pct = float(missing_checkout_deduction_percent)
                 deduction_pct = max(0.0, min(100.0, deduction_pct))
@@ -166,6 +173,7 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
                     "activity": current_checkin_activity or "Work",
                     "is_payable": True,
                     "start_ts": current_checkin.isoformat(),
+                    "attendance_date": get_operational_date(current_checkin, shift_policy=shift_policy).isoformat(),
                     "end_ts": None,
                     "start": current_checkin.strftime('%H:%M'),
                     "end": "—",
@@ -191,6 +199,9 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
                 
                 is_session_payable = False
                 session_activity_lower = session_activity.lower().strip() if session_activity else ""
+                shift_activity_lower = (
+                    str(getattr(shift_policy, "name", "") or "").lower().strip()
+                )
                 
                 if timetable:
                     found_act = None
@@ -203,9 +214,15 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
                         act_type = found_act.get('type', 'Work')
                         is_session_payable = found_act.get('is_payable', act_type == 'Work')
                     else:
-                        is_session_payable = (session_activity_lower == 'work' or not session_activity_lower)
+                        is_session_payable = (
+                            session_activity_lower in {'work', shift_activity_lower}
+                            or not session_activity_lower
+                        )
                 else:
-                    is_session_payable = (session_activity_lower == 'work' or not session_activity_lower)
+                    is_session_payable = (
+                        session_activity_lower in {'work', shift_activity_lower}
+                        or not session_activity_lower
+                    )
 
                 if is_session_payable:
                     total_seconds += duration
@@ -215,6 +232,7 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
                     "activity": session_activity,
                     "is_payable": is_session_payable,
                     "start_ts": current_checkin.isoformat(),
+                    "attendance_date": get_operational_date(current_checkin, shift_policy=shift_policy).isoformat(),
                     "end_ts": ts.isoformat(),
                     "start": current_checkin.strftime('%H:%M'),
                     "end": ts.strftime('%H:%M'),
@@ -227,11 +245,11 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
 
     is_active = current_checkin is not None
     now_dt = datetime.now()
-    now_op_date = get_operational_date(now_dt)
+    now_op_date = get_operational_date(now_dt, shift_policy=shift_policy)
     is_current_shift = False
 
     if is_active:
-        checkin_op_date = get_operational_date(current_checkin)
+        checkin_op_date = get_operational_date(current_checkin, shift_policy=shift_policy)
         # Determine if this session belongs to the currently ongoing operational shift
         is_current_shift = (checkin_op_date == now_op_date)
         if date_str:
@@ -254,6 +272,9 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
                 
                 active_activity_name = last_in_record.get('activity', 'Work') if last_in_record else "Unknown"
                 active_activity_lower = active_activity_name.lower().strip() if active_activity_name else ""
+                shift_activity_lower = (
+                    str(getattr(shift_policy, "name", "") or "").lower().strip()
+                )
                 is_active_payable = False
                 found_act = None
                 if timetable:
@@ -265,9 +286,15 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
                         act_type = found_act.get('type', 'Work')
                         is_active_payable = found_act.get('is_payable', act_type == 'Work')
                     else:
-                        is_active_payable = (active_activity_lower == 'work' or not active_activity_lower)
+                        is_active_payable = (
+                            active_activity_lower in {'work', shift_activity_lower}
+                            or not active_activity_lower
+                        )
                 else:
-                    is_active_payable = (active_activity_lower == 'work' or not active_activity_lower)
+                    is_active_payable = (
+                        active_activity_lower in {'work', shift_activity_lower}
+                        or not active_activity_lower
+                    )
                 
                 if is_active_payable:
                     total_seconds += duration
@@ -277,6 +304,7 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
                     "activity": active_activity_name,
                     "is_payable": is_active_payable,
                     "start_ts": current_checkin.isoformat(),
+                    "attendance_date": get_operational_date(current_checkin, shift_policy=shift_policy).isoformat(),
                     "end_ts": now_dt.isoformat(),
                     "start": current_checkin.strftime('%H:%M'),
                     "end": now_dt.strftime('%H:%M'),
@@ -298,6 +326,7 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
                     "activity": current_checkin_activity or "Work",
                     "is_payable": True,
                     "start_ts": current_checkin.isoformat(),
+                    "attendance_date": get_operational_date(current_checkin, shift_policy=shift_policy).isoformat(),
                     "end_ts": None,
                     "start": current_checkin.strftime('%H:%M'),
                     "end": "—",

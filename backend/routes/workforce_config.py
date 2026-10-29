@@ -1,6 +1,7 @@
 """Authenticated v2 APIs for normalized workforce and shift configuration."""
 
 from datetime import date, datetime
+import json
 import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -9,6 +10,7 @@ from flask import Blueprint, g, jsonify, request
 from db_factory import get_db_connection, set_row_factory
 from services.auth_service import require_auth
 from services.shift_resolution_service import resolve_shift
+from utils import cache_delete_vendor_prefix
 
 
 workforce_config_bp = Blueprint("workforce_config_bp", __name__)
@@ -218,7 +220,38 @@ def shifts():
                  _validate_time(segment.get("end_time"), "segment.end_time"),
                  int(bool(segment.get("is_paid", segment_type == "WORK"))), sequence),
             )
+        # The employee registration API still reads the legacy company shift
+        # list. Keep it transactionally aligned with normalized v2 creation so
+        # a new shift is immediately assignable to employees everywhere.
+        cursor.execute("SELECT id, shifts FROM companies WHERE vendor_id = ? LIMIT 1", (vendor_id,))
+        company = cursor.fetchone()
+        if company:
+            try:
+                company_shifts = json.loads(company[1]) if isinstance(company[1], str) else list(company[1] or [])
+            except (TypeError, ValueError):
+                company_shifts = []
+            company_shifts = [
+                item for item in company_shifts
+                if isinstance(item, dict)
+                and str(item.get("id", "")) != str(shift_id)
+                and str(item.get("name", "")).strip().casefold() != name.casefold()
+            ]
+            company_shifts.append({
+                "id": shift_id,
+                "code": code,
+                "name": name,
+                "start_time": start_time,
+                "end_time": end_time,
+                "grace_period_mins": max(0, int(data.get("grace_minutes") or 0)),
+                "timezone": timezone,
+                "active": True,
+            })
+            cursor.execute(
+                "UPDATE companies SET shifts = ?, last_modified_at = ? WHERE id = ? AND vendor_id = ?",
+                (json.dumps(company_shifts), datetime.now(), company[0], vendor_id),
+            )
         conn.commit()
+        cache_delete_vendor_prefix(vendor_id)
         return jsonify({"id": shift_id, "version_id": version_id}), 201
     except ValueError as exc:
         conn.rollback()
@@ -244,8 +277,9 @@ def create_shift_assignment():
             raise ValueError(f"scope_type must be one of {sorted(SCOPE_TYPES)}")
         effective_from = _parse_date(data.get("effective_from"), "effective_from")
         effective_to = _parse_date(data.get("effective_to"), "effective_to", required=False)
-        cursor.execute("SELECT id FROM shifts WHERE id = ? AND vendor_id = ?", (shift_id, vendor_id))
-        if not cursor.fetchone():
+        cursor.execute("SELECT id, name FROM shifts WHERE id = ? AND vendor_id = ?", (shift_id, vendor_id))
+        shift_row = cursor.fetchone()
+        if not shift_row:
             raise ValueError("shift not found")
         targets = {
             "EMPLOYEE": data.get("person_id"), "ORG_UNIT": data.get("organization_unit_id"),
@@ -277,7 +311,13 @@ def create_shift_assignment():
              int(data.get("priority") or 0), "MANUAL"),
         )
         assignment_id = cursor.lastrowid
+        if scope == "EMPLOYEE":
+            cursor.execute(
+                "UPDATE faces SET shift = ? WHERE id = ? AND vendor_id = ?",
+                (shift_row[1], data.get("person_id"), vendor_id),
+            )
         conn.commit()
+        cache_delete_vendor_prefix(vendor_id)
         return jsonify({"id": assignment_id}), 201
     except (TypeError, ValueError) as exc:
         conn.rollback()
