@@ -207,6 +207,7 @@ def shifts():
              max(0, int(data.get("grace_minutes") or 0)), cross_midnight),
         )
         version_id = cursor.lastrowid
+        shift_assignment_person_ids = []
         for sequence, segment in enumerate(data.get("segments") or []):
             segment_type = str(segment.get("segment_type") or "BREAK").upper()
             if segment_type not in {"WORK", "BREAK"}:
@@ -250,8 +251,34 @@ def shifts():
                 "UPDATE companies SET shifts = ?, last_modified_at = ? WHERE id = ? AND vendor_id = ?",
                 (json.dumps(company_shifts), datetime.now(), company[0], vendor_id),
             )
+            from services.attendance_shift_service import synchronize_shift_assignments
+            shift_assignment_person_ids = synchronize_shift_assignments(
+                cursor,
+                vendor_id,
+                company_shifts,
+                previous_shifts=company[1],
+            )
         conn.commit()
         cache_delete_vendor_prefix(vendor_id)
+        if shift_assignment_person_ids:
+            try:
+                from app import socketio
+                socketio.emit(
+                    'persons_updated',
+                    {
+                        'vendor_id': vendor_id,
+                        'action': 'shift_assignment',
+                        'person_ids': [str(person_id) for person_id in shift_assignment_person_ids],
+                    },
+                    room=f"vendor_{vendor_id}",
+                )
+            except Exception:
+                pass
+            try:
+                from notifications import send_face_sync_fcm
+                send_face_sync_fcm(vendor_id, "sync")
+            except Exception:
+                pass
         return jsonify({"id": shift_id, "version_id": version_id}), 201
     except ValueError as exc:
         conn.rollback()

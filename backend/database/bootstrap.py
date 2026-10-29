@@ -21,6 +21,7 @@ def bootstrap_db():
     
     # 4. Run schema migrations/checks for all database types
     add_missing_columns()
+    assign_default_employee_shifts()
     repair_face_display_ids()
     ensure_audit_logs_table()
     
@@ -115,6 +116,48 @@ def migrate_legacy_usernames_to_email():
         logger.error("Legacy email-login migration failed: %s", exc)
     finally:
         conn.close()
+
+
+def assign_default_employee_shifts():
+    """Backfill the first active company shift without replacing manual choices."""
+    from services.attendance_shift_service import assign_default_shift_to_unassigned
+
+    conn = get_db_connection()
+    changed_by_vendor = {}
+    try:
+        c = conn.cursor()
+        c.execute(
+            "SELECT vendor_id, shifts FROM companies "
+            "WHERE vendor_id IS NOT NULL ORDER BY vendor_id, id"
+        )
+        seen_vendors = set()
+        for row in c.fetchall() or []:
+            vendor_id = int(row[0])
+            if vendor_id in seen_vendors:
+                continue
+            seen_vendors.add(vendor_id)
+            person_ids = assign_default_shift_to_unassigned(c, vendor_id, row[1])
+            if person_ids:
+                changed_by_vendor[vendor_id] = person_ids
+        conn.commit()
+        if changed_by_vendor:
+            logger.info(
+                "Assigned default timetable shifts to %s existing people across %s vendors",
+                sum(len(person_ids) for person_ids in changed_by_vendor.values()),
+                len(changed_by_vendor),
+            )
+    except Exception as exc:
+        conn.rollback()
+        logger.error("Default employee shift backfill failed: %s", exc)
+    finally:
+        conn.close()
+
+    for vendor_id in changed_by_vendor:
+        try:
+            from notifications import send_face_sync_fcm
+            send_face_sync_fcm(vendor_id, "sync")
+        except Exception:
+            pass
 
 def add_performance_indexes():
     """Adds missing indexes to improve query performance."""

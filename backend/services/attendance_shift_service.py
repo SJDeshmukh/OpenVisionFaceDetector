@@ -44,6 +44,81 @@ def parse_shift_list(value: Any) -> list[dict]:
     return [item for item in value if isinstance(item, dict)]
 
 
+def first_active_shift_name(value: Any) -> Optional[str]:
+    """Return the first active timetable shift name in configured order."""
+    for item in parse_shift_list(value):
+        if item.get("active", item.get("is_active", True)) is False:
+            continue
+        name = str(item.get("name") or "").strip()
+        if name:
+            return name
+    return None
+
+
+def assign_default_shift_to_unassigned(cursor, vendor_id: int, shifts: Any) -> list[int]:
+    """Assign the first active shift without overwriting manual assignments.
+
+    Returning the affected person IDs lets callers notify connected clients
+    after their transaction commits. Database face-change triggers publish the
+    same updates through the mobile delta-sync ledger.
+    """
+    default_name = first_active_shift_name(shifts)
+    if not default_name or not vendor_id:
+        return []
+    cursor.execute(
+        """SELECT id FROM faces
+           WHERE vendor_id = ? AND COALESCE(TRIM(shift), '') = ''
+           ORDER BY id""",
+        (vendor_id,),
+    )
+    person_ids = [int(row[0]) for row in (cursor.fetchall() or [])]
+    if person_ids:
+        cursor.execute(
+            """UPDATE faces SET shift = ?
+               WHERE vendor_id = ? AND COALESCE(TRIM(shift), '') = ''""",
+            (default_name, vendor_id),
+        )
+    return person_ids
+
+
+def synchronize_shift_assignments(
+    cursor,
+    vendor_id: int,
+    shifts: Any,
+    *,
+    previous_shifts: Any = None,
+) -> list[int]:
+    """Keep renamed shifts valid, then fill only currently blank assignments."""
+    changed_ids: set[int] = set()
+    previous_by_id = {
+        str(item.get("id")): str(item.get("name") or "").strip()
+        for item in parse_shift_list(previous_shifts)
+        if item.get("id") not in (None, "") and str(item.get("name") or "").strip()
+    }
+    current_by_id = {
+        str(item.get("id")): str(item.get("name") or "").strip()
+        for item in parse_shift_list(shifts)
+        if item.get("id") not in (None, "") and str(item.get("name") or "").strip()
+    }
+    for shift_id, old_name in previous_by_id.items():
+        new_name = current_by_id.get(shift_id)
+        if not new_name or new_name.casefold() == old_name.casefold():
+            continue
+        cursor.execute(
+            "SELECT id FROM faces WHERE vendor_id = ? AND LOWER(TRIM(shift)) = LOWER(?)",
+            (vendor_id, old_name),
+        )
+        renamed_ids = [int(row[0]) for row in (cursor.fetchall() or [])]
+        if renamed_ids:
+            cursor.execute(
+                "UPDATE faces SET shift = ? WHERE vendor_id = ? AND LOWER(TRIM(shift)) = LOWER(?)",
+                (new_name, vendor_id, old_name),
+            )
+            changed_ids.update(renamed_ids)
+    changed_ids.update(assign_default_shift_to_unassigned(cursor, vendor_id, shifts))
+    return sorted(changed_ids)
+
+
 @dataclass(frozen=True)
 class ShiftPolicy:
     shift_id: Optional[str]

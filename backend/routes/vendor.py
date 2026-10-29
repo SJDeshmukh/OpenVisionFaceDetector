@@ -458,14 +458,17 @@ def update_company_settings(company_id):
 
     conn = get_db_connection()
     c = conn.cursor()
+    previous_shifts = None
+    shift_assignment_person_ids = []
     
     # Verify Ownership
     if vendor_id:
-        c.execute("SELECT vendor_id FROM companies WHERE id = ?", (company_id,))
+        c.execute("SELECT vendor_id, shifts FROM companies WHERE id = ?", (company_id,))
         row = c.fetchone()
         if not row or (row[0] and row[0] != vendor_id):
              conn.close()
              return jsonify({"error": "Access Denied"}), 403
+        previous_shifts = row[1]
 
     data = request.json
     shifts = data.get("shifts") 
@@ -495,9 +498,16 @@ def update_company_settings(company_id):
                 conn.close()
                 return jsonify({"error": "Feature 'shifts' is not enabled for your plan."}), 403
 
-        if isinstance(shifts, list):
-            shifts = json.dumps(shifts)
+        shift_items = shifts if isinstance(shifts, list) else json_list(shifts)
+        shifts = json.dumps(shift_items)
         c.execute("UPDATE companies SET shifts = ? WHERE id = ?", (shifts, company_id))
+        from services.attendance_shift_service import synchronize_shift_assignments
+        shift_assignment_person_ids = synchronize_shift_assignments(
+            c,
+            vendor_id,
+            shift_items,
+            previous_shifts=previous_shifts,
+        )
     
     if working_hours is not None:
         c.execute("UPDATE companies SET working_hours = ? WHERE id = ?", (working_hours, company_id))
@@ -513,8 +523,24 @@ def update_company_settings(company_id):
                 {'vendor_id': vendor_id, 'company_id': company_id, 'kind': 'shifts_updated'},
                 room=f"vendor_{vendor_id}",
             )
+            if shift_assignment_person_ids:
+                socketio.emit(
+                    'persons_updated',
+                    {
+                        'vendor_id': vendor_id,
+                        'action': 'shift_assignment',
+                        'person_ids': [str(person_id) for person_id in shift_assignment_person_ids],
+                    },
+                    room=f"vendor_{vendor_id}",
+                )
         except Exception:
             pass
+        if shift_assignment_person_ids:
+            try:
+                from notifications import send_face_sync_fcm
+                send_face_sync_fcm(vendor_id, "sync")
+            except Exception:
+                pass
     return jsonify({"success": True})
 
 
@@ -678,11 +704,26 @@ def delete_company_shift(company_id, shift_id):
              json.dumps(updated_live_activities), g.username, datetime.now(),
              company_id, vendor_id),
         )
+        shift_assignment_person_ids = []
         if deleted_shift:
+            c.execute(
+                "SELECT id FROM faces WHERE vendor_id = ? AND (shift = ? OR shift = ?)",
+                (vendor_id, str(deleted_shift.get("name") or ""), str(shift_id)),
+            )
+            shift_assignment_person_ids = [int(row[0]) for row in (c.fetchall() or [])]
             c.execute(
                 "UPDATE faces SET shift = '' WHERE vendor_id = ? AND (shift = ? OR shift = ?)",
                 (vendor_id, str(deleted_shift.get("name") or ""), str(shift_id)),
             )
+        from services.attendance_shift_service import synchronize_shift_assignments
+        shift_assignment_person_ids = sorted(set(shift_assignment_person_ids) | set(
+            synchronize_shift_assignments(
+                c,
+                vendor_id,
+                updated_shifts,
+                previous_shifts=company[0],
+            )
+        ))
         conn.commit()
         cache_delete_vendor_prefix(vendor_id)
         log_audit(
@@ -703,8 +744,24 @@ def delete_company_shift(company_id, shift_id):
                 {'vendor_id': vendor_id, 'company_id': company_id, 'kind': 'shift_deleted'},
                 room=f"vendor_{vendor_id}",
             )
+            if shift_assignment_person_ids:
+                socketio.emit(
+                    'persons_updated',
+                    {
+                        'vendor_id': vendor_id,
+                        'action': 'shift_assignment',
+                        'person_ids': [str(person_id) for person_id in shift_assignment_person_ids],
+                    },
+                    room=f"vendor_{vendor_id}",
+                )
         except Exception:
             pass
+        if shift_assignment_person_ids:
+            try:
+                from notifications import send_face_sync_fcm
+                send_face_sync_fcm(vendor_id, "sync")
+            except Exception:
+                pass
         return jsonify({
             "success": True,
             "shifts": updated_shifts,

@@ -784,6 +784,14 @@ def upload_face():
     try:
         metadata_cursor = metadata_conn.cursor()
         vertical = vendor_vertical(metadata_cursor, vendor_id) if vendor_id else ""
+        if vendor_id and not str(shift or "").strip():
+            from services.attendance_shift_service import first_active_shift_name
+            metadata_cursor.execute(
+                "SELECT shifts FROM companies WHERE vendor_id = ? ORDER BY id LIMIT 1",
+                (vendor_id,),
+            )
+            company_shift_row = metadata_cursor.fetchone()
+            shift = first_active_shift_name(company_shift_row[0] if company_shift_row else None) or ""
         if is_school_hostel(vertical):
             incoming_type = normalize_person_type(
                 data.get("person_type") or custom_dict.get("person_type"), "student"
