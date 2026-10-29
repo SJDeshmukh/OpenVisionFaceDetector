@@ -12,6 +12,7 @@ class TestPostgresFallback(unittest.TestCase):
         try:
             os.environ["DB_PATH"] = db_path
             os.environ["DATABASE_URL"] = "postgresql://invalid:invalid@127.0.0.1:65432/doesnotexist"
+            os.environ["ALLOW_SQLITE_FAILOVER"] = "true"
 
             if "app" in sys.modules:
                 del sys.modules["app"]

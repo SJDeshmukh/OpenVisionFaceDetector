@@ -102,6 +102,20 @@ class PostgresPoolTimeoutError(TimeoutError):
     """Raised when PostgreSQL is healthy but every pooled connection is busy."""
 
 
+class PostgresUnavailableError(ConnectionError):
+    """Raised when the configured PostgreSQL primary cannot be reached."""
+
+
+def _sqlite_failover_enabled():
+    """
+    SQLite failover is opt-in because an unmirrored local database can return
+    stale identities or split attendance writes from the PostgreSQL primary.
+    """
+    return str(os.environ.get("ALLOW_SQLITE_FAILOVER", "false")).strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+
+
 def _is_pool_exhaustion_error(error):
     """psycopg2's ThreadedConnectionPool raises immediately when it is full."""
     return "connection pool exhausted" in str(error).strip().lower()
@@ -442,9 +456,14 @@ def get_db_connection(timeout=30):
     
     current_time = time.time()
     
-    # 1. Try PostgreSQL (Primary) if DATABASE_URL is set and we're not in cooldown
-    # We still try if not in fallback mode, but if we are in fallback, we wait for cooldown
-    should_try_pg = DATABASE_URL and (not _IS_FALLBACK_MODE or (current_time - _LAST_PG_RETRY_TIME) > _PG_COOLDOWN_SECONDS)
+    # A PostgreSQL production deployment always retries its primary. The
+    # cooldown applies only when legacy SQLite failover was explicitly enabled.
+    allow_sqlite_failover = _sqlite_failover_enabled()
+    should_try_pg = DATABASE_URL and (
+        not allow_sqlite_failover
+        or not _IS_FALLBACK_MODE
+        or (current_time - _LAST_PG_RETRY_TIME) > _PG_COOLDOWN_SECONDS
+    )
     
     if should_try_pg:
         try:
@@ -492,6 +511,15 @@ def get_db_connection(timeout=30):
             )
             raise
         except Exception as e:
+            if not allow_sqlite_failover:
+                logger.error(
+                    "PostgreSQL connection failed; refusing unsafe SQLite fallback: %s",
+                    e,
+                )
+                raise PostgresUnavailableError(
+                    "PostgreSQL is temporarily unavailable"
+                ) from e
+
             # Only log the error once when it first fails or after cooldown
             if not _IS_FALLBACK_MODE:
                 logger.error(f"PostgreSQL Connection failed, falling back to SQLite: {e}")
@@ -502,7 +530,10 @@ def get_db_connection(timeout=30):
             _IS_FALLBACK_MODE = True
             _LAST_PG_RETRY_TIME = current_time
     
-    # 2. SQLite (Fallback)
+    # 2. SQLite (primary for local installs, or explicit legacy failover only)
+    if DATABASE_URL and not allow_sqlite_failover:
+        raise PostgresUnavailableError("PostgreSQL is temporarily unavailable")
+
     try:
         conn = sqlite3.connect(DB_PATH, timeout=timeout, check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")

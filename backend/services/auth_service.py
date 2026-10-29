@@ -9,7 +9,11 @@ from datetime import date, datetime, timedelta
 from functools import wraps
 from flask import request, jsonify, g
 from utils import parse_db_date
-from db_factory import get_db_connection, PostgresPoolTimeoutError
+from db_factory import (
+    get_db_connection,
+    PostgresPoolTimeoutError,
+    PostgresUnavailableError,
+)
 from services.login_identity_service import (
     is_valid_login_email,
     login_email_from_profile,
@@ -232,11 +236,13 @@ def authenticate_vendor_access():
         g._vendor_access_checked = True
         return vendor_id, None
 
-    except PostgresPoolTimeoutError:
-        logger.warning("Authentication delayed because the PostgreSQL pool is busy")
+    except (PostgresPoolTimeoutError, PostgresUnavailableError) as error:
+        pool_busy = isinstance(error, PostgresPoolTimeoutError)
+        code = "DATABASE_BUSY" if pool_busy else "DATABASE_UNAVAILABLE"
+        logger.warning("Authentication database request is retryable: %s", code)
         response = jsonify({
-            "error": "The database is temporarily busy. Please retry.",
-            "code": "DATABASE_BUSY",
+            "error": "The database is temporarily unavailable. Please retry.",
+            "code": code,
             "retryable": True,
         })
         response.headers["Retry-After"] = "1"

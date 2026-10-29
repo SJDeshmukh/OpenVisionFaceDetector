@@ -11,6 +11,10 @@ class PostgresPoolTimeoutError(TimeoutError):
     pass
 
 
+class PostgresUnavailableError(ConnectionError):
+    pass
+
+
 class Response(dict):
     def __init__(self, payload):
         super().__init__(payload)
@@ -29,6 +33,7 @@ def _install_common_stubs(monkeypatch):
 
     db_factory = types.ModuleType("db_factory")
     db_factory.PostgresPoolTimeoutError = PostgresPoolTimeoutError
+    db_factory.PostgresUnavailableError = PostgresUnavailableError
     db_factory.get_db_connection = lambda: (_ for _ in ()).throw(
         PostgresPoolTimeoutError("pool busy")
     )
@@ -103,6 +108,17 @@ def test_authentication_returns_retryable_503_when_pool_stays_busy(monkeypatch):
     assert response["retryable"] is True
     assert response.headers["Retry-After"] == "1"
 
+    auth_service.get_db_connection = lambda: (_ for _ in ()).throw(
+        PostgresUnavailableError("database down")
+    )
+    vendor_id, unavailable_error = auth_service.authenticate_vendor_access()
+    unavailable_response, unavailable_status = unavailable_error
+
+    assert vendor_id is None
+    assert unavailable_status == 503
+    assert unavailable_response["code"] == "DATABASE_UNAVAILABLE"
+    assert unavailable_response["retryable"] is True
+
 
 def test_global_handler_returns_retryable_503(monkeypatch):
     _install_common_stubs(monkeypatch)
@@ -132,3 +148,10 @@ def test_global_handler_returns_retryable_503(monkeypatch):
     assert response["code"] == "DATABASE_BUSY"
     assert response["retryable"] is True
     assert response.headers["Retry-After"] == "1"
+
+    unavailable_response, unavailable_status = app.handlers[PostgresUnavailableError](
+        PostgresUnavailableError("database down")
+    )
+    assert unavailable_status == 503
+    assert unavailable_response["code"] == "DATABASE_UNAVAILABLE"
+    assert unavailable_response["retryable"] is True

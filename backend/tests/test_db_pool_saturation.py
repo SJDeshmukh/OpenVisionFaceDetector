@@ -84,7 +84,29 @@ def test_busy_pool_retries_until_a_connection_is_available(monkeypatch):
     assert pool.attempts == 2
 
 
-def test_actual_postgres_failure_keeps_existing_sqlite_failover(monkeypatch, tmp_path):
+def test_actual_postgres_failure_refuses_unmirrored_sqlite(monkeypatch):
+    db_factory = _load_db_factory(monkeypatch)
+
+    class FailedPool:
+        def getconn(self):
+            raise RuntimeError("database server is unavailable")
+
+    monkeypatch.setattr(db_factory, "get_pg_pool", lambda: FailedPool())
+
+    def unexpected_sqlite(*args, **kwargs):
+        raise AssertionError("Unmirrored SQLite must not receive production traffic")
+
+    monkeypatch.setattr(db_factory.sqlite3, "connect", unexpected_sqlite)
+
+    with pytest.raises(db_factory.PostgresUnavailableError):
+        db_factory.get_db_connection()
+
+    assert db_factory.is_fallback_mode() is False
+
+
+def test_sqlite_failover_remains_available_only_when_explicitly_enabled(
+    monkeypatch, tmp_path
+):
     db_factory = _load_db_factory(monkeypatch)
 
     class FailedPool:
@@ -92,6 +114,7 @@ def test_actual_postgres_failure_keeps_existing_sqlite_failover(monkeypatch, tmp
             raise RuntimeError("database server is unavailable")
 
     fallback_path = tmp_path / "fallback.sqlite"
+    monkeypatch.setenv("ALLOW_SQLITE_FAILOVER", "true")
     monkeypatch.setattr(db_factory, "DB_PATH", str(fallback_path))
     monkeypatch.setattr(db_factory, "get_pg_pool", lambda: FailedPool())
 
