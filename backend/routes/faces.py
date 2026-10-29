@@ -35,6 +35,11 @@ from services.person_scope_service import (
 )
 from services.person_delete_service import delete_person_dependencies
 from services.display_id_service import compact_vendor_display_ids
+from services.person_image_cache_service import (
+    PRIVATE_IMAGE_CACHE_CONTROL,
+    PRIVATE_IMAGE_REDIRECT_CACHE_CONTROL,
+    load_person_image_versions,
+)
 
 def _get_faculty_identifiers(c, username):
     """Fetch all possible strings that identify this faculty member (username, name, email)."""
@@ -179,12 +184,16 @@ def person_image(person_id):
 
     if image_value.startswith("s3://"):
         try:
-            return redirect(presigned_url_for_key(image_value), code=302)
+            response = redirect(presigned_url_for_key(image_value), code=302)
+            response.headers["Cache-Control"] = PRIVATE_IMAGE_REDIRECT_CACHE_CONTROL
+            return response
         except Exception:
             logger.warning("Could not create face image URL for person_id=%s", person_id, exc_info=True)
             return jsonify({"error": "Face image is unavailable"}), 503
     if image_value.startswith(("http://", "https://")):
-        return redirect(_renew_object_storage_url(image_value) or image_value, code=302)
+        response = redirect(_renew_object_storage_url(image_value) or image_value, code=302)
+        response.headers["Cache-Control"] = PRIVATE_IMAGE_REDIRECT_CACHE_CONTROL
+        return response
 
     mime_type = "image/jpeg"
     encoded = image_value
@@ -210,9 +219,9 @@ def person_image(person_id):
         mimetype=mime_type,
         conditional=True,
         etag=hashlib.sha256(image_bytes).hexdigest(),
-        max_age=0,
+        max_age=86400,
     )
-    response.headers["Cache-Control"] = "private, no-cache"
+    response.headers["Cache-Control"] = PRIVATE_IMAGE_CACHE_CONTROL
     return response
 
 def _unassign_faculty_from_classes(c, conn, vendor_id, usernames):
@@ -566,6 +575,11 @@ def get_persons():
         conn.close()
         return jsonify({"error": str(e)}), 500
 
+    image_versions = load_person_image_versions(
+        conn, c, vendor_id,
+        [(dict(row) if not isinstance(row, dict) else row).get("id") for row in rows],
+    )
+
     class_id = request.args.get("class_id")
     class_year = request.args.get("class_year")
     division = request.args.get("division")
@@ -595,7 +609,7 @@ def get_persons():
             continue
         has_face_image = bool(r.pop("has_face_image", 0))
         if has_face_image:
-            r["image_url"] = _person_image_url(r["id"])
+            r["image_url"] = _person_image_url(r["id"], image_versions.get(int(r["id"])))
 
         # Preserve inline-image compatibility for clients that explicitly request it.
         img = r.get("face_image")
@@ -1666,7 +1680,11 @@ def download_faces():
         # No vendor_id (SuperAdmin), fetch all
         c.execute(query + " ORDER BY f.display_id ASC", [])
         rows = c.fetchall()
-    
+
+    image_versions = load_person_image_versions(
+        conn, c, vendor_id,
+        [(dict(row) if not isinstance(row, dict) else row).get("id") for row in rows],
+    )
     conn.close()
     
     resp_faces = []
@@ -1693,7 +1711,9 @@ def download_faces():
         }
 
         if bool(r.get("has_face_image", 0)):
-            face_item["image_url"] = _person_image_url(r.get("id"), current_cursor)
+            face_item["image_url"] = _person_image_url(
+                r.get("id"), image_versions.get(int(r.get("id")))
+            )
         
         try:
             if face_item["face_image"] and isinstance(face_item["face_image"], str) and face_item["face_image"].startswith("s3://"):

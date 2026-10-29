@@ -531,6 +531,7 @@ def _init_pg_schema_on_conn(conn):
         "CREATE TABLE IF NOT EXISTS active_sessions (token TEXT PRIMARY KEY, username TEXT, vendor_id INTEGER, device_id TEXT, platform TEXT, last_active TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS face_sync_changes (seq BIGSERIAL PRIMARY KEY, vendor_id INTEGER NOT NULL, person_id INTEGER NOT NULL, operation TEXT NOT NULL, changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE INDEX IF NOT EXISTS idx_face_sync_changes_vendor_seq ON face_sync_changes(vendor_id, seq)",
+        "CREATE INDEX IF NOT EXISTS idx_face_sync_changes_vendor_person_seq ON face_sync_changes(vendor_id, person_id, seq)",
         """CREATE OR REPLACE FUNCTION record_face_sync_change() RETURNS trigger AS $$
         BEGIN
             IF TG_OP = 'DELETE' THEN
@@ -952,6 +953,7 @@ def init_sqlite_schema(conn):
         "CREATE TABLE IF NOT EXISTS active_sessions (token TEXT PRIMARY KEY, username TEXT, vendor_id INTEGER, device_id TEXT, platform TEXT, last_active DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS face_sync_changes (seq INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER NOT NULL, person_id INTEGER NOT NULL, operation TEXT NOT NULL, changed_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE INDEX IF NOT EXISTS idx_face_sync_changes_vendor_seq ON face_sync_changes(vendor_id, seq)",
+        "CREATE INDEX IF NOT EXISTS idx_face_sync_changes_vendor_person_seq ON face_sync_changes(vendor_id, person_id, seq)",
         "CREATE TRIGGER IF NOT EXISTS trg_faces_sync_insert AFTER INSERT ON faces BEGIN INSERT INTO face_sync_changes(vendor_id, person_id, operation) VALUES (NEW.vendor_id, NEW.id, 'INSERT'); END",
         "CREATE TRIGGER IF NOT EXISTS trg_faces_sync_update AFTER UPDATE ON faces BEGIN INSERT INTO face_sync_changes(vendor_id, person_id, operation) VALUES (NEW.vendor_id, NEW.id, 'UPDATE'); END",
         "CREATE TRIGGER IF NOT EXISTS trg_faces_sync_delete AFTER DELETE ON faces BEGIN INSERT INTO face_sync_changes(vendor_id, person_id, operation) VALUES (OLD.vendor_id, OLD.id, 'DELETE'); END",

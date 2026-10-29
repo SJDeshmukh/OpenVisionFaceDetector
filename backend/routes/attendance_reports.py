@@ -39,6 +39,7 @@ from services.person_scope_service import (
     requested_person_type,
     vendor_vertical,
 )
+from services.person_image_cache_service import load_person_image_versions
 
 attendance_reports_bp = Blueprint('attendance_reports_bp', __name__)
 
@@ -707,29 +708,7 @@ def get_payroll_report(valid_data: PayrollReportRequest):
         person['person_type'] = resolved_type
         persons[person['id']] = person
 
-    image_version = None
-    image_version_savepoint = bool(getattr(conn, "_is_pg", False))
-    try:
-        if image_version_savepoint:
-            c.execute("SAVEPOINT payroll_image_version")
-        c.execute(
-            "SELECT COALESCE(MAX(seq), 0) FROM face_sync_changes WHERE vendor_id = ?",
-            (vendor_id,),
-        )
-        version_row = c.fetchone()
-        image_version = int(version_row[0] or 0) if version_row else 0
-        if image_version_savepoint:
-            c.execute("RELEASE SAVEPOINT payroll_image_version")
-    except Exception:
-        # Older databases without the change ledger can still serve stable,
-        # revalidated image URLs.
-        if image_version_savepoint:
-            try:
-                c.execute("ROLLBACK TO SAVEPOINT payroll_image_version")
-                c.execute("RELEASE SAVEPOINT payroll_image_version")
-            except Exception:
-                pass
-        image_version = None
+    image_versions = load_person_image_versions(conn, c, vendor_id, persons.keys())
     
     global_allowance = int(stored_settings.get('global_late_allowance', 7))
     global_deduction = float(stored_settings.get('global_late_deduction', 0.0))
@@ -895,7 +874,7 @@ def get_payroll_report(valid_data: PayrollReportRequest):
             "department": person_info.get('department'),
             "designation": person_info.get('designation'),
             "face_image": compact_image_data_url(person_info.get('face_image')),
-            "image_url": _payroll_person_image_url(pid, image_version)
+            "image_url": _payroll_person_image_url(pid, image_versions.get(int(pid)))
                 if person_info.get('has_face_image') else None,
             "phone": person_info.get('phone'),
             "daily_wage": daily_wage,
