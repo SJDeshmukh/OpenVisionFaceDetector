@@ -29,22 +29,23 @@ def normalize_registration_config(config):
 def hydrate_registration_config(vendor_id, config, conn=None):
     """
     Hydrates registration configuration with dynamic data sources.
-    Currently supports mapping 'leave_departments' to options.
+    Timetable shifts are exposed as a registration field so newly created
+    shifts immediately become assignable from every registration client.
     """
     if not isinstance(config, list):
         return config
 
-    # The stored list is authoritative. Feature flags must not silently inject
-    # fields that the Superadmin did not configure.
     updated_config = list(config)
-    from db_factory import get_db_connection
     conn_internal = None
     if conn is None:
+        from db_factory import get_db_connection
         conn_internal = get_db_connection()
         conn = conn_internal
 
     hydrated_config = []
     cached_depts = None
+    cached_shifts = None
+    has_shift_field = False
 
     for field in updated_config:
         if not isinstance(field, dict):
@@ -54,9 +55,24 @@ def hydrate_registration_config(vendor_id, config, conn=None):
         new_field = dict(field)
         new_field['type'] = str(new_field.get('type') or 'text').strip().lower() or 'text'
         source = new_field.get('options_source')
-        # Dynamic options are populated only when the Superadmin explicitly
-        # configured a source. Field names alone must never pull in unrelated
-        # business data or alter a static list.
+        field_name = str(new_field.get('field') or new_field.get('name') or '').strip()
+        is_shift_field = field_name.lower().replace('-', '_').replace(' ', '_') in {
+            'shift', 'work_shift'
+        }
+        if is_shift_field:
+            has_shift_field = True
+            if cached_shifts is None:
+                cached_shifts = _fetch_vendor_shifts(vendor_id, conn)
+            # Faces and attendance persist this core value in ``faces.shift``.
+            # Keep the registration key canonical even if an older schema used
+            # labels such as "Work Shift".
+            new_field['field'] = 'shift'
+            new_field['name'] = 'shift'
+            new_field['type'] = 'select'
+            new_field['options'] = list(cached_shifts)
+            new_field['options_source'] = 'company_shifts'
+        # Other dynamic lists are populated only when the Superadmin explicitly
+        # configured their source.
         if source == 'leave_departments':
             if cached_depts is None:
                 cached_depts = _fetch_vendor_departments(vendor_id, conn)
@@ -66,10 +82,64 @@ def hydrate_registration_config(vendor_id, config, conn=None):
             logger.debug(f"Hydrated field {new_field.get('field')} with {len(new_field['options'])} departments for vendor {vendor_id}")
 
         hydrated_config.append(new_field)
+
+    if not has_shift_field:
+        if cached_shifts is None:
+            cached_shifts = _fetch_vendor_shifts(vendor_id, conn)
+        if cached_shifts:
+            hydrated_config.append({
+                'field': 'shift',
+                'name': 'shift',
+                'label': 'Shift',
+                'type': 'select',
+                'required': False,
+                'enabled': True,
+                'options_source': 'company_shifts',
+                'options': list(cached_shifts),
+            })
     
     if conn_internal:
         conn_internal.close()
     return hydrated_config
+
+
+def _fetch_vendor_shifts(vendor_id, conn=None):
+    """Return the vendor's active timetable shift names in display order."""
+    should_close = False
+    if conn is None:
+        from db_factory import get_db_connection
+        conn = get_db_connection()
+        should_close = True
+
+    try:
+        c = conn.cursor()
+        c.execute("SELECT shifts FROM companies WHERE vendor_id = ? ORDER BY id", (vendor_id,))
+        rows = c.fetchall()
+        names = []
+        seen = set()
+        for row in rows:
+            raw_shifts = row[0] if row else None
+            try:
+                shifts = json.loads(raw_shifts) if isinstance(raw_shifts, str) else raw_shifts
+            except (TypeError, ValueError, json.JSONDecodeError):
+                shifts = []
+            if not isinstance(shifts, list):
+                continue
+            for shift in shifts:
+                if not isinstance(shift, dict) or shift.get('active', True) is False:
+                    continue
+                name = str(shift.get('name') or '').strip()
+                key = name.casefold()
+                if name and key not in seen:
+                    seen.add(key)
+                    names.append(name)
+        return names
+    except Exception as exc:
+        logger.debug("Could not hydrate timetable shifts for vendor %s: %s", vendor_id, exc)
+        return []
+    finally:
+        if should_close:
+            conn.close()
 
 def _fetch_vendor_departments(vendor_id, conn=None):
     """Fetches the list of departments for a given vendor."""
