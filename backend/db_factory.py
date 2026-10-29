@@ -10,6 +10,7 @@ except ImportError:
     ext = None
 import re
 import logging
+import threading
 from datetime import datetime
 import time
 from database.models import db
@@ -94,6 +95,59 @@ _PG_COOLDOWN_SECONDS = 30 # Don't flood logs if PG is down
 DB_BACKUP_PATH = os.environ.get("DB_BACKUP_PATH", os.path.join(os.path.dirname(__file__), "backup_faces.db"))
 
 _PG_POOL = None
+_PG_POOL_AVAILABLE = threading.Condition()
+
+
+class PostgresPoolTimeoutError(TimeoutError):
+    """Raised when PostgreSQL is healthy but every pooled connection is busy."""
+
+
+def _is_pool_exhaustion_error(error):
+    """psycopg2's ThreadedConnectionPool raises immediately when it is full."""
+    return "connection pool exhausted" in str(error).strip().lower()
+
+
+def _acquire_pg_connection(pool, wait_seconds=None):
+    """
+    Wait briefly for a busy PostgreSQL pool instead of treating saturation as
+    a database outage. ThreadedConnectionPool.getconn() is non-blocking, so a
+    request burst can otherwise trigger the SQLite failover path even while
+    PostgreSQL is fully healthy.
+    """
+    if wait_seconds is None:
+        try:
+            wait_seconds = float(os.environ.get("DB_POOL_WAIT_SECONDS", "5"))
+        except (TypeError, ValueError):
+            wait_seconds = 5.0
+
+    wait_seconds = max(0.0, float(wait_seconds))
+    deadline = time.monotonic() + wait_seconds
+    started = time.monotonic()
+
+    while True:
+        try:
+            conn = pool.getconn()
+            waited = time.monotonic() - started
+            if waited >= 0.25:
+                logger.info(
+                    "PostgreSQL pool saturation resolved after %.0fms",
+                    waited * 1000,
+                )
+            return conn
+        except Exception as error:
+            if not _is_pool_exhaustion_error(error):
+                raise
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise PostgresPoolTimeoutError(
+                    f"PostgreSQL connection pool remained busy for {wait_seconds:.1f}s"
+                ) from error
+
+            # close() notifies this condition after returning a connection.
+            # The short ceiling also protects against a missed notification.
+            with _PG_POOL_AVAILABLE:
+                _PG_POOL_AVAILABLE.wait(timeout=min(remaining, 0.25))
 
 def get_pg_pool():
     global _PG_POOL
@@ -359,6 +413,8 @@ class PostgresConnectionWrapper:
         if pool:
             try:
                 pool.putconn(self.conn)
+                with _PG_POOL_AVAILABLE:
+                    _PG_POOL_AVAILABLE.notify()
             except Exception as e:
                 logger.error(f"Error returning connection to pool: {e}")
                 try: self.conn.close()
@@ -394,7 +450,7 @@ def get_db_connection(timeout=30):
         try:
             pool = get_pg_pool()
             if pool:
-                conn = pool.getconn()
+                conn = _acquire_pg_connection(pool)
                 # Ensure the connection is in a clean state.
                 # If a previous request aborted a transaction but didn't rollback, we must fix it here.
                 try:
@@ -428,6 +484,13 @@ def get_db_connection(timeout=30):
             
             _IS_FALLBACK_MODE = False
             return PostgresConnectionWrapper(conn)
+        except PostgresPoolTimeoutError:
+            # Pool saturation is not a PostgreSQL outage. Never switch this
+            # request (or the whole process) to a potentially stale SQLite DB.
+            logger.error(
+                "PostgreSQL connection pool wait timed out; refusing SQLite fallback"
+            )
+            raise
         except Exception as e:
             # Only log the error once when it first fails or after cooldown
             if not _IS_FALLBACK_MODE:
