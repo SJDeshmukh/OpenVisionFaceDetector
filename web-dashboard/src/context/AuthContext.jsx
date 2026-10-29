@@ -13,6 +13,24 @@ const withoutToken = (value) => {
   return safe;
 };
 
+const isSessionUnauthorized = (error) => {
+  if (error.response?.status !== 401) return false;
+  const code = String(error.response?.data?.code || '').toUpperCase();
+  const message = String(error.response?.data?.error || '').toLowerCase();
+  const endpoint = String(error.config?.url || '');
+
+  if (endpoint.includes('/auth/me') || code === 'UNAUTHORIZED' || code === 'USER_NOT_FOUND') {
+    return true;
+  }
+
+  return message === 'unauthorized' ||
+    message === 'authentication required' ||
+    message === 'invalid token' ||
+    message === 'invalid or expired token' ||
+    message === 'missing authorization header' ||
+    message.startsWith('session expired');
+};
+
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [staffSession, setStaffSession] = useState(null);
@@ -32,14 +50,14 @@ export const AuthProvider = ({ children }) => {
 
   const logout = useCallback(() => {
     const deviceId = localStorage.getItem('web_device_id');
-    axios.post(`${API_URL}/auth/logout`, { username: user?.username, device_id: deviceId }).catch(() => {});
+    axios.post(`${API_URL}/auth/logout`, { device_id: deviceId }).catch(() => {});
     setUser(null);
     setStaffSession(null);
     localStorage.removeItem('user');
     localStorage.removeItem('staffSession');
     clearSensitiveCaches();
     delete axios.defaults.headers.common.Authorization;
-  }, [clearSensitiveCaches, user?.username]);
+  }, [clearSensitiveCaches]);
 
   const refreshUserData = useCallback(async () => {
     try {
@@ -69,30 +87,9 @@ export const AuthProvider = ({ children }) => {
   }, [logout]);
 
   useEffect(() => {
-    try {
-      const storedUser = localStorage.getItem('user');
-      if (storedUser) {
-        const safeUser = withoutToken(JSON.parse(storedUser));
-        setUser(safeUser);
-        localStorage.setItem('user', JSON.stringify(safeUser));
-        refreshUserData().catch(() => {});
-      }
-      const storedStaff = localStorage.getItem('staffSession');
-      if (storedStaff) {
-        const parsedStaff = JSON.parse(storedStaff);
-        if (parsedStaff?.access_token) {
-          setStaffSession(parsedStaff);
-        } else {
-          localStorage.removeItem('staffSession');
-        }
-      }
-    } catch {
-      localStorage.removeItem('user');
-      localStorage.removeItem('staffSession');
-    }
+    let cancelled = false;
     delete axios.defaults.headers.common['ngrok-skip-browser-warning'];
     delete axios.defaults.headers.common.Authorization;
-    setLoading(false);
 
     const interceptor = axios.interceptors.response.use(
       (response) => response,
@@ -102,7 +99,7 @@ export const AuthProvider = ({ children }) => {
         const suspended = message.includes('Subscription Expired') ||
           message.includes('Account Suspended') || message.includes('Service Suspended');
         const featureMissing = message.includes('Feature') && message.includes('not enabled');
-        if (status === 401 || (status === 403 && suspended)) {
+        if (isSessionUnauthorized(error) || (status === 403 && suspended)) {
           logout();
           if (window.location.pathname !== '/login') window.location.assign('/login');
         } else if (status === 403 && featureMissing) {
@@ -111,7 +108,46 @@ export const AuthProvider = ({ children }) => {
         return Promise.reject(error);
       },
     );
-    return () => axios.interceptors.response.eject(interceptor);
+
+    const initializeSession = async () => {
+      let shouldVerifySession = false;
+      try {
+        const storedUser = localStorage.getItem('user');
+        if (storedUser) {
+          const safeUser = withoutToken(JSON.parse(storedUser));
+          setUser(safeUser);
+          localStorage.setItem('user', JSON.stringify(safeUser));
+          shouldVerifySession = true;
+        }
+        const storedStaff = localStorage.getItem('staffSession');
+        if (storedStaff) {
+          const parsedStaff = JSON.parse(storedStaff);
+          if (parsedStaff?.access_token) {
+            setStaffSession(parsedStaff);
+          } else {
+            localStorage.removeItem('staffSession');
+          }
+        }
+      } catch {
+        localStorage.removeItem('user');
+        localStorage.removeItem('staffSession');
+      }
+
+      // Do not render protected pages from localStorage until the httpOnly
+      // session cookie has been accepted by the backend. Otherwise a refresh
+      // briefly renders stale people data, fires unauthenticated image loads,
+      // and redirects only after a later API request returns 401.
+      if (shouldVerifySession) {
+        await refreshUserData().catch(() => null);
+      }
+      if (!cancelled) setLoading(false);
+    };
+
+    initializeSession();
+    return () => {
+      cancelled = true;
+      axios.interceptors.response.eject(interceptor);
+    };
   }, [logout, refreshUserData]);
 
   // Subscription features can be changed by SuperAdmin while this session is

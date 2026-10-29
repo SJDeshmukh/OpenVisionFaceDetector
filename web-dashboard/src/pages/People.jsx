@@ -74,6 +74,44 @@ const peopleCachePayload = (people) => people.map((person) => {
   return cached;
 });
 
+const personImageSource = (person) => {
+  if (person.image_url) return person.image_url;
+  if (!person.face_image) return null;
+  if (person.face_image.startsWith('http') || person.face_image.startsWith('data:')) {
+    return person.face_image;
+  }
+  return `data:image/jpeg;base64,${person.face_image}`;
+};
+
+const PersonAvatar = ({ person }) => {
+  const source = personImageSource(person);
+  const [failedAttempts, setFailedAttempts] = useState(0);
+  useEffect(() => setFailedAttempts(0), [source]);
+  const separator = source?.includes('?') ? '&' : '?';
+  const renderedSource = failedAttempts === 1
+    ? `${source}${separator}image_retry=1`
+    : source;
+
+  if (!source || failedAttempts > 1) {
+    return (
+      <div className="h-10 w-10 rounded-xl bg-slate-100 flex items-center justify-center text-slate-400 font-bold text-sm mr-3 border border-slate-200">
+        {person.name?.charAt(0)}
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={renderedSource}
+      alt={person.name}
+      loading="lazy"
+      decoding="async"
+      onError={() => setFailedAttempts((attempts) => attempts + 1)}
+      className="h-10 w-10 rounded-xl object-cover mr-3 border border-slate-200 shadow-sm"
+    />
+  );
+};
+
 const People = () => {
   const { user } = useAuth();
   const terminology = useMemo(() => getBusinessTerminology(user?.vertical), [user?.vertical]);
@@ -1276,28 +1314,10 @@ const People = () => {
                         </tr>
                       ) : (
                         filteredUsers.map((person, idx) => (
-                          <tr key={idx} className="hover:bg-slate-50/60 transition-colors">
+                          <tr key={person.id || person.person_id || idx} className="hover:bg-slate-50/60 transition-colors">
                             <td className="px-6 py-4 whitespace-nowrap">
                               <div className="flex items-center">
-                                {person.face_image || person.image_url ? (
-                                  <img
-                                    src={
-                                      person.image_url
-                                        ? person.image_url
-                                        : (person.face_image.startsWith('http')
-                                          ? person.face_image
-                                          : (person.face_image.startsWith('data:')
-                                            ? person.face_image
-                                            : `data:image/jpeg;base64,${person.face_image}`))
-                                    }
-                                    alt={person.name}
-                                    className="h-10 w-10 rounded-xl object-cover mr-3 border border-slate-200 shadow-sm"
-                                  />
-                                ) : (
-                                  <div className="h-10 w-10 rounded-xl bg-slate-100 flex items-center justify-center text-slate-400 font-bold text-sm mr-3 border border-slate-200">
-                                    {person.name?.charAt(0)}
-                                  </div>
-                                )}
+                                <PersonAvatar person={person} />
                                 <div>
                                   <div className="text-sm font-bold text-slate-800 tracking-tight">{person.name}</div>
                                   <div className="text-[10px] text-slate-400 font-mono uppercase">#{person.display_id || person.id}</div>

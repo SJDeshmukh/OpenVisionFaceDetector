@@ -129,6 +129,14 @@ def setup_middleware(app):
     @app.after_request
     def add_cors_headers(resp):
         try:
+            # Authentication failures must never be cached by a browser or
+            # CloudFront. A cached 401 on an employee image can survive a new
+            # login and make valid images appear broken until the cache expires.
+            if resp.status_code == 401:
+                resp.headers['Cache-Control'] = 'private, no-store, max-age=0'
+                resp.headers['Pragma'] = 'no-cache'
+                resp.headers['Expires'] = '0'
+
             origin = request.headers.get('Origin')
             origin_allowed = False
             if origin in allowed_origins or origin == '*':
