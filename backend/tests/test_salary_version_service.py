@@ -142,7 +142,7 @@ def test_salary_change_creates_audited_version_and_single_use_confirmation(
     ).fetchall()
     assert [(row[0], row[3]) for row in rows] == [(1, 100), (2, 200)]
     assert rows[0][1] == "2026-01-15"
-    assert rows[0][5] == "Initial price"
+    assert rows[0][5] == "Initial salary"
     assert rows[0][2] == effective_day.isoformat()
     assert rows[1][1] == effective_day.isoformat()
     assert rows[1][4:] == ("manager@example.com", "Annual revision")

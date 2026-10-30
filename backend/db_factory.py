@@ -1009,7 +1009,7 @@ def _init_pg_schema_on_conn(conn):
             COALESCE(f.special_allowance, 0), COALESCE(f.pf_enabled, 0),
             COALESCE(f.esi_enabled, 0), COALESCE(f.gratuity_enabled, 0),
             COALESCE(f.professional_tax, 0), f.late_allowance_days,
-            f.late_deduction_amount, 'system-registration', 'Initial price'
+            f.late_deduction_amount, 'system-registration', 'Initial salary'
         FROM faces f
         WHERE f.vendor_id IS NOT NULL
         ON CONFLICT (vendor_id, person_id, version_number) DO NOTHING
@@ -1017,7 +1017,7 @@ def _init_pg_schema_on_conn(conn):
     run_migration("""
         UPDATE employee_salary_versions esv
            SET effective_from = COALESCE(DATE(f.registered_at), CURRENT_DATE),
-               change_reason = 'Initial price'
+               change_reason = 'Initial salary'
           FROM faces f
          WHERE esv.person_id = f.id AND esv.vendor_id = f.vendor_id
            AND esv.version_number = 1
@@ -1042,7 +1042,7 @@ def _init_pg_schema_on_conn(conn):
                     COALESCE(NEW.special_allowance, 0), COALESCE(NEW.pf_enabled, 0),
                     COALESCE(NEW.esi_enabled, 0), COALESCE(NEW.gratuity_enabled, 0),
                     COALESCE(NEW.professional_tax, 0), NEW.late_allowance_days,
-                    NEW.late_deduction_amount, 'system-registration', 'Initial price'
+                    NEW.late_deduction_amount, 'system-registration', 'Initial salary'
                   ) ON CONFLICT (vendor_id, person_id, version_number) DO NOTHING;
                 END IF;
                 RETURN NEW;
@@ -1416,7 +1416,7 @@ def init_sqlite_schema(conn):
             COALESCE(f.special_allowance, 0), COALESCE(f.pf_enabled, 0),
             COALESCE(f.esi_enabled, 0), COALESCE(f.gratuity_enabled, 0),
             COALESCE(f.professional_tax, 0), f.late_allowance_days,
-            f.late_deduction_amount, 'system-registration', 'Initial price'
+            f.late_deduction_amount, 'system-registration', 'Initial salary'
         FROM faces f
         WHERE f.vendor_id IS NOT NULL
     """)
@@ -1428,7 +1428,7 @@ def init_sqlite_schema(conn):
                        AND f.vendor_id = employee_salary_versions.vendor_id),
                    DATE('now')
                ),
-               change_reason = 'Initial price'
+               change_reason = 'Initial salary'
          WHERE version_number = 1
     """)
     cur.execute("""
@@ -1456,7 +1456,7 @@ def init_sqlite_schema(conn):
                 COALESCE(NEW.special_allowance, 0), COALESCE(NEW.pf_enabled, 0),
                 COALESCE(NEW.esi_enabled, 0), COALESCE(NEW.gratuity_enabled, 0),
                 COALESCE(NEW.professional_tax, 0), NEW.late_allowance_days,
-                NEW.late_deduction_amount, 'system-registration', 'Initial price'
+                NEW.late_deduction_amount, 'system-registration', 'Initial salary'
             );
         END
     """)

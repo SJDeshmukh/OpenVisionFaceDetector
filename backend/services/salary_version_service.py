@@ -327,7 +327,7 @@ def _insert_baseline(cursor, vendor_id, person_id, face, changed_by):
                 "gratuity_enabled", "professional_tax", "late_allowance_days",
                 "late_deduction_amount",
             )],
-            changed_by, "Initial price",
+            changed_by, "Initial salary",
         ),
     )
 

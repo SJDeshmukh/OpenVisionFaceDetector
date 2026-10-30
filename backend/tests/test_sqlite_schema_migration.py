@@ -47,10 +47,10 @@ def test_legacy_faces_table_is_upgraded_before_display_id_index(monkeypatch):
         "INSERT INTO faces (name, vendor_id, registered_at, daily_wage) VALUES (?, ?, ?, ?)",
         ("Registered Employee", 7, "2026-01-15 09:30:00", 750),
     )
-    initial_price = conn.execute(
+    initial_salary = conn.execute(
         """SELECT effective_from, daily_wage, change_reason
              FROM employee_salary_versions
             WHERE vendor_id = 7 ORDER BY id DESC LIMIT 1"""
     ).fetchone()
-    assert initial_price == ("2026-01-15", 750, "Initial price")
+    assert initial_salary == ("2026-01-15", 750, "Initial salary")
     conn.close()
