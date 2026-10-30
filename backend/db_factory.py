@@ -601,7 +601,7 @@ def _init_pg_schema_on_conn(conn):
     queries = [
         "CREATE TABLE IF NOT EXISTS vendors (id SERIAL PRIMARY KEY, company_name TEXT NOT NULL, email TEXT, phone TEXT, address TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, status TEXT DEFAULT 'active', registration_config TEXT, contact_person TEXT, web_login_enabled INTEGER DEFAULT 1, frontend_bundle_id TEXT, backend_service_id TEXT, vertical TEXT, attendance_type TEXT DEFAULT 'total_time', retention_days INTEGER DEFAULT 90, num_rectors INTEGER DEFAULT 0, num_hods INTEGER DEFAULT 0, departments TEXT)",
         "CREATE TABLE IF NOT EXISTS companies (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), name TEXT, working_hours REAL, shifts TEXT, draft_timetable TEXT, live_timetable TEXT, last_modified_by TEXT, last_modified_at TIMESTAMP, published_by TEXT, published_at TIMESTAMP)",
-        "CREATE TABLE IF NOT EXISTS faces (id SERIAL PRIMARY KEY, local_uid TEXT, name TEXT, templates TEXT, face_image TEXT, department TEXT, designation TEXT, phone TEXT, shift TEXT, daily_wage REAL DEFAULT 0, basic_salary REAL DEFAULT 0, hra REAL DEFAULT 0, conveyance REAL DEFAULT 0, special_allowance REAL DEFAULT 0, pf_enabled INTEGER DEFAULT 0, esi_enabled INTEGER DEFAULT 0, gratuity_enabled INTEGER DEFAULT 0, professional_tax REAL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount REAL DEFAULT 0, vendor_id INTEGER REFERENCES vendors(id), custom_data TEXT, display_id INTEGER, joining_date DATE)",
+        "CREATE TABLE IF NOT EXISTS faces (id SERIAL PRIMARY KEY, local_uid TEXT, name TEXT, templates TEXT, face_image TEXT, department TEXT, designation TEXT, phone TEXT, shift TEXT, daily_wage REAL DEFAULT 0, basic_salary REAL DEFAULT 0, hra REAL DEFAULT 0, conveyance REAL DEFAULT 0, special_allowance REAL DEFAULT 0, pf_enabled INTEGER DEFAULT 0, esi_enabled INTEGER DEFAULT 0, gratuity_enabled INTEGER DEFAULT 0, professional_tax REAL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount REAL DEFAULT 0, vendor_id INTEGER REFERENCES vendors(id), custom_data TEXT, display_id INTEGER, joining_date DATE, registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "ALTER TABLE faces ADD COLUMN IF NOT EXISTS local_uid TEXT",
         "CREATE TABLE IF NOT EXISTS employee_salary_versions (id SERIAL PRIMARY KEY, vendor_id INTEGER NOT NULL REFERENCES vendors(id), person_id INTEGER NOT NULL REFERENCES faces(id) ON DELETE CASCADE, version_number INTEGER NOT NULL, effective_from DATE NOT NULL, effective_to DATE, daily_wage NUMERIC(12,2) NOT NULL DEFAULT 0, basic_salary NUMERIC(12,2) NOT NULL DEFAULT 0, hra NUMERIC(12,2) NOT NULL DEFAULT 0, conveyance NUMERIC(12,2) NOT NULL DEFAULT 0, special_allowance NUMERIC(12,2) NOT NULL DEFAULT 0, pf_enabled INTEGER NOT NULL DEFAULT 0, esi_enabled INTEGER NOT NULL DEFAULT 0, gratuity_enabled INTEGER NOT NULL DEFAULT 0, professional_tax NUMERIC(12,2) NOT NULL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount NUMERIC(12,2), changed_by TEXT NOT NULL, change_reason TEXT NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, person_id, version_number))",
         "CREATE TABLE IF NOT EXISTS salary_reauth_tokens (token_hash TEXT PRIMARY KEY, vendor_id INTEGER NOT NULL REFERENCES vendors(id), username TEXT NOT NULL, purpose TEXT NOT NULL, expires_at TIMESTAMP NOT NULL, used_at TIMESTAMP, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)",
@@ -822,6 +822,7 @@ def _init_pg_schema_on_conn(conn):
         ("faces", "late_allowance_days", "INTEGER"),
         ("faces", "late_deduction_amount", "REAL DEFAULT 0"),
         ("faces", "joining_date", "DATE"),
+        ("faces", "registered_at", "TIMESTAMP"),
         ("advances", "amount_cash", "REAL DEFAULT 0"),
         ("advances", "amount_online", "REAL DEFAULT 0"),
         ("advances", "approved_by", "TEXT"),
@@ -968,9 +969,32 @@ def _init_pg_schema_on_conn(conn):
     """, "Initialize has_set_password")
     run_migration("UPDATE system_users SET password_plain = NULL WHERE password_plain IS NOT NULL", "Remove legacy plaintext passwords")
 
-    # Seed the immutable salary ledger from the current compatibility snapshot.
-    # Earlier changes cannot be reconstructed, so existing values begin at a
-    # documented baseline date and all future edits create new versions.
+    # Recover the employee registration timestamp for records created before the
+    # column existed. Face enrollment is the closest exact source; attendance is
+    # the next reliable lower-bound, and the migration time is the final fallback.
+    run_migration("""
+        UPDATE faces f
+           SET registered_at = COALESCE(
+               (SELECT MIN(pe.created_at) FROM person_embeddings pe
+                 WHERE pe.person_id = f.id AND pe.vendor_id = f.vendor_id),
+               (SELECT MIN(a.timestamp) FROM attendance a
+                 WHERE a.person_id = f.id AND a.vendor_id = f.vendor_id),
+               CURRENT_TIMESTAMP
+           )
+         WHERE f.registered_at IS NULL
+    """, "Backfill employee registration timestamps")
+    run_migration("""
+        UPDATE faces f
+           SET registered_at = esv.effective_to::timestamp
+          FROM employee_salary_versions esv
+         WHERE esv.person_id = f.id AND esv.vendor_id = f.vendor_id
+           AND esv.version_number = 1 AND esv.effective_to IS NOT NULL
+           AND DATE(f.registered_at) > esv.effective_to
+    """, "Bound recovered registration dates to first salary change")
+    run_migration("ALTER TABLE faces ALTER COLUMN registered_at SET DEFAULT CURRENT_TIMESTAMP",
+                  "Default employee registration timestamp")
+
+    # Seed the immutable salary ledger from the employee registration date.
     run_migration("""
         INSERT INTO employee_salary_versions (
             vendor_id, person_id, version_number, effective_from, effective_to,
@@ -979,18 +1003,59 @@ def _init_pg_schema_on_conn(conn):
             late_allowance_days, late_deduction_amount, changed_by, change_reason
         )
         SELECT
-            f.vendor_id, f.id, 1, DATE '1970-01-01', NULL,
+            f.vendor_id, f.id, 1, COALESCE(DATE(f.registered_at), CURRENT_DATE), NULL,
             COALESCE(f.daily_wage, 0), COALESCE(f.basic_salary, 0),
             COALESCE(f.hra, 0), COALESCE(f.conveyance, 0),
             COALESCE(f.special_allowance, 0), COALESCE(f.pf_enabled, 0),
             COALESCE(f.esi_enabled, 0), COALESCE(f.gratuity_enabled, 0),
             COALESCE(f.professional_tax, 0), f.late_allowance_days,
-            f.late_deduction_amount, 'system-backfill',
-            'Initial salary imported from employee record'
+            f.late_deduction_amount, 'system-registration', 'Initial price'
         FROM faces f
         WHERE f.vendor_id IS NOT NULL
         ON CONFLICT (vendor_id, person_id, version_number) DO NOTHING
     """, "Backfill employee salary versions")
+    run_migration("""
+        UPDATE employee_salary_versions esv
+           SET effective_from = COALESCE(DATE(f.registered_at), CURRENT_DATE),
+               change_reason = 'Initial price'
+          FROM faces f
+         WHERE esv.person_id = f.id AND esv.vendor_id = f.vendor_id
+           AND esv.version_number = 1
+    """, "Correct initial salary effective dates")
+
+    if is_pg:
+        run_migration("""
+            CREATE OR REPLACE FUNCTION create_initial_employee_salary_version()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                IF NEW.vendor_id IS NOT NULL THEN
+                  INSERT INTO employee_salary_versions (
+                    vendor_id, person_id, version_number, effective_from, effective_to,
+                    daily_wage, basic_salary, hra, conveyance, special_allowance,
+                    pf_enabled, esi_enabled, gratuity_enabled, professional_tax,
+                    late_allowance_days, late_deduction_amount, changed_by, change_reason
+                ) VALUES (
+                    NEW.vendor_id, NEW.id, 1,
+                    COALESCE(DATE(NEW.registered_at), CURRENT_DATE), NULL,
+                    COALESCE(NEW.daily_wage, 0), COALESCE(NEW.basic_salary, 0),
+                    COALESCE(NEW.hra, 0), COALESCE(NEW.conveyance, 0),
+                    COALESCE(NEW.special_allowance, 0), COALESCE(NEW.pf_enabled, 0),
+                    COALESCE(NEW.esi_enabled, 0), COALESCE(NEW.gratuity_enabled, 0),
+                    COALESCE(NEW.professional_tax, 0), NEW.late_allowance_days,
+                    NEW.late_deduction_amount, 'system-registration', 'Initial price'
+                  ) ON CONFLICT (vendor_id, person_id, version_number) DO NOTHING;
+                END IF;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql
+        """, "Create initial salary trigger function")
+        run_migration("DROP TRIGGER IF EXISTS trg_faces_initial_salary ON faces",
+                      "Refresh initial salary trigger")
+        run_migration("""
+            CREATE TRIGGER trg_faces_initial_salary
+            AFTER INSERT ON faces
+            FOR EACH ROW EXECUTE FUNCTION create_initial_employee_salary_version()
+        """, "Create initial salary trigger")
 
     # 4. Ensure ON DELETE CASCADE on foreign keys so vendor and batch deletions cascade cleanly
     if is_pg:
@@ -1060,7 +1125,7 @@ def init_sqlite_schema(conn):
     queries = [
         "CREATE TABLE IF NOT EXISTS vendors (id INTEGER PRIMARY KEY AUTOINCREMENT, company_name TEXT NOT NULL, email TEXT, phone TEXT, address TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, status TEXT DEFAULT 'active', registration_config TEXT, contact_person TEXT, web_login_enabled INTEGER DEFAULT 1, frontend_bundle_id TEXT, backend_service_id TEXT, vertical TEXT, attendance_type TEXT DEFAULT 'total_time', retention_days INTEGER DEFAULT 90, num_rectors INTEGER DEFAULT 0, num_hods INTEGER DEFAULT 0, departments TEXT)",
         "CREATE TABLE IF NOT EXISTS companies (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, name TEXT, working_hours REAL, shifts TEXT, draft_timetable TEXT, live_timetable TEXT, last_modified_by TEXT, last_modified_at DATETIME, published_by TEXT, published_at DATETIME)",
-        "CREATE TABLE IF NOT EXISTS faces (id INTEGER PRIMARY KEY AUTOINCREMENT, local_uid TEXT, name TEXT, templates TEXT, face_image TEXT, department TEXT, designation TEXT, phone TEXT, shift TEXT, daily_wage REAL DEFAULT 0, basic_salary REAL DEFAULT 0, hra REAL DEFAULT 0, conveyance REAL DEFAULT 0, special_allowance REAL DEFAULT 0, pf_enabled INTEGER DEFAULT 0, esi_enabled INTEGER DEFAULT 0, gratuity_enabled INTEGER DEFAULT 0, professional_tax REAL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount REAL DEFAULT 0, vendor_id INTEGER, custom_data TEXT, display_id INTEGER, joining_date DATE)",
+        "CREATE TABLE IF NOT EXISTS faces (id INTEGER PRIMARY KEY AUTOINCREMENT, local_uid TEXT, name TEXT, templates TEXT, face_image TEXT, department TEXT, designation TEXT, phone TEXT, shift TEXT, daily_wage REAL DEFAULT 0, basic_salary REAL DEFAULT 0, hra REAL DEFAULT 0, conveyance REAL DEFAULT 0, special_allowance REAL DEFAULT 0, pf_enabled INTEGER DEFAULT 0, esi_enabled INTEGER DEFAULT 0, gratuity_enabled INTEGER DEFAULT 0, professional_tax REAL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount REAL DEFAULT 0, vendor_id INTEGER, custom_data TEXT, display_id INTEGER, joining_date DATE, registered_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS employee_salary_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER NOT NULL, person_id INTEGER NOT NULL, version_number INTEGER NOT NULL, effective_from DATE NOT NULL, effective_to DATE, daily_wage NUMERIC NOT NULL DEFAULT 0, basic_salary NUMERIC NOT NULL DEFAULT 0, hra NUMERIC NOT NULL DEFAULT 0, conveyance NUMERIC NOT NULL DEFAULT 0, special_allowance NUMERIC NOT NULL DEFAULT 0, pf_enabled INTEGER NOT NULL DEFAULT 0, esi_enabled INTEGER NOT NULL DEFAULT 0, gratuity_enabled INTEGER NOT NULL DEFAULT 0, professional_tax NUMERIC NOT NULL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount NUMERIC, changed_by TEXT NOT NULL, change_reason TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, person_id, version_number))",
         "CREATE TABLE IF NOT EXISTS salary_reauth_tokens (token_hash TEXT PRIMARY KEY, vendor_id INTEGER NOT NULL, username TEXT NOT NULL, purpose TEXT NOT NULL, expires_at DATETIME NOT NULL, used_at DATETIME, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS payroll_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER NOT NULL, period_start DATE NOT NULL, period_end DATE NOT NULL, status TEXT NOT NULL DEFAULT 'FINALIZED', finalized_by TEXT NOT NULL, finalized_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, settings_json TEXT NOT NULL DEFAULT '{}', created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, period_start, period_end, status))",
@@ -1257,7 +1322,7 @@ def init_sqlite_schema(conn):
     except Exception:
         pass
             
-    for col in ["display_id INTEGER", "local_uid TEXT", "daily_wage REAL DEFAULT 0", "basic_salary REAL DEFAULT 0", "hra REAL DEFAULT 0", "conveyance REAL DEFAULT 0", "special_allowance REAL DEFAULT 0", "pf_enabled INTEGER DEFAULT 0", "esi_enabled INTEGER DEFAULT 0", "gratuity_enabled INTEGER DEFAULT 0", "professional_tax REAL DEFAULT 0", "late_allowance_days INTEGER", "late_deduction_amount REAL DEFAULT 0", "joining_date DATE"]:
+    for col in ["display_id INTEGER", "local_uid TEXT", "daily_wage REAL DEFAULT 0", "basic_salary REAL DEFAULT 0", "hra REAL DEFAULT 0", "conveyance REAL DEFAULT 0", "special_allowance REAL DEFAULT 0", "pf_enabled INTEGER DEFAULT 0", "esi_enabled INTEGER DEFAULT 0", "gratuity_enabled INTEGER DEFAULT 0", "professional_tax REAL DEFAULT 0", "late_allowance_days INTEGER", "late_deduction_amount REAL DEFAULT 0", "joining_date DATE", "registered_at DATETIME"]:
         try:
             cur.execute(f"ALTER TABLE faces ADD COLUMN {col}")
         except Exception:
@@ -1307,6 +1372,37 @@ def init_sqlite_schema(conn):
         pass
 
     cur.execute("""
+        UPDATE faces
+           SET registered_at = COALESCE(
+               (SELECT MIN(pe.created_at) FROM person_embeddings pe
+                 WHERE pe.person_id = faces.id AND pe.vendor_id = faces.vendor_id),
+               (SELECT MIN(a.timestamp) FROM attendance a
+                 WHERE a.person_id = faces.id AND a.vendor_id = faces.vendor_id),
+               CURRENT_TIMESTAMP
+           )
+         WHERE registered_at IS NULL
+    """)
+    cur.execute("""
+        UPDATE faces
+           SET registered_at = (
+               SELECT esv.effective_to
+                 FROM employee_salary_versions esv
+                WHERE esv.person_id = faces.id
+                  AND esv.vendor_id = faces.vendor_id
+                  AND esv.version_number = 1
+                  AND esv.effective_to IS NOT NULL
+           )
+         WHERE EXISTS (
+               SELECT 1 FROM employee_salary_versions esv
+                WHERE esv.person_id = faces.id
+                  AND esv.vendor_id = faces.vendor_id
+                  AND esv.version_number = 1
+                  AND esv.effective_to IS NOT NULL
+                  AND DATE(faces.registered_at) > esv.effective_to
+         )
+    """)
+
+    cur.execute("""
         INSERT OR IGNORE INTO employee_salary_versions (
             vendor_id, person_id, version_number, effective_from, effective_to,
             daily_wage, basic_salary, hra, conveyance, special_allowance,
@@ -1314,16 +1410,55 @@ def init_sqlite_schema(conn):
             late_allowance_days, late_deduction_amount, changed_by, change_reason
         )
         SELECT
-            f.vendor_id, f.id, 1, '1970-01-01', NULL,
+            f.vendor_id, f.id, 1, COALESCE(DATE(f.registered_at), DATE('now')), NULL,
             COALESCE(f.daily_wage, 0), COALESCE(f.basic_salary, 0),
             COALESCE(f.hra, 0), COALESCE(f.conveyance, 0),
             COALESCE(f.special_allowance, 0), COALESCE(f.pf_enabled, 0),
             COALESCE(f.esi_enabled, 0), COALESCE(f.gratuity_enabled, 0),
             COALESCE(f.professional_tax, 0), f.late_allowance_days,
-            f.late_deduction_amount, 'system-backfill',
-            'Initial salary imported from employee record'
+            f.late_deduction_amount, 'system-registration', 'Initial price'
         FROM faces f
         WHERE f.vendor_id IS NOT NULL
+    """)
+    cur.execute("""
+        UPDATE employee_salary_versions
+           SET effective_from = COALESCE(
+                   (SELECT DATE(f.registered_at) FROM faces f
+                     WHERE f.id = employee_salary_versions.person_id
+                       AND f.vendor_id = employee_salary_versions.vendor_id),
+                   DATE('now')
+               ),
+               change_reason = 'Initial price'
+         WHERE version_number = 1
+    """)
+    cur.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_faces_registered_at
+        AFTER INSERT ON faces
+        WHEN NEW.registered_at IS NULL
+        BEGIN
+            UPDATE faces SET registered_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+        END
+    """)
+    cur.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_faces_initial_salary
+        AFTER INSERT ON faces
+        BEGIN
+            INSERT OR IGNORE INTO employee_salary_versions (
+                vendor_id, person_id, version_number, effective_from, effective_to,
+                daily_wage, basic_salary, hra, conveyance, special_allowance,
+                pf_enabled, esi_enabled, gratuity_enabled, professional_tax,
+                late_allowance_days, late_deduction_amount, changed_by, change_reason
+            ) VALUES (
+                NEW.vendor_id, NEW.id, 1,
+                COALESCE(DATE(NEW.registered_at), DATE('now')), NULL,
+                COALESCE(NEW.daily_wage, 0), COALESCE(NEW.basic_salary, 0),
+                COALESCE(NEW.hra, 0), COALESCE(NEW.conveyance, 0),
+                COALESCE(NEW.special_allowance, 0), COALESCE(NEW.pf_enabled, 0),
+                COALESCE(NEW.esi_enabled, 0), COALESCE(NEW.gratuity_enabled, 0),
+                COALESCE(NEW.professional_tax, 0), NEW.late_allowance_days,
+                NEW.late_deduction_amount, 'system-registration', 'Initial price'
+            );
+        END
     """)
 
     for q in deferred_indexes:

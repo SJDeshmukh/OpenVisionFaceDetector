@@ -293,7 +293,7 @@ def _current_face(cursor, vendor_id, person_id, for_update=False):
         """SELECT id, vendor_id, daily_wage, basic_salary, hra, conveyance,
                   special_allowance, pf_enabled, esi_enabled, gratuity_enabled,
                   professional_tax, late_allowance_days, late_deduction_amount,
-                  joining_date
+                  joining_date, registered_at
              FROM faces WHERE id = ? AND vendor_id = ?""" + suffix,
         (person_id, vendor_id),
     )
@@ -302,6 +302,16 @@ def _current_face(cursor, vendor_id, person_id, for_update=False):
 
 def _insert_baseline(cursor, vendor_id, person_id, face, changed_by):
     values = normalize_salary_values(face)
+    registered_at = face.get("registered_at")
+    if isinstance(registered_at, datetime):
+        registration_day = registered_at.date()
+    elif isinstance(registered_at, date):
+        registration_day = registered_at
+    else:
+        try:
+            registration_day = date.fromisoformat(str(registered_at)[:10])
+        except (TypeError, ValueError):
+            registration_day = date.today()
     cursor.execute(
         """INSERT INTO employee_salary_versions (
                vendor_id, person_id, version_number, effective_from, effective_to,
@@ -310,14 +320,14 @@ def _insert_baseline(cursor, vendor_id, person_id, face, changed_by):
                late_allowance_days, late_deduction_amount, changed_by, change_reason
            ) VALUES (?, ?, 1, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
-            vendor_id, person_id, date(1970, 1, 1).isoformat(),
+            vendor_id, person_id, registration_day.isoformat(),
             *[values[field] for field in (
                 "daily_wage", "basic_salary", "hra", "conveyance",
                 "special_allowance", "pf_enabled", "esi_enabled",
                 "gratuity_enabled", "professional_tax", "late_allowance_days",
                 "late_deduction_amount",
             )],
-            changed_by, "Initial salary imported from employee record",
+            changed_by, "Initial price",
         ),
     )
 

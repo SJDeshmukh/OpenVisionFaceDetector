@@ -40,5 +40,17 @@ def test_legacy_faces_table_is_upgraded_before_display_id_index(monkeypatch):
     columns = {row[1] for row in conn.execute("PRAGMA table_info(faces)")}
     indexes = {row[1] for row in conn.execute("PRAGMA index_list(faces)")}
     assert "display_id" in columns
+    assert "registered_at" in columns
     assert "idx_faces_vendor_display" in indexes
+
+    conn.execute(
+        "INSERT INTO faces (name, vendor_id, registered_at, daily_wage) VALUES (?, ?, ?, ?)",
+        ("Registered Employee", 7, "2026-01-15 09:30:00", 750),
+    )
+    initial_price = conn.execute(
+        """SELECT effective_from, daily_wage, change_reason
+             FROM employee_salary_versions
+            WHERE vendor_id = 7 ORDER BY id DESC LIMIT 1"""
+    ).fetchone()
+    assert initial_price == ("2026-01-15", 750, "Initial price")
     conn.close()

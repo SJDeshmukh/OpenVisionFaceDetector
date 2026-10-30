@@ -48,7 +48,8 @@ def salary_db():
             professional_tax REAL DEFAULT 0,
             late_allowance_days INTEGER,
             late_deduction_amount REAL,
-            joining_date DATE
+            joining_date DATE,
+            registered_at DATETIME
         );
         CREATE TABLE system_users (
             username TEXT PRIMARY KEY,
@@ -90,8 +91,8 @@ def salary_db():
         INSERT INTO faces (
             id, vendor_id, daily_wage, basic_salary, hra, conveyance,
             special_allowance, pf_enabled, esi_enabled, gratuity_enabled,
-            professional_tax, late_allowance_days, late_deduction_amount
-        ) VALUES (10, 8, 100, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL);
+            professional_tax, late_allowance_days, late_deduction_amount, registered_at
+        ) VALUES (10, 8, 100, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, '2026-01-15 09:00:00');
     """)
     conn.execute(
         "INSERT INTO system_users VALUES (?, ?, ?)",
@@ -140,6 +141,8 @@ def test_salary_change_creates_audited_version_and_single_use_confirmation(
              FROM employee_salary_versions ORDER BY version_number"""
     ).fetchall()
     assert [(row[0], row[3]) for row in rows] == [(1, 100), (2, 200)]
+    assert rows[0][1] == "2026-01-15"
+    assert rows[0][5] == "Initial price"
     assert rows[0][2] == effective_day.isoformat()
     assert rows[1][1] == effective_day.isoformat()
     assert rows[1][4:] == ("manager@example.com", "Annual revision")

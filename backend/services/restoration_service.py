@@ -108,7 +108,7 @@ def run_restore(sqlite_backup_path):
     tables = [
         ('vendors', ['id', 'company_name', 'email', 'phone', 'status', 'created_at', 'contact_person', 'web_login_enabled', 'frontend_bundle_id', 'backend_service_id', 'registration_config', 'retention_days']),
         ('companies', ['id', 'vendor_id', 'name', 'working_hours', 'shifts', 'draft_timetable', 'live_timetable', 'last_modified_by', 'last_modified_at', 'published_by', 'published_at']),
-        ('faces', ['id', 'name', 'templates', 'face_image', 'department', 'designation', 'phone', 'shift', 'daily_wage', 'vendor_id', 'custom_data', 'display_id']),
+        ('faces', ['id', 'name', 'templates', 'face_image', 'department', 'designation', 'phone', 'shift', 'daily_wage', 'vendor_id', 'custom_data', 'display_id', 'registered_at']),
         ('hostel_buildings', ['id', 'vendor_id', 'name', 'code', 'sort_order', 'eligibility_rules', 'created_at']),
         ('hostel_floors', ['id', 'vendor_id', 'building_id', 'name', 'sort_order', 'eligibility_rules', 'created_at']),
         ('hostel_rooms', ['id', 'vendor_id', 'floor_id', 'room_number', 'room_type', 'position_index', 'eligibility_rules', 'created_at']),
@@ -178,7 +178,7 @@ def run_backup(dest_path):
         tables = [
             ('vendors', ['id', 'company_name', 'email', 'phone', 'status', 'created_at', 'contact_person', 'web_login_enabled', 'frontend_bundle_id', 'backend_service_id', 'registration_config', 'retention_days']),
             ('companies', ['id', 'vendor_id', 'name', 'working_hours', 'shifts', 'draft_timetable', 'live_timetable', 'last_modified_by', 'last_modified_at', 'published_by', 'published_at']),
-            ('faces', ['id', 'name', 'templates', 'face_image', 'department', 'designation', 'phone', 'shift', 'daily_wage', 'vendor_id', 'custom_data', 'display_id']),
+            ('faces', ['id', 'name', 'templates', 'face_image', 'department', 'designation', 'phone', 'shift', 'daily_wage', 'vendor_id', 'custom_data', 'display_id', 'registered_at']),
             ('hostel_buildings', ['id', 'vendor_id', 'name', 'code', 'sort_order', 'eligibility_rules', 'created_at']),
             ('hostel_floors', ['id', 'vendor_id', 'building_id', 'name', 'sort_order', 'eligibility_rules', 'created_at']),
             ('hostel_rooms', ['id', 'vendor_id', 'floor_id', 'room_number', 'room_type', 'position_index', 'eligibility_rules', 'created_at']),
