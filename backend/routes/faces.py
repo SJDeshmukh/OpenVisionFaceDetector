@@ -2320,70 +2320,56 @@ def regenerate_face():
 @faces_bp.route("/persons/wages", methods=["PUT"])
 @require_feature("payroll")
 def update_wages():
-    from app import get_db_connection, socketio, is_testing, ALL_FEATURES
-    from services.auth_service import extract_token, verify_token
+    from app import get_db_connection, socketio
+    from services.salary_version_service import (
+        MANAGER_ROLES,
+        ReauthenticationError,
+        SalaryConflictError,
+        SalaryValidationError,
+        apply_salary_updates,
+    )
     vendor_id, error = authenticate_vendor_access()
     if error: return error
+    if g.user_role not in MANAGER_ROLES:
+        return jsonify({"error": "Payroll changes require manager access"}), 403
 
-    data = request.json
-    updates = data.get("updates", []) # List of {person_id|name, daily_wage, late_allowance_days, late_deduction_amount}
-    late_mark_enabled = vendor_has_feature(vendor_id, "late_mark")
+    data = request.get_json(silent=True) or {}
 
     conn = get_db_connection()
     c = conn.cursor()
-    
     try:
-        for u in updates:
-            pid = u.get('person_id')
-            name = u.get('name')
-            wage = u.get('daily_wage')
-            allowance = u.get('late_allowance_days')
-            deduction = u.get('late_deduction_amount')
-            
-            if pid or name:
-                query_parts = []
-                params = []
-                
-                if 'daily_wage' in u and wage is not None and str(wage) != '':
-                    query_parts.append("daily_wage = ?")
-                    params.append(u['daily_wage'])
-                if late_mark_enabled and 'late_allowance_days' in u and allowance is not None and str(allowance) != '':
-                    query_parts.append("late_allowance_days = ?")
-                    params.append(u['late_allowance_days'])
-                if late_mark_enabled and 'late_deduction_amount' in u and deduction is not None and str(deduction) != '':
-                    query_parts.append("late_deduction_amount = ?")
-                    params.append(u['late_deduction_amount'])
-                
-                # New fields
-                for field in ['basic_salary', 'hra', 'conveyance', 'special_allowance', 'pf_enabled', 'esi_enabled', 'gratuity_enabled', 'professional_tax', 'joining_date']:
-                    if field in u and u[field] is not None:
-                        # Allow 0 or empty string if it's explicitly passed, though frontend usually sends values
-                        query_parts.append(f"{field} = ?")
-                        params.append(u[field])
-                
-                if query_parts:
-                    if pid:
-                        query_str = f"UPDATE faces SET {', '.join(query_parts)} WHERE id = ?"
-                        params.append(pid)
-                    else:
-                        query_str = f"UPDATE faces SET {', '.join(query_parts)} WHERE name = ?"
-                        params.append(name)
-                    
-                    if vendor_id:
-                        query_str += " AND vendor_id = ?"
-                        params.append(vendor_id)
-                    
-                    # logger.info(f"[WAGES] Updating {pid or name}: {query_str} with {params}")
-                    c.execute(query_str, params)
-                 
+        changed = apply_salary_updates(
+            conn,
+            c,
+            vendor_id=vendor_id,
+            username=g.username,
+            updates=data.get("updates"),
+            effective_from=data.get("effective_from"),
+            reason=data.get("change_reason"),
+            reauth_token=data.get("reauth_token"),
+        )
         conn.commit()
-        return jsonify({"success": True})
-    except Exception as e:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        return jsonify({"error": str(e)}), 500
+        if changed:
+            cache_delete_vendor_prefix(vendor_id)
+            socketio.emit("persons_updated", {
+                "vendor_id": vendor_id,
+                "reason": "salary_versions_updated",
+                "person_ids": [item["person_id"] for item in changed],
+            })
+        return jsonify({"success": True, "changed": changed})
+    except SalaryValidationError as exc:
+        conn.rollback()
+        return jsonify({"error": str(exc), "code": "INVALID_SALARY_CHANGE"}), 400
+    except ReauthenticationError as exc:
+        conn.rollback()
+        return jsonify({"error": str(exc), "code": "REAUTHENTICATION_FAILED"}), 403
+    except SalaryConflictError as exc:
+        conn.rollback()
+        return jsonify({"error": str(exc), "code": "SALARY_VERSION_CONFLICT"}), 409
+    except Exception:
+        conn.rollback()
+        logger.exception("Could not save salary versions for vendor %s", vendor_id)
+        return jsonify({"error": "Could not save salary changes"}), 500
     finally:
         conn.close()
 

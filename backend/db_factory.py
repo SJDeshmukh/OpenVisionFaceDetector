@@ -603,6 +603,10 @@ def _init_pg_schema_on_conn(conn):
         "CREATE TABLE IF NOT EXISTS companies (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), name TEXT, working_hours REAL, shifts TEXT, draft_timetable TEXT, live_timetable TEXT, last_modified_by TEXT, last_modified_at TIMESTAMP, published_by TEXT, published_at TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS faces (id SERIAL PRIMARY KEY, local_uid TEXT, name TEXT, templates TEXT, face_image TEXT, department TEXT, designation TEXT, phone TEXT, shift TEXT, daily_wage REAL DEFAULT 0, basic_salary REAL DEFAULT 0, hra REAL DEFAULT 0, conveyance REAL DEFAULT 0, special_allowance REAL DEFAULT 0, pf_enabled INTEGER DEFAULT 0, esi_enabled INTEGER DEFAULT 0, gratuity_enabled INTEGER DEFAULT 0, professional_tax REAL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount REAL DEFAULT 0, vendor_id INTEGER REFERENCES vendors(id), custom_data TEXT, display_id INTEGER, joining_date DATE)",
         "ALTER TABLE faces ADD COLUMN IF NOT EXISTS local_uid TEXT",
+        "CREATE TABLE IF NOT EXISTS employee_salary_versions (id SERIAL PRIMARY KEY, vendor_id INTEGER NOT NULL REFERENCES vendors(id), person_id INTEGER NOT NULL REFERENCES faces(id) ON DELETE CASCADE, version_number INTEGER NOT NULL, effective_from DATE NOT NULL, effective_to DATE, daily_wage NUMERIC(12,2) NOT NULL DEFAULT 0, basic_salary NUMERIC(12,2) NOT NULL DEFAULT 0, hra NUMERIC(12,2) NOT NULL DEFAULT 0, conveyance NUMERIC(12,2) NOT NULL DEFAULT 0, special_allowance NUMERIC(12,2) NOT NULL DEFAULT 0, pf_enabled INTEGER NOT NULL DEFAULT 0, esi_enabled INTEGER NOT NULL DEFAULT 0, gratuity_enabled INTEGER NOT NULL DEFAULT 0, professional_tax NUMERIC(12,2) NOT NULL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount NUMERIC(12,2), changed_by TEXT NOT NULL, change_reason TEXT NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, person_id, version_number))",
+        "CREATE TABLE IF NOT EXISTS salary_reauth_tokens (token_hash TEXT PRIMARY KEY, vendor_id INTEGER NOT NULL REFERENCES vendors(id), username TEXT NOT NULL, purpose TEXT NOT NULL, expires_at TIMESTAMP NOT NULL, used_at TIMESTAMP, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS payroll_runs (id SERIAL PRIMARY KEY, vendor_id INTEGER NOT NULL REFERENCES vendors(id), period_start DATE NOT NULL, period_end DATE NOT NULL, status TEXT NOT NULL DEFAULT 'FINALIZED', finalized_by TEXT NOT NULL, finalized_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, settings_json TEXT NOT NULL DEFAULT '{}', created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, period_start, period_end, status))",
+        "CREATE TABLE IF NOT EXISTS payroll_line_items (id SERIAL PRIMARY KEY, payroll_run_id INTEGER NOT NULL REFERENCES payroll_runs(id) ON DELETE CASCADE, vendor_id INTEGER NOT NULL REFERENCES vendors(id), person_id INTEGER NOT NULL, salary_version_ids TEXT NOT NULL DEFAULT '[]', total_hours NUMERIC(12,2) NOT NULL DEFAULT 0, regular_hours NUMERIC(12,2) NOT NULL DEFAULT 0, overtime_hours NUMERIC(12,2) NOT NULL DEFAULT 0, gross_pay NUMERIC(14,2) NOT NULL DEFAULT 0, deductions NUMERIC(14,2) NOT NULL DEFAULT 0, net_payout NUMERIC(14,2) NOT NULL DEFAULT 0, calculation_json TEXT NOT NULL DEFAULT '{}', created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(payroll_run_id, person_id))",
         "CREATE TABLE IF NOT EXISTS advances (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id), amount REAL, amount_cash REAL DEFAULT 0, amount_online REAL DEFAULT 0, date DATE, status TEXT DEFAULT 'pending', approved_by TEXT, approved_at TIMESTAMP, rejection_reason TEXT, deduction_month TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS advance_revisions (id SERIAL PRIMARY KEY, advance_id INTEGER NOT NULL, vendor_id INTEGER NOT NULL, person_id INTEGER NOT NULL, old_amount REAL, new_amount REAL, old_amount_cash REAL, new_amount_cash REAL, old_amount_online REAL, new_amount_online REAL, old_date DATE, new_date DATE, old_deduction_month TEXT, new_deduction_month TEXT, edited_by TEXT, edited_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS attendance (id SERIAL PRIMARY KEY, name TEXT, timestamp TIMESTAMP, status TEXT, captured_image TEXT, activity TEXT, is_late INTEGER DEFAULT 0, device_id TEXT, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id), attendance_date DATE, class_year TEXT, division TEXT, branch TEXT, subject TEXT, lecture_id INTEGER)",
@@ -695,6 +699,11 @@ def _init_pg_schema_on_conn(conn):
         "CREATE INDEX IF NOT EXISTS idx_person_org_resolution ON person_organization_assignments(vendor_id, person_id, effective_from, effective_to)",
         "CREATE INDEX IF NOT EXISTS idx_faces_vendor ON faces(vendor_id)",
         "CREATE INDEX IF NOT EXISTS idx_faces_vendor_display ON faces(vendor_id, display_id)",
+        "CREATE INDEX IF NOT EXISTS idx_salary_versions_resolution ON employee_salary_versions(vendor_id, person_id, effective_from, effective_to)",
+        "CREATE INDEX IF NOT EXISTS idx_salary_reauth_expiry ON salary_reauth_tokens(vendor_id, username, purpose, expires_at)",
+        "CREATE INDEX IF NOT EXISTS idx_payroll_runs_vendor_period ON payroll_runs(vendor_id, period_start, period_end, finalized_at)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_payroll_runs_unique_status ON payroll_runs(vendor_id, period_start, period_end, status)",
+        "CREATE INDEX IF NOT EXISTS idx_payroll_lines_run ON payroll_line_items(payroll_run_id, person_id)",
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_faces_vendor_local_uid ON faces(vendor_id, local_uid) WHERE local_uid IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_system_users_vendor ON system_users(vendor_id)",
         "CREATE INDEX IF NOT EXISTS idx_system_users_vendor_person_role ON system_users(vendor_id, person_id, role)",
@@ -801,6 +810,7 @@ def _init_pg_schema_on_conn(conn):
         ("xchat_token_usage", "usage_type", "TEXT DEFAULT 'chat'"),
         ("faces", "display_id", "INTEGER"),
         ("faces", "local_uid", "TEXT"),
+        ("faces", "daily_wage", "REAL DEFAULT 0"),
         ("faces", "basic_salary", "REAL DEFAULT 0"),
         ("faces", "hra", "REAL DEFAULT 0"),
         ("faces", "conveyance", "REAL DEFAULT 0"),
@@ -809,6 +819,8 @@ def _init_pg_schema_on_conn(conn):
         ("faces", "esi_enabled", "INTEGER DEFAULT 0"),
         ("faces", "gratuity_enabled", "INTEGER DEFAULT 0"),
         ("faces", "professional_tax", "REAL DEFAULT 0"),
+        ("faces", "late_allowance_days", "INTEGER"),
+        ("faces", "late_deduction_amount", "REAL DEFAULT 0"),
         ("faces", "joining_date", "DATE"),
         ("advances", "amount_cash", "REAL DEFAULT 0"),
         ("advances", "amount_online", "REAL DEFAULT 0"),
@@ -956,6 +968,30 @@ def _init_pg_schema_on_conn(conn):
     """, "Initialize has_set_password")
     run_migration("UPDATE system_users SET password_plain = NULL WHERE password_plain IS NOT NULL", "Remove legacy plaintext passwords")
 
+    # Seed the immutable salary ledger from the current compatibility snapshot.
+    # Earlier changes cannot be reconstructed, so existing values begin at a
+    # documented baseline date and all future edits create new versions.
+    run_migration("""
+        INSERT INTO employee_salary_versions (
+            vendor_id, person_id, version_number, effective_from, effective_to,
+            daily_wage, basic_salary, hra, conveyance, special_allowance,
+            pf_enabled, esi_enabled, gratuity_enabled, professional_tax,
+            late_allowance_days, late_deduction_amount, changed_by, change_reason
+        )
+        SELECT
+            f.vendor_id, f.id, 1, DATE '1970-01-01', NULL,
+            COALESCE(f.daily_wage, 0), COALESCE(f.basic_salary, 0),
+            COALESCE(f.hra, 0), COALESCE(f.conveyance, 0),
+            COALESCE(f.special_allowance, 0), COALESCE(f.pf_enabled, 0),
+            COALESCE(f.esi_enabled, 0), COALESCE(f.gratuity_enabled, 0),
+            COALESCE(f.professional_tax, 0), f.late_allowance_days,
+            f.late_deduction_amount, 'system-backfill',
+            'Initial salary imported from employee record'
+        FROM faces f
+        WHERE f.vendor_id IS NOT NULL
+        ON CONFLICT (vendor_id, person_id, version_number) DO NOTHING
+    """, "Backfill employee salary versions")
+
     # 4. Ensure ON DELETE CASCADE on foreign keys so vendor and batch deletions cascade cleanly
     if is_pg:
         try:
@@ -1025,6 +1061,10 @@ def init_sqlite_schema(conn):
         "CREATE TABLE IF NOT EXISTS vendors (id INTEGER PRIMARY KEY AUTOINCREMENT, company_name TEXT NOT NULL, email TEXT, phone TEXT, address TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, status TEXT DEFAULT 'active', registration_config TEXT, contact_person TEXT, web_login_enabled INTEGER DEFAULT 1, frontend_bundle_id TEXT, backend_service_id TEXT, vertical TEXT, attendance_type TEXT DEFAULT 'total_time', retention_days INTEGER DEFAULT 90, num_rectors INTEGER DEFAULT 0, num_hods INTEGER DEFAULT 0, departments TEXT)",
         "CREATE TABLE IF NOT EXISTS companies (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, name TEXT, working_hours REAL, shifts TEXT, draft_timetable TEXT, live_timetable TEXT, last_modified_by TEXT, last_modified_at DATETIME, published_by TEXT, published_at DATETIME)",
         "CREATE TABLE IF NOT EXISTS faces (id INTEGER PRIMARY KEY AUTOINCREMENT, local_uid TEXT, name TEXT, templates TEXT, face_image TEXT, department TEXT, designation TEXT, phone TEXT, shift TEXT, daily_wage REAL DEFAULT 0, basic_salary REAL DEFAULT 0, hra REAL DEFAULT 0, conveyance REAL DEFAULT 0, special_allowance REAL DEFAULT 0, pf_enabled INTEGER DEFAULT 0, esi_enabled INTEGER DEFAULT 0, gratuity_enabled INTEGER DEFAULT 0, professional_tax REAL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount REAL DEFAULT 0, vendor_id INTEGER, custom_data TEXT, display_id INTEGER, joining_date DATE)",
+        "CREATE TABLE IF NOT EXISTS employee_salary_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER NOT NULL, person_id INTEGER NOT NULL, version_number INTEGER NOT NULL, effective_from DATE NOT NULL, effective_to DATE, daily_wage NUMERIC NOT NULL DEFAULT 0, basic_salary NUMERIC NOT NULL DEFAULT 0, hra NUMERIC NOT NULL DEFAULT 0, conveyance NUMERIC NOT NULL DEFAULT 0, special_allowance NUMERIC NOT NULL DEFAULT 0, pf_enabled INTEGER NOT NULL DEFAULT 0, esi_enabled INTEGER NOT NULL DEFAULT 0, gratuity_enabled INTEGER NOT NULL DEFAULT 0, professional_tax NUMERIC NOT NULL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount NUMERIC, changed_by TEXT NOT NULL, change_reason TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, person_id, version_number))",
+        "CREATE TABLE IF NOT EXISTS salary_reauth_tokens (token_hash TEXT PRIMARY KEY, vendor_id INTEGER NOT NULL, username TEXT NOT NULL, purpose TEXT NOT NULL, expires_at DATETIME NOT NULL, used_at DATETIME, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS payroll_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER NOT NULL, period_start DATE NOT NULL, period_end DATE NOT NULL, status TEXT NOT NULL DEFAULT 'FINALIZED', finalized_by TEXT NOT NULL, finalized_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, settings_json TEXT NOT NULL DEFAULT '{}', created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, period_start, period_end, status))",
+        "CREATE TABLE IF NOT EXISTS payroll_line_items (id INTEGER PRIMARY KEY AUTOINCREMENT, payroll_run_id INTEGER NOT NULL, vendor_id INTEGER NOT NULL, person_id INTEGER NOT NULL, salary_version_ids TEXT NOT NULL DEFAULT '[]', total_hours NUMERIC NOT NULL DEFAULT 0, regular_hours NUMERIC NOT NULL DEFAULT 0, overtime_hours NUMERIC NOT NULL DEFAULT 0, gross_pay NUMERIC NOT NULL DEFAULT 0, deductions NUMERIC NOT NULL DEFAULT 0, net_payout NUMERIC NOT NULL DEFAULT 0, calculation_json TEXT NOT NULL DEFAULT '{}', created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(payroll_run_id, person_id))",
         "CREATE TABLE IF NOT EXISTS advances (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, person_id INTEGER, amount REAL, amount_cash REAL DEFAULT 0, amount_online REAL DEFAULT 0, date DATE, status TEXT DEFAULT 'pending', approved_by TEXT, approved_at DATETIME, rejection_reason TEXT, deduction_month TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS advance_revisions (id INTEGER PRIMARY KEY AUTOINCREMENT, advance_id INTEGER NOT NULL, vendor_id INTEGER NOT NULL, person_id INTEGER NOT NULL, old_amount REAL, new_amount REAL, old_amount_cash REAL, new_amount_cash REAL, old_amount_online REAL, new_amount_online REAL, old_date DATE, new_date DATE, old_deduction_month TEXT, new_deduction_month TEXT, edited_by TEXT, edited_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS attendance (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, timestamp DATETIME, status TEXT, captured_image TEXT, activity TEXT, is_late INTEGER DEFAULT 0, device_id TEXT, vendor_id INTEGER, person_id INTEGER, attendance_date DATE, class_year TEXT, division TEXT, branch TEXT, subject TEXT, lecture_id INTEGER)",
@@ -1106,6 +1146,11 @@ def init_sqlite_schema(conn):
         "CREATE INDEX IF NOT EXISTS idx_person_org_resolution ON person_organization_assignments(vendor_id, person_id, effective_from, effective_to)",
         "CREATE INDEX IF NOT EXISTS idx_faces_vendor ON faces(vendor_id)",
         "CREATE INDEX IF NOT EXISTS idx_faces_vendor_display ON faces(vendor_id, display_id)",
+        "CREATE INDEX IF NOT EXISTS idx_salary_versions_resolution ON employee_salary_versions(vendor_id, person_id, effective_from, effective_to)",
+        "CREATE INDEX IF NOT EXISTS idx_salary_reauth_expiry ON salary_reauth_tokens(vendor_id, username, purpose, expires_at)",
+        "CREATE INDEX IF NOT EXISTS idx_payroll_runs_vendor_period ON payroll_runs(vendor_id, period_start, period_end, finalized_at)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_payroll_runs_unique_status ON payroll_runs(vendor_id, period_start, period_end, status)",
+        "CREATE INDEX IF NOT EXISTS idx_payroll_lines_run ON payroll_line_items(payroll_run_id, person_id)",
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_faces_vendor_local_uid ON faces(vendor_id, local_uid) WHERE local_uid IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_system_users_vendor ON system_users(vendor_id)",
         "CREATE INDEX IF NOT EXISTS idx_system_users_vendor_person_role ON system_users(vendor_id, person_id, role)",
@@ -1212,7 +1257,7 @@ def init_sqlite_schema(conn):
     except Exception:
         pass
             
-    for col in ["display_id INTEGER", "local_uid TEXT", "basic_salary REAL DEFAULT 0", "hra REAL DEFAULT 0", "conveyance REAL DEFAULT 0", "special_allowance REAL DEFAULT 0", "pf_enabled INTEGER DEFAULT 0", "esi_enabled INTEGER DEFAULT 0", "gratuity_enabled INTEGER DEFAULT 0", "professional_tax REAL DEFAULT 0", "joining_date DATE"]:
+    for col in ["display_id INTEGER", "local_uid TEXT", "daily_wage REAL DEFAULT 0", "basic_salary REAL DEFAULT 0", "hra REAL DEFAULT 0", "conveyance REAL DEFAULT 0", "special_allowance REAL DEFAULT 0", "pf_enabled INTEGER DEFAULT 0", "esi_enabled INTEGER DEFAULT 0", "gratuity_enabled INTEGER DEFAULT 0", "professional_tax REAL DEFAULT 0", "late_allowance_days INTEGER", "late_deduction_amount REAL DEFAULT 0", "joining_date DATE"]:
         try:
             cur.execute(f"ALTER TABLE faces ADD COLUMN {col}")
         except Exception:
@@ -1260,6 +1305,26 @@ def init_sqlite_schema(conn):
         )
     except Exception:
         pass
+
+    cur.execute("""
+        INSERT OR IGNORE INTO employee_salary_versions (
+            vendor_id, person_id, version_number, effective_from, effective_to,
+            daily_wage, basic_salary, hra, conveyance, special_allowance,
+            pf_enabled, esi_enabled, gratuity_enabled, professional_tax,
+            late_allowance_days, late_deduction_amount, changed_by, change_reason
+        )
+        SELECT
+            f.vendor_id, f.id, 1, '1970-01-01', NULL,
+            COALESCE(f.daily_wage, 0), COALESCE(f.basic_salary, 0),
+            COALESCE(f.hra, 0), COALESCE(f.conveyance, 0),
+            COALESCE(f.special_allowance, 0), COALESCE(f.pf_enabled, 0),
+            COALESCE(f.esi_enabled, 0), COALESCE(f.gratuity_enabled, 0),
+            COALESCE(f.professional_tax, 0), f.late_allowance_days,
+            f.late_deduction_amount, 'system-backfill',
+            'Initial salary imported from employee record'
+        FROM faces f
+        WHERE f.vendor_id IS NOT NULL
+    """)
 
     for q in deferred_indexes:
         cur.execute(q)

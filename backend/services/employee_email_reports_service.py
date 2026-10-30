@@ -11,10 +11,14 @@ from datetime import date, datetime, timedelta
 
 from services.payroll_service import calculate_salary_breakdown, get_approved_advances
 from services.attendance_shift_service import (
-    calculate_shift_wage,
     choose_shift_policy,
     parse_shift_list,
     scheduled_payable_hours,
+)
+from services.salary_version_service import (
+    calculate_versioned_shift_wage,
+    load_salary_versions,
+    resolve_salary_version,
 )
 from services.person_scope_service import person_type_for, requested_person_type, vendor_vertical
 
@@ -271,6 +275,7 @@ def build_employee_monthly_deliveries(vendor_id, month, person_type=None, filter
         settings = _settings(cursor, vendor_id)
         people = _load_people(cursor, vendor_id, person_type, filters=filters)
         person_ids = {person["id"] for person in people}
+        salary_versions = load_salary_versions(cursor, vendor_id, person_ids)
 
         cursor.execute("""
             SELECT person_id, timestamp, status, activity, is_late
@@ -323,14 +328,24 @@ def build_employee_monthly_deliveries(vendor_id, month, person_type=None, filter
                 if record.get("is_late") and (stamp := _timestamp(record.get("timestamp")))
                 and start <= shift_policy.attendance_date(stamp) <= end
             }
-            allowance = person.get("late_allowance_days")
-            allowance = _as_int(allowance, settings["global_late_allowance"]) if allowance is not None else _as_int(settings["global_late_allowance"], 7)
-            late_rate = person.get("late_deduction_amount")
-            late_rate = _as_float(late_rate, settings["global_late_deduction"]) if late_rate is not None else _as_float(settings["global_late_deduction"])
-            late_deduction = round(max(0, len(late_dates) - allowance) * late_rate, 2)
-            daily_wage = _as_float(person.get("daily_wage"))
-            wage_result = calculate_shift_wage(
-                daily_wage,
+            person_versions = salary_versions.get(person["id"], [])
+            late_deduction = 0.0
+            for late_index, late_day in enumerate(sorted(late_dates), start=1):
+                late_config = resolve_salary_version(person_versions, late_day) or person
+                allowance = late_config.get("late_allowance_days")
+                allowance = _as_int(
+                    allowance, settings["global_late_allowance"]
+                ) if allowance is not None else _as_int(settings["global_late_allowance"], 7)
+                late_rate = late_config.get("late_deduction_amount")
+                late_rate = _as_float(
+                    late_rate, settings["global_late_deduction"]
+                ) if late_rate is not None else _as_float(settings["global_late_deduction"])
+                if late_index > allowance:
+                    late_deduction += late_rate
+            late_deduction = round(late_deduction, 2)
+            wage_result = calculate_versioned_shift_wage(
+                person_versions,
+                person,
                 worked_seconds_by_day,
                 scheduled_hours,
                 overtime_multiplier=_as_float(settings.get("overtime_multiplier"), 1.0),
@@ -344,15 +359,39 @@ def build_employee_monthly_deliveries(vendor_id, month, person_type=None, filter
                     tenure_years = max(0, (end - joined).days / 365.25)
                 except (TypeError, ValueError):
                     pass
-            config = dict(person)
-            config["tenure_years"] = tenure_years
-            breakdown = calculate_salary_breakdown(
-                base_cost, config,
-                pf_percent=_as_float(settings["global_pf_percentage"], 12),
-                esi_percent=_as_float(settings["global_esi_percentage"], 0.75),
-                gratuity_percent=_as_float(settings["global_gratuity_percentage"], 4.81),
-                gratuity_threshold_years=_as_int(settings["global_gratuity_threshold_years"], 5),
-            )
+            breakdown = {
+                "components": {"basic": 0.0, "hra": 0.0, "conveyance": 0.0, "special_allowance": 0.0},
+                "deductions": {"pf": 0.0, "esi": 0.0, "pt": 0.0, "total_statutory": 0.0},
+                "provisions": {"gratuity": 0.0},
+                "gross": 0.0,
+                "net_before_advances": 0.0,
+            }
+            version_groups = wage_result.get("groups") or [{
+                "config": person,
+                "wage": {"gross_wage": base_cost},
+            }]
+            for group in version_groups:
+                config = dict(group.get("config") or person)
+                config["tenure_years"] = tenure_years
+                group_breakdown = calculate_salary_breakdown(
+                    _as_float(group.get("wage", {}).get("gross_wage")), config,
+                    pf_percent=_as_float(settings["global_pf_percentage"], 12),
+                    esi_percent=_as_float(settings["global_esi_percentage"], 0.75),
+                    gratuity_percent=_as_float(settings["global_gratuity_percentage"], 4.81),
+                    gratuity_threshold_years=_as_int(settings["global_gratuity_threshold_years"], 5),
+                )
+                for section in ("components", "deductions", "provisions"):
+                    for key, value in group_breakdown[section].items():
+                        breakdown[section][key] = round(
+                            _as_float(breakdown[section].get(key)) + _as_float(value), 2
+                        )
+                breakdown["gross"] = round(
+                    breakdown["gross"] + _as_float(group_breakdown["gross"]), 2
+                )
+                breakdown["net_before_advances"] = round(
+                    breakdown["net_before_advances"]
+                    + _as_float(group_breakdown["net_before_advances"]), 2
+                )
             advances = get_approved_advances(conn, person["id"], start.strftime("%Y-%m"))
             approved_advance = round(sum(_as_float(row[1]) for row in advances), 2)
             net_payable = round(breakdown["net_before_advances"] - late_deduction - approved_advance, 2)
@@ -360,7 +399,9 @@ def build_employee_monthly_deliveries(vendor_id, month, person_type=None, filter
                 "days_present": len(present_dates), "total_hours": round(total_hours, 2),
                 "regular_hours": wage_result["regular_hours"],
                 "overtime_hours": wage_result["overtime_hours"],
-                "daily_wage": daily_wage, "gross": round(breakdown["gross"], 2),
+                "daily_wage": _as_float(
+                    (resolve_salary_version(person_versions, end) or person).get("daily_wage")
+                ), "gross": round(breakdown["gross"], 2),
                 "pf": breakdown["deductions"]["pf"], "esi": breakdown["deductions"]["esi"],
                 "professional_tax": breakdown["deductions"]["pt"], "late_deduction": late_deduction,
                 "approved_advance_deduction": approved_advance, "net_payable": net_payable,

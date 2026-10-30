@@ -368,6 +368,9 @@ app.register_blueprint(admin_bp, url_prefix='/api/admin')
 from routes.faces import faces_bp
 app.register_blueprint(faces_bp, url_prefix='/api')
 
+from routes.compensation import compensation_bp
+app.register_blueprint(compensation_bp, url_prefix='/api')
+
 from routes.vendor import vendor_bp
 app.register_blueprint(vendor_bp, url_prefix='/api')
 

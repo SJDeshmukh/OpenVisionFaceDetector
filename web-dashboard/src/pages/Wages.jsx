@@ -31,7 +31,21 @@ const Wages = () => {
   const [startDate, setStartDate] = useState(formatDate(firstDay));
   const [endDate, setEndDate] = useState(formatDate(lastDay));
   const [hasChanges, setHasChanges] = useState(false);
+  const [dirtyPersonIds, setDirtyPersonIds] = useState(new Set());
   const [saveLoading, setSaveLoading] = useState(false);
+  const [salarySaveOpen, setSalarySaveOpen] = useState(false);
+  const [salaryPassword, setSalaryPassword] = useState('');
+  const [salaryEffectiveDate, setSalaryEffectiveDate] = useState(formatDate(new Date()));
+  const [salaryChangeReason, setSalaryChangeReason] = useState('');
+  const [salarySaveError, setSalarySaveError] = useState('');
+  const [salaryHistoryOpen, setSalaryHistoryOpen] = useState(false);
+  const [salaryHistoryPerson, setSalaryHistoryPerson] = useState(null);
+  const [salaryHistory, setSalaryHistory] = useState([]);
+  const [salaryHistoryLoading, setSalaryHistoryLoading] = useState(false);
+  const [finalizeOpen, setFinalizeOpen] = useState(false);
+  const [finalizePassword, setFinalizePassword] = useState('');
+  const [finalizeError, setFinalizeError] = useState('');
+  const [finalizeLoading, setFinalizeLoading] = useState(false);
   const [workingHours, setWorkingHours] = useState(8.0);
   const [workingHoursChanged, setWorkingHoursChanged] = useState(false);
   const [globalSettings, setGlobalSettings] = useState({ allowance: 7, deduction: 0 });
@@ -61,9 +75,17 @@ const Wages = () => {
   const [disableStatutoryOpen, setDisableStatutoryOpen] = useState(false);
   const [disableStatutoryPassword, setDisableStatutoryPassword] = useState('');
   const [disableStatutoryError, setDisableStatutoryError] = useState('');
-  const [disableStatutoryLoading, setDisableStatutoryLoading] = useState(false);
   const lateMarkEnabled = Boolean(user?.features?.includes('late_mark'));
   const payrollRequestRef = useRef(null);
+
+  const markSalaryDirty = (personId) => {
+    if (!personId) return;
+    setDirtyPersonIds(current => {
+      const next = new Set(current);
+      next.add(Number(personId));
+      return next;
+    });
+  };
 
   useEffect(() => {
     if (user) {
@@ -287,6 +309,7 @@ const Wages = () => {
 
     setPayrollData(newData);
     setHasChanges(true);
+    markSalaryDirty(newData[index].person_id);
   };
 
   const enablePfAndEsiForAll = () => {
@@ -298,39 +321,27 @@ const Wages = () => {
     }));
     setPayrollData(updated);
     setHasChanges(true);
+    setDirtyPersonIds(new Set(updated.map(person => Number(person.person_id)).filter(Boolean)));
   };
 
-  const disablePfAndEsiForAll = async () => {
-    if (!disableStatutoryPassword || disableStatutoryLoading) return;
-    setDisableStatutoryLoading(true);
+  const disablePfAndEsiForAll = () => {
+    if (!disableStatutoryPassword) return;
     setDisableStatutoryError('');
-    try {
-      const res = await fetch(`${API_BASE_URL}/persons/wages/statutory/bulk`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${user?.token}`
-        },
-        body: JSON.stringify({ enabled: false, password: disableStatutoryPassword })
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setDisableStatutoryError(data.error || 'Could not disable PF and ESI.');
-        return;
-      }
-      setPayrollData(current => current.map(person => recalculatePayrollPerson({
-        ...person,
-        pf_enabled: 0,
-        esi_enabled: 0,
-      })));
-      setDisableStatutoryOpen(false);
-      setDisableStatutoryPassword('');
-      alert(`PF and ESI were disabled for ${data.affected_employees ?? 'all'} employees.`);
-    } catch (_) {
-      setDisableStatutoryError('Could not reach the server. Please try again.');
-    } finally {
-      setDisableStatutoryLoading(false);
-    }
+    const updated = payrollData.map(person => recalculatePayrollPerson({
+      ...person,
+      pf_enabled: 0,
+      esi_enabled: 0,
+    }));
+    setPayrollData(updated);
+    setDirtyPersonIds(new Set(updated.map(person => Number(person.person_id)).filter(Boolean)));
+    setHasChanges(true);
+    setDisableStatutoryOpen(false);
+    setSalaryPassword(disableStatutoryPassword);
+    setDisableStatutoryPassword('');
+    setSalaryEffectiveDate(formatDate(new Date()));
+    setSalaryChangeReason('Disable PF and ESI for all employees');
+    setSalarySaveError('');
+    setSalarySaveOpen(true);
   };
 
   const saveJoiningDate = () => {
@@ -343,6 +354,7 @@ const Wages = () => {
     
     setPayrollData(newData);
     setHasChanges(true);
+    markSalaryDirty(newData[idx].person_id);
     setJoiningDateModalOpen(false);
     setJoiningDatePerson(null);
   };
@@ -382,24 +394,57 @@ const Wages = () => {
   };
 
   const saveWages = async () => {
+    if (!salaryPassword) {
+      setSalarySaveError('Enter your current login password.');
+      return;
+    }
+    if (!salaryEffectiveDate || salaryEffectiveDate > formatDate(new Date())) {
+      setSalarySaveError('Choose today or an earlier effective date.');
+      return;
+    }
+    if (salaryChangeReason.trim().length < 3) {
+      setSalarySaveError('Enter a short reason for this salary change.');
+      return;
+    }
     setSaveLoading(true);
+    setSalarySaveError('');
     try {
-      const updates = payrollData.map(p => {
-        const u = {};
-        if (p.person_id) u.person_id = p.person_id; else u.name = p.name;
+      const updates = payrollData.filter(p => dirtyPersonIds.has(Number(p.person_id))).map(p => {
+        const u = { person_id: p.person_id };
+        if (p.salary_version !== undefined && p.salary_version !== null) {
+          u.expected_salary_version = p.salary_version;
+        }
         if (typeof p.daily_wage === 'number') u.daily_wage = p.daily_wage;
-        if (lateMarkEnabled && p.late_allowance_days !== null && p.late_allowance_days !== '' && p.late_allowance_days !== undefined) {
+        if (lateMarkEnabled && p.late_allowance_days !== '' && p.late_allowance_days !== undefined) {
           u.late_allowance_days = p.late_allowance_days;
         }
-        if (lateMarkEnabled && p.late_deduction_amount !== null && p.late_deduction_amount !== '' && p.late_deduction_amount !== undefined) {
+        if (lateMarkEnabled && p.late_deduction_amount !== '' && p.late_deduction_amount !== undefined) {
           u.late_deduction_amount = p.late_deduction_amount;
         }
-        // New Payroll Fields
         ['basic_salary', 'hra', 'conveyance', 'special_allowance', 'pf_enabled', 'esi_enabled', 'gratuity_enabled', 'professional_tax', 'joining_date'].forEach(f => {
           if (p[f] !== undefined && p[f] !== null) u[f] = p[f];
         });
         return u;
       });
+
+      if (!updates.length) {
+        setSalarySaveError('No employee salary changes were selected.');
+        return;
+      }
+
+      const confirmationResponse = await fetch(`${API_BASE_URL}/persons/wages/reauth`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user?.token}`
+        },
+        body: JSON.stringify({ password: salaryPassword, purpose: 'salary_change' })
+      });
+      const confirmation = await confirmationResponse.json().catch(() => ({}));
+      if (!confirmationResponse.ok || !confirmation.reauth_token) {
+        setSalarySaveError(confirmation.error || 'The password could not be confirmed.');
+        return;
+      }
 
       const res = await fetch(`${API_BASE_URL}/persons/wages`, {
         method: 'PUT',
@@ -407,34 +452,116 @@ const Wages = () => {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${user?.token}`
         },
-        body: JSON.stringify({ updates })
+        body: JSON.stringify({
+          updates,
+          reauth_token: confirmation.reauth_token,
+          effective_from: salaryEffectiveDate,
+          change_reason: salaryChangeReason.trim(),
+        })
       });
 
-      if (res.status === 403) {
-        const data = await res.json();
-        setError(data.error || "Access Denied");
-        alert(data.error || "Access Denied");
-        return;
-      }
+      const result = await res.json().catch(() => ({}));
 
       if (res.ok) {
         setHasChanges(false);
-        alert("Wages saved successfully!");
+        setDirtyPersonIds(new Set());
+        setSalarySaveOpen(false);
+        setSalaryPassword('');
+        setSalaryChangeReason('');
+        alert(`Salary history updated for ${result.changed?.length ?? updates.length} employee(s).`);
         fetchPayroll();
       } else {
-        let errMsg = "Failed to save wages";
-        try {
-          const errData = await res.json();
-          if (errData.error) errMsg = errData.error;
-        } catch (_) {}
+        const errMsg = result.error || "Failed to save salary changes";
         console.error("Save wages error:", errMsg);
-        alert(errMsg);
+        setSalarySaveError(errMsg);
       }
     } catch (error) {
       console.error("Error saving wages:", error);
-      alert("Error saving wages: " + error.message);
+      setSalarySaveError("Could not reach the server. Please try again.");
     } finally {
       setSaveLoading(false);
+    }
+  };
+
+  const openSalarySave = () => {
+    setSalaryPassword('');
+    setSalaryEffectiveDate(formatDate(new Date()));
+    setSalaryChangeReason('');
+    setSalarySaveError('');
+    setSalarySaveOpen(true);
+  };
+
+  const openSalaryHistory = async (person) => {
+    setSalaryHistoryPerson(person);
+    setSalaryHistory([]);
+    setSalaryHistoryOpen(true);
+    setSalaryHistoryLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/persons/${person.person_id}/salary-versions`, {
+        headers: { 'Authorization': `Bearer ${user?.token}` }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Could not load salary history');
+      setSalaryHistory(data.versions || []);
+    } catch (historyError) {
+      setSalaryHistory([{ error: historyError.message }]);
+    } finally {
+      setSalaryHistoryLoading(false);
+    }
+  };
+
+  const finalizePayroll = async () => {
+    if (!finalizePassword || finalizeLoading) {
+      if (!finalizePassword) setFinalizeError('Enter your current login password.');
+      return;
+    }
+    setFinalizeLoading(true);
+    setFinalizeError('');
+    try {
+      const confirmationResponse = await fetch(`${API_BASE_URL}/persons/wages/reauth`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user?.token}`
+        },
+        body: JSON.stringify({ password: finalizePassword, purpose: 'payroll_finalize' })
+      });
+      const confirmation = await confirmationResponse.json().catch(() => ({}));
+      if (!confirmationResponse.ok || !confirmation.reauth_token) {
+        setFinalizeError(confirmation.error || 'The password could not be confirmed.');
+        return;
+      }
+
+      const params = new URLSearchParams({
+        pf_percentage: String(pfPercentage),
+        esi_percentage: String(esiPercentage),
+        gratuity_percentage: String(gratuityPercentage),
+        include_images: 'false',
+      });
+      const response = await fetch(`${API_BASE_URL}/reports/payroll/finalize?${params.toString()}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user?.token}`
+        },
+        body: JSON.stringify({
+          start_date: startDate,
+          end_date: endDate,
+          reauth_token: confirmation.reauth_token,
+        })
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setFinalizeError(result.error || 'Could not finalize this payroll period.');
+        return;
+      }
+      setFinalizeOpen(false);
+      setFinalizePassword('');
+      alert(`Payroll finalized. Run #${result.run_id} contains ${result.employee_count} employee(s).`);
+    } catch (_) {
+      setFinalizeError('Could not reach the server. Please try again.');
+    } finally {
+      setFinalizeLoading(false);
     }
   };
   const fetchAdvanceHistory = async (personId) => {
@@ -606,7 +733,7 @@ const Wages = () => {
 
         {hasChanges && (
           <button
-            onClick={saveWages}
+            onClick={openSalarySave}
             disabled={saveLoading}
             className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2 shadow-sm transition-all"
           >
@@ -626,6 +753,21 @@ const Wages = () => {
             )}
           </button>
         )}
+
+        <button
+          type="button"
+          onClick={() => {
+            setFinalizePassword('');
+            setFinalizeError('');
+            setFinalizeOpen(true);
+          }}
+          disabled={!payrollData.length || loading || hasChanges}
+          className="px-4 py-2 bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-50 flex items-center gap-2 shadow-sm transition-all"
+          title={hasChanges ? 'Save salary changes before finalizing payroll' : 'Create an immutable payroll record for this date range'}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg>
+          Finalize Payroll
+        </button>
 
         {!hasChanges && (
           <button
@@ -1011,6 +1153,13 @@ const Wages = () => {
                     </td>
                     <td className="py-3 px-4 text-center">
                       <button
+                        onClick={() => openSalaryHistory(person)}
+                        className="p-1.5 text-slate-600 hover:bg-slate-100 rounded transition-colors"
+                        title="View Salary History"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>
+                      </button>
+                      <button
                         onClick={() => handleOpenAdvanceModal(person)}
                         className="p-1.5 text-blue-600 hover:bg-blue-50 rounded transition-colors"
                         title="Manage Advances"
@@ -1035,6 +1184,103 @@ const Wages = () => {
           </table>
         </div>
       </div>
+      {finalizeOpen && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="border-b border-slate-200 px-6 py-5">
+              <h3 className="text-lg font-bold text-slate-900">Finalize Payroll</h3>
+              <p className="mt-1 text-sm text-slate-500">{startDate} to {endDate}</p>
+            </div>
+            <div className="space-y-4 px-6 py-5">
+              <div className="rounded-lg border border-violet-200 bg-violet-50 p-3 text-sm text-violet-800">
+                This creates a permanent snapshot of hours, salary versions, deductions, and net payouts. It cannot be edited later.
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-500">Current Login Password</label>
+                <input type="password" value={finalizePassword} onChange={(event) => setFinalizePassword(event.target.value)} autoComplete="current-password" className="w-full rounded-lg border border-slate-300 px-3 py-2 focus:border-violet-500 focus:ring-2 focus:ring-violet-100" onKeyDown={(event) => { if (event.key === 'Enter' && !finalizeLoading) finalizePayroll(); }} />
+              </div>
+              {finalizeError && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{finalizeError}</div>}
+            </div>
+            <div className="flex justify-end gap-3 border-t border-slate-200 bg-slate-50 px-6 py-4">
+              <button type="button" disabled={finalizeLoading} onClick={() => setFinalizeOpen(false)} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50">Cancel</button>
+              <button type="button" disabled={finalizeLoading} onClick={finalizePayroll} className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-wait disabled:opacity-60">{finalizeLoading ? 'Finalizing…' : 'Confirm & Finalize'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {salarySaveOpen && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="border-b border-slate-200 px-6 py-5">
+              <h3 className="text-lg font-bold text-slate-900">Confirm Salary Change</h3>
+              <p className="mt-1 text-sm text-slate-500">
+                {dirtyPersonIds.size} employee record{dirtyPersonIds.size === 1 ? '' : 's'} will receive a new salary version.
+              </p>
+            </div>
+            <div className="space-y-4 px-6 py-5">
+              <div>
+                <label className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-500">Effective From</label>
+                <input type="date" max={formatDate(new Date())} value={salaryEffectiveDate} onChange={(event) => setSalaryEffectiveDate(event.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 focus:border-blue-500 focus:ring-2 focus:ring-blue-100" />
+                <p className="mt-1 text-xs text-slate-500">Attendance before this date keeps the previous salary.</p>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-500">Reason</label>
+                <textarea value={salaryChangeReason} onChange={(event) => setSalaryChangeReason(event.target.value)} maxLength={500} rows={3} placeholder="Example: Annual salary revision" className="w-full resize-none rounded-lg border border-slate-300 px-3 py-2 focus:border-blue-500 focus:ring-2 focus:ring-blue-100" />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-500">Current Login Password</label>
+                <input type="password" value={salaryPassword} onChange={(event) => setSalaryPassword(event.target.value)} autoComplete="current-password" placeholder="Confirm this change with your password" className="w-full rounded-lg border border-slate-300 px-3 py-2 focus:border-blue-500 focus:ring-2 focus:ring-blue-100" onKeyDown={(event) => { if (event.key === 'Enter' && !saveLoading) saveWages(); }} />
+              </div>
+              {salarySaveError && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{salarySaveError}</div>}
+            </div>
+            <div className="flex justify-end gap-3 border-t border-slate-200 bg-slate-50 px-6 py-4">
+              <button type="button" disabled={saveLoading} onClick={() => setSalarySaveOpen(false)} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50">Cancel</button>
+              <button type="button" disabled={saveLoading} onClick={saveWages} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-wait disabled:opacity-60">{saveLoading ? 'Saving…' : 'Confirm & Save'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {salaryHistoryOpen && salaryHistoryPerson && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
+          <div className="flex max-h-[80vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-start justify-between border-b border-slate-200 px-6 py-5">
+              <div>
+                <h3 className="text-lg font-bold text-slate-900">Salary History</h3>
+                <p className="mt-1 text-sm text-slate-500">{salaryHistoryPerson.name} · ID #{salaryHistoryPerson.display_id || salaryHistoryPerson.person_id}</p>
+              </div>
+              <button onClick={() => setSalaryHistoryOpen(false)} className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700">✕</button>
+            </div>
+            <div className="overflow-auto px-6 py-5">
+              {salaryHistoryLoading ? (
+                <div className="py-12 text-center text-sm text-slate-500">Loading salary history…</div>
+              ) : salaryHistory[0]?.error ? (
+                <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{salaryHistory[0].error}</div>
+              ) : salaryHistory.length === 0 ? (
+                <div className="py-12 text-center text-sm text-slate-500">No salary history is available yet.</div>
+              ) : (
+                <table className="w-full border-collapse text-left text-sm">
+                  <thead><tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500"><th className="px-3 py-3">Version</th><th className="px-3 py-3">Effective Period</th><th className="px-3 py-3 text-right">Daily Wage</th><th className="px-3 py-3">Changed By</th><th className="px-3 py-3">Reason</th></tr></thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {salaryHistory.map(version => (
+                      <tr key={version.id} className="align-top">
+                        <td className="px-3 py-3 font-semibold text-slate-800">v{version.version_number}</td>
+                        <td className="px-3 py-3 text-slate-600">{version.effective_from} to {version.effective_to || 'Current'}</td>
+                        <td className="px-3 py-3 text-right font-semibold text-slate-900">₹{Number(version.daily_wage || 0).toFixed(2)}</td>
+                        <td className="px-3 py-3 text-slate-600">{version.changed_by}</td>
+                        <td className="max-w-xs px-3 py-3 text-slate-600">{version.change_reason}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+            <div className="flex justify-end border-t border-slate-200 bg-slate-50 px-6 py-4"><button onClick={() => setSalaryHistoryOpen(false)} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100">Close</button></div>
+          </div>
+        </div>
+      )}
+
       {advanceModalOpen && advancePerson && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden transform transition-all flex flex-col max-h-[90vh]">
@@ -1247,7 +1493,6 @@ const Wages = () => {
             <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex gap-3 justify-end">
               <button
                 type="button"
-                disabled={disableStatutoryLoading}
                 onClick={() => setDisableStatutoryOpen(false)}
                 className="px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-100 disabled:opacity-50 font-semibold"
               >
@@ -1255,10 +1500,10 @@ const Wages = () => {
               </button>
               <button
                 type="submit"
-                disabled={!disableStatutoryPassword || disableStatutoryLoading}
+                disabled={!disableStatutoryPassword}
                 className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 font-semibold"
               >
-                {disableStatutoryLoading ? 'Disabling…' : 'Disable for All Employees'}
+                Disable for All Employees
               </button>
             </div>
           </form>

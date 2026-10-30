@@ -25,6 +25,10 @@ from services.person_scope_service import (
 )
 from services.timetable_service import json_list, remove_activity, remove_activities_for_shift, remove_shift
 from services.payroll_service import set_vendor_statutory_flags
+from services.salary_version_service import (
+    apply_salary_updates,
+    issue_reauth_token,
+)
 
 # Mock Auth Decorators
 def vendor_required(f):
@@ -1202,7 +1206,50 @@ def bulk_update_statutory_flags():
             return jsonify({"error": password_error[0]}), password_error[1]
 
         flag = 1 if enabled else 0
-        affected = set_vendor_statutory_flags(c, vendor_id, enabled)
+        try:
+            c.execute("SELECT 1 FROM employee_salary_versions LIMIT 1")
+            salary_ledger_available = True
+        except Exception as schema_exc:
+            # Rolling upgrades can briefly serve requests before schema startup
+            # finishes. Keep the legacy behavior only when the ledger table itself
+            # is absent; all initialized installations use immutable versions.
+            if "employee_salary_versions" not in str(schema_exc).lower():
+                raise
+            conn.rollback()
+            salary_ledger_available = False
+
+        if salary_ledger_available:
+            c.execute("SELECT id FROM faces WHERE vendor_id = ? ORDER BY id", (vendor_id,))
+            person_ids = [int(row[0]) for row in (c.fetchall() or [])]
+            if person_ids:
+                token, _expires_at = issue_reauth_token(
+                    c, vendor_id, g.username, g.user_role, data.get('password'), "salary_change"
+                )
+                changed = apply_salary_updates(
+                    conn,
+                    c,
+                    vendor_id=vendor_id,
+                    username=g.username,
+                    updates=[{
+                        "person_id": person_id,
+                        "pf_enabled": flag,
+                        "esi_enabled": flag,
+                    } for person_id in person_ids],
+                    effective_from=data.get('effective_from') or date.today().isoformat(),
+                    reason=data.get('change_reason') or (
+                        "Bulk enabled PF and ESI" if enabled else "Bulk disabled PF and ESI"
+                    ),
+                    reauth_token=token,
+                )
+                affected = len(changed)
+            else:
+                affected = 0
+        else:
+            logger.warning(
+                "Salary ledger schema unavailable; applying compatibility PF/ESI update for vendor %s",
+                vendor_id,
+            )
+            affected = set_vendor_statutory_flags(c, vendor_id, enabled)
         conn.commit()
         cache_delete_vendor_prefix(vendor_id)
         log_audit(

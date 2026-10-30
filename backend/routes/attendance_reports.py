@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 from utils import (
     get_db_connection, get_table_columns, parse_db_date, parse_db_datetime, cache_get, cache_set,
-    vendor_has_feature, require_feature, _run
+    cache_delete_vendor_prefix, vendor_has_feature, require_feature, _run
 )
 from services.attendance_service import (
     calculate_daily_hours, calculate_expected_hours, calculate_arrival_status
@@ -40,6 +40,17 @@ from services.person_scope_service import (
     vendor_vertical,
 )
 from services.person_image_cache_service import load_person_image_versions
+from services.salary_version_service import (
+    MANAGER_ROLES,
+    ReauthenticationError,
+    SalaryConflictError,
+    SalaryValidationError,
+    apply_salary_updates,
+    calculate_versioned_shift_wage,
+    consume_reauth_token,
+    load_salary_versions,
+    resolve_salary_version,
+)
 
 attendance_reports_bp = Blueprint('attendance_reports_bp', __name__)
 
@@ -581,6 +592,7 @@ def export_attendance(valid_data: PayrollReportRequest):
     }
 
 @attendance_reports_bp.route("/reports/payroll", methods=["GET"])
+@attendance_reports_bp.route("/reports/payroll/finalize", methods=["POST"])
 @require_feature("payroll", "report_payroll")
 @require_auth()
 @validate_request(PayrollReportRequest)
@@ -709,6 +721,7 @@ def get_payroll_report(valid_data: PayrollReportRequest):
         persons[person['id']] = person
 
     image_versions = load_person_image_versions(conn, c, vendor_id, persons.keys())
+    salary_versions_by_person = load_salary_versions(c, vendor_id, persons.keys())
     
     global_allowance = int(stored_settings.get('global_late_allowance', 7))
     global_deduction = float(stored_settings.get('global_late_deduction', 0.0))
@@ -815,9 +828,13 @@ def get_payroll_report(valid_data: PayrollReportRequest):
             if start_dt_req <= attendance_day <= end_dt_req:
                 per_day_seconds[attendance_day] += float(session.get('duration_seconds') or 0)
         total_hours = round(total_seconds / 3600.0, 2)
-        daily_wage = person_info.get('daily_wage') or 0
-        wage_result = calculate_shift_wage(
-            daily_wage,
+        current_salary_version = resolve_salary_version(
+            salary_versions_by_person.get(pid, []), date.today()
+        )
+        daily_wage = (current_salary_version or person_info).get('daily_wage') or 0
+        wage_result = calculate_versioned_shift_wage(
+            salary_versions_by_person.get(pid, []),
+            person_info,
             per_day_seconds,
             scheduled_hours,
             overtime_multiplier=overtime_multiplier,
@@ -826,11 +843,25 @@ def get_payroll_report(valid_data: PayrollReportRequest):
         overtime_hours = wage_result['overtime_hours']
         base_cost = wage_result['gross_wage']
         
-        allowance = person_info.get('late_allowance_days') if person_info.get('late_allowance_days') is not None else global_allowance
-        deduction_amt = person_info.get('late_deduction_amount') if person_info.get('late_deduction_amount') is not None else global_deduction
-        
-        deductable_lates = max(0, late_marks_count - allowance)
-        total_deduction = round(deductable_lates * deduction_amt, 2)
+        active_config = current_salary_version or person_info
+        allowance = active_config.get('late_allowance_days') if active_config.get('late_allowance_days') is not None else global_allowance
+        deduction_amt = active_config.get('late_deduction_amount') if active_config.get('late_deduction_amount') is not None else global_deduction
+
+        # Late penalties follow the version active on each operational shift day.
+        total_deduction = 0.0
+        for late_index, late_day in enumerate(sorted(late_dates), start=1):
+            late_config = resolve_salary_version(
+                salary_versions_by_person.get(pid, []), late_day
+            ) or person_info
+            day_allowance = late_config.get('late_allowance_days')
+            if day_allowance is None:
+                day_allowance = global_allowance
+            day_deduction = late_config.get('late_deduction_amount')
+            if day_deduction is None:
+                day_deduction = global_deduction
+            if late_index > int(day_allowance):
+                total_deduction += float(day_deduction or 0)
+        total_deduction = round(total_deduction, 2)
         
         # Determine Tenure (Years) for Gratuity Threshold
         tenure_years = 0
@@ -850,18 +881,39 @@ def get_payroll_report(valid_data: PayrollReportRequest):
             except (ValueError, TypeError, AttributeError):
                 pass
         
-        # Calculate Breakdown using the service
-        person_info_with_tenure = person_info.copy()
-        person_info_with_tenure['tenure_years'] = tenure_years
-        
-        breakdown = calculate_salary_breakdown(
-            base_cost, 
-            person_info_with_tenure, 
-            pf_percent=pf_pct, 
-            esi_percent=esi_pct, 
-            gratuity_percent=gratuity_pct,
-            gratuity_threshold_years=grat_years_threshold
-        )
+        # Calculate statutory components inside each effective salary version,
+        # then add the immutable version results for the requested period.
+        version_groups = wage_result.get('groups') or [{
+            'config': active_config,
+            'wage': {'gross_wage': base_cost},
+        }]
+        breakdown = {
+            'components': {'basic': 0.0, 'hra': 0.0, 'conveyance': 0.0, 'special_allowance': 0.0},
+            'deductions': {'pf': 0.0, 'esi': 0.0, 'pt': 0.0, 'total_statutory': 0.0},
+            'provisions': {'gratuity': 0.0},
+            'gross': 0.0,
+            'net_before_advances': 0.0,
+        }
+        for group in version_groups:
+            group_config = dict(group.get('config') or person_info)
+            group_config['tenure_years'] = tenure_years
+            group_breakdown = calculate_salary_breakdown(
+                float(group.get('wage', {}).get('gross_wage') or 0),
+                group_config,
+                pf_percent=pf_pct,
+                esi_percent=esi_pct,
+                gratuity_percent=gratuity_pct,
+                gratuity_threshold_years=grat_years_threshold,
+            )
+            for section in ('components', 'deductions', 'provisions'):
+                for key, value in group_breakdown[section].items():
+                    breakdown[section][key] = round(
+                        float(breakdown[section].get(key) or 0) + float(value or 0), 2
+                    )
+            breakdown['gross'] = round(breakdown['gross'] + float(group_breakdown['gross'] or 0), 2)
+            breakdown['net_before_advances'] = round(
+                breakdown['net_before_advances'] + float(group_breakdown['net_before_advances'] or 0), 2
+            )
         
         advance_total = advance_totals.get(pid, 0.0)
         
@@ -878,6 +930,9 @@ def get_payroll_report(valid_data: PayrollReportRequest):
                 if person_info.get('has_face_image') else None,
             "phone": person_info.get('phone'),
             "daily_wage": daily_wage,
+            "salary_version": current_salary_version.get('version_number') if current_salary_version else None,
+            "salary_version_id": current_salary_version.get('id') if current_salary_version else None,
+            "salary_version_ids_applied": wage_result.get('salary_version_ids', []),
             "total_hours": round(total_hours, 2),
             "regular_hours": regular_hours,
             "overtime_hours": overtime_hours,
@@ -890,19 +945,23 @@ def get_payroll_report(valid_data: PayrollReportRequest):
             "late_marks_count": late_marks_count,
             "late_deduction": total_deduction,
             "advance_deduction": advance_total,
-            "pf_enabled": person_info.get('pf_enabled', 0),
-            "esi_enabled": person_info.get('esi_enabled', 0),
-            "gratuity_enabled": person_info.get('gratuity_enabled', 0),
-            "professional_tax": person_info.get('professional_tax', 0),
-            "late_allowance_days": person_info.get('late_allowance_days'),
-            "late_deduction_amount": person_info.get('late_deduction_amount'),
+            "pf_enabled": active_config.get('pf_enabled', 0),
+            "esi_enabled": active_config.get('esi_enabled', 0),
+            "gratuity_enabled": active_config.get('gratuity_enabled', 0),
+            "professional_tax": active_config.get('professional_tax', 0),
+            "basic_salary": active_config.get('basic_salary', 0),
+            "hra": active_config.get('hra', 0),
+            "conveyance": active_config.get('conveyance', 0),
+            "special_allowance": active_config.get('special_allowance', 0),
+            "joining_date": person_info.get('joining_date'),
+            "late_allowance_days": active_config.get('late_allowance_days'),
+            "late_deduction_amount": active_config.get('late_deduction_amount'),
             "breakdown": breakdown,
             "final_payout": final_payout,
             "custom_data": json.loads(person_info.get('custom_data') or '{}') if isinstance(person_info.get('custom_data'), str) else person_info.get('custom_data')
         })
     
-    conn.close()
-    return jsonify({
+    response_payload = {
         "payroll": payroll_data,
         "global_settings": {
             "allowance": global_allowance, 
@@ -913,7 +972,97 @@ def get_payroll_report(valid_data: PayrollReportRequest):
             "gratuity_threshold_years": grat_years_threshold,
             "overtime_multiplier": overtime_multiplier,
         }
-    })
+    }
+
+    if request.method == "POST":
+        if g.user_role not in MANAGER_ROLES:
+            conn.close()
+            return jsonify({"error": "Finalizing payroll requires manager access"}), 403
+        body = request.get_json(silent=True) or {}
+        try:
+            consume_reauth_token(
+                c, vendor_id, g.username, body.get("reauth_token"), "payroll_finalize"
+            )
+        except ReauthenticationError as exc:
+            conn.rollback()
+            conn.close()
+            return jsonify({"error": str(exc), "code": "REAUTHENTICATION_FAILED"}), 403
+
+        c.execute(
+            """SELECT id FROM payroll_runs
+                 WHERE vendor_id = ? AND period_start = ? AND period_end = ?
+                   AND status = 'FINALIZED' LIMIT 1""",
+            (vendor_id, start_date, end_date),
+        )
+        existing_run = c.fetchone()
+        if existing_run:
+            conn.rollback()
+            conn.close()
+            return jsonify({
+                "error": "This payroll period is already finalized",
+                "code": "PAYROLL_ALREADY_FINALIZED",
+                "run_id": existing_run["id"],
+            }), 409
+
+        try:
+            c.execute(
+                """INSERT INTO payroll_runs
+                       (vendor_id, period_start, period_end, status, finalized_by, settings_json)
+                   VALUES (?, ?, ?, 'FINALIZED', ?, ?)""",
+                (
+                    vendor_id, start_date, end_date, g.username,
+                    json.dumps(response_payload["global_settings"], sort_keys=True),
+                ),
+            )
+            run_id = c.lastrowid
+            for item in payroll_data:
+                statutory = float(item.get("breakdown", {}).get("deductions", {}).get("total_statutory") or 0)
+                deductions = round(
+                    statutory
+                    + float(item.get("late_deduction") or 0)
+                    + float(item.get("advance_deduction") or 0),
+                    2,
+                )
+                calculation = dict(item)
+                calculation.pop("face_image", None)
+                calculation.pop("image_url", None)
+                c.execute(
+                    """INSERT INTO payroll_line_items (
+                           payroll_run_id, vendor_id, person_id, salary_version_ids,
+                           total_hours, regular_hours, overtime_hours, gross_pay,
+                           deductions, net_payout, calculation_json
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        run_id, vendor_id, item["person_id"],
+                        json.dumps(item.get("salary_version_ids_applied") or []),
+                        item.get("total_hours") or 0,
+                        item.get("regular_hours") or 0,
+                        item.get("overtime_hours") or 0,
+                        item.get("breakdown", {}).get("gross") or item.get("base_cost") or 0,
+                        deductions,
+                        item.get("final_payout") or 0,
+                        json.dumps(calculation, default=str, sort_keys=True),
+                    ),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            conn.close()
+            logger.exception("Could not finalize payroll for vendor %s", vendor_id)
+            return jsonify({"error": "Could not finalize payroll"}), 500
+
+        conn.close()
+        return jsonify({
+            "success": True,
+            "run_id": run_id,
+            "status": "FINALIZED",
+            "period_start": start_date,
+            "period_end": end_date,
+            "employee_count": len(payroll_data),
+        }), 201
+
+    conn.close()
+    return jsonify(response_payload)
 
 @attendance_reports_bp.route("/reports/payroll/export-daily", methods=["GET"])
 @require_feature("payroll", "report_payroll")
@@ -995,6 +1144,8 @@ def export_payroll_daily():
                     continue
             persons[rd['id']] = rd
 
+        salary_versions_by_person = load_salary_versions(c, vendor_id, persons.keys())
+
         setting_suffix = f'_vendor_{vendor_id}'
         c.execute("SELECT key, value FROM system_settings WHERE key IN (?, ?, ?, ?)",
                   (f'global_late_allowance{setting_suffix}', f'global_late_deduction{setting_suffix}', f'missing_checkout_deduction_percent{setting_suffix}', f'overtime_multiplier{setting_suffix}'))
@@ -1044,14 +1195,16 @@ def export_payroll_daily():
                 for timestamp in [parse_db_datetime(r.get('timestamp'))]
                 if timestamp and start_dt_req <= shift_policy.attendance_date(timestamp) <= end_dt_req
             })
-            allowance = info.get('late_allowance_days') if info.get('late_allowance_days') is not None else global_allowance
-            deduction_amt = info.get('late_deduction_amount') if info.get('late_deduction_amount') is not None else global_deduction
-
             for d, secs in sorted(per_day_seconds.items()):
+                salary_config = resolve_salary_version(
+                    salary_versions_by_person.get(pid, []), d
+                ) or info
+                allowance = salary_config.get('late_allowance_days') if salary_config.get('late_allowance_days') is not None else global_allowance
+                deduction_amt = salary_config.get('late_deduction_amount') if salary_config.get('late_deduction_amount') is not None else global_deduction
                 lm = 1 if d in late_dates else 0
                 idx = late_dates.index(d) + 1 if d in late_dates else 0
                 deduct = deduction_amt if (lm == 1 and idx > allowance) else 0.0
-                daily_wage = float(info.get('daily_wage') or 0.0)
+                daily_wage = float(salary_config.get('daily_wage') or 0.0)
                 day_hours = round(secs / 3600.0, 2)
                 wage_result = calculate_shift_wage(
                     daily_wage, {d: secs}, scheduled_hours,
@@ -1062,7 +1215,7 @@ def export_payroll_daily():
                 base_wage_for_day = wage_result['gross_wage']
                 
                 # Breakdown for this day's portion
-                breakdown = calculate_salary_breakdown(base_wage_for_day, info)
+                breakdown = calculate_salary_breakdown(base_wage_for_day, salary_config)
                 pf = breakdown['deductions']['pf']
                 esi = breakdown['deductions']['esi']
                 pt = breakdown['deductions']['pt'] / 26.0 # Arbitrary per day PT if monthly
@@ -1149,6 +1302,8 @@ def export_payroll_excel():
                 continue
             persons[person['id']] = person
 
+        salary_versions_by_person = load_salary_versions(c, vendor_id, persons.keys())
+
         setting_suffix = f'_vendor_{vendor_id}'
         c.execute("SELECT key, value FROM system_settings WHERE key IN (?, ?, ?, ?)",
                   (f'global_late_allowance{setting_suffix}', f'global_late_deduction{setting_suffix}', f'missing_checkout_deduction_percent{setting_suffix}', f'overtime_multiplier{setting_suffix}'))
@@ -1198,14 +1353,16 @@ def export_payroll_excel():
                 for timestamp in [parse_db_datetime(r.get('timestamp'))]
                 if timestamp and start_dt_req <= shift_policy.attendance_date(timestamp) <= end_dt_req
             })
-            allowance = info.get('late_allowance_days') if info.get('late_allowance_days') is not None else global_allowance
-            deduction_amt = info.get('late_deduction_amount') if info.get('late_deduction_amount') is not None else global_deduction
-
             for d, secs in sorted(per_day_seconds.items()):
+                salary_config = resolve_salary_version(
+                    salary_versions_by_person.get(pid, []), d
+                ) or info
+                allowance = salary_config.get('late_allowance_days') if salary_config.get('late_allowance_days') is not None else global_allowance
+                deduction_amt = salary_config.get('late_deduction_amount') if salary_config.get('late_deduction_amount') is not None else global_deduction
                 lm = 1 if d in late_dates else 0
                 idx = late_dates.index(d) + 1 if d in late_dates else 0
                 deduct = deduction_amt if (lm == 1 and idx > allowance) else 0.0
-                daily_wage = float(info.get('daily_wage') or 0.0)
+                daily_wage = float(salary_config.get('daily_wage') or 0.0)
                 day_hours = round(secs / 3600.0, 2)
                 wage_result = calculate_shift_wage(
                     daily_wage, {d: secs}, scheduled_hours,
@@ -1216,7 +1373,7 @@ def export_payroll_excel():
                 base_wage_for_day = wage_result['gross_wage']
                 
                 # Breakdown
-                breakdown = calculate_salary_breakdown(base_wage_for_day, info)
+                breakdown = calculate_salary_breakdown(base_wage_for_day, salary_config)
                 pf = breakdown['deductions']['pf']
                 esi = breakdown['deductions']['esi']
                 pt = breakdown['deductions']['pt'] / 26.0
@@ -1239,27 +1396,57 @@ def export_payroll_excel():
 @require_auth()
 def import_payroll_adjustments():
     vendor_id = g.vendor_id
+    if g.user_role not in MANAGER_ROLES:
+        return jsonify({"error": "Importing payroll changes requires manager access"}), 403
     if 'file' not in request.files:
         return jsonify({"error":"CSV file required"}), 400
     f = request.files['file']
+    conn = None
     try:
         content = f.read().decode('utf-8')
         reader = csv.DictReader(io.StringIO(content))
         conn = get_db_connection()
         c = conn.cursor()
-        updated = 0
+        updates = []
         for row in reader:
             pid = row.get('person_id')
             if not pid: continue
-            vals = {}
+            update = {"person_id": pid}
             try:
-                if row.get('late_allowance_days'): vals['late_allowance_days'] = int(row['late_allowance_days'])
-                if row.get('late_deduction_amount'): vals['late_deduction_amount'] = float(row['late_deduction_amount'])
-            except (ValueError, TypeError): pass
-            if vals:
-                c.execute("UPDATE faces SET late_allowance_days = ?, late_deduction_amount = ? WHERE vendor_id = ? AND id = ?", (vals.get('late_allowance_days'), vals.get('late_deduction_amount'), vendor_id, pid))
-                updated += 1
-        conn.commit(); conn.close()
-        return jsonify({"success": True, "updated": updated})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+                if row.get('late_allowance_days') not in (None, ''):
+                    update['late_allowance_days'] = int(row['late_allowance_days'])
+                if row.get('late_deduction_amount') not in (None, ''):
+                    update['late_deduction_amount'] = float(row['late_deduction_amount'])
+            except (ValueError, TypeError):
+                raise SalaryValidationError(f"Invalid payroll values for employee {pid}")
+            if len(update) > 1:
+                updates.append(update)
+        changed = apply_salary_updates(
+            conn,
+            c,
+            vendor_id=vendor_id,
+            username=g.username,
+            updates=updates,
+            effective_from=request.form.get('effective_from') or date.today().isoformat(),
+            reason=request.form.get('change_reason') or "Payroll CSV import",
+            reauth_token=request.form.get('reauth_token'),
+        )
+        conn.commit()
+        cache_delete_vendor_prefix(vendor_id)
+        return jsonify({"success": True, "updated": len(changed), "changed": changed})
+    except SalaryValidationError as exc:
+        if conn: conn.rollback()
+        return jsonify({"error": str(exc), "code": "INVALID_SALARY_CHANGE"}), 400
+    except ReauthenticationError as exc:
+        if conn: conn.rollback()
+        return jsonify({"error": str(exc), "code": "REAUTHENTICATION_FAILED"}), 403
+    except SalaryConflictError as exc:
+        if conn: conn.rollback()
+        return jsonify({"error": str(exc), "code": "SALARY_VERSION_CONFLICT"}), 409
+    except Exception:
+        if conn: conn.rollback()
+        logger.exception("Could not import payroll adjustments for vendor %s", vendor_id)
+        return jsonify({"error": "Could not import payroll adjustments"}), 500
+    finally:
+        if conn:
+            conn.close()

@@ -153,7 +153,10 @@ def _company_settings(c, vendor_id):
 def _employee_metrics(vendor_id, start, end, department=None):
     from services.attendance_service import calculate_daily_hours
     from services.attendance_shift_service import (
-        calculate_shift_wage, choose_shift_policy, parse_shift_list, scheduled_payable_hours,
+        choose_shift_policy, parse_shift_list, scheduled_payable_hours,
+    )
+    from services.salary_version_service import (
+        calculate_versioned_shift_wage, load_salary_versions,
     )
     conn = _db()
     c = conn.cursor()
@@ -171,6 +174,7 @@ def _employee_metrics(vendor_id, start, end, department=None):
         c.execute(query, params)
         people = [_dict(row) for row in (c.fetchall() or [])]
         person_ids = {person["id"] for person in people}
+        salary_versions = load_salary_versions(c, vendor_id, person_ids)
         c.execute("""
             SELECT person_id, timestamp, status, activity, is_late
             FROM attendance
@@ -217,7 +221,6 @@ def _employee_metrics(vendor_id, start, end, department=None):
             for item in sessions
         )
         hours = round(total_sec / 3600.0, 2)
-        daily_wage = float(person.get("daily_wage") or 0)
         per_day_seconds = defaultdict(float)
         for item in sessions:
             try:
@@ -225,7 +228,12 @@ def _employee_metrics(vendor_id, start, end, department=None):
                 per_day_seconds[attendance_day] += float(item.get("duration_seconds") or 0)
             except (KeyError, TypeError, ValueError):
                 continue
-        wage_result = calculate_shift_wage(daily_wage, per_day_seconds, scheduled_hours)
+        wage_result = calculate_versioned_shift_wage(
+            salary_versions.get(person["id"], []),
+            person,
+            per_day_seconds,
+            scheduled_hours,
+        )
         estimated_wages = wage_result["gross_wage"]
         metrics.append({
             "person_id": person["id"], "name": person.get("name"),
