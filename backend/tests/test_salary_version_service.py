@@ -49,7 +49,14 @@ def salary_db():
             late_allowance_days INTEGER,
             late_deduction_amount REAL,
             joining_date DATE,
-            registered_at DATETIME
+            registered_at DATETIME,
+            shift TEXT
+        );
+        CREATE TABLE attendance (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            vendor_id INTEGER,
+            person_id INTEGER,
+            timestamp DATETIME
         );
         CREATE TABLE system_users (
             username TEXT PRIMARY KEY,
@@ -221,3 +228,69 @@ def test_retroactive_change_keeps_later_current_salary(salary_service, salary_db
     assert salary_service.resolve_salary_version(versions, earlier_day)["daily_wage"] == 150
     assert salary_service.resolve_salary_version(versions, later_day)["daily_wage"] == 200
     assert salary_db.execute("SELECT daily_wage FROM faces WHERE id = 10").fetchone()[0] == 200
+
+
+def _add_punch(conn, person_id, moment):
+    conn.execute(
+        "INSERT INTO attendance (vendor_id, person_id, timestamp) VALUES (8, ?, ?)",
+        (person_id, moment),
+    )
+    conn.commit()
+
+
+def test_first_wage_starts_earning_on_the_same_day(salary_service, salary_db):
+    """A first wage on an employee with no wage yet prices the current day."""
+    salary_db.execute("UPDATE faces SET daily_wage = 0 WHERE id = 10")
+    salary_db.commit()
+    first_day = date.today() - timedelta(days=5)
+    _add_punch(salary_db, 10, f"{first_day.isoformat()} 10:00:00")
+
+    token = _confirmed_token(salary_service, salary_db)
+    salary_service.apply_salary_updates(
+        salary_db,
+        salary_db.cursor(),
+        vendor_id=8,
+        username="manager@example.com",
+        updates=[{"person_id": 10, "daily_wage": 200}],
+        effective_from=first_day,
+        reason="First wage",
+        reauth_token=token,
+    )
+    salary_db.commit()
+
+    versions = salary_service.load_salary_versions(salary_db.cursor(), 8, [10])[10]
+    active = salary_service.resolve_salary_version(versions, first_day)
+    assert active["effective_from"] == first_day
+    assert active["daily_wage"] == 200
+    result = salary_service.calculate_versioned_shift_wage(
+        versions, {"daily_wage": 0}, {first_day: 8 * 3600}, 8
+    )
+    assert result["gross_wage"] == 200
+
+
+def test_wage_change_after_a_started_day_continues_the_next_day(salary_service, salary_db):
+    """Changing an established wage keeps the started day on the earlier rate."""
+    change_day = date.today() - timedelta(days=5)
+    _add_punch(salary_db, 10, f"{change_day.isoformat()} 10:00:00")
+
+    token = _confirmed_token(salary_service, salary_db)
+    salary_service.apply_salary_updates(
+        salary_db,
+        salary_db.cursor(),
+        vendor_id=8,
+        username="manager@example.com",
+        updates=[{"person_id": 10, "daily_wage": 200}],
+        effective_from=change_day,
+        reason="Approved raise",
+        reauth_token=token,
+    )
+    salary_db.commit()
+
+    versions = salary_service.load_salary_versions(salary_db.cursor(), 8, [10])[10]
+    assert salary_service.resolve_salary_version(versions, change_day)["daily_wage"] == 100
+    next_day = change_day + timedelta(days=1)
+    assert salary_service.resolve_salary_version(versions, next_day)["effective_from"] == next_day
+    result = salary_service.calculate_versioned_shift_wage(
+        versions, {"daily_wage": 0}, {change_day: 8 * 3600, next_day: 8 * 3600}, 8
+    )
+    assert result["gross_wage"] == 300

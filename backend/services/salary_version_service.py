@@ -431,11 +431,16 @@ def apply_salary_updates(
         if not face:
             raise SalaryValidationError(f"Employee {person_id} was not found")
 
-        # A day the employee has already started (checked in / worked) keeps its
-        # earlier salary; the new salary continues from the next day onwards.
-        boundary_day = _salary_effective_boundary(
-            cursor, vendor_id, person_id, effective_day, company_shifts
-        )
+        # A first wage on an employee who has no wage yet starts earning from
+        # the moment it is saved, so the current day is priced with it. A change
+        # from an established non-zero wage keeps the day the employee has
+        # already started on the earlier salary and continues from the next day.
+        if float(face.get("daily_wage") or 0) > 0:
+            boundary_day = _salary_effective_boundary(
+                cursor, vendor_id, person_id, effective_day, company_shifts
+            )
+        else:
+            boundary_day = effective_day
 
         cursor.execute(
             """SELECT id, vendor_id, person_id, version_number, effective_from,
