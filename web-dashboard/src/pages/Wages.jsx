@@ -41,6 +41,7 @@ const Wages = () => {
   const [salaryHistoryOpen, setSalaryHistoryOpen] = useState(false);
   const [salaryHistoryPerson, setSalaryHistoryPerson] = useState(null);
   const [salaryHistory, setSalaryHistory] = useState([]);
+  const [salaryHistoryPeriod, setSalaryHistoryPeriod] = useState({ start: null, end: null });
   const [salaryHistoryLoading, setSalaryHistoryLoading] = useState(false);
   const [finalizeOpen, setFinalizeOpen] = useState(false);
   const [finalizePassword, setFinalizePassword] = useState('');
@@ -526,12 +527,14 @@ const Wages = () => {
     setSalaryHistoryOpen(true);
     setSalaryHistoryLoading(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/persons/${person.person_id}/salary-versions`, {
+      const params = new URLSearchParams({ start: startDate, end: endDate });
+      const res = await fetch(`${API_BASE_URL}/persons/${person.person_id}/salary-versions?${params.toString()}`, {
         headers: { 'Authorization': `Bearer ${user?.token}` }
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Could not load salary history');
       setSalaryHistory(data.versions || []);
+      setSalaryHistoryPeriod(data.period || { start: null, end: null });
     } catch (historyError) {
       setSalaryHistory([{ error: historyError.message }]);
     } finally {
@@ -1289,6 +1292,9 @@ const Wages = () => {
               <div>
                 <h3 className="text-lg font-bold text-slate-900">Salary History</h3>
                 <p className="mt-1 text-sm text-slate-500">{salaryHistoryPerson.name} · ID #{salaryHistoryPerson.display_id || salaryHistoryPerson.person_id}</p>
+                {salaryHistoryPeriod.start && (
+                  <p className="mt-1 text-xs text-slate-400">Amounts are for the selected period {salaryHistoryPeriod.start} to {salaryHistoryPeriod.end}, priced with the wage effective on each day.</p>
+                )}
               </div>
               <button onClick={() => setSalaryHistoryOpen(false)} className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700">✕</button>
             </div>
@@ -1301,13 +1307,15 @@ const Wages = () => {
                 <div className="py-12 text-center text-sm text-slate-500">No salary history is available yet.</div>
               ) : (
                 <table className="w-full border-collapse text-left text-sm">
-                  <thead><tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500"><th className="px-3 py-3">Version</th><th className="px-3 py-3">Effective Period</th><th className="px-3 py-3 text-right">Daily Wage</th><th className="px-3 py-3">Changed By</th><th className="px-3 py-3">Reason</th></tr></thead>
+                  <thead><tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500"><th className="px-3 py-3">Version</th><th className="px-3 py-3">Effective Period</th><th className="px-3 py-3 text-right">Daily Wage</th><th className="px-3 py-3 text-right">Days Priced</th><th className="px-3 py-3 text-right">Amount</th><th className="px-3 py-3">Changed By</th><th className="px-3 py-3">Reason</th></tr></thead>
                   <tbody className="divide-y divide-slate-100">
                     {salaryHistory.map(version => (
                       <tr key={version.id} className="align-top">
                         <td className="px-3 py-3 font-semibold text-slate-800">v{version.version_number}</td>
                         <td className="px-3 py-3 text-slate-600">{version.effective_from} to {version.effective_to || 'Current'}</td>
                         <td className="px-3 py-3 text-right font-semibold text-slate-900">₹{Number(version.daily_wage || 0).toFixed(2)}</td>
+                        <td className="px-3 py-3 text-right text-slate-600">{Number(version.period_days || 0)}</td>
+                        <td className="px-3 py-3 text-right font-semibold text-slate-900">₹{Number(version.period_amount || 0).toFixed(2)}</td>
                         <td className="px-3 py-3 text-slate-600">{version.changed_by}</td>
                         <td className="max-w-xs px-3 py-3 text-slate-600">{version.change_reason}</td>
                       </tr>

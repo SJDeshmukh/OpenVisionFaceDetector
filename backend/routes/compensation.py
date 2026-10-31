@@ -2,15 +2,24 @@
 
 import json
 import logging
+from collections import defaultdict
+from datetime import date, timedelta
 
 from flask import Blueprint, g, jsonify, request
 
 from middleware.handlers import rate_limit
+from services.attendance_service import calculate_daily_hours
+from services.attendance_shift_service import (
+    choose_shift_policy,
+    parse_shift_list,
+    scheduled_payable_hours,
+)
 from services.auth_service import require_auth
 from services.salary_version_service import (
     MANAGER_ROLES,
     ReauthenticationError,
     SalaryValidationError,
+    calculate_versioned_shift_wage,
     issue_reauth_token,
     load_salary_versions,
     serialize_salary_version,
@@ -65,6 +74,88 @@ def reauthenticate_payroll_change():
         conn.close()
 
 
+def _period_wage_totals(cursor, vendor_id, employee, versions, start_day, end_day):
+    """Price every payable attendance day in the period with its effective salary version."""
+    cursor.execute(
+        "SELECT live_timetable, working_hours, shifts FROM companies WHERE vendor_id = ?",
+        (vendor_id,),
+    )
+    company = dict(cursor.fetchone() or {})
+    try:
+        timetable = json.loads(company.get("live_timetable") or "[]")
+    except (TypeError, ValueError):
+        timetable = []
+    try:
+        working_hours = float(company.get("working_hours") or 8.0)
+    except (TypeError, ValueError):
+        working_hours = 8.0
+    shift_policy = choose_shift_policy(
+        parse_shift_list(company.get("shifts")), employee.get("shift")
+    )
+    scheduled_hours = scheduled_payable_hours(shift_policy, working_hours)
+
+    cursor.execute(
+        "SELECT value FROM system_settings WHERE key = ?",
+        (f"missing_checkout_deduction_percent_vendor_{vendor_id}",),
+    )
+    setting = cursor.fetchone()
+    try:
+        missing_deduction_pct = float(dict(setting).get("value")) if setting else 50.0
+    except (TypeError, ValueError):
+        missing_deduction_pct = 50.0
+
+    cursor.execute(
+        """SELECT person_id, status, activity, timestamp, is_late
+             FROM attendance
+            WHERE vendor_id = ? AND person_id = ? AND timestamp >= ? AND timestamp < ?
+            ORDER BY timestamp ASC""",
+        (
+            vendor_id,
+            employee["id"],
+            start_day.strftime("%Y-%m-%d 00:00:00"),
+            (end_day + timedelta(days=1)).strftime("%Y-%m-%d 00:00:00"),
+        ),
+    )
+    records = [dict(row) for row in cursor.fetchall() or []]
+
+    stats = calculate_daily_hours(
+        records,
+        timetable,
+        missing_checkout_deduction_percent=missing_deduction_pct,
+        working_hours=scheduled_hours,
+        shift_policy=shift_policy,
+    )
+    per_day_seconds = defaultdict(float)
+    for session in stats.get("sessions", []):
+        if not session.get("is_payable", False):
+            continue
+        try:
+            attendance_day = date.fromisoformat(session["attendance_date"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if start_day <= attendance_day <= end_day:
+            per_day_seconds[attendance_day] += float(session.get("duration_seconds") or 0)
+
+    wage_result = calculate_versioned_shift_wage(
+        versions, employee, per_day_seconds, scheduled_hours
+    )
+    totals = {}
+    for group in wage_result.get("groups", []):
+        version_id = group.get("salary_version_id")
+        if version_id is None:
+            continue
+        wage = group.get("wage") or {}
+        totals[int(version_id)] = {
+            "days": len(group.get("dates") or []),
+            "hours": round(
+                float(wage.get("regular_hours") or 0) + float(wage.get("overtime_hours") or 0),
+                2,
+            ),
+            "amount": round(float(wage.get("gross_wage") or 0), 2),
+        }
+    return totals
+
+
 @compensation_bp.route("/persons/<int:person_id>/salary-versions", methods=["GET"])
 @require_auth(roles=_MANAGER_ROLES)
 @require_feature("payroll")
@@ -73,18 +164,46 @@ def get_employee_salary_versions(person_id):
     cursor = conn.cursor()
     try:
         cursor.execute(
-            "SELECT id, name, display_id FROM faces WHERE id = ? AND vendor_id = ?",
+            "SELECT id, name, display_id, daily_wage, shift FROM faces WHERE id = ? AND vendor_id = ?",
             (person_id, g.vendor_id),
         )
         employee = cursor.fetchone()
         if not employee:
             return jsonify({"error": "Employee not found"}), 404
+        employee = dict(employee)
         versions = load_salary_versions(cursor, g.vendor_id, [person_id]).get(person_id, [])
+
+        period = {"start": None, "end": None}
+        period_totals = {}
+        start_raw = str(request.args.get("start") or "").strip()
+        end_raw = str(request.args.get("end") or "").strip()
+        if start_raw and end_raw:
+            try:
+                start_day = date.fromisoformat(start_raw)
+                end_day = date.fromisoformat(end_raw)
+            except ValueError:
+                return jsonify({"error": "Invalid date format"}), 400
+            if start_day > end_day:
+                return jsonify({"error": "start must be on or before end"}), 400
+            period_totals = _period_wage_totals(
+                cursor, g.vendor_id, employee, versions, start_day, end_day
+            )
+            period = {"start": start_raw, "end": end_raw}
+
+        payload = []
+        for version in reversed(versions):
+            item = serialize_salary_version(version)
+            totals = period_totals.get(int(version["id"])) or {}
+            item["period_days"] = int(totals.get("days", 0))
+            item["period_hours"] = float(totals.get("hours", 0.0))
+            item["period_amount"] = float(totals.get("amount", 0.0))
+            payload.append(item)
         return jsonify({
             "person_id": person_id,
             "name": employee["name"],
             "display_id": employee["display_id"],
-            "versions": [serialize_salary_version(version) for version in reversed(versions)],
+            "period": period,
+            "versions": payload,
         })
     except Exception:
         logger.exception("Could not load salary history for employee %s", person_id)
