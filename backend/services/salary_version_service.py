@@ -9,7 +9,11 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
-from services.attendance_shift_service import calculate_shift_wage
+from services.attendance_shift_service import (
+    calculate_shift_wage,
+    choose_shift_policy,
+    parse_shift_list,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -332,6 +336,58 @@ def _insert_baseline(cursor, vendor_id, person_id, face, changed_by):
     )
 
 
+def _parse_attendance_moment(value):
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime.combine(value, datetime.min.time())
+    if isinstance(value, str):
+        text = value.strip().replace("T", " ")
+        for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+    return None
+
+
+def _salary_effective_boundary(cursor, vendor_id, person_id, effective_day, company_shifts):
+    """Keep a day the employee already attended on the earlier salary.
+
+    When the employee is already checked in (or has already worked) on the
+    effective day, that day must not be repriced by the new salary. The change
+    then continues from the following day onwards.
+    """
+    try:
+        cursor.execute(
+            "SELECT shift FROM faces WHERE id = ? AND vendor_id = ?",
+            (person_id, vendor_id),
+        )
+        shift_policy = choose_shift_policy(
+            company_shifts, (_row_dict(cursor.fetchone()) or {}).get("shift")
+        )
+        cursor.execute(
+            """SELECT timestamp FROM attendance
+                WHERE vendor_id = ? AND person_id = ?
+                  AND timestamp >= ? AND timestamp < ?""",
+            (
+                vendor_id,
+                person_id,
+                (effective_day - timedelta(days=1)).isoformat() + " 00:00:00",
+                (effective_day + timedelta(days=2)).isoformat() + " 00:00:00",
+            ),
+        )
+        rows = cursor.fetchall() or []
+    except Exception:
+        return effective_day
+    for row in rows:
+        value = row["timestamp"] if hasattr(row, "keys") else row[0]
+        moment = _parse_attendance_moment(value)
+        if moment is not None and shift_policy.attendance_date(moment) == effective_day:
+            return effective_day + timedelta(days=1)
+    return effective_day
+
+
 def apply_salary_updates(
     conn,
     cursor,
@@ -356,6 +412,11 @@ def apply_salary_updates(
 
     consume_reauth_token(cursor, vendor_id, username, reauth_token, "salary_change")
     is_pg = bool(getattr(conn, "_is_pg", False))
+    try:
+        cursor.execute("SELECT shifts FROM companies WHERE vendor_id = ?", (vendor_id,))
+        company_shifts = parse_shift_list((_row_dict(cursor.fetchone()) or {}).get("shifts"))
+    except Exception:
+        company_shifts = []
     changed = []
 
     for update in updates:
@@ -369,6 +430,12 @@ def apply_salary_updates(
         face = _current_face(cursor, vendor_id, person_id, for_update=is_pg)
         if not face:
             raise SalaryValidationError(f"Employee {person_id} was not found")
+
+        # A day the employee has already started (checked in / worked) keeps its
+        # earlier salary; the new salary continues from the next day onwards.
+        boundary_day = _salary_effective_boundary(
+            cursor, vendor_id, person_id, effective_day, company_shifts
+        )
 
         cursor.execute(
             """SELECT id, vendor_id, person_id, version_number, effective_from,
@@ -404,7 +471,7 @@ def apply_salary_updates(
                     if version.get(field) is not None:
                         version[field] = float(version[field])
 
-        base = resolve_salary_version(versions, effective_day)
+        base = resolve_salary_version(versions, boundary_day)
         if not base:
             raise SalaryConflictError(f"No salary baseline exists for employee {person_id}")
         expected = update.get("expected_salary_version")
@@ -429,7 +496,7 @@ def apply_salary_updates(
             old_effective_to = base.get("effective_to")
             cursor.execute(
                 "UPDATE employee_salary_versions SET effective_to = ? WHERE id = ?",
-                (effective_day.isoformat(), base["id"]),
+                (boundary_day.isoformat(), base["id"]),
             )
             cursor.execute(
                 """INSERT INTO employee_salary_versions (
@@ -439,7 +506,7 @@ def apply_salary_updates(
                        late_allowance_days, late_deduction_amount, changed_by, change_reason
                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    vendor_id, person_id, new_version_number, effective_day.isoformat(),
+                    vendor_id, person_id, new_version_number, boundary_day.isoformat(),
                     old_effective_to.isoformat() if hasattr(old_effective_to, "isoformat") else old_effective_to,
                     *[new_values[field] for field in (
                         "daily_wage", "basic_salary", "hra", "conveyance",
