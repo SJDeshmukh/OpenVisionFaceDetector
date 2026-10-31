@@ -87,6 +87,44 @@ const Wages = () => {
     });
   };
 
+  // Unsaved wage edits are kept in the browser so a page refresh does not lose them.
+  const wagesDraftKey = user
+    ? `wages_draft_${user.vendor_id ?? user.company_id ?? 'default'}_${startDate}_${endDate}`
+    : null;
+
+  const readWagesDraft = () => {
+    if (!wagesDraftKey) return {};
+    try {
+      const parsed = JSON.parse(localStorage.getItem(wagesDraftKey) || '{}');
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  };
+
+  const clearWagesDraft = () => {
+    if (!wagesDraftKey) return;
+    try { localStorage.removeItem(wagesDraftKey); } catch { }
+  };
+
+  const applyWagesDraft = (rows) => {
+    const draft = readWagesDraft();
+    if (!Object.keys(draft).length) return rows;
+    const restored = new Set();
+    const merged = rows.map((row) => {
+      const pid = Number(row.person_id);
+      const patch = draft[pid];
+      if (!patch) return row;
+      restored.add(pid);
+      return { ...row, ...patch };
+    });
+    if (restored.size) {
+      setDirtyPersonIds(restored);
+      setHasChanges(true);
+    }
+    return merged;
+  };
+
   useEffect(() => {
     if (user) {
       fetchWorkingHours();
@@ -180,7 +218,7 @@ const Wages = () => {
       }
       const data = await res.json();
       if (data.payroll) {
-        setPayrollData(data.payroll);
+        setPayrollData(applyWagesDraft(data.payroll));
       }
       if (data.global_settings) {
         setGlobalSettings({
@@ -243,45 +281,30 @@ const Wages = () => {
     if (payrollRequestRef.current) payrollRequestRef.current.abort();
   }, []);
 
-  const recalculatePayrollPerson = (person) => {
-    const hourlyRate = (person.daily_wage || 0) / Math.max(parseFloat(workingHours) || 0, 0.01);
-    const baseCost = (person.total_hours || 0) * hourlyRate;
-    const allowance = lateMarkEnabled ? (person.late_allowance_days ?? globalSettings.allowance) : 0;
-    const deduction = lateMarkEnabled ? (person.late_deduction_amount ?? globalSettings.deduction) : 0;
-    const lateMarks = lateMarkEnabled ? (person.late_marks_count || 0) : 0;
-    const lateDeduction = Math.max(0, lateMarks - allowance) * deduction;
-
-    const configuredBasic = parseFloat(person.basic_salary || 0);
-    const configuredHra = parseFloat(person.hra || 0);
-    const configuredConveyance = parseFloat(person.conveyance || 0);
-    const configuredSpecial = parseFloat(person.special_allowance || 0);
-    const basic = configuredBasic || baseCost * 0.5;
-    const hra = configuredHra || baseCost * 0.2;
-    const conveyance = configuredConveyance || 0;
-    const specialAllowance = configuredSpecial || Math.max(0, baseCost - basic - hra - conveyance);
-    const gross = basic + hra + conveyance + specialAllowance;
-    const pf = person.pf_enabled ? Math.min(basic, 15000) * (parseFloat(pfPercentage) / 100) : 0;
-    const esi = person.esi_enabled && gross <= 21000 ? gross * (parseFloat(esiPercentage) / 100) : 0;
-    const professionalTax = parseFloat(person.professional_tax || 0);
-    const statutoryDeduction = pf + esi + professionalTax;
-    const advanceDeduction = parseFloat(person.advance_deduction || 0);
-    const finalPayout = gross - statutoryDeduction - lateDeduction - advanceDeduction;
-
-    return {
-      ...person,
-      base_cost: baseCost.toFixed(2),
-      late_deduction: lateDeduction.toFixed(2),
-      breakdown: {
-        ...(person.breakdown || {}),
-        components: { basic, hra, conveyance, special_allowance: specialAllowance },
-        deductions: { pf, esi, pt: professionalTax, total_statutory: statutoryDeduction },
-        gross,
-        net_before_advances: gross - statutoryDeduction,
-      },
-      final_payout: finalPayout.toFixed(2),
-      total_cost: finalPayout.toFixed(2),
-    };
-  };
+  // Persist unsaved edits so they survive a page refresh.
+  useEffect(() => {
+    if (!wagesDraftKey || !hasChanges) return;
+    const patch = {};
+    payrollData.forEach((person) => {
+      const pid = Number(person.person_id);
+      if (!pid || !dirtyPersonIds.has(pid)) return;
+      patch[pid] = {
+        daily_wage: person.daily_wage,
+        late_allowance_days: person.late_allowance_days,
+        late_deduction_amount: person.late_deduction_amount,
+        pf_enabled: person.pf_enabled,
+        esi_enabled: person.esi_enabled,
+        gratuity_enabled: person.gratuity_enabled,
+        basic_salary: person.basic_salary,
+        hra: person.hra,
+        conveyance: person.conveyance,
+        special_allowance: person.special_allowance,
+        professional_tax: person.professional_tax,
+        joining_date: person.joining_date,
+      };
+    });
+    try { localStorage.setItem(wagesDraftKey, JSON.stringify(patch)); } catch { }
+  }, [payrollData, dirtyPersonIds, hasChanges, wagesDraftKey]);
 
   const handleWageChange = (index, field, value) => {
     const newData = [...payrollData];
@@ -305,8 +328,6 @@ const Wages = () => {
       newData[index][field] = value === '' ? 0 : parseFloat(value);
     }
 
-    newData[index] = recalculatePayrollPerson(newData[index]);
-
     setPayrollData(newData);
     setHasChanges(true);
     markSalaryDirty(newData[index].person_id);
@@ -314,7 +335,7 @@ const Wages = () => {
 
   const enablePfAndEsiForAll = () => {
     if (!payrollData.length) return;
-    const updated = payrollData.map(person => recalculatePayrollPerson({
+    const updated = payrollData.map(person => ({
       ...person,
       pf_enabled: 1,
       esi_enabled: 1,
@@ -327,7 +348,7 @@ const Wages = () => {
   const disablePfAndEsiForAll = () => {
     if (!disableStatutoryPassword) return;
     setDisableStatutoryError('');
-    const updated = payrollData.map(person => recalculatePayrollPerson({
+    const updated = payrollData.map(person => ({
       ...person,
       pf_enabled: 0,
       esi_enabled: 0,
@@ -465,6 +486,7 @@ const Wages = () => {
       if (res.ok) {
         setHasChanges(false);
         setDirtyPersonIds(new Set());
+        clearWagesDraft();
         setSalarySaveOpen(false);
         setSalaryPassword('');
         setSalaryChangeReason('');
@@ -489,6 +511,13 @@ const Wages = () => {
     setSalaryChangeReason('');
     setSalarySaveError('');
     setSalarySaveOpen(true);
+  };
+
+  const discardWageChanges = () => {
+    clearWagesDraft();
+    setDirtyPersonIds(new Set());
+    setHasChanges(false);
+    fetchPayroll();
   };
 
   const openSalaryHistory = async (person) => {
@@ -730,6 +759,17 @@ const Wages = () => {
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
             Disable PF &amp; ESI for All
           </button>
+
+        {hasChanges && (
+          <button
+            onClick={discardWageChanges}
+            disabled={saveLoading}
+            className="px-4 py-2 bg-white text-slate-700 border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-50 flex items-center gap-2 shadow-sm transition-all"
+            title="Throw away unsaved wage changes"
+          >
+            Discard
+          </button>
+        )}
 
         {hasChanges && (
           <button
