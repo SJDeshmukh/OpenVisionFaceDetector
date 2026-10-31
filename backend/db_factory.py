@@ -283,7 +283,7 @@ class PostgresCursorWrapper:
              match = re.search(r"INSERT\s+INTO\s+([a-zA-Z0-9_]+)", sql_pg, re.IGNORECASE)
              if match:
                  table_name = match.group(1)
-                 if table_name not in ['system_users', 'active_sessions', 'system_settings', 'audit_logs', 'parent_tokens']: 
+                 if table_name not in ['system_users', 'active_sessions', 'system_settings', 'audit_logs', 'parent_tokens', 'salary_reauth_tokens']: 
                      sql_pg += " RETURNING id"
         
         try:
