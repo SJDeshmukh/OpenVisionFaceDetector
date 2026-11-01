@@ -2579,3 +2579,4 @@ def delete_advance_record(record_id):
     finally:
         conn.close()
 
+
