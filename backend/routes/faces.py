@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify, send_file, g, redirect, url_for
+﻿from flask import Blueprint, request, jsonify, send_file, g, redirect, url_for
 import logging
 import sqlite3
 import json
@@ -701,7 +701,7 @@ def upload_face():
             img_rgb_base = _decode_data_uri_to_rgb(face_image)
             if img_rgb_base is not None:
                 # face_image is already a detected+refined crop from the pipeline.
-                # Augment the crop directly — re-running face detection here is
+                # Augment the crop directly â€” re-running face detection here is
                 # redundant and fails on tight crops that have no margin.
                 emb_list = []
                 for aug_img in get_face_augmentations(img_rgb_base):
@@ -1294,9 +1294,30 @@ def upload_face():
             next_display_id = c.fetchone()[0]
             assigned_display_id = int(next_display_id)
 
-            c.execute("INSERT INTO faces (local_uid, name, templates, face_image, phone, department, designation, shift, vendor_id, custom_data, display_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                      (local_uid, name, to_store_templates, face_image, phone or "", department or "", designation or "", shift or "", vendor_id, custom_data, next_display_id))
-            new_id = c.lastrowid
+            # UPSERT logic: If the local_uid already exists for this vendor (e.g., sync conflict), 
+            # update the existing record instead of crashing.
+            sql = """
+                INSERT INTO faces (local_uid, name, templates, face_image, phone, department, designation, shift, vendor_id, custom_data, display_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (vendor_id, local_uid) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    templates = EXCLUDED.templates,
+                    face_image = EXCLUDED.face_image,
+                    phone = EXCLUDED.phone,
+                    department = EXCLUDED.department,
+                    designation = EXCLUDED.designation,
+                    shift = EXCLUDED.shift,
+                    custom_data = EXCLUDED.custom_data
+            """
+            if getattr(conn, "_is_pg", False):
+                sql += " RETURNING id"
+            
+            c.execute(sql, (local_uid, name, to_store_templates, face_image, phone or "", department or "", designation or "", shift or "", vendor_id, custom_data, next_display_id))
+            
+            if getattr(conn, "_is_pg", False):
+                new_id = c.fetchone()[0]
+            else:
+                new_id = c.lastrowid
             
             # --- Automated Student Login Creation ("Inking") ---
             try:
@@ -1440,7 +1461,7 @@ def upload_face():
         except Exception:
             pass
 
-        # Emit real-time updates immediately after commit — don't block on reindex
+        # Emit real-time updates immediately after commit â€” don't block on reindex
         cache_delete_vendor_prefix(vendor_id)
         cache_delete("admin_stats")
         if vendor_id:
@@ -2049,7 +2070,7 @@ def delete_face_by_id(person_id):
         except Exception:
             pass
 
-        # Clean up parent/token relations — each guarded independently
+        # Clean up parent/token relations â€” each guarded independently
         if sn:
             for _sql, _args in [
                 ("DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number = ?", (target_vendor_id, sn)),
@@ -2120,7 +2141,7 @@ def delete_face_by_id(person_id):
         cache_delete("admin_stats")
 
         if deleted_faces > 0:
-            # Emit socket NOW — before any blocking reindex/reset
+            # Emit socket NOW â€” before any blocking reindex/reset
             if effective_vendor_id:
                 socketio.emit(
                     'persons_updated',
@@ -2199,7 +2220,7 @@ def delete_all_faces():
             c.execute("DELETE FROM parent_users WHERE vendor_id = ? AND NOT EXISTS (SELECT 1 FROM student_parents WHERE parent_id = parent_users.id)", (vendor_id,))
             c.execute("DELETE FROM system_users WHERE vendor_id = ? AND role = 'student'", (vendor_id,))
 
-            # 2. Delete student faces only — preserve faces linked to faculty accounts
+            # 2. Delete student faces only â€” preserve faces linked to faculty accounts
             c.execute("""
                 DELETE FROM faces WHERE vendor_id = ?
                 AND id NOT IN (
@@ -2274,7 +2295,7 @@ def regenerate_face():
             return jsonify({"error": "Failed to decode target image"}), 400
         target_rgb = cv2.cvtColor(target_bgr, cv2.COLOR_BGR2RGB)
 
-        # Skip enhancement for already-sharp faces — warping a reference onto a clear
+        # Skip enhancement for already-sharp faces â€” warping a reference onto a clear
         # face usually makes it look worse, not better.
         _REGEN_BLUR_THRESHOLD = 150.0
         gray_t = cv2.cvtColor(target_bgr, cv2.COLOR_BGR2GRAY)
@@ -2285,7 +2306,7 @@ def regenerate_face():
                 "image": target_b64,
                 "skipped": True,
                 "sharpness": round(sharpness, 1),
-                "reason": "Face is already sharp — enhancement skipped"
+                "reason": "Face is already sharp â€” enhancement skipped"
             })
         
         # Decode reference image
@@ -2557,3 +2578,4 @@ def delete_advance_record(record_id):
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
+
