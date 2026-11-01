@@ -1087,10 +1087,14 @@ def export_payroll_daily():
     c = conn.cursor()
 
     try:
-        c.execute("SELECT working_hours, shifts FROM companies WHERE vendor_id = ?", (vendor_id,))
+        c.execute("SELECT working_hours, shifts, live_timetable FROM companies WHERE vendor_id = ?", (vendor_id,))
         v_row = c.fetchone()
         company_working_hours = float(v_row['working_hours']) if v_row and v_row['working_hours'] else 8.0
         company_shifts = parse_shift_list(v_row['shifts'] if v_row else None)
+        timetable = []
+        if v_row and v_row['live_timetable']:
+            try: timetable = json.loads(v_row['live_timetable'])
+            except (json.JSONDecodeError, ValueError): timetable = []
 
         # Add a 1-day buffer on each side to capture timezone-shifted timestamps
         start_dt_req = datetime.strptime(start_date, '%Y-%m-%d').date()
@@ -1165,13 +1169,6 @@ def export_payroll_daily():
             info = persons[pid]
             shift_policy = choose_shift_policy(company_shifts, info.get('shift'))
             scheduled_hours = scheduled_payable_hours(shift_policy, company_working_hours)
-            # Simple fallback for timetable if needed (would ideally use company timetable)
-            timetable = []
-            try:
-                tjson = info.get('shift') or ""
-                if tjson: timetable = json.loads(tjson) if isinstance(tjson, str) else (tjson or [])
-            except (json.JSONDecodeError, ValueError): pass
-            
             stats = calculate_daily_hours(
                 records,
                 timetable,
@@ -1252,10 +1249,14 @@ def export_payroll_excel():
     c = conn.cursor()
 
     try:
-        c.execute("SELECT working_hours, shifts FROM companies WHERE vendor_id = ?", (vendor_id,))
+        c.execute("SELECT working_hours, shifts, live_timetable FROM companies WHERE vendor_id = ?", (vendor_id,))
         v_row = c.fetchone()
         company_working_hours = float(v_row['working_hours']) if v_row and v_row['working_hours'] else 8.0
         company_shifts = parse_shift_list(v_row['shifts'] if v_row else None)
+        timetable = []
+        if v_row and v_row['live_timetable']:
+            try: timetable = json.loads(v_row['live_timetable'])
+            except (json.JSONDecodeError, ValueError): timetable = []
 
         # Add a 1-day buffer on each side to capture timezone-shifted timestamps
         start_dt_req = datetime.strptime(start_date, '%Y-%m-%d').date()
@@ -1333,6 +1334,7 @@ def export_payroll_excel():
             scheduled_hours = scheduled_payable_hours(shift_policy, company_working_hours)
             stats = calculate_daily_hours(
                 records,
+                timetable,
                 missing_checkout_deduction_percent=missing_deduction_pct,
                 working_hours=scheduled_hours,
                 shift_policy=shift_policy,

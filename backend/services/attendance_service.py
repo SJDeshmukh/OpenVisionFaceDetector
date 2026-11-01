@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, time, timedelta
 
 from services.attendance_shift_service import attendance_date_for
 
@@ -34,6 +34,84 @@ def get_operational_date(dt, cutoff_hour=6, shift_policy=None):
     elif isinstance(dt, date):
         return dt
     return None
+
+_WEEKDAY_ABBR = ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')
+_WEEKDAY_FULL = ('monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday')
+
+
+def _parse_hhmm(value):
+    raw = str(value or '').strip()[:5]
+    try:
+        hours, minutes = (int(part) for part in raw.split(':', 1))
+    except (TypeError, ValueError):
+        return None
+    if 0 <= hours <= 23 and 0 <= minutes <= 59:
+        return hours, minutes
+    return None
+
+
+def _activity_runs_on(activity, day):
+    """Whether a scheduled activity applies on the given calendar day."""
+    days = activity.get('days')
+    if not days or not isinstance(days, (list, tuple, set)):
+        return True
+    wanted = {str(entry).strip().lower() for entry in days}
+    return _WEEKDAY_ABBR[day.weekday()].lower() in wanted or _WEEKDAY_FULL[day.weekday()] in wanted
+
+
+def non_payable_activity_windows(timetable, start_dt, end_dt):
+    """Scheduled non-payable activity windows that overlap [start_dt, end_dt).
+
+    An employee performs the timetable activities without checking out for each
+    one, so the scheduled window itself decides payability. Activities that
+    never configured a start/end time are ignored, which keeps timetables that
+    only registered activity names behaving as before.
+    """
+    if not timetable or start_dt is None or end_dt is None or end_dt <= start_dt:
+        return []
+    windows = []
+    day = (start_dt - timedelta(days=1)).date()
+    last_day = end_dt.date()
+    while day <= last_day:
+        for activity in timetable:
+            if not isinstance(activity, dict) or activity.get('enabled') is False:
+                continue
+            activity_type = activity.get('type', 'Work')
+            if activity.get('is_payable', activity_type == 'Work'):
+                continue
+            start_hm = _parse_hhmm(activity.get('start_time'))
+            end_hm = _parse_hhmm(activity.get('end_time'))
+            if not start_hm or not end_hm or not _activity_runs_on(activity, day):
+                continue
+            window_start = datetime.combine(day, time(*start_hm))
+            window_end = datetime.combine(day, time(*end_hm))
+            if window_end <= window_start:
+                window_end += timedelta(days=1)
+            if window_start < end_dt and window_end > start_dt:
+                windows.append((window_start, window_end))
+        day += timedelta(days=1)
+    return windows
+
+
+def payable_session_seconds(start_dt, end_dt, unpaid_windows):
+    """Return (payable_seconds, unpaid_seconds) for a session and its windows."""
+    total = (end_dt - start_dt).total_seconds()
+    if total <= 0:
+        return 0.0, 0.0
+    merged = []
+    for window_start, window_end in sorted(unpaid_windows):
+        if merged and window_start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], window_end))
+        else:
+            merged.append((window_start, window_end))
+    unpaid = 0.0
+    for window_start, window_end in merged:
+        overlap_start = max(start_dt, window_start)
+        overlap_end = min(end_dt, window_end)
+        if overlap_end > overlap_start:
+            unpaid += (overlap_end - overlap_start).total_seconds()
+    return max(0.0, total - unpaid), unpaid
+
 
 def calculate_daily_hours(records, timetable=None, date_str=None, attendance_type='total_time',
                           missing_checkout_deduction_percent=50, working_hours=8.0,
@@ -224,9 +302,17 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
                         or not session_activity_lower
                     )
 
+                session_seconds = duration
+                unpaid_seconds = 0.0
                 if is_session_payable:
-                    total_seconds += duration
-                    
+                    # Time spent inside a scheduled non-payable activity (e.g. lunch)
+                    # is not paid, even when the employee never checked out for it.
+                    unpaid_windows = non_payable_activity_windows(timetable, current_checkin, ts)
+                    session_seconds, unpaid_seconds = payable_session_seconds(
+                        current_checkin, ts, unpaid_windows
+                    )
+                    total_seconds += session_seconds
+
                 sessions.append({
                     "type": "Work",
                     "activity": session_activity,
@@ -236,8 +322,9 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
                     "end_ts": ts.isoformat(),
                     "start": current_checkin.strftime('%H:%M'),
                     "end": ts.strftime('%H:%M'),
-                    "duration_seconds": duration,
-                    "duration_mins": round(duration / 60.0, 2)
+                    "duration_seconds": session_seconds,
+                    "duration_mins": round(session_seconds / 60.0, 2),
+                    "unpaid_seconds": round(unpaid_seconds, 2)
                 })
                 current_checkin = None
                 current_checkin_activity = None
@@ -296,9 +383,17 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
                         or not active_activity_lower
                     )
                 
+                session_seconds = duration
+                unpaid_seconds = 0.0
                 if is_active_payable:
-                    total_seconds += duration
-                
+                    # Non-payable scheduled activities are excluded from an ongoing
+                    # session the moment their window opens or closes.
+                    unpaid_windows = non_payable_activity_windows(timetable, current_checkin, now_dt)
+                    session_seconds, unpaid_seconds = payable_session_seconds(
+                        current_checkin, now_dt, unpaid_windows
+                    )
+                    total_seconds += session_seconds
+
                 sessions.append({
                     "type": "Work (Active)",
                     "activity": active_activity_name,
@@ -308,8 +403,9 @@ def calculate_daily_hours(records, timetable=None, date_str=None, attendance_typ
                     "end_ts": now_dt.isoformat(),
                     "start": current_checkin.strftime('%H:%M'),
                     "end": now_dt.strftime('%H:%M'),
-                    "duration_seconds": duration,
-                    "duration_mins": round(duration / 60.0, 2)
+                    "duration_seconds": session_seconds,
+                    "duration_mins": round(session_seconds / 60.0, 2),
+                    "unpaid_seconds": round(unpaid_seconds, 2)
                 })
             except Exception:
                 pass

@@ -132,7 +132,8 @@ class TestAttendanceLogic(unittest.TestCase):
 
     def test_payable_hours_work_through_lunch(self):
         # Scenario: User works 9-5 straight. Lunch is 1-2 (Unpaid) in timetable.
-        # Expected: 8 hours pay (since they didn't check out).
+        # Expected: 7 hours pay. The scheduled non-payable window is detected
+        # from the timetable, so no lunch check-out is required.
         
         # Timetable
         timetable = [
@@ -147,8 +148,36 @@ class TestAttendanceLogic(unittest.TestCase):
         ]
         
         stats = calculate_daily_hours(records, timetable)
-        self.assertEqual(stats['total_hours'], 8.0, "Should count full 8h if user worked through lunch")
-        self.assertEqual(stats['total_hours_str'], "8h 0m")
+        self.assertEqual(stats['total_hours'], 7.0, "Should exclude the not-payable lunch window")
+        self.assertEqual(stats['total_hours_str'], "7h 0m")
+
+    def test_real_time_hours_active_excludes_non_payable_activity(self):
+        # Scenario: the employee checked in and is still working right now.
+        # The timetable marks a 30-minute activity as not payable and the
+        # employee never checked out for it, so that window must not be paid.
+        
+        today = datetime.now()
+        checkin = today - timedelta(hours=4)
+        window_start = today - timedelta(hours=3)
+        window_end = today - timedelta(minutes=150)
+        
+        all_days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+        timetable = [
+            {'name': 'Work', 'type': 'Work', 'is_payable': True, 'start_time': '06:00', 'end_time': '05:59', 'days': all_days},
+            {'name': 'Lunch time', 'type': 'Work', 'is_payable': False,
+             'start_time': window_start.strftime('%H:%M'), 'end_time': window_end.strftime('%H:%M'), 'days': all_days}
+        ]
+        
+        records = [
+            {'timestamp': checkin.strftime('%Y-%m-%d %H:%M:%S'), 'status': 'CHECK_IN', 'activity': 'Work'}
+        ]
+        
+        stats = calculate_daily_hours(records, timetable, date_str=today.strftime('%Y-%m-%d'))
+        
+        # 4h session minus the 30m not-payable activity = 3.5h
+        self.assertTrue(3.49 <= stats['total_hours'] <= 3.51, f"Expected ~3.5h, got {stats['total_hours']}")
+        self.assertTrue(stats['is_active'])
+        self.assertAlmostEqual(stats['sessions'][0]['unpaid_seconds'], 1800.0, delta=5.0)
 
     def test_payable_hours_taken_lunch(self):
         # Scenario: User works 9-5 but takes Lunch 1-2.
