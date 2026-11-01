@@ -423,6 +423,7 @@ def get_analytics(valid_data: PayrollReportRequest):
         person_stats[pid] = {
             "name": person_info['name'],
             "department": person_info['department'],
+            "shift": person_info.get('shift'),
             "total_hours": round(p_total_hours, 2),
             "present_days": p_present_days,
             "late_count": p_late_count,

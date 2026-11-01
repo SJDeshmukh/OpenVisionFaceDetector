@@ -1043,6 +1043,7 @@ def get_attendance(valid_data: AttendanceFilterSchema):
             "status": r["status"], "activity": r["activity"],
             "is_late": r.get("is_late", 0) if late_enabled else 0,
             "department": r["department"], "designation": r["designation"],
+            "shift": r["shift"],
             "captured_image": compact_image_data_url(r["captured_image"]),
             "device_name": device_name,
             "class_id": custom.get("class_id"),
