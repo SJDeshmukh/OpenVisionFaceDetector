@@ -7,7 +7,7 @@ from datetime import datetime, date, timedelta
 from collections import defaultdict
 from flask import Blueprint, request, jsonify, send_file, g
 from openpyxl import Workbook
-from openpyxl.styles import Font, Alignment
+from openpyxl.styles import Alignment, Font, PatternFill
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,6 @@ from services.attendance_service import (
 )
 from services.payroll_service import calculate_salary_breakdown
 from services.attendance_shift_service import (
-    calculate_shift_wage,
     choose_shift_policy,
     parse_shift_list,
     scheduled_payable_hours,
@@ -30,6 +29,7 @@ from services.report_filter_service import (
     STANDARD_FILTERS, custom_filter_values, face_matches, facet_options,
     merge_filter_configuration, parse_json_list,
 )
+from services.report_export_service import PAYROLL_EXPORT_HEADERS, payroll_export_values
 from middleware.validation import validate_request
 from schemas import PayrollReportRequest
 from storage import compact_image_data_url
@@ -58,6 +58,19 @@ attendance_reports_bp = Blueprint('attendance_reports_bp', __name__)
 def _payroll_person_image_url(person_id, version=None):
     url = f"/api/persons/{int(person_id)}/image"
     return f"{url}?v={int(version)}" if version is not None else url
+
+
+def _active_report_filters():
+    """Return the registry filters selected on the Reports page."""
+    return (
+        {
+            "department": request.args.get("department", "").strip(),
+            "designation": request.args.get("designation", "").strip(),
+            "shift": request.args.get("shift", "").strip(),
+            "phone": request.args.get("phone", "").strip(),
+        },
+        _parse_dynamic_args(),
+    )
 
 
 @attendance_reports_bp.route("/reports/email-employees", methods=["POST"])
@@ -478,140 +491,189 @@ def get_analytics(valid_data: PayrollReportRequest):
     cache_set(cache_key, result, 300)
     return jsonify(result)
 
+def _attendance_export_rows(vendor_id, start_date, end_date, person_type=None):
+    try:
+        start = date.fromisoformat(start_date)
+        end = date.fromisoformat(end_date)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Dates must use YYYY-MM-DD format") from exc
+    if start > end:
+        raise ValueError("start_date must be on or before end_date")
+
+    standard_filters, dynamic_filters = _active_report_filters()
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    try:
+        query = """
+            SELECT a.name, a.timestamp, a.status, a.activity, a.is_late,
+                   a.device_id, f.id AS person_id, f.display_id,
+                   f.department, f.designation,
+                   f.shift, f.phone, f.custom_data,
+                   (SELECT su.role FROM system_users su
+                    WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                    ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
+                    LIMIT 1) AS system_role
+            FROM attendance a
+            LEFT JOIN faces f ON a.person_id = f.id AND a.vendor_id = f.vendor_id
+            WHERE a.timestamp >= ? AND a.timestamp < ? AND a.vendor_id = ?
+        """
+        params = [
+            f"{start_date} 00:00:00",
+            f"{(end + timedelta(days=1)).isoformat()} 00:00:00",
+            vendor_id,
+        ]
+        for key in STANDARD_FILTERS:
+            value = standard_filters.get(key)
+            if value:
+                query += f" AND f.{key} = ?"
+                params.append(value)
+        query += " ORDER BY a.timestamp ASC"
+        cursor.execute(query, params)
+        rows = cursor.fetchall() or []
+        vertical = vendor_vertical(cursor, vendor_id)
+        wanted_type = requested_person_type(person_type, vertical)
+
+        parsed_rows = []
+        custom_keys = []
+        for source in rows:
+            row = dict(source)
+            custom = parse_custom_data(row.pop("custom_data", None))
+            system_role = row.pop("system_role", None)
+            resolved_type = person_type_for(custom, system_role, vertical)
+            if wanted_type and resolved_type != wanted_type:
+                continue
+            face = {**row, "custom": custom}
+            if not face_matches(face, standard_filters, dynamic_filters):
+                continue
+            for key in custom:
+                if key not in custom_keys:
+                    custom_keys.append(key)
+            row["custom"] = custom
+            parsed_rows.append(row)
+    finally:
+        conn.close()
+
+    headers = [
+        "Employee ID", "Employee Name", "Attendance Date", "Scan Time",
+        "Status", "Activity", "Device", "Late", "Department",
+        "Designation", "Shift", "Phone",
+    ] + [key.replace("_", " ").title() for key in custom_keys]
+    output_rows = []
+    for row in parsed_rows:
+        timestamp = parse_db_datetime(row.get("timestamp"))
+        output_rows.append([
+            row.get("display_id") or row.get("person_id") or "",
+            row.get("name") or "",
+            timestamp.strftime("%Y-%m-%d") if timestamp else "",
+            timestamp.strftime("%H:%M:%S") if timestamp else "",
+            row.get("status") or "",
+            row.get("activity") or "",
+            row.get("device_id") or "",
+            "Yes" if row.get("is_late") else "No",
+            row.get("department") or "",
+            row.get("designation") or "",
+            row.get("shift") or "",
+            row.get("phone") or "",
+            *[row["custom"].get(key, "") for key in custom_keys],
+        ])
+    return headers, output_rows
+
+
 @attendance_reports_bp.route("/reports/export", methods=["GET"])
 @require_feature("reports", "report_detailed", "report_payroll", "lecture_wise_reports")
 @require_auth()
 @validate_request(PayrollReportRequest)
 def export_attendance(valid_data: PayrollReportRequest):
-    vendor_id = g.vendor_id
-
-    start_date = valid_data.start_date
-    end_date   = valid_data.end_date
-
-    # --- active filters ---
-    f_dept  = request.args.get('department', '').strip()
-    f_desig = request.args.get('designation', '').strip()
-    f_shift = request.args.get('shift', '').strip()
-    f_phone = request.args.get('phone', '').strip()
-    dyn_filters = _parse_dynamic_args()  # {field_key: value, ...}
-
-    conn = get_db_connection()
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-
-    # Build query with optional standard-filter JOINs on faces
-    query = """
-        SELECT a.name, a.timestamp, a.status, a.activity, a.is_late,
-               f.department, f.designation, f.shift, f.phone, f.custom_data,
-               (SELECT su.role FROM system_users su
-                WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
-                ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
-                LIMIT 1) AS system_role
-        FROM attendance a
-        LEFT JOIN faces f ON a.person_id = f.id
-        WHERE date(a.timestamp) BETWEEN ? AND ? AND a.vendor_id = ?
-    """
-    params = [start_date, end_date, vendor_id]
-
-    if f_dept:
-        query += " AND f.department = ?"; params.append(f_dept)
-    if f_desig:
-        query += " AND f.designation = ?"; params.append(f_desig)
-    if f_shift:
-        query += " AND f.shift = ?"; params.append(f_shift)
-    if f_phone:
-        query += " AND f.phone = ?"; params.append(f_phone)
-
-    query += " ORDER BY a.timestamp ASC"
-    c.execute(query, params)
-    db_rows = c.fetchall()
-    vertical = vendor_vertical(c, vendor_id)
-    wanted_type = requested_person_type(valid_data.person_type, vertical)
-    conn.close()
-
-    # Extract unique custom-data keys and apply dynamic filters
-    custom_keys  = []
-    parsed_rows  = []
-    for row in db_rows:
-        row_dict  = dict(row)
-        cdata_str = row_dict.pop('custom_data', None)
-        system_role = row_dict.pop('system_role', None)
-        cdata     = {}
-        if cdata_str:
-            try:
-                cdata = json.loads(cdata_str)
-                if isinstance(cdata, dict):
-                    for k in cdata.keys():
-                        if k not in custom_keys:
-                            custom_keys.append(k)
-            except Exception:
-                pass
-        resolved_type = person_type_for(cdata, system_role, vertical)
-        if wanted_type and resolved_type != wanted_type:
-            continue
-        row_dict['person_type'] = resolved_type
-        row_dict['parsed_custom'] = cdata
-
-        # Apply dynamic (custom_data) filters – Python-side after parse
-        match = True
-        for dk, dv in dyn_filters.items():
-            if dv not in custom_filter_values(cdata, dk):
-                match = False
-                break
-        if not match:
-            continue
-
-        parsed_rows.append(row_dict)
-
-    # Build CSV
-    base_headers     = ["Name", "Date", "Time", "Status", "Activity", "Is Late",
-                        "Department", "Designation", "Shift", "Phone"]
-    formatted_custom = [k.replace('_', ' ').title() for k in custom_keys]
-    headers          = base_headers + formatted_custom
+    try:
+        headers, rows = _attendance_export_rows(
+            g.vendor_id, valid_data.start_date, valid_data.end_date, valid_data.person_type,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(headers)
-
-    for row in parsed_rows:
-        d     = parse_db_datetime(row['timestamp'])
-        d_str = d.strftime('%Y-%m-%d') if d else ""
-        t_str = d.strftime('%H:%M:%S') if d else ""
-
-        base_record = [
-            row['name'], d_str, t_str, row['status'], row['activity'],
-            "Yes" if row['is_late'] else "No",
-            row.get('department', ''), row.get('designation', ''),
-            row.get('shift', ''), row.get('phone', '')
-        ]
-        custom_record = [row['parsed_custom'].get(k, '') for k in custom_keys]
-        writer.writerow(base_record + custom_record)
-
+    writer.writerows(rows)
     return output.getvalue(), 200, {
-        "Content-Type": "text/csv",
-        "Content-Disposition": f"attachment; filename=attendance_{start_date}_{end_date}.csv"
+        "Content-Type": "text/csv; charset=utf-8",
+        "Content-Disposition": (
+            f"attachment; filename=attendance_detail_{valid_data.start_date}_{valid_data.end_date}.csv"
+        ),
     }
 
-@attendance_reports_bp.route("/reports/payroll", methods=["GET"])
-@attendance_reports_bp.route("/reports/payroll/finalize", methods=["POST"])
-@require_feature("payroll", "report_payroll")
+
+@attendance_reports_bp.route("/reports/export-excel", methods=["GET"])
+@require_feature("reports", "report_detailed", "report_payroll", "lecture_wise_reports")
 @require_auth()
 @validate_request(PayrollReportRequest)
-def get_payroll_report(valid_data: PayrollReportRequest):
+def export_attendance_excel(valid_data: PayrollReportRequest):
+    try:
+        headers, rows = _attendance_export_rows(
+            g.vendor_id, valid_data.start_date, valid_data.end_date, valid_data.person_type,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Attendance Detail"
+    sheet.append(headers)
+    for cell in sheet[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="2563EB")
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    for row in rows:
+        sheet.append(row)
+    for column in range(1, len(headers) + 1):
+        letter = sheet.cell(1, column).column_letter
+        max_length = max(
+            len(str(sheet.cell(row, column).value or ""))
+            for row in range(1, sheet.max_row + 1)
+        )
+        sheet.column_dimensions[letter].width = min(max(max_length + 2, 12), 32)
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = sheet.dimensions
+    sheet.sheet_view.showGridLines = False
+
+    out = io.BytesIO()
+    workbook.save(out)
+    out.seek(0)
+    return send_file(
+        out,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=(
+            f"attendance_detail_{valid_data.start_date}_{valid_data.end_date}.xlsx"
+        ),
+    )
+
+
+def _payroll_report_response(valid_data: PayrollReportRequest, include_images=None):
     vendor_id = g.vendor_id
-    include_images = str(request.args.get("include_images", "true")).strip().lower() not in {
-        "0", "false", "no", "off"
-    }
+    if include_images is None:
+        include_images = str(request.args.get("include_images", "true")).strip().lower() not in {
+            "0", "false", "no", "off"
+        }
+    standard_filters, dynamic_filters = _active_report_filters()
 
     start_date = valid_data.start_date
     end_date = valid_data.end_date
+    try:
+        requested_start = date.fromisoformat(start_date)
+        requested_end = date.fromisoformat(end_date)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Dates must use YYYY-MM-DD format"}), 400
+    if requested_start > requested_end:
+        return jsonify({"error": "start_date must be on or before end_date"}), 400
         
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     
     # 1. Fetch Timetable and Working Hours
-    c.execute("SELECT live_timetable, working_hours, shifts FROM companies WHERE vendor_id = ?", (vendor_id,))
+    c.execute("SELECT name, live_timetable, working_hours, shifts FROM companies WHERE vendor_id = ?", (vendor_id,))
     company_row = c.fetchone()
 
     timetable = []
@@ -713,10 +775,13 @@ def get_payroll_report(valid_data: PayrollReportRequest):
     persons = {}
     for row in person_rows:
         person = dict(row)
+        person['custom'] = parse_custom_data(person.get('custom_data'))
         resolved_type = person_type_for(
             person.get('custom_data'), person.get('system_role'), vertical,
         )
         if wanted_type and resolved_type != wanted_type:
+            continue
+        if not face_matches(person, standard_filters, dynamic_filters):
             continue
         person['person_type'] = resolved_type
         persons[person['id']] = person
@@ -756,20 +821,22 @@ def get_payroll_report(valid_data: PayrollReportRequest):
         
     payroll_data = []
     # today_str = datetime.now().strftime('%Y-%m-%d') # Removed unused
-    start_dt_req = datetime.strptime(start_date, '%Y-%m-%d').date()
-    end_dt_req = datetime.strptime(end_date, '%Y-%m-%d').date()
+    start_dt_req = requested_start
+    end_dt_req = requested_end
 
     missing_deduction_pct = float(stored_settings.get('missing_checkout_deduction_percent', 50.0))
 
     # Load approved deductions once for the whole payroll. The old loop issued
     # one database query per employee.
-    target_month = end_dt_req.strftime('%Y-%m')
+    first_deduction_month = start_dt_req.strftime('%Y-%m')
+    last_deduction_month = end_dt_req.strftime('%Y-%m')
     c.execute(
         """SELECT person_id, COALESCE(SUM(amount), 0)
              FROM advances
-            WHERE vendor_id = ? AND deduction_month = ? AND status = 'approved'
+            WHERE vendor_id = ? AND deduction_month >= ? AND deduction_month <= ?
+              AND status = 'approved'
             GROUP BY person_id""",
-        (vendor_id, target_month),
+        (vendor_id, first_deduction_month, last_deduction_month),
     )
     advance_totals = {
         row[0]: float(row[1] or 0)
@@ -830,7 +897,7 @@ def get_payroll_report(valid_data: PayrollReportRequest):
                 per_day_seconds[attendance_day] += float(session.get('duration_seconds') or 0)
         total_hours = round(total_seconds / 3600.0, 2)
         current_salary_version = resolve_salary_version(
-            salary_versions_by_person.get(pid, []), date.today()
+            salary_versions_by_person.get(pid, []), end_dt_req
         )
         daily_wage = (current_salary_version or person_info).get('daily_wage') or 0
         wage_result = calculate_versioned_shift_wage(
@@ -934,6 +1001,10 @@ def get_payroll_report(valid_data: PayrollReportRequest):
             "salary_version": current_salary_version.get('version_number') if current_salary_version else None,
             "salary_version_id": current_salary_version.get('id') if current_salary_version else None,
             "salary_version_ids_applied": wage_result.get('salary_version_ids', []),
+            "salary_rates_applied": sorted({
+                float((group.get('config') or {}).get('daily_wage') or 0)
+                for group in (wage_result.get('groups') or [])
+            }),
             "total_hours": round(total_hours, 2),
             "regular_hours": regular_hours,
             "overtime_hours": overtime_hours,
@@ -964,6 +1035,12 @@ def get_payroll_report(valid_data: PayrollReportRequest):
     
     response_payload = {
         "payroll": payroll_data,
+        "report": {
+            "company_name": company_row["name"] if company_row else None,
+            "period_start": start_date,
+            "period_end": end_date,
+            "employee_count": len(payroll_data),
+        },
         "global_settings": {
             "allowance": global_allowance, 
             "deduction": global_deduction, 
@@ -1065,334 +1142,148 @@ def get_payroll_report(valid_data: PayrollReportRequest):
     conn.close()
     return jsonify(response_payload)
 
+
+@attendance_reports_bp.route("/reports/payroll", methods=["GET"])
+@attendance_reports_bp.route("/reports/payroll/finalize", methods=["POST"])
+@require_feature("payroll", "report_payroll")
+@require_auth()
+@validate_request(PayrollReportRequest)
+def get_payroll_report(valid_data: PayrollReportRequest):
+    return _payroll_report_response(valid_data)
+
+def _payroll_payload_for_export(start_date, end_date):
+    if not start_date or not end_date:
+        return None, (jsonify({"error": "start_date and end_date required"}), 400)
+    try:
+        start = date.fromisoformat(start_date)
+        end = date.fromisoformat(end_date)
+    except (TypeError, ValueError):
+        return None, (jsonify({"error": "Dates must use YYYY-MM-DD format"}), 400)
+    if start > end:
+        return None, (jsonify({"error": "start_date must be on or before end_date"}), 400)
+
+    result = _payroll_report_response(
+        PayrollReportRequest(
+            start_date=start_date,
+            end_date=end_date,
+            person_type=request.args.get("person_type"),
+        ),
+        include_images=False,
+    )
+    if isinstance(result, tuple):
+        response = result[0]
+        status = result[1] if len(result) > 1 else 500
+    else:
+        response = result
+        status = getattr(response, "status_code", 200)
+    payload = response.get_json(silent=True) if hasattr(response, "get_json") else None
+    if status >= 400 or not isinstance(payload, dict):
+        return None, (response, status)
+    return payload, None
+
+
+@attendance_reports_bp.route("/reports/payroll/export", methods=["GET"])
 @attendance_reports_bp.route("/reports/payroll/export-daily", methods=["GET"])
 @require_feature("payroll", "report_payroll")
 @require_auth()
-def export_payroll_daily():
-    vendor_id  = g.vendor_id
+def export_payroll_summary():
+    """Export one consolidated payroll row per employee for the selected period."""
     start_date = request.args.get("start_date")
-    end_date   = request.args.get("end_date")
-    if not start_date or not end_date:
-        return jsonify({"error": "start_date and end_date required"}), 400
+    end_date = request.args.get("end_date")
+    payload, error = _payroll_payload_for_export(start_date, end_date)
+    if error:
+        return error
 
-    # active standard filters
-    f_dept  = request.args.get('department', '').strip()
-    f_desig = request.args.get('designation', '').strip()
-    f_shift = request.args.get('shift', '').strip()
-    f_phone = request.args.get('phone', '').strip()
-    dyn_filters = _parse_dynamic_args()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(PAYROLL_EXPORT_HEADERS)
+    for item in payload.get("payroll") or []:
+        writer.writerow(payroll_export_values(item, start_date, end_date))
 
-    conn = get_db_connection()
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
+    return output.getvalue(), 200, {
+        "Content-Type": "text/csv; charset=utf-8",
+        "Content-Disposition": (
+            f"attachment; filename=payroll_summary_{start_date}_{end_date}.csv"
+        ),
+    }
 
-    try:
-        c.execute("SELECT working_hours, shifts, live_timetable FROM companies WHERE vendor_id = ?", (vendor_id,))
-        v_row = c.fetchone()
-        company_working_hours = float(v_row['working_hours']) if v_row and v_row['working_hours'] else 8.0
-        company_shifts = parse_shift_list(v_row['shifts'] if v_row else None)
-        timetable = []
-        if v_row and v_row['live_timetable']:
-            try: timetable = json.loads(v_row['live_timetable'])
-            except (json.JSONDecodeError, ValueError): timetable = []
-
-        # Add a 1-day buffer on each side to capture timezone-shifted timestamps
-        start_dt_req = datetime.strptime(start_date, '%Y-%m-%d').date()
-        end_dt_req   = datetime.strptime(end_date, '%Y-%m-%d').date()
-        fetch_start  = (start_dt_req - timedelta(days=1)).isoformat()
-        fetch_end    = (end_dt_req   + timedelta(days=1)).isoformat()
-
-        c.execute(
-            "SELECT * FROM attendance WHERE vendor_id = ? AND date(timestamp) BETWEEN ? AND ?",
-            (vendor_id, fetch_start, fetch_end)
-        )
-        rows = c.fetchall()
-        user_records = defaultdict(list)
-        for row in rows:
-            d = dict(row)
-            if d.get('person_id'): user_records[d['person_id']].append(d)
-
-        # Build faces query with standard filters
-        fcols = get_table_columns(conn, "faces")
-        payroll_fields = ["basic_salary", "hra", "conveyance", "special_allowance", "pf_enabled", "esi_enabled", "professional_tax"]
-        extra = [col for col in (["late_allowance_days", "late_deduction_amount"] + payroll_fields) if col in fcols]
-        extra_select = ", " + ", ".join(extra) if extra else ""
-        
-        faces_query  = f"""SELECT id, name, daily_wage, shift, department, designation,
-                                  phone, custom_data, display_id{extra_select},
-                                  (SELECT su.role FROM system_users su
-                                   WHERE su.person_id = faces.id AND su.vendor_id = faces.vendor_id
-                                   ORDER BY CASE LOWER(su.role) WHEN 'faculty' THEN 0 WHEN 'student' THEN 1 ELSE 2 END
-                                   LIMIT 1) AS system_role
-                           FROM faces WHERE vendor_id = ?"""
-        faces_params = [vendor_id]
-        if f_dept:  faces_query += " AND department = ?";  faces_params.append(f_dept)
-        if f_desig: faces_query += " AND designation = ?"; faces_params.append(f_desig)
-        if f_shift: faces_query += " AND shift = ?" ;      faces_params.append(f_shift)
-        if f_phone: faces_query += " AND phone = ?" ;      faces_params.append(f_phone)
-
-        c.execute(faces_query, faces_params)
-        all_faces, _, _ = _scope_face_rows(
-            c, vendor_id, c.fetchall(), request.args.get("person_type"),
-        )
-
-        # Apply dynamic (custom_data) filter if any
-        persons = {}
-        for r in all_faces:
-            rd = dict(r)
-            if dyn_filters:
-                try:
-                    cdata = json.loads(rd.get('custom_data') or '{}')
-                except Exception:
-                    cdata = {}
-                if any(dv not in custom_filter_values(cdata, dk) for dk, dv in dyn_filters.items()):
-                    continue
-            persons[rd['id']] = rd
-
-        salary_versions_by_person = load_salary_versions(c, vendor_id, persons.keys())
-
-        setting_suffix = f'_vendor_{vendor_id}'
-        c.execute("SELECT key, value FROM system_settings WHERE key IN (?, ?, ?, ?)",
-                  (f'global_late_allowance{setting_suffix}', f'global_late_deduction{setting_suffix}', f'missing_checkout_deduction_percent{setting_suffix}', f'overtime_multiplier{setting_suffix}'))
-        s_map = {r['key'].removesuffix(setting_suffix): r['value'] for r in c.fetchall()}
-        global_allowance = int(s_map.get('global_late_allowance', 7))
-        global_deduction = float(s_map.get('global_late_deduction', 0.0))
-        missing_deduction_pct = float(s_map.get('missing_checkout_deduction_percent', 50.0))
-        overtime_multiplier = float(s_map.get('overtime_multiplier', 1.0))
-
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow(["Employee ID", "Name", "Date", "Daily Wage Rate", "Working Hours", "Overtime Hours", "Overtime Wage", "Base Wage", "Late Penalty", "PF", "ESI", "PT", "Net Wage"])
-
-        for pid, records in user_records.items():
-            if pid not in persons: continue
-            info = persons[pid]
-            shift_policy = choose_shift_policy(company_shifts, info.get('shift'))
-            scheduled_hours = scheduled_payable_hours(shift_policy, company_working_hours)
-            stats = calculate_daily_hours(
-                records,
-                timetable,
-                missing_checkout_deduction_percent=missing_deduction_pct,
-                working_hours=scheduled_hours,
-                shift_policy=shift_policy,
-            )
-            per_day_seconds = defaultdict(float)
-            for s in stats.get('sessions', []):
-                try:
-                    sd = date.fromisoformat(s['attendance_date']) if s.get('attendance_date') else shift_policy.attendance_date(datetime.fromisoformat(s['start_ts']))
-                    if start_dt_req <= sd <= end_dt_req and s.get('is_payable', False):
-                        dur_sec = s.get('duration_seconds')
-                        if dur_sec is None:
-                            dur_sec = float(s.get('duration_mins', 0) or 0) * 60.0
-                        per_day_seconds[sd] += float(dur_sec)
-                except (ValueError, TypeError): continue
-
-            late_dates = sorted({
-                shift_policy.attendance_date(timestamp)
-                for r in records if r.get('is_late') == 1
-                for timestamp in [parse_db_datetime(r.get('timestamp'))]
-                if timestamp and start_dt_req <= shift_policy.attendance_date(timestamp) <= end_dt_req
-            })
-            for d, secs in sorted(per_day_seconds.items()):
-                salary_config = resolve_salary_version(
-                    salary_versions_by_person.get(pid, []), d
-                ) or info
-                allowance = salary_config.get('late_allowance_days') if salary_config.get('late_allowance_days') is not None else global_allowance
-                deduction_amt = salary_config.get('late_deduction_amount') if salary_config.get('late_deduction_amount') is not None else global_deduction
-                lm = 1 if d in late_dates else 0
-                idx = late_dates.index(d) + 1 if d in late_dates else 0
-                deduct = deduction_amt if (lm == 1 and idx > allowance) else 0.0
-                daily_wage = float(salary_config.get('daily_wage') or 0.0)
-                day_hours = round(secs / 3600.0, 2)
-                wage_result = calculate_shift_wage(
-                    daily_wage, {d: secs}, scheduled_hours,
-                    overtime_multiplier=overtime_multiplier,
-                )
-                overtime_hours = wage_result['overtime_hours']
-                overtime_wage = wage_result['overtime_wage']
-                base_wage_for_day = wage_result['gross_wage']
-                
-                # Breakdown for this day's portion
-                breakdown = calculate_salary_breakdown(base_wage_for_day, salary_config)
-                pf = breakdown['deductions']['pf']
-                esi = breakdown['deductions']['esi']
-                pt = breakdown['deductions']['pt'] / 26.0 # Arbitrary per day PT if monthly
-                
-                net_wage = round(breakdown['net_before_advances'] - deduct, 2)
-                d_id = info.get('display_id') or pid
-                writer.writerow([d_id, info.get('name'), d.isoformat(), daily_wage, day_hours, overtime_hours, overtime_wage, base_wage_for_day, deduct, pf, esi, round(pt, 2), net_wage])
-        
-        return output.getvalue(), 200, {"Content-Type": "text/csv"}
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        conn.close()
 
 @attendance_reports_bp.route("/reports/payroll/export-excel", methods=["GET"])
 @require_feature("payroll", "report_payroll")
 @require_auth()
 def export_payroll_excel():
-    vendor_id = g.vendor_id
+    """Export a formatted period payroll workbook with one row per employee."""
     start_date = request.args.get("start_date")
     end_date = request.args.get("end_date")
-    if not start_date or not end_date:
-        return jsonify({"error": "start_date and end_date required"}), 400
+    payload, error = _payroll_payload_for_export(start_date, end_date)
+    if error:
+        return error
 
-    f_dept = request.args.get('department', '').strip()
-    f_desig = request.args.get('designation', '').strip()
-    f_shift = request.args.get('shift', '').strip()
-    f_phone = request.args.get('phone', '').strip()
-    dyn_filters = _parse_dynamic_args()
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Payroll Summary"
+    column_count = len(PAYROLL_EXPORT_HEADERS)
+    company_name = (payload.get("report") or {}).get("company_name") or "Company"
 
-    conn = get_db_connection()
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
+    sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=column_count)
+    title = sheet.cell(1, 1, f"{company_name} - Payroll Summary")
+    title.font = Font(size=16, bold=True, color="FFFFFF")
+    title.fill = PatternFill("solid", fgColor="1E3A8A")
+    title.alignment = Alignment(horizontal="center", vertical="center")
+    sheet.row_dimensions[1].height = 28
 
-    try:
-        c.execute("SELECT working_hours, shifts, live_timetable FROM companies WHERE vendor_id = ?", (vendor_id,))
-        v_row = c.fetchone()
-        company_working_hours = float(v_row['working_hours']) if v_row and v_row['working_hours'] else 8.0
-        company_shifts = parse_shift_list(v_row['shifts'] if v_row else None)
-        timetable = []
-        if v_row and v_row['live_timetable']:
-            try: timetable = json.loads(v_row['live_timetable'])
-            except (json.JSONDecodeError, ValueError): timetable = []
+    sheet.merge_cells(start_row=2, start_column=1, end_row=2, end_column=column_count)
+    period = sheet.cell(2, 1, f"Payroll period: {start_date} to {end_date}")
+    period.font = Font(bold=True, color="334155")
+    period.alignment = Alignment(horizontal="center")
 
-        # Add a 1-day buffer on each side to capture timezone-shifted timestamps
-        start_dt_req = datetime.strptime(start_date, '%Y-%m-%d').date()
-        end_dt_req   = datetime.strptime(end_date, '%Y-%m-%d').date()
-        fetch_start  = (start_dt_req - timedelta(days=1)).isoformat()
-        fetch_end    = (end_dt_req   + timedelta(days=1)).isoformat()
+    header_row = 4
+    for column, label in enumerate(PAYROLL_EXPORT_HEADERS, start=1):
+        cell = sheet.cell(header_row, column, label)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="2563EB")
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    sheet.row_dimensions[header_row].height = 34
 
-        c.execute(
-            "SELECT * FROM attendance WHERE vendor_id = ? AND date(timestamp) BETWEEN ? AND ?",
-            (vendor_id, fetch_start, fetch_end)
-        )
-        rows = c.fetchall()
-        user_records = defaultdict(list)
-        for row in rows:
-            d = dict(row)
-            if d.get('person_id'): user_records[d['person_id']].append(d)
+    for item in payload.get("payroll") or []:
+        sheet.append(payroll_export_values(item, start_date, end_date))
 
-        fcols = get_table_columns(conn, "faces")
-        payroll_fields = ["basic_salary", "hra", "conveyance", "special_allowance", "pf_enabled", "esi_enabled", "professional_tax"]
-        extra = [col for col in (["late_allowance_days", "late_deduction_amount"] + payroll_fields) if col in fcols]
-        extra_select = ", " + ", ".join(extra) if extra else ""
-        
-        faces_query = f"""SELECT id, name, daily_wage, display_id, department,
-                                  designation, shift, phone, custom_data{extra_select},
-                       (SELECT su.role FROM system_users su
-                        WHERE su.person_id = faces.id AND su.vendor_id = faces.vendor_id
-                        ORDER BY CASE LOWER(su.role) WHEN 'faculty' THEN 0 WHEN 'student' THEN 1 ELSE 2 END
-                        LIMIT 1) AS system_role
-                           FROM faces WHERE vendor_id = ?"""
-        faces_params = [vendor_id]
-        if f_dept: faces_query += " AND department = ?"; faces_params.append(f_dept)
-        if f_desig: faces_query += " AND designation = ?"; faces_params.append(f_desig)
-        if f_shift: faces_query += " AND shift = ?"; faces_params.append(f_shift)
-        if f_phone: faces_query += " AND phone = ?"; faces_params.append(f_phone)
-        c.execute(faces_query, faces_params)
-        scoped_faces, _, _ = _scope_face_rows(
-            c, vendor_id, c.fetchall(), request.args.get("person_type"),
-        )
-        persons = {}
-        for person in scoped_faces:
-            if dyn_filters and any(
-                value not in custom_filter_values(person.get('custom'), key)
-                for key, value in dyn_filters.items()
-            ):
-                continue
-            persons[person['id']] = person
+    first_data_row = header_row + 1
+    last_data_row = max(sheet.max_row, first_data_row)
+    for row in sheet.iter_rows(min_row=first_data_row, max_row=sheet.max_row):
+        for cell in row:
+            cell.alignment = Alignment(vertical="center")
+        if row[0].row % 2 == 0:
+            for cell in row:
+                cell.fill = PatternFill("solid", fgColor="EFF6FF")
 
-        salary_versions_by_person = load_salary_versions(c, vendor_id, persons.keys())
+    for column in range(9, 13):
+        for row in range(first_data_row, sheet.max_row + 1):
+            sheet.cell(row, column).number_format = "0.00"
+    for column in range(14, 26):
+        for row in range(first_data_row, sheet.max_row + 1):
+            sheet.cell(row, column).number_format = '₹#,##0.00'
 
-        setting_suffix = f'_vendor_{vendor_id}'
-        c.execute("SELECT key, value FROM system_settings WHERE key IN (?, ?, ?, ?)",
-                  (f'global_late_allowance{setting_suffix}', f'global_late_deduction{setting_suffix}', f'missing_checkout_deduction_percent{setting_suffix}', f'overtime_multiplier{setting_suffix}'))
-        s_map = {r['key'].removesuffix(setting_suffix): r['value'] for r in c.fetchall()}
-        global_allowance = int(s_map.get('global_late_allowance', 7))
-        global_deduction = float(s_map.get('global_late_deduction', 0.0))
-        missing_deduction_pct = float(s_map.get('missing_checkout_deduction_percent', 50.0))
-        overtime_multiplier = float(s_map.get('overtime_multiplier', 1.0))
+    widths = {
+        1: 14, 2: 24, 3: 18, 4: 18, 5: 16, 6: 14, 7: 14, 8: 13,
+        9: 18, 10: 19, 11: 15, 12: 16, 13: 24,
+    }
+    for column in range(1, column_count + 1):
+        sheet.column_dimensions[chr(64 + column)].width = widths.get(column, 18)
+    sheet.freeze_panes = f"A{first_data_row}"
+    sheet.auto_filter.ref = f"A{header_row}:Y{last_data_row}"
+    sheet.sheet_view.showGridLines = False
 
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Daily Payroll"
-        headers = ["Employee ID", "Name", "Date", "Daily Wage Rate", "Working Hours", "Overtime Hours", "Overtime Wage", "Base Wage", "Late Penalty", "PF", "ESI", "PT", "Net Wage"]
-        ws.append(headers)
-        for cell in ws[1]:
-            cell.font = Font(bold=True)
-            cell.alignment = Alignment(horizontal="center")
+    out = io.BytesIO()
+    workbook.save(out)
+    out.seek(0)
+    return send_file(
+        out,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=f"payroll_summary_{start_date}_{end_date}.xlsx",
+    )
 
-        start_dt_req = datetime.fromisoformat(start_date).date()
-        end_dt_req = datetime.fromisoformat(end_date).date()
-
-        for pid, records in user_records.items():
-            if pid not in persons: continue
-            info = persons[pid]
-            shift_policy = choose_shift_policy(company_shifts, info.get('shift'))
-            scheduled_hours = scheduled_payable_hours(shift_policy, company_working_hours)
-            stats = calculate_daily_hours(
-                records,
-                timetable,
-                missing_checkout_deduction_percent=missing_deduction_pct,
-                working_hours=scheduled_hours,
-                shift_policy=shift_policy,
-            )
-            per_day_seconds = defaultdict(float)
-            for s in stats.get('sessions', []):
-                try:
-                    sd = date.fromisoformat(s['attendance_date']) if s.get('attendance_date') else shift_policy.attendance_date(datetime.fromisoformat(s['start_ts']))
-                    if start_dt_req <= sd <= end_dt_req and s.get('is_payable', False):
-                        dur_sec = s.get('duration_seconds')
-                        if dur_sec is None:
-                            dur_sec = float(s.get('duration_mins', 0) or 0) * 60.0
-                        per_day_seconds[sd] += float(dur_sec)
-                except (ValueError, TypeError): continue
-
-            late_dates = sorted({
-                shift_policy.attendance_date(timestamp)
-                for r in records if r.get('is_late') == 1
-                for timestamp in [parse_db_datetime(r.get('timestamp'))]
-                if timestamp and start_dt_req <= shift_policy.attendance_date(timestamp) <= end_dt_req
-            })
-            for d, secs in sorted(per_day_seconds.items()):
-                salary_config = resolve_salary_version(
-                    salary_versions_by_person.get(pid, []), d
-                ) or info
-                allowance = salary_config.get('late_allowance_days') if salary_config.get('late_allowance_days') is not None else global_allowance
-                deduction_amt = salary_config.get('late_deduction_amount') if salary_config.get('late_deduction_amount') is not None else global_deduction
-                lm = 1 if d in late_dates else 0
-                idx = late_dates.index(d) + 1 if d in late_dates else 0
-                deduct = deduction_amt if (lm == 1 and idx > allowance) else 0.0
-                daily_wage = float(salary_config.get('daily_wage') or 0.0)
-                day_hours = round(secs / 3600.0, 2)
-                wage_result = calculate_shift_wage(
-                    daily_wage, {d: secs}, scheduled_hours,
-                    overtime_multiplier=overtime_multiplier,
-                )
-                overtime_hours = wage_result['overtime_hours']
-                overtime_wage = wage_result['overtime_wage']
-                base_wage_for_day = wage_result['gross_wage']
-                
-                # Breakdown
-                breakdown = calculate_salary_breakdown(base_wage_for_day, salary_config)
-                pf = breakdown['deductions']['pf']
-                esi = breakdown['deductions']['esi']
-                pt = breakdown['deductions']['pt'] / 26.0
-                
-                net_wage = round(breakdown['net_before_advances'] - deduct, 2)
-                d_id = info.get('display_id') or pid
-                ws.append([d_id, info.get('name'), d.isoformat(), daily_wage, day_hours, overtime_hours, overtime_wage, base_wage_for_day, deduct, pf, esi, round(pt, 2), net_wage])
-
-        out = io.BytesIO()
-        wb.save(out)
-        out.seek(0)
-        return send_file(out, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name=f"payroll_daily_{start_date}_{end_date}.xlsx")
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        conn.close()
 
 @attendance_reports_bp.route("/reports/payroll/import", methods=["POST"])
 @require_feature("payroll", "report_payroll")

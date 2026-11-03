@@ -245,7 +245,7 @@ const Reports = () => {
     }
 
     const endpoint = filters.type === 'summary'
-      ? `${API_URL}/reports/payroll/export-daily`
+      ? `${API_URL}/reports/payroll/export`
       : `${API_URL}/reports/export`;
 
     window.location.href = `${endpoint}?${params.toString()}`;
@@ -264,7 +264,10 @@ const Reports = () => {
       if (value) params.append(`dynamic_${key}`, value);
     });
     if (user?.token) params.append('token', user.token);
-    window.location.href = `${API_URL}/reports/payroll/export-excel?${params.toString()}`;
+    const endpoint = filters.type === 'summary'
+      ? `${API_URL}/reports/payroll/export-excel`
+      : `${API_URL}/reports/export-excel`;
+    window.location.href = `${endpoint}?${params.toString()}`;
   };
 
   const selectedReportMonth = (filters.endDate || new Date().toISOString().split('T')[0]).slice(0, 7);
@@ -772,7 +775,7 @@ const Reports = () => {
             <span>Refresh</span>
           </button>
           <button
-            onClick={() => handleDownload(30)}
+            onClick={handleCustomExport}
             className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium transition-colors shadow-sm"
           >
             <Download size={18} />
@@ -781,7 +784,7 @@ const Reports = () => {
           <button
             onClick={handleExcelExport}
             className="flex items-center space-x-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-medium transition-colors shadow-sm"
-            title="Download the selected report as Excel"
+            title={`Download the selected ${filters.type === 'summary' ? 'payroll summary' : 'attendance detail'} as Excel`}
           >
             <FileSpreadsheet size={18} />
             <span>Excel Report</span>
@@ -1020,7 +1023,7 @@ const Reports = () => {
                     <option value="detailed">Detailed Attendance Log</option>
                   )}
                   {(user?.features?.includes('report_payroll')) && (
-                    <option value="summary">Payroll & Hours Summary</option>
+                    <option value="summary">Payroll Summary (One Row per Employee)</option>
                   )}
                 </select>
               </div>
