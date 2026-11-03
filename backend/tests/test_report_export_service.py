@@ -1,7 +1,7 @@
-from services.report_export_service import PAYROLL_EXPORT_HEADERS, payroll_export_values
+from services.report_export_service import payroll_export_headers, payroll_export_values
 
 
-def test_payroll_export_is_one_period_row_with_complete_calculation():
+def test_payroll_export_contains_only_requested_period_summary_columns():
     item = {
         "person_id": 7,
         "display_id": 3,
@@ -17,7 +17,10 @@ def test_payroll_export_is_one_period_row_with_complete_calculation():
         "salary_rates_applied": [1000, 1200],
         "late_deduction": 25,
         "advance_deduction": 100,
-        "final_payout": 2075,
+        "pf_enabled": 1,
+        "esi_enabled": 0,
+        "gratuity_enabled": 1,
+        "final_payout": 2055,
         "breakdown": {
             "gross": 2300,
             "components": {
@@ -29,22 +32,51 @@ def test_payroll_export_is_one_period_row_with_complete_calculation():
             "deductions": {
                 "pf": 100,
                 "esi": 0,
-                "pt": 0,
-                "total_statutory": 100,
+                "pt": 20,
+                "total_statutory": 120,
             },
+            "provisions": {"gratuity": 55},
         },
     }
 
-    row = payroll_export_values(item, "2026-10-01", "2026-10-31")
-    values = dict(zip(PAYROLL_EXPORT_HEADERS, row))
+    headers = payroll_export_headers([item])
+    row = payroll_export_values(item, "2026-10-01", "2026-10-31", headers)
+    values = dict(zip(headers, row))
 
-    assert len(row) == len(PAYROLL_EXPORT_HEADERS)
-    assert values["Period Start"] == "2026-10-01"
-    assert values["Period End"] == "2026-10-31"
+    assert len(row) == len(headers)
+    assert values["Employee Name"] == "Anant Batre"
+    assert values["Shift"] == "Work"
+    assert values["Start Date"] == "2026-10-01"
+    assert values["End Date"] == "2026-10-31"
     assert values["Days Present"] == 2
+    assert values["Hours Per Day"] == 8
     assert values["Total Working Hours"] == 17
-    assert values["Daily Salary Rate(s) Applied"] == "1000.00, 1200.00"
-    assert values["Gross Earnings"] == 2300
-    assert values["Total Deductions"] == 225
-    assert values["Net Payroll"] == 2075
-    assert "Attendance Date" not in PAYROLL_EXPORT_HEADERS
+    assert values["Daily Salary"] == "1000.00, 1200.00"
+    assert values["PF Deduction"] == 100
+    assert "ESI Deduction" not in headers
+    assert values["Gratuity"] == 55
+    assert values["Approved Advance"] == 100
+    assert values["Total Deductions"] == 245
+    assert values["Net Payroll"] == 2055
+
+    removed_columns = {
+        "Employee ID", "Department", "Designation", "Regular Hours",
+        "Overtime Hours", "Gross Earnings", "Basic", "HRA", "Conveyance",
+        "Special Allowance", "Professional Tax", "Late Deduction",
+    }
+    assert removed_columns.isdisjoint(headers)
+
+
+def test_optional_statutory_columns_appear_only_when_enabled_in_selection():
+    no_benefits = {"name": "One", "pf_enabled": 0, "esi_enabled": "false"}
+    esi_employee = {"name": "Two", "esi_enabled": "1", "gratuity_enabled": 0}
+
+    headers_without_benefits = payroll_export_headers([no_benefits])
+    headers_with_esi = payroll_export_headers([no_benefits, esi_employee])
+
+    assert "PF Deduction" not in headers_without_benefits
+    assert "ESI Deduction" not in headers_without_benefits
+    assert "Gratuity" not in headers_without_benefits
+    assert "ESI Deduction" in headers_with_esi
+    assert "PF Deduction" not in headers_with_esi
+    assert "Gratuity" not in headers_with_esi

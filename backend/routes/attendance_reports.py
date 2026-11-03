@@ -29,7 +29,7 @@ from services.report_filter_service import (
     STANDARD_FILTERS, custom_filter_values, face_matches, facet_options,
     merge_filter_configuration, parse_json_list,
 )
-from services.report_export_service import PAYROLL_EXPORT_HEADERS, payroll_export_values
+from services.report_export_service import payroll_export_headers, payroll_export_values
 from middleware.validation import validate_request
 from schemas import PayrollReportRequest
 from storage import compact_image_data_url
@@ -1194,11 +1194,13 @@ def export_payroll_summary():
     if error:
         return error
 
+    items = payload.get("payroll") or []
+    headers = payroll_export_headers(items)
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(PAYROLL_EXPORT_HEADERS)
-    for item in payload.get("payroll") or []:
-        writer.writerow(payroll_export_values(item, start_date, end_date))
+    writer.writerow(headers)
+    for item in items:
+        writer.writerow(payroll_export_values(item, start_date, end_date, headers))
 
     return output.getvalue(), 200, {
         "Content-Type": "text/csv; charset=utf-8",
@@ -1219,10 +1221,12 @@ def export_payroll_excel():
     if error:
         return error
 
+    items = payload.get("payroll") or []
+    headers = payroll_export_headers(items)
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Payroll Summary"
-    column_count = len(PAYROLL_EXPORT_HEADERS)
+    column_count = len(headers)
     company_name = (payload.get("report") or {}).get("company_name") or "Company"
 
     sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=column_count)
@@ -1238,15 +1242,15 @@ def export_payroll_excel():
     period.alignment = Alignment(horizontal="center")
 
     header_row = 4
-    for column, label in enumerate(PAYROLL_EXPORT_HEADERS, start=1):
+    for column, label in enumerate(headers, start=1):
         cell = sheet.cell(header_row, column, label)
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="2563EB")
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     sheet.row_dimensions[header_row].height = 34
 
-    for item in payload.get("payroll") or []:
-        sheet.append(payroll_export_values(item, start_date, end_date))
+    for item in items:
+        sheet.append(payroll_export_values(item, start_date, end_date, headers))
 
     first_data_row = header_row + 1
     last_data_row = max(sheet.max_row, first_data_row)
@@ -1257,21 +1261,31 @@ def export_payroll_excel():
             for cell in row:
                 cell.fill = PatternFill("solid", fgColor="EFF6FF")
 
-    for column in range(9, 13):
+    decimal_headers = {"Hours Per Day", "Total Working Hours"}
+    currency_headers = {
+        "Daily Salary", "PF Deduction", "ESI Deduction", "Gratuity",
+        "Approved Advance", "Total Deductions", "Net Payroll",
+    }
+    for column, label in enumerate(headers, start=1):
+        if label not in decimal_headers | currency_headers:
+            continue
+        number_format = "0.00" if label in decimal_headers else '₹#,##0.00'
         for row in range(first_data_row, sheet.max_row + 1):
-            sheet.cell(row, column).number_format = "0.00"
-    for column in range(14, 26):
-        for row in range(first_data_row, sheet.max_row + 1):
-            sheet.cell(row, column).number_format = '₹#,##0.00'
+            sheet.cell(row, column).number_format = number_format
 
     widths = {
-        1: 14, 2: 24, 3: 18, 4: 18, 5: 16, 6: 14, 7: 14, 8: 13,
-        9: 18, 10: 19, 11: 15, 12: 16, 13: 24,
+        "Employee Name": 24, "Shift": 16, "Start Date": 14, "End Date": 14,
+        "Days Present": 14, "Hours Per Day": 16, "Total Working Hours": 20,
+        "Daily Salary": 22, "PF Deduction": 16, "ESI Deduction": 16,
+        "Gratuity": 15, "Approved Advance": 18, "Total Deductions": 18,
+        "Net Payroll": 18,
     }
-    for column in range(1, column_count + 1):
-        sheet.column_dimensions[chr(64 + column)].width = widths.get(column, 18)
+    for column, label in enumerate(headers, start=1):
+        column_letter = sheet.cell(header_row, column).column_letter
+        sheet.column_dimensions[column_letter].width = widths.get(label, 18)
     sheet.freeze_panes = f"A{first_data_row}"
-    sheet.auto_filter.ref = f"A{header_row}:Y{last_data_row}"
+    last_column = sheet.cell(header_row, column_count).column_letter
+    sheet.auto_filter.ref = f"A{header_row}:{last_column}{last_data_row}"
     sheet.sheet_view.showGridLines = False
 
     out = io.BytesIO()
