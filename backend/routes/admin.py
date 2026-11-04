@@ -1060,12 +1060,22 @@ def get_vendors():
     
     rows = c.fetchall()
     
-    # Pre-fetch system_settings for threshold and cooldown in a single query to eliminate N+1 queries
+    # Pre-fetch biometric settings in a single query to eliminate N+1 queries.
     settings_cache = {}
-    need_settings = any(r.get("threshold") is None or r.get("cooldown") is None for r in rows)
+    need_settings = any(
+        r.get("threshold") is None
+        or r.get("cooldown") is None
+        or r.get("max_faces_per_frame") is None
+        for r in rows
+    )
     if need_settings:
         try:
-            c.execute("SELECT key, value FROM system_settings WHERE key LIKE 'threshold_vendor_%' OR key LIKE 'cooldown_vendor_%'")
+            c.execute(
+                "SELECT key, value FROM system_settings "
+                "WHERE key LIKE 'threshold_vendor_%' "
+                "OR key LIKE 'cooldown_vendor_%' "
+                "OR key LIKE 'max_faces_per_frame_vendor_%'"
+            )
             for s_row in (c.fetchall() or []):
                 try:
                     sk = s_row['key'] if hasattr(s_row, 'keys') else s_row[0]
@@ -1115,6 +1125,15 @@ def get_vendors():
         else:
             try: v["cooldown"] = int(v["cooldown"])
             except: v["cooldown"] = 30
+
+        if v.get("max_faces_per_frame") is None:
+            raw_max_faces = settings_cache.get(f"max_faces_per_frame_vendor_{v['id']}")
+            try: v["max_faces_per_frame"] = int(raw_max_faces) if raw_max_faces else 5
+            except: v["max_faces_per_frame"] = 5
+        else:
+            try: v["max_faces_per_frame"] = int(v["max_faces_per_frame"])
+            except: v["max_faces_per_frame"] = 5
+        v["max_faces_per_frame"] = max(1, min(10, v["max_faces_per_frame"]))
 
         # Calculate status based on subscription
         if v.get('features'):
@@ -1579,7 +1598,7 @@ def import_employees(vendor_id):
 @rate_limit(limit=60, window=60)
 def create_vendor():
     from app import socketio, is_testing
-    from db_factory import get_db_connection
+    from db_factory import get_db_connection, get_table_columns
     from services.auth_service import authenticate_vendor_access
     data = request.get_json(silent=True) or {}
     company_name = data.get("company_name")
@@ -1593,6 +1612,12 @@ def create_vendor():
         data['xchat_price_per_1k_tokens'] = rate
     except (TypeError, ValueError) as exc:
         return jsonify({"error": str(exc) or "Invalid XChat token limit"}), 400
+    try:
+        max_faces_per_frame = int(data.get("max_faces_per_frame") or 5)
+        if not 1 <= max_faces_per_frame <= 10:
+            raise ValueError
+    except (TypeError, ValueError):
+        return jsonify({"error": "Maximum faces per frame must be between 1 and 10"}), 400
     
     if not company_name:
         return jsonify({"error": "Company Name is required"}), 400
@@ -1614,6 +1639,16 @@ def create_vendor():
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                   (company_name, data.get("contact_person"), data.get("phone"), vendor_email, frontend_bundle_id, backend_service_id, data.get("attendance_type", "total_time"), data.get("retention_days", 90), json.dumps(registration_config) if registration_config else None))
         vendor_id = c.lastrowid
+        vendor_cols = get_table_columns(conn, "vendors")
+        if "max_faces_per_frame" in vendor_cols:
+            c.execute(
+                "UPDATE vendors SET max_faces_per_frame = ? WHERE id = ?",
+                (max_faces_per_frame, vendor_id),
+            )
+        c.execute(
+            "INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)",
+            (f"max_faces_per_frame_vendor_{vendor_id}", str(max_faces_per_frame)),
+        )
         
         # 2. Setup Subscription (Synchronous now to avoid "Infinity" on first load)
         from datetime import date, timedelta
@@ -1636,7 +1671,6 @@ def create_vendor():
         features_json = json.dumps(features)
         
         # Get columns to handle schema variations
-        from db_factory import get_table_columns
         subs_cols = get_table_columns(conn, "subscriptions")
         
         s_cols = ["vendor_id", "plan_type", "start_date", "end_date", "max_users", "max_employees", "max_mobile_devices", "cost_per_user", "cost_per_employee", "setup_fee", "features"]
@@ -2270,6 +2304,13 @@ def update_vendor_details(vendor_id):
         data['email'] = normalize_login_email(data.get('email'))
         if not is_valid_login_email(data['email']):
             return jsonify({"error": "A valid company email address is required"}), 400
+    if 'max_faces_per_frame' in data:
+        try:
+            data['max_faces_per_frame'] = int(data['max_faces_per_frame'])
+            if not 1 <= data['max_faces_per_frame'] <= 10:
+                raise ValueError
+        except (TypeError, ValueError):
+            return jsonify({"error": "Maximum faces per frame must be between 1 and 10"}), 400
     
     conn = get_db_connection()
     c = conn.cursor()
@@ -2279,12 +2320,15 @@ def update_vendor_details(vendor_id):
         c.execute("SELECT id FROM vendors WHERE id = ?", (vendor_id,))
         if not c.fetchone():
             return jsonify({"error": "Vendor not found"}), 404
+        vendor_cols = get_table_columns(conn, "vendors")
 
         # 1. Update Vendor Details
         query = "UPDATE vendors SET "
         params = []
         
         fields = ['company_name', 'contact_person', 'phone', 'email', 'frontend_bundle_id', 'backend_service_id', 'vertical', 'attendance_type', 'retention_days']
+        if "max_faces_per_frame" in vendor_cols:
+            fields.append("max_faces_per_frame")
         for field in fields:
             if field in data:
                 query += f"{field} = ?, "
@@ -2409,7 +2453,6 @@ def update_vendor_details(vendor_id):
         if user_username and not is_valid_login_email(user_username):
             return jsonify({"error": "User/Kiosk login must be a valid email address"}), 400
 
-        vendor_cols = get_table_columns(conn, "vendors")
         has_kiosk_username_col = "kiosk_username" in vendor_cols
         sys_user_cols = get_table_columns(conn, "system_users")
         has_is_kiosk_col = "is_kiosk" in sys_user_cols
@@ -2518,6 +2561,12 @@ def update_vendor_details(vendor_id):
                     c.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)", (f"cooldown_vendor_{vendor_id}", str(cool_val)))
             except Exception as ex:
                 logger.warning(f"Error updating cooldown for vendor {vendor_id}: {ex}")
+
+        if 'max_faces_per_frame' in data:
+            c.execute(
+                "INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)",
+                (f"max_faces_per_frame_vendor_{vendor_id}", str(data['max_faces_per_frame'])),
+            )
 
         # 4. Update Owner Accounts (Sync Logic)
         owners = data.get('owners', [])

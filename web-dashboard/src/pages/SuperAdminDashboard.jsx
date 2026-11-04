@@ -174,6 +174,7 @@ const SuperAdminDashboard = () => {
     retention_days: '90', // Default to 90 days
     threshold: 0.60,
     cooldown: 30,
+    max_faces_per_frame: 5,
     kiosk_pin: '8888',
     owners: []
   });
@@ -1314,6 +1315,7 @@ const SuperAdminDashboard = () => {
           retention_days: normalizePositiveInt(newVendor.retention_days, 90),
           threshold: newVendor.threshold != null ? parseFloat(newVendor.threshold) : 0.60,
           cooldown: newVendor.cooldown != null ? parseInt(newVendor.cooldown, 10) : 30,
+          max_faces_per_frame: Math.max(1, Math.min(10, parseInt(newVendor.max_faces_per_frame, 10) || 5)),
           kiosk_pin: newVendor.kiosk_pin || '8888',
           owners: newVendor.owners || []
         }, {
@@ -1459,6 +1461,7 @@ const SuperAdminDashboard = () => {
         retention_days: '90',
         threshold: 0.60,
         cooldown: 30,
+        max_faces_per_frame: 5,
         kiosk_pin: '8888',
         owners: []
       });
@@ -1507,6 +1510,7 @@ const SuperAdminDashboard = () => {
       retention_days: String(vendor.retention_days || 90),
       threshold: vendor.threshold != null ? parseFloat(vendor.threshold) : 0.60,
       cooldown: vendor.cooldown != null ? parseInt(vendor.cooldown, 10) : 30,
+      max_faces_per_frame: Math.max(1, Math.min(10, parseInt(vendor.max_faces_per_frame, 10) || 5)),
       kiosk_pin: vendor.kiosk_pin || '8888',
       owners: vendor.owners || []
     };
@@ -1998,6 +2002,7 @@ const SuperAdminDashboard = () => {
                   retention_days: '90',
                   threshold: 0.60,
                   cooldown: 30,
+                  max_faces_per_frame: 5,
                   kiosk_pin: '8888',
                   owners: []
                 });
@@ -4504,9 +4509,9 @@ const SuperAdminDashboard = () => {
                   <Camera size={16} className="text-indigo-600" /> Face Recognition Engine
                 </h3>
                 <p className="text-xs text-slate-500 mb-4">
-                  SuperAdmin-managed biometric threshold and duplicate cooldown for mobile tablet kiosks and server attendance engine.
+                  SuperAdmin-managed biometric threshold, duplicate cooldown, and simultaneous face processing for mobile kiosks and the attendance engine.
                 </p>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
                   <div className="bg-white p-3.5 rounded-lg border border-slate-200 shadow-sm">
                     <div className="flex justify-between items-center mb-2">
                       <label className="text-xs font-bold text-slate-700">
@@ -4550,6 +4555,29 @@ const SuperAdminDashboard = () => {
                     />
                     <p className="text-[11px] text-slate-500 mt-2 leading-relaxed">
                       Cooldown interval to prevent duplicate punch records for the same person in short succession. (Default: 30s)
+                    </p>
+                  </div>
+
+                  <div className="bg-white p-3.5 rounded-lg border border-slate-200 shadow-sm">
+                    <div className="flex justify-between items-center mb-2">
+                      <label className="text-xs font-bold text-slate-700">
+                        Faces Processed Per Frame
+                      </label>
+                      <span className="text-xs font-mono text-indigo-600 font-bold bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100">
+                        {newVendor.max_faces_per_frame != null ? newVendor.max_faces_per_frame : 5}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="1"
+                      max="10"
+                      step="1"
+                      value={newVendor.max_faces_per_frame != null ? newVendor.max_faces_per_frame : 5}
+                      onChange={(e) => setNewVendor({ ...newVendor, max_faces_per_frame: parseInt(e.target.value, 10) })}
+                      className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                    />
+                    <p className="text-[11px] text-slate-500 mt-2 leading-relaxed">
+                      Maximum number of employees recognized in the same camera frame. Increase this for wider queue views. (Default: 5)
                     </p>
                   </div>
                 </div>
@@ -4637,6 +4665,7 @@ const SuperAdminDashboard = () => {
                       retention_days: '90',
                       threshold: 0.60,
                       cooldown: 30,
+                      max_faces_per_frame: 5,
                       kiosk_pin: '8888',
                       owners: []
                     });

@@ -904,6 +904,13 @@ class MainActivity : AppCompatActivity() {
                                 val sec = match?.value?.toIntOrNull() ?: 30
                                 prefs.edit().putInt("cooldown_seconds", sec).apply()
                             }
+                            if (body.has("max_faces_per_frame") && !body.get("max_faces_per_frame").isJsonNull) {
+                                val maxFaces = body.get("max_faces_per_frame").asString
+                                    .toIntOrNull()
+                                    ?.coerceIn(1, 10)
+                                    ?: 5
+                                prefs.edit().putInt("max_faces_per_frame", maxFaces).apply()
+                            }
                             if (body.has("threshold") && !body.get("threshold").isJsonNull) {
                                 val threshold = body.get("threshold").asString.toFloatOrNull()?.coerceIn(0.4f, 0.95f)
                                 if (threshold != null) {

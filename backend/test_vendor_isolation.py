@@ -406,7 +406,12 @@ class TestVendorIsolation(unittest.TestCase):
                 "Authorization": f"Bearer {self.super_token}",
                 "X-Vendor-ID": "1",
             },
-            json={"threshold": 0.75, "cooldown": 45, "voice_greeting": False},
+            json={
+                "threshold": 0.75,
+                "cooldown": 45,
+                "max_faces_per_frame": 3,
+                "voice_greeting": False,
+            },
         )
         self.assertEqual(response.status_code, 200, response.data.decode())
 
@@ -418,8 +423,20 @@ class TestVendorIsolation(unittest.TestCase):
         ).get_json()
         self.assertEqual(vendor_one["threshold"], "0.75")
         self.assertEqual(vendor_one["cooldown"], "45")
+        self.assertEqual(vendor_one["max_faces_per_frame"], "3")
         self.assertEqual(vendor_one["voice_greeting"], "false")
         self.assertEqual(vendor_two["threshold"], "0.60")
+        self.assertEqual(vendor_two["max_faces_per_frame"], "5")
+
+        invalid = self.client.post(
+            "/api/settings",
+            headers={
+                "Authorization": f"Bearer {self.super_token}",
+                "X-Vendor-ID": "1",
+            },
+            json={"max_faces_per_frame": 11},
+        )
+        self.assertEqual(invalid.status_code, 400, invalid.data.decode())
         self.assertEqual(vendor_two["cooldown"], "30")
         self.assertNotIn("voice_greeting", vendor_two)
 

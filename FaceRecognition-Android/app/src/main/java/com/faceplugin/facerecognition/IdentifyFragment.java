@@ -67,6 +67,7 @@ import io.socket.client.IO;
 import io.socket.client.Socket;
 import org.json.JSONObject;
 import java.util.Collections;
+import java.util.ArrayDeque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -107,7 +108,14 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     private android.net.ConnectivityManager.NetworkCallback networkCallback;
     private long lastNotRecognizedToastAtMs = 0L;
     private boolean vendorVerifyOnlyMode = false;
-    private java.util.Map<String, Long> lastEventSentAtMs = new java.util.HashMap<>();
+    private final java.util.Map<String, Long> lastEventSentAtMs = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Map<String, Long> lastFaceSeenAtMs = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Map<String, Long> lastCooldownFeedbackAtMs = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Map<String, Float> markedFaceAreaRatioByKey = new java.util.concurrent.ConcurrentHashMap<>();
+    private final ArrayDeque<AttendanceFeedback> attendanceFeedbackQueue = new ArrayDeque<>();
+    private final Handler attendanceFeedbackHandler = new Handler(Looper.getMainLooper());
+    private boolean attendanceFeedbackShowing = false;
+    private static final long ATTENDANCE_FEEDBACK_DISPLAY_MS = 1800L;
 
     // Power Saving / Screen Saver
     private Handler powerSaveHandler = new Handler(Looper.getMainLooper());
@@ -158,6 +166,18 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             this.personId = personId;
             this.localUid = localUid;
             this.similarity = similarity;
+        }
+    }
+
+    private static class AttendanceFeedback {
+        final String name;
+        final String status;
+        final boolean alreadyMarked;
+
+        AttendanceFeedback(String name, String status, boolean alreadyMarked) {
+            this.name = name;
+            this.status = status;
+            this.alreadyMarked = alreadyMarked;
         }
     }
 
@@ -421,6 +441,9 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     @Override
     public void onDestroy() {
         super.onDestroy();
+        attendanceFeedbackHandler.removeCallbacksAndMessages(null);
+        attendanceFeedbackQueue.clear();
+        attendanceFeedbackShowing = false;
         if (webrtcManager != null) {
             webrtcManager.dispose();
             webrtcManager = null;
@@ -571,6 +594,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         }
 
         final String finalPersonId = resolvedBackendId;
+        final String eventTrackKey = attendanceTrackKey(finalPersonId, localUid, name);
 
         if (!online) {
             if ((resolvedBackendId != null && !resolvedBackendId.isEmpty()) || (localUid != null && !localUid.isEmpty())) {
@@ -667,14 +691,8 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                         } catch (Exception ignored) {}
                         // Announce only the backend-confirmed result, on this
                         // scanning kiosk. Socket updates on other kiosks are silent.
-                        if (triggerUiEffects && getActivity() != null) {
-                            getActivity().runOnUiThread(() -> {
-                                playAttendanceSound(status);
-                                speakAttendanceGreeting(name, status);
-                                showStatusOverlay(status);
-                                showAttendanceToast(name, status);
-                                if (statusText != null) statusText.setText(name + " " + status);
-                            });
+                        if (triggerUiEffects) {
+                            enqueueAttendanceFeedback(name, status, false);
                         }
                     } else if (Boolean.FALSE.equals(greeting.getAccepted()) && "cooldown".equals(greeting.getReason())) {
                         try {
@@ -682,11 +700,15 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                             dbManager.restoreAttendanceState(finalPersonId, localUid, name, timestamp,
                                     previousStatus, previousTimestamp);
                         } catch (Exception ignored) {}
-                        if (triggerUiEffects && getActivity() != null) {
-                            getActivity().runOnUiThread(() -> {
-                                Toast.makeText(getContext(), "Attendance was already marked recently", Toast.LENGTH_SHORT).show();
-                                if (statusText != null) statusText.setText("Already marked recently");
-                            });
+                        if (triggerUiEffects) {
+                            String markedStatus = greeting.getStatus();
+                            if (!isAttendanceStatus(markedStatus)) {
+                                markedStatus = previousStatus;
+                            }
+                            if (isAttendanceStatus(markedStatus)) {
+                                lastCooldownFeedbackAtMs.put(eventTrackKey, System.currentTimeMillis());
+                                enqueueAttendanceFeedback(name, markedStatus, true);
+                            }
                         }
                     } else {
                         try {
@@ -763,6 +785,108 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 e.printStackTrace();
             }
         }).start();
+    }
+
+    private boolean isAttendanceStatus(String status) {
+        return "CHECK_IN".equalsIgnoreCase(status) || "CHECK_OUT".equalsIgnoreCase(status);
+    }
+
+    private String friendlyAttendanceStatus(String status) {
+        return "CHECK_OUT".equalsIgnoreCase(status) ? "Check Out" : "Check In";
+    }
+
+    private void enqueueAttendanceFeedback(String name, String status, boolean alreadyMarked) {
+        if (!isAttendanceStatus(status) || getActivity() == null) return;
+        getActivity().runOnUiThread(() -> {
+            if (!isAdded()) return;
+            attendanceFeedbackQueue.offer(new AttendanceFeedback(name, status.toUpperCase(Locale.US), alreadyMarked));
+            showNextAttendanceFeedback();
+        });
+    }
+
+    private void showNextAttendanceFeedback() {
+        if (attendanceFeedbackShowing || !isAdded()) return;
+        AttendanceFeedback feedback = attendanceFeedbackQueue.poll();
+        if (feedback == null) return;
+
+        attendanceFeedbackShowing = true;
+        if (feedback.alreadyMarked) {
+            String message = feedback.name + " — " + friendlyAttendanceStatus(feedback.status) + " already marked";
+            if (faceView != null) faceView.startCooldownBorderAnimation();
+            if (statusText != null) {
+                statusText.setText(message);
+                statusText.setTextColor(ContextCompat.getColor(requireContext(), R.color.vision_success));
+            }
+            Toast.makeText(requireContext(), message, Toast.LENGTH_LONG).show();
+            speakAlreadyMarked(feedback.name, feedback.status);
+        } else {
+            playAttendanceSound(feedback.status);
+            speakAttendanceGreeting(feedback.name, feedback.status);
+            showStatusOverlay(feedback.status);
+            showAttendanceToast(feedback.name, feedback.status);
+            if (statusText != null) {
+                statusText.setText(feedback.name + " " + friendlyAttendanceStatus(feedback.status));
+            }
+        }
+
+        attendanceFeedbackHandler.postDelayed(() -> {
+            attendanceFeedbackShowing = false;
+            if (statusText != null && isAdded()) {
+                statusText.setTextColor(ContextCompat.getColor(requireContext(), R.color.primary_soft_blue));
+            }
+            showNextAttendanceFeedback();
+        }, ATTENDANCE_FEEDBACK_DISPLAY_MS);
+    }
+
+    private void speakAlreadyMarked(String name, String status) {
+        try {
+            android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
+            if (!prefs.getBoolean("voice_greeting_enabled", true) || tts == null) return;
+            String message = name + ", " + friendlyAttendanceStatus(status) + " already marked";
+            tts.speak(message, TextToSpeech.QUEUE_FLUSH, null, "attendance_already_marked");
+        } catch (Exception ignored) {}
+    }
+
+    private float faceAreaRatio(FaceBox faceBox, int frameWidth, int frameHeight) {
+        if (faceBox == null || frameWidth <= 0 || frameHeight <= 0) return 0f;
+        float width = Math.max(0f, faceBox.x2 - faceBox.x1);
+        float height = Math.max(0f, faceBox.y2 - faceBox.y1);
+        return (width * height) / ((float) frameWidth * (float) frameHeight);
+    }
+
+    private String attendanceTrackKey(String personId, String localUid, String name) {
+        if (personId != null && !personId.isEmpty()) return personId;
+        if (localUid != null && !localUid.isEmpty()) return "local:" + localUid;
+        return "name:" + (name == null ? "unknown" : name);
+    }
+
+    private void rememberMarkedFaceArea(String trackKey, FaceBox faceBox, int frameWidth, int frameHeight) {
+        if (trackKey == null || trackKey.isEmpty()) return;
+        markedFaceAreaRatioByKey.put(trackKey, faceAreaRatio(faceBox, frameWidth, frameHeight));
+    }
+
+    private boolean shouldShowCooldownFeedback(
+            String trackKey,
+            FaceBox faceBox,
+            int frameWidth,
+            int frameHeight,
+            long nowMs,
+            int cooldownSeconds,
+            Long previousSeenAtMs) {
+        Long lastFeedback = lastCooldownFeedbackAtMs.get(trackKey);
+        Long lastSent = lastEventSentAtMs.get(trackKey);
+        float currentArea = faceAreaRatio(faceBox, frameWidth, frameHeight);
+        Float markedArea = markedFaceAreaRatioByKey.get(trackKey);
+        if (!CooldownFeedbackPolicy.shouldNotify(
+                lastFeedback,
+                lastSent,
+                markedArea,
+                currentArea,
+                previousSeenAtMs,
+                nowMs,
+                cooldownSeconds)) return false;
+        lastCooldownFeedbackAtMs.put(trackKey, nowMs);
+        return true;
     }
 
     private void speakAttendanceGreeting(String name, String status) {
@@ -1160,13 +1284,25 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 java.util.Set<String> matchedPersonKeysInFrame = new java.util.HashSet<>();
                 float highestSimilarityInFrame = 0f;
 
-                // Multi-Face Batch Scanning: Process up to 5 faces simultaneously in a single frame
-                int maxFacesToProcess = Math.min(faceBoxes.size(), 5);
+                int configuredMaxFaces = 5;
+                try {
+                    android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
+                    configuredMaxFaces = Math.max(1, Math.min(10, prefs.getInt("max_faces_per_frame", 5)));
+                } catch (Exception ignored) {}
+                // Multi-face batch scanning is limited per tenant by SuperAdmin.
+                int maxFacesToProcess = Math.min(faceBoxes.size(), configuredMaxFaces);
+                java.util.List<Integer> prioritizedFaceIndexes = new java.util.ArrayList<>();
+                for (int i = 0; i < faceBoxes.size(); i++) prioritizedFaceIndexes.add(i);
+                prioritizedFaceIndexes.sort((left, right) -> Float.compare(
+                        faceAreaRatio(faceBoxes.get(right), finalProcessed.getWidth(), finalProcessed.getHeight()),
+                        faceAreaRatio(faceBoxes.get(left), finalProcessed.getWidth(), finalProcessed.getHeight())));
+                java.util.Set<Integer> faceIndexesToProcess = new java.util.HashSet<>(
+                        prioritizedFaceIndexes.subList(0, maxFacesToProcess));
                 for (int i = 0; i < faceBoxes.size(); i++) {
                     FaceBox faceBox = faceBoxes.get(i);
                     String nameForBox = "Unknown";
 
-                    if (i < maxFacesToProcess && FacePipeline.recognitionReady(requireContext(), faceBox,
+                    if (faceIndexesToProcess.contains(i) && FacePipeline.recognitionReady(requireContext(), faceBox,
                             finalProcessed.getWidth(), finalProcessed.getHeight())) {
                         byte[] templates = LocalFaceEngineFacade.INSTANCE.templateExtraction(finalProcessed, faceBox);
 
@@ -1255,10 +1391,8 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                             continue;
                         }
 
-                        String trackKey = match.personId;
-                        if (trackKey == null || trackKey.isEmpty()) {
-                            trackKey = "local:" + (match.localUid != null && !match.localUid.isEmpty() ? match.localUid : match.person.name);
-                        }
+                        String trackKey = attendanceTrackKey(match.personId, match.localUid, match.person.name);
+                        Long previousSeenAtMs = lastFaceSeenAtMs.put(trackKey, currentTime);
 
                         boolean allow = false;
                         String lastTs = dbManager.getLastAttendanceTimestamp(match.personId, match.localUid, match.person.name);
@@ -1291,6 +1425,20 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
 
                         if (allow) {
                             readyToMark.add(match);
+                        } else if (!vendorVerifyOnlyMode && !isVendorVerifyOnlyMode()) {
+                            String lastStatus = dbManager.getLastAttendanceStatus(
+                                    match.personId, match.localUid, match.person.name);
+                            if (isAttendanceStatus(lastStatus)
+                                    && shouldShowCooldownFeedback(
+                                            trackKey,
+                                            match.faceBox,
+                                            finalProcessed.getWidth(),
+                                            finalProcessed.getHeight(),
+                                            currentTime,
+                                            cooldown,
+                                            previousSeenAtMs)) {
+                                enqueueAttendanceFeedback(match.person.name, lastStatus, true);
+                            }
                         }
                     }
 
@@ -1325,7 +1473,8 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                         for (RecognizedFaceMatch match : readyToMark) {
                             String predicted = dbManager.predictNextAttendanceStatus(match.personId, match.localUid, match.person.name);
                             dbManager.insertAttendanceQueue(match.personId, match.localUid, match.person.name, timestamp, predicted, finalProcessed, false);
-                            String trackKey = !match.personId.isEmpty() ? match.personId : ("local:" + match.localUid);
+                            String trackKey = attendanceTrackKey(match.personId, match.localUid, match.person.name);
+                            rememberMarkedFaceArea(trackKey, match.faceBox, finalProcessed.getWidth(), finalProcessed.getHeight());
                             try { lastEventSentAtMs.put(trackKey, System.currentTimeMillis()); } catch (Exception ignored) {}
                             markedNames.add(match.person.name);
                         }
@@ -1354,36 +1503,19 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                     if (!readyToMark.isEmpty()) {
                         if (readyToMark.size() == 1) {
                             RecognizedFaceMatch single = readyToMark.get(0);
-                            String trackKey = !single.personId.isEmpty() ? single.personId : ("local:" + single.localUid);
+                            String trackKey = attendanceTrackKey(single.personId, single.localUid, single.person.name);
                             lastProcessedPersonId = trackKey;
+                            rememberMarkedFaceArea(trackKey, single.faceBox, finalProcessed.getWidth(), finalProcessed.getHeight());
                             try { lastEventSentAtMs.put(trackKey, System.currentTimeMillis()); } catch (Exception ignored) {}
                             sendPersonEvent(true, true, single.personId, single.localUid, single.person.name, single.similarity, finalProcessed, true);
                         } else {
-                            List<String> names = new java.util.ArrayList<>();
-                            int batchCheckInCount = 0;
                             for (RecognizedFaceMatch match : readyToMark) {
-                                String trackKey = !match.personId.isEmpty() ? match.personId : ("local:" + match.localUid);
+                                String trackKey = attendanceTrackKey(match.personId, match.localUid, match.person.name);
+                                rememberMarkedFaceArea(trackKey, match.faceBox, finalProcessed.getWidth(), finalProcessed.getHeight());
                                 try { lastEventSentAtMs.put(trackKey, System.currentTimeMillis()); } catch (Exception ignored) {}
-                                names.add(match.person.name);
-                                // Predict before sending — sendPersonEvent will independently predict again server-side
-                                String matchPredicted = dbManager.predictNextAttendanceStatus(match.personId, match.localUid, match.person.name);
-                                if ("CHECK_IN".equalsIgnoreCase(matchPredicted)) batchCheckInCount++;
-                                sendPersonEvent(true, true, match.personId, match.localUid, match.person.name, match.similarity, finalProcessed, false);
-                            }
-                            String onlineBatchStatus = batchCheckInCount >= readyToMark.size() / 2.0 ? "CHECK_IN" : "CHECK_OUT";
-                            StringBuilder sb = new StringBuilder();
-                            for (int k = 0; k < names.size(); k++) {
-                                if (k > 0) sb.append(k == names.size() - 1 ? " & " : ", ");
-                                sb.append(names.get(k));
-                            }
-                            String batchNamesStr = sb.toString();
-                            playAttendanceSound(onlineBatchStatus);
-                            speakAttendanceGreeting(batchNamesStr, onlineBatchStatus);
-                            showStatusOverlay(onlineBatchStatus);
-                            if (getActivity() != null) {
-                                getActivity().runOnUiThread(() -> {
-                                    if (statusText != null) statusText.setText("Marked: " + batchNamesStr);
-                                });
+                                // Each response is announced separately so mixed check-ins and check-outs
+                                // use the exact status confirmed by the backend.
+                                sendPersonEvent(true, true, match.personId, match.localUid, match.person.name, match.similarity, finalProcessed, true);
                             }
                         }
                     }

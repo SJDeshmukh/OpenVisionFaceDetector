@@ -1378,7 +1378,7 @@ def sync_vendor_owners():
 def get_settings():
     from app import get_db_connection, socketio, is_testing
     from services.auth_service import extract_token, verify_token
-    allowed_keys = {'threshold', 'cooldown', 'work_start_time', 'late_threshold', 'late_grace_period', 'auto_checkout', 'voice_greeting', 'admin_alerts', 'missing_checkout_deduction_percent'}
+    allowed_keys = {'threshold', 'cooldown', 'max_faces_per_frame', 'work_start_time', 'late_threshold', 'late_grace_period', 'auto_checkout', 'voice_greeting', 'admin_alerts', 'missing_checkout_deduction_percent'}
     vendor_id, error = authenticate_vendor_access()
     if error:
         return error
@@ -1392,13 +1392,27 @@ def get_settings():
 
     v_thresh = None
     v_cool = None
+    v_max_faces = None
     if vendor_id:
         try:
-            c.execute("SELECT threshold, cooldown FROM vendors WHERE id = ?", (vendor_id,))
+            from db_factory import get_table_columns
+            vendor_columns = get_table_columns(conn, "vendors")
+            select_fields = ["threshold", "cooldown"]
+            if "max_faces_per_frame" in vendor_columns:
+                select_fields.append("max_faces_per_frame")
+            c.execute(f"SELECT {', '.join(select_fields)} FROM vendors WHERE id = ?", (vendor_id,))
             v_row = c.fetchone()
             if v_row:
-                v_thresh = v_row['threshold'] if hasattr(v_row, '__getitem__') else v_row[0]
-                v_cool = v_row['cooldown'] if hasattr(v_row, '__getitem__') else v_row[1]
+                if hasattr(v_row, "keys"):
+                    v_thresh = v_row["threshold"]
+                    v_cool = v_row["cooldown"]
+                    if "max_faces_per_frame" in select_fields:
+                        v_max_faces = v_row["max_faces_per_frame"]
+                else:
+                    v_thresh = v_row[0]
+                    v_cool = v_row[1]
+                    if len(select_fields) > 2:
+                        v_max_faces = v_row[2]
         except Exception:
             pass
     conn.close()
@@ -1425,6 +1439,11 @@ def get_settings():
     elif 'cooldown' not in effective:
         effective['cooldown'] = "30"
 
+    if v_max_faces is not None:
+        effective['max_faces_per_frame'] = str(v_max_faces)
+    elif 'max_faces_per_frame' not in effective:
+        effective['max_faces_per_frame'] = "5"
+
     return jsonify(effective)
 
 
@@ -1436,7 +1455,7 @@ def update_settings():
     if error:
         return error
 
-    allowed_keys = {'threshold', 'cooldown', 'work_start_time', 'late_threshold', 'late_grace_period', 'auto_checkout', 'voice_greeting', 'admin_alerts', 'missing_checkout_deduction_percent'}
+    allowed_keys = {'threshold', 'cooldown', 'max_faces_per_frame', 'work_start_time', 'late_threshold', 'late_grace_period', 'auto_checkout', 'voice_greeting', 'admin_alerts', 'missing_checkout_deduction_percent'}
     data = dict(request.json or {})
     role = g.user_role
     if role not in {'super_admin', 'vendor_admin', 'admin', 'owner'}:
@@ -1448,16 +1467,19 @@ def update_settings():
         data.pop('late_threshold', None)
         data.pop('late_grace_period', None)
 
-    # Only super_admin is allowed to change engine threshold and cooldown
+    # Only super_admin is allowed to change biometric engine controls.
     if role != 'super_admin':
         data.pop('threshold', None)
         data.pop('cooldown', None)
+        data.pop('max_faces_per_frame', None)
 
     try:
         if 'threshold' in data and not 0.4 <= float(data['threshold']) <= 0.95:
             raise ValueError("threshold must be between 0.40 and 0.95")
         if 'cooldown' in data and not 5 <= int(data['cooldown']) <= 3600:
             raise ValueError("cooldown must be between 5 and 3600 seconds")
+        if 'max_faces_per_frame' in data and not 1 <= int(data['max_faces_per_frame']) <= 10:
+            raise ValueError("max_faces_per_frame must be between 1 and 10")
         for time_key in ('work_start_time', 'late_threshold'):
             if time_key in data and not re.fullmatch(r'([01]\d|2[0-3]):[0-5]\d', str(data[time_key])):
                 raise ValueError(f"{time_key} must use HH:MM format")
@@ -1472,6 +1494,8 @@ def update_settings():
     c = conn.cursor()
     try:
         if role == 'super_admin' and vendor_id:
+            from db_factory import get_table_columns
+            vendor_columns = get_table_columns(conn, "vendors")
             if 'threshold' in data:
                 try:
                     c.execute("UPDATE vendors SET threshold = ? WHERE id = ?", (float(data['threshold']), vendor_id))
@@ -1482,6 +1506,11 @@ def update_settings():
                     c.execute("UPDATE vendors SET cooldown = ? WHERE id = ?", (int(data['cooldown']), vendor_id))
                 except Exception:
                     pass
+            if 'max_faces_per_frame' in data and 'max_faces_per_frame' in vendor_columns:
+                c.execute(
+                    "UPDATE vendors SET max_faces_per_frame = ? WHERE id = ?",
+                    (int(data['max_faces_per_frame']), vendor_id),
+                )
 
         for key, value in data.items():
             if key not in allowed_keys:

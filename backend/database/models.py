@@ -30,6 +30,7 @@ class Vendor(Base):
     kiosk_username = Column(String(255))
     threshold = Column(Float, default=0.60)
     cooldown = Column(Integer, default=30)
+    max_faces_per_frame = Column(Integer, default=5)
 
     # Relationships
     companies = relationship("Company", back_populates="vendor")

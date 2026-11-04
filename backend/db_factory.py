@@ -599,7 +599,7 @@ def _init_pg_schema_on_conn(conn):
     cur = conn.cursor()
     # Using the existing DDL from init_postgres_schema
     queries = [
-        "CREATE TABLE IF NOT EXISTS vendors (id SERIAL PRIMARY KEY, company_name TEXT NOT NULL, email TEXT, phone TEXT, address TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, status TEXT DEFAULT 'active', registration_config TEXT, contact_person TEXT, web_login_enabled INTEGER DEFAULT 1, frontend_bundle_id TEXT, backend_service_id TEXT, vertical TEXT, attendance_type TEXT DEFAULT 'total_time', retention_days INTEGER DEFAULT 90, num_rectors INTEGER DEFAULT 0, num_hods INTEGER DEFAULT 0, departments TEXT)",
+        "CREATE TABLE IF NOT EXISTS vendors (id SERIAL PRIMARY KEY, company_name TEXT NOT NULL, email TEXT, phone TEXT, address TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, status TEXT DEFAULT 'active', registration_config TEXT, contact_person TEXT, web_login_enabled INTEGER DEFAULT 1, frontend_bundle_id TEXT, backend_service_id TEXT, vertical TEXT, attendance_type TEXT DEFAULT 'total_time', retention_days INTEGER DEFAULT 90, num_rectors INTEGER DEFAULT 0, num_hods INTEGER DEFAULT 0, departments TEXT, max_faces_per_frame INTEGER DEFAULT 5)",
         "CREATE TABLE IF NOT EXISTS companies (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), name TEXT, working_hours REAL, shifts TEXT, draft_timetable TEXT, live_timetable TEXT, last_modified_by TEXT, last_modified_at TIMESTAMP, published_by TEXT, published_at TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS faces (id SERIAL PRIMARY KEY, local_uid TEXT, name TEXT, templates TEXT, face_image TEXT, department TEXT, designation TEXT, phone TEXT, shift TEXT, daily_wage REAL DEFAULT 0, basic_salary REAL DEFAULT 0, hra REAL DEFAULT 0, conveyance REAL DEFAULT 0, special_allowance REAL DEFAULT 0, pf_enabled INTEGER DEFAULT 0, esi_enabled INTEGER DEFAULT 0, gratuity_enabled INTEGER DEFAULT 0, professional_tax REAL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount REAL DEFAULT 0, vendor_id INTEGER REFERENCES vendors(id), custom_data TEXT, display_id INTEGER, joining_date DATE, registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "ALTER TABLE faces ADD COLUMN IF NOT EXISTS local_uid TEXT",
@@ -788,6 +788,7 @@ def _init_pg_schema_on_conn(conn):
         ("vendors", "kiosk_username", "TEXT"),
         ("vendors", "threshold", "REAL DEFAULT 0.60"),
         ("vendors", "cooldown", "INTEGER DEFAULT 30"),
+        ("vendors", "max_faces_per_frame", "INTEGER DEFAULT 5"),
         ("system_users", "person_id", "INTEGER"),
         ("system_users", "password_plain", "TEXT"),
         ("system_users", "has_set_password", "INTEGER DEFAULT 0"),
@@ -1123,7 +1124,7 @@ def init_sqlite_schema(conn):
     cur = conn.cursor()
     # Simplified SQLite versions (using INTEGER PRIMARY KEY AUTOINCREMENT)
     queries = [
-        "CREATE TABLE IF NOT EXISTS vendors (id INTEGER PRIMARY KEY AUTOINCREMENT, company_name TEXT NOT NULL, email TEXT, phone TEXT, address TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, status TEXT DEFAULT 'active', registration_config TEXT, contact_person TEXT, web_login_enabled INTEGER DEFAULT 1, frontend_bundle_id TEXT, backend_service_id TEXT, vertical TEXT, attendance_type TEXT DEFAULT 'total_time', retention_days INTEGER DEFAULT 90, num_rectors INTEGER DEFAULT 0, num_hods INTEGER DEFAULT 0, departments TEXT)",
+        "CREATE TABLE IF NOT EXISTS vendors (id INTEGER PRIMARY KEY AUTOINCREMENT, company_name TEXT NOT NULL, email TEXT, phone TEXT, address TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, status TEXT DEFAULT 'active', registration_config TEXT, contact_person TEXT, web_login_enabled INTEGER DEFAULT 1, frontend_bundle_id TEXT, backend_service_id TEXT, vertical TEXT, attendance_type TEXT DEFAULT 'total_time', retention_days INTEGER DEFAULT 90, num_rectors INTEGER DEFAULT 0, num_hods INTEGER DEFAULT 0, departments TEXT, max_faces_per_frame INTEGER DEFAULT 5)",
         "CREATE TABLE IF NOT EXISTS companies (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, name TEXT, working_hours REAL, shifts TEXT, draft_timetable TEXT, live_timetable TEXT, last_modified_by TEXT, last_modified_at DATETIME, published_by TEXT, published_at DATETIME)",
         "CREATE TABLE IF NOT EXISTS faces (id INTEGER PRIMARY KEY AUTOINCREMENT, local_uid TEXT, name TEXT, templates TEXT, face_image TEXT, department TEXT, designation TEXT, phone TEXT, shift TEXT, daily_wage REAL DEFAULT 0, basic_salary REAL DEFAULT 0, hra REAL DEFAULT 0, conveyance REAL DEFAULT 0, special_allowance REAL DEFAULT 0, pf_enabled INTEGER DEFAULT 0, esi_enabled INTEGER DEFAULT 0, gratuity_enabled INTEGER DEFAULT 0, professional_tax REAL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount REAL DEFAULT 0, vendor_id INTEGER, custom_data TEXT, display_id INTEGER, joining_date DATE, registered_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS employee_salary_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER NOT NULL, person_id INTEGER NOT NULL, version_number INTEGER NOT NULL, effective_from DATE NOT NULL, effective_to DATE, daily_wage NUMERIC NOT NULL DEFAULT 0, basic_salary NUMERIC NOT NULL DEFAULT 0, hra NUMERIC NOT NULL DEFAULT 0, conveyance NUMERIC NOT NULL DEFAULT 0, special_allowance NUMERIC NOT NULL DEFAULT 0, pf_enabled INTEGER NOT NULL DEFAULT 0, esi_enabled INTEGER NOT NULL DEFAULT 0, gratuity_enabled INTEGER NOT NULL DEFAULT 0, professional_tax NUMERIC NOT NULL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount NUMERIC, changed_by TEXT NOT NULL, change_reason TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, person_id, version_number))",
@@ -1293,6 +1294,16 @@ def init_sqlite_schema(conn):
         cur.execute("ALTER TABLE vendors ADD COLUMN kiosk_pin TEXT DEFAULT '8888'")
     except Exception:
         pass
+    for col in [
+        "kiosk_username TEXT",
+        "threshold REAL DEFAULT 0.60",
+        "cooldown INTEGER DEFAULT 30",
+        "max_faces_per_frame INTEGER DEFAULT 5",
+    ]:
+        try:
+            cur.execute(f"ALTER TABLE vendors ADD COLUMN {col}")
+        except Exception:
+            pass
 
     try:
         cur.execute("UPDATE system_users SET has_set_password = 1 WHERE role = 'user' AND password != password_plain AND password_plain IS NOT NULL")

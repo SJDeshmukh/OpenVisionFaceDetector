@@ -31,6 +31,7 @@ public class FaceView extends View {
     private Paint meshPaint;
     private Paint meshSweepPaint;
     private Paint meshPointPaint;
+    private Paint cooldownBorderPaint;
     private LinearGradient meshSweepGradient;
     private Matrix meshSweepMatrix;
     private float density = 1f;
@@ -38,6 +39,9 @@ public class FaceView extends View {
     private boolean meshAnimating = false;
     private static final long MESH_PULSE_PERIOD_MS = 1400L;
     private static final long MESH_SWEEP_PERIOD_MS = 2200L;
+    private static final long COOLDOWN_BORDER_DURATION_MS = 1800L;
+    private long cooldownBorderStartMs = 0L;
+    private boolean cooldownBorderAnimating = false;
 
     private Size frameSize;
 
@@ -133,6 +137,12 @@ public class FaceView extends View {
         meshPointPaint.setAlpha(230);
         meshPointPaint.setAntiAlias(true);
 
+        cooldownBorderPaint = new Paint();
+        cooldownBorderPaint.setStyle(Paint.Style.STROKE);
+        cooldownBorderPaint.setColor(Color.rgb(34, 197, 94));
+        cooldownBorderPaint.setStrokeCap(Paint.Cap.ROUND);
+        cooldownBorderPaint.setAntiAlias(true);
+
         meshSweepMatrix = new Matrix();
     }
 
@@ -200,6 +210,12 @@ public class FaceView extends View {
         successAnimating = true;
         successAnimationStart = System.currentTimeMillis();
         invalidate();
+    }
+
+    public void startCooldownBorderAnimation() {
+        cooldownBorderAnimating = true;
+        cooldownBorderStartMs = SystemClock.uptimeMillis();
+        postInvalidateOnAnimation();
     }
 
     @Override
@@ -355,6 +371,29 @@ public class FaceView extends View {
                     canvas.drawCircle(cx, cy, radius, successPaint);
                     postInvalidateOnAnimation();
                 }
+            }
+        }
+
+        if (cooldownBorderAnimating) {
+            long elapsed = SystemClock.uptimeMillis() - cooldownBorderStartMs;
+            float progress = elapsed / (float) COOLDOWN_BORDER_DURATION_MS;
+            if (progress >= 1f) {
+                cooldownBorderAnimating = false;
+            } else {
+                float pulse = (float) (0.5f - 0.5f * Math.cos(progress * Math.PI * 6f));
+                float strokeWidth = (5f + 5f * pulse) * density;
+                float inset = strokeWidth / 2f + 3f * density;
+                cooldownBorderPaint.setStrokeWidth(strokeWidth);
+                cooldownBorderPaint.setAlpha(150 + (int) (105f * pulse));
+                canvas.drawRoundRect(
+                        inset,
+                        inset,
+                        getWidth() - inset,
+                        getHeight() - inset,
+                        18f * density,
+                        18f * density,
+                        cooldownBorderPaint);
+                postInvalidateOnAnimation();
             }
         }
     }
