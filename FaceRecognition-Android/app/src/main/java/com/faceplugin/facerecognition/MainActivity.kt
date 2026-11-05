@@ -754,7 +754,10 @@ class MainActivity : AppCompatActivity() {
         } catch (_: Exception) {}
 
         try {
-            checkForOtaUpdate(forceImmediate = false)
+            val resumedPendingInstall = AppUpdateManager.resumePendingInstallIfAllowed(this)
+            if (!resumedPendingInstall) {
+                checkForOtaUpdate(forceImmediate = false)
+            }
         } catch (_: Exception) {}
     }
 

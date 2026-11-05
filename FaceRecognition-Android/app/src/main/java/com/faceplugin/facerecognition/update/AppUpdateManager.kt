@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.util.Log
 import androidx.core.content.FileProvider
 import com.faceplugin.facerecognition.BuildConfig
@@ -42,6 +43,8 @@ object AppUpdateManager {
     private val isDownloading = AtomicBoolean(false)
     private var lastCheckedTs: Long = 0
     private const val CHECK_INTERVAL_MS = 60 * 60 * 1000L // 1 hour between automatic checks
+    private const val UPDATE_PREFS = "ota_update_state"
+    private const val PENDING_APK_PATH = "pending_apk_path"
 
     data class ReleaseInfo(
         val releaseId: Int,
@@ -303,8 +306,25 @@ object AppUpdateManager {
             val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
             val isDeviceOwner = dpm?.isDeviceOwnerApp(context.packageName) == true
 
-            // On Android 12+ (API 31+) or if Device Owner, we can use PackageInstaller with USER_ACTION_NOT_REQUIRED
-            // for completely silent background self-updates!
+            // REQUEST_INSTALL_PACKAGES is a special per-source permission. Android does
+            // not grant it with the APK installation or through a runtime permission
+            // dialog. Send the user to the system's "Allow from this source" page once,
+            // retain the verified APK, and finish the update when MainActivity resumes.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                !isDeviceOwner &&
+                !context.packageManager.canRequestPackageInstalls()
+            ) {
+                rememberPendingInstall(context, apkFile)
+                requestPackageInstallAccess(context)
+                return
+            }
+
+            clearPendingInstall(context)
+
+            // Device Owner installs can be silent. Android 12+ may also allow a
+            // self-update without another confirmation when the documented installer,
+            // target-SDK and permission conditions are satisfied. The receiver still
+            // handles STATUS_PENDING_USER_ACTION because OEM policy can require it.
             if (isDeviceOwner || Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 try {
                     Log.i(TAG, "Installing via PackageInstaller session (isDeviceOwner=$isDeviceOwner, sdk=${Build.VERSION.SDK_INT})...")
@@ -320,6 +340,69 @@ object AppUpdateManager {
         } catch (e: Exception) {
             Log.e(TAG, "Error initiating APK installation; falling back to intent", e)
             launchSystemInstallIntent(context, apkFile)
+        }
+    }
+
+    /**
+     * Continues an update after the user returns from Android's per-source install
+     * permission page. Returns true only when a pending installation was started.
+     */
+    fun resumePendingInstallIfAllowed(context: Context): Boolean {
+        val path = context.getSharedPreferences(UPDATE_PREFS, Context.MODE_PRIVATE)
+            .getString(PENDING_APK_PATH, null)
+            ?: return false
+        val apkFile = File(path)
+        if (!apkFile.exists()) {
+            clearPendingInstall(context)
+            return false
+        }
+
+        val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
+        val isDeviceOwner = dpm?.isDeviceOwnerApp(context.packageName) == true
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            !isDeviceOwner &&
+            !context.packageManager.canRequestPackageInstalls()
+        ) {
+            return false
+        }
+
+        clearPendingInstall(context)
+        installApk(context, apkFile)
+        return true
+    }
+
+    private fun rememberPendingInstall(context: Context, apkFile: File) {
+        context.getSharedPreferences(UPDATE_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(PENDING_APK_PATH, apkFile.absolutePath)
+            .apply()
+    }
+
+    private fun clearPendingInstall(context: Context) {
+        context.getSharedPreferences(UPDATE_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .remove(PENDING_APK_PATH)
+            .apply()
+    }
+
+    private fun requestPackageInstallAccess(context: Context) {
+        try {
+            val intent = Intent(
+                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:${context.packageName}")
+            ).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+        } catch (e: Exception) {
+            // Some vendor ROMs omit the app-specific settings screen. Their package
+            // installer will display the appropriate blocked-source prompt instead.
+            Log.w(TAG, "Unable to open install-source settings; using installer prompt", e)
+            val path = context.getSharedPreferences(UPDATE_PREFS, Context.MODE_PRIVATE)
+                .getString(PENDING_APK_PATH, null)
+            if (!path.isNullOrBlank()) {
+                launchSystemInstallIntent(context, File(path))
+            }
         }
     }
 
