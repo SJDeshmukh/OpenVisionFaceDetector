@@ -10,6 +10,7 @@ final class FaceAppearanceTracker {
     static final int VISUAL_NONE = 0;
     static final int VISUAL_SUCCESS = 1;
     static final int VISUAL_COOLDOWN = 2;
+    static final int VISUAL_PENDING = 3;
 
     private static final class State {
         long lastSeenAtMs;
@@ -125,7 +126,8 @@ final class FaceAppearanceTracker {
 
     synchronized int getVisualState(String key, long nowMs, long successWindowMs) {
         State state = states.get(key);
-        if (state == null || !state.marked || !state.confirmed) return VISUAL_NONE;
+        if (state == null || !state.marked) return VISUAL_NONE;
+        if (!state.confirmed) return VISUAL_PENDING;
         if (state.cooldownVisual) return VISUAL_COOLDOWN;
         if (nowMs >= state.markedAtMs && nowMs - state.markedAtMs >= successWindowMs) {
             return VISUAL_COOLDOWN;

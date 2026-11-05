@@ -69,12 +69,12 @@ public class FaceAppearanceTrackerTest {
     }
 
     @Test
-    public void pendingOnlineRequestBlocksDuplicatesWithoutShowingSuccess() {
+    public void pendingOnlineRequestBlocksDuplicatesAndShowsPendingState() {
         FaceAppearanceTracker tracker = new FaceAppearanceTracker(2500L);
         tracker.markPending("7", "CHECK_IN", 1000L);
 
         assertTrue(tracker.isMarked("7"));
-        assertEquals(FaceAppearanceTracker.VISUAL_NONE,
+        assertEquals(FaceAppearanceTracker.VISUAL_PENDING,
                 tracker.getVisualState("7", 1000L, 2000L));
 
         tracker.mark("7", "CHECK_IN", 1500L);

@@ -1204,11 +1204,15 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                         ? FaceView.ATTENDANCE_SUCCESS
                         : trackerState == FaceAppearanceTracker.VISUAL_COOLDOWN
                         ? FaceView.ATTENDANCE_COOLDOWN
+                        : trackerState == FaceAppearanceTracker.VISUAL_PENDING
+                        ? FaceView.ATTENDANCE_PENDING
                         : FaceView.ATTENDANCE_NONE;
                 visualStates.set(match.faceIndex, visualState);
                 if (visualState == FaceView.ATTENDANCE_NONE) continue;
                 String status = appearanceTracker.getStatus(key);
-                String suffix = visualState == FaceView.ATTENDANCE_COOLDOWN
+                String suffix = visualState == FaceView.ATTENDANCE_PENDING
+                        ? "Attendance saved • Syncing"
+                        : visualState == FaceView.ATTENDANCE_COOLDOWN
                         ? attendanceRejectionMessages.getOrDefault(key, "Attendance already marked")
                         : isAttendanceStatus(status)
                         ? friendlyAttendanceStatus(status) + " successful"
@@ -1671,17 +1675,11 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                             synchronized (DBManager.personList) {
                                 people = DBManager.personList.toArray(new Person[0]);
                             }
-                            for (Person person : people) {
-                                if (person == null) continue;
-                                // Template decoding is cached by LocalFaceEngine. Do not
-                                // validate or rebuild templates from SQLite photos inside
-                                // the per-frame, per-person attendance loop.
-                                if (person.templates == null || person.templates.length == 0) continue;
-                                float similarity = LocalFaceEngineFacade.INSTANCE.similarityCalculation(templates, person.templates);
-                                if (similarity > maxSimilarityForBox) {
-                                    maxSimilarityForBox = similarity;
-                                    bestForBox = person;
-                                }
+                            FaceGalleryMatcher.Match galleryMatch =
+                                    FaceGalleryMatcher.bestMatch(templates, people);
+                            if (galleryMatch != null) {
+                                maxSimilarityForBox = galleryMatch.similarity;
+                                bestForBox = galleryMatch.person;
                             }
                         }
 

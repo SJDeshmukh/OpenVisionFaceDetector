@@ -1,6 +1,7 @@
 package com.faceplugin.facerecognition.api;
 
 import okhttp3.OkHttpClient;
+import okhttp3.ConnectionPool;
 import okhttp3.Request;
 import okhttp3.Response;
 import retrofit2.Retrofit;
@@ -25,6 +26,10 @@ public class RetrofitClient {
     private static volatile Retrofit attendanceRetrofit = null;
     private static volatile OkHttpClient imageClient = null;
     private static volatile String authToken = null;
+    // All API clients target the same host. Sharing this pool allows attendance
+    // to reuse a TLS connection already warmed by configuration or heartbeat calls.
+    private static final ConnectionPool SHARED_CONNECTION_POOL =
+            new ConnectionPool(5, 5, TimeUnit.MINUTES);
 
     public static synchronized void setBaseUrl(String url) {
         if (url != null && !url.isEmpty()) {
@@ -131,6 +136,7 @@ public class RetrofitClient {
 
     private static OkHttpClient buildHttpClient(long connectSeconds, long readSeconds, long writeSeconds) {
         OkHttpClient.Builder httpClient = new OkHttpClient.Builder()
+                .connectionPool(SHARED_CONNECTION_POOL)
                 .connectTimeout(connectSeconds, TimeUnit.SECONDS)
                 .readTimeout(readSeconds, TimeUnit.SECONDS)
                 .writeTimeout(writeSeconds, TimeUnit.SECONDS);

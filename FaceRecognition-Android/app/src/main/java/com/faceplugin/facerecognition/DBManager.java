@@ -524,7 +524,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
         synchronized (personList) {
             for (Person p : personList) {
                 if (p.localUid != null && p.localUid.equals(localUid)) {
-                    p.templates = templates;
+                    p.setTemplates(templates);
                     p.synced = false;
                     break;
                 }

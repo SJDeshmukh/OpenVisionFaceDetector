@@ -2,6 +2,8 @@ package com.faceplugin.facerecognition;
 
 import android.graphics.Bitmap;
 
+import com.faceplugin.faceengine.FaceTemplateCodec;
+
 public class Person {
 
     public String localUid;
@@ -9,6 +11,7 @@ public class Person {
     public int displayId; // Sequential display number from server (1, 2, 3…) — matches web UI
     public String name;
     public byte[] templates;
+    private volatile float[] normalizedEmbedding;
     public String phone;
     public String department;
     public String designation;
@@ -26,7 +29,7 @@ public class Person {
         this.localUid = localUid;
         this.id = id;
         this.name = name;
-        this.templates = templates;
+        setTemplates(templates);
         this.phone = phone;
         // String interning saves massive RAM when thousands of users share the same metadata
         this.department = (department != null) ? department.intern() : null;
@@ -59,5 +62,27 @@ public class Person {
 
     public Person(String name, byte[] templates) {
         this(name, templates, "", "", "", "");
+    }
+
+    /**
+     * Updates the serialized template and its decoded form together. Keeping the
+     * normalized embedding on the person avoids decoding the same gallery entry
+     * for every detected face and every camera frame.
+     */
+    public synchronized void setTemplates(byte[] templates) {
+        this.templates = templates;
+        this.normalizedEmbedding = FaceTemplateCodec.decode(templates);
+    }
+
+    /** Returns the immutable normalized embedding used by the local matcher. */
+    public float[] embeddingForMatching() {
+        float[] current = normalizedEmbedding;
+        if (current != null || templates == null || templates.length == 0) return current;
+        synchronized (this) {
+            if (normalizedEmbedding == null) {
+                normalizedEmbedding = FaceTemplateCodec.decode(templates);
+            }
+            return normalizedEmbedding;
+        }
     }
 }

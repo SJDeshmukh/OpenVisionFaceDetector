@@ -60,6 +60,29 @@ def _resolve_event_time(timestamp):
     return resolve_client_event_time(timestamp)
 
 
+def _enabled_features(cursor, vendor_id):
+    """Read subscription features through the request's existing connection."""
+    if not vendor_id:
+        return set()
+    try:
+        cursor.execute(
+            "SELECT features FROM subscriptions WHERE vendor_id = ? LIMIT 1",
+            (vendor_id,),
+        )
+        row = cursor.fetchone()
+        if isinstance(row, dict):
+            raw = row.get("features")
+        elif row is not None and hasattr(row, "keys") and "features" in row.keys():
+            raw = row["features"]
+        else:
+            raw = row[0] if row else None
+        parsed = json.loads(raw) if isinstance(raw, str) else list(raw or [])
+        return {str(feature) for feature in parsed}
+    except Exception:
+        logger.debug("Subscription feature lookup failed", exc_info=True)
+        return set()
+
+
 @attendance_core_bp.route("/attendance/latest-states", methods=["GET"])
 @require_feature("enable_attendance", "checkin_checkout", "mobile_app")
 @require_auth()
@@ -544,6 +567,7 @@ def person_event(valid_data: PersonEventSchema):
                 pass
 
     shift_policy = load_person_shift_policy(c, vendor_id_to_check, person_id)
+    enabled_features = _enabled_features(c, vendor_id_to_check)
 
     requested_event_source = str(
         valid_data.event_source or AttendanceEventSource.KIOSK.value
@@ -613,7 +637,7 @@ def person_event(valid_data: PersonEventSchema):
 
     hostel_movement_mode = bool(
         person_id and vendor_id_to_check and
-        vendor_has_feature(vendor_id_to_check, "hostel_attendance_alerts")
+        "hostel_attendance_alerts" in enabled_features
     )
     # A kiosk timestamp means this is an offline replay (live Identify requests
     # omit it). The device's status was predicted from its local cache and may
@@ -822,7 +846,7 @@ def person_event(valid_data: PersonEventSchema):
             logger.debug("Cooldown check failed", exc_info=True)
 
     is_late = 0
-    if new_status == 'CHECK_IN' and vendor_id_to_check and vendor_has_feature(vendor_id_to_check, "late_mark"):
+    if new_status == 'CHECK_IN' and vendor_id_to_check and "late_mark" in enabled_features:
         try:
             # 1. Look for matching Shift in Timetable (companies table)
             matched_shift = None
@@ -1017,7 +1041,7 @@ def person_event(valid_data: PersonEventSchema):
         # Push notification to parent (fire-and-forget, never blocks response)
         if (
             person_id and vendor_id_to_check
-            and vendor_has_feature(vendor_id_to_check, "parent_alerts")
+            and "parent_alerts" in enabled_features
         ):
             try:
                 from notifications import notify_parent_async

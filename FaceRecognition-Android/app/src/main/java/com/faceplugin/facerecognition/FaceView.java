@@ -34,6 +34,7 @@ public class FaceView extends View {
     private Paint cooldownBorderPaint;
     private Paint attendanceSuccessPaint;
     private Paint attendanceCooldownPaint;
+    private Paint attendancePendingPaint;
     private Paint attendanceGlowPaint;
     private LinearGradient meshSweepGradient;
     private Matrix meshSweepMatrix;
@@ -46,8 +47,10 @@ public class FaceView extends View {
     public static final int ATTENDANCE_NONE = 0;
     public static final int ATTENDANCE_SUCCESS = 1;
     public static final int ATTENDANCE_COOLDOWN = 2;
+    public static final int ATTENDANCE_PENDING = 3;
     private static final int SUCCESS_GREEN = Color.rgb(34, 197, 94);
     private static final int COOLDOWN_RED = Color.rgb(239, 68, 68);
+    private static final int PENDING_AMBER = Color.rgb(245, 158, 11);
     private long cooldownBorderStartMs = 0L;
     private boolean cooldownBorderAnimating = false;
     private int feedbackBorderColor = COOLDOWN_RED;
@@ -165,6 +168,12 @@ public class FaceView extends View {
         attendanceCooldownPaint.setStrokeJoin(Paint.Join.ROUND);
         attendanceCooldownPaint.setColor(COOLDOWN_RED);
 
+        attendancePendingPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        attendancePendingPaint.setStyle(Paint.Style.STROKE);
+        attendancePendingPaint.setStrokeCap(Paint.Cap.ROUND);
+        attendancePendingPaint.setStrokeJoin(Paint.Join.ROUND);
+        attendancePendingPaint.setColor(PENDING_AMBER);
+
         attendanceGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         attendanceGlowPaint.setStyle(Paint.Style.STROKE);
         attendanceGlowPaint.setStrokeCap(Paint.Cap.ROUND);
@@ -279,8 +288,10 @@ public class FaceView extends View {
         if (visualState == ATTENDANCE_NONE) return;
 
         boolean cooldown = visualState == ATTENDANCE_COOLDOWN;
-        int color = cooldown ? COOLDOWN_RED : SUCCESS_GREEN;
-        Paint statePaint = cooldown ? attendanceCooldownPaint : attendanceSuccessPaint;
+        boolean pending = visualState == ATTENDANCE_PENDING;
+        int color = cooldown ? COOLDOWN_RED : pending ? PENDING_AMBER : SUCCESS_GREEN;
+        Paint statePaint = cooldown ? attendanceCooldownPaint
+                : pending ? attendancePendingPaint : attendanceSuccessPaint;
         float phase = (now % 1200L) / 1200f;
         float pulse = (float) (0.5f - 0.5f * Math.cos(phase * Math.PI * 2f));
         float inset = (3f + 1.5f * pulse) * density;
