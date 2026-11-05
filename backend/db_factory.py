@@ -762,7 +762,10 @@ def _init_pg_schema_on_conn(conn):
     
     def run_migration(query, msg, params=None):
         try:
-            cur.execute(query, params)
+            if params is None:
+                cur.execute(query)
+            else:
+                cur.execute(query, params)
             if is_pg: conn.commit() # Commit each migration independently
             else: conn.commit()
         except Exception as e:
@@ -867,7 +870,7 @@ def _init_pg_schema_on_conn(conn):
            SELECT v.id,
                   CASE WHEN LOWER(COALESCE(v.attendance_action_mode, 'automatic')) = 'manual'
                        THEN 'manual' ELSE 'automatic' END,
-                  ?, 'schema_migration', ?
+                  %s, 'schema_migration', %s
            FROM vendors v
            WHERE NOT EXISTS (
                SELECT 1 FROM attendance_action_mode_history h WHERE h.vendor_id = v.id
