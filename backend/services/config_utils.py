@@ -1,7 +1,106 @@
 import json
 import logging
+import re
 
 logger = logging.getLogger(__name__)
+
+_REGISTRATION_FIELD_ALIASES = {
+    'full_name': 'name',
+    'employee_name': 'name',
+    'mobile': 'phone',
+    'mobile_number': 'phone',
+    'phone_number': 'phone',
+    'student_phone': 'phone',
+    'contact_phone': 'phone',
+    'dept': 'department',
+    'work_shift': 'shift',
+}
+
+
+def canonical_registration_field(value):
+    """Return the stable payload key used for registration validation."""
+    key = re.sub(r'[^a-z0-9]+', '_', str(value or '').strip().lower()).strip('_')
+    return _REGISTRATION_FIELD_ALIASES.get(key, key)
+
+
+def validate_registration_values(config, core_values=None, custom_values=None):
+    """
+    Validate enabled required registration fields against core and dynamic data.
+
+    Returns ``None`` when valid, otherwise a small error object suitable for an
+    API 400 response.  Aliases allow older mobile clients to keep working while
+    SuperAdmin labels and field names change.
+    """
+    if not isinstance(config, list):
+        return None
+
+    values = {}
+    for source in (custom_values or {}, core_values or {}):
+        if not isinstance(source, dict):
+            continue
+        for raw_key, raw_value in source.items():
+            key = canonical_registration_field(raw_key)
+            # Core columns take precedence over duplicate custom aliases.
+            if key and (key not in values or source is core_values):
+                values[key] = raw_value
+
+    for item in normalize_registration_config(config):
+        if not item.get('enabled', True) or not item.get('required', False):
+            continue
+        raw_field = item.get('field') or item.get('name')
+        key = canonical_registration_field(raw_field)
+        value = values.get(key)
+        if isinstance(value, (list, tuple, set, dict)):
+            missing = len(value) == 0
+        else:
+            text = str(value or '').strip()
+            missing = not text or (key == 'shift' and text.casefold() == 'no shift')
+        if missing:
+            label = str(item.get('label') or raw_field or key).strip() or key
+            return {
+                'error': f'{label} is required',
+                'field': str(raw_field or key),
+            }
+    return None
+
+
+def load_registration_config(vendor_id, conn):
+    """Load the same effective registration schema returned to mobile clients."""
+    cursor = conn.cursor()
+    cursor.execute('SELECT registration_config FROM vendors WHERE id = ?', (vendor_id,))
+    row = cursor.fetchone()
+    raw = row[0] if row else None
+    try:
+        config = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError, json.JSONDecodeError):
+        config = []
+    if not isinstance(config, list):
+        config = []
+
+    if not config:
+        try:
+            cursor.execute('SELECT fields FROM bulk_attendance_config WHERE vendor_id = ?', (vendor_id,))
+            fallback = cursor.fetchone()
+            raw_fields = fallback[0] if fallback else None
+            fields = json.loads(raw_fields) if isinstance(raw_fields, str) else raw_fields
+            if isinstance(fields, list):
+                for item in fields:
+                    if not isinstance(item, dict):
+                        continue
+                    field = item.get('field') or item.get('name')
+                    if field:
+                        config.append({
+                            'field': field,
+                            'label': item.get('label') or field,
+                            'type': item.get('type') or 'text',
+                            'required': bool(item.get('required', False)),
+                            'enabled': item.get('enabled', True) is not False,
+                            'options': item.get('options') or [],
+                        })
+        except Exception as exc:
+            logger.debug('Could not load registration fallback for vendor %s: %s', vendor_id, exc)
+
+    return hydrate_registration_config(vendor_id, normalize_registration_config(config), conn=conn)
 
 def normalize_registration_config(config):
     """Return a deterministic registration schema with text as the default type."""
@@ -12,7 +111,7 @@ def normalize_registration_config(config):
     for raw in config:
         if not isinstance(raw, dict):
             continue
-        field = str(raw.get('field') or raw.get('key') or '').strip()
+        field = str(raw.get('field') or raw.get('key') or raw.get('name') or '').strip()
         if not field or field.lower() in seen:
             continue
         seen.add(field.lower())

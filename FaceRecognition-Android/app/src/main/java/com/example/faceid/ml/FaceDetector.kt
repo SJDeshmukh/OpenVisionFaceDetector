@@ -44,7 +44,12 @@ class FaceDetector(context: Context, modelAsset: String = "models/scrfd_500m.onn
         }
     }
 
-    fun detect(bitmap: Bitmap, scoreThreshold: Float = 0.5f, nmsIou: Float = 0.4f): List<FaceBox> {
+    fun detect(
+        bitmap: Bitmap,
+        scoreThreshold: Float = 0.5f,
+        nmsIou: Float = 0.4f,
+        maxFaces: Int = 0
+    ): List<FaceBox> {
         val lb = ImageUtils.letterbox(bitmap, inputSize)
         try {
             val inputBuffer = ImageUtils.bitmapToNCHW(
@@ -58,8 +63,13 @@ class FaceDetector(context: Context, modelAsset: String = "models/scrfd_500m.onn
                 session.run(mapOf(inputName to inputTensor)).use { results ->
                     val candidates = decode(results, scoreThreshold)
                     val kept = nms(candidates, nmsIou)
+                    val selected = if (maxFaces > 0) {
+                        kept.sortedByDescending { it.box.width() * it.box.height() }.take(maxFaces)
+                    } else {
+                        kept
+                    }
                     // Map boxes/landmarks from letterboxed space back to the original bitmap.
-                    return kept.map { fb ->
+                    return selected.map { fb ->
                         val box = RectF(
                             (fb.box.left - lb.padX) / lb.scale,
                             (fb.box.top - lb.padY) / lb.scale,

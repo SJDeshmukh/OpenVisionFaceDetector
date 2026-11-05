@@ -48,6 +48,7 @@ public class FaceView extends View {
     private List<FaceBox> faceBoxes;
     private String recognizedName = null;
     private List<String> recognizedNames;
+    private List<Boolean> attendanceMarkedStates;
     private boolean meshEnabled = false;
 
     public void setMeshEnabled(boolean enabled) {
@@ -202,6 +203,15 @@ public class FaceView extends View {
         invalidate();
     }
 
+    public void setAttendanceMarkedStates(List<Boolean> states) {
+        if (states == null) {
+            attendanceMarkedStates = null;
+        } else {
+            attendanceMarkedStates = new ArrayList<>(states);
+        }
+        postInvalidateOnAnimation();
+    }
+
     private boolean successAnimating = false;
     private long successAnimationStart = 0L;
     private static final long SUCCESS_ANIMATION_DURATION_MS = 500L;
@@ -226,6 +236,7 @@ public class FaceView extends View {
             float x_scale = this.frameSize.getWidth() / (float)canvas.getWidth();
             float y_scale = this.frameSize.getHeight() / (float)canvas.getHeight();
             boolean drewMeshThisFrame = false;
+            boolean drewMarkedFaceThisFrame = false;
 
             for (int i = 0; i < faceBoxes.size(); i++) {
                 FaceBox faceBox = faceBoxes.get(i);
@@ -290,6 +301,27 @@ public class FaceView extends View {
                         canvas.drawRect(rect, realPaint);
                     }
 
+                    boolean attendanceMarked = attendanceMarkedStates != null
+                            && i < attendanceMarkedStates.size()
+                            && Boolean.TRUE.equals(attendanceMarkedStates.get(i));
+                    if (attendanceMarked) {
+                        long now = SystemClock.uptimeMillis();
+                        float phase = (now % 1200L) / 1200f;
+                        float pulse = (float) (0.5f - 0.5f * Math.cos(phase * Math.PI * 2f));
+                        cooldownBorderPaint.setStrokeWidth((5f + 4f * pulse) * density);
+                        cooldownBorderPaint.setAlpha(170 + (int) (85f * pulse));
+                        float inset = 3f * density;
+                        canvas.drawRoundRect(
+                                rect.left - inset,
+                                rect.top - inset,
+                                rect.right + inset,
+                                rect.bottom + inset,
+                                12f * density,
+                                12f * density,
+                                cooldownBorderPaint);
+                        drewMarkedFaceThisFrame = true;
+                    }
+
                     if (meshEnabled && faceBox.landmarks_68 != null && faceBox.landmarks_68.length >= 136) {
                         int edgeCount = LANDMARK_EDGES_68.length / 2;
                         for (int e = 0; e < edgeCount; e++) {
@@ -351,6 +383,9 @@ public class FaceView extends View {
             if (!drewMeshThisFrame) {
                 meshAnimating = false;
             } else {
+                postInvalidateOnAnimation();
+            }
+            if (drewMarkedFaceThisFrame) {
                 postInvalidateOnAnimation();
             }
 

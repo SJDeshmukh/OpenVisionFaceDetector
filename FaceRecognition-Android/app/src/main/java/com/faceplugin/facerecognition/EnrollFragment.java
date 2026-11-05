@@ -9,7 +9,6 @@ import android.graphics.BitmapFactory;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.MediaStore;
-import android.text.TextUtils;
 import android.util.Base64;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -39,7 +38,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Random;
 
 import retrofit2.Call;
 import retrofit2.Callback;
@@ -64,12 +62,29 @@ public class EnrollFragment extends Fragment {
     private List<String> shiftNames = new ArrayList<>();
     private ArrayAdapter<String> shiftAdapter;
     private java.util.Map<String, View> dynamicViews = new java.util.HashMap<>();
-    private java.util.Map<String, String> dynamicFieldConfig = new java.util.HashMap<>();
-    private boolean requireMobile = false;
-    private boolean requireDepartment = false;
-    private boolean requireDesignation = false;
-    private boolean requireShift = false;
+    private java.util.Map<String, String> dynamicFieldLabels = new java.util.HashMap<>();
+    private final java.util.Map<String, String> registrationDraft = new java.util.HashMap<>();
     private JsonArray currentRegistrationConfig;
+    private PendingRegistration pendingRegistration;
+
+    private static final class PendingRegistration {
+        final String name;
+        final String phone;
+        final String department;
+        final String designation;
+        final String shift;
+        final JsonObject dynamicData;
+
+        PendingRegistration(String name, String phone, String department, String designation,
+                            String shift, JsonObject dynamicData) {
+            this.name = name;
+            this.phone = phone;
+            this.department = department;
+            this.designation = designation;
+            this.shift = shift;
+            this.dynamicData = dynamicData.deepCopy();
+        }
+    }
 
     private ActivityResultLauncher<Intent> cameraLauncher;
     private ActivityResultLauncher<Intent> galleryLauncher;
@@ -166,49 +181,11 @@ public class EnrollFragment extends Fragment {
         );
 
         btnProceed.setOnClickListener(v -> {
-            String name = etName.getText().toString().trim();
-            if (TextUtils.isEmpty(name)) {
-                Toast.makeText(getContext(), "Name is required", Toast.LENGTH_SHORT).show();
-                etName.setError("Name is required");
-                etName.requestFocus();
-                return;
-            }
-            if (requireMobile) {
-                String phone = etMobile.getText().toString().trim();
-                if (TextUtils.isEmpty(phone)) {
-                    Toast.makeText(getContext(), "Mobile Number is required", Toast.LENGTH_SHORT).show();
-                    etMobile.setError("Mobile Number is required");
-                    etMobile.requestFocus();
-                    return;
-                }
-            }
-            if (requireDepartment) {
-                String dept = etDepartment.getText().toString().trim();
-                if (TextUtils.isEmpty(dept)) {
-                    Toast.makeText(getContext(), "Department is required", Toast.LENGTH_SHORT).show();
-                    etDepartment.setError("Department is required");
-                    etDepartment.requestFocus();
-                    return;
-                }
-            }
-            if (requireDesignation) {
-                String desig = etDesignation.getText().toString().trim();
-                if (TextUtils.isEmpty(desig)) {
-                    Toast.makeText(getContext(), "Designation is required", Toast.LENGTH_SHORT).show();
-                    etDesignation.setError("Designation is required");
-                    etDesignation.requestFocus();
-                    return;
-                }
-            }
-            if (requireShift) {
-                Object sel = spShift.getSelectedItem();
-                String shift = sel != null ? sel.toString() : "";
-                if (TextUtils.isEmpty(shift) || "No Shift".equals(shift)) {
-                    Toast.makeText(getContext(), "Shift is required", Toast.LENGTH_SHORT).show();
-                    spShift.requestFocus();
-                    return;
-                }
-            }
+            PendingRegistration collected = collectRegistration(true);
+            if (collected == null) return;
+            // Keep an immutable form snapshot while CaptureActivity is open.
+            // Config refreshes may rebuild the visible controls on resume.
+            pendingRegistration = collected;
             // Launch Camera (or Dialog to choose Camera/Gallery)
             // For now, let's just launch Camera for "Screen 2" requirement
             Intent intent = new Intent(requireContext(), CaptureActivity.class);
@@ -251,21 +228,24 @@ public class EnrollFragment extends Fragment {
     }
 
     private void showDefaultProfileFields() {
-        requireMobile = false;
-        requireDepartment = false;
-        requireDesignation = false;
-        requireShift = false;
+        captureRegistrationDraft();
         dynamicViews.clear();
-        dynamicFieldConfig.clear();
+        dynamicFieldLabels.clear();
         if (dynamicContainer != null) dynamicContainer.removeAllViews();
         if (tilName != null) tilName.setVisibility(View.VISIBLE);
         if (tilMobile != null) tilMobile.setVisibility(View.VISIBLE);
         if (tilDepartment != null) tilDepartment.setVisibility(View.VISIBLE);
         if (tilDesignation != null) tilDesignation.setVisibility(View.VISIBLE);
         if (llShift != null) llShift.setVisibility(View.VISIBLE);
+        restoreStaticDraftValues();
     }
 
     private void processImage(Bitmap bitmap, byte[] capturedTemplate, boolean capturedVerified) {
+        PendingRegistration registration = pendingRegistration;
+        if (registration == null) {
+            registration = collectRegistration(true);
+            if (registration == null) return;
+        }
         // Run Face Detection
         List<FaceBox> faceBoxes = LocalFaceEngineFacade.INSTANCE.faceDetection(
                 bitmap, FacePipeline.enrollmentDetectionParams(requireContext()));
@@ -299,15 +279,11 @@ public class EnrollFragment extends Fragment {
                 return;
             }
 
-            String name = etName.getText().toString().trim();
-            if (name.isEmpty()) {
-                name = "Person" + new Random().nextInt(10000);
-            }
-            String phone = etMobile.getText().toString().trim();
-            String department = etDepartment.getText().toString().trim();
-            String designation = etDesignation.getText().toString().trim();
-            String shift = spShift.getSelectedItem() != null ? spShift.getSelectedItem().toString() : "";
-            if (shift.equals("No Shift")) shift = "";
+            String name = registration.name;
+            String phone = registration.phone;
+            String department = registration.department;
+            String designation = registration.designation;
+            String shift = registration.shift;
 
             float maxSimilarity = 0f;
             Person[] people;
@@ -334,46 +310,7 @@ public class EnrollFragment extends Fragment {
                 return;
             }
             
-            JsonObject dynamicData = new JsonObject();
-            for (java.util.Map.Entry<String, View> entry : dynamicViews.entrySet()) {
-                 View v = entry.getValue();
-                 String key = entry.getKey();
-                 String value = "";
-                 if (v instanceof android.widget.EditText) {
-                     value = ((android.widget.EditText) v).getText().toString();
-                 } else if (v instanceof Spinner) {
-                     Object selected = ((Spinner) v).getSelectedItem();
-                     if (selected != null) value = selected.toString();
-                 } else if (v instanceof android.widget.Button) {
-                     // Handle Multi-select button
-                     Object tag = v.getTag();
-                     if (tag instanceof List) {
-                         List<String> selected = (List<String>) tag;
-                         value = android.text.TextUtils.join(", ", selected);
-                     } else {
-                         // If nothing selected but label was changed by button text, fallback
-                         String btnText = ((android.widget.Button) v).getText().toString();
-                         if (!btnText.startsWith("Select ")) {
-                             value = btnText;
-                         }
-                     }
-                 }
-                 
-                 if ("required".equals(dynamicFieldConfig.get(key)) && value.isEmpty()) {
-                      Toast.makeText(getContext(), key + " is required", Toast.LENGTH_SHORT).show();
-                      return;
-                 }
-                 dynamicData.addProperty(key, value);
-
-                 // Update standard fields if they are provided via dynamic config
-                 if (key.equalsIgnoreCase("name") || key.equalsIgnoreCase("full_name")) {
-                     if (!value.isEmpty()) name = value;
-                 }
-                 if (key.equalsIgnoreCase("phone") || key.equalsIgnoreCase("mobile") || key.equalsIgnoreCase("phone_number") || key.equalsIgnoreCase("student_phone") || key.equalsIgnoreCase("contact_phone")) phone = value;
-                 if (key.equalsIgnoreCase("department")) department = value;
-                 if (key.equalsIgnoreCase("designation")) designation = value;
-                 if (key.equalsIgnoreCase("shift")) shift = value;
-            }
+            JsonObject dynamicData = registration.dynamicData.deepCopy();
 
             // NEW: Always save locally first with synced=false
             String localUid = dbManager.insertLocalPerson(name, faceImage, templates, phone, department, designation, shift, dynamicData.toString());
@@ -393,11 +330,198 @@ public class EnrollFragment extends Fragment {
             if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
 
             // Clear inputs
+            pendingRegistration = null;
+            registrationDraft.clear();
             etName.setText("");
             etMobile.setText("");
             etDepartment.setText("");
             etDesignation.setText("");
             spShift.setSelection(0);
+            clearDynamicInputs();
+        }
+    }
+
+    private static String canonicalFieldKey(String raw) {
+        String key = raw == null ? "" : raw.trim().toLowerCase(java.util.Locale.ROOT)
+                .replaceAll("[^a-z0-9]+", "_").replaceAll("^_+|_+$", "");
+        if (key.equals("full_name") || key.equals("employee_name")) return "name";
+        if (key.equals("mobile") || key.equals("mobile_number") || key.equals("phone_number")
+                || key.equals("student_phone") || key.equals("contact_phone")) return "phone";
+        if (key.equals("dept")) return "department";
+        if (key.equals("work_shift")) return "shift";
+        return key;
+    }
+
+    private String readDynamicValue(View view) {
+        if (view instanceof android.widget.EditText) {
+            return ((android.widget.EditText) view).getText().toString().trim();
+        }
+        if (view instanceof Spinner) {
+            Object selected = ((Spinner) view).getSelectedItem();
+            return selected == null ? "" : selected.toString().trim();
+        }
+        if (view instanceof android.widget.Button) {
+            Object tag = view.getTag();
+            if (tag instanceof List) {
+                return android.text.TextUtils.join(", ", (List<?>) tag).trim();
+            }
+            String text = ((android.widget.Button) view).getText().toString().trim();
+            return text.startsWith("Select ") ? "" : text;
+        }
+        return "";
+    }
+
+    private void captureRegistrationDraft() {
+        if (etName != null) registrationDraft.put("name", etName.getText().toString().trim());
+        if (etMobile != null) registrationDraft.put("phone", etMobile.getText().toString().trim());
+        if (etDepartment != null) registrationDraft.put("department", etDepartment.getText().toString().trim());
+        if (etDesignation != null) registrationDraft.put("designation", etDesignation.getText().toString().trim());
+        if (spShift != null && spShift.getSelectedItem() != null) {
+            String shift = spShift.getSelectedItem().toString().trim();
+            registrationDraft.put("shift", "No Shift".equalsIgnoreCase(shift) ? "" : shift);
+        }
+        for (java.util.Map.Entry<String, View> entry : dynamicViews.entrySet()) {
+            registrationDraft.put(entry.getKey(), readDynamicValue(entry.getValue()));
+        }
+    }
+
+    private void restoreStaticDraftValues() {
+        if (etName != null && registrationDraft.containsKey("name")) etName.setText(registrationDraft.get("name"));
+        if (etMobile != null && registrationDraft.containsKey("phone")) etMobile.setText(registrationDraft.get("phone"));
+        if (etDepartment != null && registrationDraft.containsKey("department")) etDepartment.setText(registrationDraft.get("department"));
+        if (etDesignation != null && registrationDraft.containsKey("designation")) etDesignation.setText(registrationDraft.get("designation"));
+        if (spShift != null) {
+            String wanted = registrationDraft.get("shift");
+            if (wanted != null && !wanted.isEmpty()) {
+                for (int i = 0; i < shiftNames.size(); i++) {
+                    if (wanted.equalsIgnoreCase(shiftNames.get(i))) {
+                        spShift.setSelection(i);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    private void restoreDynamicValue(String key, View view, List<String> options, String label) {
+        String wanted = registrationDraft.get(key);
+        if (wanted == null) {
+            wanted = registrationDraft.get(canonicalFieldKey(key));
+        }
+        if (wanted == null || wanted.isEmpty()) return;
+        if (view instanceof android.widget.EditText) {
+            ((android.widget.EditText) view).setText(wanted);
+        } else if (view instanceof Spinner && options != null) {
+            for (int i = 0; i < options.size(); i++) {
+                if (wanted.equalsIgnoreCase(options.get(i))) {
+                    ((Spinner) view).setSelection(i);
+                    break;
+                }
+            }
+        } else if (view instanceof android.widget.Button) {
+            List<String> selected = new ArrayList<>();
+            for (String part : wanted.split(",")) {
+                String item = part.trim();
+                if (!item.isEmpty()) selected.add(item);
+            }
+            view.setTag(selected);
+            ((android.widget.Button) view).setText(selected.isEmpty()
+                    ? "Select " + label : android.text.TextUtils.join(", ", selected));
+        }
+    }
+
+    private String configuredValue(String rawKey, JsonObject dynamicData,
+                                   String name, String phone, String department,
+                                   String designation, String shift) {
+        String canonical = canonicalFieldKey(rawKey);
+        if (canonical.equals("name")) return name;
+        if (canonical.equals("phone")) return phone;
+        if (canonical.equals("department")) return department;
+        if (canonical.equals("designation")) return designation;
+        if (canonical.equals("shift")) return shift;
+        for (String key : dynamicData.keySet()) {
+            if (canonicalFieldKey(key).equals(canonical) && !dynamicData.get(key).isJsonNull()) {
+                return dynamicData.get(key).getAsString().trim();
+            }
+        }
+        return "";
+    }
+
+    private void showFieldError(String key, String label) {
+        String message = label + " is required";
+        Toast.makeText(getContext(), message, Toast.LENGTH_SHORT).show();
+        String canonical = canonicalFieldKey(key);
+        if (canonical.equals("name")) { etName.setError(message); etName.requestFocus(); return; }
+        if (canonical.equals("phone")) { etMobile.setError(message); etMobile.requestFocus(); return; }
+        if (canonical.equals("department")) { etDepartment.setError(message); etDepartment.requestFocus(); return; }
+        if (canonical.equals("designation")) { etDesignation.setError(message); etDesignation.requestFocus(); return; }
+        if (canonical.equals("shift") && !dynamicViews.containsKey(key)) { spShift.requestFocus(); return; }
+        View fieldView = dynamicViews.get(key);
+        if (fieldView != null) fieldView.requestFocus();
+    }
+
+    private PendingRegistration collectRegistration(boolean showErrors) {
+        captureRegistrationDraft();
+        String name = etName == null ? "" : etName.getText().toString().trim();
+        String phone = etMobile == null ? "" : etMobile.getText().toString().trim();
+        String department = etDepartment == null ? "" : etDepartment.getText().toString().trim();
+        String designation = etDesignation == null ? "" : etDesignation.getText().toString().trim();
+        String shift = spShift != null && spShift.getSelectedItem() != null
+                ? spShift.getSelectedItem().toString().trim() : "";
+        if ("No Shift".equalsIgnoreCase(shift)) shift = "";
+
+        JsonObject dynamicData = new JsonObject();
+        for (java.util.Map.Entry<String, View> entry : dynamicViews.entrySet()) {
+            String value = readDynamicValue(entry.getValue());
+            dynamicData.addProperty(entry.getKey(), value);
+            String canonical = canonicalFieldKey(entry.getKey());
+            if (canonical.equals("name") && !value.isEmpty()) name = value;
+            else if (canonical.equals("phone")) phone = value;
+            else if (canonical.equals("department")) department = value;
+            else if (canonical.equals("designation")) designation = value;
+            else if (canonical.equals("shift")) shift = "No Shift".equalsIgnoreCase(value) ? "" : value;
+        }
+
+        if (name.isEmpty()) {
+            if (showErrors) showFieldError("name", "Name");
+            return null;
+        }
+
+        if (currentRegistrationConfig != null) {
+            for (JsonElement element : currentRegistrationConfig) {
+                if (!element.isJsonObject()) continue;
+                JsonObject item = element.getAsJsonObject();
+                boolean enabled = !item.has("enabled") || item.get("enabled").isJsonNull()
+                        || item.get("enabled").getAsBoolean();
+                boolean required = item.has("required") && !item.get("required").isJsonNull()
+                        && item.get("required").getAsBoolean();
+                if (!enabled || !required) continue;
+                String key = item.has("field") && !item.get("field").isJsonNull()
+                        ? item.get("field").getAsString()
+                        : (item.has("name") && !item.get("name").isJsonNull() ? item.get("name").getAsString() : "");
+                if (key.trim().isEmpty()) continue;
+                String label = item.has("label") && !item.get("label").isJsonNull()
+                        ? item.get("label").getAsString() : key;
+                String value = configuredValue(key, dynamicData, name, phone, department, designation, shift);
+                if (value.isEmpty() || (canonicalFieldKey(key).equals("shift") && "No Shift".equalsIgnoreCase(value))) {
+                    if (showErrors) showFieldError(key, label);
+                    return null;
+                }
+            }
+        }
+        return new PendingRegistration(name, phone, department, designation, shift, dynamicData);
+    }
+
+    private void clearDynamicInputs() {
+        for (java.util.Map.Entry<String, View> entry : dynamicViews.entrySet()) {
+            View view = entry.getValue();
+            if (view instanceof android.widget.EditText) ((android.widget.EditText) view).setText("");
+            else if (view instanceof Spinner) ((Spinner) view).setSelection(0);
+            else if (view instanceof android.widget.Button) {
+                view.setTag(new ArrayList<String>());
+                String label = dynamicFieldLabels.get(entry.getKey());
+                ((android.widget.Button) view).setText("Select " + (label == null ? entry.getKey() : label));
+            }
         }
     }
 
@@ -580,12 +704,12 @@ public class EnrollFragment extends Fragment {
         try {
             if (!isAdded() || getContext() == null) return;
 
-            requireMobile = false;
-            requireDepartment = false;
-            requireDesignation = false;
-            requireShift = false;
+            // Network/config callbacks may rebuild this form while CaptureActivity
+            // is open. Preserve all entered values before replacing any views.
+            captureRegistrationDraft();
+
             dynamicViews.clear();
-            dynamicFieldConfig.clear();
+            dynamicFieldLabels.clear();
             if (dynamicContainer != null) dynamicContainer.removeAllViews();
             if (tilName != null) tilName.setVisibility(View.GONE);
             if (tilMobile != null) tilMobile.setVisibility(View.GONE);
@@ -635,7 +759,7 @@ public class EnrollFragment extends Fragment {
                 }
                 boolean required = field.has("required") && field.get("required").getAsBoolean();
     
-                dynamicFieldConfig.put(key, required ? "required" : "optional");
+                dynamicFieldLabels.put(key, label);
     
                 // If it's a 'select' or 'multiselect' type, we bypass the mapping to standard UI elements 
                 // and always use the dynamic Spinner rendering below.
@@ -654,7 +778,6 @@ public class EnrollFragment extends Fragment {
                             tilMobile.setHint(label);
                             tilMobile.setVisibility(View.VISIBLE);
                         }
-                        requireMobile = required;
                         continue;
                     }
                     if (key.equalsIgnoreCase("department")) {
@@ -662,7 +785,6 @@ public class EnrollFragment extends Fragment {
                             tilDepartment.setHint(label);
                             tilDepartment.setVisibility(View.VISIBLE);
                         }
-                        requireDepartment = required;
                         continue;
                     }
                     if (key.equalsIgnoreCase("designation")) {
@@ -670,14 +792,12 @@ public class EnrollFragment extends Fragment {
                             tilDesignation.setHint(label);
                             tilDesignation.setVisibility(View.VISIBLE);
                         }
-                        requireDesignation = required;
                         continue;
                     }
                     if (key.equalsIgnoreCase("shift")) {
                         if (llShift != null) {
                             llShift.setVisibility(View.VISIBLE);
                         }
-                        requireShift = required;
                         continue;
                     }
                 }
@@ -711,6 +831,7 @@ public class EnrollFragment extends Fragment {
                     til.addView(et);
                     if (dynamicContainer != null) dynamicContainer.addView(til);
                     dynamicViews.put(key, et);
+                    restoreDynamicValue(key, et, null, label);
                 } else if (type.equals("select") || type.equals("multiselect") || type.equals("dropdown")) {
                     android.widget.TextView tv = new android.widget.TextView(context);
                     tv.setText(label + (required ? " *" : ""));
@@ -783,6 +904,21 @@ public class EnrollFragment extends Fragment {
                         btnMulti.setLayoutParams(params);
                         if (dynamicContainer != null) dynamicContainer.addView(btnMulti);
                         dynamicViews.put(key, btnMulti);
+                        restoreDynamicValue(key, btnMulti, options, label);
+                        Object restoredTag = btnMulti.getTag();
+                        if (restoredTag instanceof List) {
+                            selectedItems.clear();
+                            for (Object restored : (List<?>) restoredTag) {
+                                String restoredValue = String.valueOf(restored);
+                                selectedItems.add(restoredValue);
+                                for (int optionIndex = 0; optionIndex < options.size(); optionIndex++) {
+                                    if (restoredValue.equalsIgnoreCase(options.get(optionIndex))) {
+                                        checkedItems[optionIndex] = true;
+                                    }
+                                }
+                            }
+                            btnMulti.setTag(selectedItems);
+                        }
 
                     } else {
                         // Single select Spinner
@@ -803,12 +939,14 @@ public class EnrollFragment extends Fragment {
         
                         if (dynamicContainer != null) dynamicContainer.addView(spinner);
                         dynamicViews.put(key, spinner);
+                        restoreDynamicValue(key, spinner, options, label);
                     }
                 }
             }
             if (!nameInConfig && tilName != null) {
                 tilName.setVisibility(View.VISIBLE);
             }
+            restoreStaticDraftValues();
         } catch (Exception e) {
             e.printStackTrace();
             if (getActivity() != null) {

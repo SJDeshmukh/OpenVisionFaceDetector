@@ -2,6 +2,8 @@ package com.faceplugin.faceengine;
 
 /** Options retained so existing screens can request only the work they need. */
 public final class FaceDetectionParam {
+    /** Zero means unlimited. Attendance sets this from the tenant configuration. */
+    public int max_faces;
     public boolean check_liveness;
     public int check_liveness_level;
     public boolean check_eye_closeness;

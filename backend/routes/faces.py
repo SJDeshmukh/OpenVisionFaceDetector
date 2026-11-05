@@ -832,6 +832,23 @@ def upload_face():
                 return jsonify({
                     "error": "Class allocation is required for School students"
                 }), 400
+
+        if vendor_id:
+            from services.config_utils import load_registration_config, validate_registration_values
+            registration_config = load_registration_config(vendor_id, metadata_conn)
+            validation_error = validate_registration_values(
+                registration_config,
+                core_values={
+                    "name": name,
+                    "phone": phone,
+                    "department": department,
+                    "designation": designation,
+                    "shift": shift,
+                },
+                custom_values=custom_dict,
+            )
+            if validation_error:
+                return jsonify(validation_error), 400
     finally:
         metadata_conn.close()
 
@@ -1294,12 +1311,17 @@ def upload_face():
             next_display_id = c.fetchone()[0]
             assigned_display_id = int(next_display_id)
 
-            # UPSERT logic: If the local_uid already exists for this vendor (e.g., sync conflict), 
-            # update the existing record instead of crashing.
-            sql = """
+            insert_sql = """
                 INSERT INTO faces (local_uid, name, templates, face_image, phone, department, designation, shift, vendor_id, custom_data, display_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (vendor_id, local_uid) DO UPDATE SET
+            """
+            # ``local_uid`` is the device idempotency key.  PostgreSQL and
+            # SQLite both use a partial unique index because null means an
+            # older client supplied no key.  The conflict target must include
+            # the same predicate; null-key registrations are ordinary inserts.
+            if local_uid:
+                insert_sql += """
+                ON CONFLICT (vendor_id, local_uid) WHERE local_uid IS NOT NULL DO UPDATE SET
                     name = EXCLUDED.name,
                     templates = EXCLUDED.templates,
                     face_image = EXCLUDED.face_image,
@@ -1308,14 +1330,24 @@ def upload_face():
                     designation = EXCLUDED.designation,
                     shift = EXCLUDED.shift,
                     custom_data = EXCLUDED.custom_data
-            """
+                """
             if getattr(conn, "_is_pg", False):
-                sql += " RETURNING id"
+                insert_sql += " RETURNING id, display_id"
             
-            c.execute(sql, (local_uid, name, to_store_templates, face_image, phone or "", department or "", designation or "", shift or "", vendor_id, custom_data, next_display_id))
+            c.execute(insert_sql, (local_uid, name, to_store_templates, face_image, phone or "", department or "", designation or "", shift or "", vendor_id, custom_data, next_display_id))
             
             if getattr(conn, "_is_pg", False):
-                new_id = c.fetchone()[0]
+                inserted_row = c.fetchone()
+                new_id = inserted_row[0]
+                assigned_display_id = int(inserted_row[1])
+            elif local_uid:
+                c.execute(
+                    "SELECT id, display_id FROM faces WHERE vendor_id = ? AND local_uid = ? LIMIT 1",
+                    (vendor_id, local_uid),
+                )
+                inserted_row = c.fetchone()
+                new_id = inserted_row[0]
+                assigned_display_id = int(inserted_row[1])
             else:
                 new_id = c.lastrowid
             

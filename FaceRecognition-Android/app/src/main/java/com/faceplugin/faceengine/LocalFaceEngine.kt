@@ -73,7 +73,22 @@ object LocalFaceEngine {
     fun detect(bitmap: Bitmap, param: FaceDetectionParam?): List<FaceBox> {
         val engine = components ?: return emptyList()
         if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) return emptyList()
-        return engine.detector.detect(bitmap).mapNotNull { detected ->
+        val maxFaces = param?.max_faces?.coerceAtLeast(0) ?: 0
+        val validDetections = engine.detector.detect(bitmap, maxFaces = maxFaces)
+            .filter { detected ->
+                detected.score.isFinite()
+                    && detected.box.left.isFinite() && detected.box.top.isFinite()
+                    && detected.box.right.isFinite() && detected.box.bottom.isFinite()
+                    && detected.landmarks.size >= 10 && detected.landmarks.all { it.isFinite() }
+            }
+            .sortedByDescending { detected ->
+                val width = (detected.box.right - detected.box.left).coerceAtLeast(0f)
+                val height = (detected.box.bottom - detected.box.top).coerceAtLeast(0f)
+                width * height
+            }
+        val selectedDetections = if (maxFaces > 0) validDetections.take(maxFaces) else validDetections
+
+        return selectedDetections.mapNotNull { detected ->
             if (!detected.score.isFinite()
                 || !detected.box.left.isFinite() || !detected.box.top.isFinite()
                 || !detected.box.right.isFinite() || !detected.box.bottom.isFinite()
