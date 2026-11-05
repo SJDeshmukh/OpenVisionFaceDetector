@@ -18,6 +18,9 @@ import android.widget.Button
 import android.widget.LinearLayout
 import java.io.File
 import java.security.MessageDigest
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.TimeZone
 import androidx.appcompat.app.AppCompatActivity
 import androidx.fragment.app.Fragment
 import com.faceplugin.facerecognition.api.RetrofitClient
@@ -895,11 +898,24 @@ class MainActivity : AppCompatActivity() {
             val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
             val token = prefs.getString("token", null)
             if (token.isNullOrBlank()) return
+            val requestStartedAt = System.currentTimeMillis()
             RetrofitClient.getService().getSettings().enqueue(object : retrofit2.Callback<JsonObject> {
                 override fun onResponse(call: retrofit2.Call<JsonObject>, response: retrofit2.Response<JsonObject>) {
                     try {
                         if (response.isSuccessful && response.body() != null) {
                             val body = response.body()!!
+                            if (body.has("server_time_utc") && !body.get("server_time_utc").isJsonNull) {
+                                parseServerUtcMillis(body.get("server_time_utc").asString)?.let { serverMillis ->
+                                    val receivedAt = System.currentTimeMillis()
+                                    val adjustedServerAtReceipt = serverMillis +
+                                        ((receivedAt - requestStartedAt).coerceAtLeast(0L) / 2L)
+                                    prefs.edit()
+                                        .putLong("server_clock_anchor_utc_ms", adjustedServerAtReceipt)
+                                        .putLong("server_clock_anchor_elapsed_ms", android.os.SystemClock.elapsedRealtime())
+                                        .putLong("server_clock_offset_ms", adjustedServerAtReceipt - receivedAt)
+                                        .apply()
+                                }
+                            }
                             if (body.has("cooldown") && !body.get("cooldown").isJsonNull) {
                                 val raw = body.get("cooldown")
                                 val s = if (raw.isJsonPrimitive) raw.asString else raw.toString()
@@ -945,6 +961,27 @@ class MainActivity : AppCompatActivity() {
             })
         } catch (_: Exception) {
         }
+    }
+
+    private fun parseServerUtcMillis(value: String): Long? {
+        val raw = value.trim()
+        if (raw.isEmpty()) return null
+        val patterns = listOf(
+            "yyyy-MM-dd'T'HH:mm:ss.SSSX",
+            "yyyy-MM-dd'T'HH:mm:ssX",
+            "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
+            "yyyy-MM-dd'T'HH:mm:ssXXX"
+        )
+        for (pattern in patterns) {
+            try {
+                return SimpleDateFormat(pattern, Locale.US).apply {
+                    timeZone = TimeZone.getTimeZone("UTC")
+                    isLenient = false
+                }.parse(raw)?.time
+            } catch (_: Exception) {
+            }
+        }
+        return null
     }
 
     override fun onPause() {

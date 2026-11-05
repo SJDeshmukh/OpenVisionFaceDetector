@@ -29,6 +29,11 @@ from services.salary_version_service import (
     apply_salary_updates,
     issue_reauth_token,
 )
+from services.attendance_action_mode_service import (
+    latest_action_mode_record,
+    record_action_mode_change,
+    utc_now_naive,
+)
 
 # Mock Auth Decorators
 def vendor_required(f):
@@ -1394,6 +1399,7 @@ def get_settings():
     v_cool = None
     v_max_faces = None
     v_attendance_action_mode = None
+    mode_effective_from_utc = None
     if vendor_id:
         try:
             from db_factory import get_table_columns
@@ -1423,6 +1429,14 @@ def get_settings():
                             v_attendance_action_mode = v_row[index]
         except Exception:
             pass
+        try:
+            mode_record = latest_action_mode_record(
+                c, vendor_id, v_attendance_action_mode or "automatic"
+            )
+            v_attendance_action_mode = mode_record.mode
+            mode_effective_from_utc = mode_record.effective_from_utc
+        except Exception:
+            logger.debug("Attendance action mode history lookup failed", exc_info=True)
     conn.close()
     
     all_settings = {row['key']: row['value'] for row in rows}
@@ -1456,6 +1470,11 @@ def get_settings():
         'manual' if str(v_attendance_action_mode or '').strip().lower() == 'manual'
         else 'automatic'
     )
+    effective['attendance_action_mode_effective_from_utc'] = (
+        mode_effective_from_utc.isoformat(timespec="milliseconds") + "Z"
+        if isinstance(mode_effective_from_utc, datetime) else None
+    )
+    effective['server_time_utc'] = utc_now_naive().isoformat(timespec="milliseconds") + "Z"
 
     return jsonify(effective)
 
@@ -1534,6 +1553,12 @@ def update_settings():
                 c.execute(
                     "UPDATE vendors SET attendance_action_mode = ? WHERE id = ?",
                     (data['attendance_action_mode'], vendor_id),
+                )
+                record_action_mode_change(
+                    c,
+                    vendor_id,
+                    data['attendance_action_mode'],
+                    getattr(g, 'username', 'super_admin'),
                 )
 
         for key, value in data.items():

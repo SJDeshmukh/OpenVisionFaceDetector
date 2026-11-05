@@ -347,6 +347,18 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                         appPreferences.getString("attendance_action_mode", "automatic"));
     }
 
+    private long trustedAttendanceNowMillis() {
+        if (appPreferences == null) return System.currentTimeMillis();
+        long serverAnchor = appPreferences.getLong("server_clock_anchor_utc_ms", 0L);
+        long elapsedAnchor = appPreferences.getLong("server_clock_anchor_elapsed_ms", 0L);
+        long elapsedNow = android.os.SystemClock.elapsedRealtime();
+        if (serverAnchor > 0L && elapsedAnchor > 0L && elapsedNow >= elapsedAnchor) {
+            return serverAnchor + (elapsedNow - elapsedAnchor);
+        }
+        long offset = appPreferences.getLong("server_clock_offset_ms", 0L);
+        return System.currentTimeMillis() + offset;
+    }
+
     private void applyAttendanceActionMode() {
         if (manualAttendancePanel == null) return;
         boolean showManualControls = isManualAttendanceMode() && !isVendorVerifyOnlyMode();
@@ -649,7 +661,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
 
         // Generate timestamp from mobile
         SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US);
-        String timestamp = sdf.format(new Date());
+        String timestamp = sdf.format(new Date(trustedAttendanceNowMillis()));
 
         boolean online = false;
         try {
@@ -703,6 +715,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         PersonEventRequest request = new PersonEventRequest(detected, recognized, finalPersonId, name, confidence, imageBase64, isAttendance, null);
         final boolean explicitStatus = isAttendanceStatus(requestedStatus);
         if (explicitStatus) request.setStatus(requestedStatus);
+        request.setModeAtCreation(explicitStatus ? "manual" : "automatic");
         String requestDeviceId = null;
         try {
             String deviceId = Settings.Secure.getString(requireContext().getContentResolver(), Settings.Secure.ANDROID_ID);
@@ -1603,7 +1616,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                                                 manualAction,
                                                 lastStateStatus,
                                                 lastOperationalDate,
-                                                DBManager.getOperationalDate(System.currentTimeMillis()),
+                                                DBManager.getOperationalDate(trustedAttendanceNowMillis()),
                                                 match.person.name);
                                 if (!decision.allowed) {
                                     attendanceRejectionMessages.put(trackKey, decision.message);
@@ -1689,7 +1702,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
 
                     if (!online) {
                         SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US);
-                        String timestamp = sdf.format(new Date());
+                        String timestamp = sdf.format(new Date(trustedAttendanceNowMillis()));
 
                         List<String> markedNames = new java.util.ArrayList<>();
                         for (RecognizedFaceMatch match : readyToMark) {

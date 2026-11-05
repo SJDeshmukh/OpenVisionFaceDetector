@@ -11,7 +11,7 @@ except ImportError:
 import re
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 import time
 from database.models import db
 
@@ -605,6 +605,7 @@ def _init_pg_schema_on_conn(conn):
     # Using the existing DDL from init_postgres_schema
     queries = [
         "CREATE TABLE IF NOT EXISTS vendors (id SERIAL PRIMARY KEY, company_name TEXT NOT NULL, email TEXT, phone TEXT, address TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, status TEXT DEFAULT 'active', registration_config TEXT, contact_person TEXT, web_login_enabled INTEGER DEFAULT 1, frontend_bundle_id TEXT, backend_service_id TEXT, vertical TEXT, attendance_type TEXT DEFAULT 'total_time', attendance_action_mode TEXT DEFAULT 'automatic', retention_days INTEGER DEFAULT 90, num_rectors INTEGER DEFAULT 0, num_hods INTEGER DEFAULT 0, departments TEXT, max_faces_per_frame INTEGER DEFAULT 5)",
+        "CREATE TABLE IF NOT EXISTS attendance_action_mode_history (id SERIAL PRIMARY KEY, vendor_id INTEGER NOT NULL REFERENCES vendors(id) ON DELETE CASCADE, mode TEXT NOT NULL, effective_from_utc TIMESTAMP NOT NULL, changed_by TEXT NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS companies (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), name TEXT, working_hours REAL, shifts TEXT, draft_timetable TEXT, live_timetable TEXT, last_modified_by TEXT, last_modified_at TIMESTAMP, published_by TEXT, published_at TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS faces (id SERIAL PRIMARY KEY, local_uid TEXT, name TEXT, templates TEXT, face_image TEXT, department TEXT, designation TEXT, phone TEXT, shift TEXT, daily_wage REAL DEFAULT 0, basic_salary REAL DEFAULT 0, hra REAL DEFAULT 0, conveyance REAL DEFAULT 0, special_allowance REAL DEFAULT 0, pf_enabled INTEGER DEFAULT 0, esi_enabled INTEGER DEFAULT 0, gratuity_enabled INTEGER DEFAULT 0, professional_tax REAL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount REAL DEFAULT 0, vendor_id INTEGER REFERENCES vendors(id), custom_data TEXT, display_id INTEGER, joining_date DATE, registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "ALTER TABLE faces ADD COLUMN IF NOT EXISTS local_uid TEXT",
@@ -699,6 +700,7 @@ def _init_pg_schema_on_conn(conn):
         "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_person ON attendance(vendor_id, person_id)",
         "CREATE INDEX IF NOT EXISTS idx_attendance_events_person_time ON attendance_events(vendor_id, person_id, event_time_utc)",
         "CREATE INDEX IF NOT EXISTS idx_attendance_events_device_received ON attendance_events(vendor_id, device_id, received_at_utc)",
+        "CREATE INDEX IF NOT EXISTS idx_attendance_action_mode_history_resolution ON attendance_action_mode_history(vendor_id, effective_from_utc, id)",
         "CREATE INDEX IF NOT EXISTS idx_shift_assignment_resolution ON shift_assignments(vendor_id, person_id, effective_from, effective_to)",
         "CREATE INDEX IF NOT EXISTS idx_shift_version_resolution ON shift_versions(vendor_id, shift_id, effective_from, effective_to)",
         "CREATE INDEX IF NOT EXISTS idx_person_org_resolution ON person_organization_assignments(vendor_id, person_id, effective_from, effective_to)",
@@ -857,6 +859,22 @@ def _init_pg_schema_on_conn(conn):
             run_migration(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {col_type}", f"Add {col} to {table}")
         else:
             run_migration(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}", f"Add {col} to {table}")
+
+    baseline_utc = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(sep=" ")
+    run_migration(
+        """INSERT INTO attendance_action_mode_history
+           (vendor_id, mode, effective_from_utc, changed_by, created_at)
+           SELECT v.id,
+                  CASE WHEN LOWER(COALESCE(v.attendance_action_mode, 'automatic')) = 'manual'
+                       THEN 'manual' ELSE 'automatic' END,
+                  ?, 'schema_migration', ?
+           FROM vendors v
+           WHERE NOT EXISTS (
+               SELECT 1 FROM attendance_action_mode_history h WHERE h.vendor_id = v.id
+           )""",
+        "Seed attendance action mode history",
+        (baseline_utc, baseline_utc),
+    )
 
     run_migration(
         "CREATE INDEX IF NOT EXISTS idx_person_embeddings_gallery "
@@ -1131,6 +1149,7 @@ def init_sqlite_schema(conn):
     # Simplified SQLite versions (using INTEGER PRIMARY KEY AUTOINCREMENT)
     queries = [
         "CREATE TABLE IF NOT EXISTS vendors (id INTEGER PRIMARY KEY AUTOINCREMENT, company_name TEXT NOT NULL, email TEXT, phone TEXT, address TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, status TEXT DEFAULT 'active', registration_config TEXT, contact_person TEXT, web_login_enabled INTEGER DEFAULT 1, frontend_bundle_id TEXT, backend_service_id TEXT, vertical TEXT, attendance_type TEXT DEFAULT 'total_time', attendance_action_mode TEXT DEFAULT 'automatic', retention_days INTEGER DEFAULT 90, num_rectors INTEGER DEFAULT 0, num_hods INTEGER DEFAULT 0, departments TEXT, max_faces_per_frame INTEGER DEFAULT 5)",
+        "CREATE TABLE IF NOT EXISTS attendance_action_mode_history (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER NOT NULL, mode TEXT NOT NULL, effective_from_utc DATETIME NOT NULL, changed_by TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS companies (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, name TEXT, working_hours REAL, shifts TEXT, draft_timetable TEXT, live_timetable TEXT, last_modified_by TEXT, last_modified_at DATETIME, published_by TEXT, published_at DATETIME)",
         "CREATE TABLE IF NOT EXISTS faces (id INTEGER PRIMARY KEY AUTOINCREMENT, local_uid TEXT, name TEXT, templates TEXT, face_image TEXT, department TEXT, designation TEXT, phone TEXT, shift TEXT, daily_wage REAL DEFAULT 0, basic_salary REAL DEFAULT 0, hra REAL DEFAULT 0, conveyance REAL DEFAULT 0, special_allowance REAL DEFAULT 0, pf_enabled INTEGER DEFAULT 0, esi_enabled INTEGER DEFAULT 0, gratuity_enabled INTEGER DEFAULT 0, professional_tax REAL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount REAL DEFAULT 0, vendor_id INTEGER, custom_data TEXT, display_id INTEGER, joining_date DATE, registered_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS employee_salary_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER NOT NULL, person_id INTEGER NOT NULL, version_number INTEGER NOT NULL, effective_from DATE NOT NULL, effective_to DATE, daily_wage NUMERIC NOT NULL DEFAULT 0, basic_salary NUMERIC NOT NULL DEFAULT 0, hra NUMERIC NOT NULL DEFAULT 0, conveyance NUMERIC NOT NULL DEFAULT 0, special_allowance NUMERIC NOT NULL DEFAULT 0, pf_enabled INTEGER NOT NULL DEFAULT 0, esi_enabled INTEGER NOT NULL DEFAULT 0, gratuity_enabled INTEGER NOT NULL DEFAULT 0, professional_tax NUMERIC NOT NULL DEFAULT 0, late_allowance_days INTEGER, late_deduction_amount NUMERIC, changed_by TEXT NOT NULL, change_reason TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, person_id, version_number))",
@@ -1213,6 +1232,7 @@ def init_sqlite_schema(conn):
         "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_person ON attendance(vendor_id, person_id)",
         "CREATE INDEX IF NOT EXISTS idx_attendance_events_person_time ON attendance_events(vendor_id, person_id, event_time_utc)",
         "CREATE INDEX IF NOT EXISTS idx_attendance_events_device_received ON attendance_events(vendor_id, device_id, received_at_utc)",
+        "CREATE INDEX IF NOT EXISTS idx_attendance_action_mode_history_resolution ON attendance_action_mode_history(vendor_id, effective_from_utc, id)",
         "CREATE INDEX IF NOT EXISTS idx_shift_assignment_resolution ON shift_assignments(vendor_id, person_id, effective_from, effective_to)",
         "CREATE INDEX IF NOT EXISTS idx_shift_version_resolution ON shift_versions(vendor_id, shift_id, effective_from, effective_to)",
         "CREATE INDEX IF NOT EXISTS idx_person_org_resolution ON person_organization_assignments(vendor_id, person_id, effective_from, effective_to)",
@@ -1311,6 +1331,21 @@ def init_sqlite_schema(conn):
             cur.execute(f"ALTER TABLE vendors ADD COLUMN {col}")
         except Exception:
             pass
+
+    baseline_utc = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(sep=" ")
+    cur.execute(
+        """INSERT INTO attendance_action_mode_history
+           (vendor_id, mode, effective_from_utc, changed_by, created_at)
+           SELECT v.id,
+                  CASE WHEN LOWER(COALESCE(v.attendance_action_mode, 'automatic')) = 'manual'
+                       THEN 'manual' ELSE 'automatic' END,
+                  ?, 'schema_migration', ?
+           FROM vendors v
+           WHERE NOT EXISTS (
+               SELECT 1 FROM attendance_action_mode_history h WHERE h.vendor_id = v.id
+           )""",
+        (baseline_utc, baseline_utc),
+    )
 
     try:
         cur.execute("UPDATE system_users SET has_set_password = 1 WHERE role = 'user' AND password != password_plain AND password_plain IS NOT NULL")

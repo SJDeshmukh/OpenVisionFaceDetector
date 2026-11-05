@@ -41,6 +41,9 @@ public class PersonEventRequest {
     @SerializedName("status")
     private String status;
 
+    @SerializedName("mode_at_creation")
+    private String modeAtCreation;
+
     // Constructor with is_attendance and timestamp
     public PersonEventRequest(boolean detected, boolean recognized, String personId, String name, float confidence, String imageBase64, boolean is_attendance, String timestamp) {
         this.detected = detected;
@@ -211,5 +214,13 @@ public class PersonEventRequest {
 
     public void setStatus(String status) {
         this.status = status;
+    }
+
+    public String getModeAtCreation() {
+        return modeAtCreation;
+    }
+
+    public void setModeAtCreation(String modeAtCreation) {
+        this.modeAtCreation = modeAtCreation;
     }
 }

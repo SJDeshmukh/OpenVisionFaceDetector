@@ -26,10 +26,14 @@ def should_use_manual_kiosk_mode(
     """
 
     source = str(requested_event_source or "KIOSK").strip().upper()
-    status = str(provided_status or "").strip().upper()
     mode = str(configured_mode or "automatic").strip().lower()
-    if has_timestamp:
-        return source == "KIOSK_MANUAL" and status in {"CHECK_IN", "CHECK_OUT"}
+    if has_timestamp and source == "KIOSK_MANUAL":
+        # A deliberate offline action remains manual even if the tenant mode
+        # changed before synchronization. Missing/invalid actions are rejected
+        # later by validate_manual_action instead of being auto-interpreted.
+        return True
+    if not has_timestamp and source == "KIOSK_MANUAL":
+        source = "KIOSK"
     return source == "KIOSK" and mode == "manual"
 
 

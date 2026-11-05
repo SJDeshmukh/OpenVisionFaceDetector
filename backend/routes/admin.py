@@ -39,6 +39,7 @@ from services.vendor_delete_service import (
     purge_vendor_archive_database,
     purge_vendor_database,
 )
+from services.attendance_action_mode_service import record_action_mode_change
 from services.person_scope_service import (
     is_school_hostel,
     person_type_for,
@@ -1653,6 +1654,9 @@ def create_vendor():
                 "UPDATE vendors SET attendance_action_mode = ? WHERE id = ?",
                 (attendance_action_mode, vendor_id),
             )
+            record_action_mode_change(
+                c, vendor_id, attendance_action_mode, getattr(g, "username", "super_admin")
+            )
         c.execute(
             "INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)",
             (f"max_faces_per_frame_vendor_{vendor_id}", str(max_faces_per_frame)),
@@ -2388,6 +2392,13 @@ def update_vendor_details(vendor_id):
             query = query.rstrip(", ") + " WHERE id = ?"
             params.append(vendor_id)
             c.execute(query, params)
+            if 'attendance_action_mode' in data:
+                record_action_mode_change(
+                    c,
+                    vendor_id,
+                    data['attendance_action_mode'],
+                    getattr(g, "username", "super_admin"),
+                )
             try:
                 if 'vertical' in data and str(data.get('vertical') or '').strip().lower() in {'school', 'hostel'}:
                     c.execute("SELECT registration_config FROM vendors WHERE id = ?", (vendor_id,))

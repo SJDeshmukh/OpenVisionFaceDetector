@@ -33,6 +33,7 @@ from services.manual_attendance_action_service import (
     should_use_manual_kiosk_mode,
     validate_manual_action,
 )
+from services.attendance_action_mode_service import resolve_action_mode_at
 from services.attendance_shift_service import (
     choose_shift_policy,
     load_person_shift_policy,
@@ -559,7 +560,7 @@ def person_event(valid_data: PersonEventSchema):
         if requested_event_source == AttendanceEventSource.KIOSK_MANUAL.value
         else requested_event_source
     )
-    attendance_action_mode = "automatic"
+    current_attendance_action_mode = "automatic"
     if vendor_id_to_check:
         try:
             c.execute(
@@ -568,19 +569,43 @@ def person_event(valid_data: PersonEventSchema):
             )
             mode_row = c.fetchone()
             if mode_row and str(mode_row[0] or "").strip().lower() == "manual":
-                attendance_action_mode = "manual"
+                current_attendance_action_mode = "manual"
         except Exception:
             logger.debug("Attendance action mode lookup failed", exc_info=True)
-    # A queued event keeps the action mode that was active when it was captured.
-    # Current Android clients attach a status only to explicit/manual queue
-    # entries. This prevents a later SuperAdmin mode change from reinterpreting
-    # or dropping an event that was already saved offline.
+    resolved_mode_effective_from_utc = None
+    attendance_action_mode = current_attendance_action_mode
+    if valid_data.timestamp and vendor_id_to_check:
+        try:
+            mode_resolution = resolve_action_mode_at(
+                c,
+                vendor_id_to_check,
+                current_time_obj,
+                valid_data.source_timezone,
+                current_attendance_action_mode,
+            )
+            attendance_action_mode = mode_resolution.mode
+            resolved_mode_effective_from_utc = mode_resolution.effective_from_utc
+        except ValueError as exc:
+            conn.close()
+            return jsonify({"error": str(exc), "code": "INVALID_EVENT_TIMEZONE"}), 400
+    # Timestamped queue events use the server-recorded mode that was effective
+    # when they occurred. A deliberate offline manual action keeps its explicit
+    # KIOSK_MANUAL marker so it is not reinterpreted after synchronization.
     manual_kiosk_mode = should_use_manual_kiosk_mode(
         requested_event_source,
         provided_status,
         bool(valid_data.timestamp),
         attendance_action_mode,
     )
+    # A timestamped KIOSK replay without the dedicated manual source is an
+    # automatic event from an older/current automatic queue. If mode history
+    # says manual at that time, it has no trustworthy operator-selected action.
+    manual_action_status = provided_status
+    if (
+        valid_data.timestamp
+        and requested_event_source != AttendanceEventSource.KIOSK_MANUAL.value
+    ):
+        manual_action_status = ""
     event_source = (
         AttendanceEventSource.KIOSK_MANUAL.value
         if manual_kiosk_mode else client_event_source
@@ -646,7 +671,7 @@ def person_event(valid_data: PersonEventSchema):
                 "event_id": existing_event.event_id,
             })
 
-    if manual_kiosk_mode and provided_status not in ("CHECK_IN", "CHECK_OUT"):
+    if manual_kiosk_mode and manual_action_status not in ("CHECK_IN", "CHECK_OUT"):
         latest_status, latest_timestamp = latest_person_state(
             c, vendor_id_to_check, person_id
         )
@@ -679,7 +704,7 @@ def person_event(valid_data: PersonEventSchema):
                 shift_day_events.append((str(event_row[0] or "").upper(), event_time))
 
         manual_decision = validate_manual_action(
-            provided_status, shift_day_events, current_time_obj, name
+            manual_action_status, shift_day_events, current_time_obj, name
         )
         if not manual_decision.accepted:
             latest_status, latest_timestamp = latest_person_state(
@@ -691,7 +716,7 @@ def person_event(valid_data: PersonEventSchema):
                 "text": manual_decision.text,
                 "accepted": False,
                 "reason": manual_decision.reason,
-                "status": provided_status,
+                "status": manual_action_status or None,
                 "latest_status": latest_status,
                 "latest_timestamp": latest_timestamp,
                 "person_id": person_id,
@@ -705,7 +730,7 @@ def person_event(valid_data: PersonEventSchema):
             and not is_offline_kiosk_replay
         )
     ):
-        new_status = provided_status
+        new_status = manual_action_status if manual_kiosk_mode else provided_status
         if person_id:
             q = "SELECT * FROM attendance WHERE person_id = ?"
             p = [person_id]
@@ -916,6 +941,21 @@ def person_event(valid_data: PersonEventSchema):
                 source_timezone=valid_data.source_timezone,
                 verification_method="FACE",
                 verification_score=valid_data.confidence,
+                payload_metadata={
+                    "mode_at_creation": str(valid_data.mode_at_creation or "").strip().lower() or None,
+                    "resolved_attendance_action_mode": attendance_action_mode,
+                    "mode_effective_from_utc": (
+                        resolved_mode_effective_from_utc.isoformat(timespec="milliseconds")
+                        if isinstance(resolved_mode_effective_from_utc, datetime)
+                        else None
+                    ),
+                    "mode_resolution": (
+                        "explicit_manual_replay"
+                        if valid_data.timestamp
+                        and requested_event_source == AttendanceEventSource.KIOSK_MANUAL.value
+                        else "timestamp_history" if valid_data.timestamp else "current_setting"
+                    ),
+                },
             ),
         )
         event_timestamp = current_time_obj.isoformat(timespec="milliseconds")

@@ -41,10 +41,14 @@ def test_six_am_shift_groups_pre_six_am_checkout_with_previous_day():
 def test_live_kiosk_uses_current_tenant_mode_only():
     assert should_use_manual_kiosk_mode("KIOSK", "CHECK_IN", False, "manual")
     assert not should_use_manual_kiosk_mode("KIOSK", "CHECK_IN", False, "automatic")
-    assert not should_use_manual_kiosk_mode("KIOSK_MANUAL", "CHECK_IN", False, "manual")
+    assert should_use_manual_kiosk_mode("KIOSK_MANUAL", "CHECK_IN", False, "manual")
+    assert not should_use_manual_kiosk_mode(
+        "KIOSK_MANUAL", "CHECK_IN", False, "automatic"
+    )
 
 
 def test_offline_replay_preserves_capture_mode_across_configuration_changes():
     assert should_use_manual_kiosk_mode("KIOSK_MANUAL", "CHECK_OUT", True, "automatic")
-    assert not should_use_manual_kiosk_mode("KIOSK", "CHECK_IN", True, "manual")
-    assert not should_use_manual_kiosk_mode("KIOSK_MANUAL", "", True, "manual")
+    assert should_use_manual_kiosk_mode("KIOSK", "", True, "manual")
+    assert should_use_manual_kiosk_mode("KIOSK_MANUAL", "", True, "automatic")
+    assert not should_use_manual_kiosk_mode("KIOSK", "CHECK_IN", True, "automatic")

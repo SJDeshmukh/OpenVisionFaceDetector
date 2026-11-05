@@ -41,6 +41,7 @@ class PersonEventSchema(BaseModel):
     source_timezone: Optional[str] = None
     event_source: Optional[str] = None
     status: Optional[str] = None
+    mode_at_creation: Optional[str] = None
 
 class ClassBatchStartSchema(BaseModel):
     class_year: Optional[str] = ""

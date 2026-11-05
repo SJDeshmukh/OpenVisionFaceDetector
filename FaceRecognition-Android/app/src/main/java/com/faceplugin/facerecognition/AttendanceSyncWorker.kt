@@ -126,6 +126,9 @@ class AttendanceSyncWorker(appContext: Context, params: WorkerParameters) : Work
                         if (item.explicitStatus) {
                             req.status = item.status
                             req.eventSource = "KIOSK_MANUAL"
+                            req.modeAtCreation = "manual"
+                        } else {
+                            req.modeAtCreation = "automatic"
                         }
                         req.deviceId = deviceId
                         req.deviceName = deviceName
