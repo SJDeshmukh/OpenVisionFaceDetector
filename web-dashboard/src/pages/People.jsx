@@ -343,9 +343,18 @@ const People = () => {
       .then(res => setVendorDepartments(res.data.departments || []))
       .catch(() => setVendorDepartments([]));
 
-    axios.get(`${API_URL}/classes`)
-      .then(res => setVendorClasses(res.data.classes || []))
-      .catch(() => setVendorClasses([]));
+    const classFeatures = new Set(user?.features || []);
+    const canUseClasses = requiresClassroomAllocation
+      || classFeatures.has('classes')
+      || classFeatures.has('bulk_image_attendance')
+      || classFeatures.has('lecture_wise_reports');
+    if (canUseClasses) {
+      axios.get(`${API_URL}/classes`)
+        .then(res => setVendorClasses(res.data.classes || []))
+        .catch(() => setVendorClasses([]));
+    } else {
+      setVendorClasses([]);
+    }
 
     if (user.features?.includes('bulk_image_attendance')) {
       axios.get(`${API_URL}/bulk-attendance/config`)
@@ -576,6 +585,10 @@ const People = () => {
       return;
     }
     if (!formData.name) return;
+    if (!formData.id && !formData.photo) {
+      alert(`Please upload a clear face photo before registering the ${personLabel.toLowerCase()}.`);
+      return;
+    }
     if (requiresClassroomAllocation && !formData.class_id) {
       alert(`Please allocate the ${personLabel.toLowerCase()} to a ${groupLabel.toLowerCase()}.`);
       return;

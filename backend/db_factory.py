@@ -279,18 +279,23 @@ class PostgresCursorWrapper:
         
         # 3. Handle lastrowid for INSERTs
         is_insert = sql_pg.strip().upper().startswith("INSERT")
+        auto_returning_added = False
         if is_insert and "RETURNING" not in sql_pg.upper() and "ON CONFLICT" not in sql_pg.upper():
              match = re.search(r"INSERT\s+INTO\s+([a-zA-Z0-9_]+)", sql_pg, re.IGNORECASE)
              if match:
                  table_name = match.group(1)
                  if table_name not in ['system_users', 'active_sessions', 'system_settings', 'audit_logs', 'parent_tokens', 'salary_reauth_tokens']: 
                      sql_pg += " RETURNING id"
+                     auto_returning_added = True
         
         try:
             self.cursor.execute(sql_pg, params)
             self._rowcount = self.cursor.rowcount
             
-            if is_insert and "RETURNING id" in sql_pg:
+            # Consume only a RETURNING clause added by this compatibility
+            # wrapper.  Callers that supplied RETURNING explicitly own that
+            # result and must be able to read it with fetchone()/fetchall().
+            if auto_returning_added:
                 row = self.cursor.fetchone()
                 if row:
                     self._lastrowid = row['id'] if isinstance(row, dict) else row[0]

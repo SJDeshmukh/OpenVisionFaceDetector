@@ -734,6 +734,8 @@ def upload_face():
 
     if not name:
         return jsonify({"error": "Missing name"}), 400
+    if not person_id and not face_image and not templates and not templates_list:
+        return jsonify({"error": "Please upload a clear face photo before registering the employee"}), 400
 
     raw_profile_email = next(
         (custom_dict.get(key) for key in ("email", "Email", "employee_email", "student_email", "faculty_email") if custom_dict.get(key)),
