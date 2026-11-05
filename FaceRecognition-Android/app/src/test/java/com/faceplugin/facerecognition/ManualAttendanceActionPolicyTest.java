@@ -22,4 +22,13 @@ public class ManualAttendanceActionPolicyTest {
         assertFalse(ManualAttendanceActionPolicy.decide(
                 "CHECK_OUT", "CHECK_IN", "2026-11-04", "2026-11-05", "Anant").allowed);
     }
+
+    @Test public void actionChangeInvalidatesAnOlderRecognitionCycle() {
+        assertTrue(ManualAttendanceActionPolicy.isCurrentSelection(
+                "CHECK_IN", 4L, "CHECK_IN", 4L));
+        assertFalse(ManualAttendanceActionPolicy.isCurrentSelection(
+                "CHECK_IN", 4L, "CHECK_OUT", 5L));
+        assertFalse(ManualAttendanceActionPolicy.isCurrentSelection(
+                "CHECK_IN", 4L, "CHECK_IN", 6L));
+    }
 }

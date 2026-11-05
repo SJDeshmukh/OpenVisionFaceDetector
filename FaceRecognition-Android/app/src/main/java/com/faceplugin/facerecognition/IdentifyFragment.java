@@ -114,7 +114,8 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     private com.google.android.material.button.MaterialButton checkOutActionButton;
     private android.animation.ObjectAnimator checkInActionAnimator;
     private android.animation.ObjectAnimator checkOutActionAnimator;
-    private volatile String selectedManualAttendanceAction = null;
+    private volatile ManualAttendanceActionSelection manualAttendanceActionSelection =
+            new ManualAttendanceActionSelection(null, 0L);
     private android.content.SharedPreferences appPreferences;
     private boolean preferenceListenerRegistered = false;
     private final java.util.Map<String, String> attendanceRejectionMessages = new java.util.concurrent.ConcurrentHashMap<>();
@@ -205,6 +206,16 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             this.status = status;
             this.alreadyMarked = alreadyMarked;
             this.message = message;
+        }
+    }
+
+    private static class ManualAttendanceActionSelection {
+        final String action;
+        final long revision;
+
+        ManualAttendanceActionSelection(String action, long revision) {
+            this.action = action;
+            this.revision = revision;
         }
     }
 
@@ -377,17 +388,24 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             manualActionModeCard.setVisibility(showManualControls ? View.VISIBLE : View.GONE);
         }
         if (!showManualControls) {
-            selectedManualAttendanceAction = null;
+            ManualAttendanceActionSelection currentSelection = manualAttendanceActionSelection;
+            if (currentSelection.action != null) {
+                manualAttendanceActionSelection =
+                        new ManualAttendanceActionSelection(null, currentSelection.revision + 1L);
+            }
             updateManualAttendanceModeUi(null, false);
         } else {
-            updateManualAttendanceModeUi(selectedManualAttendanceAction, false);
+            updateManualAttendanceModeUi(manualAttendanceActionSelection.action, false);
         }
     }
 
     private void selectManualAttendanceAction(String action) {
         if (!isAttendanceStatus(action)) return;
-        selectedManualAttendanceAction = action.toUpperCase(Locale.US);
-        updateManualAttendanceModeUi(selectedManualAttendanceAction, true);
+        ManualAttendanceActionSelection currentSelection = manualAttendanceActionSelection;
+        ManualAttendanceActionSelection nextSelection = new ManualAttendanceActionSelection(
+                action.toUpperCase(Locale.US), currentSelection.revision + 1L);
+        manualAttendanceActionSelection = nextSelection;
+        updateManualAttendanceModeUi(nextSelection.action, true);
         appearanceTracker.clearAll();
         attendanceRejectionMessages.clear();
         lastEventSentAtMs.clear();
@@ -397,6 +415,12 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             statusText.setText("Ready to " + friendlyAttendanceStatus(action));
             statusText.setTextColor(ContextCompat.getColor(requireContext(), R.color.primary_soft_blue));
         }
+    }
+
+    private boolean isCurrentManualAction(String action, long revision) {
+        ManualAttendanceActionSelection currentSelection = manualAttendanceActionSelection;
+        return ManualAttendanceActionPolicy.isCurrentSelection(
+                action, revision, currentSelection.action, currentSelection.revision);
     }
 
     private void updateManualAttendanceModeUi(String action, boolean animate) {
@@ -774,14 +798,23 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     }
 
     private void sendPersonEvent(boolean detected, boolean recognized, String personId, String localUid, String name, float confidence, Bitmap bitmap) {
-        sendPersonEvent(detected, recognized, personId, localUid, name, confidence, bitmap, true, null);
+        sendPersonEvent(detected, recognized, personId, localUid, name, confidence, bitmap,
+                true, null, manualAttendanceActionSelection.revision);
     }
 
     private void sendPersonEvent(boolean detected, boolean recognized, String personId, String localUid, String name, float confidence, Bitmap bitmap, boolean triggerUiEffects) {
-        sendPersonEvent(detected, recognized, personId, localUid, name, confidence, bitmap, triggerUiEffects, null);
+        sendPersonEvent(detected, recognized, personId, localUid, name, confidence, bitmap,
+                triggerUiEffects, null, manualAttendanceActionSelection.revision);
     }
 
     private void sendPersonEvent(boolean detected, boolean recognized, String personId, String localUid, String name, float confidence, Bitmap bitmap, boolean triggerUiEffects, String requestedStatus) {
+        sendPersonEvent(detected, recognized, personId, localUid, name, confidence, bitmap,
+                triggerUiEffects, requestedStatus, manualAttendanceActionSelection.revision);
+    }
+
+    private void sendPersonEvent(boolean detected, boolean recognized, String personId, String localUid,
+                                 String name, float confidence, Bitmap bitmap, boolean triggerUiEffects,
+                                 String requestedStatus, long manualActionRevisionAtDispatch) {
         GreetingService service = RetrofitClient.getAttendanceService();
         // Downscale to 320px width to cut encoding time (~300ms -> ~25ms) and payload (~800KB -> ~25KB)
         Bitmap resized = Utils.resizeBitmap(bitmap, 320);
@@ -835,7 +868,11 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                     boolean explicitStatus = isAttendanceStatus(requestedStatus);
                     String predicted = explicitStatus ? requestedStatus : dbManager.predictNextAttendanceStatus(resolvedBackendId, localUid, name);
                     dbManager.insertAttendanceQueue(resolvedBackendId, localUid, name, timestamp, predicted, bitmap, false, explicitStatus);
-                    appearanceTracker.mark(eventTrackKey, predicted, System.currentTimeMillis());
+                    boolean actionStillCurrent = !explicitStatus
+                            || isCurrentManualAction(requestedStatus, manualActionRevisionAtDispatch);
+                    if (actionStillCurrent) {
+                        appearanceTracker.mark(eventTrackKey, predicted, System.currentTimeMillis());
+                    }
                     announceAttendanceSavedOffline(
                             Collections.singletonList(name),
                             Collections.singletonList(predicted));
@@ -917,7 +954,11 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                             ("CHECK_IN".equalsIgnoreCase(status) || "CHECK_OUT".equalsIgnoreCase(status));
                     if (confirmed) {
                         attendanceRejectionMessages.remove(eventTrackKey);
-                        appearanceTracker.mark(eventTrackKey, status, System.currentTimeMillis());
+                        boolean actionStillCurrent = !explicitStatus
+                                || isCurrentManualAction(requestedStatus, manualActionRevisionAtDispatch);
+                        if (actionStillCurrent) {
+                            appearanceTracker.mark(eventTrackKey, status, System.currentTimeMillis());
+                        }
                         try {
                             String stateStatus = greeting.getLatestStatus();
                             if (stateStatus == null || stateStatus.isEmpty()) {
@@ -950,7 +991,9 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                                         greeting.getLatestStatus(), greeting.getLatestTimestamp());
                             }
                         } catch (Exception ignored) {}
-                        if (triggerUiEffects) {
+                        boolean actionStillCurrent = !explicitStatus
+                                || isCurrentManualAction(requestedStatus, manualActionRevisionAtDispatch);
+                        if (triggerUiEffects && actionStillCurrent) {
                             String markedStatus = greeting.getStatus();
                             if (!isAttendanceStatus(markedStatus)) {
                                 markedStatus = isAttendanceStatus(requestedStatus) ? requestedStatus : previousStatus;
@@ -1704,7 +1747,10 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                     } catch (Exception ignored) {}
 
                     final boolean manualAttendanceMode = isManualAttendanceMode();
-                    final String manualAction = selectedManualAttendanceAction;
+                    final ManualAttendanceActionSelection actionSelectionAtRecognition =
+                            manualAttendanceActionSelection;
+                    final String manualAction = actionSelectionAtRecognition.action;
+                    final long manualActionRevisionAtRecognition = actionSelectionAtRecognition.revision;
                     boolean onlineAtRecognition = false;
                     try {
                         onlineAtRecognition = NetworkUtils.INSTANCE.isOnline(
@@ -1852,6 +1898,12 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
 
                     boolean online = onlineAtRecognition;
 
+                    if (manualAttendanceMode
+                            && !isCurrentManualAction(
+                                    manualAction, manualActionRevisionAtRecognition)) {
+                        return;
+                    }
+
                     if (!online) {
                         SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US);
                         String timestamp = sdf.format(new Date(trustedAttendanceNowMillis()));
@@ -1859,6 +1911,11 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                         List<String> markedNames = new java.util.ArrayList<>();
                         List<String> markedStatuses = new java.util.ArrayList<>();
                         for (RecognizedFaceMatch match : readyToMark) {
+                            if (manualAttendanceMode
+                                    && !isCurrentManualAction(
+                                            manualAction, manualActionRevisionAtRecognition)) {
+                                break;
+                            }
                             String predicted = manualAttendanceMode
                                     ? manualAction
                                     : dbManager.predictNextAttendanceStatus(match.personId, match.localUid, match.person.name);
@@ -1867,8 +1924,13 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                                     timestamp, predicted, finalProcessed, false,
                                     manualAttendanceMode);
                             String trackKey = attendanceTrackKey(match.personId, match.localUid, match.person.name);
-                            appearanceTracker.mark(trackKey, predicted, currentTime);
-                            try { lastEventSentAtMs.put(trackKey, System.currentTimeMillis()); } catch (Exception ignored) {}
+                            boolean actionStillCurrent = !manualAttendanceMode
+                                    || isCurrentManualAction(
+                                            manualAction, manualActionRevisionAtRecognition);
+                            if (actionStillCurrent) {
+                                appearanceTracker.mark(trackKey, predicted, currentTime);
+                                try { lastEventSentAtMs.put(trackKey, System.currentTimeMillis()); } catch (Exception ignored) {}
+                            }
                             markedNames.add(match.person.name);
                             markedStatuses.add(predicted);
                         }
@@ -1892,22 +1954,36 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                             String predicted = dbManager.predictNextAttendanceStatus(
                                     single.personId, single.localUid, single.person.name);
                             appearanceTracker.markPending(trackKey, predicted, currentTime);
+                            if (manualAttendanceMode
+                                    && !isCurrentManualAction(
+                                            manualAction, manualActionRevisionAtRecognition)) {
+                                appearanceTracker.clearMark(trackKey);
+                                return;
+                            }
                             try { lastEventSentAtMs.put(trackKey, System.currentTimeMillis()); } catch (Exception ignored) {}
                             sendPersonEvent(true, true, single.personId, single.localUid,
                                     single.person.name, single.similarity, finalProcessed,
-                                    true, manualAttendanceMode ? manualAction : null);
+                                    true, manualAttendanceMode ? manualAction : null,
+                                    manualActionRevisionAtRecognition);
                         } else {
                             for (RecognizedFaceMatch match : readyToMark) {
                                 String trackKey = attendanceTrackKey(match.personId, match.localUid, match.person.name);
                                 String predicted = dbManager.predictNextAttendanceStatus(
                                         match.personId, match.localUid, match.person.name);
                                 appearanceTracker.markPending(trackKey, predicted, currentTime);
+                                if (manualAttendanceMode
+                                        && !isCurrentManualAction(
+                                                manualAction, manualActionRevisionAtRecognition)) {
+                                    appearanceTracker.clearMark(trackKey);
+                                    continue;
+                                }
                                 try { lastEventSentAtMs.put(trackKey, System.currentTimeMillis()); } catch (Exception ignored) {}
                                 // Each response is announced separately so mixed check-ins and check-outs
                                 // use the exact status confirmed by the backend.
                                 sendPersonEvent(true, true, match.personId, match.localUid,
                                         match.person.name, match.similarity, finalProcessed,
-                                        true, manualAttendanceMode ? manualAction : null);
+                                        true, manualAttendanceMode ? manualAction : null,
+                                        manualActionRevisionAtRecognition);
                             }
                         }
                         renderAttendanceFaceStates(namesForBoxes, faceBoxes.size(), batchMatches);

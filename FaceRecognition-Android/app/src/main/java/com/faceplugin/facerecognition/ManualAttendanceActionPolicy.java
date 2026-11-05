@@ -16,6 +16,13 @@ final class ManualAttendanceActionPolicy {
 
     private ManualAttendanceActionPolicy() {}
 
+    static boolean isCurrentSelection(String dispatchedAction, long dispatchedRevision,
+                                      String currentAction, long currentRevision) {
+        if (dispatchedRevision != currentRevision) return false;
+        if (dispatchedAction == null || currentAction == null) return false;
+        return dispatchedAction.trim().equalsIgnoreCase(currentAction.trim());
+    }
+
     static Decision decide(String action, String lastStatus, String lastOperationalDate,
                            String currentOperationalDate, String name) {
         String normalizedAction = action == null ? "" : action.trim().toUpperCase();
