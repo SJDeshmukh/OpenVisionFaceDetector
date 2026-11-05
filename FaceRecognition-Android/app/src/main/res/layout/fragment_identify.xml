@@ -80,6 +80,63 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent">
 
+        <LinearLayout
+            android:id="@+id/manualActionModeCard"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="10dp"
+            android:background="@drawable/bg_attendance_mode_idle"
+            android:elevation="10dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingHorizontal="18dp"
+            android:paddingVertical="12dp"
+            android:visibility="gone">
+
+            <View
+                android:id="@+id/manualActionModeDot"
+                android:layout_width="11dp"
+                android:layout_height="11dp"
+                android:background="@drawable/bg_attendance_mode_dot_idle" />
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="sans-serif-medium"
+                    android:letterSpacing="0.12"
+                    android:text="CURRENT ATTENDANCE ACTION"
+                    android:textColor="#AFC4C4E0"
+                    android:textSize="10sp" />
+
+                <TextView
+                    android:id="@+id/manualActionModeText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:fontFamily="sans-serif-medium"
+                    android:text="SELECT CHECK IN OR CHECK OUT"
+                    android:textColor="@android:color/white"
+                    android:textSize="17sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/manualActionModeSubtitle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="1dp"
+                    android:text="Choose an action below before scanning"
+                    android:textColor="#C8FFFFFF"
+                    android:textSize="11sp" />
+            </LinearLayout>
+        </LinearLayout>
+
         <TextView
             android:id="@+id/statusText"
             android:layout_width="match_parent"
@@ -214,46 +271,86 @@
         android:elevation="18dp"
         android:gravity="center"
         android:orientation="vertical"
-        android:padding="12dp"
+        android:padding="14dp"
         android:visibility="gone"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent">
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="8dp"
-            android:text="Select attendance action"
-            android:textColor="@android:color/white"
-            android:textSize="13sp"
-            android:fontFamily="sans-serif-medium" />
-
-        <com.google.android.material.button.MaterialButtonToggleGroup
-            android:id="@+id/attendanceActionToggle"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            app:selectionRequired="true"
-            app:singleSelection="true">
+            android:layout_marginBottom="10dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:fontFamily="sans-serif-medium"
+                android:text="Attendance action"
+                android:textColor="@android:color/white"
+                android:textSize="13sp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="TAP TO SWITCH"
+                android:textColor="#AFC4C4E0"
+                android:textSize="9sp"
+                android:letterSpacing="0.08" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:baselineAligned="false"
+            android:orientation="horizontal">
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/checkInActionButton"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                 android:layout_width="0dp"
-                android:layout_height="52dp"
+                android:layout_height="56dp"
                 android:layout_weight="1"
+                android:contentDescription="Select check in attendance action"
+                android:fontFamily="sans-serif-medium"
                 android:text="CHECK IN"
-                android:textStyle="bold" />
+                android:textColor="@color/selector_attendance_action_text"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                app:backgroundTint="@color/selector_attendance_action_background"
+                app:cornerRadius="20dp"
+                app:icon="@drawable/ic_attendance_check_in"
+                app:iconGravity="textStart"
+                app:iconPadding="8dp"
+                app:iconTint="@color/selector_attendance_action_text"
+                app:rippleColor="#3300E87A"
+                app:strokeColor="@color/selector_attendance_action_stroke"
+                app:strokeWidth="1dp" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/checkOutActionButton"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                 android:layout_width="0dp"
-                android:layout_height="52dp"
+                android:layout_height="56dp"
+                android:layout_marginStart="10dp"
                 android:layout_weight="1"
+                android:contentDescription="Select check out attendance action"
+                android:fontFamily="sans-serif-medium"
                 android:text="CHECK OUT"
-                android:textStyle="bold" />
-        </com.google.android.material.button.MaterialButtonToggleGroup>
+                android:textColor="@color/selector_attendance_action_text"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                app:backgroundTint="@color/selector_attendance_action_background"
+                app:cornerRadius="20dp"
+                app:icon="@drawable/ic_attendance_check_out"
+                app:iconGravity="textStart"
+                app:iconPadding="8dp"
+                app:iconTint="@color/selector_attendance_action_text"
+                app:rippleColor="#3300E87A"
+                app:strokeColor="@color/selector_attendance_action_stroke"
+                app:strokeWidth="1dp" />
+        </LinearLayout>
     </LinearLayout>
 
     <!-- Timeline hint chip -->

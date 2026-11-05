@@ -106,7 +106,14 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     private View syncOrb;
     private TextView networkStatusPill;
     private View manualAttendancePanel;
-    private com.google.android.material.button.MaterialButtonToggleGroup attendanceActionToggle;
+    private View manualActionModeCard;
+    private View manualActionModeDot;
+    private TextView manualActionModeText;
+    private TextView manualActionModeSubtitle;
+    private com.google.android.material.button.MaterialButton checkInActionButton;
+    private com.google.android.material.button.MaterialButton checkOutActionButton;
+    private android.animation.ObjectAnimator checkInActionAnimator;
+    private android.animation.ObjectAnimator checkOutActionAnimator;
     private volatile String selectedManualAttendanceAction = null;
     private android.content.SharedPreferences appPreferences;
     private boolean preferenceListenerRegistered = false;
@@ -254,16 +261,19 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         syncOrb = view.findViewById(R.id.syncOrb);
         networkStatusPill = view.findViewById(R.id.networkStatusPill);
         manualAttendancePanel = view.findViewById(R.id.manualAttendancePanel);
-        attendanceActionToggle = view.findViewById(R.id.attendanceActionToggle);
-        if (attendanceActionToggle != null) {
-            attendanceActionToggle.addOnButtonCheckedListener((group, checkedId, isChecked) -> {
-                if (!isChecked) return;
-                if (checkedId == R.id.checkInActionButton) {
-                    selectManualAttendanceAction("CHECK_IN");
-                } else if (checkedId == R.id.checkOutActionButton) {
-                    selectManualAttendanceAction("CHECK_OUT");
-                }
-            });
+        manualActionModeCard = view.findViewById(R.id.manualActionModeCard);
+        manualActionModeDot = view.findViewById(R.id.manualActionModeDot);
+        manualActionModeText = view.findViewById(R.id.manualActionModeText);
+        manualActionModeSubtitle = view.findViewById(R.id.manualActionModeSubtitle);
+        checkInActionButton = view.findViewById(R.id.checkInActionButton);
+        checkOutActionButton = view.findViewById(R.id.checkOutActionButton);
+        if (checkInActionButton != null) {
+            checkInActionButton.setCheckable(true);
+            checkInActionButton.setOnClickListener(v -> selectManualAttendanceAction("CHECK_IN"));
+        }
+        if (checkOutActionButton != null) {
+            checkOutActionButton.setCheckable(true);
+            checkOutActionButton.setOnClickListener(v -> selectManualAttendanceAction("CHECK_OUT"));
         }
         applyAttendanceActionMode();
         if (networkStatusPill != null) {
@@ -363,15 +373,21 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         if (manualAttendancePanel == null) return;
         boolean showManualControls = isManualAttendanceMode() && !isVendorVerifyOnlyMode();
         manualAttendancePanel.setVisibility(showManualControls ? View.VISIBLE : View.GONE);
+        if (manualActionModeCard != null) {
+            manualActionModeCard.setVisibility(showManualControls ? View.VISIBLE : View.GONE);
+        }
         if (!showManualControls) {
             selectedManualAttendanceAction = null;
-            if (attendanceActionToggle != null) attendanceActionToggle.clearChecked();
+            updateManualAttendanceModeUi(null, false);
+        } else {
+            updateManualAttendanceModeUi(selectedManualAttendanceAction, false);
         }
     }
 
     private void selectManualAttendanceAction(String action) {
         if (!isAttendanceStatus(action)) return;
         selectedManualAttendanceAction = action.toUpperCase(Locale.US);
+        updateManualAttendanceModeUi(selectedManualAttendanceAction, true);
         appearanceTracker.clearAll();
         attendanceRejectionMessages.clear();
         lastEventSentAtMs.clear();
@@ -381,6 +397,121 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             statusText.setText("Ready to " + friendlyAttendanceStatus(action));
             statusText.setTextColor(ContextCompat.getColor(requireContext(), R.color.primary_soft_blue));
         }
+    }
+
+    private void updateManualAttendanceModeUi(String action, boolean animate) {
+        boolean checkInSelected = "CHECK_IN".equalsIgnoreCase(action);
+        boolean checkOutSelected = "CHECK_OUT".equalsIgnoreCase(action);
+        boolean hasSelection = checkInSelected || checkOutSelected;
+
+        if (checkInActionButton != null) {
+            checkInActionButton.setChecked(checkInSelected);
+            checkInActionButton.setContentDescription(
+                    checkInSelected ? "Check In selected" : "Select Check In");
+            checkInActionButton.setElevation(checkInSelected ? 10f : 2f);
+            checkInActionAnimator = updateActionButtonAnimation(
+                    checkInActionButton, checkInSelected, checkInActionAnimator);
+        }
+        if (checkOutActionButton != null) {
+            checkOutActionButton.setChecked(checkOutSelected);
+            checkOutActionButton.setContentDescription(
+                    checkOutSelected ? "Check Out selected" : "Select Check Out");
+            checkOutActionButton.setElevation(checkOutSelected ? 10f : 2f);
+            checkOutActionAnimator = updateActionButtonAnimation(
+                    checkOutActionButton, checkOutSelected, checkOutActionAnimator);
+        }
+
+        String heading;
+        String subtitle;
+        if (checkInSelected) {
+            heading = "CHECK IN MODE";
+            subtitle = "Recognized employees will be checked in";
+        } else if (checkOutSelected) {
+            heading = "CHECK OUT MODE";
+            subtitle = "Recognized employees will be checked out";
+        } else {
+            heading = "SELECT CHECK IN OR CHECK OUT";
+            subtitle = "Choose an action below before scanning";
+        }
+
+        if (manualActionModeCard != null) {
+            manualActionModeCard.setBackgroundResource(
+                    hasSelection ? R.drawable.bg_attendance_mode_active : R.drawable.bg_attendance_mode_idle);
+            if (animate && hasSelection) {
+                manualActionModeCard.setScaleX(0.985f);
+                manualActionModeCard.setScaleY(0.985f);
+                manualActionModeCard.animate()
+                        .scaleX(1.0f)
+                        .scaleY(1.0f)
+                        .setDuration(220L)
+                        .start();
+            }
+        }
+        if (manualActionModeDot != null) {
+            manualActionModeDot.setBackgroundResource(
+                    hasSelection ? R.drawable.bg_attendance_mode_dot_active : R.drawable.bg_attendance_mode_dot_idle);
+            manualActionModeDot.clearAnimation();
+            if (hasSelection && getContext() != null) {
+                manualActionModeDot.startAnimation(
+                        android.view.animation.AnimationUtils.loadAnimation(requireContext(), R.anim.pulse));
+            }
+        }
+        if (manualActionModeText != null) {
+            manualActionModeText.animate().cancel();
+            manualActionModeText.setText(heading);
+            manualActionModeText.setTextColor(ContextCompat.getColor(
+                    requireContext(), hasSelection ? R.color.status_success : R.color.text_primary));
+            if (animate) {
+                manualActionModeText.setAlpha(0f);
+                manualActionModeText.setTranslationY(7f);
+                manualActionModeText.animate()
+                        .alpha(1f)
+                        .translationY(0f)
+                        .setDuration(220L)
+                        .start();
+            } else {
+                manualActionModeText.setAlpha(1f);
+                manualActionModeText.setTranslationY(0f);
+            }
+        }
+        if (manualActionModeSubtitle != null) {
+            manualActionModeSubtitle.setText(subtitle);
+        }
+    }
+
+    private android.animation.ObjectAnimator updateActionButtonAnimation(
+            View button,
+            boolean selected,
+            android.animation.ObjectAnimator currentAnimator) {
+        if (currentAnimator != null) {
+            currentAnimator.cancel();
+        }
+        button.animate().cancel();
+        if (!selected) {
+            button.animate()
+                    .scaleX(1.0f)
+                    .scaleY(1.0f)
+                    .alpha(1.0f)
+                    .setDuration(180L)
+                    .start();
+            return null;
+        }
+
+        button.setAlpha(1.0f);
+        button.setScaleX(1.0f);
+        button.setScaleY(1.0f);
+        android.animation.PropertyValuesHolder scaleX =
+                android.animation.PropertyValuesHolder.ofFloat(View.SCALE_X, 1.0f, 1.025f, 1.0f);
+        android.animation.PropertyValuesHolder scaleY =
+                android.animation.PropertyValuesHolder.ofFloat(View.SCALE_Y, 1.0f, 1.025f, 1.0f);
+        android.animation.ObjectAnimator animator = android.animation.ObjectAnimator.ofPropertyValuesHolder(
+                button, scaleX, scaleY);
+        animator.setDuration(1500L);
+        animator.setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator());
+        animator.setRepeatCount(android.animation.ValueAnimator.INFINITE);
+        animator.setRepeatMode(android.animation.ValueAnimator.RESTART);
+        animator.start();
+        return animator;
     }
 
     @Override
@@ -436,6 +567,17 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
 
     private void pauseResources() {
         unregisterNetworkCallback();
+        if (manualActionModeDot != null) {
+            manualActionModeDot.clearAnimation();
+        }
+        if (checkInActionAnimator != null) {
+            checkInActionAnimator.cancel();
+            checkInActionAnimator = null;
+        }
+        if (checkOutActionAnimator != null) {
+            checkOutActionAnimator.cancel();
+            checkOutActionAnimator = null;
+        }
         if (faceView != null) {
             faceView.setFaceBoxes(null);
         }
