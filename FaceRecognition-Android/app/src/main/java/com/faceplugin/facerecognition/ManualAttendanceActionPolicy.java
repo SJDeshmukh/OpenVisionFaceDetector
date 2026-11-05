@@ -32,16 +32,16 @@ final class ManualAttendanceActionPolicy {
         String safeName = name == null ? "Employee" : name;
 
         if ("CHECK_IN".equals(normalizedAction)) {
-            if (sameShiftDay) {
+            if (sameShiftDay && "CHECK_IN".equals(normalizedStatus)) {
                 return new Decision(false, "already_checked_in",
-                        safeName + ", check in is already marked for this shift");
+                        safeName + ", check in is already active");
             }
             return new Decision(true, null, null);
         }
         if ("CHECK_OUT".equals(normalizedAction)) {
             if (sameShiftDay && "CHECK_OUT".equals(normalizedStatus)) {
                 return new Decision(false, "already_checked_out",
-                        safeName + ", check out is already marked for this shift");
+                        safeName + ", check out is already marked");
             }
             if (!sameShiftDay || !"CHECK_IN".equals(normalizedStatus)) {
                 return new Decision(false, "not_checked_in",

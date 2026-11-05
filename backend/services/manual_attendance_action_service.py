@@ -43,15 +43,24 @@ def validate_manual_action(
     current_time: datetime,
     name: str,
 ) -> ManualActionDecision:
-    """Allow at most one explicit IN and OUT, in order, per shift day."""
+    """Require explicit actions to alternate within the active shift day."""
 
     normalized = str(action or "").strip().upper()
     safe_name = str(name or "Employee").strip() or "Employee"
-    events = [
-        (str(status or "").strip().upper(), timestamp)
-        for status, timestamp in shift_day_events
-        if isinstance(timestamp, datetime)
-    ]
+    events = sorted(
+        [
+            (str(status or "").strip().upper(), timestamp)
+            for status, timestamp in shift_day_events
+            if (
+                isinstance(timestamp, datetime)
+                and str(status or "").strip().upper()
+                in {"CHECK_IN", "CHECK_OUT"}
+                and timestamp <= current_time
+            )
+        ],
+        key=lambda event: event[1],
+    )
+    last_status = events[-1][0] if events else None
 
     if normalized not in {"CHECK_IN", "CHECK_OUT"}:
         return ManualActionDecision(
@@ -60,24 +69,21 @@ def validate_manual_action(
             "Select Check In or Check Out before scanning.",
         )
     if normalized == "CHECK_IN":
-        if any(status == "CHECK_IN" for status, _timestamp in events):
+        if last_status == "CHECK_IN":
             return ManualActionDecision(
                 False,
                 "already_checked_in",
-                f"{safe_name}, check in is already marked for this shift.",
+                f"{safe_name}, check in is already active.",
             )
         return ManualActionDecision(True)
 
-    if any(status == "CHECK_OUT" for status, _timestamp in events):
+    if last_status == "CHECK_OUT":
         return ManualActionDecision(
             False,
             "already_checked_out",
-            f"{safe_name}, check out is already marked for this shift.",
+            f"{safe_name}, check out is already marked.",
         )
-    if not any(
-        status == "CHECK_IN" and timestamp <= current_time
-        for status, timestamp in events
-    ):
+    if last_status != "CHECK_IN":
         return ManualActionDecision(
             False,
             "not_checked_in",

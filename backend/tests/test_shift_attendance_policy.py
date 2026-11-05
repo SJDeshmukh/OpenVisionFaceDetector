@@ -115,3 +115,22 @@ def test_cross_day_session_is_one_attendance_day_with_actual_hours():
     assert stats["total_hours"] == 20.8
     assert len(stats["sessions"]) == 1
     assert stats["sessions"][0]["attendance_date"] == "2026-10-28"
+
+
+def test_multiple_sessions_in_one_shift_are_summed_separately():
+    policy = _work_shift()
+    stats = calculate_daily_hours(
+        [
+            {"timestamp": "2026-11-05 08:00:00", "status": "CHECK_IN", "activity": "Work"},
+            {"timestamp": "2026-11-05 10:00:00", "status": "CHECK_OUT", "activity": "Work"},
+            {"timestamp": "2026-11-05 11:00:00", "status": "CHECK_IN", "activity": "Work"},
+            {"timestamp": "2026-11-05 14:00:00", "status": "CHECK_OUT", "activity": "Work"},
+        ],
+        shift_policy=policy,
+        working_hours=8,
+    )
+
+    assert stats["total_hours"] == 5.0
+    assert len(stats["sessions"]) == 2
+    assert [session["duration_mins"] for session in stats["sessions"]] == [120.0, 180.0]
+    assert {session["attendance_date"] for session in stats["sessions"]} == {"2026-11-05"}

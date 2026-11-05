@@ -7,7 +7,7 @@ from services.manual_attendance_action_service import (
 )
 
 
-def test_explicit_action_rules_allow_one_ordered_pair_per_shift_day():
+def test_explicit_action_rules_allow_multiple_ordered_pairs_per_shift_day():
     now = datetime(2026, 11, 5, 10, 0)
     assert validate_manual_action("CHECK_IN", [], now, "Anant").accepted
 
@@ -15,10 +15,36 @@ def test_explicit_action_rules_allow_one_ordered_pair_per_shift_day():
     assert not validate_manual_action("CHECK_IN", check_in, now, "Anant").accepted
     assert validate_manual_action("CHECK_OUT", check_in, now, "Anant").accepted
 
-    completed = check_in + [("CHECK_OUT", now)]
-    decision = validate_manual_action("CHECK_OUT", completed, now, "Anant")
+    first_pair = check_in + [("CHECK_OUT", datetime(2026, 11, 5, 9, 0))]
+    assert validate_manual_action("CHECK_IN", first_pair, now, "Anant").accepted
+
+    second_check_in = first_pair + [("CHECK_IN", datetime(2026, 11, 5, 9, 30))]
+    assert not validate_manual_action(
+        "CHECK_IN", second_check_in, now, "Anant"
+    ).accepted
+    assert validate_manual_action(
+        "CHECK_OUT", second_check_in, now, "Anant"
+    ).accepted
+
+    completed = second_check_in + [("CHECK_OUT", now)]
+    decision = validate_manual_action(
+        "CHECK_OUT", completed, datetime(2026, 11, 5, 10, 30), "Anant"
+    )
     assert not decision.accepted
     assert decision.reason == "already_checked_out"
+
+
+def test_backdated_offline_action_uses_state_at_its_original_time():
+    events = [
+        ("CHECK_IN", datetime(2026, 11, 5, 8, 0)),
+        ("CHECK_OUT", datetime(2026, 11, 5, 9, 0)),
+        ("CHECK_IN", datetime(2026, 11, 5, 11, 0)),
+    ]
+
+    decision = validate_manual_action(
+        "CHECK_IN", events, datetime(2026, 11, 5, 10, 0), "Anant"
+    )
+    assert decision.accepted
 
 
 def test_checkout_requires_an_earlier_checkin():

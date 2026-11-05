@@ -280,9 +280,41 @@ class TestVendorIsolation(unittest.TestCase):
         self.assertEqual(checkout.get_json()["status"], "CHECK_OUT")
 
         duplicate_out = punch(
-            "CHECK_OUT", checkout_time + timedelta(minutes=10), "manual-check-out-again"
+            "CHECK_OUT", checkout_time + timedelta(minutes=5), "manual-check-out-again"
         )
         self.assertEqual(duplicate_out.get_json()["reason"], "already_checked_out")
+
+        second_checkin = punch(
+            "CHECK_IN", checkout_time + timedelta(minutes=10), "manual-second-check-in"
+        )
+        self.assertEqual(second_checkin.status_code, 200, second_checkin.data.decode())
+        self.assertTrue(second_checkin.get_json()["accepted"])
+        self.assertEqual(second_checkin.get_json()["status"], "CHECK_IN")
+
+        second_duplicate_in = punch(
+            "CHECK_IN",
+            checkout_time + timedelta(minutes=15),
+            "manual-second-check-in-again",
+        )
+        self.assertEqual(
+            second_duplicate_in.get_json()["reason"], "already_checked_in"
+        )
+
+        second_checkout = punch(
+            "CHECK_OUT", checkout_time + timedelta(minutes=20), "manual-second-check-out"
+        )
+        self.assertEqual(second_checkout.status_code, 200, second_checkout.data.decode())
+        self.assertTrue(second_checkout.get_json()["accepted"])
+        self.assertEqual(second_checkout.get_json()["status"], "CHECK_OUT")
+
+        second_duplicate_out = punch(
+            "CHECK_OUT",
+            checkout_time + timedelta(minutes=25),
+            "manual-second-check-out-again",
+        )
+        self.assertEqual(
+            second_duplicate_out.get_json()["reason"], "already_checked_out"
+        )
 
         # Conversely, an automatic event queued before manual mode was enabled
         # still derives its status when it eventually reaches the backend.
@@ -311,6 +343,8 @@ class TestVendorIsolation(unittest.TestCase):
         ).fetchall()
         conn.close()
         self.assertEqual(rows, [
+            ("CHECK_IN", shift_day.isoformat(), "KIOSK_MANUAL"),
+            ("CHECK_OUT", shift_day.isoformat(), "KIOSK_MANUAL"),
             ("CHECK_IN", shift_day.isoformat(), "KIOSK_MANUAL"),
             ("CHECK_OUT", shift_day.isoformat(), "KIOSK_MANUAL"),
             ("CHECK_IN", next_shift_day.isoformat(), "KIOSK"),

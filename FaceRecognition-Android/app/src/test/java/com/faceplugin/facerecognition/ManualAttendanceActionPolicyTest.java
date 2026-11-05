@@ -11,9 +11,14 @@ public class ManualAttendanceActionPolicyTest {
                 "CHECK_IN", "CHECK_OUT", "2026-11-04", "2026-11-05", "Anant").allowed);
     }
 
-    @Test public void blocksSecondCheckInEvenAfterCheckout() {
-        assertFalse(ManualAttendanceActionPolicy.decide(
+    @Test public void permitsAnotherCheckInAfterCheckoutWithinShiftDay() {
+        assertTrue(ManualAttendanceActionPolicy.decide(
                 "CHECK_IN", "CHECK_OUT", "2026-11-05", "2026-11-05", "Anant").allowed);
+    }
+
+    @Test public void blocksConsecutiveCheckInsWhileSessionIsOpen() {
+        assertFalse(ManualAttendanceActionPolicy.decide(
+                "CHECK_IN", "CHECK_IN", "2026-11-05", "2026-11-05", "Anant").allowed);
     }
 
     @Test public void checkoutRequiresOpenCheckInOnSameShiftDay() {
@@ -21,6 +26,8 @@ public class ManualAttendanceActionPolicyTest {
                 "CHECK_OUT", "CHECK_IN", "2026-11-05", "2026-11-05", "Anant").allowed);
         assertFalse(ManualAttendanceActionPolicy.decide(
                 "CHECK_OUT", "CHECK_IN", "2026-11-04", "2026-11-05", "Anant").allowed);
+        assertFalse(ManualAttendanceActionPolicy.decide(
+                "CHECK_OUT", "CHECK_OUT", "2026-11-05", "2026-11-05", "Anant").allowed);
     }
 
     @Test public void actionChangeInvalidatesAnOlderRecognitionCycle() {
