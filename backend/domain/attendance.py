@@ -21,6 +21,7 @@ class AttendanceEventSource(str, Enum):
     MOBILE = "MOBILE"
     WEB = "WEB"
     KIOSK = "KIOSK"
+    KIOSK_MANUAL = "KIOSK_MANUAL"
     IMPORT = "IMPORT"
     API = "API"
     FACULTY_APP = "FACULTY_APP"

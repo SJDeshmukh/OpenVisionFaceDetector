@@ -206,6 +206,116 @@ class TestVendorIsolation(unittest.TestCase):
         conn.close()
         self.assertEqual(rows, [("Alex", "CHECK_IN", "device-a"), ("Alex", "CHECK_OUT", "device-b")])
 
+    def test_manual_kiosk_actions_are_explicit_and_shift_day_scoped(self):
+        shift_day = (datetime.now() - timedelta(days=2)).date()
+        check_in_time = datetime.combine(shift_day, datetime.min.time()).replace(hour=21)
+        checkout_time = datetime.combine(
+            shift_day + timedelta(days=1), datetime.min.time()
+        ).replace(hour=5, minute=30)
+
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(
+            "UPDATE vendors SET attendance_action_mode = 'manual' WHERE id = 1"
+        )
+        conn.execute(
+            "INSERT INTO companies (vendor_id, name, shifts) VALUES (?, ?, ?)",
+            (1, "Vendor One", json.dumps([{
+                "id": "work", "name": "Work", "start_time": "06:00",
+                "end_time": "05:59", "active": True,
+            }])),
+        )
+        conn.execute("DELETE FROM attendance_events WHERE vendor_id = 1")
+        conn.execute("DELETE FROM attendance WHERE vendor_id = 1 AND person_id = 101")
+        conn.commit()
+        conn.close()
+
+        def punch(action, when, event_id, *, replay=True):
+            payload = {
+                "detected": True,
+                "recognized": True,
+                "person_id": "101",
+                "name": "Alex",
+                "confidence": 0.92,
+                "is_attendance": True,
+                "source_event_id": event_id,
+                "source_timezone": "Asia/Kolkata",
+                "device_id": "manual-kiosk",
+            }
+            if replay:
+                payload["timestamp"] = when.isoformat(timespec="milliseconds")
+            if action:
+                payload["status"] = action
+                payload["event_source"] = "KIOSK_MANUAL"
+            return self.client.post(
+                "/api/person-event",
+                headers={"Authorization": f"Bearer {self.v1_token}"},
+                json=payload,
+            )
+
+        missing = punch(None, check_in_time, "manual-missing-action", replay=False)
+        self.assertEqual(missing.status_code, 200, missing.data.decode())
+        self.assertEqual(missing.get_json()["reason"], "manual_action_required")
+
+        first = punch("CHECK_IN", check_in_time, "manual-check-in")
+        self.assertEqual(first.status_code, 200, first.data.decode())
+        self.assertTrue(first.get_json()["accepted"])
+        self.assertEqual(first.get_json()["status"], "CHECK_IN")
+
+        duplicate_in = punch(
+            "CHECK_IN", check_in_time + timedelta(hours=1), "manual-check-in-again"
+        )
+        self.assertEqual(duplicate_in.get_json()["reason"], "already_checked_in")
+
+        # The queued action remains explicit even if SuperAdmin changes the
+        # tenant mode before the offline kiosk reconnects.
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(
+            "UPDATE vendors SET attendance_action_mode = 'automatic' WHERE id = 1"
+        )
+        conn.commit()
+        conn.close()
+        checkout = punch("CHECK_OUT", checkout_time, "manual-check-out")
+        self.assertEqual(checkout.status_code, 200, checkout.data.decode())
+        self.assertTrue(checkout.get_json()["accepted"])
+        self.assertEqual(checkout.get_json()["status"], "CHECK_OUT")
+
+        duplicate_out = punch(
+            "CHECK_OUT", checkout_time + timedelta(minutes=10), "manual-check-out-again"
+        )
+        self.assertEqual(duplicate_out.get_json()["reason"], "already_checked_out")
+
+        # Conversely, an automatic event queued before manual mode was enabled
+        # still derives its status when it eventually reaches the backend.
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(
+            "UPDATE vendors SET attendance_action_mode = 'manual' WHERE id = 1"
+        )
+        conn.commit()
+        conn.close()
+        next_shift_day = shift_day + timedelta(days=1)
+        automatic_replay = punch(
+            None,
+            datetime.combine(next_shift_day, datetime.min.time()).replace(hour=8),
+            "automatic-before-mode-change",
+        )
+        self.assertTrue(automatic_replay.get_json()["accepted"])
+        self.assertEqual(automatic_replay.get_json()["status"], "CHECK_IN")
+
+        conn = sqlite3.connect(self.db_path)
+        rows = conn.execute(
+            """SELECT a.status, a.attendance_date, e.source
+               FROM attendance a
+               JOIN attendance_events e ON e.legacy_attendance_id = a.id
+               WHERE a.vendor_id = 1 AND a.person_id = 101
+               ORDER BY a.timestamp"""
+        ).fetchall()
+        conn.close()
+        self.assertEqual(rows, [
+            ("CHECK_IN", shift_day.isoformat(), "KIOSK_MANUAL"),
+            ("CHECK_OUT", shift_day.isoformat(), "KIOSK_MANUAL"),
+            ("CHECK_IN", next_shift_day.isoformat(), "KIOSK"),
+        ])
+
     def test_attendance_rejects_cross_vendor_person_id(self):
         response = self.client.post(
             "/api/person-event",

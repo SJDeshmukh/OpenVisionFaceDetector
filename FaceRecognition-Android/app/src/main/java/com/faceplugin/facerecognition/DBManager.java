@@ -24,7 +24,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
      public static CopyOnWriteArrayList<Person> personList = new CopyOnWriteArrayList<Person>();
 
     public DBManager(Context context) {
-        super(context, "mydb" , null, 20);
+        super(context, "mydb" , null, 21);
     }
 
     @Override
@@ -39,7 +39,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_person_display_id ON person(display_id)");
         db.execSQL(
                 "create table attendance_queue " +
-                        "(id integer primary key autoincrement, person_id text, local_uid text, name text, timestamp text, status text, image blob, is_late integer, sync_state text default 'pending', attempts integer default 0, last_error text)"
+                        "(id integer primary key autoincrement, person_id text, local_uid text, name text, timestamp text, status text, image blob, is_late integer, explicit_status integer default 0, previous_status text, previous_timestamp text, sync_state text default 'pending', attempts integer default 0, last_error text)"
         );
         db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_attendance_queue_event ON attendance_queue(ifnull(person_id, ''), ifnull(local_uid, ''), timestamp)");
         db.execSQL(
@@ -182,6 +182,11 @@ import java.util.concurrent.CopyOnWriteArrayList;
         }
         if (oldVersion < 20) {
             try { db.execSQL("ALTER TABLE person ADD COLUMN image_url text"); } catch (Exception ignored) {}
+        }
+        if (oldVersion < 21) {
+            try { db.execSQL("ALTER TABLE attendance_queue ADD COLUMN explicit_status integer default 0"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE attendance_queue ADD COLUMN previous_status text"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE attendance_queue ADD COLUMN previous_timestamp text"); } catch (Exception ignored) {}
         }
     }
 
@@ -1040,6 +1045,10 @@ import java.util.concurrent.CopyOnWriteArrayList;
     }
 
     public long insertAttendanceQueue(String personId, String localUid, String name, String timestamp, String status, Bitmap image, boolean isLate) {
+        return insertAttendanceQueue(personId, localUid, name, timestamp, status, image, isLate, false);
+    }
+
+    public long insertAttendanceQueue(String personId, String localUid, String name, String timestamp, String status, Bitmap image, boolean isLate, boolean explicitStatus) {
         byte[] imageJpeg = null;
         if (image != null && !image.isRecycled()) {
             try {
@@ -1048,10 +1057,14 @@ import java.util.concurrent.CopyOnWriteArrayList;
                 imageJpeg = output.toByteArray();
             } catch (Exception | OutOfMemoryError ignored) {}
         }
-        return insertAttendanceQueueJpeg(personId, localUid, name, timestamp, status, imageJpeg, isLate);
+        return insertAttendanceQueueJpeg(personId, localUid, name, timestamp, status, imageJpeg, isLate, explicitStatus);
     }
 
     public long insertAttendanceQueueJpeg(String personId, String localUid, String name, String timestamp, String status, byte[] imageJpeg, boolean isLate) {
+        return insertAttendanceQueueJpeg(personId, localUid, name, timestamp, status, imageJpeg, isLate, false);
+    }
+
+    public long insertAttendanceQueueJpeg(String personId, String localUid, String name, String timestamp, String status, byte[] imageJpeg, boolean isLate, boolean explicitStatus) {
         SQLiteDatabase db = this.getWritableDatabase();
         String effectivePersonId = personId;
         if ((effectivePersonId == null || effectivePersonId.isEmpty() || effectivePersonId.startsWith("local:")) && localUid != null && !localUid.isEmpty()) {
@@ -1067,6 +1080,11 @@ import java.util.concurrent.CopyOnWriteArrayList;
         contentValues.put("timestamp", timestamp);
         contentValues.put("status", status);
         contentValues.put("is_late", isLate ? 1 : 0);
+        contentValues.put("explicit_status", explicitStatus ? 1 : 0);
+        String previousStatus = getAttendanceStateStatus(effectivePersonId, localUid, name);
+        String previousTimestamp = getLastAttendanceTimestamp(effectivePersonId, localUid, name);
+        contentValues.put("previous_status", previousStatus);
+        contentValues.put("previous_timestamp", previousTimestamp);
         contentValues.put("sync_state", "pending");
         contentValues.put("attempts", 0);
         contentValues.putNull("last_error");
@@ -1352,6 +1370,12 @@ import java.util.concurrent.CopyOnWriteArrayList;
                 item.timestamp = res.getString(res.getColumnIndexOrThrow("timestamp"));
                 item.status = res.getString(res.getColumnIndexOrThrow("status"));
                 item.isLate = res.getInt(res.getColumnIndexOrThrow("is_late")) == 1;
+                int explicitIdx = res.getColumnIndex("explicit_status");
+                if (explicitIdx != -1) item.explicitStatus = res.getInt(explicitIdx) == 1;
+                int previousStatusIdx = res.getColumnIndex("previous_status");
+                if (previousStatusIdx != -1) item.previousStatus = res.getString(previousStatusIdx);
+                int previousTimestampIdx = res.getColumnIndex("previous_timestamp");
+                if (previousTimestampIdx != -1) item.previousTimestamp = res.getString(previousTimestampIdx);
                 int attemptsIdx = res.getColumnIndex("attempts");
                 if (attemptsIdx != -1) item.attempts = res.getInt(attemptsIdx);
                 
@@ -1427,6 +1451,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
         public String timestamp;
         public String status;
         public boolean isLate;
+        public boolean explicitStatus;
+        public String previousStatus;
+        public String previousTimestamp;
         public int attempts;
         public String image; // Base64
     }

@@ -154,4 +154,8 @@ final class FaceAppearanceTracker {
         state.markedAtMs = 0L;
         state.lastCooldownFeedbackAtMs = 0L;
     }
+
+    synchronized void clearAll() {
+        states.clear();
+    }
 }

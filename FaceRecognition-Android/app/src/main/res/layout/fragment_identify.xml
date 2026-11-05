@@ -203,6 +203,59 @@
         </LinearLayout>
     </LinearLayout>
 
+    <LinearLayout
+        android:id="@+id/manualAttendancePanel"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="24dp"
+        android:layout_marginEnd="24dp"
+        android:layout_marginBottom="28dp"
+        android:background="@drawable/bg_glass_card"
+        android:elevation="18dp"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="12dp"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
+            android:text="Select attendance action"
+            android:textColor="@android:color/white"
+            android:textSize="13sp"
+            android:fontFamily="sans-serif-medium" />
+
+        <com.google.android.material.button.MaterialButtonToggleGroup
+            android:id="@+id/attendanceActionToggle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            app:selectionRequired="true"
+            app:singleSelection="true">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/checkInActionButton"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                android:layout_width="0dp"
+                android:layout_height="52dp"
+                android:layout_weight="1"
+                android:text="CHECK IN"
+                android:textStyle="bold" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/checkOutActionButton"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                android:layout_width="0dp"
+                android:layout_height="52dp"
+                android:layout_weight="1"
+                android:text="CHECK OUT"
+                android:textStyle="bold" />
+        </com.google.android.material.button.MaterialButtonToggleGroup>
+    </LinearLayout>
+
     <!-- Timeline hint chip -->
     <TextView
         android:id="@+id/timelineChip"

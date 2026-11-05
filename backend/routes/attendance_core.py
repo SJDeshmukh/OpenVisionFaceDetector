@@ -29,6 +29,10 @@ from services.attendance_state_service import (
     next_attendance_status,
     reconcile_person_timeline,
 )
+from services.manual_attendance_action_service import (
+    should_use_manual_kiosk_mode,
+    validate_manual_action,
+)
 from services.attendance_shift_service import (
     choose_shift_policy,
     load_person_shift_policy,
@@ -540,10 +544,47 @@ def person_event(valid_data: PersonEventSchema):
 
     shift_policy = load_person_shift_policy(c, vendor_id_to_check, person_id)
 
-    event_source = str(valid_data.event_source or AttendanceEventSource.KIOSK.value).strip().upper()
-    if event_source not in {item.value for item in AttendanceEventSource}:
+    requested_event_source = str(
+        valid_data.event_source or AttendanceEventSource.KIOSK.value
+    ).strip().upper()
+    if requested_event_source not in {item.value for item in AttendanceEventSource}:
         conn.close()
         return jsonify({"error": "Unsupported event_source"}), 400
+
+    provided_status = str(valid_data.status or "").strip().upper()
+    # KIOSK_MANUAL is accepted only as a marker on timestamped queue replays.
+    # Live clients cannot use it to override the tenant's configured mode.
+    client_event_source = (
+        AttendanceEventSource.KIOSK.value
+        if requested_event_source == AttendanceEventSource.KIOSK_MANUAL.value
+        else requested_event_source
+    )
+    attendance_action_mode = "automatic"
+    if vendor_id_to_check:
+        try:
+            c.execute(
+                "SELECT attendance_action_mode FROM vendors WHERE id = ? LIMIT 1",
+                (vendor_id_to_check,),
+            )
+            mode_row = c.fetchone()
+            if mode_row and str(mode_row[0] or "").strip().lower() == "manual":
+                attendance_action_mode = "manual"
+        except Exception:
+            logger.debug("Attendance action mode lookup failed", exc_info=True)
+    # A queued event keeps the action mode that was active when it was captured.
+    # Current Android clients attach a status only to explicit/manual queue
+    # entries. This prevents a later SuperAdmin mode change from reinterpreting
+    # or dropping an event that was already saved offline.
+    manual_kiosk_mode = should_use_manual_kiosk_mode(
+        requested_event_source,
+        provided_status,
+        bool(valid_data.timestamp),
+        attendance_action_mode,
+    )
+    event_source = (
+        AttendanceEventSource.KIOSK_MANUAL.value
+        if manual_kiosk_mode else client_event_source
+    )
 
     hostel_movement_mode = bool(
         person_id and vendor_id_to_check and
@@ -553,7 +594,10 @@ def person_event(valid_data: PersonEventSchema):
     # omit it). The device's status was predicted from its local cache and may
     # be stale if another kiosk marked this person while it was disconnected.
     is_offline_kiosk_replay = bool(
-        valid_data.timestamp and event_source == AttendanceEventSource.KIOSK.value
+        valid_data.timestamp and client_event_source in {
+            AttendanceEventSource.KIOSK.value,
+            AttendanceEventSource.KIOSK_MANUAL.value,
+        }
     )
 
     # Resolve idempotent retries before deriving the next IN/OUT state. Without
@@ -602,11 +646,64 @@ def person_event(valid_data: PersonEventSchema):
                 "event_id": existing_event.event_id,
             })
 
-    provided_status = str(valid_data.status or "").strip().upper()
+    if manual_kiosk_mode and provided_status not in ("CHECK_IN", "CHECK_OUT"):
+        latest_status, latest_timestamp = latest_person_state(
+            c, vendor_id_to_check, person_id
+        )
+        conn.close()
+        return jsonify({
+            "speak": True,
+            "text": "Select Check In or Check Out before scanning.",
+            "accepted": False,
+            "reason": "manual_action_required",
+            "latest_status": latest_status,
+            "latest_timestamp": latest_timestamp,
+            "person_id": person_id,
+        })
+
+    if manual_kiosk_mode:
+        target_attendance_date = shift_policy.attendance_date(current_time_obj)
+        c.execute(
+            """SELECT status, timestamp FROM attendance
+               WHERE vendor_id = ? AND person_id = ?
+               ORDER BY timestamp ASC, id ASC""",
+            (vendor_id_to_check, person_id),
+        )
+        shift_day_events = []
+        for event_row in c.fetchall() or []:
+            event_time = parse_db_datetime(event_row[1])
+            if (
+                event_time is not None
+                and shift_policy.attendance_date(event_time) == target_attendance_date
+            ):
+                shift_day_events.append((str(event_row[0] or "").upper(), event_time))
+
+        manual_decision = validate_manual_action(
+            provided_status, shift_day_events, current_time_obj, name
+        )
+        if not manual_decision.accepted:
+            latest_status, latest_timestamp = latest_person_state(
+                c, vendor_id_to_check, person_id
+            )
+            conn.close()
+            return jsonify({
+                "speak": True,
+                "text": manual_decision.text,
+                "accepted": False,
+                "reason": manual_decision.reason,
+                "status": provided_status,
+                "latest_status": latest_status,
+                "latest_timestamp": latest_timestamp,
+                "person_id": person_id,
+            })
+
     if (
-        provided_status in ("CHECK_IN", "CHECK_OUT")
-        and event_source != AttendanceEventSource.KIOSK.value
-        and not is_offline_kiosk_replay
+        manual_kiosk_mode
+        or (
+            provided_status in ("CHECK_IN", "CHECK_OUT")
+            and event_source != AttendanceEventSource.KIOSK.value
+            and not is_offline_kiosk_replay
+        )
     ):
         new_status = provided_status
         if person_id:
@@ -672,7 +769,7 @@ def person_event(valid_data: PersonEventSchema):
     # Full shift matching logic here...
     
     # Cooldown Check: only apply for live punches (not offline replay sync)
-    if last_record and not valid_data.timestamp:
+    if last_record and not valid_data.timestamp and not manual_kiosk_mode:
         try:
             lts = parse_db_datetime(last_record['timestamp'])
             cooldown_key = f"cooldown_vendor_{vendor_id_to_check}" if vendor_id_to_check else "cooldown"

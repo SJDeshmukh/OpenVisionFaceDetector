@@ -121,9 +121,12 @@ class AttendanceSyncWorker(appContext: Context, params: WorkerParameters) : Work
                             true,
                             item.timestamp
                         )
-                        // The offline label is only a local prediction. Let the
-                        // backend derive CHECK_IN/CHECK_OUT from the complete
-                        // vendor timeline when this event is replayed.
+                        // Automatic labels are local predictions. Manual labels
+                        // are operator-selected actions and remain authoritative.
+                        if (item.explicitStatus) {
+                            req.status = item.status
+                            req.eventSource = "KIOSK_MANUAL"
+                        }
                         req.deviceId = deviceId
                         req.deviceName = deviceName
                         req.sourceEventId = PersonEventRequest.buildSourceEventId(
@@ -159,8 +162,21 @@ class AttendanceSyncWorker(appContext: Context, params: WorkerParameters) : Work
                                 db.deleteQueueItem(item.id)
                                 successCount++
                                 Log.i(TAG, "Synced item ${item.id} successfully: person=$personName, status=$status")
-                            } else if (body?.accepted == false && body.reason == "cooldown") {
-                                // An explicit server no-op is final and safe to remove.
+                            } else if (body?.accepted == false && body.reason in setOf(
+                                    "cooldown", "already_checked_in", "already_checked_out",
+                                    "not_checked_in", "manual_action_required")) {
+                                db.restoreAttendanceState(
+                                    pid, item.localUid, item.name, item.timestamp,
+                                    item.previousStatus, item.previousTimestamp
+                                )
+                                val latestStatus = body.latestStatus
+                                val latestTimestamp = body.latestTimestamp
+                                if (!latestStatus.isNullOrBlank() && !latestTimestamp.isNullOrBlank()) {
+                                    db.upsertAttendanceState(
+                                        pid, item.localUid, item.name,
+                                        latestStatus, latestTimestamp
+                                    )
+                                }
                                 db.deleteQueueItem(item.id)
                             } else {
                                 val retrying = db.markQueueItemRetry(item.id, "HTTP 2xx without confirmed attendance status")

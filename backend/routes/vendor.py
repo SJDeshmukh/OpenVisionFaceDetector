@@ -1378,7 +1378,7 @@ def sync_vendor_owners():
 def get_settings():
     from app import get_db_connection, socketio, is_testing
     from services.auth_service import extract_token, verify_token
-    allowed_keys = {'threshold', 'cooldown', 'max_faces_per_frame', 'work_start_time', 'late_threshold', 'late_grace_period', 'auto_checkout', 'voice_greeting', 'admin_alerts', 'missing_checkout_deduction_percent'}
+    allowed_keys = {'threshold', 'cooldown', 'max_faces_per_frame', 'attendance_action_mode', 'work_start_time', 'late_threshold', 'late_grace_period', 'auto_checkout', 'voice_greeting', 'admin_alerts', 'missing_checkout_deduction_percent'}
     vendor_id, error = authenticate_vendor_access()
     if error:
         return error
@@ -1393,6 +1393,7 @@ def get_settings():
     v_thresh = None
     v_cool = None
     v_max_faces = None
+    v_attendance_action_mode = None
     if vendor_id:
         try:
             from db_factory import get_table_columns
@@ -1400,6 +1401,8 @@ def get_settings():
             select_fields = ["threshold", "cooldown"]
             if "max_faces_per_frame" in vendor_columns:
                 select_fields.append("max_faces_per_frame")
+            if "attendance_action_mode" in vendor_columns:
+                select_fields.append("attendance_action_mode")
             c.execute(f"SELECT {', '.join(select_fields)} FROM vendors WHERE id = ?", (vendor_id,))
             v_row = c.fetchone()
             if v_row:
@@ -1408,11 +1411,16 @@ def get_settings():
                     v_cool = v_row["cooldown"]
                     if "max_faces_per_frame" in select_fields:
                         v_max_faces = v_row["max_faces_per_frame"]
+                    if "attendance_action_mode" in select_fields:
+                        v_attendance_action_mode = v_row["attendance_action_mode"]
                 else:
                     v_thresh = v_row[0]
                     v_cool = v_row[1]
-                    if len(select_fields) > 2:
-                        v_max_faces = v_row[2]
+                    for index, field in enumerate(select_fields):
+                        if field == "max_faces_per_frame":
+                            v_max_faces = v_row[index]
+                        elif field == "attendance_action_mode":
+                            v_attendance_action_mode = v_row[index]
         except Exception:
             pass
     conn.close()
@@ -1444,6 +1452,11 @@ def get_settings():
     elif 'max_faces_per_frame' not in effective:
         effective['max_faces_per_frame'] = "5"
 
+    effective['attendance_action_mode'] = (
+        'manual' if str(v_attendance_action_mode or '').strip().lower() == 'manual'
+        else 'automatic'
+    )
+
     return jsonify(effective)
 
 
@@ -1455,7 +1468,7 @@ def update_settings():
     if error:
         return error
 
-    allowed_keys = {'threshold', 'cooldown', 'max_faces_per_frame', 'work_start_time', 'late_threshold', 'late_grace_period', 'auto_checkout', 'voice_greeting', 'admin_alerts', 'missing_checkout_deduction_percent'}
+    allowed_keys = {'threshold', 'cooldown', 'max_faces_per_frame', 'attendance_action_mode', 'work_start_time', 'late_threshold', 'late_grace_period', 'auto_checkout', 'voice_greeting', 'admin_alerts', 'missing_checkout_deduction_percent'}
     data = dict(request.json or {})
     role = g.user_role
     if role not in {'super_admin', 'vendor_admin', 'admin', 'owner'}:
@@ -1472,6 +1485,7 @@ def update_settings():
         data.pop('threshold', None)
         data.pop('cooldown', None)
         data.pop('max_faces_per_frame', None)
+        data.pop('attendance_action_mode', None)
 
     try:
         if 'threshold' in data and not 0.4 <= float(data['threshold']) <= 0.95:
@@ -1480,6 +1494,11 @@ def update_settings():
             raise ValueError("cooldown must be between 5 and 3600 seconds")
         if 'max_faces_per_frame' in data and not 1 <= int(data['max_faces_per_frame']) <= 10:
             raise ValueError("max_faces_per_frame must be between 1 and 10")
+        if 'attendance_action_mode' in data:
+            action_mode = str(data['attendance_action_mode'] or '').strip().lower()
+            if action_mode not in {'automatic', 'manual'}:
+                raise ValueError("attendance_action_mode must be automatic or manual")
+            data['attendance_action_mode'] = action_mode
         for time_key in ('work_start_time', 'late_threshold'):
             if time_key in data and not re.fullmatch(r'([01]\d|2[0-3]):[0-5]\d', str(data[time_key])):
                 raise ValueError(f"{time_key} must use HH:MM format")
@@ -1510,6 +1529,11 @@ def update_settings():
                 c.execute(
                     "UPDATE vendors SET max_faces_per_frame = ? WHERE id = ?",
                     (int(data['max_faces_per_frame']), vendor_id),
+                )
+            if 'attendance_action_mode' in data and 'attendance_action_mode' in vendor_columns:
+                c.execute(
+                    "UPDATE vendors SET attendance_action_mode = ? WHERE id = ?",
+                    (data['attendance_action_mode'], vendor_id),
                 )
 
         for key, value in data.items():

@@ -1618,6 +1618,9 @@ def create_vendor():
             raise ValueError
     except (TypeError, ValueError):
         return jsonify({"error": "Maximum faces per frame must be between 1 and 10"}), 400
+    attendance_action_mode = str(data.get("attendance_action_mode") or "automatic").strip().lower()
+    if attendance_action_mode not in {"automatic", "manual"}:
+        return jsonify({"error": "Attendance action mode must be automatic or manual"}), 400
     
     if not company_name:
         return jsonify({"error": "Company Name is required"}), 400
@@ -1645,9 +1648,18 @@ def create_vendor():
                 "UPDATE vendors SET max_faces_per_frame = ? WHERE id = ?",
                 (max_faces_per_frame, vendor_id),
             )
+        if "attendance_action_mode" in vendor_cols:
+            c.execute(
+                "UPDATE vendors SET attendance_action_mode = ? WHERE id = ?",
+                (attendance_action_mode, vendor_id),
+            )
         c.execute(
             "INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)",
             (f"max_faces_per_frame_vendor_{vendor_id}", str(max_faces_per_frame)),
+        )
+        c.execute(
+            "INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)",
+            (f"attendance_action_mode_vendor_{vendor_id}", attendance_action_mode),
         )
         
         # 2. Setup Subscription (Synchronous now to avoid "Infinity" on first load)
@@ -2311,6 +2323,10 @@ def update_vendor_details(vendor_id):
                 raise ValueError
         except (TypeError, ValueError):
             return jsonify({"error": "Maximum faces per frame must be between 1 and 10"}), 400
+    if 'attendance_action_mode' in data:
+        data['attendance_action_mode'] = str(data['attendance_action_mode'] or '').strip().lower()
+        if data['attendance_action_mode'] not in {'automatic', 'manual'}:
+            return jsonify({"error": "Attendance action mode must be automatic or manual"}), 400
     
     conn = get_db_connection()
     c = conn.cursor()
@@ -2329,6 +2345,8 @@ def update_vendor_details(vendor_id):
         fields = ['company_name', 'contact_person', 'phone', 'email', 'frontend_bundle_id', 'backend_service_id', 'vertical', 'attendance_type', 'retention_days']
         if "max_faces_per_frame" in vendor_cols:
             fields.append("max_faces_per_frame")
+        if "attendance_action_mode" in vendor_cols:
+            fields.append("attendance_action_mode")
         for field in fields:
             if field in data:
                 query += f"{field} = ?, "
@@ -2566,6 +2584,11 @@ def update_vendor_details(vendor_id):
             c.execute(
                 "INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)",
                 (f"max_faces_per_frame_vendor_{vendor_id}", str(data['max_faces_per_frame'])),
+            )
+        if 'attendance_action_mode' in data:
+            c.execute(
+                "INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)",
+                (f"attendance_action_mode_vendor_{vendor_id}", data['attendance_action_mode']),
             )
 
         # 4. Update Owner Accounts (Sync Logic)

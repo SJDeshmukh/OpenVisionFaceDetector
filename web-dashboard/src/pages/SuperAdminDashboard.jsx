@@ -175,6 +175,7 @@ const SuperAdminDashboard = () => {
     threshold: 0.60,
     cooldown: 30,
     max_faces_per_frame: 5,
+    attendance_action_mode: 'automatic',
     kiosk_pin: '8888',
     owners: []
   });
@@ -1316,6 +1317,7 @@ const SuperAdminDashboard = () => {
           threshold: newVendor.threshold != null ? parseFloat(newVendor.threshold) : 0.60,
           cooldown: newVendor.cooldown != null ? parseInt(newVendor.cooldown, 10) : 30,
           max_faces_per_frame: Math.max(1, Math.min(10, parseInt(newVendor.max_faces_per_frame, 10) || 5)),
+          attendance_action_mode: newVendor.attendance_action_mode === 'manual' ? 'manual' : 'automatic',
           kiosk_pin: newVendor.kiosk_pin || '8888',
           owners: newVendor.owners || []
         }, {
@@ -1462,6 +1464,7 @@ const SuperAdminDashboard = () => {
         threshold: 0.60,
         cooldown: 30,
         max_faces_per_frame: 5,
+        attendance_action_mode: 'automatic',
         kiosk_pin: '8888',
         owners: []
       });
@@ -1511,6 +1514,7 @@ const SuperAdminDashboard = () => {
       threshold: vendor.threshold != null ? parseFloat(vendor.threshold) : 0.60,
       cooldown: vendor.cooldown != null ? parseInt(vendor.cooldown, 10) : 30,
       max_faces_per_frame: Math.max(1, Math.min(10, parseInt(vendor.max_faces_per_frame, 10) || 5)),
+      attendance_action_mode: vendor.attendance_action_mode === 'manual' ? 'manual' : 'automatic',
       kiosk_pin: vendor.kiosk_pin || '8888',
       owners: vendor.owners || []
     };
@@ -2003,6 +2007,7 @@ const SuperAdminDashboard = () => {
                   threshold: 0.60,
                   cooldown: 30,
                   max_faces_per_frame: 5,
+                  attendance_action_mode: 'automatic',
                   kiosk_pin: '8888',
                   owners: []
                 });
@@ -4511,7 +4516,7 @@ const SuperAdminDashboard = () => {
                 <p className="text-xs text-slate-500 mb-4">
                   SuperAdmin-managed biometric threshold, duplicate cooldown, and simultaneous face processing for mobile kiosks and the attendance engine.
                 </p>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5">
                   <div className="bg-white p-3.5 rounded-lg border border-slate-200 shadow-sm">
                     <div className="flex justify-between items-center mb-2">
                       <label className="text-xs font-bold text-slate-700">
@@ -4578,6 +4583,34 @@ const SuperAdminDashboard = () => {
                     />
                     <p className="text-[11px] text-slate-500 mt-2 leading-relaxed">
                       Maximum number of employees recognized in the same camera frame. Increase this for wider queue views. (Default: 5)
+                    </p>
+                  </div>
+
+                  <div className="bg-white p-3.5 rounded-lg border border-slate-200 shadow-sm">
+                    <label className="text-xs font-bold text-slate-700 block mb-2">
+                      Attendance Action Mode
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {[
+                        ['automatic', 'Automatic'],
+                        ['manual', 'Manual Buttons']
+                      ].map(([value, label]) => (
+                        <button
+                          key={value}
+                          type="button"
+                          onClick={() => setNewVendor({ ...newVendor, attendance_action_mode: value })}
+                          className={`rounded-lg border px-2 py-2 text-xs font-semibold transition ${
+                            (newVendor.attendance_action_mode || 'automatic') === value
+                              ? 'border-indigo-600 bg-indigo-600 text-white shadow-sm'
+                              : 'border-slate-200 bg-white text-slate-600 hover:border-indigo-300'
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-[11px] text-slate-500 mt-2 leading-relaxed">
+                      Manual mode shows Check In and Check Out controls on the kiosk. The selected action is enforced online and during offline sync.
                     </p>
                   </div>
                 </div>
@@ -4666,6 +4699,7 @@ const SuperAdminDashboard = () => {
                       threshold: 0.60,
                       cooldown: 30,
                       max_faces_per_frame: 5,
+                      attendance_action_mode: 'automatic',
                       kiosk_pin: '8888',
                       owners: []
                     });

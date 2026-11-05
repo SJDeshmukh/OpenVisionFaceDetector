@@ -927,6 +927,14 @@ class MainActivity : AppCompatActivity() {
                                     body.get("voice_greeting").asString.equals("true", ignoreCase = true)
                                 ).apply()
                             }
+                            if (body.has("attendance_action_mode") && !body.get("attendance_action_mode").isJsonNull) {
+                                val mode = if (body.get("attendance_action_mode").asString.equals("manual", ignoreCase = true)) {
+                                    "manual"
+                                } else {
+                                    "automatic"
+                                }
+                                prefs.edit().putString("attendance_action_mode", mode).apply()
+                            }
                         }
                     } catch (_: Exception) {
                     }
