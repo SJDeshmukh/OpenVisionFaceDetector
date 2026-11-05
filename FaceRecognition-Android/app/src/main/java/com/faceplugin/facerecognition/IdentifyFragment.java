@@ -836,7 +836,9 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                     String predicted = explicitStatus ? requestedStatus : dbManager.predictNextAttendanceStatus(resolvedBackendId, localUid, name);
                     dbManager.insertAttendanceQueue(resolvedBackendId, localUid, name, timestamp, predicted, bitmap, false, explicitStatus);
                     appearanceTracker.mark(eventTrackKey, predicted, System.currentTimeMillis());
-                    announceAttendanceSavedOffline(name);
+                    announceAttendanceSavedOffline(
+                            Collections.singletonList(name),
+                            Collections.singletonList(predicted));
                     try { SyncScheduler.scheduleImmediate(requireContext().getApplicationContext()); } catch (Exception ignored) {}
                 }
             } else {
@@ -1091,7 +1093,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                 statusText.setTextColor(ContextCompat.getColor(requireContext(), R.color.vision_error));
             }
             Toast.makeText(requireContext(), message, Toast.LENGTH_LONG).show();
-            speakAttendanceMessage(message);
+            speakAlreadyMarked(feedback.name, feedback.status);
         } else {
             playAttendanceSound(feedback.status);
             speakAttendanceGreeting(feedback.name, feedback.status);
@@ -1117,7 +1119,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     }
 
     private void speakAlreadyMarked(String name, String status) {
-        speakAttendanceMessage(name + ", attendance already marked");
+        speakAttendanceMessage(AttendanceVoiceMessage.alreadyMarked(name, status));
     }
 
     private void speakAttendanceMessage(String message) {
@@ -1184,19 +1186,27 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         try {
             android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
             if (!prefs.getBoolean("voice_greeting_enabled", true) || tts == null) return;
-            String greeting = "CHECK_OUT".equalsIgnoreCase(status)
-                    ? "Goodbye " + name
-                    : "Welcome " + name;
+            String greeting = AttendanceVoiceMessage.success(name, status);
             tts.speak(greeting, TextToSpeech.QUEUE_FLUSH, null, "attendance_greeting");
         } catch (Exception ignored) {}
     }
 
-    private void announceAttendanceSavedOffline(String names) {
+    private void announceAttendanceSavedOffline(List<String> names, List<String> statuses) {
+        String spokenMessage = AttendanceVoiceMessage.savedOffline(names, statuses);
+        StringBuilder displayNamesBuilder = new StringBuilder();
+        if (names != null) {
+            for (String name : names) {
+                if (displayNamesBuilder.length() > 0) displayNamesBuilder.append(", ");
+                displayNamesBuilder.append(name == null ? "Employee" : name);
+            }
+        }
+        String displayNames = displayNamesBuilder.length() == 0
+                ? "employee" : displayNamesBuilder.toString();
         try {
             android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
             if (prefs.getBoolean("voice_greeting_enabled", true) && tts != null) {
                 tts.speak(
-                        "Attendance saved offline for " + names,
+                        spokenMessage,
                         TextToSpeech.QUEUE_FLUSH,
                         null,
                         "attendance_offline_saved");
@@ -1204,8 +1214,8 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         } catch (Exception ignored) {}
         if (getActivity() != null) {
             getActivity().runOnUiThread(() -> {
-                Toast.makeText(getContext(), "Attendance saved offline for " + names, Toast.LENGTH_SHORT).show();
-                if (statusText != null) statusText.setText("Saved offline: " + names);
+                Toast.makeText(getContext(), "Attendance saved offline for " + displayNames, Toast.LENGTH_SHORT).show();
+                if (statusText != null) statusText.setText("Saved offline: " + displayNames);
                 if (faceView != null) {
                     faceView.startSuccessCircleAnimation();
                     faceView.startSuccessBorderAnimation();
@@ -1847,6 +1857,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                         String timestamp = sdf.format(new Date(trustedAttendanceNowMillis()));
 
                         List<String> markedNames = new java.util.ArrayList<>();
+                        List<String> markedStatuses = new java.util.ArrayList<>();
                         for (RecognizedFaceMatch match : readyToMark) {
                             String predicted = manualAttendanceMode
                                     ? manualAction
@@ -1859,22 +1870,12 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                             appearanceTracker.mark(trackKey, predicted, currentTime);
                             try { lastEventSentAtMs.put(trackKey, System.currentTimeMillis()); } catch (Exception ignored) {}
                             markedNames.add(match.person.name);
+                            markedStatuses.add(predicted);
                         }
 
                         if (!markedNames.isEmpty()) {
                             renderAttendanceFaceStates(namesForBoxes, faceBoxes.size(), batchMatches);
-                            if (markedNames.size() == 1) {
-                                String singleName = markedNames.get(0);
-                                announceAttendanceSavedOffline(singleName);
-                            } else {
-                                StringBuilder sb = new StringBuilder();
-                                for (int k = 0; k < markedNames.size(); k++) {
-                                    if (k > 0) sb.append(k == markedNames.size() - 1 ? " & " : ", ");
-                                    sb.append(markedNames.get(k));
-                                }
-                                String batchNamesStr = sb.toString();
-                                announceAttendanceSavedOffline(batchNamesStr);
-                            }
+                            announceAttendanceSavedOffline(markedNames, markedStatuses);
                             try {
                                 SyncScheduler.scheduleImmediate(requireContext().getApplicationContext());
                             } catch (Exception ignored) {}
