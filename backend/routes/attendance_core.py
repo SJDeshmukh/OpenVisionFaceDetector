@@ -25,6 +25,7 @@ from services.attendance_ingestion_service import (
     resolve_client_event_time,
 )
 from services.attendance_state_service import (
+    is_within_attendance_cooldown,
     latest_person_state,
     next_attendance_status,
     reconcile_person_timeline,
@@ -835,12 +836,23 @@ def person_event(valid_data: PersonEventSchema):
                     cd_sec = 30
             else:
                 cd_sec = 30
-            if 0 <= (datetime.now() - lts).total_seconds() < cd_sec:
+            if is_within_attendance_cooldown(lts, current_time_obj, cd_sec):
+                latest_status = str(last_record['status'] or '').strip().upper() or None
+                latest_timestamp = (
+                    lts.isoformat(timespec="milliseconds") if lts else None
+                )
+                action_label = (
+                    "check out" if latest_status == "CHECK_OUT" else "check in"
+                )
                 conn.close(); return jsonify({
                     "speak": False,
                     "accepted": False,
                     "reason": "cooldown",
-                    "status": last_record['status'] if last_record else None,
+                    "text": f"{name}, {action_label} is already marked",
+                    "status": latest_status,
+                    "latest_status": latest_status,
+                    "latest_timestamp": latest_timestamp,
+                    "person_id": person_id,
                 })
         except Exception:
             logger.debug("Cooldown check failed", exc_info=True)

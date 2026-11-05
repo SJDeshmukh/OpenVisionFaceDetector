@@ -7,7 +7,11 @@ from services.attendance_shift_service import (
     choose_shift_policy,
     scheduled_payable_hours,
 )
-from services.attendance_state_service import next_attendance_status, reconcile_person_timeline
+from services.attendance_state_service import (
+    is_within_attendance_cooldown,
+    next_attendance_status,
+    reconcile_person_timeline,
+)
 from services.attendance_service import calculate_daily_hours
 
 
@@ -36,6 +40,24 @@ def test_open_checkin_over_16_hours_checks_out_within_same_shift_day():
         last_attendance_date=date(2026, 10, 28),
         current_attendance_date=date(2026, 10, 29),
     ) == "CHECK_IN"
+
+
+def test_cooldown_blocks_reentry_and_clock_skew_without_changing_state():
+    assert is_within_attendance_cooldown(
+        datetime(2026, 11, 5, 10, 0),
+        datetime(2026, 11, 5, 10, 4, 59),
+        300,
+    )
+    assert not is_within_attendance_cooldown(
+        datetime(2026, 11, 5, 10, 0),
+        datetime(2026, 11, 5, 10, 5),
+        300,
+    )
+    assert is_within_attendance_cooldown(
+        datetime(2026, 11, 5, 10, 0, 1),
+        datetime(2026, 11, 5, 10, 0),
+        300,
+    )
 
 
 def test_offline_timeline_reconciles_across_assigned_shift_boundary():

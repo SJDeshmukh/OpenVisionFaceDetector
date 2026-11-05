@@ -57,6 +57,23 @@ def next_attendance_status(
     return CHECK_OUT
 
 
+def is_within_attendance_cooldown(last_time, current_time, cooldown_seconds):
+    """Return whether a live punch must retain the current attendance state.
+
+    A last timestamp slightly ahead of the server clock is treated as recent.
+    Clock skew must never authorize an opposite punch.
+    """
+    previous = _as_datetime(last_time)
+    current = _as_datetime(current_time)
+    try:
+        cooldown = int(cooldown_seconds)
+    except (TypeError, ValueError):
+        return False
+    if previous is None or current is None or cooldown <= 0:
+        return False
+    return (current - previous).total_seconds() < cooldown
+
+
 def _as_datetime(value):
     if isinstance(value, datetime):
         return value
