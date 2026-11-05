@@ -32,6 +32,9 @@ public class FaceView extends View {
     private Paint meshSweepPaint;
     private Paint meshPointPaint;
     private Paint cooldownBorderPaint;
+    private Paint attendanceSuccessPaint;
+    private Paint attendanceCooldownPaint;
+    private Paint attendanceGlowPaint;
     private LinearGradient meshSweepGradient;
     private Matrix meshSweepMatrix;
     private float density = 1f;
@@ -40,15 +43,21 @@ public class FaceView extends View {
     private static final long MESH_PULSE_PERIOD_MS = 1400L;
     private static final long MESH_SWEEP_PERIOD_MS = 2200L;
     private static final long COOLDOWN_BORDER_DURATION_MS = 1800L;
+    public static final int ATTENDANCE_NONE = 0;
+    public static final int ATTENDANCE_SUCCESS = 1;
+    public static final int ATTENDANCE_COOLDOWN = 2;
+    private static final int SUCCESS_GREEN = Color.rgb(34, 197, 94);
+    private static final int COOLDOWN_RED = Color.rgb(239, 68, 68);
     private long cooldownBorderStartMs = 0L;
     private boolean cooldownBorderAnimating = false;
+    private int feedbackBorderColor = COOLDOWN_RED;
 
     private Size frameSize;
 
     private List<FaceBox> faceBoxes;
     private String recognizedName = null;
     private List<String> recognizedNames;
-    private List<Boolean> attendanceMarkedStates;
+    private List<Integer> attendanceVisualStates;
     private boolean meshEnabled = false;
 
     public void setMeshEnabled(boolean enabled) {
@@ -106,7 +115,7 @@ public class FaceView extends View {
         successPaint = new Paint();
         successPaint.setStyle(Paint.Style.STROKE);
         successPaint.setStrokeWidth(6);
-        successPaint.setColor(Color.WHITE);
+        successPaint.setColor(SUCCESS_GREEN);
         successPaint.setAntiAlias(true);
 
         density = getResources().getDisplayMetrics().density;
@@ -140,9 +149,26 @@ public class FaceView extends View {
 
         cooldownBorderPaint = new Paint();
         cooldownBorderPaint.setStyle(Paint.Style.STROKE);
-        cooldownBorderPaint.setColor(Color.rgb(34, 197, 94));
+        cooldownBorderPaint.setColor(COOLDOWN_RED);
         cooldownBorderPaint.setStrokeCap(Paint.Cap.ROUND);
         cooldownBorderPaint.setAntiAlias(true);
+
+        attendanceSuccessPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        attendanceSuccessPaint.setStyle(Paint.Style.STROKE);
+        attendanceSuccessPaint.setStrokeCap(Paint.Cap.ROUND);
+        attendanceSuccessPaint.setStrokeJoin(Paint.Join.ROUND);
+        attendanceSuccessPaint.setColor(SUCCESS_GREEN);
+
+        attendanceCooldownPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        attendanceCooldownPaint.setStyle(Paint.Style.STROKE);
+        attendanceCooldownPaint.setStrokeCap(Paint.Cap.ROUND);
+        attendanceCooldownPaint.setStrokeJoin(Paint.Join.ROUND);
+        attendanceCooldownPaint.setColor(COOLDOWN_RED);
+
+        attendanceGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        attendanceGlowPaint.setStyle(Paint.Style.STROKE);
+        attendanceGlowPaint.setStrokeCap(Paint.Cap.ROUND);
+        attendanceGlowPaint.setStrokeJoin(Paint.Join.ROUND);
 
         meshSweepMatrix = new Matrix();
     }
@@ -205,9 +231,22 @@ public class FaceView extends View {
 
     public void setAttendanceMarkedStates(List<Boolean> states) {
         if (states == null) {
-            attendanceMarkedStates = null;
+            attendanceVisualStates = null;
         } else {
-            attendanceMarkedStates = new ArrayList<>(states);
+            attendanceVisualStates = new ArrayList<>();
+            for (Boolean state : states) {
+                attendanceVisualStates.add(Boolean.TRUE.equals(state)
+                        ? ATTENDANCE_COOLDOWN : ATTENDANCE_NONE);
+            }
+        }
+        postInvalidateOnAnimation();
+    }
+
+    public void setAttendanceVisualStates(List<Integer> states) {
+        if (states == null) {
+            attendanceVisualStates = null;
+        } else {
+            attendanceVisualStates = new ArrayList<>(states);
         }
         postInvalidateOnAnimation();
     }
@@ -223,9 +262,71 @@ public class FaceView extends View {
     }
 
     public void startCooldownBorderAnimation() {
+        feedbackBorderColor = COOLDOWN_RED;
         cooldownBorderAnimating = true;
         cooldownBorderStartMs = SystemClock.uptimeMillis();
         postInvalidateOnAnimation();
+    }
+
+    public void startSuccessBorderAnimation() {
+        feedbackBorderColor = SUCCESS_GREEN;
+        cooldownBorderAnimating = true;
+        cooldownBorderStartMs = SystemClock.uptimeMillis();
+        postInvalidateOnAnimation();
+    }
+
+    private void drawAttendanceStateBox(Canvas canvas, Rect rect, int visualState, long now) {
+        if (visualState == ATTENDANCE_NONE) return;
+
+        boolean cooldown = visualState == ATTENDANCE_COOLDOWN;
+        int color = cooldown ? COOLDOWN_RED : SUCCESS_GREEN;
+        Paint statePaint = cooldown ? attendanceCooldownPaint : attendanceSuccessPaint;
+        float phase = (now % 1200L) / 1200f;
+        float pulse = (float) (0.5f - 0.5f * Math.cos(phase * Math.PI * 2f));
+        float inset = (3f + 1.5f * pulse) * density;
+        float radius = 14f * density;
+
+        attendanceGlowPaint.setColor(color);
+        attendanceGlowPaint.setStrokeWidth((9f + 5f * pulse) * density);
+        attendanceGlowPaint.setAlpha(45 + (int) (45f * pulse));
+        attendanceGlowPaint.setShadowLayer((12f + 8f * pulse) * density, 0f, 0f, color);
+        canvas.drawRoundRect(
+                rect.left - inset,
+                rect.top - inset,
+                rect.right + inset,
+                rect.bottom + inset,
+                radius,
+                radius,
+                attendanceGlowPaint);
+        attendanceGlowPaint.clearShadowLayer();
+
+        statePaint.setStrokeWidth((4.5f + 1.8f * pulse) * density);
+        statePaint.setAlpha(215 + (int) (40f * pulse));
+        canvas.drawRoundRect(
+                rect.left - inset,
+                rect.top - inset,
+                rect.right + inset,
+                rect.bottom + inset,
+                radius,
+                radius,
+                statePaint);
+
+        // Bright corner accents keep the state readable against busy camera scenes.
+        float corner = Math.min(rect.width(), rect.height()) * 0.22f;
+        statePaint.setStrokeWidth((6f + 1.5f * pulse) * density);
+        statePaint.setAlpha(255);
+        float left = rect.left - inset;
+        float top = rect.top - inset;
+        float right = rect.right + inset;
+        float bottom = rect.bottom + inset;
+        canvas.drawLine(left, top, left + corner, top, statePaint);
+        canvas.drawLine(left, top, left, top + corner, statePaint);
+        canvas.drawLine(right - corner, top, right, top, statePaint);
+        canvas.drawLine(right, top, right, top + corner, statePaint);
+        canvas.drawLine(left, bottom - corner, left, bottom, statePaint);
+        canvas.drawLine(left, bottom, left + corner, bottom, statePaint);
+        canvas.drawLine(right - corner, bottom, right, bottom, statePaint);
+        canvas.drawLine(right, bottom - corner, right, bottom, statePaint);
     }
 
     @Override
@@ -301,24 +402,13 @@ public class FaceView extends View {
                         canvas.drawRect(rect, realPaint);
                     }
 
-                    boolean attendanceMarked = attendanceMarkedStates != null
-                            && i < attendanceMarkedStates.size()
-                            && Boolean.TRUE.equals(attendanceMarkedStates.get(i));
-                    if (attendanceMarked) {
-                        long now = SystemClock.uptimeMillis();
-                        float phase = (now % 1200L) / 1200f;
-                        float pulse = (float) (0.5f - 0.5f * Math.cos(phase * Math.PI * 2f));
-                        cooldownBorderPaint.setStrokeWidth((5f + 4f * pulse) * density);
-                        cooldownBorderPaint.setAlpha(170 + (int) (85f * pulse));
-                        float inset = 3f * density;
-                        canvas.drawRoundRect(
-                                rect.left - inset,
-                                rect.top - inset,
-                                rect.right + inset,
-                                rect.bottom + inset,
-                                12f * density,
-                                12f * density,
-                                cooldownBorderPaint);
+                    int attendanceVisualState = attendanceVisualStates != null
+                            && i < attendanceVisualStates.size()
+                            && attendanceVisualStates.get(i) != null
+                            ? attendanceVisualStates.get(i) : ATTENDANCE_NONE;
+                    if (attendanceVisualState != ATTENDANCE_NONE) {
+                        drawAttendanceStateBox(
+                                canvas, rect, attendanceVisualState, SystemClock.uptimeMillis());
                         drewMarkedFaceThisFrame = true;
                     }
 
@@ -418,8 +508,11 @@ public class FaceView extends View {
                 float pulse = (float) (0.5f - 0.5f * Math.cos(progress * Math.PI * 6f));
                 float strokeWidth = (5f + 5f * pulse) * density;
                 float inset = strokeWidth / 2f + 3f * density;
+                cooldownBorderPaint.setColor(feedbackBorderColor);
                 cooldownBorderPaint.setStrokeWidth(strokeWidth);
                 cooldownBorderPaint.setAlpha(150 + (int) (105f * pulse));
+                cooldownBorderPaint.setShadowLayer(
+                        (10f + 10f * pulse) * density, 0f, 0f, feedbackBorderColor);
                 canvas.drawRoundRect(
                         inset,
                         inset,
@@ -428,6 +521,7 @@ public class FaceView extends View {
                         18f * density,
                         18f * density,
                         cooldownBorderPaint);
+                cooldownBorderPaint.clearShadowLayer();
                 postInvalidateOnAnimation();
             }
         }

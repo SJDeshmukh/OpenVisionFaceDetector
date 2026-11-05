@@ -111,9 +111,12 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
     private final java.util.Map<String, Long> lastEventSentAtMs = new java.util.concurrent.ConcurrentHashMap<>();
     private final FaceAppearanceTracker appearanceTracker = new FaceAppearanceTracker();
     private final ArrayDeque<AttendanceFeedback> attendanceFeedbackQueue = new ArrayDeque<>();
+    private final java.util.Set<String> pendingCooldownFeedbackKeys = new java.util.HashSet<>();
     private final Handler attendanceFeedbackHandler = new Handler(Looper.getMainLooper());
     private boolean attendanceFeedbackShowing = false;
     private static final long ATTENDANCE_FEEDBACK_DISPLAY_MS = 1800L;
+    private static final long ATTENDANCE_SUCCESS_VISUAL_MS = 2000L;
+    private static final long COOLDOWN_FEEDBACK_REPEAT_MS = 2000L;
 
     // Power Saving / Screen Saver
     private Handler powerSaveHandler = new Handler(Looper.getMainLooper());
@@ -446,6 +449,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         super.onDestroy();
         attendanceFeedbackHandler.removeCallbacksAndMessages(null);
         attendanceFeedbackQueue.clear();
+        pendingCooldownFeedbackKeys.clear();
         attendanceFeedbackShowing = false;
         if (webrtcManager != null) {
             webrtcManager.dispose();
@@ -711,8 +715,9 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                                 markedStatus = previousStatus;
                             }
                             if (isAttendanceStatus(markedStatus)) {
-                                if (appearanceTracker.markAndRequestFeedback(
-                                        eventTrackKey, markedStatus, System.currentTimeMillis())) {
+                                if (appearanceTracker.markCooldownAndRequestFeedback(
+                                        eventTrackKey, markedStatus, System.currentTimeMillis(),
+                                        COOLDOWN_FEEDBACK_REPEAT_MS)) {
                                     enqueueAttendanceFeedback(name, markedStatus, true);
                                 }
                             }
@@ -807,6 +812,8 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         if (!isAttendanceStatus(status) || getActivity() == null) return;
         getActivity().runOnUiThread(() -> {
             if (!isAdded()) return;
+            String cooldownKey = name == null ? "" : name.trim().toLowerCase(Locale.US);
+            if (alreadyMarked && !pendingCooldownFeedbackKeys.add(cooldownKey)) return;
             attendanceFeedbackQueue.offer(new AttendanceFeedback(name, status.toUpperCase(Locale.US), alreadyMarked));
             showNextAttendanceFeedback();
         });
@@ -823,7 +830,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             if (faceView != null) faceView.startCooldownBorderAnimation();
             if (statusText != null) {
                 statusText.setText(message);
-                statusText.setTextColor(ContextCompat.getColor(requireContext(), R.color.vision_success));
+                statusText.setTextColor(ContextCompat.getColor(requireContext(), R.color.vision_error));
             }
             Toast.makeText(requireContext(), message, Toast.LENGTH_LONG).show();
             speakAlreadyMarked(feedback.name, feedback.status);
@@ -839,6 +846,11 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
 
         attendanceFeedbackHandler.postDelayed(() -> {
             attendanceFeedbackShowing = false;
+            if (feedback.alreadyMarked) {
+                String cooldownKey = feedback.name == null
+                        ? "" : feedback.name.trim().toLowerCase(Locale.US);
+                pendingCooldownFeedbackKeys.remove(cooldownKey);
+            }
             if (statusText != null && isAdded()) {
                 statusText.setTextColor(ContextCompat.getColor(requireContext(), R.color.primary_soft_blue));
             }
@@ -850,7 +862,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         try {
             android.content.SharedPreferences prefs = requireContext().getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
             if (!prefs.getBoolean("voice_greeting_enabled", true) || tts == null) return;
-            String message = name + ", " + friendlyAttendanceStatus(status) + " already marked";
+            String message = name + ", attendance already marked";
             tts.speak(message, TextToSpeech.QUEUE_FLUSH, null, "attendance_already_marked");
         } catch (Exception ignored) {}
     }
@@ -873,17 +885,28 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             int faceCount,
             List<RecognizedFaceMatch> matches) {
         List<String> labels = new java.util.ArrayList<>(namesForBoxes);
-        List<Boolean> markedStates = new java.util.ArrayList<>();
-        for (int i = 0; i < faceCount; i++) markedStates.add(false);
+        List<Integer> visualStates = new java.util.ArrayList<>();
+        for (int i = 0; i < faceCount; i++) visualStates.add(FaceView.ATTENDANCE_NONE);
+        long nowMs = System.currentTimeMillis();
         for (RecognizedFaceMatch match : matches) {
             String key = attendanceTrackKey(match.personId, match.localUid, match.person.name);
             if (!appearanceTracker.isMarked(key)) continue;
-            if (match.faceIndex >= 0 && match.faceIndex < markedStates.size()) {
-                markedStates.set(match.faceIndex, true);
+            if (match.faceIndex >= 0 && match.faceIndex < visualStates.size()) {
+                int trackerState = appearanceTracker.getVisualState(
+                        key, nowMs, ATTENDANCE_SUCCESS_VISUAL_MS);
+                int visualState = trackerState == FaceAppearanceTracker.VISUAL_SUCCESS
+                        ? FaceView.ATTENDANCE_SUCCESS
+                        : trackerState == FaceAppearanceTracker.VISUAL_COOLDOWN
+                        ? FaceView.ATTENDANCE_COOLDOWN
+                        : FaceView.ATTENDANCE_NONE;
+                visualStates.set(match.faceIndex, visualState);
+                if (visualState == FaceView.ATTENDANCE_NONE) continue;
                 String status = appearanceTracker.getStatus(key);
-                String suffix = isAttendanceStatus(status)
-                        ? friendlyAttendanceStatus(status) + " marked"
-                        : "Attendance marked";
+                String suffix = visualState == FaceView.ATTENDANCE_COOLDOWN
+                        ? "Attendance already marked"
+                        : isAttendanceStatus(status)
+                        ? friendlyAttendanceStatus(status) + " successful"
+                        : "Attendance successful";
                 labels.set(match.faceIndex, match.person.name + " • " + suffix);
             }
         }
@@ -891,7 +914,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             getActivity().runOnUiThread(() -> {
                 if (faceView == null) return;
                 faceView.setRecognizedNames(labels);
-                faceView.setAttendanceMarkedStates(markedStates);
+                faceView.setAttendanceVisualStates(visualStates);
             });
         }
     }
@@ -922,6 +945,10 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
             getActivity().runOnUiThread(() -> {
                 Toast.makeText(getContext(), "Attendance saved offline for " + names, Toast.LENGTH_SHORT).show();
                 if (statusText != null) statusText.setText("Saved offline: " + names);
+                if (faceView != null) {
+                    faceView.startSuccessCircleAnimation();
+                    faceView.startSuccessBorderAnimation();
+                }
             });
         }
     }
@@ -930,6 +957,9 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         if (getActivity() == null) return;
         triggerHapticFeedback(status);
         getActivity().runOnUiThread(() -> {
+            if (faceView != null) {
+                faceView.startSuccessBorderAnimation();
+            }
             if ("CHECK_IN".equals(status)) {
                 if (ivStatusOverlay != null) {
                     ivStatusOverlay.setImageResource(R.drawable.ic_check_in_success);
@@ -1414,6 +1444,18 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                         // even when the configured cooldown expires while it is
                         // still in front of the camera.
                         if (appearanceTracker.isMarked(trackKey)) {
+                            if (!vendorVerifyOnlyMode && !isVendorVerifyOnlyMode()
+                                    && match.attendanceEligible) {
+                                String markedStatus = appearanceTracker.getStatus(trackKey);
+                                if (isAttendanceStatus(markedStatus)
+                                        && appearanceTracker.requestCooldownFeedbackIfDue(
+                                                trackKey, currentTime,
+                                                ATTENDANCE_SUCCESS_VISUAL_MS,
+                                                COOLDOWN_FEEDBACK_REPEAT_MS)) {
+                                    enqueueAttendanceFeedback(
+                                            match.person.name, markedStatus, true);
+                                }
+                            }
                             continue;
                         }
 
@@ -1462,8 +1504,9 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                             String lastStatus = dbManager.getLastAttendanceStatus(
                                     match.personId, match.localUid, match.person.name);
                             if (isAttendanceStatus(lastStatus)
-                                    && appearanceTracker.markAndRequestFeedback(
-                                            trackKey, lastStatus, currentTime)) {
+                                    && appearanceTracker.markCooldownAndRequestFeedback(
+                                            trackKey, lastStatus, currentTime,
+                                            COOLDOWN_FEEDBACK_REPEAT_MS)) {
                                 enqueueAttendanceFeedback(match.person.name, lastStatus, true);
                             }
                         }
@@ -1537,7 +1580,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                             lastProcessedPersonId = trackKey;
                             String predicted = dbManager.predictNextAttendanceStatus(
                                     single.personId, single.localUid, single.person.name);
-                            appearanceTracker.mark(trackKey, predicted, currentTime);
+                            appearanceTracker.markPending(trackKey, predicted, currentTime);
                             try { lastEventSentAtMs.put(trackKey, System.currentTimeMillis()); } catch (Exception ignored) {}
                             sendPersonEvent(true, true, single.personId, single.localUid, single.person.name, single.similarity, finalProcessed, true);
                         } else {
@@ -1545,7 +1588,7 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                                 String trackKey = attendanceTrackKey(match.personId, match.localUid, match.person.name);
                                 String predicted = dbManager.predictNextAttendanceStatus(
                                         match.personId, match.localUid, match.person.name);
-                                appearanceTracker.mark(trackKey, predicted, currentTime);
+                                appearanceTracker.markPending(trackKey, predicted, currentTime);
                                 try { lastEventSentAtMs.put(trackKey, System.currentTimeMillis()); } catch (Exception ignored) {}
                                 // Each response is announced separately so mixed check-ins and check-outs
                                 // use the exact status confirmed by the backend.

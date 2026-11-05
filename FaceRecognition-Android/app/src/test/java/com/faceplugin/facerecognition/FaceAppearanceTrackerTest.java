@@ -36,9 +36,49 @@ public class FaceAppearanceTrackerTest {
     }
 
     @Test
-    public void alreadyMarkedFeedbackOccursOncePerAppearance() {
+    public void confirmedAttendanceChangesFromGreenToRedAfterSuccessWindow() {
         FaceAppearanceTracker tracker = new FaceAppearanceTracker(2500L);
-        assertTrue(tracker.markAndRequestFeedback("7", "CHECK_IN", 1000L));
-        assertFalse(tracker.markAndRequestFeedback("7", "CHECK_IN", 1200L));
+        tracker.mark("7", "CHECK_IN", 1000L);
+
+        assertEquals(FaceAppearanceTracker.VISUAL_SUCCESS,
+                tracker.getVisualState("7", 2999L, 2000L));
+        assertEquals(FaceAppearanceTracker.VISUAL_COOLDOWN,
+                tracker.getVisualState("7", 3000L, 2000L));
+    }
+
+    @Test
+    public void cooldownFeedbackRepeatsEveryTwoSeconds() {
+        FaceAppearanceTracker tracker = new FaceAppearanceTracker(2500L);
+        tracker.mark("7", "CHECK_IN", 1000L);
+
+        assertFalse(tracker.requestCooldownFeedbackIfDue("7", 2999L, 2000L, 2000L));
+        assertTrue(tracker.requestCooldownFeedbackIfDue("7", 3000L, 2000L, 2000L));
+        assertFalse(tracker.requestCooldownFeedbackIfDue("7", 4999L, 2000L, 2000L));
+        assertTrue(tracker.requestCooldownFeedbackIfDue("7", 5000L, 2000L, 2000L));
+    }
+
+    @Test
+    public void serverCooldownIsRedAndFeedbackIsThrottled() {
+        FaceAppearanceTracker tracker = new FaceAppearanceTracker(2500L);
+
+        assertTrue(tracker.markCooldownAndRequestFeedback("7", "CHECK_OUT", 1000L, 2000L));
+        assertEquals(FaceAppearanceTracker.VISUAL_COOLDOWN,
+                tracker.getVisualState("7", 1000L, 2000L));
+        assertFalse(tracker.requestCooldownFeedbackIfDue("7", 2999L, 2000L, 2000L));
+        assertTrue(tracker.requestCooldownFeedbackIfDue("7", 3000L, 2000L, 2000L));
+    }
+
+    @Test
+    public void pendingOnlineRequestBlocksDuplicatesWithoutShowingSuccess() {
+        FaceAppearanceTracker tracker = new FaceAppearanceTracker(2500L);
+        tracker.markPending("7", "CHECK_IN", 1000L);
+
+        assertTrue(tracker.isMarked("7"));
+        assertEquals(FaceAppearanceTracker.VISUAL_NONE,
+                tracker.getVisualState("7", 1000L, 2000L));
+
+        tracker.mark("7", "CHECK_IN", 1500L);
+        assertEquals(FaceAppearanceTracker.VISUAL_SUCCESS,
+                tracker.getVisualState("7", 1500L, 2000L));
     }
 }
