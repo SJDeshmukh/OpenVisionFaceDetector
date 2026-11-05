@@ -585,10 +585,6 @@ const People = () => {
       return;
     }
     if (!formData.name) return;
-    if (!formData.id && !formData.photo) {
-      alert(`Please upload a clear face photo before registering the ${personLabel.toLowerCase()}.`);
-      return;
-    }
     if (requiresClassroomAllocation && !formData.class_id) {
       alert(`Please allocate the ${personLabel.toLowerCase()} to a ${groupLabel.toLowerCase()}.`);
       return;
