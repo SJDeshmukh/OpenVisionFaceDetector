@@ -925,10 +925,9 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         request.setSourceEventId(PersonEventRequest.buildSourceEventId(
                 requestDeviceId, finalPersonId, localUid, timestamp));
 
-        // Persist an optimistic queue entry so a lost response can be retried,
-        // but do not announce that prediction. Another kiosk may have changed
-        // this person's vendor-wide state; only the server response is
-        // authoritative for CHECK_IN versus CHECK_OUT.
+        // Persist locally before making the request. The kiosk confirms this
+        // local punch immediately and lets the server reconcile it in the
+        // background. This keeps online and offline capture equally responsive.
         final String previousStatus = dbManager.getAttendanceStateStatus(finalPersonId, localUid, name);
         final String previousTimestamp = dbManager.getLastAttendanceTimestamp(finalPersonId, localUid, name);
         final String optimisticStatus = explicitStatus
@@ -938,10 +937,13 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
         // WorkManager retries the exact same idempotency key.
         final long pendingQueueId = dbManager.insertAttendanceQueueJpeg(
                 finalPersonId, localUid, name, timestamp, optimisticStatus, retryImageJpeg, false, explicitStatus);
-        if (triggerUiEffects && getActivity() != null) {
-            getActivity().runOnUiThread(() -> {
-                if (statusText != null) statusText.setText("Confirming attendance for " + name + "…");
-            });
+        final boolean optimisticActionStillCurrent = !explicitStatus
+                || isCurrentManualAction(requestedStatus, manualActionRevisionAtDispatch);
+        final boolean optimisticFeedbackShown = pendingQueueId > 0
+                && triggerUiEffects && optimisticActionStillCurrent;
+        if (optimisticFeedbackShown) {
+            appearanceTracker.mark(eventTrackKey, optimisticStatus, System.currentTimeMillis());
+            enqueueAttendanceFeedback(name, optimisticStatus, false);
         }
 
         service.sendPersonEvent(request).enqueue(new Callback<GreetingResponse>() {
@@ -954,9 +956,12 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                             ("CHECK_IN".equalsIgnoreCase(status) || "CHECK_OUT".equalsIgnoreCase(status));
                     if (confirmed) {
                         attendanceRejectionMessages.remove(eventTrackKey);
+                        boolean serverResultNeedsFeedback =
+                                AttendanceConfirmationPolicy.shouldAnnounceServerResult(
+                                        optimisticStatus, status, optimisticFeedbackShown);
                         boolean actionStillCurrent = !explicitStatus
                                 || isCurrentManualAction(requestedStatus, manualActionRevisionAtDispatch);
-                        if (actionStillCurrent) {
+                        if (actionStillCurrent && serverResultNeedsFeedback) {
                             appearanceTracker.mark(eventTrackKey, status, System.currentTimeMillis());
                         }
                         try {
@@ -974,9 +979,10 @@ public class IdentifyFragment extends Fragment implements TextToSpeech.OnInitLis
                             dbManager.upsertAttendanceState(finalPersonId, localUid, name, stateStatus, stateTimestamp);
                             if (pendingQueueId > 0) dbManager.deleteQueueItem((int) pendingQueueId);
                         } catch (Exception ignored) {}
-                        // Announce only the backend-confirmed result, on this
-                        // scanning kiosk. Socket updates on other kiosks are silent.
-                        if (triggerUiEffects) {
+                        // The local result has already been announced. Speak
+                        // again only when the server reconciles it to a different
+                        // status, or when local feedback could not be shown.
+                        if (triggerUiEffects && serverResultNeedsFeedback) {
                             enqueueAttendanceFeedback(name, status, false);
                         }
                     } else if (Boolean.FALSE.equals(greeting.getAccepted()) && isFinalAttendanceRejection(greeting.getReason())) {
