@@ -63,7 +63,14 @@ const emptyPersonForm = (fields = []) => {
 };
 
 const normalizedFieldKey = (field) => String(field?.key || field?.field || '').trim();
-const normalizedFieldIdentity = (field) => normalizedFieldKey(field).toLowerCase().replace(/[\s-]+/g, '_');
+const normalizedFieldIdentity = (field) => normalizedFieldKey(field)
+  // SuperAdmin field IDs are user-defined and may use EmployeeName,
+  // employeeName, employee_name, or "Employee Name" for the same value.
+  .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+  .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, '_')
+  .replace(/^_+|_+$/g, '');
 const isNameField = (field) => field?.is_name || ['name', 'full_name', 'student_name', 'employee_name'].includes(normalizedFieldIdentity(field));
 const isPhoneField = (field) => field?.is_phone || ['phone', 'mobile', 'mobile_number', 'phone_number', 'contact_number'].includes(normalizedFieldIdentity(field));
 const isClassField = (field) => ['class', 'class_id', 'class_section'].includes(normalizedFieldIdentity(field));

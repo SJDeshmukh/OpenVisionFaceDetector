@@ -19,7 +19,13 @@ _REGISTRATION_FIELD_ALIASES = {
 
 def canonical_registration_field(value):
     """Return the stable payload key used for registration validation."""
-    key = re.sub(r'[^a-z0-9]+', '_', str(value or '').strip().lower()).strip('_')
+    raw_key = str(value or '').strip()
+    # Registration keys are configured by a SuperAdmin, so accept common
+    # PascalCase/camelCase spellings as well as spaces, hyphens and underscores.
+    # For example, EmployeeName and employeeName both become employee_name.
+    raw_key = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1_\2', raw_key)
+    raw_key = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', raw_key)
+    key = re.sub(r'[^a-z0-9]+', '_', raw_key.lower()).strip('_')
     return _REGISTRATION_FIELD_ALIASES.get(key, key)
 
 

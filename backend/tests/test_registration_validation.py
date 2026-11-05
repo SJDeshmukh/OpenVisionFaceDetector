@@ -43,6 +43,22 @@ class RegistrationValidationTests(unittest.TestCase):
     def test_canonical_field_normalizes_labels_and_aliases(self):
         self.assertEqual(canonical_registration_field(" Mobile Number "), "phone")
         self.assertEqual(canonical_registration_field("Employee Code"), "employee_code")
+        self.assertEqual(canonical_registration_field("EmployeeName"), "name")
+        self.assertEqual(canonical_registration_field("employeeName"), "name")
+        self.assertEqual(canonical_registration_field("phoneNumber"), "phone")
+        self.assertEqual(canonical_registration_field("WorkShift"), "shift")
+
+    def test_pascal_case_name_config_accepts_core_name(self):
+        config = [
+            {"field": "EmployeeName", "label": "Employee name", "required": True},
+            {"field": "Plant", "label": "Plant", "required": True},
+        ]
+        error = validate_registration_values(
+            config,
+            core_values={"name": "Sudha"},
+            custom_values={"Plant": "A"},
+        )
+        self.assertIsNone(error)
 
 
 class LocalUidUpsertCompatibilityTests(unittest.TestCase):

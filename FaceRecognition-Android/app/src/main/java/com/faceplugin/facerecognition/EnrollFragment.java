@@ -341,8 +341,11 @@ public class EnrollFragment extends Fragment {
         }
     }
 
-    private static String canonicalFieldKey(String raw) {
-        String key = raw == null ? "" : raw.trim().toLowerCase(java.util.Locale.ROOT)
+    static String canonicalFieldKey(String raw) {
+        String key = raw == null ? "" : raw.trim()
+                .replaceAll("([A-Z]+)([A-Z][a-z])", "$1_$2")
+                .replaceAll("([a-z0-9])([A-Z])", "$1_$2")
+                .toLowerCase(java.util.Locale.ROOT)
                 .replaceAll("[^a-z0-9]+", "_").replaceAll("^_+|_+$", "");
         if (key.equals("full_name") || key.equals("employee_name")) return "name";
         if (key.equals("mobile") || key.equals("mobile_number") || key.equals("phone_number")
@@ -760,12 +763,13 @@ public class EnrollFragment extends Fragment {
                 boolean required = field.has("required") && field.get("required").getAsBoolean();
     
                 dynamicFieldLabels.put(key, label);
+                String canonicalKey = canonicalFieldKey(key);
     
                 // If it's a 'select' or 'multiselect' type, we bypass the mapping to standard UI elements 
                 // and always use the dynamic Spinner rendering below.
                 if (!type.equals("select") && !type.equals("multiselect")) {
                     // Map standard fields back to existing UI elements
-                    if (key.equalsIgnoreCase("name") || key.equalsIgnoreCase("full_name")) {
+                    if (canonicalKey.equals("name")) {
                         if (tilName != null) {
                             tilName.setHint(label);
                             tilName.setVisibility(View.VISIBLE);
@@ -773,28 +777,28 @@ public class EnrollFragment extends Fragment {
                         nameInConfig = true;
                         continue; 
                     }
-                    if (key.equalsIgnoreCase("phone") || key.equalsIgnoreCase("mobile") || key.equalsIgnoreCase("phone_number")) {
+                    if (canonicalKey.equals("phone")) {
                         if (tilMobile != null) {
                             tilMobile.setHint(label);
                             tilMobile.setVisibility(View.VISIBLE);
                         }
                         continue;
                     }
-                    if (key.equalsIgnoreCase("department")) {
+                    if (canonicalKey.equals("department")) {
                         if (tilDepartment != null) {
                             tilDepartment.setHint(label);
                             tilDepartment.setVisibility(View.VISIBLE);
                         }
                         continue;
                     }
-                    if (key.equalsIgnoreCase("designation")) {
+                    if (canonicalKey.equals("designation")) {
                         if (tilDesignation != null) {
                             tilDesignation.setHint(label);
                             tilDesignation.setVisibility(View.VISIBLE);
                         }
                         continue;
                     }
-                    if (key.equalsIgnoreCase("shift")) {
+                    if (canonicalKey.equals("shift")) {
                         if (llShift != null) {
                             llShift.setVisibility(View.VISIBLE);
                         }
