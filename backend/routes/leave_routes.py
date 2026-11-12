@@ -14,7 +14,11 @@ from services.leave_workflow_service import (
     replace_workflow,
     snapshot_request,
 )
-from services.staff_navigation_service import load_staff_nav_items, normalize_staff_nav_items, serialize_staff_nav_items
+from services.staff_navigation_service import (
+    load_staff_nav_items_for_features,
+    normalize_staff_nav_items,
+    serialize_staff_nav_items_for_features,
+)
 from utils import get_db_connection, log_audit, require_feature
 
 leave_bp = Blueprint('leave_bp', __name__)
@@ -36,6 +40,16 @@ def _require_role(*allowed_roles):
     if getattr(g, "user_role", None) not in allowed_roles:
         return jsonify({"error": "Forbidden", "code": "FORBIDDEN"}), 403
     return None
+
+
+def _vendor_subscription_features(cursor, vendor_id):
+    cursor.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+    row = cursor.fetchone()
+    if not row:
+        return []
+    if hasattr(row, "keys"):
+        return row["features"]
+    return row[0]
 
 
 def _authenticated_parent(cursor, vendor_id):
@@ -87,7 +101,9 @@ def _authenticated_leave_staff(vendor_id, required_role=None):
         navbar_raw = row["navbar_items"] if hasattr(row, "keys") else row[4]
         if role != data.get("staff_role") or (required_role and role != required_role):
             return None
-        navbar_items = load_staff_nav_items(navbar_raw)
+        navbar_items = load_staff_nav_items_for_features(
+            navbar_raw, _vendor_subscription_features(c, vendor_id),
+        )
         if "leave_management" not in navbar_items:
             return None
         return {"id": data.get("staff_id"), "name": name, "role": role, "department": department, "navbar_items": navbar_items}
@@ -886,7 +902,11 @@ def verify_staff_pin():
             res = get_row_dict(staff)
             if not isinstance(res, dict):
                 res = {"id": staff[0], "name": staff[1], "role": staff[2], "department": staff[3], "navbar_items": staff[4]}
-            res["navbar_items"] = load_staff_nav_items(res.get("navbar_items"))
+            res["navbar_items"] = load_staff_nav_items_for_features(
+                res.get("navbar_items"), _vendor_subscription_features(c, vendor_id),
+            )
+            if "leave_management" not in res["navbar_items"]:
+                return jsonify({"error": "Leave management is not enabled for this vendor"}), 403
             res["access_token"] = generate_token_with_claims(
                 f"leave_staff_{res['id']}",
                 "leave_staff",
@@ -932,6 +952,7 @@ def manage_staff():
     c = conn.cursor()
     try:
         is_pg = getattr(conn, "_is_pg", False)
+        vendor_features = _vendor_subscription_features(c, vendor_id)
         if request.method == "GET":
             if is_pg:
                 c.execute("SELECT id, name, role, pin, department, navbar_items FROM leave_staff WHERE vendor_id = %s ORDER BY name, id", (vendor_id,))
@@ -943,7 +964,9 @@ def manage_staff():
                 item = get_row_dict(row)
                 if not isinstance(item, dict):
                     item = {"id": row[0], "name": row[1], "role": row[2], "pin": row[3], "department": row[4], "navbar_items": row[5]}
-                item["navbar_items"] = load_staff_nav_items(item.get("navbar_items"))
+                item["navbar_items"] = load_staff_nav_items_for_features(
+                    item.get("navbar_items"), vendor_features,
+                )
                 payload.append(item)
             return jsonify({"staff": payload})
             
@@ -954,7 +977,9 @@ def manage_staff():
             pin = data.get("pin")
             department = data.get("department")
             try:
-                navbar_items = serialize_staff_nav_items(data.get("navbar_items"))
+                navbar_items = serialize_staff_nav_items_for_features(
+                    data.get("navbar_items"), vendor_features,
+                )
             except ValueError as exc:
                 return jsonify({"error": str(exc)}), 400
             
@@ -1013,7 +1038,9 @@ def manage_staff():
             if not staff_id:
                 return jsonify({"error": "Staff id is required"}), 400
             try:
-                navbar_items = serialize_staff_nav_items(data.get("navbar_items"))
+                navbar_items = serialize_staff_nav_items_for_features(
+                    data.get("navbar_items"), vendor_features,
+                )
             except ValueError as exc:
                 return jsonify({"error": str(exc)}), 400
             c.execute(

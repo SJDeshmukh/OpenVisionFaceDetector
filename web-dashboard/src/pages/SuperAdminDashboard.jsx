@@ -6,7 +6,7 @@ import { API_URL, FRONTEND_BUNDLES, BASE_URL } from '../config';
 import { useSocket } from '../context/SocketContext';
 import RegistrationConfigEditor from '../components/RegistrationConfigEditor';
 import FleetMapTab from '../components/FleetMapTab';
-import { DEFAULT_STAFF_NAV_KEYS, STAFF_NAV_ITEMS, toggleStaffNavKey } from '../lib/staffNavigation';
+import { DEFAULT_STAFF_NAV_KEYS, staffNavItemsForFeatures, toggleStaffNavKey } from '../lib/staffNavigation';
 
 const REPORT_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const DEFAULT_REPORT_SCHEDULE = {
@@ -28,9 +28,9 @@ const toggleListValue = (items, value) => items.includes(value)
   ? items.filter(item => item !== value)
   : [...items, value];
 
-const StaffNavigationPicker = ({ value, onChange }) => (
+const StaffNavigationPicker = ({ value, onChange, features }) => (
   <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-    {STAFF_NAV_ITEMS.map(item => {
+    {staffNavItemsForFeatures(features).map(item => {
       const checked = (value || DEFAULT_STAFF_NAV_KEYS).includes(item.key);
       return (
         <label key={item.key} className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold transition ${checked ? 'border-indigo-300 bg-indigo-50 text-indigo-800' : 'border-slate-200 bg-white text-slate-500'} ${item.required ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'}`}>
@@ -5116,6 +5116,7 @@ const SuperAdminDashboard = () => {
                     <StaffNavigationPicker
                       value={newStaff.navbar_items}
                       onChange={items => setNewStaff({ ...newStaff, navbar_items: items })}
+                      features={editingVendor?.features || []}
                     />
                   </div>
                   <button 
@@ -5180,6 +5181,7 @@ const SuperAdminDashboard = () => {
                               <StaffNavigationPicker
                                 value={staffNavEditor.items}
                                 onChange={items => setStaffNavEditor(prev => ({ ...prev, items }))}
+                                features={editingVendor?.features || []}
                               />
                               <div className="mt-3 flex justify-end">
                                 <button
