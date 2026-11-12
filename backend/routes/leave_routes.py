@@ -1033,31 +1033,139 @@ def manage_staff():
             return jsonify({"status": "success", "message": "Staff added successfully"})
 
         elif request.method == "PUT":
-            data = request.json or {}
+            data = request.get_json(silent=True) or {}
+            if not isinstance(data, dict):
+                return jsonify({"error": "Invalid staff update"}), 400
             staff_id = data.get("id")
             if not staff_id:
                 return jsonify({"error": "Staff id is required"}), 400
+
+            if is_pg:
+                c.execute(
+                    "SELECT id, name, role, pin, department, navbar_items FROM leave_staff WHERE id = %s AND vendor_id = %s",
+                    (staff_id, vendor_id),
+                )
+            else:
+                c.execute(
+                    "SELECT id, name, role, pin, department, navbar_items FROM leave_staff WHERE id = ? AND vendor_id = ?",
+                    (staff_id, vendor_id),
+                )
+            current_row = c.fetchone()
+            if not current_row:
+                return jsonify({"error": "Staff member not found"}), 404
+            current = get_row_dict(current_row)
+            if not isinstance(current, dict):
+                current = {
+                    "id": current_row[0],
+                    "name": current_row[1],
+                    "role": current_row[2],
+                    "pin": current_row[3],
+                    "department": current_row[4],
+                    "navbar_items": current_row[5],
+                }
+
+            name = str(data.get("name", current.get("name")) or "").strip()
+            role = str(data.get("role", current.get("role")) or "").strip()
+            pin = str(data.get("pin", current.get("pin")) or "").strip()
+            department = str(data.get("department", current.get("department")) or "").strip()
+            if not all((name, role, pin)):
+                return jsonify({"error": "Name, role, and PIN are required"}), 400
+            profile_update = any(
+                field in data for field in ("name", "role", "pin", "department")
+            )
+            if profile_update and (not pin.isdigit() or len(pin) != 4):
+                return jsonify({"error": "PIN must contain exactly 4 digits"}), 400
+
+            if profile_update:
+                workflow = get_active_workflow(conn, vendor_id)
+                matching_stages = [
+                    stage for stage in workflow["stages"]
+                    if stage.get("actor_type") == "staff" and stage.get("role_key") == role
+                ]
+                if not matching_stages:
+                    return jsonify({"error": "Role is not part of the active approval workflow"}), 400
+
+                department_scoped = any(stage.get("department_scoped") for stage in matching_stages)
+                if department_scoped and not department:
+                    return jsonify({"error": "Department required for this role"}), 400
+                if not department_scoped:
+                    department = None
+
+            if profile_update and department_scoped:
+                if is_pg:
+                    c.execute(
+                        "SELECT id FROM leave_staff WHERE vendor_id = %s AND LOWER(TRIM(department)) = LOWER(TRIM(%s)) AND role = %s AND id <> %s",
+                        (vendor_id, department, role, staff_id),
+                    )
+                else:
+                    c.execute(
+                        "SELECT id FROM leave_staff WHERE vendor_id = ? AND LOWER(TRIM(department)) = LOWER(TRIM(?)) AND role = ? AND id <> ?",
+                        (vendor_id, department, role, staff_id),
+                    )
+                if c.fetchone():
+                    return jsonify({"error": f"An approver for this role is already assigned to {department}"}), 409
+
+            if profile_update:
+                if is_pg:
+                    c.execute(
+                        "SELECT id FROM leave_staff WHERE vendor_id = %s AND pin = %s AND id <> %s",
+                        (vendor_id, pin, staff_id),
+                    )
+                else:
+                    c.execute(
+                        "SELECT id FROM leave_staff WHERE vendor_id = ? AND pin = ? AND id <> ?",
+                        (vendor_id, pin, staff_id),
+                    )
+                if c.fetchone():
+                    return jsonify({"error": "This PIN is already assigned to someone else"}), 409
+
             try:
                 navbar_items = serialize_staff_nav_items_for_features(
-                    data.get("navbar_items"), vendor_features,
+                    data.get("navbar_items", current.get("navbar_items")), vendor_features,
                 )
             except ValueError as exc:
                 return jsonify({"error": str(exc)}), 400
-            c.execute(
-                "UPDATE leave_staff SET navbar_items = ? WHERE id = ? AND vendor_id = ?",
-                (navbar_items, staff_id, vendor_id),
-            )
+
+            if is_pg:
+                c.execute(
+                    "UPDATE leave_staff SET name = %s, role = %s, pin = %s, department = %s, navbar_items = %s WHERE id = %s AND vendor_id = %s",
+                    (name, role, pin, department, navbar_items, staff_id, vendor_id),
+                )
+            else:
+                c.execute(
+                    "UPDATE leave_staff SET name = ?, role = ?, pin = ?, department = ?, navbar_items = ? WHERE id = ? AND vendor_id = ?",
+                    (name, role, pin, department, navbar_items, staff_id, vendor_id),
+                )
             if not c.rowcount:
                 return jsonify({"error": "Staff member not found"}), 404
             conn.commit()
             normalized_items = normalize_staff_nav_items(navbar_items)
             log_audit(
-                "leave_staff_navigation_updated",
-                {"staff_id": staff_id, "navbar_items": normalized_items},
+                "leave_staff_updated",
+                {
+                    "staff_id": staff_id,
+                    "previous_name": current.get("name"),
+                    "previous_role": current.get("role"),
+                    "previous_department": current.get("department"),
+                    "name": name,
+                    "role": role,
+                    "department": department,
+                    "navbar_items": normalized_items,
+                },
                 target_vendor_id=vendor_id,
                 actor=getattr(g, "username", None),
             )
-            return jsonify({"status": "success", "navbar_items": normalized_items})
+            return jsonify({
+                "status": "success",
+                "staff": {
+                    "id": staff_id,
+                    "name": name,
+                    "role": role,
+                    "pin": pin,
+                    "department": department,
+                    "navbar_items": normalized_items,
+                },
+            })
             
         elif request.method == "DELETE":
             staff_id = request.args.get("id")
