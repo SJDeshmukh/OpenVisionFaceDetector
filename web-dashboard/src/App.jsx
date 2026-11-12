@@ -125,6 +125,7 @@ function App() {
                 <Route path="/" element={<Navigate to="/dashboard" replace />} />
                 <Route path="/dashboard" element={<StaffNavigationRoute navKey="dashboard"><Dashboard /></StaffNavigationRoute>} />
                 <Route path="/people" element={<StaffNavigationRoute navKey="people"><People /></StaffNavigationRoute>} />
+                <Route path="/attendance" element={<StaffNavigationRoute navKey="attendance"><Attendance /></StaffNavigationRoute>} />
                 <Route path="/cameras" element={<StaffNavigationRoute navKey="cameras"><FeatureRoute anyOf={['cameras']}><Cameras /></FeatureRoute></StaffNavigationRoute>} />
                 <Route path="/reports" element={<StaffNavigationRoute navKey="reports"><FeatureRoute anyOf={['reports', 'report_detailed', 'report_payroll', 'lecture_wise_reports', 'parent_login']}><Reports /></FeatureRoute></StaffNavigationRoute>} />
                 <Route path="/settings" element={<StaffNavigationRoute navKey="settings"><Settings /></StaffNavigationRoute>} />
