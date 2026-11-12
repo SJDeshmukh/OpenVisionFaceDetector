@@ -850,8 +850,8 @@ const People = () => {
 
   const downloadAcademicTemplate = () => {
     const lines = [
-      ['admission_number', 'student_name', 'academic_session', 'program_code', 'year_of_study', 'semester', 'division', 'roll_number', 'phone', 'email'],
-      ['ADM-001', 'Sample Student', '2026-27', 'BSC-CS', '1', '1', 'A', '11', '9876543210', 'student@example.com'],
+      ['admission_number', 'student_name', 'academic_session', 'program_code', 'year_of_study', 'division', 'phone', 'parent_name', 'parent_phone', 'email', 'semester', 'roll_number'],
+      ['ADM-001', 'Sample Resident', '2026-27', 'BSC-CS', '1', 'A', '9000000001', 'Sample Parent', '9000000101', 'resident@example.com', '1', '11'],
     ];
     const csv = lines.map(row => row.map(value => `"${String(value).replaceAll('"', '""')}"`).join(',')).join('\n');
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));

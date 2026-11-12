@@ -1,0 +1,6 @@
+﻿admission_number,student_name,academic_session,program_code,year_of_study,division,phone,parent_name,parent_phone,email,semester,roll_number
+ADM-2026-001,Aarav Sharma,2026-27,BSC-CS,1,A,9000000001,Rajesh Sharma,9000000101,aarav.sharma@example.com,1,CS-001
+ADM-2026-002,Meera Patil,2026-27,BSC-CS,2,A,9000000002,Sunita Patil,9000000102,meera.patil@example.com,3,CS-041
+ADM-2026-003,Kabir Shaikh,2026-27,BTECH-CIVIL,3,B,9000000003,Imran Shaikh,9000000103,kabir.shaikh@example.com,5,CE-078
+ADM-2026-004,Ananya Deshmukh,2026-27,DIPLOMA-MECH,1,A,9000000004,Nitin Deshmukh,9000000104,,1,ME-012
+ADM-2026-005,Rohan Jadhav,2026-27,MBA,2,A,9000000005,Kavita Jadhav,9000000105,rohan.jadhav@example.com,4,MBA-055
