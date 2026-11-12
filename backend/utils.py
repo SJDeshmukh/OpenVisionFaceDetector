@@ -158,7 +158,7 @@ def decode_image_to_bgr(body: bytes) -> np.ndarray | None:
 def extract_student_number_from_custom_data(c_data_raw, search_term=None):
     """
     Extracts a student enrollment number from the custom_data JSON field.
-    Priority: student_number, student number, id_number, id number, student_id.
+    Priority: stable admission/enrollment/student/employee identifiers.
     """
     if not c_data_raw:
         return ""
@@ -174,6 +174,8 @@ def extract_student_number_from_custom_data(c_data_raw, search_term=None):
 
     # Priority keys for student/employee ID
     priority_keys = [
+        "admission_number", "admission number", "admission_no", "admission no",
+        "enrollment_number", "enrollment number", "enrolment_number", "enrolment number",
         "student_number", "student number",
         "id_number",      "id number",
         "employee_id",    "employee id",

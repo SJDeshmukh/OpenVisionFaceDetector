@@ -24,6 +24,7 @@ _PERSON_TYPE_ALIASES = {
 
 
 CLASSROOM_VERTICALS = frozenset({"school", "college", "tuition"})
+STUDENT_VERTICALS = SCHOOL_HOSTEL_VERTICALS | CLASSROOM_VERTICALS
 
 
 def normalize_person_type(value, default=None):
@@ -38,6 +39,10 @@ def is_school_hostel(vertical):
 
 def is_classroom(vertical):
     return str(vertical or "").strip().lower() in CLASSROOM_VERTICALS
+
+
+def is_student_vertical(vertical):
+    return str(vertical or "").strip().lower() in STUDENT_VERTICALS
 
 
 def parse_custom_data(value):
@@ -58,7 +63,7 @@ def person_type_for(custom_data=None, system_role=None, vertical=None):
     role_type = normalize_person_type(system_role)
     if role_type:
         return role_type
-    if str(system_role or "").strip().lower() == "user" and is_school_hostel(vertical):
+    if str(system_role or "").strip().lower() == "user" and is_student_vertical(vertical):
         return "student"
 
     custom = parse_custom_data(custom_data)
@@ -67,7 +72,7 @@ def person_type_for(custom_data=None, system_role=None, vertical=None):
     )
     if explicit:
         return explicit
-    return "student" if is_school_hostel(vertical) else "employee"
+    return "student" if is_student_vertical(vertical) else "employee"
 
 
 def requested_person_type(value, vertical=None):
@@ -78,7 +83,7 @@ def requested_person_type(value, vertical=None):
         if not normalized:
             raise ValueError("person_type must be student, faculty, or employee")
         return normalized
-    return "student" if is_school_hostel(vertical) else None
+    return "student" if is_student_vertical(vertical) else None
 
 
 def class_id_for(custom_data):

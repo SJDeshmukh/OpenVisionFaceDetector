@@ -52,6 +52,25 @@ def test_student_mapping_keeps_parent_identity_separate(monkeypatch):
     }
 
 
+def test_student_mapping_supports_mixed_programs_and_academic_sessions(monkeypatch):
+    monkeypatch.setenv("SPREADSHEET_LLM_MAPPING_ENABLED", "false")
+    headers = [
+        "Admission Number", "Student Name", "Academic Session", "Program Code",
+        "Year of Study", "Semester", "Division", "Roll Number",
+    ]
+    result = mapping_service.map_spreadsheet_headers(headers, [], context="student")
+    assert result["mapping"] == {
+        "name": "Student Name",
+        "person_id": "Admission Number",
+        "division": "Division",
+        "academic_session": "Academic Session",
+        "program_code": "Program Code",
+        "year_of_study": "Year of Study",
+        "semester": "Semester",
+        "roll_number": "Roll Number",
+    }
+
+
 def test_llm_maps_custom_headers_in_one_call_without_receiving_row_values(monkeypatch):
     monkeypatch.setenv("SPREADSHEET_LLM_MAPPING_ENABLED", "true")
     provider = FakeProvider('```json\n{"mapping":{"name":"Associate","phone":"Reach No","person_id":"Badge Ref","email":"invented"}}\n```')

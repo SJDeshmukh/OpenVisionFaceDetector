@@ -661,7 +661,7 @@ def _init_pg_schema_on_conn(conn):
         "CREATE TABLE IF NOT EXISTS person_embeddings (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id), class_year TEXT, division TEXT, branch TEXT, vec BYTEA, dim INTEGER, struct_vec BYTEA, landmarks_3d TEXT, model_version TEXT DEFAULT 'faceplugin-onnx-v1', quality_score REAL, source TEXT DEFAULT 'registration', status TEXT DEFAULT 'trusted', confirmed_by TEXT, confirmed_at TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS class_batches (id TEXT PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), class_year TEXT, division TEXT, branch TEXT, status TEXT DEFAULT 'active', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS class_batch_items (id TEXT PRIMARY KEY, batch_id TEXT REFERENCES class_batches(id), seq INTEGER, image_b64 TEXT, annotated_b64 TEXT, faces_json TEXT, status TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
-        "CREATE TABLE IF NOT EXISTS leave_staff (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), name TEXT, role TEXT, pin TEXT, department TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS leave_staff (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), name TEXT, role TEXT, pin TEXT, department TEXT, navbar_items TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS leave_workflows (id SERIAL PRIMARY KEY, vendor_id INTEGER NOT NULL REFERENCES vendors(id), name TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, is_active INTEGER NOT NULL DEFAULT 1, created_by TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, version))",
         "CREATE TABLE IF NOT EXISTS leave_workflow_stages (id SERIAL PRIMARY KEY, workflow_id INTEGER NOT NULL REFERENCES leave_workflows(id) ON DELETE CASCADE, stage_key TEXT NOT NULL, display_name TEXT NOT NULL, actor_type TEXT NOT NULL, role_key TEXT, sequence INTEGER NOT NULL, department_scoped INTEGER NOT NULL DEFAULT 0, auth_method TEXT NOT NULL DEFAULT 'staff_session', UNIQUE(workflow_id, sequence), UNIQUE(workflow_id, stage_key))",
         "CREATE TABLE IF NOT EXISTS leave_request_stages (id SERIAL PRIMARY KEY, request_id INTEGER NOT NULL REFERENCES leave_requests(id) ON DELETE CASCADE, vendor_id INTEGER NOT NULL REFERENCES vendors(id), workflow_id INTEGER REFERENCES leave_workflows(id), workflow_version INTEGER NOT NULL, stage_key TEXT NOT NULL, display_name TEXT NOT NULL, actor_type TEXT NOT NULL, role_key TEXT, sequence INTEGER NOT NULL, department_scoped INTEGER NOT NULL DEFAULT 0, auth_method TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', actor_id TEXT, actor_name TEXT, decided_at TIMESTAMP, decision_metadata TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(request_id, sequence))",
@@ -671,7 +671,11 @@ def _init_pg_schema_on_conn(conn):
         "CREATE TABLE IF NOT EXISTS bulk_attendance_config (id SERIAL PRIMARY KEY, vendor_id INTEGER UNIQUE REFERENCES vendors(id), fields TEXT DEFAULT '[]', updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS lectures (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), subject TEXT NOT NULL, class_year TEXT, division TEXT, branch TEXT, lecture_date DATE, start_time TEXT, teacher TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS lecture_attendance (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), lecture_id INTEGER REFERENCES lectures(id), person_id INTEGER REFERENCES faces(id), status TEXT DEFAULT 'present', marked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(lecture_id, person_id))",
-        "CREATE TABLE IF NOT EXISTS classes (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), class_year TEXT, division TEXT, branch TEXT, label TEXT, mapped_subjects TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS classes (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), class_year TEXT, division TEXT, branch TEXT, label TEXT, mapped_subjects TEXT, academic_session_id INTEGER, program_id INTEGER, year_of_study INTEGER, semester INTEGER, status TEXT DEFAULT 'ACTIVE', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS academic_sessions (id SERIAL PRIMARY KEY, vendor_id INTEGER NOT NULL REFERENCES vendors(id) ON DELETE CASCADE, code TEXT NOT NULL, name TEXT NOT NULL, start_date DATE NOT NULL, end_date DATE NOT NULL, status TEXT NOT NULL DEFAULT 'PLANNED', created_by TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, code))",
+        "CREATE TABLE IF NOT EXISTS academic_programs (id SERIAL PRIMARY KEY, vendor_id INTEGER NOT NULL REFERENCES vendors(id) ON DELETE CASCADE, code TEXT NOT NULL, name TEXT NOT NULL, duration_years INTEGER NOT NULL, structure TEXT NOT NULL DEFAULT 'SEMESTER', semesters_per_year INTEGER NOT NULL DEFAULT 2, is_active INTEGER NOT NULL DEFAULT 1, created_by TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, code))",
+        "CREATE TABLE IF NOT EXISTS student_enrollments (id SERIAL PRIMARY KEY, vendor_id INTEGER NOT NULL REFERENCES vendors(id) ON DELETE CASCADE, person_id INTEGER NOT NULL REFERENCES faces(id) ON DELETE CASCADE, academic_session_id INTEGER NOT NULL REFERENCES academic_sessions(id), program_id INTEGER NOT NULL REFERENCES academic_programs(id), class_id INTEGER REFERENCES classes(id), year_of_study INTEGER NOT NULL, semester INTEGER, division TEXT NOT NULL, roll_number TEXT, status TEXT NOT NULL DEFAULT 'ACTIVE', effective_from DATE NOT NULL, effective_to DATE, source TEXT NOT NULL DEFAULT 'MANUAL', change_reason TEXT NOT NULL DEFAULT 'Initial enrollment', created_by TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS student_enrollment_audit (id SERIAL PRIMARY KEY, vendor_id INTEGER NOT NULL REFERENCES vendors(id) ON DELETE CASCADE, person_id INTEGER NOT NULL, enrollment_id INTEGER, action TEXT NOT NULL, previous_data TEXT, new_data TEXT, actor_username TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS face_reset_requests (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), parent_id INTEGER REFERENCES parent_users(id), reason TEXT, status TEXT DEFAULT 'pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS registration_batches (id TEXT PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), status TEXT DEFAULT 'active', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS registration_batch_items (id TEXT PRIMARY KEY, batch_id TEXT REFERENCES registration_batches(id), seq INTEGER, image_b64 TEXT, annotated_b64 TEXT, faces_json TEXT, status TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
@@ -742,6 +746,12 @@ def _init_pg_schema_on_conn(conn):
         ,"CREATE INDEX IF NOT EXISTS idx_xchat_conversation_owner ON xchat_conversations(vendor_id, username, updated_at)"
         ,"CREATE INDEX IF NOT EXISTS idx_xchat_message_conversation ON xchat_messages(conversation_id, vendor_id, created_at)"
         ,"CREATE INDEX IF NOT EXISTS idx_xchat_token_usage_vendor ON xchat_token_usage(vendor_id, created_at)"
+        ,"CREATE INDEX IF NOT EXISTS idx_academic_sessions_vendor_status ON academic_sessions(vendor_id, status, start_date)"
+        ,"CREATE INDEX IF NOT EXISTS idx_academic_programs_vendor_active ON academic_programs(vendor_id, is_active, code)"
+        ,"CREATE INDEX IF NOT EXISTS idx_student_enrollment_resolution ON student_enrollments(vendor_id, person_id, effective_from, effective_to)"
+        ,"CREATE INDEX IF NOT EXISTS idx_student_enrollment_roster ON student_enrollments(vendor_id, academic_session_id, program_id, year_of_study, division, status)"
+        ,"DROP INDEX IF EXISTS uq_student_enrollment_scope_status"
+        ,"CREATE UNIQUE INDEX IF NOT EXISTS uq_student_enrollment_active_scope ON student_enrollments(vendor_id, person_id, academic_session_id, program_id, year_of_study, COALESCE(semester, 0), LOWER(TRIM(division))) WHERE status = 'ACTIVE'"
     ]
     for q in queries:
         try:
@@ -842,12 +852,25 @@ def _init_pg_schema_on_conn(conn):
         ("advances", "approved_at", "TIMESTAMP"),
         ("advances", "rejection_reason", "TEXT"),
         ("classes", "mapped_subjects", "TEXT"),
+        ("classes", "academic_session_id", "INTEGER"),
+        ("classes", "program_id", "INTEGER"),
+        ("classes", "year_of_study", "INTEGER"),
+        ("classes", "semester", "INTEGER"),
+        ("classes", "status", "TEXT DEFAULT 'ACTIVE'"),
         ("attendance", "class_year", "TEXT"),
         ("attendance", "division", "TEXT"),
         ("attendance", "branch", "TEXT"),
         ("attendance", "subject", "TEXT"),
         ("attendance", "lecture_id", "INTEGER"),
         ("attendance", "attendance_date", "DATE"),
+        ("attendance", "enrollment_id", "INTEGER"),
+        ("attendance", "academic_session_id", "INTEGER"),
+        ("attendance", "program_id", "INTEGER"),
+        ("attendance", "year_of_study", "INTEGER"),
+        ("attendance", "semester", "INTEGER"),
+        ("lectures", "class_id", "INTEGER"),
+        ("lectures", "academic_session_id", "INTEGER"),
+        ("lectures", "program_id", "INTEGER"),
         ("person_embeddings", "struct_vec", "BYTEA"),
         ("person_embeddings", "landmarks_3d", "TEXT"),
         ("person_embeddings", "model_version", "TEXT DEFAULT 'faceplugin-onnx-v1'"),
@@ -856,6 +879,7 @@ def _init_pg_schema_on_conn(conn):
         ("person_embeddings", "status", "TEXT DEFAULT 'trusted'"),
         ("person_embeddings", "confirmed_by", "TEXT"),
         ("person_embeddings", "confirmed_at", "TIMESTAMP"),
+        ("leave_staff", "navbar_items", "TEXT"),
     ]
     
     for table, col, col_type in cols:
@@ -1198,7 +1222,7 @@ def init_sqlite_schema(conn):
         "CREATE TABLE IF NOT EXISTS person_embeddings (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, person_id INTEGER, class_year TEXT, division TEXT, branch TEXT, vec BLOB, dim INTEGER, struct_vec BLOB, landmarks_3d TEXT, model_version TEXT DEFAULT 'faceplugin-onnx-v1', quality_score REAL, source TEXT DEFAULT 'registration', status TEXT DEFAULT 'trusted', confirmed_by TEXT, confirmed_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS class_batches (id TEXT PRIMARY KEY, vendor_id INTEGER, class_year TEXT, division TEXT, branch TEXT, status TEXT DEFAULT 'active', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS class_batch_items (id TEXT PRIMARY KEY, batch_id TEXT, seq INTEGER, image_b64 TEXT, annotated_b64 TEXT, faces_json TEXT, status TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
-        "CREATE TABLE IF NOT EXISTS leave_staff (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, name TEXT, role TEXT, pin TEXT, department TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS leave_staff (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, name TEXT, role TEXT, pin TEXT, department TEXT, navbar_items TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS leave_workflows (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER NOT NULL, name TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, is_active INTEGER NOT NULL DEFAULT 1, created_by TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, version))",
         "CREATE TABLE IF NOT EXISTS leave_workflow_stages (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id INTEGER NOT NULL, stage_key TEXT NOT NULL, display_name TEXT NOT NULL, actor_type TEXT NOT NULL, role_key TEXT, sequence INTEGER NOT NULL, department_scoped INTEGER NOT NULL DEFAULT 0, auth_method TEXT NOT NULL DEFAULT 'staff_session', UNIQUE(workflow_id, sequence), UNIQUE(workflow_id, stage_key))",
         "CREATE TABLE IF NOT EXISTS leave_request_stages (id INTEGER PRIMARY KEY AUTOINCREMENT, request_id INTEGER NOT NULL, vendor_id INTEGER NOT NULL, workflow_id INTEGER, workflow_version INTEGER NOT NULL, stage_key TEXT NOT NULL, display_name TEXT NOT NULL, actor_type TEXT NOT NULL, role_key TEXT, sequence INTEGER NOT NULL, department_scoped INTEGER NOT NULL DEFAULT 0, auth_method TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', actor_id TEXT, actor_name TEXT, decided_at DATETIME, decision_metadata TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(request_id, sequence))",
@@ -1208,7 +1232,11 @@ def init_sqlite_schema(conn):
         "CREATE TABLE IF NOT EXISTS bulk_attendance_config (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER UNIQUE, fields TEXT DEFAULT '[]', updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS lectures (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, subject TEXT NOT NULL, class_year TEXT, division TEXT, branch TEXT, lecture_date DATE, start_time TEXT, teacher TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS lecture_attendance (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, lecture_id INTEGER, person_id INTEGER, status TEXT DEFAULT 'present', marked_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(lecture_id, person_id))",
-        "CREATE TABLE IF NOT EXISTS classes (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, class_year TEXT, division TEXT, branch TEXT, label TEXT, mapped_subjects TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS classes (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, class_year TEXT, division TEXT, branch TEXT, label TEXT, mapped_subjects TEXT, academic_session_id INTEGER, program_id INTEGER, year_of_study INTEGER, semester INTEGER, status TEXT DEFAULT 'ACTIVE', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS academic_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER NOT NULL, code TEXT NOT NULL, name TEXT NOT NULL, start_date DATE NOT NULL, end_date DATE NOT NULL, status TEXT NOT NULL DEFAULT 'PLANNED', created_by TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, code))",
+        "CREATE TABLE IF NOT EXISTS academic_programs (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER NOT NULL, code TEXT NOT NULL, name TEXT NOT NULL, duration_years INTEGER NOT NULL, structure TEXT NOT NULL DEFAULT 'SEMESTER', semesters_per_year INTEGER NOT NULL DEFAULT 2, is_active INTEGER NOT NULL DEFAULT 1, created_by TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, code))",
+        "CREATE TABLE IF NOT EXISTS student_enrollments (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER NOT NULL, person_id INTEGER NOT NULL, academic_session_id INTEGER NOT NULL, program_id INTEGER NOT NULL, class_id INTEGER, year_of_study INTEGER NOT NULL, semester INTEGER, division TEXT NOT NULL, roll_number TEXT, status TEXT NOT NULL DEFAULT 'ACTIVE', effective_from DATE NOT NULL, effective_to DATE, source TEXT NOT NULL DEFAULT 'MANUAL', change_reason TEXT NOT NULL DEFAULT 'Initial enrollment', created_by TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS student_enrollment_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER NOT NULL, person_id INTEGER NOT NULL, enrollment_id INTEGER, action TEXT NOT NULL, previous_data TEXT, new_data TEXT, actor_username TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS registration_batches (id TEXT PRIMARY KEY, vendor_id INTEGER, status TEXT DEFAULT 'active', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS registration_batch_items (id TEXT PRIMARY KEY, batch_id TEXT, seq INTEGER, image_b64 TEXT, annotated_b64 TEXT, faces_json TEXT, status TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS subject_master (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, class_year TEXT, branch TEXT, subject_name TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, class_year, branch, subject_name))",
@@ -1278,6 +1306,12 @@ def init_sqlite_schema(conn):
         ,"CREATE INDEX IF NOT EXISTS idx_xchat_conversation_owner ON xchat_conversations(vendor_id, username, updated_at)"
         ,"CREATE INDEX IF NOT EXISTS idx_xchat_message_conversation ON xchat_messages(conversation_id, vendor_id, created_at)"
         ,"CREATE INDEX IF NOT EXISTS idx_xchat_token_usage_vendor ON xchat_token_usage(vendor_id, created_at)"
+        ,"CREATE INDEX IF NOT EXISTS idx_academic_sessions_vendor_status ON academic_sessions(vendor_id, status, start_date)"
+        ,"CREATE INDEX IF NOT EXISTS idx_academic_programs_vendor_active ON academic_programs(vendor_id, is_active, code)"
+        ,"CREATE INDEX IF NOT EXISTS idx_student_enrollment_resolution ON student_enrollments(vendor_id, person_id, effective_from, effective_to)"
+        ,"CREATE INDEX IF NOT EXISTS idx_student_enrollment_roster ON student_enrollments(vendor_id, academic_session_id, program_id, year_of_study, division, status)"
+        ,"DROP INDEX IF EXISTS uq_student_enrollment_scope_status"
+        ,"CREATE UNIQUE INDEX IF NOT EXISTS uq_student_enrollment_active_scope ON student_enrollments(vendor_id, person_id, academic_session_id, program_id, year_of_study, COALESCE(semester, 0), LOWER(TRIM(division))) WHERE status = 'ACTIVE'"
     ]
     # Existing SQLite databases can be older than the index definitions below.
     # Create tables/triggers now and defer indexes until additive migrations have
@@ -1368,6 +1402,11 @@ def init_sqlite_schema(conn):
             cur.execute(f"ALTER TABLE vendors ADD COLUMN {col}")
         except Exception:
             pass
+
+    try:
+        cur.execute("ALTER TABLE leave_staff ADD COLUMN navbar_items TEXT")
+    except Exception:
+        pass
             
     for col in ["max_web_sessions INTEGER DEFAULT 1", "grace_period_days INTEGER DEFAULT 0", "cost_per_employee REAL DEFAULT 0", "setup_fee REAL DEFAULT 0", "setup_fee_paid INTEGER DEFAULT 0", "xchat_billing_mode TEXT DEFAULT 'payg'", "xchat_token_limit INTEGER DEFAULT 0", "xchat_tokens_used INTEGER DEFAULT 0", "xchat_input_tokens INTEGER DEFAULT 0", "xchat_output_tokens INTEGER DEFAULT 0", "xchat_tokens_billed INTEGER DEFAULT 0", "xchat_price_per_1k_tokens REAL DEFAULT 0"]:
         try:
@@ -1383,6 +1422,30 @@ def init_sqlite_schema(conn):
     for col in ["display_id INTEGER", "local_uid TEXT", "daily_wage REAL DEFAULT 0", "basic_salary REAL DEFAULT 0", "hra REAL DEFAULT 0", "conveyance REAL DEFAULT 0", "special_allowance REAL DEFAULT 0", "pf_enabled INTEGER DEFAULT 0", "esi_enabled INTEGER DEFAULT 0", "gratuity_enabled INTEGER DEFAULT 0", "professional_tax REAL DEFAULT 0", "late_allowance_days INTEGER", "late_deduction_amount REAL DEFAULT 0", "joining_date DATE", "registered_at DATETIME"]:
         try:
             cur.execute(f"ALTER TABLE faces ADD COLUMN {col}")
+        except Exception:
+            pass
+
+    for col in [
+        "academic_session_id INTEGER", "program_id INTEGER", "year_of_study INTEGER",
+        "semester INTEGER", "status TEXT DEFAULT 'ACTIVE'",
+    ]:
+        try:
+            cur.execute(f"ALTER TABLE classes ADD COLUMN {col}")
+        except Exception:
+            pass
+
+    for col in [
+        "enrollment_id INTEGER", "academic_session_id INTEGER", "program_id INTEGER",
+        "year_of_study INTEGER", "semester INTEGER",
+    ]:
+        try:
+            cur.execute(f"ALTER TABLE attendance ADD COLUMN {col}")
+        except Exception:
+            pass
+
+    for col in ["class_id INTEGER", "academic_session_id INTEGER", "program_id INTEGER"]:
+        try:
+            cur.execute(f"ALTER TABLE lectures ADD COLUMN {col}")
         except Exception:
             pass
 

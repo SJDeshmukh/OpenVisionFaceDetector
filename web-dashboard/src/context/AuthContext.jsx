@@ -168,6 +168,38 @@ export const AuthProvider = ({ children }) => {
     };
   }, [Boolean(user), refreshUserData]);
 
+  useEffect(() => {
+    if (!user || !staffSession?.access_token) return undefined;
+    let cancelled = false;
+    const refreshStaffSession = async () => {
+      try {
+        const { data } = await axios.get(`${API_URL}/leave/admin/staff-session`, {
+          headers: { 'X-Leave-Staff-Token': staffSession.access_token },
+        });
+        if (cancelled || !data?.staff) return;
+        setStaffSession(previous => {
+          if (!previous?.access_token) return previous;
+          const next = { ...previous, ...data.staff, access_token: previous.access_token };
+          localStorage.setItem('staffSession', JSON.stringify(next));
+          return next;
+        });
+      } catch (error) {
+        if (cancelled) return;
+        if (error.response?.status === 403) {
+          setStaffSession(null);
+          localStorage.removeItem('staffSession');
+        }
+      }
+    };
+    refreshStaffSession();
+    const refreshOnFocus = () => refreshStaffSession();
+    window.addEventListener('focus', refreshOnFocus);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('focus', refreshOnFocus);
+    };
+  }, [Boolean(user), staffSession?.access_token]);
+
   const login = async (username, password, secondary_password = null) => {
     try {
       let deviceId = localStorage.getItem('web_device_id');

@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 from services.auth_service import authenticate_vendor_access, extract_token, verify_token, check_vendor_status, hash_password, login_email_from_profile
 import db_factory
 from db_factory import set_row_factory, get_table_columns
-from utils import get_db_connection, LOW_RAM_MODE, _VENDOR_EMB_CACHE, ALL_FEATURES, cache_delete_vendor_prefix, cache_delete, require_feature, cache_get, cache_set, decode_image_to_bgr, decode_image_to_rgb, get_face_augmentations, vendor_has_feature
+from utils import get_db_connection, LOW_RAM_MODE, _VENDOR_EMB_CACHE, ALL_FEATURES, cache_delete_vendor_prefix, cache_delete, require_feature, cache_get, cache_set, decode_image_to_bgr, decode_image_to_rgb, get_face_augmentations, vendor_has_feature, extract_student_number_from_custom_data
 from services.face_service import _ensure_vendor_emb_cache, _normalize_vec, _suggest_from_cache
 from storage import upload_base64_image, presigned_url_for_key, OBJECT_STORAGE_ENABLED, compress_image
 import db_factory
@@ -27,6 +27,7 @@ from services.person_scope_service import (
     class_scope_matches,
     is_school_hostel,
     is_classroom,
+    is_student_vertical,
     normalize_person_type,
     parse_custom_data,
     person_type_for,
@@ -806,7 +807,7 @@ def upload_face():
             )
             company_shift_row = metadata_cursor.fetchone()
             shift = first_active_shift_name(company_shift_row[0] if company_shift_row else None) or ""
-        if is_school_hostel(vertical):
+        if is_student_vertical(vertical):
             incoming_type = normalize_person_type(
                 data.get("person_type") or custom_dict.get("person_type"), "student"
             )
@@ -853,17 +854,22 @@ def upload_face():
         metadata_conn.close()
 
     submitted_class_id = custom_dict.get('class_id')
+    submitted_academic_payload = None
     if submitted_class_id:
         class_conn = get_db_connection()
         try:
             class_cursor = class_conn.cursor()
             class_cursor.execute(
-                "SELECT class_year, division, branch FROM classes WHERE id = ? AND vendor_id = ?",
+                """SELECT class_year, division, branch, academic_session_id, program_id,
+                          year_of_study, semester, status
+                   FROM classes WHERE id = ? AND vendor_id = ?""",
                 (submitted_class_id, vendor_id),
             )
             class_row = class_cursor.fetchone()
             if not class_row:
                 return jsonify({"error": "The selected class does not belong to this business"}), 400
+            if class_row[3] and str(class_row[7] or '').upper() != 'ACTIVE':
+                return jsonify({"error": "The selected class is no longer active"}), 409
             class_year, division, branch = class_row[0], class_row[1], class_row[2]
             custom_dict.update({
                 'class_id': str(submitted_class_id),
@@ -871,6 +877,15 @@ def upload_face():
                 'division': division or '',
                 'branch': branch or '',
             })
+            if class_row[3] and class_row[4]:
+                submitted_academic_payload = {
+                    'academic_session_id': class_row[3],
+                    'program_id': class_row[4],
+                    'year_of_study': class_row[5] or class_year,
+                    'semester': class_row[6],
+                    'division': division,
+                    'roll_number': custom_dict.get('roll_number'),
+                }
         finally:
             class_conn.close()
 
@@ -882,7 +897,7 @@ def upload_face():
         # Identify Student Number
         student_number = None
         try:
-            student_number = str(custom_dict.get('student_number') or custom_dict.get('student_id') or custom_dict.get('id_number') or '').strip()
+            student_number = extract_student_number_from_custom_data(custom_dict)
         except Exception:
             student_number = None
 
@@ -932,22 +947,27 @@ def upload_face():
                     cc.execute("""SELECT f.id FROM faces f WHERE f.vendor_id = %s
                                   AND (f.custom_data::jsonb ->> 'student_id' = %s
                                     OR f.custom_data::jsonb ->> 'id_number' = %s
-                                    OR f.custom_data::jsonb ->> 'student_number' = %s)
+                                    OR f.custom_data::jsonb ->> 'student_number' = %s
+                                    OR f.custom_data::jsonb ->> 'admission_number' = %s
+                                    OR f.custom_data::jsonb ->> 'enrollment_number' = %s)
                                   AND NOT EXISTS (
                                       SELECT 1 FROM system_users su
                                       WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
                                         AND LOWER(su.role) = 'faculty'
-                                  ) LIMIT 1""", (vendor_id, student_number, student_number, student_number))
+                                  ) LIMIT 1""", (vendor_id, student_number, student_number, student_number, student_number, student_number))
                 else:
                     # SQLite JSON search (using LIKE as fallback or json_extract if available)
                     cc.execute("""SELECT f.id FROM faces f WHERE f.vendor_id = ?
-                                  AND (f.custom_data LIKE ? OR f.custom_data LIKE ? OR f.custom_data LIKE ?)
+                                  AND (f.custom_data LIKE ? OR f.custom_data LIKE ? OR f.custom_data LIKE ?
+                                       OR f.custom_data LIKE ? OR f.custom_data LIKE ?)
                                   AND NOT EXISTS (
                                       SELECT 1 FROM system_users su
                                       WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
                                         AND LOWER(su.role) = 'faculty'
                                   ) LIMIT 1""",
-                               (vendor_id, f'%"student_id":"{student_number}"%', f'%"id_number":"{student_number}"%', f'%"student_number":"{student_number}"%'))
+                               (vendor_id, f'%"student_id":"{student_number}"%', f'%"id_number":"{student_number}"%',
+                                f'%"student_number":"{student_number}"%', f'%"admission_number":"{student_number}"%',
+                                f'%"enrollment_number":"{student_number}"%'))
                 row_id = cc.fetchone()
                 if row_id:
                     person_id = str(row_id[0] if not isinstance(row_id, dict) else row_id.get("id"))
@@ -968,14 +988,14 @@ def upload_face():
                     person_id = str(row_id[0] if not isinstance(row_id, dict) else row_id.get("id"))
                     logger.info(f"[UPLOAD] Auto-matched name '{name}' to existing ID {person_id}")
 
-        if is_school_hostel(vertical) and student_number and not person_id:
+        if is_student_vertical(vertical) and student_number and not person_id:
             # Only block if we STILL haven't found a person to update
             cc.execute("SELECT id, custom_data FROM faces WHERE vendor_id = ?", (vendor_id,))
             rows = cc.fetchall()
             for r in rows:
                 try:
                     cd = json.loads(r[1]) if r[1] else {}
-                    sn = str(cd.get('student_id') or cd.get('id_number') or cd.get('student_number') or '').strip()
+                    sn = extract_student_number_from_custom_data(cd)
                     if sn and sn == student_number:
                         conn_check.close()
                         return jsonify({"error": "Duplicate student_number for this vendor"}), 409
@@ -1064,7 +1084,7 @@ def upload_face():
                 print(f"Image processing error: {e}")
                 pass
         if person_id:
-            if is_school_hostel(vertical):
+            if is_student_vertical(vertical):
                 c.execute(
                     "SELECT role FROM system_users WHERE person_id = ? AND vendor_id = ? "
                     "AND LOWER(role) = 'faculty' LIMIT 1",
@@ -1105,7 +1125,7 @@ def upload_face():
                 # Only overwrite if the new value is non-empty.
                 if v is not None and str(v).strip() != "":
                     old[k] = v
-            if is_school_hostel(vertical):
+            if is_student_vertical(vertical):
                 old["person_type"] = "student"
             custom_data = json.dumps(old, separators=(',', ':')) if old else None
             fields = []
@@ -1286,7 +1306,7 @@ def upload_face():
                             else:
                                 # Proactively create it if it didn't exist
                                 from services.auth_service import hash_password
-                                login_role = 'student' if is_school_hostel(vertical) else 'user'
+                                login_role = 'student' if is_student_vertical(vertical) else 'user'
                                 c.execute("INSERT OR IGNORE INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (?, ?, NULL, ?, ?, ?)",
                                           (login_email, hash_password(new_phone), login_role, existing.get("vendor_id"), person_id))
             except Exception:
@@ -1371,7 +1391,7 @@ def upload_face():
                         if not c.fetchone():
                             # Create system user
                             # Using phone as initial password
-                            login_role = 'student' if is_school_hostel(vertical) else 'user'
+                            login_role = 'student' if is_student_vertical(vertical) else 'user'
                             sys_cols = get_table_columns(conn, "system_users")
                             is_kiosk_field = ", is_kiosk" if "is_kiosk" in sys_cols else ""
                             is_kiosk_val = ", 0" if "is_kiosk" in sys_cols else ""
@@ -1449,6 +1469,14 @@ def upload_face():
                     del _VENDOR_EMB_CACHE[k]
             except Exception:
                 pass
+
+        if submitted_academic_payload:
+            from services.academic_lifecycle_service import enroll_student
+            enroll_student(
+                conn, vendor_id, int(new_id), submitted_academic_payload,
+                getattr(g, 'username', '') or 'registration', source='REGISTRATION',
+                ensure_schema=False, commit=False,
+            )
 
         # Send a lightweight authoritative row with the socket event. Web and
         # kiosk clients can update metadata immediately without downloading

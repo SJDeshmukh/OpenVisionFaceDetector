@@ -9,19 +9,27 @@ const Classes = () => {
   const { user } = useAuth();
   const terminology = getBusinessTerminology(user?.vertical);
   const [items, setItems] = useState([]);
-  const [form, setForm] = useState({ class_year: '', division: '', branch: '', label: '' });
+  const [form, setForm] = useState({ class_year: '', division: '', branch: '', label: '', academic_session_id: '', program_id: '', year_of_study: '', semester: '' });
   const [loading, setLoading] = useState(false);
   const [managingClass, setManagingClass] = useState(null);
   const [masterSubjects, setMasterSubjects] = useState([]);
   const [facultyLogins, setFacultyLogins] = useState([]);
   const [showMasterPanel, setShowMasterPanel] = useState(false);
   const [masterForm, setMasterForm] = useState({ class_year: '', branch: '', subject_name: '' });
+  const [academicConfig, setAcademicConfig] = useState({ sessions: [], programs: [] });
+  const [sessionForm, setSessionForm] = useState({ code: '', name: '', start_date: '', end_date: '', status: 'PLANNED' });
+  const [programForm, setProgramForm] = useState({ code: '', name: '', duration_years: 3, structure: 'SEMESTER', semesters_per_year: 2 });
+  const [promotion, setPromotion] = useState({ source_session_id: '', target_session_id: '', students: [] });
+  const [showAcademicSetup, setShowAcademicSetup] = useState(false);
+
+  const authConfig = { headers: { Authorization: `Bearer ${user?.token}` } };
 
   const fetchItems = async () => {
     setLoading(true);
     try {
       const res = await axios.get(`${API_URL}/classes`, {
-        headers: { Authorization: `Bearer ${user?.token}` }
+        headers: { Authorization: `Bearer ${user?.token}` },
+        params: { include_archived: true },
       });
       setItems(res.data?.classes || []);
     } catch (e) {
@@ -56,12 +64,84 @@ const Classes = () => {
     }
   };
 
+  const fetchAcademicConfig = async () => {
+    if (!terminology.academic || user?.role === 'faculty') return;
+    try {
+      const res = await axios.get(`${API_URL}/academic/config`, authConfig);
+      setAcademicConfig({ sessions: res.data?.sessions || [], programs: res.data?.programs || [] });
+    } catch (e) {
+      console.error('Error fetching academic configuration', e);
+    }
+  };
+
   useEffect(() => {
     if (!user?.token) return;
     fetchItems(); 
     fetchMasterSubjects();
     fetchFaculty();
+    fetchAcademicConfig();
   }, [user?.token]);
+
+  const createSession = async (e) => {
+    e.preventDefault();
+    try {
+      await axios.post(`${API_URL}/academic/sessions`, sessionForm, authConfig);
+      setSessionForm({ code: '', name: '', start_date: '', end_date: '', status: 'PLANNED' });
+      await fetchAcademicConfig();
+    } catch (e) {
+      alert(e.response?.data?.error || 'Failed to create academic session');
+    }
+  };
+
+  const activateSession = async (sessionId) => {
+    if (!confirm('Activate this session? The currently active session will be closed.')) return;
+    try {
+      await axios.patch(`${API_URL}/academic/sessions/${sessionId}`, { status: 'ACTIVE' }, authConfig);
+      await Promise.all([fetchAcademicConfig(), fetchItems()]);
+    } catch (e) {
+      alert(e.response?.data?.error || 'Failed to activate academic session');
+    }
+  };
+
+  const createProgram = async (e) => {
+    e.preventDefault();
+    try {
+      await axios.post(`${API_URL}/academic/programs`, programForm, authConfig);
+      setProgramForm({ code: '', name: '', duration_years: 3, structure: 'SEMESTER', semesters_per_year: 2 });
+      await fetchAcademicConfig();
+    } catch (e) {
+      alert(e.response?.data?.error || 'Failed to create program');
+    }
+  };
+
+  const previewPromotions = async () => {
+    if (!promotion.source_session_id || !promotion.target_session_id) return;
+    try {
+      const res = await axios.post(`${API_URL}/academic/promotions/preview`, {
+        source_session_id: Number(promotion.source_session_id),
+        target_session_id: Number(promotion.target_session_id),
+      }, authConfig);
+      setPromotion(p => ({ ...p, students: res.data?.students || [] }));
+    } catch (e) {
+      alert(e.response?.data?.error || 'Failed to preview promotions');
+    }
+  };
+
+  const executePromotions = async () => {
+    if (!promotion.students.length || !confirm(`Apply ${promotion.students.length} promotion decisions?`)) return;
+    try {
+      await axios.post(`${API_URL}/academic/promotions/execute`, {
+        source_session_id: Number(promotion.source_session_id),
+        target_session_id: Number(promotion.target_session_id),
+        decisions: promotion.students.map(s => ({ person_id: s.person_id, action: s.selected_action || s.suggested_action })),
+      }, authConfig);
+      setPromotion(p => ({ ...p, students: [] }));
+      await Promise.all([fetchAcademicConfig(), fetchItems()]);
+      alert('Academic lifecycle updated successfully.');
+    } catch (e) {
+      alert(e.response?.data?.error || 'Failed to apply promotions');
+    }
+  };
 
   const addMasterSubject = async (e) => {
     e.preventDefault();
@@ -92,16 +172,33 @@ const Classes = () => {
   const create = async (e) => {
     e.preventDefault();
     try {
-      const payload = { ...form, mapped_subjects: [] };
+      const normalized = terminology.academic && form.academic_session_id && form.program_id;
+      const payload = normalized ? {
+        academic_session_id: Number(form.academic_session_id),
+        program_id: Number(form.program_id),
+        year_of_study: Number(form.year_of_study),
+        semester: form.semester ? Number(form.semester) : null,
+        division: form.division,
+        label: form.label,
+        mapped_subjects: [],
+      } : { ...form, mapped_subjects: [] };
       await axios.post(`${API_URL}/classes`, payload, {
         headers: { Authorization: `Bearer ${user?.token}` }
       });
-      setForm({ class_year: '', division: '', branch: '', label: '' });
+      setForm({ class_year: '', division: '', branch: '', label: '', academic_session_id: '', program_id: '', year_of_study: '', semester: '' });
       fetchItems();
     } catch (e) {
       alert(e.response?.data?.error || e.message || 'Create failed');
     }
   };
+
+  const activePrograms = academicConfig.programs.filter(p => Boolean(p.is_active));
+  const selectedProgram = activePrograms.find(p => String(p.id) === String(form.program_id));
+  const hasAcademicConfiguration = academicConfig.sessions.length > 0 && activePrograms.length > 0;
+  const yearOptions = selectedProgram ? Array.from({ length: Number(selectedProgram.duration_years) }, (_, i) => i + 1) : [];
+  const semesterOptions = selectedProgram?.structure === 'SEMESTER' && form.year_of_study
+    ? Array.from({ length: Number(selectedProgram.semesters_per_year) }, (_, i) => ((Number(form.year_of_study) - 1) * Number(selectedProgram.semesters_per_year)) + i + 1)
+    : [];
 
   const update = async (id, payload) => {
     try {
@@ -129,11 +226,72 @@ const Classes = () => {
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-bold text-slate-800">{terminology.groups}</h1>
+      {user?.role !== 'faculty' && terminology.academic && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <button type="button" onClick={() => setShowAcademicSetup(v => !v)} className="w-full flex items-center justify-between p-4 hover:bg-slate-50">
+            <div className="flex items-center gap-3 text-left">
+              <div className="p-2 bg-indigo-50 text-indigo-600 rounded-lg"><GraduationCap size={20} /></div>
+              <div>
+                <h2 className="font-bold text-slate-800">Academic lifecycle</h2>
+                <p className="text-xs text-slate-500">Configure sessions and programs of any duration, then promote students without replacing their face record.</p>
+              </div>
+            </div>
+            <ChevronDown size={20} className={`text-slate-400 transition-transform ${showAcademicSetup ? 'rotate-180' : ''}`} />
+          </button>
+          {showAcademicSetup && (
+            <div className="border-t border-slate-100 p-5 bg-slate-50/50 space-y-5">
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                <form onSubmit={createSession} className="bg-white border border-slate-200 rounded-xl p-4 space-y-3">
+                  <div><h3 className="font-semibold text-slate-800">Academic session</h3><p className="text-xs text-slate-500">Example: 2026-27. Only one session should be active.</p></div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <input required className="p-2 border rounded-lg" placeholder="Code (2026-27)" value={sessionForm.code} onChange={e => setSessionForm(p => ({ ...p, code: e.target.value }))} />
+                    <input required className="p-2 border rounded-lg" placeholder="Display name" value={sessionForm.name} onChange={e => setSessionForm(p => ({ ...p, name: e.target.value }))} />
+                    <input required type="date" className="p-2 border rounded-lg" value={sessionForm.start_date} onChange={e => setSessionForm(p => ({ ...p, start_date: e.target.value }))} />
+                    <input required type="date" className="p-2 border rounded-lg" value={sessionForm.end_date} onChange={e => setSessionForm(p => ({ ...p, end_date: e.target.value }))} />
+                    <select className="col-span-2 p-2 border rounded-lg" value={sessionForm.status} onChange={e => setSessionForm(p => ({ ...p, status: e.target.value }))}><option value="PLANNED">Planned</option><option value="ACTIVE">Active now</option></select>
+                  </div>
+                  <button className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-semibold">Add session</button>
+                  <div className="flex flex-wrap gap-2">{academicConfig.sessions.map(s => <div key={s.id} className={`inline-flex items-center gap-2 px-2 py-1 rounded-full text-xs border ${s.status === 'ACTIVE' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-50 text-slate-600'}`}><span>{s.code} · {s.status}</span>{s.status === 'PLANNED' && <button type="button" onClick={() => activateSession(s.id)} className="font-semibold text-indigo-700 hover:underline">Activate</button>}</div>)}</div>
+                </form>
+                <form onSubmit={createProgram} className="bg-white border border-slate-200 rounded-xl p-4 space-y-3">
+                  <div><h3 className="font-semibold text-slate-800">Program</h3><p className="text-xs text-slate-500">Duration controls whether a course runs for 1, 2, 3, 4 or more years.</p></div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <input required className="p-2 border rounded-lg" placeholder="Code (BSC-CS)" value={programForm.code} onChange={e => setProgramForm(p => ({ ...p, code: e.target.value }))} />
+                    <input required className="p-2 border rounded-lg" placeholder="Program name" value={programForm.name} onChange={e => setProgramForm(p => ({ ...p, name: e.target.value }))} />
+                    <input required type="number" min="1" max="12" className="p-2 border rounded-lg" value={programForm.duration_years} onChange={e => setProgramForm(p => ({ ...p, duration_years: Number(e.target.value) }))} />
+                    <select className="p-2 border rounded-lg" value={programForm.structure} onChange={e => setProgramForm(p => ({ ...p, structure: e.target.value, semesters_per_year: e.target.value === 'ANNUAL' ? 1 : (p.semesters_per_year || 2) }))}><option value="SEMESTER">Semester</option><option value="ANNUAL">Annual</option></select>
+                    {programForm.structure === 'SEMESTER' && <label className="col-span-2 text-xs font-medium text-slate-600">Terms per year<input required type="number" min="1" max="4" className="mt-1 w-full p-2 border rounded-lg text-sm" value={programForm.semesters_per_year} onChange={e => setProgramForm(p => ({ ...p, semesters_per_year: Number(e.target.value) }))} /></label>}
+                  </div>
+                  <button className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-semibold">Add program</button>
+                  <div className="flex flex-wrap gap-2">{activePrograms.map(p => <span key={p.id} className="px-2 py-1 rounded-full text-xs border bg-white text-slate-700">{p.code} · {p.duration_years} year{Number(p.duration_years) === 1 ? '' : 's'}</span>)}</div>
+                </form>
+              </div>
+              {academicConfig.sessions.length >= 2 && (
+                <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-3">
+                  <div><h3 className="font-semibold text-slate-800">Promotion and graduation</h3><p className="text-xs text-slate-500">Preview every student before applying. Final-year students are suggested for graduation.</p></div>
+                  <div className="flex flex-wrap gap-2">
+                    <select className="p-2 border rounded-lg" value={promotion.source_session_id} onChange={e => setPromotion(p => ({ ...p, source_session_id: e.target.value, students: [] }))}><option value="">Source session</option>{academicConfig.sessions.map(s => <option key={s.id} value={s.id}>{s.code}</option>)}</select>
+                    <select className="p-2 border rounded-lg" value={promotion.target_session_id} onChange={e => setPromotion(p => ({ ...p, target_session_id: e.target.value, students: [] }))}><option value="">Active target session</option>{academicConfig.sessions.filter(s => s.status === 'ACTIVE').map(s => <option key={s.id} value={s.id}>{s.code}</option>)}</select>
+                    <button type="button" onClick={previewPromotions} className="px-4 py-2 border border-indigo-200 text-indigo-700 rounded-lg text-sm font-semibold">Preview</button>
+                    {promotion.students.length > 0 && <button type="button" onClick={executePromotions} className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-semibold">Apply decisions</button>}
+                  </div>
+                  {promotion.students.length > 0 && <div className="max-h-64 overflow-auto border rounded-lg divide-y">{promotion.students.map((s, index) => <div key={s.person_id} className="grid grid-cols-[1fr_auto_auto] gap-3 items-center p-3 text-sm"><div><b>{s.student_name}</b><div className="text-xs text-slate-500">{s.program_code} · Year {s.year_of_study} · {s.division}</div></div><span className="text-xs text-slate-500">{s.suggested_action === 'graduate' ? 'Program complete' : `Year ${s.target_year_of_study}`}</span><select value={s.selected_action || s.suggested_action} onChange={e => setPromotion(p => ({ ...p, students: p.students.map((row, i) => i === index ? { ...row, selected_action: e.target.value } : row) }))} className="p-1.5 border rounded-lg"><option value="promote">Promote</option><option value="repeat">Repeat</option><option value="graduate">Graduate</option><option value="leave">Leave</option></select></div>)}</div>}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       {user?.role !== 'faculty' && (
         <form onSubmit={create} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm grid grid-cols-1 md:grid-cols-5 gap-3">
-          <input className="p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all" placeholder={terminology.academic ? 'Year' : 'Floor'} value={form.class_year} onChange={e => setForm({ ...form, class_year: e.target.value })} />
+          {terminology.academic && hasAcademicConfiguration ? <>
+            <select required className="p-2 border rounded-lg" value={form.academic_session_id} onChange={e => setForm({ ...form, academic_session_id: e.target.value })}><option value="">Active academic session</option>{academicConfig.sessions.filter(s => s.status === 'ACTIVE').map(s => <option key={s.id} value={s.id}>{s.code}</option>)}</select>
+            <select required className="p-2 border rounded-lg" value={form.program_id} onChange={e => setForm({ ...form, program_id: e.target.value, year_of_study: '', semester: '' })}><option value="">Program</option>{activePrograms.map(p => <option key={p.id} value={p.id}>{p.code} · {p.duration_years} years</option>)}</select>
+            <select required className="p-2 border rounded-lg" value={form.year_of_study} onChange={e => setForm({ ...form, year_of_study: e.target.value, semester: '' })}><option value="">Year</option>{yearOptions.map(year => <option key={year} value={year}>Year {year}</option>)}</select>
+            {selectedProgram?.structure === 'SEMESTER' ? <select required className="p-2 border rounded-lg" value={form.semester} onChange={e => setForm({ ...form, semester: e.target.value })}><option value="">Semester</option>{semesterOptions.map(semester => <option key={semester} value={semester}>Semester {semester}</option>)}</select> : null}
+          </> : <input className="p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all" placeholder={terminology.academic ? 'Year' : 'Floor'} value={form.class_year} onChange={e => setForm({ ...form, class_year: e.target.value })} />}
           <input className="p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all" placeholder={terminology.academic ? 'Division' : 'Block'} value={form.division} onChange={e => setForm({ ...form, division: e.target.value })} />
-          <input className="p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all" placeholder={terminology.academic ? 'Branch' : 'Wing / Building'} value={form.branch} onChange={e => setForm({ ...form, branch: e.target.value })} />
+          {(!terminology.academic || !hasAcademicConfiguration) && <input className="p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all" placeholder={terminology.academic ? 'Branch' : 'Wing / Building'} value={form.branch} onChange={e => setForm({ ...form, branch: e.target.value })} />}
           <input className="p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all" placeholder={terminology.academic ? 'Label (e.g., TY-CSE-A)' : 'Room label (e.g., A-101)'} value={form.label} onChange={e => setForm({ ...form, label: e.target.value })} />
           <button className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-all shadow-sm hover:shadow-md">
             <Plus size={16} /> Add {terminology.group}
@@ -208,6 +366,7 @@ const Classes = () => {
           <thead className="bg-slate-50 border-b border-slate-200">
             <tr>
               <th className="p-3">Label</th>
+              {terminology.academic && <th className="p-3">Session</th>}
               <th className="p-3">{terminology.academic ? 'Year' : 'Floor'}</th>
               <th className="p-3">{terminology.academic ? 'Division' : 'Block'}</th>
               <th className="p-3">{terminology.academic ? 'Branch' : 'Wing / Building'}</th>
@@ -217,9 +376,9 @@ const Classes = () => {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={(terminology.academic ? 4 : 3) + (user?.role === 'faculty' ? 1 : 2)} className="p-6 text-center text-slate-400">Loading…</td></tr>
+              <tr><td colSpan={(terminology.academic ? 6 : 4) + (user?.role === 'faculty' ? 0 : 1)} className="p-6 text-center text-slate-400">Loading…</td></tr>
             ) : items.length === 0 ? (
-              <tr><td colSpan={(terminology.academic ? 4 : 3) + (user?.role === 'faculty' ? 1 : 2)} className="p-6 text-center text-slate-400">No {terminology.groups.toLowerCase()} yet</td></tr>
+              <tr><td colSpan={(terminology.academic ? 6 : 4) + (user?.role === 'faculty' ? 0 : 1)} className="p-6 text-center text-slate-400">No {terminology.groups.toLowerCase()} yet</td></tr>
             ) : items.map(it => (
               <Row
                 key={it.id}
@@ -233,6 +392,7 @@ const Classes = () => {
                 }}
                 role={user?.role}
                 showSubjects={terminology.academic}
+                showAcademicSession={terminology.academic}
               />
             ))}
           </tbody>
@@ -255,7 +415,7 @@ const Classes = () => {
   );
 };
 
-const Row = ({ it, onSave, onDelete, onManageSubjects, role, showSubjects }) => {
+const Row = ({ it, onSave, onDelete, onManageSubjects, role, showSubjects, showAcademicSession }) => {
   const [edit, setEdit] = useState({ ...it });
   useEffect(() => {
     setEdit({ ...it });
@@ -272,23 +432,24 @@ const Row = ({ it, onSave, onDelete, onManageSubjects, role, showSubjects }) => 
           <input value={edit.label || ''} onChange={e => setEdit({ ...edit, label: e.target.value })} className="p-2 border rounded-lg w-full" />
         )}
       </td>
+      {showAcademicSession && <td className="p-3"><span className="text-sm text-slate-600">{it.session_code || 'Legacy'}</span></td>}
       <td className="p-3">
-        {isFaculty ? (
-          <span className="text-sm text-slate-600">{edit.class_year || '-'}</span>
+        {isFaculty || it.academic_session_id ? (
+          <span className="text-sm text-slate-600">{edit.year_of_study || edit.class_year || '-'}</span>
         ) : (
           <input value={edit.class_year || ''} onChange={e => setEdit({ ...edit, class_year: e.target.value })} className="p-2 border rounded-lg w-full" />
         )}
       </td>
       <td className="p-3">
-        {isFaculty ? (
+        {isFaculty || it.academic_session_id ? (
           <span className="text-sm text-slate-600">{edit.division || '-'}</span>
         ) : (
           <input value={edit.division || ''} onChange={e => setEdit({ ...edit, division: e.target.value })} className="p-2 border rounded-lg w-full" />
         )}
       </td>
       <td className="p-3">
-        {isFaculty ? (
-          <span className="text-sm text-slate-600">{edit.branch || '-'}</span>
+        {isFaculty || it.academic_session_id ? (
+          <span className="text-sm text-slate-600">{edit.program_code || edit.branch || '-'}</span>
         ) : (
           <input value={edit.branch || ''} onChange={e => setEdit({ ...edit, branch: e.target.value })} className="p-2 border rounded-lg w-full" />
         )}
@@ -313,9 +474,11 @@ const Row = ({ it, onSave, onDelete, onManageSubjects, role, showSubjects }) => 
           <div className="flex items-center gap-2">
             <button onClick={() => onSave(it.id, {
               label: edit.label,
-              class_year: edit.class_year,
-              division: edit.division,
-              branch: edit.branch
+              ...(it.academic_session_id ? {} : {
+                class_year: edit.class_year,
+                division: edit.division,
+                branch: edit.branch
+              })
             })} className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 inline-flex items-center gap-1 text-sm">
               <Save size={14} /> Save
             </button>

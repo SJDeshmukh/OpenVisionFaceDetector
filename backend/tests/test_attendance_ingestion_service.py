@@ -29,6 +29,11 @@ def attendance_db():
             class_year TEXT,
             division TEXT,
             branch TEXT,
+            enrollment_id INTEGER,
+            academic_session_id INTEGER,
+            program_id INTEGER,
+            year_of_study INTEGER,
+            semester INTEGER,
             subject TEXT,
             lecture_id INTEGER
         )"""
@@ -114,6 +119,32 @@ def test_insert_supports_lecture_metadata():
     row = conn.execute("SELECT * FROM attendance").fetchone()
     assert (row["class_year"], row["division"], row["branch"]) == ("FY", "A", "CS")
     assert (row["subject"], row["lecture_id"]) == ("Mathematics", 99)
+
+
+def test_insert_snapshots_effective_academic_enrollment():
+    conn = attendance_db()
+    AttendanceEventIngestionService.insert_legacy_event(
+        conn.cursor(),
+        LegacyAttendanceEvent(
+            name="Student One",
+            timestamp="2026-09-15T10:00:00",
+            status="CHECK_IN",
+            vendor_id=3,
+            person_id=8,
+            enrollment_id=41,
+            academic_session_id=5,
+            program_id=7,
+            year_of_study=2,
+            semester=3,
+        ),
+    )
+
+    row = conn.execute("SELECT * FROM attendance").fetchone()
+    assert row["enrollment_id"] == 41
+    assert row["academic_session_id"] == 5
+    assert row["program_id"] == 7
+    assert row["year_of_study"] == 2
+    assert row["semester"] == 3
 
 
 @pytest.mark.parametrize("field", ["name", "timestamp", "vendor_id", "person_id"])

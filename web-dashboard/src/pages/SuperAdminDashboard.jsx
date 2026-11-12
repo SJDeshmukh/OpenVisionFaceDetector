@@ -6,6 +6,7 @@ import { API_URL, FRONTEND_BUNDLES, BASE_URL } from '../config';
 import { useSocket } from '../context/SocketContext';
 import RegistrationConfigEditor from '../components/RegistrationConfigEditor';
 import FleetMapTab from '../components/FleetMapTab';
+import { DEFAULT_STAFF_NAV_KEYS, STAFF_NAV_ITEMS, toggleStaffNavKey } from '../lib/staffNavigation';
 
 const REPORT_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const DEFAULT_REPORT_SCHEDULE = {
@@ -26,6 +27,26 @@ const DEFAULT_REPORT_SCHEDULE = {
 const toggleListValue = (items, value) => items.includes(value)
   ? items.filter(item => item !== value)
   : [...items, value];
+
+const StaffNavigationPicker = ({ value, onChange }) => (
+  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+    {STAFF_NAV_ITEMS.map(item => {
+      const checked = (value || DEFAULT_STAFF_NAV_KEYS).includes(item.key);
+      return (
+        <label key={item.key} className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold transition ${checked ? 'border-indigo-300 bg-indigo-50 text-indigo-800' : 'border-slate-200 bg-white text-slate-500'} ${item.required ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'}`}>
+          <input
+            type="checkbox"
+            checked={checked}
+            disabled={item.required}
+            onChange={() => onChange(toggleStaffNavKey(value, item.key))}
+            className="h-4 w-4 accent-indigo-600"
+          />
+          <span>{item.label}{item.required ? ' · Required' : ''}</span>
+        </label>
+      );
+    })}
+  </div>
+);
 
 const ReportScheduleEditor = ({ schedule, setSchedule, vendorEmail, smtpConfigured, canTest, testing, onTest, onRefresh, nightShiftEnabled, deliveries = [] }) => {
   const selected = (key, value) => (schedule[key] || []).includes(value);
@@ -435,7 +456,8 @@ const SuperAdminDashboard = () => {
    const [savingLeaveWorkflow, setSavingLeaveWorkflow] = useState(false);
    const [loadingLeaveData, setLoadingLeaveData] = useState(false);
    const [newDept, setNewDept] = useState('');
-   const [newStaff, setNewStaff] = useState({ name: '', role: 'rector', pin: '', department: '' });
+   const [newStaff, setNewStaff] = useState({ name: '', role: 'rector', pin: '', department: '', navbar_items: DEFAULT_STAFF_NAV_KEYS });
+   const [staffNavEditor, setStaffNavEditor] = useState({ staffId: null, items: [], saving: false });
    const [configLoading, setConfigLoading] = useState(false);
 
    // Stats State
@@ -1003,7 +1025,8 @@ const SuperAdminDashboard = () => {
     setEditingVendor(vendor);
     setShowLeaveConfigModal(true);
     setLoadingLeaveData(true);
-    setNewStaff({ name: '', role: 'rector', pin: '', department: '' });
+    setNewStaff({ name: '', role: 'rector', pin: '', department: '', navbar_items: DEFAULT_STAFF_NAV_KEYS });
+    setStaffNavEditor({ staffId: null, items: [], saving: false });
     setNewDept('');
     try {
       await Promise.all([
@@ -1132,10 +1155,27 @@ const SuperAdminDashboard = () => {
         name: '',
         role: leaveWorkflow?.stages?.find(stage => stage.actor_type === 'staff')?.role_key || 'rector',
         pin: '',
-        department: ''
+        department: '',
+        navbar_items: DEFAULT_STAFF_NAV_KEYS
       });
     } catch (e) {
       alert(e.response?.data?.error || "Failed to create staff");
+    }
+  };
+
+  const saveStaffNavigation = async (vendorId) => {
+    if (!staffNavEditor.staffId) return;
+    setStaffNavEditor(prev => ({ ...prev, saving: true }));
+    try {
+      await axios.put(`${API_URL}/leave/admin/staff?vendor_id=${vendorId}`, {
+        id: staffNavEditor.staffId,
+        navbar_items: staffNavEditor.items,
+      }, { headers: { Authorization: `Bearer ${user?.token}` } });
+      await fetchLeaveStaff(vendorId);
+      setStaffNavEditor({ staffId: null, items: [], saving: false });
+    } catch (e) {
+      alert(e.response?.data?.error || 'Failed to save staff navigation');
+      setStaffNavEditor(prev => ({ ...prev, saving: false }));
     }
   };
 
@@ -5068,7 +5108,18 @@ const SuperAdminDashboard = () => {
                       </select>
                     </div>
                   </div>
+                  <div className="rounded-xl border border-slate-200 bg-white p-4">
+                    <div className="mb-3">
+                      <p className="text-xs font-bold uppercase tracking-wide text-slate-600">Staff navbar</p>
+                      <p className="mt-1 text-xs text-slate-500">Choose the pages this staff member can see after PIN verification. Tenant features still apply.</p>
+                    </div>
+                    <StaffNavigationPicker
+                      value={newStaff.navbar_items}
+                      onChange={items => setNewStaff({ ...newStaff, navbar_items: items })}
+                    />
+                  </div>
                   <button 
+                    type="button"
                     onClick={() => handleCreateStaff(editingVendor.id)}
                     className="w-full bg-emerald-600 text-white py-3 rounded-xl text-sm font-bold hover:bg-emerald-700 transition-all shadow-md shadow-emerald-600/20 flex items-center justify-center gap-2"
                   >
@@ -5083,33 +5134,68 @@ const SuperAdminDashboard = () => {
                       <p className="text-sm">No leave approvers registered yet.</p>
                     </div>
                   ) : (
-                    leaveStaff.map(staff => (
-                      <div key={staff.id} className="flex items-center justify-between p-4 bg-white border border-slate-100 rounded-2xl shadow-sm hover:shadow-md transition-all group">
-                        <div className="flex items-center gap-3">
-                          <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold ${staff.role === 'rector' ? 'bg-blue-100 text-blue-600' : 'bg-purple-100 text-purple-600'}`}>
-                            {staff.name.charAt(0).toUpperCase()}
+                    leaveStaff.map(staff => {
+                      const editingNavigation = staffNavEditor.staffId === staff.id;
+                      return (
+                        <div key={staff.id} className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm transition-all hover:shadow-md">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="flex min-w-0 items-center gap-3">
+                              <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full font-bold ${staff.role === 'rector' ? 'bg-blue-100 text-blue-600' : 'bg-purple-100 text-purple-600'}`}>
+                                {staff.name.charAt(0).toUpperCase()}
+                              </div>
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-bold text-slate-800">{staff.name}</p>
+                                <p className="text-[10px] font-medium uppercase text-slate-500">
+                                  {staff.role} {staff.department ? `• ${staff.department}` : ''}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <div className="mr-2 text-right">
+                                <p className="text-[10px] font-bold uppercase text-slate-400">PIN Code</p>
+                                <p className="font-mono font-bold tracking-widest text-slate-800">{staff.pin}</p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => setStaffNavEditor(editingNavigation
+                                  ? { staffId: null, items: [], saving: false }
+                                  : { staffId: staff.id, items: staff.navbar_items || DEFAULT_STAFF_NAV_KEYS, saving: false })}
+                                className="rounded-lg border border-indigo-200 px-3 py-2 text-xs font-bold text-indigo-700 transition hover:bg-indigo-50"
+                              >
+                                {editingNavigation ? 'Close menu' : 'Configure menu'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteStaff(editingVendor.id, staff.id)}
+                                className="rounded-lg p-2 text-slate-300 transition-all hover:bg-red-50 hover:text-red-500"
+                                aria-label={`Delete ${staff.name}`}
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                            </div>
                           </div>
-                          <div>
-                            <p className="font-bold text-slate-800 text-sm">{staff.name}</p>
-                            <p className="text-[10px] text-slate-500 uppercase font-medium">
-                              {staff.role} {staff.department ? `• ${staff.department}` : ''}
-                            </p>
-                          </div>
+                          {editingNavigation && (
+                            <div className="mt-4 border-t border-slate-100 pt-4">
+                              <p className="mb-3 text-xs text-slate-500">Only selected pages will appear for this PIN-based staff session.</p>
+                              <StaffNavigationPicker
+                                value={staffNavEditor.items}
+                                onChange={items => setStaffNavEditor(prev => ({ ...prev, items }))}
+                              />
+                              <div className="mt-3 flex justify-end">
+                                <button
+                                  type="button"
+                                  disabled={staffNavEditor.saving}
+                                  onClick={() => saveStaffNavigation(editingVendor.id)}
+                                  className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-bold text-white shadow-sm disabled:opacity-50"
+                                >
+                                  {staffNavEditor.saving ? 'Saving…' : 'Save navbar access'}
+                                </button>
+                              </div>
+                            </div>
+                          )}
                         </div>
-                        <div className="flex items-center gap-4">
-                          <div className="text-right">
-                            <p className="text-[10px] text-slate-400 font-bold uppercase">PIN Code</p>
-                            <p className="font-mono font-bold text-slate-800 tracking-widest">{staff.pin}</p>
-                          </div>
-                          <button 
-                            onClick={() => handleDeleteStaff(editingVendor.id, staff.id)}
-                            className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all opacity-0 group-hover:opacity-100"
-                          >
-                            <Trash2 size={16} />
-                          </button>
-                        </div>
-                      </div>
-                    ))
+                      );
+                    })
                   )}
                 </div>
               </div>

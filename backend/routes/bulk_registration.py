@@ -6,12 +6,24 @@ import io
 import secrets
 import pandas as pd
 from flask import Blueprint, request, jsonify, g
-from utils import get_db_connection, log_audit, vendor_has_feature
+from utils import (
+    extract_student_number_from_custom_data,
+    get_db_connection,
+    log_audit,
+    vendor_has_feature,
+)
 from db_factory import get_table_columns
 from services.auth_service import require_auth, hash_password, is_valid_login_email, normalize_login_email
-from services.person_scope_service import is_school_hostel, is_classroom, parse_custom_data
+from services.person_scope_service import is_school_hostel, is_classroom, is_student_vertical, parse_custom_data
 from services.spreadsheet_mapping_service import map_spreadsheet_headers
 from services.spreadsheet_type_inference import inspect_spreadsheet_fields, clean_cell_value
+from services.academic_lifecycle_service import (
+    AcademicLifecycleError,
+    enroll_student,
+    ensure_academic_class,
+    ensure_academic_tables,
+    validate_enrollment_scope,
+)
 
 bulk_registration_bp = Blueprint('bulk_registration_bp', __name__)
 
@@ -84,7 +96,7 @@ def bulk_registration_inspect_file():
             (vendor_row['vertical'] if hasattr(vendor_row, 'keys') else vendor_row[0])
             if vendor_row else ''
         ) or ''
-        school_student_flow = is_school_hostel(vendor_vertical)
+        school_student_flow = is_student_vertical(vendor_vertical)
         employee_record_flow = (
             not school_student_flow and vendor_vertical != 'bulk_attendance_attendx'
         )
@@ -148,6 +160,7 @@ def bulk_registration_upload():
         req_class_year = None
         req_division = None
         req_branch = None
+        req_academic_payload = None
 
         # Field types, options, and requirement mappings from user review
         requested_field_types = _requested_json_dict('field_types')
@@ -162,7 +175,7 @@ def bulk_registration_upload():
             (vendor_row['vertical'] if hasattr(vendor_row, 'keys') else vendor_row[0])
             if vendor_row else ''
         ) or ''
-        school_student_flow = is_school_hostel(vendor_vertical)
+        school_student_flow = is_student_vertical(vendor_vertical)
         employee_record_flow = (
             not school_student_flow and vendor_vertical != 'bulk_attendance_attendx'
         )
@@ -185,6 +198,11 @@ def bulk_registration_upload():
         class_year_key = header_mapping.get('class_year')
         division_key = header_mapping.get('division')
         branch_key = header_mapping.get('branch')
+        academic_session_key = header_mapping.get('academic_session')
+        program_code_key = header_mapping.get('program_code')
+        year_of_study_key = header_mapping.get('year_of_study')
+        semester_key = header_mapping.get('semester')
+        roll_number_key = header_mapping.get('roll_number')
         parent_name_key = header_mapping.get('parent_name')
         parent_phone_key = header_mapping.get('parent_phone')
 
@@ -201,13 +219,25 @@ def bulk_registration_upload():
         # data is processed.
         if req_class_id:
             c.execute(
-                "SELECT class_year, division, branch FROM classes WHERE id = ? AND vendor_id = ?",
+                """SELECT class_year, division, branch, academic_session_id, program_id,
+                          year_of_study, semester, status
+                   FROM classes WHERE id = ? AND vendor_id = ?""",
                 (req_class_id, vendor_id),
             )
             class_row = c.fetchone()
             if not class_row:
                 return jsonify({"error": "The selected class does not belong to this business"}), 400
+            if class_row[3] and str(class_row[7] or '').upper() != 'ACTIVE':
+                return jsonify({"error": "The selected class is no longer active"}), 409
             req_class_year, req_division, req_branch = class_row[0], class_row[1], class_row[2]
+            if class_row[3] and class_row[4]:
+                req_academic_payload = {
+                    "academic_session_id": class_row[3],
+                    "program_id": class_row[4],
+                    "year_of_study": class_row[5] or class_row[0],
+                    "semester": class_row[6],
+                    "division": class_row[1],
+                }
 
         # Persist the uploaded identity under the business-appropriate key.
         # AttendX retains its shared student/employee number for compatibility.
@@ -218,10 +248,40 @@ def bulk_registration_upload():
         else:
             person_id_custom_key = 'employee_id'
 
-        if is_classroom(vendor_vertical) and not req_class_id and not excel_class_id_key:
+        mixed_academic_columns = bool(
+            academic_session_key
+            and (program_code_key or branch_key)
+            and (year_of_study_key or class_year_key)
+            and division_key
+        )
+        academic_lifecycle_requested = bool(req_academic_payload or mixed_academic_columns)
+        if is_classroom(vendor_vertical) and not req_class_id and not excel_class_id_key and not mixed_academic_columns:
             return jsonify({
-                "error": "Class allocation is required for every student. Select a class or include a class_id column."
+                "error": (
+                    "Class allocation is required. Select a class, include class_id, or include "
+                    "academic_session, program_code, year_of_study and division columns."
+                )
             }), 400
+        if academic_lifecycle_requested and not id_key:
+            return jsonify({
+                "error": "Admission number is required for academic imports so students can be promoted without duplicate face records.",
+                "code": "ADMISSION_NUMBER_REQUIRED",
+            }), 400
+
+        if academic_lifecycle_requested:
+            ensure_academic_tables(conn)
+
+        student_by_identifier = {}
+        existing_custom_by_person = {}
+        if not employee_record_flow:
+            c.execute("SELECT id, custom_data FROM faces WHERE vendor_id = ?", (vendor_id,))
+            for existing_row in c.fetchall() or []:
+                existing_id = existing_row[0]
+                existing_custom = parse_custom_data(existing_row[1])
+                existing_custom_by_person[int(existing_id)] = existing_custom
+                identifier = extract_student_number_from_custom_data(existing_custom)
+                if identifier:
+                    student_by_identifier[str(identifier).strip().casefold()] = int(existing_id)
 
         # Get features for automated login creation ("Inking")
         c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
@@ -230,6 +290,11 @@ def bulk_registration_upload():
         inking_enabled = 'leave_management' in features or 'mobile_app' in features
 
         success_count = 0
+        created_count = 0
+        updated_count = 0
+        enrollment_created_count = 0
+        enrollment_updated_count = 0
+        unchanged_count = 0
         skipped_count = 0
         errors = []
         observed_scope_fields = set()
@@ -248,6 +313,8 @@ def bulk_registration_upload():
             savepoint_name = f"bulk_import_row_{row_idx}"
             c.execute(f"SAVEPOINT {savepoint_name}")
             row_error = None
+            row_enrollment_result = None
+            row_completed = False
             release_savepoint = True
             try:
                 name = str(row.get(name_key) or "").strip()
@@ -255,15 +322,26 @@ def bulk_registration_upload():
                     skipped_count += 1
                     continue
 
+                stable_identifier = str(row.get(id_key) or '').strip() if id_key else ''
+                if academic_lifecycle_requested and not stable_identifier:
+                    errors.append(f"Row {row_idx + 2}: admission number is required")
+                    skipped_count += 1
+                    continue
+                identifier_key = stable_identifier.casefold() if stable_identifier else ''
+                existing_person_id = student_by_identifier.get(identifier_key) if identifier_key else None
+
                 row_class_id = req_class_id
                 row_class_year = req_class_year or (str(row.get(class_year_key) or '').strip() if class_year_key else None)
                 row_division = req_division or (str(row.get(division_key) or '').strip() if division_key else None)
                 row_branch = req_branch or (str(row.get(branch_key) or '').strip() if branch_key else None)
+                row_academic_payload = dict(req_academic_payload) if req_academic_payload else None
                 if not row_class_id and excel_class_id_key:
                     row_class_id = str(row.get(excel_class_id_key) or '').strip()
                     if row_class_id:
                         c.execute(
-                            "SELECT class_year, division, branch FROM classes WHERE id = ? AND vendor_id = ?",
+                            """SELECT class_year, division, branch, academic_session_id, program_id,
+                                      year_of_study, semester, status
+                               FROM classes WHERE id = ? AND vendor_id = ?""",
                             (row_class_id, vendor_id),
                         )
                         row_class = c.fetchone()
@@ -271,7 +349,47 @@ def bulk_registration_upload():
                             errors.append(f"Row {row_idx + 2}: class_id does not belong to this business")
                             skipped_count += 1
                             continue
+                        if row_class[3] and str(row_class[7] or '').upper() != 'ACTIVE':
+                            errors.append(f"Row {row_idx + 2}: class_id is no longer active")
+                            skipped_count += 1
+                            continue
                         row_class_year, row_division, row_branch = row_class[0], row_class[1], row_class[2]
+                        if row_class[3] and row_class[4]:
+                            row_academic_payload = {
+                                "academic_session_id": row_class[3],
+                                "program_id": row_class[4],
+                                "year_of_study": row_class[5] or row_class[0],
+                                "semester": row_class[6],
+                                "division": row_class[1],
+                            }
+
+                if not row_class_id and mixed_academic_columns:
+                    row_academic_payload = {
+                        "academic_session": str(row.get(academic_session_key) or '').strip(),
+                        "program_code": str(row.get(program_code_key) or '').strip() if program_code_key else row_branch,
+                        "year_of_study": str(row.get(year_of_study_key) or '').strip() if year_of_study_key else row_class_year,
+                        "semester": str(row.get(semester_key) or '').strip() if semester_key else None,
+                        "division": row_division,
+                        "roll_number": str(row.get(roll_number_key) or '').strip() if roll_number_key else None,
+                    }
+                    academic_scope = validate_enrollment_scope(
+                        conn, vendor_id, row_academic_payload, ensure_schema=False,
+                    )
+                    row_class_id = ensure_academic_class(conn, vendor_id, academic_scope)
+                    row_class_year = str(academic_scope["year_of_study"])
+                    row_division = academic_scope["division"]
+                    row_branch = academic_scope["program"]["code"]
+                    row_academic_payload.update({
+                        "academic_session_id": academic_scope["session"]["id"],
+                        "program_id": academic_scope["program"]["id"],
+                        "year_of_study": academic_scope["year_of_study"],
+                        "semester": academic_scope["semester"],
+                        "division": academic_scope["division"],
+                        "effective_from": academic_scope["session"]["start_date"],
+                    })
+
+                if row_academic_payload and roll_number_key and not row_academic_payload.get("roll_number"):
+                    row_academic_payload["roll_number"] = str(row.get(roll_number_key) or '').strip() or None
 
                 if is_classroom(vendor_vertical) and not row_class_id:
                     errors.append(f"Row {row_idx + 2}: class allocation is required for students")
@@ -293,8 +411,16 @@ def bulk_registration_upload():
                     skipped_count += 1
                     continue
                 if login_email:
-                    c.execute("SELECT username FROM system_users WHERE LOWER(username) = LOWER(?)", (login_email,))
-                    if c.fetchone():
+                    c.execute(
+                        "SELECT vendor_id, person_id FROM system_users WHERE LOWER(username) = LOWER(?)",
+                        (login_email,),
+                    )
+                    login_owner = c.fetchone()
+                    if login_owner and (
+                        existing_person_id is None
+                        or int(login_owner[0] or 0) != int(vendor_id)
+                        or int(login_owner[1] or 0) != int(existing_person_id)
+                    ):
                         errors.append(f"Row {row_idx + 2}: email is already used by another login")
                         skipped_count += 1
                         continue
@@ -326,14 +452,18 @@ def bulk_registration_upload():
                                LIMIT 1""",
                             (login_email,),
                         )
-                    if c.fetchone():
+                    email_owner = c.fetchone()
+                    if email_owner and (
+                        existing_person_id is None or int(email_owner[0]) != int(existing_person_id)
+                    ):
                         errors.append(f"Row {row_idx + 2}: email is already registered to another person")
                         skipped_count += 1
                         continue
 
                 # Duplicate detection is student-scoped. A faculty profile with the
                 # same name/phone must never block or absorb a student registration.
-                if phone:
+                duplicate_person_id = None
+                if existing_person_id is None and phone:
                     c.execute(
                         """SELECT f.id FROM faces f
                            WHERE f.vendor_id = ? AND LOWER(f.name) = LOWER(?) AND f.phone = ?
@@ -344,7 +474,9 @@ def bulk_registration_upload():
                              )""",
                         (vendor_id, name, phone),
                     )
-                elif row_class_id:
+                    duplicate_row = c.fetchone()
+                    duplicate_person_id = duplicate_row[0] if duplicate_row else None
+                elif existing_person_id is None and row_class_id:
                     if getattr(conn, "_is_pg", False):
                         c.execute(
                             """SELECT f.id FROM faces f
@@ -369,7 +501,9 @@ def bulk_registration_upload():
                                  )""",
                             (vendor_id, name, str(row_class_id)),
                         )
-                else:
+                    duplicate_row = c.fetchone()
+                    duplicate_person_id = duplicate_row[0] if duplicate_row else None
+                elif existing_person_id is None:
                     c.execute(
                         """SELECT f.id FROM faces f
                            WHERE f.vendor_id = ? AND LOWER(f.name) = LOWER(?)
@@ -380,14 +514,15 @@ def bulk_registration_upload():
                              )""",
                         (vendor_id, name),
                     )
-                if c.fetchone():
+                    duplicate_row = c.fetchone()
+                    duplicate_person_id = duplicate_row[0] if duplicate_row else None
+                if duplicate_person_id:
                     skipped_count += 1
                     continue
 
                 # Build custom_data; exclude name and phone (stored in core columns)
-                custom_dict = {
-                    "person_type": "employee" if employee_record_flow else "student"
-                }
+                custom_dict = dict(existing_custom_by_person.get(int(existing_person_id), {})) if existing_person_id else {}
+                custom_dict["person_type"] = "employee" if employee_record_flow else "student"
                 if login_email:
                     custom_dict["email"] = login_email
                 if school_student_flow and parent_name:
@@ -399,6 +534,8 @@ def bulk_registration_upload():
                     name_key, phone_key, email_key, id_key, department_key,
                     designation_key, shift_key, excel_class_id_key,
                     parent_name_key, parent_phone_key,
+                    academic_session_key, program_code_key, year_of_study_key,
+                    semester_key, roll_number_key, class_year_key, division_key, branch_key,
                 ) if key is not None}
                 for k, v in row.items():
                     if k in core_keys:
@@ -422,38 +559,64 @@ def bulk_registration_upload():
                 # Always store student ID in custom_data under the normalised key so
                 # the parent login lookup (_extract_student_number_from_custom_data)
                 # can find it regardless of what the Excel column was named.
-                if id_key:
-                    id_val = str(row.get(id_key) or '').strip()
-                    if id_val:
-                        custom_dict[person_id_custom_key] = id_val
+                if stable_identifier:
+                    custom_dict[person_id_custom_key] = stable_identifier
+                    if academic_lifecycle_requested:
+                        custom_dict['admission_number'] = stable_identifier
 
                 # Inject Class Scope if provided via Class Cards flow
                 if row_class_id: custom_dict['class_id'] = str(row_class_id)
                 if row_class_year:
                     custom_dict['class_year'] = row_class_year
-                    observed_scope_fields.add('class_year')
+                    if not academic_lifecycle_requested:
+                        observed_scope_fields.add('class_year')
                 if row_division:
                     custom_dict['division'] = row_division
-                    observed_scope_fields.add('division')
+                    if not academic_lifecycle_requested:
+                        observed_scope_fields.add('division')
                 if row_branch:
                     custom_dict['branch'] = row_branch
-                    observed_scope_fields.add('branch')
+                    if not academic_lifecycle_requested:
+                        observed_scope_fields.add('branch')
 
                 custom_data_str = json.dumps(custom_dict, separators=(',', ':'))
-
-                # Get next display_id
-                c.execute("SELECT COALESCE(MAX(display_id), 0) + 1 FROM faces WHERE vendor_id = ?", (vendor_id,))
-                next_display_id = c.fetchone()[0]
 
                 department = str(row.get(department_key) or '').strip() if department_key else ''
                 designation = str(row.get(designation_key) or '').strip() if designation_key else ''
                 shift = str(row.get(shift_key) or '').strip() if shift_key else ''
-                c.execute("""
-                    INSERT INTO faces (name, phone, department, designation, shift, vendor_id, custom_data, display_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (name, phone, department, designation, shift, vendor_id, custom_data_str, next_display_id))
+                if existing_person_id:
+                    c.execute(
+                        """UPDATE faces SET name = ?,
+                               phone = CASE WHEN ? <> '' THEN ? ELSE phone END,
+                               department = CASE WHEN ? <> '' THEN ? ELSE department END,
+                               designation = CASE WHEN ? <> '' THEN ? ELSE designation END,
+                               shift = CASE WHEN ? <> '' THEN ? ELSE shift END,
+                               custom_data = ?
+                           WHERE id = ? AND vendor_id = ?""",
+                        (name, phone, phone, department, department, designation, designation,
+                         shift, shift, custom_data_str, existing_person_id, vendor_id),
+                    )
+                    if c.rowcount != 1:
+                        raise AcademicLifecycleError("Existing student could not be updated", "STUDENT_NOT_FOUND", 404)
+                    person_id = int(existing_person_id)
+                    row_created = False
+                else:
+                    c.execute("SELECT COALESCE(MAX(display_id), 0) + 1 FROM faces WHERE vendor_id = ?", (vendor_id,))
+                    next_display_id = c.fetchone()[0]
+                    c.execute("""
+                        INSERT INTO faces (name, phone, department, designation, shift, vendor_id, custom_data, display_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (name, phone or None, department, designation, shift, vendor_id, custom_data_str, next_display_id))
+                    person_id = c.lastrowid
+                    row_created = True
 
-                person_id = c.lastrowid
+                if row_academic_payload:
+                    enrollment, enrollment_result = enroll_student(
+                        conn, vendor_id, person_id, row_academic_payload,
+                        getattr(g, 'username', '') or 'bulk_import', source='BULK_IMPORT',
+                        ensure_schema=False, commit=False,
+                    )
+                    row_enrollment_result = enrollment_result
 
                 # Optional: Automated Login Creation ("Inking")
                 if inking_enabled and is_valid_login_email(login_email) and phone:
@@ -468,7 +631,26 @@ def bulk_registration_upload():
                             VALUES (?, ?, NULL, ?, ?, ?{is_kiosk_val})
                         """, (login_email, hash_password(phone), login_role, vendor_id, person_id))
 
+                if identifier_key:
+                    student_by_identifier[identifier_key] = int(person_id)
+                c.execute("SELECT custom_data FROM faces WHERE id = ? AND vendor_id = ?", (person_id, vendor_id))
+                refreshed_custom = c.fetchone()
+                existing_custom_by_person[int(person_id)] = parse_custom_data(refreshed_custom[0] if refreshed_custom else custom_data_str)
+                if row_created:
+                    created_count += 1
+                else:
+                    updated_count += 1
+                # Update response/audit counters only after every operation for
+                # this row has succeeded. A later login error rolls the database
+                # back to the savepoint and must not leave inflated counters.
+                if row_enrollment_result == 'created':
+                    enrollment_created_count += 1
+                elif row_enrollment_result == 'updated':
+                    enrollment_updated_count += 1
+                elif row_enrollment_result == 'unchanged':
+                    unchanged_count += 1
                 success_count += 1
+                row_completed = True
             except Exception as e:
                 row_error = e
                 try:
@@ -482,6 +664,13 @@ def bulk_registration_upload():
                 errors.append(f"Row {row_idx + 2}: {str(e)}")
             finally:
                 if release_savepoint:
+                    if row_error is None and not row_completed:
+                        try:
+                            c.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+                        except Exception as recovery_error:
+                            raise RowSavepointRecoveryError(
+                                f"Could not discard skipped row {row_idx + 2}"
+                            ) from recovery_error
                     try:
                         c.execute(f"RELEASE SAVEPOINT {savepoint_name}")
                     except Exception as release_error:
@@ -510,6 +699,15 @@ def bulk_registration_upload():
             if not field_name:
                 continue
             mapped_name = next((canonical for canonical, header in header_mapping.items() if header == h), None)
+            # Session/program/year/term/division are represented by the
+            # authoritative class selector during normal registration. They
+            # remain valid import columns but should not create duplicate text
+            # inputs in the web/mobile registration form.
+            if academic_lifecycle_requested and mapped_name in {
+                'academic_session', 'program_code', 'year_of_study', 'semester',
+                'class_year', 'division', 'branch',
+            }:
+                continue
             canonical_name = person_id_custom_key if mapped_name == 'person_id' else (mapped_name or field_name)
             existing_f = next((f for f in existing_fields if str(f.get('label') or '').strip().lower() == field_name.lower() or str(f.get('name') or '').strip().lower() == canonical_name.lower()), None)
 
@@ -654,14 +852,27 @@ def bulk_registration_upload():
             pass
 
         conn.commit()
-        log_audit('bulk_registration', details={"success_count": success_count, "skipped_count": skipped_count, "filename": filename, "mapping_method": mapping_result['method']}, target_vendor_id=vendor_id)
+        log_audit('bulk_registration', details={
+            "success_count": success_count, "created_count": created_count,
+            "updated_count": updated_count, "enrollment_created_count": enrollment_created_count,
+            "enrollment_updated_count": enrollment_updated_count, "unchanged_count": unchanged_count,
+            "skipped_count": skipped_count, "filename": filename,
+            "mapping_method": mapping_result['method'],
+        }, target_vendor_id=vendor_id)
 
         return jsonify({
             "success": True,
             "message": (
-                f"Successfully registered {success_count} "
-                f"{'employees' if employee_record_flow else 'students'}."
+                f"Successfully registered {success_count} employees."
+                if employee_record_flow else
+                f"Successfully processed {success_count} students "
+                f"({created_count} new, {updated_count} existing)."
             ),
+            "created": created_count,
+            "updated": updated_count,
+            "enrollments_created": enrollment_created_count,
+            "enrollments_updated": enrollment_updated_count,
+            "unchanged": unchanged_count,
             "skipped": skipped_count,
             "errors": errors[:10],
             "header_mapping": {key: str(value) for key, value in header_mapping.items()},

@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 CANONICAL_FIELDS = (
     "name", "phone", "person_id", "email", "department", "designation",
     "shift", "class_id", "class_year", "division", "branch",
+    "academic_session", "program_code", "year_of_study", "semester", "roll_number",
     "parent_name", "parent_phone",
 )
 
@@ -23,7 +24,7 @@ _SYNONYMS = {
     "name": ("name", "full name", "student name", "employee name", "person name", "staff name", "faculty name"),
     "phone": ("phone", "phone number", "mobile", "mobile number", "contact number", "contact mobile", "whatsapp number"),
     "person_id": (
-        "student id", "student number", "student no", "roll number", "roll no", "enrollment number",
+        "student id", "student number", "student no", "enrollment number",
         "enrollment no", "admission number", "admission no", "employee id", "employee code", "staff id",
         "person id", "id number",
     ),
@@ -32,9 +33,14 @@ _SYNONYMS = {
     "designation": ("designation", "job title", "role", "position", "post"),
     "shift": ("shift", "work shift", "timing", "shift timing"),
     "class_id": ("class id", "class code", "section id"),
-    "class_year": ("class year", "academic year", "year", "standard", "grade", "class"),
+    "class_year": ("class year", "year", "standard", "grade", "class"),
     "division": ("division", "section", "class section"),
     "branch": ("branch", "course", "stream"),
+    "academic_session": ("academic session", "academic year", "session", "session year"),
+    "program_code": ("program code", "programme code", "course code", "branch code"),
+    "year_of_study": ("year of study", "study year", "program year", "programme year", "course year"),
+    "semester": ("semester", "semester number", "sem", "sem no"),
+    "roll_number": ("roll number", "roll no", "class roll number", "class roll no"),
     "parent_name": ("parent name", "guardian name", "father name", "mother name", "parent guardian name"),
     "parent_phone": (
         "parent phone", "parent mobile", "parent whatsapp", "guardian phone", "guardian mobile",
@@ -152,6 +158,11 @@ def _contextualize(mapping, context):
         result.pop("class_id", None)
         result.pop("class_year", None)
         result.pop("division", None)
+        result.pop("academic_session", None)
+        result.pop("program_code", None)
+        result.pop("year_of_study", None)
+        result.pop("semester", None)
+        result.pop("roll_number", None)
     return result
 
 

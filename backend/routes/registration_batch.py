@@ -6,7 +6,7 @@ import numpy as np
 from flask import Blueprint, request, jsonify, g
 from utils import get_db_connection, cache_delete_vendor_prefix
 from services.auth_service import require_auth
-from services.person_scope_service import is_school_hostel, parse_custom_data, vendor_vertical
+from services.person_scope_service import is_student_vertical, parse_custom_data, vendor_vertical
 from middleware.validation import validate_request
 from schemas import (
     RegistrationBatchStartSchema, RegistrationBatchAddSchema, 
@@ -45,7 +45,7 @@ def registration_batch_add(valid_data: RegistrationBatchAddSchema):
     if not c.fetchone():
         conn.close()
         return jsonify({"error": "batch not found"}), 404
-    if is_school_hostel(vendor_vertical(c, vendor_id)):
+    if is_student_vertical(vendor_vertical(c, vendor_id)):
         params["person_type"] = "student"
         
     files = request.files.getlist('images')
@@ -133,11 +133,14 @@ def registration_batch_commit(valid_data: RegistrationBatchCommitSchema):
         return jsonify({"error": "batch not found"}), 404
 
     vertical = vendor_vertical(c, vendor_id)
-    school_student_flow = is_school_hostel(vertical)
+    school_student_flow = is_student_vertical(vertical)
     class_map = {}
     if school_student_flow:
         c.execute(
-            "SELECT id, class_year, division, branch FROM classes WHERE vendor_id = ?",
+            """SELECT id, class_year, division, branch, academic_session_id,
+                      program_id, year_of_study, semester
+               FROM classes WHERE vendor_id = ?
+                 AND (academic_session_id IS NULL OR status = 'ACTIVE')""",
             (vendor_id,),
         )
         for class_row in c.fetchall() or []:
@@ -146,6 +149,10 @@ def registration_batch_commit(valid_data: RegistrationBatchCommitSchema):
                 "class_year": class_row[1] or "",
                 "division": class_row[2] or "",
                 "branch": class_row[3] or "",
+                "academic_session_id": class_row[4],
+                "program_id": class_row[5],
+                "year_of_study": class_row[6],
+                "semester": class_row[7],
             }
         missing_class = next(
             (assignment.name for assignment in assigns if str(assignment.class_id or "") not in class_map),
@@ -167,7 +174,11 @@ def registration_batch_commit(valid_data: RegistrationBatchCommitSchema):
     from services.face_service import _normalize_vec, _decode_data_uri_to_rgb, _VENDOR_EMB_CACHE
     from utils import get_face_augmentations
     
-    for a in assigns:
+    errors = []
+    for assignment_index, a in enumerate(assigns):
+        savepoint_name = f"registration_batch_item_{assignment_index}"
+        c.execute(f"SAVEPOINT {savepoint_name}")
+        row_error = None
         try:
             item_id, face_index = a.item_id, a.face_index
             name = a.name
@@ -290,10 +301,39 @@ def registration_batch_commit(valid_data: RegistrationBatchCommitSchema):
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (vendor_id, person_id, embedding_year, embedding_division, embedding_branch, vec_blob, dim, struct_blob, lmks_json))
 
+            selected_scope = class_map.get(str(a.class_id)) if school_student_flow else None
+            if selected_scope and selected_scope.get('academic_session_id') and selected_scope.get('program_id'):
+                from services.academic_lifecycle_service import enroll_student
+                enroll_student(
+                    conn, vendor_id, int(person_id), {
+                        'academic_session_id': selected_scope['academic_session_id'],
+                        'program_id': selected_scope['program_id'],
+                        'year_of_study': selected_scope.get('year_of_study') or selected_scope.get('class_year'),
+                        'semester': selected_scope.get('semester'),
+                        'division': selected_scope.get('division'),
+                        'roll_number': custom_data.get('roll_number'),
+                    }, getattr(g, 'username', '') or 'batch_registration',
+                    source='BATCH_REGISTRATION', ensure_schema=False, commit=False,
+                )
+
             saved += 1
         except Exception as e:
-            print(f"Error committing registration: {e}")
-            continue
+            row_error = e
+            try:
+                c.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+            except Exception:
+                conn.rollback()
+                conn.close()
+                return jsonify({"error": "Registration batch could not recover from an item failure"}), 500
+            errors.append({"name": str(getattr(a, 'name', '') or ''), "error": str(e)})
+        finally:
+            try:
+                c.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+            except Exception:
+                if row_error is None:
+                    conn.rollback()
+                    conn.close()
+                    return jsonify({"error": "Registration batch could not finalize an item"}), 500
             
     conn.commit()
 
@@ -316,7 +356,7 @@ def registration_batch_commit(valid_data: RegistrationBatchCommitSchema):
         pass
     cache_delete_vendor_prefix(vendor_id)
     conn.close()
-    return jsonify({"ok": True, "saved": saved})
+    return jsonify({"ok": True, "saved": saved, "errors": errors[:20]})
 
 @registration_batch_bp.route("/registration-batch/clear", methods=["POST"])
 @require_auth()

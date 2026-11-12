@@ -274,6 +274,27 @@ def get_report_filters():
             if value not in (None, "")
         )
         class_option_labels[class_id] = str(class_row[4] or fallback_label or class_id)
+    academic_facet_values = defaultdict(set)
+    try:
+        c.execute(
+            """SELECT s.code, p.code, e.year_of_study, e.semester, e.division, e.roll_number
+                 FROM student_enrollments e
+                 JOIN academic_sessions s ON s.id = e.academic_session_id AND s.vendor_id = e.vendor_id
+                 JOIN academic_programs p ON p.id = e.program_id AND p.vendor_id = e.vendor_id
+                WHERE e.vendor_id = ?""",
+            (vendor_id,),
+        )
+        academic_keys = (
+            'academic_session', 'program_code', 'year_of_study',
+            'semester', 'division', 'roll_number',
+        )
+        for enrollment_row in c.fetchall() or []:
+            for index, key in enumerate(academic_keys):
+                value = enrollment_row[index]
+                if value not in (None, ''):
+                    academic_facet_values[key].add(str(value))
+    except Exception:
+        logger.debug("Academic lifecycle facets are not available", exc_info=True)
     conn.close()
 
     standard_options = {}
@@ -289,11 +310,12 @@ def get_report_filters():
         unique_values = set()
         for f in candidates:
             unique_values.update(custom_filter_values(f['custom'], fk))
+        normalized_filter_key = fk.strip().lower().replace(' ', '_').replace('-', '_')
+        unique_values.update(academic_facet_values.get(normalized_filter_key, set()))
         # A configured option list defines ordering and allowed values, while
         # the current employee subset determines which values remain visible.
         options = facet_options(unique_values, field.get('options'))
         filter_config = {'label': fl, 'options': options}
-        normalized_filter_key = fk.strip().lower().replace(' ', '_').replace('-', '_')
         if normalized_filter_key in {'class', 'class_id', 'class_section'}:
             filter_config['option_labels'] = {
                 value: class_option_labels.get(str(value), str(value)) for value in options
@@ -325,7 +347,8 @@ def get_analytics(valid_data: PayrollReportRequest):
     start_date = valid_data.start_date or (datetime.now() - timedelta(days=6)).strftime('%Y-%m-%d')
     end_date = valid_data.end_date or datetime.now().strftime('%Y-%m-%d')
         
-    cache_key = f"vendor:{vendor_id}:analytics:{start_date}:{end_date}:{valid_data.person_type or 'default'}"
+    filter_cache_part = json.dumps(sorted(request.args.items()), separators=(",", ":"))
+    cache_key = f"vendor:{vendor_id}:analytics:{start_date}:{end_date}:{valid_data.person_type or 'default'}:{filter_cache_part}"
     cached = cache_get(cache_key)
     if cached: return jsonify(cached)
 
@@ -357,12 +380,53 @@ def get_analytics(valid_data: PayrollReportRequest):
     face_rows = c.fetchall() or []
     vertical = vendor_vertical(c, vendor_id)
     wanted_type = requested_person_type(valid_data.person_type, vertical)
+    standard_filters, dynamic_filters = _active_report_filters()
+    enrollment_by_person = {}
+    academic_people = set()
+    try:
+        c.execute(
+            "SELECT DISTINCT person_id FROM student_enrollments WHERE vendor_id = ?",
+            (vendor_id,),
+        )
+        academic_people = {int(row[0]) for row in (c.fetchall() or [])}
+        c.execute(
+            """SELECT e.person_id, e.class_id, e.year_of_study, e.semester, e.division,
+                      e.roll_number, s.code AS session_code, p.code AS program_code
+                 FROM student_enrollments e
+                 JOIN academic_sessions s ON s.id = e.academic_session_id AND s.vendor_id = e.vendor_id
+                 JOIN academic_programs p ON p.id = e.program_id AND p.vendor_id = e.vendor_id
+                WHERE e.vendor_id = ? AND e.effective_from <= ?
+                  AND (e.effective_to IS NULL OR e.effective_to >= ?)
+                ORDER BY e.effective_from DESC, e.id DESC""",
+            (vendor_id, end_date, start_date),
+        )
+        for enrollment in c.fetchall() or []:
+            person_id = int(enrollment[0])
+            if person_id not in enrollment_by_person:
+                enrollment_by_person[person_id] = enrollment
+    except Exception:
+        logger.debug("Academic roster snapshots are not available", exc_info=True)
     all_faces = {}
     for row in face_rows:
         info = dict(row)
         info['person_type'] = person_type_for(
             info.get('custom_data'), info.get('system_role'), vertical,
         )
+        custom = parse_custom_data(info.get('custom_data'))
+        enrollment = enrollment_by_person.get(int(info['id']))
+        if enrollment:
+            custom.update({
+                'class_id': str(enrollment[1]) if enrollment[1] is not None else '',
+                'class_year': str(enrollment[2]),
+                'year_of_study': enrollment[2],
+                'semester': enrollment[3],
+                'division': enrollment[4],
+                'roll_number': enrollment[5],
+                'academic_session': enrollment[6],
+                'branch': enrollment[7],
+                'program_code': enrollment[7],
+            })
+        info['custom'] = custom
         all_faces[info['id']] = info
 
     total_faculty = sum(1 for info in all_faces.values() if info['person_type'] == 'faculty')
@@ -370,6 +434,11 @@ def get_analytics(valid_data: PayrollReportRequest):
     persons = {
         pid: info for pid, info in all_faces.items()
         if not wanted_type or info['person_type'] == wanted_type
+    }
+    persons = {
+        pid: info for pid, info in persons.items()
+        if (pid not in academic_people or pid in enrollment_by_person)
+        and face_matches(info, standard_filters, dynamic_filters)
     }
     
     # 3. Fetch Attendance
@@ -510,12 +579,19 @@ def _attendance_export_rows(vendor_id, start_date, end_date, person_type=None):
                    a.device_id, f.id AS person_id, f.display_id,
                    f.department, f.designation,
                    f.shift, f.phone, f.custom_data,
+                   a.enrollment_id, a.class_year AS attendance_year,
+                   a.division AS attendance_division, a.branch AS attendance_program,
+                   a.semester AS attendance_semester,
+                   s.code AS attendance_session_code,
+                   p.code AS attendance_program_code,
                    (SELECT su.role FROM system_users su
                     WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
                     ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
                     LIMIT 1) AS system_role
             FROM attendance a
             LEFT JOIN faces f ON a.person_id = f.id AND a.vendor_id = f.vendor_id
+            LEFT JOIN academic_sessions s ON s.id = a.academic_session_id AND s.vendor_id = a.vendor_id
+            LEFT JOIN academic_programs p ON p.id = a.program_id AND p.vendor_id = a.vendor_id
             WHERE a.timestamp >= ? AND a.timestamp < ? AND a.vendor_id = ?
         """
         params = [
@@ -540,6 +616,18 @@ def _attendance_export_rows(vendor_id, start_date, end_date, person_type=None):
             row = dict(source)
             custom = parse_custom_data(row.pop("custom_data", None))
             system_role = row.pop("system_role", None)
+            snapshot_program_code = row.pop("attendance_program_code", None)
+            snapshot_program_name = row.pop("attendance_program", None)
+            historical_scope = {
+                "academic_session": row.pop("attendance_session_code", None),
+                "program_code": snapshot_program_code or snapshot_program_name,
+                "year_of_study": row.pop("attendance_year", None),
+                "semester": row.pop("attendance_semester", None),
+                "division": row.pop("attendance_division", None),
+            }
+            for key, value in historical_scope.items():
+                if value not in (None, ""):
+                    custom[key] = value
             resolved_type = person_type_for(custom, system_role, vertical)
             if wanted_type and resolved_type != wanted_type:
                 continue

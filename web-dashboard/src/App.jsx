@@ -29,6 +29,7 @@ import HostelAlerts from './pages/HostelAlerts';
 import HostelAllocation from './pages/HostelAllocation';
 
 import { usesStudentRecords } from './lib/businessTerminology';
+import { staffCanAccessNav } from './lib/staffNavigation';
 
 // Protected Route Component
 const ProtectedRoute = ({ allowedRoles }) => {
@@ -62,6 +63,12 @@ const FeatureRoute = ({ anyOf, children }) => {
     : <Navigate to="/dashboard" replace />;
 };
 
+const StaffNavigationRoute = ({ navKey, children }) => {
+  const { staffSession } = useAuth();
+  if (!staffSession || staffCanAccessNav(staffSession, navKey)) return children;
+  return <Navigate to="/leave-management" replace />;
+};
+
 const FaceResetRoute = () => {
   const { user } = useAuth();
   const vertical = String(user?.vertical || '').trim().toLowerCase();
@@ -79,7 +86,8 @@ const HostelAlertsRoute = () => {
 
 const HostelAllocationRoute = () => {
   const { user, staffSession } = useAuth();
-  const allowed = (Boolean(staffSession) || ['vendor_admin', 'admin', 'owner', 'rector', 'hod'].includes(user?.role)) &&
+  const staffAllowed = !staffSession || staffCanAccessNav(staffSession, 'hostel_allocation');
+  const allowed = staffAllowed && (Boolean(staffSession) || ['vendor_admin', 'admin', 'owner', 'rector', 'hod'].includes(user?.role)) &&
     user?.features?.includes('hostel_allocation');
   return allowed ? <HostelAllocation /> : <Navigate to="/dashboard" replace />;
 };
@@ -115,29 +123,26 @@ function App() {
               {/* Admin/Rector/HOD/Faculty Routes */}
               <Route element={<ProtectedRoute allowedRoles={['admin', 'vendor_admin', 'owner', 'rector', 'hod', 'user', 'student', 'faculty']} />}>
                 <Route path="/" element={<Navigate to="/dashboard" replace />} />
-                <Route path="/dashboard" element={<Dashboard />} />
-                <Route path="/people" element={<People />} />
-                <Route path="/cameras" element={<FeatureRoute anyOf={['cameras']}><Cameras /></FeatureRoute>} />
-                <Route path="/reports" element={<FeatureRoute anyOf={['reports', 'report_detailed', 'report_payroll', 'lecture_wise_reports', 'parent_login']}><Reports /></FeatureRoute>} />
-                <Route path="/settings" element={<Settings />} />
-                <Route path="/timetable" element={<FeatureRoute anyOf={['shifts', 'add_shift']}><Timetable /></FeatureRoute>} />
-                <Route path="/wages" element={<FeatureRoute anyOf={['payroll', 'report_payroll', 'payable_hours']}><Wages /></FeatureRoute>} />
-                <Route path="/live-attendance" element={<FeatureRoute anyOf={['live_attendance']}><LiveAttendance /></FeatureRoute>} />
-                <Route path="/bulk-image-attendance" element={<FeatureRoute anyOf={['bulk_image_attendance']}><BulkImageAttendance /></FeatureRoute>} />
-                <Route path="/classes" element={<FeatureRoute anyOf={['classes', 'bulk_image_attendance']}><Classes /></FeatureRoute>} />
-                <Route path="/faces" element={<FeatureRoute anyOf={['bulk_image_attendance', 'classes']}><Faces /></FeatureRoute>} />
-                <Route path="/leave-management" element={<FeatureRoute anyOf={['leave_management', 'parent_login']}><LeaveManagement /></FeatureRoute>} />
-                <Route path="/face-reset-requests" element={<FaceResetRoute />} />
-                <Route path="/hostel-alerts" element={<HostelAlertsRoute />} />
+                <Route path="/dashboard" element={<StaffNavigationRoute navKey="dashboard"><Dashboard /></StaffNavigationRoute>} />
+                <Route path="/people" element={<StaffNavigationRoute navKey="people"><People /></StaffNavigationRoute>} />
+                <Route path="/cameras" element={<StaffNavigationRoute navKey="cameras"><FeatureRoute anyOf={['cameras']}><Cameras /></FeatureRoute></StaffNavigationRoute>} />
+                <Route path="/reports" element={<StaffNavigationRoute navKey="reports"><FeatureRoute anyOf={['reports', 'report_detailed', 'report_payroll', 'lecture_wise_reports', 'parent_login']}><Reports /></FeatureRoute></StaffNavigationRoute>} />
+                <Route path="/settings" element={<StaffNavigationRoute navKey="settings"><Settings /></StaffNavigationRoute>} />
+                <Route path="/timetable" element={<StaffNavigationRoute navKey="timetable"><FeatureRoute anyOf={['shifts', 'add_shift']}><Timetable /></FeatureRoute></StaffNavigationRoute>} />
+                <Route path="/wages" element={<StaffNavigationRoute navKey="wages"><FeatureRoute anyOf={['payroll', 'report_payroll', 'payable_hours']}><Wages /></FeatureRoute></StaffNavigationRoute>} />
+                <Route path="/live-attendance" element={<StaffNavigationRoute navKey="live_attendance"><FeatureRoute anyOf={['live_attendance']}><LiveAttendance /></FeatureRoute></StaffNavigationRoute>} />
+                <Route path="/bulk-image-attendance" element={<StaffNavigationRoute navKey="bulk_image_attendance"><FeatureRoute anyOf={['bulk_image_attendance']}><BulkImageAttendance /></FeatureRoute></StaffNavigationRoute>} />
+                <Route path="/classes" element={<StaffNavigationRoute navKey="classes"><FeatureRoute anyOf={['classes', 'bulk_image_attendance']}><Classes /></FeatureRoute></StaffNavigationRoute>} />
+                <Route path="/faces" element={<StaffNavigationRoute navKey="faces"><FeatureRoute anyOf={['bulk_image_attendance', 'classes']}><Faces /></FeatureRoute></StaffNavigationRoute>} />
+                <Route path="/leave-management" element={<StaffNavigationRoute navKey="leave_management"><FeatureRoute anyOf={['leave_management', 'parent_login']}><LeaveManagement /></FeatureRoute></StaffNavigationRoute>} />
+                <Route path="/face-reset-requests" element={<StaffNavigationRoute navKey="face_reset_requests"><FaceResetRoute /></StaffNavigationRoute>} />
+                <Route path="/hostel-alerts" element={<StaffNavigationRoute navKey="hostel_alerts"><HostelAlertsRoute /></StaffNavigationRoute>} />
                 <Route path="/hostel-allocation" element={<HostelAllocationRoute />} />
               </Route>
 
               {/* Shared/User Routes */}
               <Route element={<ProtectedRoute allowedRoles={['admin', 'user', 'student', 'vendor_admin', 'owner', 'faculty']} />}>
-                {/* User lands on Attendance/Identify page */}
-                <Route path="/attendance" element={<Attendance />} />
-                {/* Allow users to access People page? Maybe restrict based on role if needed, but for now keeping as is */}
-                <Route path="/users" element={<People />} />
+                <Route path="/users" element={<StaffNavigationRoute navKey="people"><People /></StaffNavigationRoute>} />
               </Route>
             </Route>
           </Routes>

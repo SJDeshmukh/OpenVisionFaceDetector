@@ -54,6 +54,7 @@ from services.person_scope_service import (
     vendor_vertical,
 )
 from services.report_filter_service import custom_value
+from services.academic_lifecycle_service import resolve_enrollment
 attendance_core_bp = Blueprint('attendance_core_bp', __name__)
 
 def _resolve_event_time(timestamp):
@@ -955,6 +956,22 @@ def person_event(valid_data: PersonEventSchema):
         except Exception:
             logger.debug("Shift / Late threshold evaluation failed", exc_info=True)
 
+    academic_enrollment = None
+    try:
+        academic_enrollment = resolve_enrollment(
+            conn, vendor_id_to_check, person_id, current_time_obj.date(), ensure_schema=False,
+        )
+        if academic_enrollment:
+            resolved_scope = {
+                "class_year": str(academic_enrollment.get("year_of_study") or ""),
+                "division": academic_enrollment.get("division") or "",
+                "branch": academic_enrollment.get("program_code") or "",
+            }
+    except Exception:
+        # Rolling deployments and non-academic tenants continue through the
+        # legacy class snapshot path until the academic tables are available.
+        logger.debug("Academic enrollment snapshot unavailable", exc_info=True)
+
     try:
         ingestion = AttendanceEventIngestionService.ingest(
             c,
@@ -972,6 +989,11 @@ def person_event(valid_data: PersonEventSchema):
                 class_year=resolved_scope.get("class_year", ""),
                 division=resolved_scope.get("division", ""),
                 branch=resolved_scope.get("branch", ""),
+                enrollment_id=academic_enrollment.get("id") if academic_enrollment else None,
+                academic_session_id=(academic_enrollment.get("academic_session_id") if academic_enrollment else None),
+                program_id=academic_enrollment.get("program_id") if academic_enrollment else None,
+                year_of_study=academic_enrollment.get("year_of_study") if academic_enrollment else None,
+                semester=academic_enrollment.get("semester") if academic_enrollment else None,
                 source=event_source,
                 source_event_id=valid_data.source_event_id,
                 source_timezone=valid_data.source_timezone,
@@ -980,6 +1002,7 @@ def person_event(valid_data: PersonEventSchema):
                 payload_metadata={
                     "mode_at_creation": str(valid_data.mode_at_creation or "").strip().lower() or None,
                     "resolved_attendance_action_mode": attendance_action_mode,
+                    "academic_enrollment": academic_enrollment,
                     "mode_effective_from_utc": (
                         resolved_mode_effective_from_utc.isoformat(timespec="milliseconds")
                         if isinstance(resolved_mode_effective_from_utc, datetime)

@@ -14,7 +14,8 @@ from services.leave_workflow_service import (
     replace_workflow,
     snapshot_request,
 )
-from utils import get_db_connection, require_feature
+from services.staff_navigation_service import load_staff_nav_items, normalize_staff_nav_items, serialize_staff_nav_items
+from utils import get_db_connection, log_audit, require_feature
 
 leave_bp = Blueprint('leave_bp', __name__)
 
@@ -76,16 +77,20 @@ def _authenticated_leave_staff(vendor_id, required_role=None):
     conn = get_db_connection()
     try:
         c = conn.cursor()
-        c.execute("SELECT id, name, role, department FROM leave_staff WHERE id = ? AND vendor_id = ?", (data.get("staff_id"), vendor_id))
+        c.execute("SELECT id, name, role, department, navbar_items FROM leave_staff WHERE id = ? AND vendor_id = ?", (data.get("staff_id"), vendor_id))
         row = c.fetchone()
         if not row:
             return None
         name = row["name"] if hasattr(row, "keys") else row[1]
         role = row["role"] if hasattr(row, "keys") else row[2]
         department = row["department"] if hasattr(row, "keys") else row[3]
+        navbar_raw = row["navbar_items"] if hasattr(row, "keys") else row[4]
         if role != data.get("staff_role") or (required_role and role != required_role):
             return None
-        return {"id": data.get("staff_id"), "name": name, "role": role, "department": department}
+        navbar_items = load_staff_nav_items(navbar_raw)
+        if "leave_management" not in navbar_items:
+            return None
+        return {"id": data.get("staff_id"), "name": name, "role": role, "department": department, "navbar_items": navbar_items}
     finally:
         conn.close()
 
@@ -873,14 +878,15 @@ def verify_staff_pin():
     try:
         is_pg = getattr(conn, "_is_pg", False)
         if is_pg:
-            c.execute("SELECT id, name, role, department FROM leave_staff WHERE vendor_id = %s AND pin = %s", (vendor_id, pin))
+            c.execute("SELECT id, name, role, department, navbar_items FROM leave_staff WHERE vendor_id = %s AND pin = %s", (vendor_id, pin))
         else:
-            c.execute("SELECT id, name, role, department FROM leave_staff WHERE vendor_id = ? AND pin = ?", (vendor_id, pin))
+            c.execute("SELECT id, name, role, department, navbar_items FROM leave_staff WHERE vendor_id = ? AND pin = ?", (vendor_id, pin))
         staff = c.fetchone()
         if staff:
             res = get_row_dict(staff)
             if not isinstance(res, dict):
-                res = {"id": staff[0], "name": staff[1], "role": staff[2], "department": staff[3]}
+                res = {"id": staff[0], "name": staff[1], "role": staff[2], "department": staff[3], "navbar_items": staff[4]}
+            res["navbar_items"] = load_staff_nav_items(res.get("navbar_items"))
             res["access_token"] = generate_token_with_claims(
                 f"leave_staff_{res['id']}",
                 "leave_staff",
@@ -899,7 +905,23 @@ def verify_staff_pin():
     finally:
         conn.close()
 
-@leave_bp.route("/admin/staff", methods=["GET", "POST", "DELETE"], strict_slashes=False)
+
+@leave_bp.route("/admin/staff-session", methods=["GET"])
+def get_staff_session():
+    """Return fresh staff permissions without asking for the PIN again."""
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+    role_error = _require_role("vendor_admin", "admin", "owner", "super_admin")
+    if role_error:
+        return role_error
+    staff = _authenticated_leave_staff(vendor_id)
+    if not staff:
+        return jsonify({"error": "Staff session is invalid or no longer active", "code": "STAFF_SESSION_INVALID"}), 403
+    return jsonify({"status": "success", "staff": staff})
+
+
+@leave_bp.route("/admin/staff", methods=["GET", "POST", "PUT", "DELETE"], strict_slashes=False)
 def manage_staff():
     vendor_id, error = authenticate_vendor_access()
     if error: return error
@@ -912,11 +934,18 @@ def manage_staff():
         is_pg = getattr(conn, "_is_pg", False)
         if request.method == "GET":
             if is_pg:
-                c.execute("SELECT id, name, role, pin, department FROM leave_staff WHERE vendor_id = %s", (vendor_id,))
+                c.execute("SELECT id, name, role, pin, department, navbar_items FROM leave_staff WHERE vendor_id = %s ORDER BY name, id", (vendor_id,))
             else:
-                c.execute("SELECT id, name, role, pin, department FROM leave_staff WHERE vendor_id = ?", (vendor_id,))
+                c.execute("SELECT id, name, role, pin, department, navbar_items FROM leave_staff WHERE vendor_id = ? ORDER BY name, id", (vendor_id,))
             staff = c.fetchall()
-            return jsonify({"staff": [get_row_dict(s) for s in staff]})
+            payload = []
+            for row in staff:
+                item = get_row_dict(row)
+                if not isinstance(item, dict):
+                    item = {"id": row[0], "name": row[1], "role": row[2], "pin": row[3], "department": row[4], "navbar_items": row[5]}
+                item["navbar_items"] = load_staff_nav_items(item.get("navbar_items"))
+                payload.append(item)
+            return jsonify({"staff": payload})
             
         elif request.method == "POST":
             data = request.json
@@ -924,6 +953,10 @@ def manage_staff():
             role = data.get("role")
             pin = data.get("pin")
             department = data.get("department")
+            try:
+                navbar_items = serialize_staff_nav_items(data.get("navbar_items"))
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
             
             if not all([name, role, pin]):
                 return jsonify({"error": "Missing required fields"}), 400
@@ -957,16 +990,47 @@ def manage_staff():
 
             if is_pg:
                 c.execute(
-                    "INSERT INTO leave_staff (vendor_id, name, role, pin, department) VALUES (%s, %s, %s, %s, %s)",
-                    (vendor_id, name, role, pin, department)
+                    "INSERT INTO leave_staff (vendor_id, name, role, pin, department, navbar_items) VALUES (%s, %s, %s, %s, %s, %s)",
+                    (vendor_id, name, role, pin, department, navbar_items)
                 )
             else:
                 c.execute(
-                    "INSERT INTO leave_staff (vendor_id, name, role, pin, department) VALUES (?, ?, ?, ?, ?)",
-                    (vendor_id, name, role, pin, department)
+                    "INSERT INTO leave_staff (vendor_id, name, role, pin, department, navbar_items) VALUES (?, ?, ?, ?, ?, ?)",
+                    (vendor_id, name, role, pin, department, navbar_items)
                 )
             conn.commit()
+            log_audit(
+                "leave_staff_created",
+                {"name": name, "role": role, "department": department, "navbar_items": normalize_staff_nav_items(navbar_items)},
+                target_vendor_id=vendor_id,
+                actor=getattr(g, "username", None),
+            )
             return jsonify({"status": "success", "message": "Staff added successfully"})
+
+        elif request.method == "PUT":
+            data = request.json or {}
+            staff_id = data.get("id")
+            if not staff_id:
+                return jsonify({"error": "Staff id is required"}), 400
+            try:
+                navbar_items = serialize_staff_nav_items(data.get("navbar_items"))
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            c.execute(
+                "UPDATE leave_staff SET navbar_items = ? WHERE id = ? AND vendor_id = ?",
+                (navbar_items, staff_id, vendor_id),
+            )
+            if not c.rowcount:
+                return jsonify({"error": "Staff member not found"}), 404
+            conn.commit()
+            normalized_items = normalize_staff_nav_items(navbar_items)
+            log_audit(
+                "leave_staff_navigation_updated",
+                {"staff_id": staff_id, "navbar_items": normalized_items},
+                target_vendor_id=vendor_id,
+                actor=getattr(g, "username", None),
+            )
+            return jsonify({"status": "success", "navbar_items": normalized_items})
             
         elif request.method == "DELETE":
             staff_id = request.args.get("id")
@@ -975,6 +1039,12 @@ def manage_staff():
             else:
                 c.execute("DELETE FROM leave_staff WHERE id = ? AND vendor_id = ?", (staff_id, vendor_id))
             conn.commit()
+            log_audit(
+                "leave_staff_deleted",
+                {"staff_id": staff_id},
+                target_vendor_id=vendor_id,
+                actor=getattr(g, "username", None),
+            )
             return jsonify({"status": "success"})
     finally:
         conn.close()

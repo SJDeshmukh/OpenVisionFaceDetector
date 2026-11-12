@@ -74,6 +74,11 @@ class LegacyAttendanceEvent:
     class_year: Optional[str] = None
     division: Optional[str] = None
     branch: Optional[str] = None
+    enrollment_id: Optional[int] = None
+    academic_session_id: Optional[int] = None
+    program_id: Optional[int] = None
+    year_of_study: Optional[int] = None
+    semester: Optional[int] = None
     subject: Optional[str] = None
     lecture_id: Optional[int] = None
     source: str = AttendanceEventSource.API.value
@@ -121,6 +126,11 @@ class AttendanceEventIngestionService:
         "class_year",
         "division",
         "branch",
+        "enrollment_id",
+        "academic_session_id",
+        "program_id",
+        "year_of_study",
+        "semester",
         "subject",
         "lecture_id",
     )

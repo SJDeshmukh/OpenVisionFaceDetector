@@ -11,6 +11,7 @@ import {
 import { Image as ImageIcon } from 'lucide-react';
 import BrandLogo from './BrandLogo';
 import { getBusinessTerminology, usesStudentRecords } from '../lib/businessTerminology';
+import { staffCanAccessNav, staffCanAccessPath } from '../lib/staffNavigation';
 
 const adminNavItems = [
   { name: 'Dashboard',            path: '/dashboard',            icon: LayoutDashboard },
@@ -111,9 +112,7 @@ export const Sidebar = ({ isOpen, onClose }) => {
     navItems = ownerNavItems;
   } else if (user?.role === 'admin' || user?.role === 'vendor_admin') {
     if (staffSession) {
-      navItems = staffSession.role === 'hod'
-        ? adminNavItems.filter(i => i.name === 'Leave Management' || i.name === 'Dashboard')
-        : adminNavItems;
+      navItems = adminNavItems.filter(item => staffCanAccessPath(staffSession, item.path));
     } else {
       navItems = adminNavItems;
     }
@@ -135,11 +134,12 @@ export const Sidebar = ({ isOpen, onClose }) => {
     const vertical = String(user?.vertical || '').trim().toLowerCase();
     const faceResetSupported = !['daily_wages', 'wages', 'factory', 'enterprise'].includes(vertical) &&
       user?.features?.includes('parent_login');
-    const hostelAlertsSupported = !staffSession &&
+    const hostelAlertsSupported = (!staffSession || staffCanAccessNav(staffSession, 'hostel_alerts')) &&
       ['vendor_admin', 'admin', 'owner'].includes(user?.role) &&
       user?.features?.includes('hostel_attendance_alerts');
     const hostelAllocationSupported = Boolean(user?.features?.includes('hostel_allocation')) &&
-      (Boolean(staffSession) || ['vendor_admin', 'admin', 'owner', 'rector', 'hod'].includes(user?.role));
+      ((!staffSession && ['vendor_admin', 'admin', 'owner', 'rector', 'hod'].includes(user?.role)) ||
+        (Boolean(staffSession) && staffCanAccessNav(staffSession, 'hostel_allocation')));
 
     // Feature-controlled pages must be added explicitly. Filtering a role's base
     // menu is not sufficient when older accounts have a reduced/default bundle.
@@ -163,6 +163,7 @@ export const Sidebar = ({ isOpen, onClose }) => {
     if (!faceResetSupported) navItems = navItems.filter(item => item.name !== 'Face Reset Requests');
     if (!hostelAlertsSupported) navItems = navItems.filter(item => item.name !== 'Hostel Alerts');
     if (!hostelAllocationSupported) navItems = navItems.filter(item => item.name !== 'Hostel Allocation');
+    if (staffSession) navItems = navItems.filter(item => staffCanAccessPath(staffSession, item.path));
   }
 
   const navLabel = (item) => {

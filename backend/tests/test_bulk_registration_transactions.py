@@ -60,8 +60,13 @@ def _create_schema(path):
             vendor_id INTEGER,
             class_year TEXT,
             division TEXT,
-            branch TEXT
+            branch TEXT,
+            label TEXT,
+            mapped_subjects TEXT DEFAULT '[]',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE attendance (id INTEGER PRIMARY KEY AUTOINCREMENT);
+        CREATE TABLE lectures (id INTEGER PRIMARY KEY AUTOINCREMENT);
         INSERT INTO vendors (id, vertical, registration_config)
         VALUES (1, 'daily_wages', '[]');
         INSERT INTO subscriptions (vendor_id, features) VALUES (1, '[]');
@@ -92,6 +97,39 @@ def _employee_workbook(rows):
     sheet = workbook.active
     sheet.title = "Employees"
     sheet.append(["Employee Name", "Employee ID", "Mobile Number", "Department"])
+    for row in rows:
+        sheet.append(row)
+    workbook.save(output)
+    output.seek(0)
+    return output
+
+
+def _academic_mapping(*_args, **_kwargs):
+    return {
+        "mapping": {
+            "name": "Student Name",
+            "person_id": "Admission Number",
+            "academic_session": "Academic Session",
+            "program_code": "Program Code",
+            "year_of_study": "Year of Study",
+            "semester": "Semester",
+            "division": "Division",
+            "roll_number": "Roll Number",
+        },
+        "method": "deterministic",
+        "warning": None,
+    }
+
+
+def _academic_workbook(rows):
+    output = io.BytesIO()
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Students"
+    sheet.append([
+        "Admission Number", "Student Name", "Academic Session", "Program Code",
+        "Year of Study", "Semester", "Division", "Roll Number",
+    ])
     for row in rows:
         sheet.append(row)
     workbook.save(output)
@@ -174,3 +212,119 @@ def test_all_rejected_rows_return_the_first_real_error(tmp_path, monkeypatch):
     assert status == 400
     assert payload["error"].startswith("No employees were imported. Row 2:")
     assert "current transaction is aborted" not in payload["error"].lower()
+
+
+def test_mixed_academic_upload_supports_program_durations_and_is_idempotent(tmp_path, monkeypatch):
+    from services.academic_lifecycle_service import create_academic_program, create_academic_session
+
+    db_path = tmp_path / "academic-import.db"
+    _create_schema(db_path)
+    conn = _connection(db_path)
+    conn.execute(
+        "INSERT INTO vendors (id, vertical, registration_config) VALUES (2, 'college', '[]')"
+    )
+    conn.execute("INSERT INTO subscriptions (vendor_id, features) VALUES (2, '[]')")
+    conn.commit()
+    create_academic_session(
+        conn,
+        2,
+        {
+            "code": "2026-27",
+            "name": "2026-27",
+            "start_date": "2026-06-01",
+            "end_date": "2027-05-31",
+            "status": "ACTIVE",
+        },
+        "owner@example.com",
+    )
+    create_academic_program(
+        conn,
+        2,
+        {
+            "code": "BSC-CS",
+            "name": "BSc Computer Science",
+            "duration_years": 3,
+            "structure": "SEMESTER",
+            "semesters_per_year": 2,
+        },
+        "owner@example.com",
+    )
+    create_academic_program(
+        conn,
+        2,
+        {
+            "code": "DIP-IT",
+            "name": "Diploma in IT",
+            "duration_years": 2,
+            "structure": "SEMESTER",
+            "semesters_per_year": 2,
+        },
+        "owner@example.com",
+    )
+    conn.close()
+
+    monkeypatch.setattr(bulk_registration, "get_db_connection", lambda: _connection(db_path))
+    monkeypatch.setattr(bulk_registration, "map_spreadsheet_headers", _academic_mapping)
+    monkeypatch.setattr(bulk_registration, "log_audit", lambda *_args, **_kwargs: None)
+
+    workbook = _academic_workbook([
+        ["ADM-001", "Student One", "2026-27", "BSC-CS", 3, 5, "A", "31"],
+        ["ADM-002", "Student Two", "2026-27", "DIP-IT", 2, 4, "B", "12"],
+    ])
+    app = Flask(__name__)
+    with app.test_request_context(
+        "/bulk-registration/upload",
+        method="POST",
+        data={"file": (workbook, "students.xlsx")},
+        content_type="multipart/form-data",
+    ):
+        g.vendor_id = 2
+        g.username = "owner@example.com"
+        first_response = bulk_registration.bulk_registration_upload.__wrapped__()
+
+    first_payload = first_response.get_json()
+    assert first_response.status_code == 200
+    assert first_payload["created"] == 2
+    assert first_payload["enrollments_created"] == 2
+
+    reupload = _academic_workbook([
+        ["ADM-001", "Student One Updated", "2026-27", "BSC-CS", 3, 5, "A", "31"],
+    ])
+    with app.test_request_context(
+        "/bulk-registration/upload",
+        method="POST",
+        data={"file": (reupload, "students.xlsx")},
+        content_type="multipart/form-data",
+    ):
+        g.vendor_id = 2
+        g.username = "owner@example.com"
+        second_response = bulk_registration.bulk_registration_upload.__wrapped__()
+
+    second_payload = second_response.get_json()
+    assert second_response.status_code == 200
+    assert second_payload["created"] == 0
+    assert second_payload["updated"] == 1
+    assert second_payload["unchanged"] == 1
+
+    conn = _connection(db_path)
+    people = conn.execute(
+        "SELECT name, phone, custom_data FROM faces WHERE vendor_id = 2 ORDER BY id"
+    ).fetchall()
+    enrollments = conn.execute(
+        "SELECT year_of_study, semester, division, status FROM student_enrollments "
+        "WHERE vendor_id = 2 ORDER BY person_id"
+    ).fetchall()
+    registration_config = json.loads(
+        conn.execute("SELECT registration_config FROM vendors WHERE id = 2").fetchone()[0]
+    )
+    conn.close()
+
+    assert len(people) == 2
+    assert people[0]["name"] == "Student One Updated"
+    assert all(person["phone"] is None for person in people)
+    assert len(enrollments) == 2
+    assert [(row["year_of_study"], row["semester"]) for row in enrollments] == [(3, 5), (2, 4)]
+    assert all(row["status"] == "ACTIVE" for row in enrollments)
+    config_names = {field["field"] for field in registration_config}
+    assert "class_id" in config_names
+    assert not config_names.intersection({"academic_session", "program_code", "year_of_study", "semester"})

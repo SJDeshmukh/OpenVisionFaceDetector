@@ -26,6 +26,12 @@ def test_school_legacy_non_faculty_defaults_to_student():
     assert person_type_for({}, vertical="school") == "student"
     assert person_type_for({}, system_role="user", vertical="hostel") == "student"
     assert requested_person_type(None, "school") == "student"
+
+
+def test_college_and_tuition_legacy_records_default_to_students():
+    assert person_type_for({}, vertical="college") == "student"
+    assert person_type_for({}, vertical="tuition") == "student"
+    assert requested_person_type(None, "college") == "student"
     assert requested_person_type(None, "factory") is None
 
 

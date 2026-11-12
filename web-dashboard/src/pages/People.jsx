@@ -350,7 +350,7 @@ const People = () => {
       || classFeatures.has('lecture_wise_reports');
     if (canUseClasses) {
       axios.get(`${API_URL}/classes`)
-        .then(res => setVendorClasses(res.data.classes || []))
+        .then(res => setVendorClasses((res.data.classes || []).filter(cls => !cls.academic_session_id || cls.status === 'ACTIVE')))
         .catch(() => setVendorClasses([]));
     } else {
       setVendorClasses([]);
@@ -751,7 +751,11 @@ const People = () => {
       Object.keys(newMapping).forEach(key => {
         if (newMapping[key] === header) delete newMapping[key];
       });
-      if (['name', 'phone', 'person_id', 'department', 'designation', 'shift'].includes(newRole)) {
+      if ([
+        'name', 'phone', 'email', 'person_id', 'department', 'designation', 'shift',
+        'academic_session', 'program_code', 'year_of_study', 'semester',
+        'division', 'roll_number', 'parent_name', 'parent_phone',
+      ].includes(newRole)) {
         newMapping[newRole] = header;
       }
 
@@ -841,6 +845,20 @@ const People = () => {
     });
 
     await uploadPeopleSpreadsheet(file, headerMapping, fieldTypes, fieldOptions, fieldRequired);
+  };
+
+  const downloadAcademicTemplate = () => {
+    const lines = [
+      ['admission_number', 'student_name', 'academic_session', 'program_code', 'year_of_study', 'semester', 'division', 'roll_number', 'phone', 'email'],
+      ['ADM-001', 'Sample Student', '2026-27', 'BSC-CS', '1', '1', 'A', '11', '9876543210', 'student@example.com'],
+    ];
+    const csv = lines.map(row => row.map(value => `"${String(value).replaceAll('"', '""')}"`).join(',')).join('\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'academic_student_import_template.csv';
+    link.click();
+    URL.revokeObjectURL(url);
   };
 
   const uploadPeopleSpreadsheet = async (file, headerMapping = null, fieldTypes = null, fieldOptions = null, fieldRequired = null) => {
@@ -1618,7 +1636,7 @@ const People = () => {
                       >
                         <div className="flex items-center justify-between w-full mb-1">
                           <span className="font-bold text-slate-800 group-hover:text-blue-600 transition-colors">
-                            {cls.class_year} - {cls.branch} ({cls.division})
+                            {cls.session_code ? `${cls.session_code} · ` : ''}{cls.program_code || cls.branch} · Year {cls.year_of_study || cls.class_year} ({cls.division})
                           </span>
                           <span className="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-bold">SELECT</span>
                         </div>
@@ -1626,14 +1644,14 @@ const People = () => {
                       </button>
                     ))}
                     
-                    {(!requiresClassroomAllocation || vendorClasses.length === 0) && <button
+                    {(!requiresClassroomAllocation || vendorClasses.length === 0 || terminology.academic) && <button
                       onClick={() => {
                         setSelectedBulkClass(null);
                         setBulkImportPhase('upload');
                       }}
                       className="flex items-center justify-center p-4 border border-dashed border-slate-300 rounded-xl hover:border-slate-400 hover:bg-slate-50 transition-all text-slate-500 text-sm font-medium"
                     >
-                      Skip {groupLabel} Assignment (Upload All)
+                      {terminology.academic ? 'Upload Mixed Academic File' : `Skip ${groupLabel} Assignment (Upload All)`}
                     </button>}
                   </div>
                 </>
@@ -1673,6 +1691,9 @@ const People = () => {
                       <Upload size={18} />
                       Select File
                     </label>
+                    {terminology.academic && <button type="button" onClick={downloadAcademicTemplate} className="w-full py-2.5 px-4 border border-slate-200 text-slate-700 rounded-xl hover:bg-slate-50 text-sm font-semibold">
+                      Download Academic CSV Template
+                    </button>}
                   </div>
                 </>
               ) : bulkImportProgress === 'inspecting' ? (
@@ -1770,10 +1791,19 @@ const People = () => {
                             >
                               <option value="name">Person Name *</option>
                               <option value="phone">Phone / Mobile</option>
-                              <option value="person_id">Student / Employee ID</option>
+                              <option value="email">Email</option>
+                              <option value="person_id">Admission / Student / Employee ID</option>
+                              <option value="academic_session">Academic Session</option>
+                              <option value="program_code">Program Code</option>
+                              <option value="year_of_study">Year of Study</option>
+                              <option value="semester">Semester</option>
+                              <option value="division">Division / Section</option>
+                              <option value="roll_number">Roll Number</option>
                               <option value="department">Department</option>
                               <option value="designation">Designation</option>
                               <option value="shift">Shift</option>
+                              <option value="parent_name">Parent / Guardian Name</option>
+                              <option value="parent_phone">Parent / Guardian Phone</option>
                               <option value="custom">Custom Field</option>
                             </select>
                           </div>

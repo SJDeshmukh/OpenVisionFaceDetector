@@ -9,6 +9,7 @@ from time import perf_counter
 from flask import Blueprint, Response, g, jsonify, request
 
 from services.auth_service import authenticate_vendor_access, verify_token
+from services.staff_navigation_service import staff_can_access
 from services.hostel_allocation_service import (
     HostelAllocationError, access_for, add_bed, allocate, create_building, create_floor,
     create_rooms, delete_bed, delete_building, delete_floor, delete_room, duplicate_floor,
@@ -60,13 +61,17 @@ def _context(permission=None):
                 conn.close()
                 return None, None, None, (jsonify({"error": "Staff session is invalid or expired"}), 401)
             c = conn.cursor()
-            c.execute("SELECT id, role FROM leave_staff WHERE id=? AND vendor_id=?", (claims.get("staff_id"), vendor_id))
+            c.execute("SELECT id, role, navbar_items FROM leave_staff WHERE id=? AND vendor_id=?", (claims.get("staff_id"), vendor_id))
             staff = c.fetchone()
             staff_id = staff["id"] if staff and hasattr(staff, "keys") else (staff[0] if staff else None)
             staff_role = staff["role"] if staff and hasattr(staff, "keys") else (staff[1] if staff else None)
+            navbar_items = staff["navbar_items"] if staff and hasattr(staff, "keys") else (staff[2] if staff else None)
             if not staff or str(staff_role) != str(claims.get("staff_role")):
                 conn.close()
                 return None, None, None, (jsonify({"error": "Staff account is no longer active"}), 401)
+            if not staff_can_access(navbar_items, "hostel_allocation"):
+                conn.close()
+                return None, None, None, (jsonify({"error": "Hostel Allocation is not enabled for this staff member", "code": "STAFF_NAV_FORBIDDEN"}), 403)
             principal = f"staff:{staff_id}"
             system_role = str(staff_role or "staff")
         access = access_for(conn, vendor_id, principal, system_role)

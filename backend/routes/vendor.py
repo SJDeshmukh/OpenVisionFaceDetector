@@ -34,6 +34,11 @@ from services.attendance_action_mode_service import (
     record_action_mode_change,
     utc_now_naive,
 )
+from services.academic_lifecycle_service import (
+    AcademicLifecycleError,
+    ensure_academic_class,
+    validate_enrollment_scope,
+)
 
 # Mock Auth Decorators
 def vendor_required(f):
@@ -853,11 +858,25 @@ def list_classes():
     try:
         conn = get_db_connection()
         c = conn.cursor()
+        manager_roles = {'super_admin', 'vendor_admin', 'admin', 'owner'}
+        include_archived = (
+            request.args.get('include_archived', '').strip().lower() in {'1', 'true', 'yes'}
+            and g.user_role in manager_roles
+        )
+        active_class_clause = "" if include_archived else (
+            " AND (c.academic_session_id IS NULL OR c.status = 'ACTIVE')"
+        )
 
         if g.user_role == 'faculty':
             # Filter classes in Python for simplicity with JSON storage
             conn.row_factory = None # Ensure simple indexing if needed, or dict if preferred
-            c.execute("SELECT id, class_year, division, branch, label, mapped_subjects FROM classes WHERE vendor_id = ?", (vendor_id,))
+            c.execute("""SELECT c.id, c.class_year, c.division, c.branch, c.label, c.mapped_subjects,
+                                c.academic_session_id, c.program_id, c.year_of_study, c.semester, c.status,
+                                s.code, p.code, p.name
+                         FROM classes c
+                         LEFT JOIN academic_sessions s ON s.id = c.academic_session_id AND s.vendor_id = c.vendor_id
+                         LEFT JOIN academic_programs p ON p.id = c.program_id AND p.vendor_id = c.vendor_id
+                         WHERE c.vendor_id = ?""" + active_class_clause, (vendor_id,))
             rows = c.fetchall() or []
             items = []
             for r in rows:
@@ -871,7 +890,9 @@ def list_classes():
                 if any(m.get('faculty') == g.username for m in ms):
                     items.append({
                         "id": r[0], "class_year": r[1], "division": r[2], "branch": r[3], "label": r[4], 
-                        "mapped_subjects": ms
+                        "mapped_subjects": ms, "academic_session_id": r[6], "program_id": r[7],
+                        "year_of_study": r[8], "semester": r[9], "status": r[10],
+                        "session_code": r[11], "program_code": r[12], "program_name": r[13],
                     })
             conn.close()
             return jsonify({"classes": items})
@@ -879,7 +900,14 @@ def list_classes():
         if not vendor_id:
             conn.close()
             return jsonify({"error": "Vendor Context Required"}), 400
-        c.execute("SELECT id, class_year, division, branch, label, mapped_subjects FROM classes WHERE vendor_id = ? ORDER BY created_at DESC", (vendor_id,))
+        c.execute("""SELECT c.id, c.class_year, c.division, c.branch, c.label, c.mapped_subjects,
+                            c.academic_session_id, c.program_id, c.year_of_study, c.semester, c.status,
+                            s.code AS session_code, p.code AS program_code, p.name AS program_name
+                     FROM classes c
+                     LEFT JOIN academic_sessions s ON s.id = c.academic_session_id AND s.vendor_id = c.vendor_id
+                     LEFT JOIN academic_programs p ON p.id = c.program_id AND p.vendor_id = c.vendor_id
+                     WHERE c.vendor_id = ?""" + active_class_clause +
+                  " ORDER BY c.created_at DESC", (vendor_id,))
         rows = c.fetchall() or []
         conn.close()
         items = []
@@ -891,7 +919,11 @@ def list_classes():
                 pass
 
             items.append({
-                "id": r[0], "class_year": r[1], "division": r[2], "branch": r[3], "label": r[4], "mapped_subjects": mapped_subjects_list
+                "id": r[0], "class_year": r[1], "division": r[2], "branch": r[3],
+                "label": r[4], "mapped_subjects": mapped_subjects_list,
+                "academic_session_id": r[6], "program_id": r[7], "year_of_study": r[8],
+                "semester": r[9], "status": r[10], "session_code": r[11],
+                "program_code": r[12], "program_name": r[13],
             })
         return jsonify({"classes": items})
     except Exception as e:
@@ -917,6 +949,18 @@ def create_class():
         conn = get_db_connection()
         c = conn.cursor()
 
+        if data.get('academic_session_id') or data.get('academic_session') or data.get('program_id') or data.get('program_code'):
+            scope = validate_enrollment_scope(conn, vendor_id, data)
+            class_id = ensure_academic_class(conn, vendor_id, scope)
+            if data.get('label'):
+                c.execute(
+                    "UPDATE classes SET label = ? WHERE id = ? AND vendor_id = ?",
+                    (str(data.get('label')).strip()[:180], class_id, vendor_id),
+                )
+            conn.commit()
+            conn.close()
+            return jsonify({"ok": True, "id": class_id}), 201
+
         class_year = str(data.get('class_year') or '').strip()
         division = str(data.get('division') or '').strip()
         branch = str(data.get('branch') or '').strip()
@@ -941,6 +985,12 @@ def create_class():
         new_id = c.lastrowid
         conn.close()
         return jsonify({"ok": True, "id": new_id})
+    except AcademicLifecycleError as e:
+        try:
+            conn.rollback(); conn.close()
+        except Exception:
+            pass
+        return jsonify({"error": str(e), "code": e.code}), e.status
     except Exception as e:
         try:
             conn.rollback(); conn.close()
@@ -964,12 +1014,17 @@ def update_class(cid: int):
         conn = get_db_connection()
         c = conn.cursor()
             
-        c.execute("SELECT vendor_id, class_year, division, branch FROM classes WHERE id = ?", (cid,))
+        c.execute("SELECT vendor_id, class_year, division, branch, academic_session_id FROM classes WHERE id = ?", (cid,))
         row = c.fetchone()
         if not row or (vendor_id and int(row[0]) != int(vendor_id)):
             conn.close()
             return jsonify({"error": "not found"}), 404
         old_year, old_division, old_branch = row[1], row[2], row[3]
+        if row[4] and any(key in data for key in ("class_year", "division", "branch", "academic_session_id", "program_id", "year_of_study", "semester")):
+            conn.close()
+            return jsonify({
+                "error": "Academic scope is historical. Create the target class or use promotion instead of rewriting it."
+            }), 409
         new_year = str(data.get('class_year', old_year) or '').strip()
         new_division = str(data.get('division', old_division) or '').strip()
         new_branch = str(data.get('branch', old_branch) or '').strip()
@@ -1058,6 +1113,17 @@ def delete_class(cid: int):
         if not class_row:
             conn.close()
             return jsonify({"error": "not found"}), 404
+        c.execute(
+            "SELECT COUNT(*) FROM student_enrollments WHERE vendor_id = ? AND class_id = ?",
+            (vendor_id, cid),
+        )
+        enrollment_count = int(c.fetchone()[0] or 0)
+        if enrollment_count:
+            conn.close()
+            return jsonify({
+                "error": "This class is part of academic history and cannot be deleted",
+                "enrollments": enrollment_count,
+            }), 409
         c.execute("""SELECT f.id, f.custom_data,
                             (SELECT su.role FROM system_users su
                              WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
