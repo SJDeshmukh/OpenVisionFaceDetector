@@ -226,10 +226,7 @@ const LeaveManagement = () => {
     if (!window.confirm("This will reset your password to your registered mobile number and LOG YOU OUT. Are you sure?")) return;
     
     try {
-      const token = user?.token;
-      await axios.post(`${API_URL}/auth/student/reset-to-default`, {}, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      await axios.post(`${API_URL}/auth/student/reset-to-default`, {});
       alert("Password reset successfully! Please login again with your mobile number.");
       logout();
     } catch (err) {

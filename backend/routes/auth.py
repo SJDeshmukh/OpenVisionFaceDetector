@@ -58,7 +58,7 @@ def forgot_password():
         c.execute(
             f"""SELECT username, role, vendor_id FROM system_users
                 WHERE LOWER(TRIM(username)) = LOWER(TRIM({placeholder}))
-                  AND role IN ('user', 'faculty', 'vendor_admin', 'owner')
+                  AND role IN ('user', 'student', 'faculty', 'vendor_admin', 'owner')
                 LIMIT 1""",
             (email,),
         )
@@ -71,7 +71,7 @@ def forgot_password():
                 f"""SELECT su.username, su.role, su.vendor_id, f.custom_data
                     FROM system_users su
                     JOIN faces f ON f.id = su.person_id AND f.vendor_id = su.vendor_id
-                    WHERE su.role IN ('user', 'faculty')
+                    WHERE su.role IN ('user', 'student', 'faculty')
                       AND LOWER(f.custom_data) LIKE LOWER({placeholder})
                     LIMIT 20""",
                 (f"%{email}%",),
@@ -512,7 +512,7 @@ def login():
         stored_plain = user.get("password_plain")
         
         # Check if student is using their "base" mobile number but has a custom password set
-        is_student = user.get('role') == 'user'
+        is_student = user.get('role') in ('user', 'student')
         stored_pw = user.get("password")
         stored_plain = user.get("password_plain")
         
@@ -1799,20 +1799,18 @@ def verify_student_password():
 
 @auth_bp.route("/auth/student/reset-to-default", methods=["POST"])
 def reset_student_password_to_default():
-    from services.auth_service import extract_token, verify_token, hash_password
     from app import get_db_connection
-    
-    auth_header = request.headers.get('Authorization')
-    if not auth_header:
-        return jsonify({"error": "Missing Authorization Header"}), 401
-    
-    token = extract_token(auth_header)
-    data = verify_token(token)
-    if not data or data.get('role') != 'user':
-        return jsonify({"error": "Unauthorized: Student access required"}), 401
-    
-    username = data['username']
-    
+
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+    if getattr(g, "user_role", None) not in ("user", "student"):
+        return jsonify({"error": "Student access required", "code": "FORBIDDEN"}), 403
+
+    username = getattr(g, "username", None)
+    if not username or not vendor_id:
+        return jsonify({"error": "Authenticated student account is incomplete"}), 401
+
     conn = get_db_connection()
     try:
         if not getattr(conn, "_is_pg", False):
@@ -1820,7 +1818,11 @@ def reset_student_password_to_default():
         c = conn.cursor()
         
         # 1. Get student's person_id from system_users
-        c.execute("SELECT person_id, vendor_id FROM system_users WHERE username = ?", (username,))
+        c.execute(
+            """SELECT person_id FROM system_users
+               WHERE username = ? AND vendor_id = ? AND role IN ('user', 'student')""",
+            (username, vendor_id),
+        )
         user_row = c.fetchone()
         if not user_row:
             return jsonify({"error": "User record not found"}), 404
@@ -1832,26 +1834,43 @@ def reset_student_password_to_default():
             return jsonify({"error": "Student profile not linked. Contact Admin."}), 400
             
         # 2. Get registered mobile number from faces table
-        c.execute("SELECT phone FROM faces WHERE id = ?", (person_id,))
+        c.execute("SELECT phone, custom_data FROM faces WHERE id = ? AND vendor_id = ?", (person_id, vendor_id))
         face_row = c.fetchone()
         if not face_row:
             return jsonify({"error": "Student identity profile not found"}), 404
-            
+
         face_dict = dict(face_row)
-        phone = face_dict.get('phone')
+        phone = str(face_dict.get('phone') or '').strip()
         if not phone:
-             return jsonify({"error": "No mobile number found in your profile"}), 400
-             
+            try:
+                custom_data = json.loads(face_dict.get('custom_data') or '{}')
+            except (TypeError, ValueError):
+                custom_data = {}
+            phone = str(next(
+                (custom_data.get(key) for key in ('phone', 'mobile', 'mobile_number', 'phone_number') if custom_data.get(key)),
+                '',
+            )).strip()
+        if not phone:
+            return jsonify({"error": "No mobile number found in your profile"}), 400
+
         # 3. Reset password back to the mobile number
         hashed_pw = hash_password(phone)
         c.execute(
-            "UPDATE system_users SET password = ?, password_plain = NULL, has_set_password = 0 WHERE username = ?",
-            (hashed_pw, username)
+            """UPDATE system_users
+               SET password = ?, password_plain = NULL, has_set_password = 0
+               WHERE username = ? AND vendor_id = ? AND role IN ('user', 'student')""",
+            (hashed_pw, username, vendor_id),
         )
+        c.execute("DELETE FROM active_sessions WHERE username = ? AND vendor_id = ?", (username, vendor_id))
         conn.commit()
-        
-        logger.info(f"Student {username} reset password to default (mobile: {phone})")
-        return jsonify({"status": "success", "message": "Password reset to registered mobile number. Please login again."})
+
+        logger.info("Student password reset to default: username=%s vendor=%s", username, vendor_id)
+        response = make_response(jsonify({
+            "status": "success",
+            "message": "Password reset to registered mobile number. Please login again.",
+        }))
+        response.delete_cookie('token', path='/')
+        return response
     except Exception as e:
         logger.error(f"Error resetting student password: {e}")
         return jsonify({"error": str(e)}), 500

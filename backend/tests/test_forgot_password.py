@@ -3,7 +3,7 @@ import sqlite3
 import sys
 from types import SimpleNamespace
 
-from flask import Flask
+from flask import Flask, g
 
 from routes import auth
 from services import email_service
@@ -127,3 +127,60 @@ def test_forgot_password_does_not_change_password_when_delivery_fails(tmp_path, 
     conn.close()
     assert password_hash == original_hash
     assert force_change == 0
+
+
+def test_student_role_can_reset_password_with_cookie_authenticated_session(tmp_path, monkeypatch):
+    db_path = tmp_path / "student-default-password.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE faces (
+            id INTEGER PRIMARY KEY, vendor_id INTEGER, phone TEXT, custom_data TEXT
+        );
+        CREATE TABLE system_users (
+            username TEXT, password TEXT, password_plain TEXT, role TEXT,
+            vendor_id INTEGER, person_id INTEGER, has_set_password INTEGER
+        );
+        CREATE TABLE active_sessions (
+            token TEXT, username TEXT, vendor_id INTEGER
+        );
+        """
+    )
+    conn.execute("INSERT INTO faces VALUES (10, 1, '9876543210', '{}')")
+    conn.execute(
+        "INSERT INTO system_users VALUES (?, ?, NULL, 'student', 1, 10, 1)",
+        ("student@example.com", auth.hash_password("custom-password")),
+    )
+    conn.execute("INSERT INTO active_sessions VALUES ('web-token', 'student@example.com', 1)")
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "app",
+        SimpleNamespace(get_db_connection=_connection_factory(db_path)),
+    )
+
+    def authenticate():
+        g.user_role = "student"
+        g.username = "student@example.com"
+        return 1, None
+
+    monkeypatch.setattr(auth, "authenticate_vendor_access", authenticate)
+    app = Flask(__name__)
+    with app.test_request_context("/auth/student/reset-to-default", method="POST"):
+        response = auth.reset_student_password_to_default()
+
+    assert response.get_json()["status"] == "success"
+    assert "token=;" in response.headers.get("Set-Cookie", "")
+
+    conn = sqlite3.connect(db_path)
+    password_hash, password_plain, has_set = conn.execute(
+        "SELECT password, password_plain, has_set_password FROM system_users WHERE username = 'student@example.com'"
+    ).fetchone()
+    sessions = conn.execute("SELECT COUNT(*) FROM active_sessions").fetchone()[0]
+    conn.close()
+    assert verify_password("9876543210", password_hash)
+    assert password_plain is None
+    assert has_set == 0
+    assert sessions == 0
