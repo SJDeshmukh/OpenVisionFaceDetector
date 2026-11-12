@@ -4,6 +4,7 @@ import pytest
 
 from services.hostel_allocation_service import (
     HostelAllocationError,
+    access_for,
     add_bed,
     allocate,
     create_building,
@@ -118,3 +119,51 @@ def test_state_loading_uses_fixed_bulk_queries(hostel):
     selects = [statement for statement in statements if statement.lstrip().upper().startswith("SELECT")]
     assert len(state["buildings"][0]["floors"][0]["rooms"]) == 13
     assert len(selects) == 7
+
+
+def test_rector_with_explicit_module_grant_can_initialize_hostel(hostel):
+    conn, _building, _floor, _room, _beds = hostel
+
+    access = access_for(
+        conn,
+        10,
+        "staff:30",
+        "Rector",
+        module_access_granted=True,
+    )
+
+    assert access["role"] == "administrator"
+    assert access["building_ids"] is None
+    assert access["can_manage_buildings"] is True
+    assert access["can_manage_permissions"] is True
+
+
+def test_rector_without_explicit_module_grant_is_not_implicitly_authorized(hostel):
+    conn, _building, _floor, _room, _beds = hostel
+
+    with pytest.raises(HostelAllocationError, match="has not been assigned"):
+        access_for(conn, 10, "staff:30", "rector")
+
+
+def test_hod_remains_building_scoped_even_with_navbar_grant(hostel):
+    conn, building_id, _floor, _room, _beds = hostel
+    conn.execute(
+        """INSERT INTO hostel_staff_permissions
+           (vendor_id, username, building_id, access_role, can_export,
+            can_override_eligibility, can_view_resident_details)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (10, "staff:31", building_id, "viewer", 1, 0, 1),
+    )
+    conn.commit()
+
+    access = access_for(
+        conn,
+        10,
+        "staff:31",
+        "hod",
+        module_access_granted=True,
+    )
+
+    assert access["role"] == "viewer"
+    assert access["building_ids"] == [building_id]
+    assert access["can_manage_buildings"] is False

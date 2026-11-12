@@ -6,6 +6,7 @@ from threading import Lock
 
 
 ADMIN_ROLES = {"super_admin", "vendor_admin", "admin", "owner"}
+HOSTEL_MODULE_ADMIN_ROLES = {"rector"}
 EDIT_ROLES = {"administrator", "warden"}
 VALID_BED_REASONS = {"maintenance", "cleaning", "out_of_service", "other"}
 _PG_SCHEMA_READY = False
@@ -68,8 +69,18 @@ def ensure_tables(conn):
             _PG_SCHEMA_READY = True
 
 
-def access_for(conn, vendor_id, username, system_role):
-    if str(system_role or "").lower() in ADMIN_ROLES:
+def access_for(conn, vendor_id, username, system_role, module_access_granted=False):
+    """Return hostel permissions for an authenticated principal.
+
+    Vendor administrators always have full access. A Rector receives the same
+    module-level access only after the request layer has verified the explicit
+    Hostel Allocation navbar grant. This lets the Rector create the first
+    building without weakening the building-scoped permissions used by HODs
+    and other staff.
+    """
+    normalized_role = str(system_role or "").strip().lower()
+    is_module_admin = module_access_granted and normalized_role in HOSTEL_MODULE_ADMIN_ROLES
+    if normalized_role in ADMIN_ROLES or is_module_admin:
         return {
             "role": "administrator", "building_ids": None, "can_edit_layout": True,
             "can_allocate": True, "can_manage_permissions": True, "can_export": True,

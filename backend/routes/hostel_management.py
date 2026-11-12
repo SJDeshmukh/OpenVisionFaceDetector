@@ -54,6 +54,7 @@ def _context(permission=None):
         ensure_tables(conn)
         principal = getattr(g, "username", "")
         system_role = getattr(g, "user_role", "")
+        staff_module_access_granted = False
         staff_token = request.headers.get("X-Leave-Staff-Token")
         if staff_token:
             claims = verify_token(staff_token)
@@ -74,7 +75,14 @@ def _context(permission=None):
                 return None, None, None, (jsonify({"error": "Hostel Allocation is not enabled for this staff member", "code": "STAFF_NAV_FORBIDDEN"}), 403)
             principal = f"staff:{staff_id}"
             system_role = str(staff_role or "staff")
-        access = access_for(conn, vendor_id, principal, system_role)
+            staff_module_access_granted = True
+        access = access_for(
+            conn,
+            vendor_id,
+            principal,
+            system_role,
+            module_access_granted=staff_module_access_granted,
+        )
         g.hostel_actor = principal
         if permission:
             require_permission(access, permission)
