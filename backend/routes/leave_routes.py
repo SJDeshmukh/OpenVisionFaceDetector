@@ -1220,6 +1220,39 @@ def manage_leave_workflow():
     finally:
         conn.close()
 
+
+@leave_bp.route("/student/workflow", methods=["GET"])
+@require_feature("leave_management")
+def get_student_leave_workflow():
+    """Return the active approval path without exposing approver credentials."""
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+    role_error = _require_role("user", "student")
+    if role_error:
+        return role_error
+
+    conn = get_db_connection()
+    try:
+        workflow = get_active_workflow(conn, vendor_id)
+        return jsonify({
+            "workflow": {
+                "name": workflow.get("name"),
+                "version": workflow.get("version"),
+                "stages": [
+                    {
+                        "stage_key": stage.get("stage_key"),
+                        "display_name": stage.get("display_name"),
+                        "sequence": stage.get("sequence"),
+                        "department_scoped": bool(stage.get("department_scoped")),
+                    }
+                    for stage in workflow.get("stages", [])
+                ],
+            }
+        })
+    finally:
+        conn.close()
+
 @leave_bp.route("/admin/departments", methods=["GET", "POST", "DELETE"], strict_slashes=False)
 def manage_departments():
     vendor_id, error = authenticate_vendor_access()
@@ -1479,29 +1512,54 @@ def get_parent_faces():
         conn.close()
 
 @leave_bp.route("/student/history", methods=["GET"])
+@require_feature("leave_management")
 def get_student_history():
-    auth_header = request.headers.get("Authorization")
-    if not auth_header: return jsonify({"error": "Missing token"}), 401
-    token = auth_header.split(" ")[1]
-    user_data = verify_token(token)
-    if not user_data or user_data.get('role') not in ('user', 'student'):
-        return jsonify({"error": "User access required"}), 403
-    
-    student_number = user_data.get('username')
-    vendor_id = user_data.get('vendor_id')
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+    role_error = _require_role("user", "student")
+    if role_error:
+        return role_error
+
+    student_number = getattr(g, "username", None)
     import logging
     logger = logging.getLogger(__name__)
-    logger.info(f"History fetch: user={student_number}, vendor={vendor_id}, token_payload={user_data}")
-    
+    logger.info("History fetch: user=%s, vendor=%s", student_number, vendor_id)
+
     if not student_number or not vendor_id:
-        return jsonify({"error": "Invalid token: missing username or vendor_id"}), 401
-    
+        return jsonify({"error": "Authenticated student account is incomplete"}), 401
+
     conn = get_db_connection()
     c = conn.cursor()
     try:
-        # Resolve student_id (faces.id) first
         is_pg = getattr(conn, "_is_pg", False)
+
+        # The account-to-person link is authoritative. It prevents a student
+        # from reading another student's history by changing request data.
         if is_pg:
+            c.execute(
+                """SELECT person_id FROM system_users
+                   WHERE vendor_id = %s AND username = %s
+                     AND role IN ('user', 'student') AND person_id IS NOT NULL""",
+                (vendor_id, student_number),
+            )
+        else:
+            c.execute(
+                """SELECT person_id FROM system_users
+                   WHERE vendor_id = ? AND username = ?
+                     AND role IN ('user', 'student') AND person_id IS NOT NULL""",
+                (vendor_id, student_number),
+            )
+        account_row = c.fetchone()
+        if account_row:
+            account_data = get_row_dict(account_row)
+            person_id = account_data.get("person_id") if isinstance(account_data, dict) else account_row[0]
+        else:
+            person_id = None
+
+        # Compatibility fallback for accounts created before person_id was
+        # persisted on system_users.
+        if person_id is None and is_pg:
             c.execute("""
                 SELECT id FROM faces 
                 WHERE vendor_id = %s AND (
@@ -1511,7 +1569,7 @@ def get_student_history():
                     LOWER(TRIM(custom_data::jsonb->>'employee_id')) = LOWER(TRIM(%s))
                 )
             """, (vendor_id, student_number, student_number, student_number, student_number))
-        else:
+        elif person_id is None:
             c.execute("""
                 SELECT id FROM faces 
                 WHERE vendor_id = ? AND (
@@ -1521,35 +1579,25 @@ def get_student_history():
                     LOWER(TRIM(json_extract(custom_data, '$.employee_id'))) = LOWER(TRIM(?))
                 )
             """, (vendor_id, student_number, student_number, student_number, student_number))
-        
-        face_row = c.fetchone()
-        
-        # --- Robust Fallback: Check system_users table ---
-        if not face_row:
-            logger.info(f"Student history faces lookup failed for {student_number}, trying system_users fallback...")
-            if is_pg:
-                c.execute("SELECT person_id FROM system_users WHERE vendor_id = %s AND username = %s AND person_id IS NOT NULL", (vendor_id, student_number))
-            else:
-                c.execute("SELECT person_id FROM system_users WHERE vendor_id = ? AND username = ? AND person_id IS NOT NULL", (vendor_id, student_number))
+
+        if person_id is None:
             face_row = c.fetchone()
-        if not face_row:
-            logger.error(f"Student history fetch failed: student_number={student_number} not found in faces table")
-            return jsonify({"requests": []})
-        
-        # If row is a dict (Postgres DictRow or similar), use key 'id'
-        if hasattr(face_row, 'keys') and 'id' in face_row.keys():
-            person_id = face_row['id']
-        else:
-            person_id = face_row[0]
-        
-        logger.info(f"Resolved history student_number={student_number} to person_id={person_id}")
-        
+            if face_row:
+                face_data = get_row_dict(face_row)
+                person_id = face_data.get("id") if isinstance(face_data, dict) else face_row[0]
+
+        if person_id is None:
+            logger.warning("Student history account is not linked: user=%s vendor=%s", student_number, vendor_id)
+            return jsonify({"error": "Student account is not linked to a resident record"}), 409
+
+        logger.info("Resolved history user=%s to person_id=%s", student_number, person_id)
+
         # Now fetch all requests for this person_id with student name
         if is_pg:
             c.execute("""
                 SELECT lr.*, f.name as student_name 
                 FROM leave_requests lr
-                JOIN faces f ON lr.student_id = f.id
+                LEFT JOIN faces f ON lr.student_id = f.id AND f.vendor_id = lr.vendor_id
                 WHERE lr.student_id = %s AND lr.vendor_id = %s 
                 ORDER BY lr.created_at DESC
             """, (person_id, vendor_id))
@@ -1557,7 +1605,7 @@ def get_student_history():
             c.execute("""
                 SELECT lr.*, f.name as student_name 
                 FROM leave_requests lr
-                JOIN faces f ON lr.student_id = f.id
+                LEFT JOIN faces f ON lr.student_id = f.id AND f.vendor_id = lr.vendor_id
                 WHERE lr.student_id = ? AND lr.vendor_id = ? 
                 ORDER BY lr.created_at DESC
             """, (person_id, vendor_id))

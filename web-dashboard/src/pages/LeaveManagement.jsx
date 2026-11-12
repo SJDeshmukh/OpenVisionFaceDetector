@@ -18,7 +18,8 @@ import {
   Plus,
   Trash2,
   ChevronUp,
-  ChevronDown
+  ChevronDown,
+  ChevronRight
 } from 'lucide-react';
 import { getBusinessTerminology, usesStudentRecords } from '../lib/businessTerminology';
 
@@ -40,6 +41,8 @@ const LeaveManagement = () => {
   const [showPinModal, setShowPinModal] = useState(false);
   const [pin, setPin] = useState('');
   const [workflow, setWorkflow] = useState(null);
+  const [studentWorkflow, setStudentWorkflow] = useState(null);
+  const [dataError, setDataError] = useState('');
   const [savingWorkflow, setSavingWorkflow] = useState(false);
   const canConfigureWorkflow = ['super_admin', 'vendor_admin', 'admin', 'owner'].includes(user?.role);
   
@@ -103,10 +106,15 @@ const LeaveManagement = () => {
   };
 
   const fetchData = async () => {
-    if (isRegularUser && activeTab !== 'history') return;
+    if (isRegularUser && !['new_request', 'history'].includes(activeTab)) return;
     setLoading(true);
+    setDataError('');
+    if (['pending', 'history'].includes(activeTab)) setRequests([]);
     try {
-      if (activeTab === 'pending') {
+      if (activeTab === 'new_request' && isRegularUser) {
+        const res = await axios.get(`${API_URL}/leave/student/workflow`);
+        setStudentWorkflow(res.data.workflow || null);
+      } else if (activeTab === 'pending') {
         let url = `${API_URL}/leave/admin/pending?role=${currentRole}`;
         if (staffSession?.department) {
           url += `&department=${encodeURIComponent(staffSession.department)}`;
@@ -141,6 +149,7 @@ const LeaveManagement = () => {
       }
     } catch (err) {
       console.error("Error fetching leave data:", err);
+      setDataError(err.response?.data?.error || 'Unable to load leave information. Please refresh and try again.');
     } finally {
       setLoading(false);
     }
@@ -279,10 +288,16 @@ const LeaveManagement = () => {
     }
   };
 
-  const filteredRequests = requests.filter(req => 
-    (req.student_name || req.name || req.employee_name || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (req.reason || "").toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filteredRequests = requests.filter(req => {
+    const query = searchTerm.toLowerCase();
+    const matchesSearch =
+      (req.student_name || req.name || req.employee_name || "").toLowerCase().includes(query) ||
+      (req.reason || "").toLowerCase().includes(query) ||
+      formatLeaveType(req.leave_type).toLowerCase().includes(query);
+    const matchesDate = !dateFilter || [req.created_at, req.start_date, req.end_date]
+      .some(value => String(value || '').startsWith(dateFilter));
+    return matchesSearch && matchesDate;
+  });
 
   const filteredParents = parents.filter(p => 
     (p.username?.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -423,6 +438,12 @@ const LeaveManagement = () => {
         )}
       </div>}
 
+      {dataError && (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
+          {dataError}
+        </div>
+      )}
+
       {loading ? (
         <div className="flex justify-center py-12">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
@@ -511,6 +532,38 @@ const LeaveManagement = () => {
             </div>
           ) : activeTab === 'new_request' ? (
             <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+              {studentWorkflow?.stages?.length > 0 && (
+                <div className="mb-6 rounded-xl border border-blue-100 bg-blue-50/60 p-4">
+                  <div className="flex flex-col gap-1 mb-4">
+                    <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                      <ShieldCheck size={18} className="text-blue-600" /> Approval path
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      Your request will move through these approvals in order.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {studentWorkflow.stages.map((stage, index) => (
+                      <React.Fragment key={stage.stage_key || `${stage.display_name}-${index}`}>
+                        <div className="flex min-w-36 items-center gap-3 rounded-lg border border-blue-100 bg-white px-3 py-2 shadow-sm">
+                          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-600 text-xs font-bold text-white">
+                            {index + 1}
+                          </span>
+                          <div>
+                            <p className="text-sm font-bold text-slate-800">{stage.display_name}</p>
+                            {stage.department_scoped && (
+                              <p className="text-[10px] font-medium uppercase tracking-wide text-blue-600">Your department</p>
+                            )}
+                          </div>
+                        </div>
+                        {index < studentWorkflow.stages.length - 1 && (
+                          <ChevronRight size={18} className="text-blue-300" aria-hidden="true" />
+                        )}
+                      </React.Fragment>
+                    ))}
+                  </div>
+                </div>
+              )}
               <form onSubmit={handleSubmitRequest} className="space-y-4">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
@@ -677,8 +730,8 @@ const LeaveManagement = () => {
             )
           ) : activeTab === 'history' ? (
             <div className="space-y-4">
-              {requests.length > 0 ? (
-                requests.map(req => (
+              {filteredRequests.length > 0 ? (
+                filteredRequests.map(req => (
                   <div key={req.id} className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
                     <div className="flex justify-between items-start mb-4">
                       <div className="flex items-center gap-3">
@@ -723,15 +776,16 @@ const LeaveManagement = () => {
                         { label: 'Supervisor', status: req.rector_status || req.status },
                         { label: 'HR / Admin', status: req.hod_status || (req.rector_status === 'approved' ? 'approved' : req.status) }
                       ]).map((step, idx) => {
-                        const isDone = step.status === 'approved';
-                        const isRejected = step.status === 'rejected';
+                        const stepStatus = String(step.status || 'pending').toLowerCase();
+                        const isDone = stepStatus === 'approved';
+                        const isRejected = stepStatus === 'rejected';
                         return (
                           <div key={idx} className="flex flex-col items-center relative z-10">
                             <div className={`w-8 h-8 rounded-full flex items-center justify-center border-2 transition-all ${isDone ? 'bg-green-500 border-green-500 text-white' : isRejected ? 'bg-red-500 border-red-500 text-white' : 'bg-white border-slate-200 text-slate-400'}`}>
                               {isDone ? <CheckCircle size={16} /> : isRejected ? <XCircle size={16} /> : <Clock size={16} />}
                             </div>
                             <span className="text-[10px] uppercase font-bold mt-2 tracking-wider text-slate-500">{step.label}</span>
-                            <span className={`text-[9px] mt-0.5 ${isDone ? 'text-green-600' : isRejected ? 'text-red-600' : 'text-slate-400'}`}>{step.status.toUpperCase()}</span>
+                            <span className={`text-[9px] mt-0.5 ${isDone ? 'text-green-600' : isRejected ? 'text-red-600' : 'text-slate-400'}`}>{stepStatus.toUpperCase()}</span>
                           </div>
                         );
                       })}

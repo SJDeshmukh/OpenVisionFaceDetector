@@ -42,6 +42,13 @@ def _create_db(db_path):
             role TEXT NOT NULL,
             department TEXT
         );
+        CREATE TABLE system_users (
+            id INTEGER PRIMARY KEY,
+            vendor_id INTEGER NOT NULL,
+            username TEXT NOT NULL,
+            role TEXT NOT NULL,
+            person_id INTEGER
+        );
         CREATE TABLE leave_requests (
             id INTEGER PRIMARY KEY,
             vendor_id INTEGER NOT NULL,
@@ -92,6 +99,10 @@ def _create_db(db_path):
     conn.executemany(
         "INSERT INTO leave_staff VALUES (?, ?, ?, ?)",
         [(30, 1, "rector", None), (31, 1, "hod", "Science")],
+    )
+    conn.execute(
+        "INSERT INTO system_users VALUES (?, ?, ?, ?, ?)",
+        (40, 1, "student@example.com", "student", 10),
     )
     conn.execute(
         """INSERT INTO leave_requests
@@ -232,3 +243,29 @@ def test_rector_rejection_stops_the_flow(tmp_path, monkeypatch):
     ).fetchone()
     conn.close()
     assert statuses == ("rejected", "pending", "pending", "rejected")
+
+
+def test_student_cookie_session_can_read_workflow_and_history(tmp_path, monkeypatch):
+    db_path = tmp_path / "student-leave-history.db"
+    _create_db(db_path)
+    monkeypatch.setattr(leave_routes, "get_db_connection", _connection_factory(db_path))
+
+    def authenticate():
+        g.user_role = "student"
+        g.username = "student@example.com"
+        return 1, None
+
+    monkeypatch.setattr(leave_routes, "authenticate_vendor_access", authenticate)
+    app = Flask(__name__)
+
+    # No Authorization header is supplied: the shared authentication helper
+    # represents the secure web cookie session used by the dashboard.
+    with app.test_request_context("/student/workflow"):
+        workflow = _json(leave_routes.get_student_leave_workflow.__wrapped__())["workflow"]
+    assert [stage["display_name"] for stage in workflow["stages"]] == ["Rector", "HOD", "Parent"]
+    assert all("auth_method" not in stage for stage in workflow["stages"])
+
+    with app.test_request_context("/student/history"):
+        history = _json(leave_routes.get_student_history.__wrapped__())["requests"]
+    assert [request["id"] for request in history] == [100]
+    assert [stage["display_name"] for stage in history[0]["approval_steps"]] == ["Rector", "HOD", "Parent"]
