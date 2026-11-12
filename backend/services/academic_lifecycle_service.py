@@ -66,6 +66,15 @@ def _code(value, field):
     return normalized
 
 
+def _department(value):
+    normalized = " ".join(str(value or "").strip().split())
+    if not normalized:
+        raise AcademicLifecycleError("Department is required")
+    if len(normalized) > 100:
+        raise AcademicLifecycleError("Department must be 100 characters or fewer")
+    return normalized
+
+
 def _positive_int(value, field, minimum=1, maximum=20):
     try:
         parsed = int(value)
@@ -93,7 +102,7 @@ def ensure_academic_tables(conn):
         (
             "CREATE TABLE IF NOT EXISTS academic_programs ("
             + ("id SERIAL PRIMARY KEY" if pg else "id INTEGER PRIMARY KEY AUTOINCREMENT")
-            + ", vendor_id INTEGER NOT NULL, code TEXT NOT NULL, name TEXT NOT NULL, "
+            + ", vendor_id INTEGER NOT NULL, code TEXT NOT NULL, name TEXT NOT NULL, department_code TEXT, "
               "duration_years INTEGER NOT NULL, structure TEXT NOT NULL DEFAULT 'SEMESTER', "
               "semesters_per_year INTEGER NOT NULL DEFAULT 2, is_active INTEGER NOT NULL DEFAULT 1, "
               "created_by TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
@@ -129,6 +138,12 @@ def ensure_academic_tables(conn):
         cursor.execute(statement)
 
     additive_columns = {
+        "academic_programs": ["department_code TEXT"],
+        # Older installations and isolated test databases may not have the
+        # denormalized department column.  Keep it in sync with the resident's
+        # active program so department-scoped HOD queues can use a simple,
+        # indexed value while custom_data remains backward compatible.
+        "faces": ["department TEXT"],
         "classes": [
             "academic_session_id INTEGER", "program_id INTEGER", "year_of_study INTEGER",
             "semester INTEGER", "status TEXT DEFAULT 'ACTIVE'",
@@ -164,12 +179,12 @@ def list_academic_config(conn, vendor_id):
     session_columns = ["id", "code", "name", "start_date", "end_date", "status", "created_at", "updated_at"]
     sessions = [_row_dict(row, session_columns) for row in cursor.fetchall()]
     cursor.execute(
-        "SELECT id, code, name, duration_years, structure, semesters_per_year, is_active, created_at, updated_at "
+        "SELECT id, code, name, department_code, duration_years, structure, semesters_per_year, is_active, created_at, updated_at "
         "FROM academic_programs WHERE vendor_id = ? ORDER BY name, code",
         (vendor_id,),
     )
     program_columns = [
-        "id", "code", "name", "duration_years", "structure", "semesters_per_year",
+        "id", "code", "name", "department_code", "duration_years", "structure", "semesters_per_year",
         "is_active", "created_at", "updated_at",
     ]
     programs = [_row_dict(row, program_columns) for row in cursor.fetchall()]
@@ -225,6 +240,7 @@ def create_academic_program(conn, vendor_id, payload, actor):
     name = str(payload.get("name") or "").strip()[:120]
     if not name:
         raise AcademicLifecycleError("Program name is required")
+    department_code = _department(payload.get("department_code") or code)
     duration_years = _positive_int(payload.get("duration_years"), "duration_years", 1, 12)
     structure = str(payload.get("structure") or "SEMESTER").strip().upper()
     if structure not in PROGRAM_STRUCTURES:
@@ -237,9 +253,9 @@ def create_academic_program(conn, vendor_id, payload, actor):
     try:
         cursor.execute(
             "INSERT INTO academic_programs "
-            "(vendor_id, code, name, duration_years, structure, semesters_per_year, is_active, created_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (vendor_id, code, name, duration_years, structure, semesters_per_year,
+            "(vendor_id, code, name, department_code, duration_years, structure, semesters_per_year, is_active, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (vendor_id, code, name, department_code, duration_years, structure, semesters_per_year,
              1 if payload.get("is_active", True) else 0, actor),
         )
     except Exception as exc:
@@ -325,16 +341,17 @@ def update_academic_program(conn, vendor_id, program_id, payload):
     ensure_academic_tables(conn)
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT id, code, name, duration_years, structure, semesters_per_year, is_active "
+        "SELECT id, code, name, department_code, duration_years, structure, semesters_per_year, is_active "
         "FROM academic_programs WHERE id = ? AND vendor_id = ?",
         (program_id, vendor_id),
     )
-    columns = ["id", "code", "name", "duration_years", "structure", "semesters_per_year", "is_active"]
+    columns = ["id", "code", "name", "department_code", "duration_years", "structure", "semesters_per_year", "is_active"]
     row = _row_dict(cursor.fetchone(), columns)
     if not row:
         raise AcademicLifecycleError("Academic program not found", "PROGRAM_NOT_FOUND", 404)
     code = _code(payload.get("code", row["code"]), "Program code")
     name = str(payload.get("name", row["name"]) or "").strip()[:120]
+    department_code = _department(payload.get("department_code", row.get("department_code") or code))
     duration = _positive_int(payload.get("duration_years", row["duration_years"]), "duration_years", 1, 12)
     structure = str(payload.get("structure", row["structure"]) or "SEMESTER").strip().upper()
     if structure not in PROGRAM_STRUCTURES:
@@ -350,6 +367,7 @@ def update_academic_program(conn, vendor_id, program_id, payload):
     usage_count, maximum_enrolled_year = cursor.fetchone()
     if int(usage_count or 0) > 0 and (
         code != str(row["code"])
+        or department_code != str(row.get("department_code") or row["code"])
         or structure != str(row["structure"])
         or semesters != int(row["semesters_per_year"])
     ):
@@ -365,10 +383,10 @@ def update_academic_program(conn, vendor_id, program_id, payload):
             409,
         )
     cursor.execute(
-        "UPDATE academic_programs SET code = ?, name = ?, duration_years = ?, structure = ?, "
+        "UPDATE academic_programs SET code = ?, name = ?, department_code = ?, duration_years = ?, structure = ?, "
         "semesters_per_year = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP "
         "WHERE id = ? AND vendor_id = ?",
-        (code, name, duration, structure, semesters,
+        (code, name, department_code, duration, structure, semesters,
          1 if payload.get("is_active", bool(row["is_active"])) else 0, program_id, vendor_id),
     )
     conn.commit()
@@ -409,19 +427,19 @@ def _find_program(cursor, vendor_id, *, program_id=None, code=None):
         except (TypeError, ValueError) as exc:
             raise AcademicLifecycleError("program_id must be a whole number") from exc
         cursor.execute(
-            "SELECT id, code, name, duration_years, structure, semesters_per_year, is_active "
+            "SELECT id, code, name, department_code, duration_years, structure, semesters_per_year, is_active "
             "FROM academic_programs WHERE vendor_id = ? AND id = ?",
             (vendor_id, parsed_id),
         )
     else:
         cursor.execute(
-            "SELECT id, code, name, duration_years, structure, semesters_per_year, is_active "
+            "SELECT id, code, name, department_code, duration_years, structure, semesters_per_year, is_active "
             "FROM academic_programs WHERE vendor_id = ? AND UPPER(code) = UPPER(?)",
             (vendor_id, str(code).strip()),
         )
     return _row_dict(
         cursor.fetchone(),
-        ["id", "code", "name", "duration_years", "structure", "semesters_per_year", "is_active"],
+        ["id", "code", "name", "department_code", "duration_years", "structure", "semesters_per_year", "is_active"],
     )
 
 
@@ -536,6 +554,7 @@ def _sync_face_scope(cursor, vendor_id, person_id, enrollment):
         "division": enrollment["division"],
         "branch": enrollment["program_code"],
         "program_code": enrollment["program_code"],
+        "department": enrollment.get("department_code") or enrollment["program_code"],
         "academic_session": enrollment["session_code"],
         "academic_session_id": enrollment["academic_session_id"],
         "enrollment_id": enrollment["id"],
@@ -543,8 +562,8 @@ def _sync_face_scope(cursor, vendor_id, person_id, enrollment):
     if enrollment.get("roll_number"):
         custom["roll_number"] = enrollment["roll_number"]
     cursor.execute(
-        "UPDATE faces SET custom_data = ? WHERE id = ? AND vendor_id = ?",
-        (json.dumps(custom, separators=(",", ":")), person_id, vendor_id),
+        "UPDATE faces SET custom_data = ?, department = ? WHERE id = ? AND vendor_id = ?",
+        (json.dumps(custom, separators=(",", ":")), custom["department"], person_id, vendor_id),
     )
 
 
@@ -584,7 +603,7 @@ def enroll_student(
                    {**existing, "class_id": class_id, "roll_number": scope["roll_number"]}, actor)
         result = {
             **existing, "class_id": class_id, "roll_number": scope["roll_number"],
-            "program_code": scope["program"]["code"], "session_code": scope["session"]["code"],
+            "program_code": scope["program"]["code"], "department_code": scope["program"].get("department_code") or scope["program"]["code"], "session_code": scope["session"]["code"],
         }
         _sync_face_scope(cursor, vendor_id, person_id, result)
         if commit:
@@ -641,7 +660,7 @@ def enroll_student(
         "semester": scope["semester"], "division": scope["division"],
         "roll_number": scope["roll_number"], "status": "ACTIVE",
         "effective_from": scope["effective_from"].isoformat(), "effective_to": None,
-        "program_code": scope["program"]["code"], "session_code": scope["session"]["code"],
+        "program_code": scope["program"]["code"], "department_code": scope["program"].get("department_code") or scope["program"]["code"], "session_code": scope["session"]["code"],
     }
     _audit(cursor, vendor_id, person_id, enrollment_id, "CREATED", None, result, actor)
     _sync_face_scope(cursor, vendor_id, person_id, result)
@@ -658,7 +677,7 @@ def resolve_enrollment(conn, vendor_id, person_id, on_date, *, ensure_schema=Tru
     cursor.execute(
         "SELECT e.id, e.academic_session_id, e.program_id, e.class_id, e.year_of_study, "
         "e.semester, e.division, e.roll_number, e.status, e.effective_from, e.effective_to, "
-        "s.code, p.code, p.name FROM student_enrollments e "
+        "s.code, p.code, p.name, p.department_code FROM student_enrollments e "
         "JOIN academic_sessions s ON s.id = e.academic_session_id AND s.vendor_id = e.vendor_id "
         "JOIN academic_programs p ON p.id = e.program_id AND p.vendor_id = e.vendor_id "
         "WHERE e.vendor_id = ? AND e.person_id = ? AND e.effective_from <= ? "
@@ -669,7 +688,7 @@ def resolve_enrollment(conn, vendor_id, person_id, on_date, *, ensure_schema=Tru
     columns = [
         "id", "academic_session_id", "program_id", "class_id", "year_of_study", "semester",
         "division", "roll_number", "status", "effective_from", "effective_to", "session_code",
-        "program_code", "program_name",
+        "program_code", "program_name", "department_code",
     ]
     return _row_dict(cursor.fetchone(), columns)
 
@@ -680,7 +699,7 @@ def list_enrollments(conn, vendor_id, person_id=None, session_id=None, active_on
     query = (
         "SELECT e.id, e.person_id, f.name, e.academic_session_id, s.code, e.program_id, p.code, p.name, "
         "e.class_id, e.year_of_study, e.semester, e.division, e.roll_number, e.status, "
-        "e.effective_from, e.effective_to, e.source, e.change_reason, e.created_at "
+        "e.effective_from, e.effective_to, e.source, e.change_reason, e.created_at, p.department_code "
         "FROM student_enrollments e JOIN faces f ON f.id = e.person_id AND f.vendor_id = e.vendor_id "
         "JOIN academic_sessions s ON s.id = e.academic_session_id AND s.vendor_id = e.vendor_id "
         "JOIN academic_programs p ON p.id = e.program_id AND p.vendor_id = e.vendor_id "
@@ -700,7 +719,7 @@ def list_enrollments(conn, vendor_id, person_id=None, session_id=None, active_on
     columns = [
         "id", "person_id", "student_name", "academic_session_id", "session_code", "program_id",
         "program_code", "program_name", "class_id", "year_of_study", "semester", "division",
-        "roll_number", "status", "effective_from", "effective_to", "source", "change_reason", "created_at",
+        "roll_number", "status", "effective_from", "effective_to", "source", "change_reason", "created_at", "department_code",
     ]
     return [_row_dict(row, columns) for row in cursor.fetchall()]
 

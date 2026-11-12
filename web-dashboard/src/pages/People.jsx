@@ -124,6 +124,7 @@ const People = () => {
   const terminology = useMemo(() => getBusinessTerminology(user?.vertical), [user?.vertical]);
   const schoolFlow = usesStudentRecords(user?.vertical);
   const isHostel = useMemo(() => isHostelVertical(user?.vertical), [user?.vertical]);
+  const academicImportEnabled = terminology.academic || (isHostel && user?.features?.includes('academic_management'));
   const requiresClassroomAllocation = useMemo(() => isClassroomVertical(user?.vertical), [user?.vertical]);
   const personLabel = terminology.person;
   const peopleLabel = terminology.people;
@@ -856,7 +857,7 @@ const People = () => {
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'academic_student_import_template.csv';
+    link.download = isHostel ? 'hostel_resident_academic_import_template.csv' : 'academic_student_import_template.csv';
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -1644,14 +1645,14 @@ const People = () => {
                       </button>
                     ))}
                     
-                    {(!requiresClassroomAllocation || vendorClasses.length === 0 || terminology.academic) && <button
+                    {(!requiresClassroomAllocation || vendorClasses.length === 0 || academicImportEnabled) && <button
                       onClick={() => {
                         setSelectedBulkClass(null);
                         setBulkImportPhase('upload');
                       }}
                       className="flex items-center justify-center p-4 border border-dashed border-slate-300 rounded-xl hover:border-slate-400 hover:bg-slate-50 transition-all text-slate-500 text-sm font-medium"
                     >
-                      {terminology.academic ? 'Upload Mixed Academic File' : `Skip ${groupLabel} Assignment (Upload All)`}
+                      {academicImportEnabled ? `Upload Mixed ${isHostel ? 'Resident' : 'Academic'} File` : `Skip ${groupLabel} Assignment (Upload All)`}
                     </button>}
                   </div>
                 </>
@@ -1691,8 +1692,8 @@ const People = () => {
                       <Upload size={18} />
                       Select File
                     </label>
-                    {terminology.academic && <button type="button" onClick={downloadAcademicTemplate} className="w-full py-2.5 px-4 border border-slate-200 text-slate-700 rounded-xl hover:bg-slate-50 text-sm font-semibold">
-                      Download Academic CSV Template
+                    {academicImportEnabled && <button type="button" onClick={downloadAcademicTemplate} className="w-full py-2.5 px-4 border border-slate-200 text-slate-700 rounded-xl hover:bg-slate-50 text-sm font-semibold">
+                      Download {isHostel ? 'Resident Academic' : 'Academic'} CSV Template
                     </button>}
                   </div>
                 </>

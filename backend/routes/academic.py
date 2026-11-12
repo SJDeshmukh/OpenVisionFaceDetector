@@ -16,7 +16,7 @@ from services.academic_lifecycle_service import (
     update_academic_session,
 )
 from services.auth_service import require_auth
-from utils import log_audit
+from utils import log_audit, require_feature
 
 
 academic_bp = Blueprint("academic_bp", __name__)
@@ -39,6 +39,7 @@ def _error(exc):
 
 @academic_bp.route("/academic/config", methods=["GET"])
 @require_auth()
+@require_feature("academic_management", "classes")
 def academic_config():
     role_error = _manager_error()
     if role_error:
@@ -51,6 +52,7 @@ def academic_config():
 
 @academic_bp.route("/academic/sessions", methods=["POST"])
 @require_auth()
+@require_feature("academic_management", "classes")
 def academic_session_create():
     role_error = _manager_error()
     if role_error:
@@ -71,6 +73,7 @@ def academic_session_create():
 
 @academic_bp.route("/academic/sessions/<int:session_id>", methods=["PATCH"])
 @require_auth()
+@require_feature("academic_management", "classes")
 def academic_session_update(session_id):
     role_error = _manager_error()
     if role_error:
@@ -89,6 +92,7 @@ def academic_session_update(session_id):
 
 @academic_bp.route("/academic/programs", methods=["POST"])
 @require_auth()
+@require_feature("academic_management", "classes")
 def academic_program_create():
     role_error = _manager_error()
     if role_error:
@@ -109,6 +113,7 @@ def academic_program_create():
 
 @academic_bp.route("/academic/programs/<int:program_id>", methods=["PATCH"])
 @require_auth()
+@require_feature("academic_management", "classes")
 def academic_program_update(program_id):
     role_error = _manager_error()
     if role_error:
@@ -127,6 +132,7 @@ def academic_program_update(program_id):
 
 @academic_bp.route("/academic/enrollments", methods=["GET", "POST"])
 @require_auth()
+@require_feature("academic_management", "classes")
 def academic_enrollments():
     role_error = _manager_error()
     if role_error:
@@ -163,6 +169,7 @@ def academic_enrollments():
 
 @academic_bp.route("/academic/promotions/preview", methods=["POST"])
 @require_auth()
+@require_feature("academic_management", "classes")
 def promotions_preview():
     role_error = _manager_error()
     if role_error:
@@ -186,6 +193,7 @@ def promotions_preview():
 
 @academic_bp.route("/academic/promotions/execute", methods=["POST"])
 @require_auth()
+@require_feature("academic_management", "classes")
 def promotions_execute():
     role_error = _manager_error()
     if role_error:

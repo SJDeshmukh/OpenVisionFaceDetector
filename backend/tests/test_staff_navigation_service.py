@@ -46,6 +46,13 @@ def test_available_navigation_is_limited_by_vendor_features():
     assert "reports" not in available
 
 
+def test_resident_academic_setup_requires_its_vendor_feature():
+    assert "academic_management" not in available_staff_nav_items(["hostel_allocation"])
+    assert "academic_management" in available_staff_nav_items(
+        ["hostel_allocation", "academic_management"]
+    )
+
+
 def test_direct_assignment_rejects_disabled_vendor_feature():
     with pytest.raises(ValueError, match="not enabled.*hostel_allocation"):
         normalize_staff_nav_items_for_features(

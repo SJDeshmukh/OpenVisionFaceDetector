@@ -14,6 +14,7 @@ import Wages from './pages/Wages';
 import LiveAttendance from './pages/LiveAttendance';
 import BulkImageAttendance from './pages/BulkImageAttendance';
 import Classes from './pages/Classes';
+import AcademicManagement from './pages/AcademicManagement';
 import SuperAdminDashboard from './pages/SuperAdminDashboard'; // New
 import SuperAdminLogin from './pages/SuperAdminLogin';
 import LiveFeed from './pages/LiveFeed';
@@ -134,6 +135,7 @@ function App() {
                 <Route path="/live-attendance" element={<StaffNavigationRoute navKey="live_attendance"><FeatureRoute anyOf={['live_attendance']}><LiveAttendance /></FeatureRoute></StaffNavigationRoute>} />
                 <Route path="/bulk-image-attendance" element={<StaffNavigationRoute navKey="bulk_image_attendance"><FeatureRoute anyOf={['bulk_image_attendance']}><BulkImageAttendance /></FeatureRoute></StaffNavigationRoute>} />
                 <Route path="/classes" element={<StaffNavigationRoute navKey="classes"><FeatureRoute anyOf={['classes', 'bulk_image_attendance']}><Classes /></FeatureRoute></StaffNavigationRoute>} />
+                <Route path="/resident-academic-setup" element={<StaffNavigationRoute navKey="academic_management"><FeatureRoute anyOf={['academic_management']}><AcademicManagement /></FeatureRoute></StaffNavigationRoute>} />
                 <Route path="/faces" element={<StaffNavigationRoute navKey="faces"><FeatureRoute anyOf={['bulk_image_attendance', 'classes']}><Faces /></FeatureRoute></StaffNavigationRoute>} />
                 <Route path="/leave-management" element={<StaffNavigationRoute navKey="leave_management"><FeatureRoute anyOf={['leave_management', 'parent_login']}><LeaveManagement /></FeatureRoute></StaffNavigationRoute>} />
                 <Route path="/face-reset-requests" element={<StaffNavigationRoute navKey="face_reset_requests"><FaceResetRoute /></StaffNavigationRoute>} />

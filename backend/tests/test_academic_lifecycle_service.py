@@ -72,13 +72,14 @@ def _session(conn, code, start, end, status="ACTIVE"):
     )
 
 
-def _program(conn, code="BSC-CS", years=3, structure="SEMESTER"):
+def _program(conn, code="BSC-CS", years=3, structure="SEMESTER", department="CSE"):
     return create_academic_program(
         conn,
         8,
         {
             "code": code,
             "name": code,
+            "department_code": department,
             "duration_years": years,
             "structure": structure,
             "semesters_per_year": 2,
@@ -183,6 +184,8 @@ def test_reupload_is_idempotent_and_new_session_preserves_history(academic_db):
     assert custom["academic_session"] == "2027-28"
     assert custom["year_of_study"] == 2
     assert custom["student_id"] == "ADM-001"
+    assert custom["department"] == "CSE"
+    assert academic_db.execute("SELECT department FROM faces WHERE id = 1").fetchone()[0] == "CSE"
 
 
 def test_promotion_preview_graduates_final_year_and_executes_atomically(academic_db):

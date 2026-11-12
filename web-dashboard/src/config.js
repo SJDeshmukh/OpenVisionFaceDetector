@@ -43,6 +43,7 @@ export const FEATURE_TO_SIDEBAR_MAP = {
   'api_access': 'Settings',
   'audit_logs': 'Audit Logs',
   'classes': 'Classes',
+  'academic_management': 'Resident Academic Setup',
   'faces': 'Faces',
   'leave_management': 'Leave Management',
   'parent_login': 'Reports',

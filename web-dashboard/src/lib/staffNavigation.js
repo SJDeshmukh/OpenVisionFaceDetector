@@ -3,6 +3,7 @@ export const STAFF_NAV_ITEMS = [
   { key: 'people', label: 'People', path: '/people' },
   { key: 'faces', label: 'Faces', path: '/faces' },
   { key: 'classes', label: 'Classes', path: '/classes' },
+  { key: 'academic_management', label: 'Resident Academic Setup', path: '/resident-academic-setup' },
   { key: 'timetable', label: 'Timetable', path: '/timetable' },
   { key: 'wages', label: 'Wages', path: '/wages' },
   { key: 'attendance', label: 'Attendance', path: '/attendance' },
@@ -23,6 +24,7 @@ export const BASE_STAFF_NAV_KEYS = ['dashboard', 'people', 'attendance', 'settin
 export const STAFF_NAV_FEATURE_REQUIREMENTS = {
   faces: ['classes', 'bulk_image_attendance'],
   classes: ['classes', 'bulk_image_attendance', 'lecture_wise_reports'],
+  academic_management: ['academic_management'],
   timetable: ['shifts', 'add_shift'],
   wages: ['payroll', 'report_payroll'],
   bulk_image_attendance: ['bulk_image_attendance'],

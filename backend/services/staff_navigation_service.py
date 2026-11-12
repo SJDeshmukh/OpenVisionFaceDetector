@@ -10,6 +10,7 @@ STAFF_NAV_ITEMS = (
     "people",
     "faces",
     "classes",
+    "academic_management",
     "timetable",
     "wages",
     "attendance",
@@ -35,6 +36,7 @@ BASE_STAFF_NAV_ITEMS = ("dashboard", "people", "settings", "attendance")
 STAFF_NAV_FEATURE_REQUIREMENTS = {
     "faces": ("classes", "bulk_image_attendance"),
     "classes": ("classes", "bulk_image_attendance", "lecture_wise_reports"),
+    "academic_management": ("academic_management",),
     "timetable": ("shifts", "add_shift"),
     "wages": ("payroll", "report_payroll"),
     "bulk_image_attendance": ("bulk_image_attendance",),

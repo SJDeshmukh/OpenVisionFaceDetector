@@ -360,7 +360,7 @@ const SuperAdminDashboard = () => {
     'reports', 'report_detailed', 'report_payroll', 'automated_email_reports', 'employee_reports', 'xchat_ai', 'mobile_app', 'payroll', 'shifts',
     'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 
     'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'hostel_attendance_alerts', 'hostel_allocation', 'api_access', 'white_labeling',
-    'late_mark', 'bulk_image_attendance', 'classes', 'leave_management', 'parent_login',
+    'late_mark', 'bulk_image_attendance', 'classes', 'academic_management', 'leave_management', 'parent_login',
     'lecture_wise_reports', 'parent_alerts', 'checkin_checkout'
   ]);
   const [bundleConfig, setBundleConfig] = useState({
@@ -4410,7 +4410,11 @@ const SuperAdminDashboard = () => {
                           className="rounded text-indigo-600 focus:ring-indigo-500"
                         />
                         <span className="text-sm capitalize flex-1">
-                          {feature === 'employee_reports' ? 'Report to Each Employee' : feature.replace(/_/g, ' ')}
+                          {feature === 'employee_reports'
+                            ? 'Report to Each Employee'
+                            : feature === 'academic_management'
+                              ? 'Resident Academic Setup'
+                              : feature.replace(/_/g, ' ')}
                         </span>
                         {feature === 'employee_reports' && (
                           <span className="text-[10px] uppercase font-bold bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded ml-auto">Add-on</span>

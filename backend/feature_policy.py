@@ -13,7 +13,7 @@ ALL_FEATURES = [
     "live_attendance", "cameras", "add_shift", "payable_hours",
     "enable_attendance", "night_shift_logic", "geofencing", "whatsapp_alerts",
     "hostel_attendance_alerts", "hostel_allocation", "api_access",
-    "white_labeling", "late_mark", "bulk_image_attendance", "classes",
+    "white_labeling", "late_mark", "bulk_image_attendance", "classes", "academic_management",
     "leave_management", "parent_login", "lecture_wise_reports",
     "parent_alerts", "checkin_checkout",
 ]

@@ -6,7 +6,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   LayoutDashboard, Users, ClipboardList, Video, FileText, Settings,
   Shield, Bell, Search, LogOut, CalendarClock, DollarSign, Activity,
-  Menu, X, FileCheck, Zap, ChevronRight, Moon, Sun, Building2
+  Menu, X, FileCheck, Zap, ChevronRight, Moon, Sun, Building2, GraduationCap
 } from 'lucide-react';
 import { Image as ImageIcon } from 'lucide-react';
 import BrandLogo from './BrandLogo';
@@ -18,6 +18,7 @@ const adminNavItems = [
   { name: 'People',               path: '/people',               icon: Users },
   { name: 'Faces',                path: '/faces',                icon: ImageIcon },
   { name: 'Classes',              path: '/classes',              icon: Users },
+  { name: 'Resident Academic Setup', path: '/resident-academic-setup', icon: GraduationCap },
   { name: 'Timetable',            path: '/timetable',            icon: CalendarClock },
   { name: 'Wages',                path: '/wages',                icon: DollarSign },
   { name: 'Attendance',           path: '/attendance',           icon: ClipboardList },
@@ -140,6 +141,9 @@ export const Sidebar = ({ isOpen, onClose }) => {
     const hostelAllocationSupported = Boolean(user?.features?.includes('hostel_allocation')) &&
       ((!staffSession && ['vendor_admin', 'admin', 'owner', 'rector', 'hod'].includes(user?.role)) ||
         (Boolean(staffSession) && staffCanAccessNav(staffSession, 'hostel_allocation')));
+    const residentAcademicSupported = vertical === 'hostel' &&
+      Boolean(user?.features?.includes('academic_management')) &&
+      (!staffSession || staffCanAccessNav(staffSession, 'academic_management'));
 
     // Feature-controlled pages must be added explicitly. Filtering a role's base
     // menu is not sufficient when older accounts have a reduced/default bundle.
@@ -163,6 +167,7 @@ export const Sidebar = ({ isOpen, onClose }) => {
     if (!faceResetSupported) navItems = navItems.filter(item => item.name !== 'Face Reset Requests');
     if (!hostelAlertsSupported) navItems = navItems.filter(item => item.name !== 'Hostel Alerts');
     if (!hostelAllocationSupported) navItems = navItems.filter(item => item.name !== 'Hostel Allocation');
+    if (!residentAcademicSupported) navItems = navItems.filter(item => item.name !== 'Resident Academic Setup');
     if (staffSession) navItems = navItems.filter(item => staffCanAccessPath(staffSession, item.path));
   }
 
