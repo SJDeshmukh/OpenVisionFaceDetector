@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { API_URL } from '../config';
 import { useSocket } from '../context/SocketContext';
+import { getBusinessTerminology, isHostelVertical } from '../lib/businessTerminology';
 
 const Section = ({ title, icon: Icon, children, action }) => (
   <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden mb-6">
@@ -44,6 +45,13 @@ const Section = ({ title, icon: Icon, children, action }) => (
 const Settings = () => {
   const { user } = useAuth();
   const { socket } = useSocket();
+  const terminology = getBusinessTerminology(user?.vertical);
+  const hostelBusiness = isHostelVertical(user?.vertical);
+  const enabledFeatures = Array.isArray(user?.features) ? user.features : [];
+  const hasPayrollFeature = ['payroll', 'report_payroll', 'payable_hours']
+    .some(feature => enabledFeatures.includes(feature));
+  const showAttendanceShiftRules = !hostelBusiness;
+  const showForgottenCheckoutPolicy = !terminology.studentRecords && hasPayrollFeature;
 
   // System Settings State
   const [workStartTime, setWorkStartTime] = useState("09:00");
@@ -283,17 +291,21 @@ const Settings = () => {
         }
       }
 
-      // Fetch active company shifts for Timetable integration preview
-      try {
-        const compRes = await axios.get(`${API_URL}/companies`, { headers: getAuthHeaders() });
-        const compList = compRes.data?.companies || [];
-        if (compList.length > 0) {
-          const detailRes = await axios.get(`${API_URL}/companies/${compList[0].id}`, { headers: getAuthHeaders() });
-          const rawShifts = detailRes.data?.shifts || [];
-          setCompanyShifts(Array.isArray(rawShifts) ? rawShifts : []);
+      if (showAttendanceShiftRules) {
+        // Fetch active company shifts for Timetable integration preview.
+        try {
+          const compRes = await axios.get(`${API_URL}/companies`, { headers: getAuthHeaders() });
+          const compList = compRes.data?.companies || [];
+          if (compList.length > 0) {
+            const detailRes = await axios.get(`${API_URL}/companies/${compList[0].id}`, { headers: getAuthHeaders() });
+            const rawShifts = detailRes.data?.shifts || [];
+            setCompanyShifts(Array.isArray(rawShifts) ? rawShifts : []);
+          }
+        } catch (e) {
+          // Silently continue if company shifts are not configured.
         }
-      } catch (e) {
-        // Silently continue if company shifts not configured
+      } else {
+        setCompanyShifts([]);
       }
     } catch (error) {
       console.error("Error fetching settings:", error);
@@ -301,18 +313,18 @@ const Settings = () => {
   };
 
   const handleSaveSettings = async () => {
-    if (hasLateMarkFeature && workStartTime && lateThreshold && lateThreshold < workStartTime) {
+    if (showAttendanceShiftRules && hasLateMarkFeature && workStartTime && lateThreshold && lateThreshold < workStartTime) {
       alert("Late After time cannot be earlier than Work Start Time. Please adjust the timings.");
       return;
     }
     setSaving(true);
     try {
       const payload = {
-        work_start_time: workStartTime,
         voice_greeting: voiceGreeting,
-        missing_checkout_deduction_percent: missingCheckoutDeduction,
       };
-      if (hasLateMarkFeature) payload.late_threshold = lateThreshold;
+      if (showAttendanceShiftRules) payload.work_start_time = workStartTime;
+      if (showAttendanceShiftRules && hasLateMarkFeature) payload.late_threshold = lateThreshold;
+      if (showForgottenCheckoutPolicy) payload.missing_checkout_deduction_percent = missingCheckoutDeduction;
       await axios.post(`${API_URL}/settings`, payload, {
         headers: getAuthHeaders()
       });
@@ -468,7 +480,7 @@ const Settings = () => {
                                     return (
                                       <>
                                         {deviceCount > 0 && <div>{deviceCount} devices</div>}
-                                        {Number(d.max_employees || 0) > 0 && <div>{d.max_employees} employees</div>}
+                                        {Number(d.max_employees || 0) > 0 && <div>{d.max_employees} {terminology.people.toLowerCase()}</div>}
                                         {d.setup_fee > 0 && <div>+ Setup</div>}
                                       </>
                                     );
@@ -524,7 +536,7 @@ const Settings = () => {
                   </div>
                   <p className="text-xs text-slate-500 mt-0.5">
                     {whatsappSettings.status === 'connected'
-                      ? 'Automated alerts for biometric punches, leaves, and advances are actively running.'
+                      ? 'Automated attendance and workflow alerts are actively running.'
                       : 'Scan QR code with your business phone to enable automated WhatsApp notifications.'}
                   </p>
                 </div>
@@ -580,7 +592,7 @@ const Settings = () => {
                   />
                   <div>
                     <span className="text-sm font-medium text-slate-800">Real-Time Attendance Punch Alerts</span>
-                    <p className="text-xs text-slate-500">Sends instant WhatsApp confirmation to employee (and parent in campus mode) on kiosk punch.</p>
+                    <p className="text-xs text-slate-500">Sends an instant WhatsApp confirmation when a {terminology.person.toLowerCase()} records attendance.</p>
                   </div>
                 </label>
 
@@ -597,11 +609,11 @@ const Settings = () => {
                   />
                   <div>
                     <span className="text-sm font-medium text-slate-800">Leave & Gate-Pass Alerts</span>
-                    <p className="text-xs text-slate-500">Notifies employees or students when leaves or gate-passes are approved or rejected.</p>
+                    <p className="text-xs text-slate-500">Notifies {terminology.people.toLowerCase()} when leaves or gate-passes are approved or rejected.</p>
                   </div>
                 </label>
 
-                <label className="flex items-start gap-3 p-3 rounded-xl border border-slate-200 hover:bg-slate-50 cursor-pointer transition-colors">
+                {hasPayrollFeature && <label className="flex items-start gap-3 p-3 rounded-xl border border-slate-200 hover:bg-slate-50 cursor-pointer transition-colors">
                   <input
                     type="checkbox"
                     className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
@@ -616,9 +628,9 @@ const Settings = () => {
                     <span className="text-sm font-medium text-slate-800">Owner Advance Approvals</span>
                     <p className="text-xs text-slate-500">Sends instant WhatsApp notification when salary advances are requested and approved.</p>
                   </div>
-                </label>
+                </label>}
 
-                {hasLateMarkFeature && <label className="flex items-start gap-3 p-3 rounded-xl border border-slate-200 hover:bg-slate-50 cursor-pointer transition-colors">
+                {showAttendanceShiftRules && hasLateMarkFeature && <label className="flex items-start gap-3 p-3 rounded-xl border border-slate-200 hover:bg-slate-50 cursor-pointer transition-colors">
                   <input
                     type="checkbox"
                     className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
@@ -631,7 +643,7 @@ const Settings = () => {
                   />
                   <div>
                     <span className="text-sm font-medium text-slate-800">Late Arrival Warning</span>
-                    <p className="text-xs text-slate-500">Alerts employee when they clock in past the configured grace period.</p>
+                    <p className="text-xs text-slate-500">Alerts the {terminology.person.toLowerCase()} when attendance is recorded after the configured grace period.</p>
                   </div>
                 </label>}
               </div>
@@ -741,7 +753,7 @@ const Settings = () => {
         </Section>
       )}
 
-      <Section 
+      {showAttendanceShiftRules && <Section
         title="Attendance & Shift Rules" 
         icon={CalendarClock}
         action={
@@ -859,11 +871,11 @@ const Settings = () => {
             {hasLateMarkFeature && <p className="text-xs text-slate-500">A check-in after the configured late time is marked late for this business.</p>}
           </div>
         )}
-      </Section>
+      </Section>}
 
 
       {/* Forgotten Checkout Wage Deduction Policy */}
-      <Section title="Forgotten Checkout Policy" icon={Clock}>
+      {showForgottenCheckoutPolicy && <Section title="Forgotten Checkout Policy" icon={Clock}>
         <div className="space-y-4">
           <div>
             <p className="text-sm font-semibold text-slate-800 mb-1">Wage Deduction for Missing Check-Out</p>
@@ -919,7 +931,7 @@ const Settings = () => {
             </div>
           </div>
         </div>
-      </Section>
+      </Section>}
 
 
 
