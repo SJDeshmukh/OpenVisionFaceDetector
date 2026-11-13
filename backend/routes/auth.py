@@ -194,7 +194,7 @@ def change_password():
         role = account["role"] if hasattr(account, "keys") else account[1]
         has_set_password = account["has_set_password"] if hasattr(account, "keys") else account[2]
         force_change = account["force_password_change"] if hasattr(account, "keys") else account[3]
-        is_required_change = force_change == 1 or (role in {"user", "faculty"} and has_set_password != 1)
+        is_required_change = force_change == 1 or (role in {"user", "student", "faculty"} and has_set_password != 1)
         current_password = str((request.json or {}).get("current_password") or "")
         if not is_required_change and not verify_password(current_password, stored_password):
             return jsonify({"error": "Current password is required"}), 403

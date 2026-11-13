@@ -129,6 +129,50 @@ def test_forgot_password_does_not_change_password_when_delivery_fails(tmp_path, 
     assert force_change == 0
 
 
+def test_first_login_student_can_set_password_without_current_password(tmp_path, monkeypatch):
+    db_path = tmp_path / "student-first-login.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE system_users (
+            username TEXT PRIMARY KEY, password TEXT, password_plain TEXT, role TEXT,
+            has_set_password INTEGER, force_password_change INTEGER
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO system_users VALUES (?, ?, NULL, 'student', 0, 0)",
+        ("student@example.com", auth.hash_password("9876543210")),
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "app",
+        SimpleNamespace(get_db_connection=_connection_factory(db_path)),
+    )
+    monkeypatch.setattr(auth, "verify_token", lambda token: {"username": "student@example.com"})
+    app = Flask(__name__)
+    with app.test_request_context(
+        "/auth/change-password",
+        method="POST",
+        json={"password": "new-password"},
+        headers={"Authorization": "Bearer web-token"},
+    ):
+        response = _undecorated(auth.change_password)()
+
+    assert response.get_json()["status"] == "success"
+    conn = sqlite3.connect(db_path)
+    password_hash, password_plain, has_set, force_change = conn.execute(
+        "SELECT password, password_plain, has_set_password, force_password_change FROM system_users"
+    ).fetchone()
+    conn.close()
+    assert verify_password("new-password", password_hash)
+    assert password_plain is None
+    assert (has_set, force_change) == (1, 0)
+
+
 def test_student_role_can_reset_password_with_cookie_authenticated_session(tmp_path, monkeypatch):
     db_path = tmp_path / "student-default-password.db"
     conn = sqlite3.connect(db_path)
