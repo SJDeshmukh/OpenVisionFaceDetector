@@ -849,8 +849,18 @@ def generate_student_logins():
                 continue
                 
             # Create system user
-            # Default password is the student's phone number
-            phone = row.get('phone') or ""
+            # Default password is the student's phone number.
+            # Skip students without a phone instead of raising and rolling back
+            # the entire batch (hash_password rejects empty strings).
+            phone = (row.get('phone') or "").strip()
+            if not phone:
+                skipped_count += 1
+                continue
+            # Normalize the phone before hashing so login comparisons
+            # (which also normalize) are format-agnostic.
+            phone = phone.replace("+91", "").replace(" ", "").replace("-", "")
+            if phone.startswith("0") and len(phone) > 10:
+                phone = phone[1:]
             if is_pg:
                 c.execute(
                     "INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id) VALUES (%s, %s, NULL, 'user', %s, %s)",

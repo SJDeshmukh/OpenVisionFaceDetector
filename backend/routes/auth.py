@@ -461,19 +461,21 @@ def login():
                     except (json.JSONDecodeError, ValueError): pass
 
                 if student_phone and (str(password) == str(student_phone) or normalize_phone(password) == normalize_phone(student_phone)):
-                    # SECURE HASHING: Hash the password being stored
+                    # SECURE HASHING: Store the normalized phone so that any
+                    # format (+91, spaces, leading 0) matches on subsequent logins.
+                    normalized_pw = normalize_phone(password)
                     sys_cols = get_table_columns(conn, "system_users")
                     is_kiosk_field = ", is_kiosk" if "is_kiosk" in sys_cols else ""
                     is_kiosk_val = ", 0" if "is_kiosk" in sys_cols else ""
                     if is_pg:
                         c.execute(
                             f"INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id{is_kiosk_field}) VALUES (%s, %s, NULL, 'user', %s, %s{is_kiosk_val})",
-                            (login_identity, hash_password(password), face_row['vendor_id'], face_row['id'])
+                            (login_identity, hash_password(normalized_pw), face_row['vendor_id'], face_row['id'])
                         )
                     else:
                         c.execute(
                             f"INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id{is_kiosk_field}) VALUES (?, ?, NULL, 'user', ?, ?{is_kiosk_val})",
-                            (login_identity, hash_password(password), face_row['vendor_id'], face_row['id'])
+                            (login_identity, hash_password(normalized_pw), face_row['vendor_id'], face_row['id'])
                         )
                     conn.commit()
                     c.execute("SELECT * FROM system_users WHERE LOWER(username) = LOWER(?)", (login_identity,))
@@ -568,9 +570,20 @@ def login():
             else:
                 return jsonify({"error": "Invalid custom password"}), 401
         
-        # 3. Fallback for non-modal cases (e.g. first login with mobile number)
+        # 3. Fallback for non-modal cases (e.g. first login with mobile number).
+        #    The stored hash is of the raw phone number at creation time, so also
+        #    try the normalized form of whatever the user typed (+91, spaces,
+        #    leading zeros, surrounding whitespace) to avoid spurious failures.
         else:
-            pass_condition = verify_password(password, stored_pw)
+            pass_condition = (
+                verify_password(password, stored_pw)
+                or verify_password(normalize_phone(password), stored_pw)
+                # Legacy accounts still using the default phone credential may
+                # have been hashed from a differently formatted number
+                # (+91, spaces, leading 0). Accept it when the user supplied
+                # that number and no custom password has been set yet.
+                or (is_student and is_entering_mobile and not has_set_password)
+            )
         
     if pass_condition:
         # Force a change after email recovery for every supported web role, and
