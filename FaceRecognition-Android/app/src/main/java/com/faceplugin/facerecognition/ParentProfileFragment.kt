@@ -58,7 +58,7 @@ class ParentProfileFragment : Fragment() {
                 val name = try { student?.get("name")?.asString } catch (_: Exception) { null }
                 val faceImg = try { student?.get("face_image")?.asString } catch (_: Exception) { null }
 
-                root.findViewById<TextView>(R.id.tv_profile_name).text = name ?: "Student"
+                root.findViewById<TextView>(R.id.tv_profile_name).text = name ?: "Resident"
 
                 if (!faceImg.isNullOrBlank()) {
                     try {

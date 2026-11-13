@@ -35,6 +35,11 @@ class ParentFaceRegistrationActivity : AppCompatActivity() {
         dbManager = DBManager(applicationContext)
         dbManager.loadPerson() // Ensure person list is populated for similarity checks
 
+        // Before forcing the parent to capture their face again, ask the server
+        // whether a face is already registered for this account. If so, skip the
+        // capture step entirely — registration is one-time.
+        checkServerFaceStatus()
+
         btnCaptureFace.setOnClickListener {
             Toast.makeText(this, "Look straight into the camera", Toast.LENGTH_SHORT).show()
             val intent = Intent(this, CaptureActivity::class.java)
@@ -42,6 +47,42 @@ class ParentFaceRegistrationActivity : AppCompatActivity() {
             intent.putExtra("force_front_camera", true)
             cameraLauncher.launch(intent)
         }
+    }
+
+    private fun checkServerFaceStatus() {
+        if (!NetworkUtils.isOnline(applicationContext)) {
+            // Offline: fall back to the local flag only.
+            val prefs = getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+            if (prefs.getBoolean("face_registered", false)) {
+                proceedToParentHome("Face already registered on this device")
+            }
+            return
+        }
+        showLoading(true)
+        RetrofitClient.getService().getParentFaceStatus().enqueue(object : Callback<com.google.gson.JsonObject> {
+            override fun onResponse(call: Call<com.google.gson.JsonObject>, response: Response<com.google.gson.JsonObject>) {
+                runOnUiThread { showLoading(false) }
+                val registered = try {
+                    response.body()?.get("face_registered")?.asBoolean == true
+                } catch (_: Exception) { false }
+                if (registered) {
+                    getSharedPreferences("app_prefs", Context.MODE_PRIVATE).edit()
+                        .putBoolean("face_registered", true)
+                        .apply()
+                    proceedToParentHome("Face already registered")
+                }
+            }
+
+            override fun onFailure(call: Call<com.google.gson.JsonObject>, t: Throwable) {
+                runOnUiThread { showLoading(false) }
+            }
+        })
+    }
+
+    private fun proceedToParentHome(message: String) {
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+        startActivity(Intent(this, ParentActivity::class.java))
+        finish()
     }
 
     // Launcher for CaptureActivity (the shared local-model camera flow)
@@ -168,7 +209,15 @@ class ParentFaceRegistrationActivity : AppCompatActivity() {
         RetrofitClient.getService().parentRegisterFace(request).enqueue(object : Callback<com.google.gson.JsonObject> {
             override fun onResponse(call: Call<com.google.gson.JsonObject>, response: Response<com.google.gson.JsonObject>) {
                 runOnUiThread { showLoading(false) }
-                if (response.isSuccessful && response.body()?.get("status")?.asString == "success") {
+                val status = try { response.body()?.get("status")?.asString } catch (_: Exception) { null }
+                if (status == "already_registered") {
+                    getSharedPreferences("app_prefs", Context.MODE_PRIVATE).edit()
+                        .putBoolean("face_registered", true)
+                        .apply()
+                    finishLocalRegistration("Face already registered")
+                    return
+                }
+                if (response.isSuccessful && status == "success") {
                     finishLocalRegistration("Face saved and synced")
                 } else {
                     var errorMsg = "Registration failed"

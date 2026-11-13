@@ -11,7 +11,7 @@
         android:orientation="vertical"
         android:paddingStart="20dp"
         android:paddingEnd="20dp"
-        android:paddingTop="52dp"
+        android:paddingTop="20dp"
         android:paddingBottom="16dp">
 
         <TextView
@@ -25,7 +25,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Attendance insights &amp; trends"
+            android:text="Hostel attendance overview"
             android:textSize="13sp"
             android:textColor="#66FFFFFF"
             android:layout_marginBottom="20dp"/>
@@ -163,7 +163,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Attendance Distribution"
+                android:text="Residency Pattern"
                 android:textSize="14sp"
                 android:textStyle="bold"
                 android:textColor="@android:color/white"

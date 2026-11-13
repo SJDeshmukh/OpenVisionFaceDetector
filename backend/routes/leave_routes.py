@@ -340,6 +340,25 @@ def get_parent_pending_requests():
     finally:
         conn.close()
 
+@leave_bp.route("/parent/face-status", methods=["GET"])
+def parent_face_status():
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        parent = _authenticated_parent(c, vendor_id)
+        if not parent:
+            conn.close()
+            return jsonify({"error": "Parent access required"}), 403
+        face_registered = bool(parent.get("face_template") or parent.get("face_image"))
+        conn.close()
+        return jsonify({"status": "success", "face_registered": face_registered})
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 500
+
+
 @leave_bp.route("/parent/register-face", methods=["POST"])
 def parent_register_face():
     vendor_id, error = authenticate_vendor_access()
@@ -363,6 +382,15 @@ def parent_register_face():
     if student_number.strip().lower() != str(parent["student_number"]).strip().lower():
         conn.close()
         return jsonify({"error": "This parent account is not linked to that student"}), 403
+
+    # If this parent already has a registered face, flag it immediately instead
+    # of silently overwriting. Re-registration must go through the face-reset flow.
+    if parent.get("face_template") or parent.get("face_image"):
+        conn.close()
+        return jsonify({
+            "status": "already_registered",
+            "message": "Face is already registered for this parent account",
+        }), 200
     
     # 1. Unique Registration Rule: Check if this face already exists as a student/employee
     if face_template:

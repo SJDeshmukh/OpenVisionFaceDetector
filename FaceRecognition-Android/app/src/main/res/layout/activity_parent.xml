@@ -11,13 +11,16 @@
         android:id="@+id/parent_fragment_container"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:paddingBottom="80dp"/>
+        android:paddingBottom="96dp"/>
 
-    <!-- Bottom navigation + FAB layer -->
+    <!-- Bottom navigation + FAB layer.
+         The FAB is docked just above the bottom nav so it never overlaps the
+         nav icons (which are evenly distributed across the bar width). -->
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_gravity="bottom">
+        android:layout_gravity="bottom"
+        android:clipChildren="false">
 
         <com.google.android.material.bottomnavigation.BottomNavigationView
             android:id="@+id/bottom_navigation"
@@ -29,13 +32,14 @@
             app:itemIconSize="24dp"
             app:labelVisibilityMode="labeled" />
 
-        <!-- Center FAB sits above the bottom nav -->
+        <!-- Center FAB floats entirely above the bottom nav (56dp tall) so the
+             middle two nav items stay fully visible and tappable. -->
         <com.google.android.material.floatingactionbutton.FloatingActionButton
             android:id="@+id/fab_scan"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="top|center_horizontal"
-            android:layout_marginTop="-24dp"
+            android:layout_marginTop="-56dp"
             android:src="@drawable/ic_nav_scan"
             android:backgroundTint="@color/indigo_mid"
             app:fabSize="normal"

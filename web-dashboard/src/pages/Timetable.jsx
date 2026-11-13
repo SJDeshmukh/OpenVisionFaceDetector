@@ -720,8 +720,8 @@ const Timetable = () => {
                         {shift.active ? 'Active' : 'Inactive'}
                       </span>
                       {lateMarkEnabled && (
-                        <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md font-medium" title="Employees punching after this time are marked late">
-                          Late after: {calculateLateTime(shift.start_time, shift.grace_period_mins ?? 15)}
+                        <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md font-medium" title="Residents checking in after this time are marked late">
+                          Late after: {calculateLateTime(shift.end_time, shift.grace_period_mins ?? 15)}
                         </span>
                       )}
                   </div>
@@ -1195,7 +1195,7 @@ const Timetable = () => {
                     <div className="flex justify-between items-center mb-1.5">
                       <label className="block text-sm font-medium text-slate-800">Late Grace Period (Minutes)</label>
                       <span className="text-xs text-blue-700 font-semibold bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200">
-                        Late after: {calculateLateTime(shiftForm.start_time, shiftForm.grace_period_mins ?? 15)}
+                        Late after: {calculateLateTime(shiftForm.end_time, shiftForm.grace_period_mins ?? 15)}
                       </span>
                     </div>
                     <input
@@ -1207,7 +1207,7 @@ const Timetable = () => {
                       className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-2.5 text-slate-900 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
                       placeholder="15"
                     />
-                    <p className="text-xs text-slate-500 mt-1">Check-ins beyond start time + grace period are automatically marked Late.</p>
+                    <p className="text-xs text-slate-500 mt-1">Check-ins beyond end time + grace period are automatically marked Late.</p>
                  </div>
                )}
                <div className="flex items-center space-x-2">

@@ -94,6 +94,9 @@ public interface GreetingService {
     @POST("api/leave/parent/register-face")
     Call<com.google.gson.JsonObject> parentRegisterFace(@Body ParentRegisterFaceRequest request);
 
+    @GET("api/leave/parent/face-status")
+    Call<com.google.gson.JsonObject> getParentFaceStatus();
+
     @GET("api/leave/parent/pending")
     Call<com.google.gson.JsonObject> getParentPendingLeaves(@Query("student_number") String studentNumber);
 

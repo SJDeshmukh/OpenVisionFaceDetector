@@ -143,7 +143,7 @@ class ParentHomeFragment : Fragment() {
                 val student = try { body.getAsJsonObject("student") } catch (_: Exception) { null }
                 val name = try { student?.get("name")?.asString } catch (_: Exception) { null }
                 val faceImg = try { student?.get("face_image")?.asString } catch (_: Exception) { null }
-                root.findViewById<TextView>(R.id.tv_home_student_name).text = name ?: "Student"
+                root.findViewById<TextView>(R.id.tv_home_student_name).text = name ?: "Resident"
                 if (!faceImg.isNullOrBlank()) {
                     try {
                         val bytes = android.util.Base64.decode(faceImg, android.util.Base64.DEFAULT)
@@ -183,7 +183,7 @@ class ParentHomeFragment : Fragment() {
                 if (!isAdded) return
                 if (response.code() in listOf(401, 403)) { (activity as? ParentActivity)?.performLogout(); return }
                 if (!response.isSuccessful || response.body() == null) {
-                    root.findViewById<TextView>(R.id.tv_home_student_name)?.text = "Student"
+                    root.findViewById<TextView>(R.id.tv_home_student_name)?.text = "Resident"
                     root.findViewById<TextView>(R.id.tv_ai_insight)?.text = "No data found. Please contact your administrator."
                     return
                 }
@@ -194,7 +194,7 @@ class ParentHomeFragment : Fragment() {
                 val checkIn = try { body.get("check_in")?.asString } catch (_: Exception) { null }
                 val checkOut = try { body.get("check_out")?.asString } catch (_: Exception) { null }
 
-                root.findViewById<TextView>(R.id.tv_home_student_name).text = name ?: "Student"
+                root.findViewById<TextView>(R.id.tv_home_student_name).text = name ?: "Resident"
                 if (!faceImg.isNullOrBlank()) {
                     try {
                         val bytes = android.util.Base64.decode(faceImg, android.util.Base64.DEFAULT)
@@ -284,11 +284,15 @@ class ParentHomeFragment : Fragment() {
         root.findViewById<TextView>(R.id.tv_stat_rate).text = "$rate%"
     }
 
-    private fun buildInsight(present: Int, absent: Int, rate: Int): String = when {
-        rate >= 90 -> "Excellent! $present sessions attended ($rate%). Outstanding performance!"
-        rate >= 75 -> "Good job at $rate% ($present sessions). Push for 90%+ this month."
-        rate >= 50 -> "Fair attendance: $rate% ($present sessions, $absent missed). Room to improve."
-        else -> "Attendance needs attention: $rate% ($absent sessions missed). Take action now."
+    private fun buildInsight(present: Int, absent: Int, rate: Int): String {
+        // TapInX (hostel): check-in based attendance. AttendX: lecture sessions.
+        val unit = if (BuildConfig.IS_ATTENDX) "sessions" else "days checked in"
+        return when {
+            rate >= 90 -> "Excellent! $present $unit ($rate%). Great hostel compliance!"
+            rate >= 75 -> "Good at $rate% ($present $unit). Aim for 90%+ this month."
+            rate >= 50 -> "Fair hostel attendance: $rate% ($present $unit, $absent missed). Room to improve."
+            else -> "Hostel attendance needs attention: $rate% ($absent days missed). Please ensure daily check-ins."
+        }
     }
 
     private fun greeting() = when (Calendar.getInstance().get(Calendar.HOUR_OF_DAY)) {

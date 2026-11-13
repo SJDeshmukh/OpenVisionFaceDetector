@@ -12,7 +12,7 @@
         android:orientation="vertical"
         android:paddingStart="20dp"
         android:paddingEnd="20dp"
-        android:paddingTop="52dp"
+        android:paddingTop="20dp"
         android:paddingBottom="16dp">
 
         <!-- Header: greeting + student name -->
@@ -39,7 +39,7 @@
                     android:id="@+id/tv_home_student_name"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Student"
+                    android:text="Resident"
                     android:textSize="22sp"
                     android:textStyle="bold"
                     android:textColor="@android:color/white"
@@ -303,7 +303,7 @@
             android:id="@+id/tv_home_recent_title"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Recent Activity"
+            android:text="Recent Check-ins"
             android:textSize="16sp"
             android:textStyle="bold"
             android:textColor="@android:color/white"

@@ -280,12 +280,12 @@ class ParentAnalyticsFragment : Fragment() {
     }
 
     private fun updateInsight(present: Int, absent: Int, rate: Int) {
-        val label = if (BuildConfig.IS_ATTENDX) "lectures" else "days"
+        val label = if (BuildConfig.IS_ATTENDX) "lectures" else "days checked in"
         root.findViewById<TextView>(R.id.tv_analytics_insight).text = when {
-            rate >= 90 -> "Excellent! $present/${ present + absent} $label attended ($rate%). Outstanding performance."
-            rate >= 75 -> "Good job at $rate% ($present $label). Push for 90%+ to maximize performance."
+            rate >= 90 -> "Excellent! $present/${present + absent} $label ($rate%). Great hostel compliance."
+            rate >= 75 -> "Good at $rate% ($present $label). Aim for 90%+ to stay compliant."
             rate >= 50 -> "Fair at $rate% — $absent $label missed. There's room to improve."
-            else -> "Attendance needs improvement: $rate% ($absent $label missed). Take action now."
+            else -> "Hostel attendance needs improvement: $rate% ($absent $label missed). Please ensure daily check-ins."
         }
     }
 

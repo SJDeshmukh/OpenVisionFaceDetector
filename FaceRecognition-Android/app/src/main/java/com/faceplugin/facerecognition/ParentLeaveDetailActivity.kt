@@ -56,7 +56,7 @@ class ParentLeaveDetailActivity : AppCompatActivity() {
                 leaveRequestId = json.optInt("id", -1)
                 studentNumber = getSharedPreferences("app_prefs", Context.MODE_PRIVATE).getString("parent_student_number", "") ?: ""
                 
-                tvStudentName.text = "ID: $studentNumber"
+                tvStudentName.text = "Resident ID: $studentNumber"
                 tvReason.text = json.optString("reason", "No Reason Provided")
                 tvStartDate.text = json.optString("start_date", "-")
                 tvEndDate.text = json.optString("end_date", "-")
@@ -71,6 +71,17 @@ class ParentLeaveDetailActivity : AppCompatActivity() {
 
         btnReject.setOnClickListener {
             startVerification("rejected")
+        }
+
+        // Upfront guard: leave approval requires a registered parent face. If none
+        // is present locally, send the parent to the one-time registration screen.
+        val prefs = getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+        val faceRegistered = prefs.getBoolean("face_registered", false)
+        val hasTemplate = prefs.getString("parent_face_template", "")?.isNotEmpty() == true
+        if (!faceRegistered || !hasTemplate) {
+            Toast.makeText(this, "Please register your face to approve/reject leaves", Toast.LENGTH_LONG).show()
+            startActivity(Intent(this, ParentFaceRegistrationActivity::class.java))
+            finish()
         }
     }
 
@@ -152,7 +163,9 @@ class ParentLeaveDetailActivity : AppCompatActivity() {
         if (savedTemplateB64.isEmpty()) {
             runOnUiThread {
                 progressBar.visibility = View.GONE
-                Toast.makeText(this, "No registered face found. Please register your face first.", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "No registered face found. Redirecting to face registration...", Toast.LENGTH_LONG).show()
+                startActivity(Intent(this, ParentFaceRegistrationActivity::class.java))
+                finish()
             }
             return
         }
