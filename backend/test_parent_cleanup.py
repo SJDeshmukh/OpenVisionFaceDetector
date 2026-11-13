@@ -89,5 +89,29 @@ class TestParentCleanup(unittest.TestCase):
                                   headers={"Authorization": f"Bearer {parent_token}"})
         self.assertIn(res_day.status_code, (401, 404), f"Parent day should not show data: {res_day.data}")
 
+    def test_parent_login_accepts_student_email_and_registered_parent_phone(self):
+        pid = self._create_student(student_number="RES-EMAIL-1", phone="9370449595")
+        conn = sqlite3.connect(TEST_DB)
+        c = conn.cursor()
+        c.execute("SELECT custom_data FROM faces WHERE id = ?", (pid,))
+        custom_data = json.loads(c.fetchone()[0] or "{}")
+        custom_data.update({
+            "email": "family.student@example.com",
+            "parent_phone": "6618495931",
+        })
+        c.execute(
+            "UPDATE faces SET custom_data = ? WHERE id = ?",
+            (json.dumps(custom_data), pid),
+        )
+        conn.commit()
+        conn.close()
+
+        response = self._parent_login(
+            student_id="family.student@example.com",
+            mobile="6618495931",
+        )
+        self.assertEqual(response.status_code, 200, f"Email-based parent login failed: {response.data}")
+        self.assertEqual(response.json.get("status"), "success")
+
 if __name__ == '__main__':
     unittest.main()

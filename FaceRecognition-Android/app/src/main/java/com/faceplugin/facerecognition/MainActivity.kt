@@ -218,7 +218,7 @@ class MainActivity : AppCompatActivity() {
         // Adjust visibility based on role
         val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
         val role = prefs.getString("role", "user")
-        val isUser = "user".equals(role, ignoreCase = true)
+        val isKioskUser = prefs.getBoolean("is_kiosk", false)
         val canManagePeople = role.equals("vendor_admin", true) ||
             role.equals("admin", true) || role.equals("super_admin", true)
 
@@ -228,8 +228,8 @@ class MainActivity : AppCompatActivity() {
             bottomNav.menu.findItem(R.id.nav_users).isVisible = false
         }
 
-        if (isUser) {
-            // Hide the bottom navigation bar entirely for users since they only have one tab
+        if (isKioskUser) {
+            // Only the vendor-designated kiosk account runs in locked kiosk mode.
             bottomNav.visibility = android.view.View.GONE
 
             // Auto-engage Kiosk Lockdown Mode for kiosk user
@@ -240,6 +240,9 @@ class MainActivity : AppCompatActivity() {
 
         // Kiosk Mode & Logout
         val btnKiosk = findViewById<ImageButton>(R.id.btn_kiosk)
+        if (!isKioskUser) {
+            btnKiosk?.visibility = android.view.View.GONE
+        }
         btnKiosk?.setOnClickListener {
             if (isKioskModeActive) {
                 promptKioskPin {
@@ -275,8 +278,8 @@ class MainActivity : AppCompatActivity() {
                 tvPlace.text = "— $dn"
             }
             
-            // If Kiosk user has no place assigned, force selection
-            if (isUser && dn.isNullOrBlank()) {
+            // If the designated kiosk has no place assigned, force selection.
+            if (isKioskUser && dn.isNullOrBlank()) {
                 checkDeviceSlotAssignment()
             }
         } catch (_: Exception) {}

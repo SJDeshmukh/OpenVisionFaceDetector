@@ -12,6 +12,9 @@ public class LoginResponse {
 
     @SerializedName("username")
     private String username;
+
+    @SerializedName("student_id")
+    private String studentId;
     
     @SerializedName("token")
     private String token;
@@ -39,6 +42,7 @@ public class LoginResponse {
     public String getStatus() { return status; }
     public String getRole() { return role; }
     public String getUsername() { return username; }
+    public String getStudentId() { return studentId; }
     public String getToken() { return token; }
     public Integer getVendorId() { return vendorId; }
     public Integer getCompanyId() { return companyId; }
@@ -66,10 +70,14 @@ public class LoginResponse {
     @SerializedName("kiosk_pin")
     private String kioskPin;
 
+    @SerializedName("is_kiosk")
+    private Boolean isKiosk;
+
     public Boolean getFaceRegistered() { return faceRegistered; }
     public String getFaceTemplate() { return faceTemplate; }
     public String getVertical() { return vertical; }
     public Boolean getHasBulkAttendance() { return hasBulkAttendance; }
     public String getFacultyDisplayName() { return facultyDisplayName; }
     public String getKioskPin() { return (kioskPin != null && !kioskPin.isEmpty()) ? kioskPin : "8888"; }
+    public Boolean getIsKiosk() { return isKiosk != null && isKiosk; }
 }

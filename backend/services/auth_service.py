@@ -18,6 +18,7 @@ from services.login_identity_service import (
     is_valid_login_email,
     login_email_from_profile,
     normalize_login_email,
+    is_student_profile,
 )
 
 logger = logging.getLogger(__name__)
@@ -195,6 +196,37 @@ def authenticate_vendor_access():
                 logger.exception('Unable to validate persistent session')
                 conn.close()
                 return None, (jsonify({"error": "Session validation unavailable", "code": "AUTH_SERVICE_UNAVAILABLE"}), 503)
+
+            if user_row and role != "parent":
+                account_role = user_row["role"] if hasattr(user_row, "keys") else user_row[1]
+                if account_role == "student":
+                    conn.close()
+                    return None, (jsonify({"error": "Student accounts must use the Parent Portal, not kiosk login", "code": "STUDENT_MOBILE_LOGIN_BLOCKED"}), 403)
+                if account_role == "user":
+                    try:
+                        c.execute(
+                            "SELECT person_id, vendor_id FROM system_users WHERE username = ?",
+                            (username,),
+                        )
+                        account = c.fetchone()
+                        person_id = account["person_id"] if hasattr(account, "keys") else account[0]
+                        account_vendor_id = account["vendor_id"] if hasattr(account, "keys") else account[1]
+                        if person_id:
+                            c.execute(
+                                "SELECT designation, custom_data FROM faces WHERE id = ? AND vendor_id = ?",
+                                (person_id, account_vendor_id),
+                            )
+                            profile = c.fetchone()
+                            if profile:
+                                designation = profile[0] if not hasattr(profile, "keys") else profile["designation"]
+                                custom_data = profile[1] if not hasattr(profile, "keys") else profile["custom_data"]
+                                if is_student_profile(designation, custom_data):
+                                    conn.close()
+                                    return None, (jsonify({"error": "Student accounts must use the Parent Portal, not kiosk login", "code": "STUDENT_MOBILE_LOGIN_BLOCKED"}), 403)
+                    except Exception:
+                        logger.exception("Unable to verify mobile user profile type")
+                        conn.close()
+                        return None, (jsonify({"error": "Authentication validation unavailable", "code": "AUTH_SERVICE_UNAVAILABLE"}), 503)
 
         if token and role == 'faculty':
             try:

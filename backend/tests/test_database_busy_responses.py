@@ -85,6 +85,7 @@ def test_authentication_returns_retryable_503_when_pool_stays_busy(monkeypatch):
     identity.is_valid_login_email = lambda value: True
     identity.login_email_from_profile = lambda value: value
     identity.normalize_login_email = lambda value: value
+    identity.is_student_profile = lambda designation, profile: False
     services.login_identity_service = identity
     monkeypatch.setitem(sys.modules, "services", services)
     monkeypatch.setitem(sys.modules, "services.login_identity_service", identity)

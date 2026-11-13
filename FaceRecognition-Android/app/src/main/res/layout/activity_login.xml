@@ -139,7 +139,7 @@
                     android:layout_height="56dp"
                     android:layout_marginTop="32dp"
                     android:background="@drawable/bg_input_field"
-                    android:hint="Student ID"
+                    android:hint="Student ID or Email"
                     android:inputType="text"
                     android:singleLine="true"
                     android:padding="16dp"

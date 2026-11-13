@@ -5,6 +5,7 @@ import string
 from flask import Blueprint, request, jsonify, make_response, g
 from datetime import datetime, date, timedelta
 from services.auth_service import authenticate_vendor_access, verify_password, generate_token, check_vendor_status, verify_token, hash_password, generate_token_with_claims, extract_token, is_valid_login_email, normalize_login_email, WEB_TOKEN_TTL
+from services.login_identity_service import is_designated_kiosk_account, is_student_profile
 from middleware.handlers import rate_limit, get_client_ip
 import json
 import base64
@@ -425,7 +426,7 @@ def login():
             is_pg = getattr(conn, "_is_pg", False)
             if is_pg:
                 c.execute(
-                    """SELECT id, name, phone, vendor_id, custom_data FROM faces
+                    """SELECT id, name, phone, vendor_id, custom_data, designation FROM faces
                        WHERE LOWER(COALESCE(
                            custom_data::jsonb->>'email',
                            custom_data::jsonb->>'Email',
@@ -436,7 +437,7 @@ def login():
                 )
             else:
                 c.execute(
-                    """SELECT id, name, phone, vendor_id, custom_data FROM faces
+                    """SELECT id, name, phone, vendor_id, custom_data, designation FROM faces
                        WHERE LOWER(COALESCE(
                            json_extract(custom_data, '$.email'),
                            json_extract(custom_data, '$.Email'),
@@ -448,7 +449,7 @@ def login():
             
             face = c.fetchone()
             if face:
-                face_row = dict(face) if hasattr(face, 'keys') else dict(zip(['id', 'name', 'phone', 'vendor_id', 'custom_data'], face))
+                face_row = dict(face) if hasattr(face, 'keys') else dict(zip(['id', 'name', 'phone', 'vendor_id', 'custom_data', 'designation'], face))
                 student_phone = face_row.get('phone')
                 
                 # FALLBACK: If phone column is empty, check custom_data for student_phone or phone
@@ -467,15 +468,18 @@ def login():
                     sys_cols = get_table_columns(conn, "system_users")
                     is_kiosk_field = ", is_kiosk" if "is_kiosk" in sys_cols else ""
                     is_kiosk_val = ", 0" if "is_kiosk" in sys_cols else ""
+                    login_role = "student" if is_student_profile(
+                        face_row.get("designation"), face_row.get("custom_data")
+                    ) else "user"
                     if is_pg:
                         c.execute(
-                            f"INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id{is_kiosk_field}) VALUES (%s, %s, NULL, 'user', %s, %s{is_kiosk_val})",
-                            (login_identity, hash_password(normalized_pw), face_row['vendor_id'], face_row['id'])
+                            f"INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id{is_kiosk_field}) VALUES (%s, %s, NULL, %s, %s, %s{is_kiosk_val})",
+                            (login_identity, hash_password(normalized_pw), login_role, face_row['vendor_id'], face_row['id'])
                         )
                     else:
                         c.execute(
-                            f"INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id{is_kiosk_field}) VALUES (?, ?, NULL, 'user', ?, ?{is_kiosk_val})",
-                            (login_identity, hash_password(normalized_pw), face_row['vendor_id'], face_row['id'])
+                            f"INSERT INTO system_users (username, password, password_plain, role, vendor_id, person_id{is_kiosk_field}) VALUES (?, ?, NULL, ?, ?, ?{is_kiosk_val})",
+                            (login_identity, hash_password(normalized_pw), login_role, face_row['vendor_id'], face_row['id'])
                         )
                     conn.commit()
                     c.execute("SELECT * FROM system_users WHERE LOWER(username) = LOWER(?)", (login_identity,))
@@ -586,6 +590,30 @@ def login():
             )
         
     if pass_condition:
+        is_student_mobile_login = user.get("role") == "student"
+        if (
+            not is_student_mobile_login
+            and user.get("role") == "user"
+            and user.get("person_id")
+            and platform.lower() in {"mobile", "kiosk"}
+        ):
+            student_conn = get_db_connection()
+            try:
+                student_cursor = student_conn.cursor()
+                student_cursor.execute(
+                    "SELECT designation, custom_data FROM faces WHERE id = ? AND vendor_id = ?",
+                    (user.get("person_id"), user.get("vendor_id")),
+                )
+                profile = student_cursor.fetchone()
+                if profile:
+                    designation = profile[0] if not hasattr(profile, "keys") else profile["designation"]
+                    custom_data = profile[1] if not hasattr(profile, "keys") else profile["custom_data"]
+                    is_student_mobile_login = is_student_profile(designation, custom_data)
+            finally:
+                student_conn.close()
+        if platform.lower() in {"mobile", "kiosk"} and is_student_mobile_login:
+            return jsonify({"error": "Student accounts must use the Parent Portal, not kiosk login"}), 403
+
         # Force a change after email recovery for every supported web role, and
         # retain the existing first-login behavior for students and faculty.
         is_faculty = user.get('role') == 'faculty'
@@ -600,6 +628,7 @@ def login():
         backend_service_id = 'default_api'
         vendor_config = []
         features = []
+        is_kiosk_login = False
         
         if user_vendor_id:
             is_allowed, reason = check_vendor_status(user_vendor_id)
@@ -613,13 +642,16 @@ def login():
             c = conn.cursor()
             vcols = get_table_columns(conn, "vendors")
             reg_select = "registration_config" if "registration_config" in vcols else "NULL AS registration_config"
-            c.execute(f"SELECT web_login_enabled, frontend_bundle_id, backend_service_id, {reg_select}, vertical FROM vendors WHERE id = ?", (user_vendor_id,))
+            kiosk_select = "kiosk_username" if "kiosk_username" in vcols else "NULL AS kiosk_username"
+            c.execute(f"SELECT web_login_enabled, frontend_bundle_id, backend_service_id, {reg_select}, vertical, {kiosk_select} FROM vendors WHERE id = ?", (user_vendor_id,))
             row = c.fetchone()
             web_login_enabled = row[0] if row else 1
             frontend_bundle_id = row[1] if row and len(row) > 1 and row[1] else 'default_attendance'
             backend_service_id = row[2] if row and len(row) > 2 and row[2] else 'default_api'
             config_raw = json.loads(row[3]) if row and len(row) > 3 and row[3] else []
             vendor_vertical = row[4] if row and len(row) > 4 else None
+            kiosk_username = row[5] if row and len(row) > 5 else None
+            is_kiosk_login = is_designated_kiosk_account(user, kiosk_username)
             if not config_raw:
                 try:
                     c.execute("SELECT fields FROM bulk_attendance_config WHERE vendor_id = ?", (user_vendor_id,))
@@ -937,6 +969,7 @@ def login():
             "force_password_change": user.get('force_password_change', False),
             "faculty_display_name": faculty_display_name,
             "kiosk_pin": str(user.get("kiosk_pin") or "8888"),
+            "is_kiosk": is_kiosk_login,
         }))
 
         # For web logins: set an httpOnly cookie so the token is not accessible
@@ -1100,6 +1133,68 @@ def parent_login():
         actual_vendor_id = None
         resolved_person_id = None
         from utils import extract_student_number_from_custom_data
+        if is_valid_login_email(student_id):
+            original_identifier = str(student_id).strip()
+            is_pg = getattr(conn, "_is_pg", False)
+            if is_pg:
+                c.execute(
+                    """SELECT id, phone, custom_data FROM faces
+                       WHERE vendor_id = %s AND (
+                           LOWER(COALESCE(custom_data::jsonb->>'email', '')) = LOWER(%s) OR
+                           LOWER(COALESCE(custom_data::jsonb->>'Email', '')) = LOWER(%s) OR
+                           LOWER(COALESCE(custom_data::jsonb->>'student_email', '')) = LOWER(%s) OR
+                           LOWER(COALESCE(custom_data::jsonb->>'employee_email', '')) = LOWER(%s)
+                       )""",
+                    (vendor_id, original_identifier, original_identifier, original_identifier, original_identifier),
+                )
+            else:
+                c.execute(
+                    """SELECT id, phone, custom_data FROM faces
+                       WHERE vendor_id = ? AND (
+                           LOWER(COALESCE(json_extract(custom_data, '$.email'), '')) = LOWER(?) OR
+                           LOWER(COALESCE(json_extract(custom_data, '$.Email'), '')) = LOWER(?) OR
+                           LOWER(COALESCE(json_extract(custom_data, '$.student_email'), '')) = LOWER(?) OR
+                           LOWER(COALESCE(json_extract(custom_data, '$.employee_email'), '')) = LOWER(?)
+                       )""",
+                    (vendor_id, original_identifier, original_identifier, original_identifier, original_identifier),
+                )
+            email_candidates = c.fetchall() or []
+            for candidate in email_candidates:
+                profile_raw = _row_get(candidate, 2, "custom_data")
+                try:
+                    profile = json.loads(profile_raw) if isinstance(profile_raw, str) else profile_raw
+                except (TypeError, ValueError):
+                    profile = {}
+                if not isinstance(profile, dict):
+                    profile = {}
+                profile_emails = {
+                    normalize_login_email(profile.get(key))
+                    for key in ("email", "Email", "student_email", "employee_email")
+                    if profile.get(key)
+                }
+                if normalize_login_email(original_identifier) not in profile_emails:
+                    continue
+                candidate_phones = [_row_get(candidate, 1, "phone")]
+                candidate_phones.extend(
+                    profile.get(key)
+                    for key in (
+                        "phone", "student_phone", "mobile", "mobile_number",
+                        "phone_number", "contact_phone", "parent_phone",
+                    )
+                )
+                if not mobile_tail or not any(
+                    _digits(phone_value)[-10:] == mobile_tail
+                    for phone_value in candidate_phones
+                    if phone_value
+                ):
+                    continue
+                student_id = (
+                    extract_student_number_from_custom_data(profile, search_term=original_identifier)
+                    or original_identifier
+                )
+                resolved_person_id = _row_get(candidate, 0, "id")
+                break
+
         def _find_student_person_id(vendor_to_check):
             # Search both faces.phone and custom_data (school/hostel may store phone
             # as 'student_phone' inside custom_data rather than the core phone column).
@@ -1262,8 +1357,15 @@ def parent_login():
         session_version = _row_get(row, 4, "session_version") or 1
         face_template = _row_get(row, 5, "face_template")
         if mobile_tail and _digits(stored_mobile)[-10:] != mobile_tail:
-            conn.close()
-            return jsonify({"error": "Mobile number mismatch"}), 401
+            if resolved_person_id:
+                c.execute(
+                    "UPDATE parent_users SET contact_phone = ? WHERE id = ? AND vendor_id = ?",
+                    (mobile_number, parent_id, actual_vendor_id),
+                )
+                conn.commit()
+            else:
+                conn.close()
+                return jsonify({"error": "Mobile number mismatch"}), 401
         if resolved_person_id is None:
             resolved_person_id = _find_student_person_id(actual_vendor_id)
         

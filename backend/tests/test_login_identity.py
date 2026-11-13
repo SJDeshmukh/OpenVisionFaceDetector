@@ -8,7 +8,9 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from services.login_identity_service import (
+    is_designated_kiosk_account,
     is_valid_login_email,
+    is_student_profile,
     login_email_from_profile,
     migrate_legacy_login_identities,
     normalize_login_email,
@@ -25,6 +27,24 @@ def test_profile_email_aliases_are_normalized():
     assert login_email_from_profile({"employee_email": " Staff@Example.com "}) == "staff@example.com"
     assert login_email_from_profile('{"student_email":"student@example.com"}') == "student@example.com"
     assert login_email_from_profile({"email": "employee-id"}) == ""
+
+
+def test_student_profiles_are_not_confused_with_vendor_kiosk_users():
+    assert is_student_profile("Student", '{"person_type":"student"}')
+    assert is_student_profile("Resident", {})
+    assert not is_student_profile("Employee", '{"person_type":"employee"}')
+
+    kiosk = {
+        "username": "kiosk@school.example",
+        "role": "user",
+        "person_id": None,
+        "is_kiosk": 1,
+    }
+    assert is_designated_kiosk_account(kiosk, "Kiosk@School.Example")
+    assert not is_designated_kiosk_account(kiosk, "other@school.example")
+    assert not is_designated_kiosk_account(
+        {**kiosk, "person_id": 25}, "kiosk@school.example"
+    )
 
 
 def test_legacy_employee_id_login_is_migrated_to_profile_email():

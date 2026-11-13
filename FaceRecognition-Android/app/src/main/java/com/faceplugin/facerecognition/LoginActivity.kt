@@ -169,13 +169,17 @@ class LoginActivity : AppCompatActivity() {
                 val studentId = etStudentId.text.toString().trim()
                 val mobile = etMobileNumber.text.toString().trim()
                 if (studentId.isEmpty() || mobile.isEmpty()) {
-                    Toast.makeText(this, "Enter Student ID and Mobile Number", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Enter Student ID or Email and Mobile Number", Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }
                 
                 val deviceId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
                 val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
                 var vendorId = prefs.getInt("vendor_id", -1)
+                // Fall back to the vendor resolved from business selection before
+                // defaulting to 1, matching EnrollFragment. Otherwise first-time
+                // parent logins hit the wrong vendor and fail with "No identity found".
+                if (vendorId == -1) vendorId = prefs.getInt("selected_vendor_id", -1)
                 if (vendorId == -1) vendorId = 1
                 
                 val request = com.faceplugin.facerecognition.api.ParentLoginRequest(studentId, mobile, deviceId, vendorId, "")
@@ -186,6 +190,7 @@ class LoginActivity : AppCompatActivity() {
                              val token = response.body()?.token
                              val role = response.body()?.role
                              val vId = response.body()?.vendorId
+                             val resolvedStudentId = response.body()?.studentId?.takeIf { it.isNotBlank() } ?: studentId
                              val faceRegistered = response.body()?.faceRegistered ?: false
                              val faceTemplate = response.body()?.faceTemplate
                              
@@ -199,10 +204,11 @@ class LoginActivity : AppCompatActivity() {
                              if (token != null) editor.putString("token", token)
                              if (role != null) editor.putString("role", role)
                              if (vId != null) editor.putInt("vendor_id", vId)
+                             editor.putBoolean("is_kiosk", false)
                              editor.putBoolean("face_registered", faceRegistered)
                              if (faceTemplate != null) editor.putString("parent_face_template", faceTemplate)
-                             editor.putString("student_id", studentId)
-                             editor.putString("parent_student_number", studentId)
+                             editor.putString("student_id", resolvedStudentId)
+                             editor.putString("parent_student_number", resolvedStudentId)
                              editor.putString("parent_mobile_number", mobile)
                              if (vertical != null) editor.putString("parent_vendor_vertical", vertical)
                              editor.putBoolean("parent_has_bulk_attendance", hasBulkAttendance)
@@ -284,6 +290,7 @@ class LoginActivity : AppCompatActivity() {
                         val vendorId = body?.vendorId
                         val companyId = body?.companyId
                         val role = body?.role
+                        val isKiosk = body?.isKiosk == true
                         
                         // Save login state
                         val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
@@ -293,6 +300,7 @@ class LoginActivity : AppCompatActivity() {
                         if (token != null) editor.putString("token", token)
                         if (vendorId != null) editor.putInt("vendor_id", vendorId)
                         if (companyId != null) editor.putInt("company_id", companyId)
+                        editor.putBoolean("is_kiosk", isKiosk)
                         try {
                             val vc = body?.vendorConfig
                             val cached = when {
@@ -317,7 +325,7 @@ class LoginActivity : AppCompatActivity() {
                         val kioskPin = body?.kioskPin ?: "8888"
                         editor.putString("kiosk_pin", kioskPin)
                         editor.apply()
-                        saveOfflineUserCredentials(username, password, role, token, vendorId, companyId, kioskPin)
+                        saveOfflineUserCredentials(username, password, role, token, vendorId, companyId, kioskPin, isKiosk)
 
                         // Set token in RetrofitClient
                         if (token != null) {
@@ -378,9 +386,8 @@ class LoginActivity : AppCompatActivity() {
                             }
                             
                             // Always run onboarding once per install (or when not yet confirmed)
-                            // If role is user (kiosk), we MUST have a place.
-                            val role = prefs.getString("role", "user")
-                            if (!alreadyPrompted || (role == "user" && cachedName.isNullOrBlank())) {
+                            // Only the vendor-designated kiosk account requires a place.
+                            if (isKiosk && (!alreadyPrompted || cachedName.isNullOrBlank())) {
                                 // Login already contains the authoritative slot state. Avoid two
                                 // extra serial API round trips before opening the kiosk.
                                 val loginDeviceName = body?.deviceName?.trim()
@@ -635,7 +642,8 @@ class LoginActivity : AppCompatActivity() {
         token: String?,
         vendorId: Int?,
         companyId: Int?,
-        kioskPin: String?
+        kioskPin: String?,
+        isKiosk: Boolean
     ) {
         try {
             val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
@@ -651,6 +659,7 @@ class LoginActivity : AppCompatActivity() {
                 put("vendor_id", vendorId ?: -1)
                 put("company_id", companyId ?: -1)
                 put("kiosk_pin", kioskPin ?: "8888")
+                put("is_kiosk", isKiosk)
             }
             editor.putString(userKey, userObj.toString())
             editor.putString("offline_username", username)
@@ -659,6 +668,7 @@ class LoginActivity : AppCompatActivity() {
             editor.putString("offline_saved_token", token ?: "")
             editor.putInt("offline_saved_vendor_id", vendorId ?: -1)
             editor.putInt("offline_saved_company_id", companyId ?: -1)
+            editor.putBoolean("offline_saved_is_kiosk", isKiosk)
             editor.apply()
         } catch (_: Exception) {}
     }
@@ -689,6 +699,7 @@ class LoginActivity : AppCompatActivity() {
         var targetVendorId = -1
         var targetCompanyId = -1
         var targetKioskPin = "8888"
+        var targetIsKiosk = false
 
         if (!userJsonStr.isNullOrBlank()) {
             try {
@@ -701,6 +712,7 @@ class LoginActivity : AppCompatActivity() {
                     targetVendorId = obj.optInt("vendor_id", -1)
                     targetCompanyId = obj.optInt("company_id", -1)
                     targetKioskPin = obj.optString("kiosk_pin", "8888")
+                    targetIsKiosk = obj.optBoolean("is_kiosk", false)
                 }
             } catch (_: Exception) {}
         }
@@ -720,6 +732,7 @@ class LoginActivity : AppCompatActivity() {
                     if (it != -1) it else prefs.getInt("company_id", -1)
                 }
                 targetKioskPin = prefs.getString("kiosk_pin", "8888") ?: "8888"
+                targetIsKiosk = prefs.getBoolean("offline_saved_is_kiosk", false)
             }
         }
 
@@ -740,6 +753,7 @@ class LoginActivity : AppCompatActivity() {
             editor.putInt("company_id", targetCompanyId)
         }
         editor.putString("kiosk_pin", targetKioskPin)
+        editor.putBoolean("is_kiosk", targetIsKiosk)
         editor.apply()
         return true
     }

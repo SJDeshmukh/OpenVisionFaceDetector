@@ -30,6 +30,36 @@ def login_email_from_profile(profile):
     return ""
 
 
+def is_student_profile(designation, profile):
+    """Identify student/resident records without relying on the system login role."""
+    if isinstance(profile, str):
+        try:
+            profile = json.loads(profile)
+        except (TypeError, ValueError):
+            profile = {}
+    if not isinstance(profile, dict):
+        profile = {}
+
+    person_type = str(profile.get("person_type") or "").strip().lower()
+    designation = str(designation or "").strip().lower()
+    student_types = {"student", "resident", "hosteller", "hostel resident"}
+    return person_type in student_types or designation in student_types
+
+
+def is_designated_kiosk_account(user, kiosk_username=None):
+    """Only the vendor's unlinked kiosk user may activate kiosk mode."""
+    if str(user.get("role") or "").strip().lower() != "user":
+        return False
+    if user.get("person_id") not in (None, "", 0, "0"):
+        return False
+
+    username = normalize_login_email(user.get("username"))
+    designated_username = normalize_login_email(kiosk_username)
+    if designated_username:
+        return username == designated_username
+    return bool(user.get("is_kiosk"))
+
+
 def migrate_legacy_login_identities(conn):
     """Replace legacy ID-based usernames with their registered profile email.
 

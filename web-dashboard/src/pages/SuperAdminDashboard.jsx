@@ -460,6 +460,12 @@ const SuperAdminDashboard = () => {
    const [staffEditor, setStaffEditor] = useState({ staffId: null, name: '', role: '', pin: '', department: '', items: [], saving: false });
    const [configLoading, setConfigLoading] = useState(false);
 
+   // Use the live feature toggles from the vendor edit form when it is open,
+   // otherwise fall back to the saved vendor features. This keeps the staff
+   // navbar picker in sync with features the super admin just toggled but has
+   // not saved yet.
+   const effectiveFeatures = showModal && editingVendor ? (newVendor.features || []) : (editingVendor?.features || []);
+
    // Stats State
    const [stats, setStats] = useState({
      total_vendors: 0,
@@ -5124,7 +5130,7 @@ const SuperAdminDashboard = () => {
                     <StaffNavigationPicker
                       value={newStaff.navbar_items}
                       onChange={items => setNewStaff({ ...newStaff, navbar_items: items })}
-                      features={editingVendor?.features || []}
+                      features={effectiveFeatures}
                     />
                   </div>
                   <button 
@@ -5247,7 +5253,7 @@ const SuperAdminDashboard = () => {
                               <StaffNavigationPicker
                                 value={staffEditor.items}
                                 onChange={items => setStaffEditor(prev => ({ ...prev, items }))}
-                                features={editingVendor?.features || []}
+                                features={effectiveFeatures}
                               />
                               <div className="mt-3 flex justify-end">
                                 <button
