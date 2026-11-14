@@ -1,41 +1,47 @@
 package com.faceplugin.facerecognition;
 
+import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.DialogInterface;
+import android.content.Intent;
+import android.graphics.Bitmap;
+import android.net.Uri;
 import android.os.Bundle;
+import android.text.Editable;
+import android.text.TextWatcher;
+import android.util.Base64;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.inputmethod.InputMethodManager;
+import android.widget.EditText;
+import android.widget.ImageView;
+import android.widget.TextView;
 import android.widget.Toast;
-import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.Locale;
 
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.fragment.app.Fragment;
 import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
+import java.io.ByteArrayOutputStream;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.List;
+import java.util.Locale;
+
+import com.faceplugin.faceengine.FaceBox;
 import com.faceplugin.facerecognition.api.GreetingService;
 import com.faceplugin.facerecognition.api.RetrofitClient;
+import com.faceplugin.facerecognition.api.UploadFaceResponse;
+import com.google.gson.JsonObject;
 
 import retrofit2.Call;
 import retrofit2.Callback;
 import retrofit2.Response;
-
-import android.app.Activity;
-import android.content.Intent;
-import android.graphics.Bitmap;
-import android.net.Uri;
-import android.util.Base64;
-import androidx.activity.result.ActivityResultLauncher;
-import androidx.activity.result.contract.ActivityResultContracts;
-import com.faceplugin.faceengine.FaceBox;
-import com.faceplugin.facerecognition.api.UploadFaceResponse;
-import com.google.gson.JsonObject;
-import java.io.ByteArrayOutputStream;
-import java.util.List;
 
 public class UsersFragment extends Fragment {
 
@@ -44,6 +50,12 @@ public class UsersFragment extends Fragment {
     private DBManager dbManager;
     private ActivityResultLauncher<Intent> cameraLauncher;
     private Person pendingPersonForRegistration;
+
+    private EditText etSearch;
+    private ImageView btnClearSearch;
+    private TextView tvUserCount;
+    private View llEmptyState;
+    private TextView tvEmptyMessage;
 
     @Override
     public void onCreate(@Nullable Bundle savedInstanceState) {
@@ -91,6 +103,12 @@ public class UsersFragment extends Fragment {
         
         dbManager = new DBManager(requireContext().getApplicationContext());
 
+        etSearch = view.findViewById(R.id.et_search);
+        btnClearSearch = view.findViewById(R.id.btn_clear_search);
+        tvUserCount = view.findViewById(R.id.tv_user_count);
+        llEmptyState = view.findViewById(R.id.ll_empty_state);
+        tvEmptyMessage = view.findViewById(R.id.tv_empty_message);
+
         recyclerView = view.findViewById(R.id.recycler_users);
         recyclerView.setLayoutManager(new GridLayoutManager(getContext(), 2));
         
@@ -102,17 +120,87 @@ public class UsersFragment extends Fragment {
                      showDeleteConfirmationDialog(person, position);
                  }
              });
+
+             // Quick click to register or re-register/update face
              adapter.setOnUserClickListener((person, position) -> {
-                 if (person.templates == null || person.templates.length == 0) {
-                     showRegisterFaceDialog(person);
-                 } else {
-                     Toast.makeText(getContext(), "Face already registered for " + person.name, Toast.LENGTH_SHORT).show();
-                 }
+                 boolean hasFace = (person.templates != null && person.templates.length > 0);
+                 String title = hasFace ? "Update Face" : "Register Face";
+                 String message = hasFace
+                         ? "Face is already registered for " + person.name + ".\n\nWould you like to capture a new photo and update their face?"
+                         : "No face registered for " + person.name + ".\n\nWould you like to capture and register their face now?";
+                 String actionBtn = hasFace ? "Update Face" : "Register Face";
+
+                 new AlertDialog.Builder(getContext())
+                         .setTitle(title)
+                         .setMessage(message)
+                         .setPositiveButton(actionBtn, (dialog, which) -> {
+                             pendingPersonForRegistration = person;
+                             Intent intent = new Intent(requireContext(), CaptureActivity.class);
+                             intent.putExtra("is_capture_only", true);
+                             cameraLauncher.launch(intent);
+                         })
+                         .setNegativeButton("Cancel", null)
+                         .show();
              });
+
+             adapter.setOnFilterResultListener(this::updateCountAndEmptyState);
              recyclerView.setAdapter(adapter);
+             updateCountAndEmptyState(adapter.getItemCount());
+        }
+
+        // Search text watcher for real-time filtering
+        if (etSearch != null) {
+            etSearch.addTextChangedListener(new TextWatcher() {
+                @Override
+                public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+
+                @Override
+                public void onTextChanged(CharSequence s, int start, int before, int count) {
+                    if (btnClearSearch != null) {
+                        btnClearSearch.setVisibility(s != null && s.length() > 0 ? View.VISIBLE : View.GONE);
+                    }
+                    if (adapter != null) {
+                        adapter.filter(s != null ? s.toString() : "");
+                    }
+                }
+
+                @Override
+                public void afterTextChanged(Editable s) {}
+            });
+        }
+
+        if (btnClearSearch != null) {
+            btnClearSearch.setOnClickListener(v -> {
+                if (etSearch != null) {
+                    etSearch.setText("");
+                    if (getContext() != null) {
+                        InputMethodManager imm = (InputMethodManager) getContext().getSystemService(Activity.INPUT_METHOD_SERVICE);
+                        if (imm != null) imm.hideSoftInputFromWindow(etSearch.getWindowToken(), 0);
+                    }
+                }
+            });
         }
 
         return view;
+    }
+
+    private void updateCountAndEmptyState(int count) {
+        if (tvUserCount != null) {
+            tvUserCount.setText(count + (count == 1 ? " User" : " Users"));
+        }
+        if (llEmptyState != null && recyclerView != null) {
+            if (count == 0) {
+                llEmptyState.setVisibility(View.VISIBLE);
+                recyclerView.setVisibility(View.GONE);
+                String q = (etSearch != null && etSearch.getText() != null) ? etSearch.getText().toString().trim() : "";
+                if (tvEmptyMessage != null) {
+                    tvEmptyMessage.setText(q.isEmpty() ? "No registered users" : "No users found matching \"" + q + "\"");
+                }
+            } else {
+                llEmptyState.setVisibility(View.GONE);
+                recyclerView.setVisibility(View.VISIBLE);
+            }
+        }
     }
 
     private void showDeleteConfirmationDialog(Person person, int position) {
@@ -222,21 +310,10 @@ public class UsersFragment extends Fragment {
     }
 
     public void refreshList() {
-        if (adapter != null) adapter.replaceUsers(DBManager.personList);
-    }
-
-    private void showRegisterFaceDialog(Person person) {
-        new AlertDialog.Builder(getContext())
-                .setTitle("Register Face")
-                .setMessage("No face registered for " + person.name + ". Would you like to register their face now?")
-                .setPositiveButton("Register", (dialog, which) -> {
-                    pendingPersonForRegistration = person;
-                    Intent intent = new Intent(requireContext(), CaptureActivity.class);
-                    intent.putExtra("is_capture_only", true);
-                    cameraLauncher.launch(intent);
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
+        if (adapter != null) {
+            adapter.replaceUsers(DBManager.personList);
+            updateCountAndEmptyState(adapter.getItemCount());
+        }
     }
 
     private void processCameraResult(Bitmap bitmap, byte[] capturedTemplate, boolean capturedVerified) {
@@ -373,7 +450,7 @@ public class UsersFragment extends Fragment {
             @Override
             public void onResponse(Call<UploadFaceResponse> call, Response<UploadFaceResponse> response) {
                 if (response.isSuccessful()) {
-                    if (getContext() != null) Toast.makeText(getContext(), "Face Synced to Cloud", Toast.LENGTH_SHORT).show();
+                    if (getContext() != null) Toast.makeText(getContext(), "Face Registered & Synced for " + person.name, Toast.LENGTH_SHORT).show();
                     String newId = null;
                     Integer assignedDisplayId = null;
                     try {
@@ -392,8 +469,20 @@ public class UsersFragment extends Fragment {
                     } else {
                         dbManager.updatePersonStatusByLocalUid(person.localUid, true);
                     }
+                    if (adapter != null) adapter.invalidateFace(person);
                 } else {
-                    if (getContext() != null) Toast.makeText(getContext(), "Sync Failed: " + response.code(), Toast.LENGTH_SHORT).show();
+                    String errorMsg = "Sync Failed: " + response.code();
+                    try {
+                        String errorBody = response.errorBody() != null ? response.errorBody().string() : null;
+                        if (errorBody != null && !errorBody.isEmpty() && errorBody.contains("\"error\"")) {
+                            int start = errorBody.indexOf("\"error\"") + 9;
+                            int end = errorBody.indexOf("\"", start);
+                            if (start > 8 && end > start) {
+                                errorMsg = errorBody.substring(start, end).replace("\\", "");
+                            }
+                        }
+                    } catch (Exception ignored) {}
+                    if (getContext() != null) Toast.makeText(getContext(), errorMsg, Toast.LENGTH_LONG).show();
                 }
             }
             @Override
