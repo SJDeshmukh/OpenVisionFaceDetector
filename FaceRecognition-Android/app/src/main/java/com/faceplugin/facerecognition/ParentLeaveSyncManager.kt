@@ -17,12 +17,13 @@ object ParentLeaveSyncManager {
     /**
      * Enqueue a locally verified leave decision when offline or network fails.
      */
+    @Suppress("DEPRECATION")
     fun enqueueDecision(context: Context, body: JsonObject) {
         try {
             val prefs = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
             val currentRaw = prefs.getString(PREFS_KEY, "[]") ?: "[]"
             val array = try {
-                JsonParser.parseString(currentRaw).asJsonArray
+                JsonParser().parse(currentRaw).asJsonArray
             } catch (_: Exception) {
                 JsonArray()
             }
@@ -37,6 +38,7 @@ object ParentLeaveSyncManager {
     /**
      * Asynchronously sync all queued parent leave decisions to the server.
      */
+    @Suppress("DEPRECATION")
     fun syncPendingDecisions(context: Context, onComplete: ((syncedCount: Int) -> Unit)? = null) {
         if (!NetworkUtils.isOnline(context)) {
             onComplete?.invoke(0)
@@ -54,7 +56,7 @@ object ParentLeaveSyncManager {
                 val prefs = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
                 val currentRaw = prefs.getString(PREFS_KEY, "[]") ?: "[]"
                 val array = try {
-                    JsonParser.parseString(currentRaw).asJsonArray
+                    JsonParser().parse(currentRaw).asJsonArray
                 } catch (_: Exception) {
                     JsonArray()
                 }
