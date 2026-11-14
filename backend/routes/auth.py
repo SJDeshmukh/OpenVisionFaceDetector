@@ -1289,7 +1289,29 @@ def parent_login():
                 break
         if row and actual_vendor_id:
             try:
-                c.execute("SELECT id, custom_data FROM faces WHERE vendor_id = ? AND phone LIKE ?", (actual_vendor_id, f"%{mobile_tail}%"))
+                is_pg = getattr(conn, "_is_pg", False)
+                if is_pg:
+                    c.execute("""
+                        SELECT id, custom_data, phone FROM faces 
+                        WHERE vendor_id = %s AND (student_status IS NULL OR student_status <> 'deleted')
+                          AND (
+                              custom_data::jsonb->>'student_id' ILIKE %s OR 
+                              custom_data::jsonb->>'id_number' ILIKE %s OR
+                              phone LIKE %s OR 
+                              custom_data::text LIKE %s
+                          )
+                    """, (actual_vendor_id, str(student_id).strip(), str(student_id).strip(), f"%{mobile_tail}%", f"%{mobile_tail}%"))
+                else:
+                    c.execute("""
+                        SELECT id, custom_data, phone FROM faces 
+                        WHERE vendor_id = ? AND (student_status IS NULL OR student_status <> 'deleted')
+                          AND (
+                              json_extract(custom_data, '$.student_id') LIKE ? OR
+                              json_extract(custom_data, '$.id_number') LIKE ? OR
+                              phone LIKE ? OR 
+                              custom_data LIKE ?
+                          )
+                    """, (actual_vendor_id, str(student_id).strip(), str(student_id).strip(), f"%{mobile_tail}%", f"%{mobile_tail}%"))
                 rows = c.fetchall() or []
                 exists = False
                 for st in rows:
@@ -1298,8 +1320,9 @@ def parent_login():
                         if not c_data:
                             continue
                         sn = extract_student_number_from_custom_data(c_data, search_term=student_id)
-                        if sn.lower() == str(student_id).strip().lower():
+                        if sn and sn.lower() == str(student_id).strip().lower():
                             exists = True
+                            resolved_person_id = _row_get(st, 0, "id")
                             break
                     except Exception:
                         continue
@@ -1318,14 +1341,36 @@ def parent_login():
                     pass
         if row and vendor_id and actual_vendor_id and str(actual_vendor_id) != str(vendor_id):
             try:
-                c.execute("SELECT id, custom_data FROM faces WHERE vendor_id = ? AND phone LIKE ?", (vendor_id, f"%{mobile_tail}%"))
+                is_pg = getattr(conn, "_is_pg", False)
+                if is_pg:
+                    c.execute("""
+                        SELECT id, custom_data FROM faces 
+                        WHERE vendor_id = %s AND (student_status IS NULL OR student_status <> 'deleted')
+                          AND (
+                              custom_data::jsonb->>'student_id' ILIKE %s OR 
+                              custom_data::jsonb->>'id_number' ILIKE %s OR
+                              phone LIKE %s OR 
+                              custom_data::text LIKE %s
+                          )
+                    """, (vendor_id, str(student_id).strip(), str(student_id).strip(), f"%{mobile_tail}%", f"%{mobile_tail}%"))
+                else:
+                    c.execute("""
+                        SELECT id, custom_data FROM faces 
+                        WHERE vendor_id = ? AND (student_status IS NULL OR student_status <> 'deleted')
+                          AND (
+                              json_extract(custom_data, '$.student_id') LIKE ? OR
+                              json_extract(custom_data, '$.id_number') LIKE ? OR
+                              phone LIKE ? OR 
+                              custom_data LIKE ?
+                          )
+                    """, (vendor_id, str(student_id).strip(), str(student_id).strip(), f"%{mobile_tail}%", f"%{mobile_tail}%"))
                 vv = c.fetchall() or []
                 ok = False
                 for st in vv:
                     try:
                         cd = _row_get(st, 1, "custom_data")
                         sn = extract_student_number_from_custom_data(cd, search_term=student_id)
-                        if sn.lower() == str(student_id).strip().lower():
+                        if sn and sn.lower() == str(student_id).strip().lower():
                             ok = True
                             resolved_person_id = _row_get(st, 0, "id")
                             break

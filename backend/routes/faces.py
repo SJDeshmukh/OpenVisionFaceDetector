@@ -1065,40 +1065,32 @@ def upload_face():
                         return jsonify({"error": "Duplicate student_number for this vendor"}), 409
                 except Exception:
                     continue
-        # Generic duplicate guard for new registrations:
-        # If creating a new person (no person_id), block if name or templates already exist for this vendor
-        if not person_id:
-            try:
-                if vendor_id:
-                    if templates_list and isinstance(templates_list, list) and len(templates_list) > 0:
-                        cc.execute("SELECT templates FROM faces WHERE vendor_id = ?", (vendor_id,))
-                        rows_all = cc.fetchall()
-                        for rtpl in rows_all:
-                            try:
-                                et = rtpl[0] if not isinstance(rtpl, dict) else rtpl.get("templates")
-                                if not et:
-                                    continue
-                                if et.startswith('['):
-                                    arr = json.loads(et)
-                                    for t in templates_list:
-                                        if t in arr:
-                                            conn_check.close()
-                                            return jsonify({"error": "Face already registered for this vendor (templates_list)"}), 409
-                                else:
-                                    for t in templates_list:
-                                        if t == et:
-                                            conn_check.close()
-                                            return jsonify({"error": "Face already registered for this vendor (templates)"}), 409
-                            except Exception:
-                                continue
-                    elif vendor_id and templates and str(templates).strip() != "":
-                        cc.execute("SELECT id FROM faces WHERE vendor_id = ? AND templates = ? LIMIT 1", (vendor_id, templates))
-                        row_tpl = cc.fetchone()
-                        if row_tpl:
-                            conn_check.close()
-                            return jsonify({"error": "Face already registered for this vendor (templates)"}), 409
-            except Exception:
-                pass
+        # Vector-based Cross-Entity Duplicate Guard:
+        # Check candidate face against active parents (parent_users) and existing students/employees (faces)
+        try:
+            if vendor_id:
+                from services.face_duplicate_service import (
+                    check_student_face_duplicate,
+                    extract_vectors_from_payload,
+                )
+                candidate_vecs = []
+                if templates_list and isinstance(templates_list, list):
+                    candidate_vecs.extend(extract_vectors_from_payload(templates_list))
+                if templates and str(templates).strip():
+                    candidate_vecs.extend(extract_vectors_from_payload(templates))
+
+                is_dup, dup_err = check_student_face_duplicate(
+                    conn=conn_check,
+                    vendor_id=vendor_id,
+                    candidate_vectors=candidate_vecs,
+                    candidate_image=face_image,
+                    exclude_person_id=person_id,
+                )
+                if is_dup:
+                    conn_check.close()
+                    return jsonify({"error": dup_err}), 409
+        except Exception as _dup_e:
+            logger.error(f"[UPLOAD_FACE] Error during duplicate face verification: {_dup_e}", exc_info=True)
         conn_check.close()
     except Exception:
         pass

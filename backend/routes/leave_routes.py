@@ -519,10 +519,7 @@ def parent_register_face():
             "message": "Face is already registered for this parent account",
         }), 200
 
-    # 1. Parent Face Registration is 1:1 bound to this parent account
-    # No 1:N scan across unrelated students is required for parent enrollment.
-
-    # 2. Proceed with registration
+    # 1. Proceed with registration
     try:
         is_pg = getattr(conn, "_is_pg", False)
         server_template = None
@@ -532,6 +529,29 @@ def parent_register_face():
             if not face_template:
                 conn.close()
                 return jsonify({"error": f"Inference failed or timed out: {str(e)}"}), 500
+
+        # Cross-entity vector duplicate check:
+        # A parent CANNOT have the same face as any active student, or any other parent account.
+        from services.face_duplicate_service import (
+            check_parent_face_duplicate,
+            extract_vectors_from_payload,
+        )
+        candidate_vecs = []
+        if server_template:
+            candidate_vecs.extend(extract_vectors_from_payload(server_template))
+        if face_template:
+            candidate_vecs.extend(extract_vectors_from_payload(face_template))
+
+        is_dup, dup_err = check_parent_face_duplicate(
+            conn=conn,
+            vendor_id=vendor_id,
+            parent_id=parent["id"],
+            candidate_vectors=candidate_vecs,
+            candidate_image=face_image,
+        )
+        if is_dup:
+            conn.close()
+            return jsonify({"error": dup_err}), 409
 
         # Web clients without the local model may use the server template for
         # local storage too; Android keeps its model-specific FID1 template.
