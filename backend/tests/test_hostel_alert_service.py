@@ -226,7 +226,7 @@ def test_approved_leave_with_datetime_string_suppresses_alerts(tmp_path):
     assert "9000000011" not in sent
 
 
-def test_leave_checkout_alert_dispatches_to_parent_for_girl_on_night_out(tmp_path):
+def test_leave_checkout_alert_dispatches_to_parent_for_all_residents(tmp_path):
     factory = _database(tmp_path)
     conn = factory()
     conn.execute("INSERT INTO faces VALUES (5, 1, 'Priya Patel', '9000000020', '{\"person_type\":\"student\",\"gender\":\"female\",\"parent_phone\":\"9000000021\"}')")
@@ -239,7 +239,6 @@ def test_leave_checkout_alert_dispatches_to_parent_for_girl_on_night_out(tmp_pat
     save_settings(1, {
         "enabled": True,
         "leave_checkout_alert_enabled": True,
-        "leave_checkout_gender_filter": "female_only",
         "timezone": "Asia/Kolkata",
     }, connection_factory=factory)
 
@@ -250,7 +249,7 @@ def test_leave_checkout_alert_dispatches_to_parent_for_girl_on_night_out(tmp_pat
 
     checkout_time = datetime(2026, 9, 21, 12, 30, tzinfo=timezone.utc)  # 18:00 IST
 
-    # 1. Girl on night out checks out -> sends WhatsApp to parent
+    # 1. Resident 5 (female) on night out checks out -> sends WhatsApp to parent
     res_female = process_leave_checkout_alert(1, 5, checkout_time, connection_factory=factory, sender=sender)
     assert res_female["status"] == "sent"
     assert len(sent) == 1
@@ -263,7 +262,9 @@ def test_leave_checkout_alert_dispatches_to_parent_for_girl_on_night_out(tmp_pat
     assert res_dup["status"] == "skipped"
     assert len(sent) == 1
 
-    # 3. Male student checks out when female_only is set -> skipped
+    # 3. Resident 6 (male) on night out checks out -> ALSO sends WhatsApp to parent (same rules for all residents)
     res_male = process_leave_checkout_alert(1, 6, checkout_time, connection_factory=factory, sender=sender)
-    assert res_male["status"] == "skipped"
-    assert len(sent) == 1
+    assert res_male["status"] == "sent"
+    assert len(sent) == 2
+    assert sent[1][1] == "9000000023"
+    assert "Rahul Verma" in sent[1][2]

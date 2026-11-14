@@ -580,7 +580,7 @@ def process_leave_checkout_alert(vendor_id, person_id, timestamp=None, connectio
         if str(setting.get("whatsapp_status") or "").lower() != "connected":
             return {"status": "skipped", "reason": "WhatsApp disconnected"}
 
-        # 2. Check resident and gender filter
+        # 2. Check resident
         c.execute("SELECT id, name, phone, custom_data FROM faces WHERE id = ? AND vendor_id = ?", (person_id, vendor_id))
         person_row = c.fetchone()
         if not person_row:
@@ -589,14 +589,7 @@ def process_leave_checkout_alert(vendor_id, person_id, timestamp=None, connectio
         custom = _parse_custom(person.get("custom_data"))
         person["custom"] = custom
 
-        gender_filter = str(setting.get("leave_checkout_gender_filter") or "female_only").lower().strip()
-        if gender_filter == "female_only":
-            gender = str(custom.get("gender") or custom.get("sex") or "").lower().strip()
-            if gender not in {"female", "girl", "f", "women", "woman"}:
-                logger.info("Leave checkout alert skipped for person %s: gender '%s' is not female", person_id, gender)
-                return {"status": "skipped", "reason": f"Resident gender '{gender}' does not match female_only filter"}
-
-        # 3. Check approved leave for current date
+        # 3. Check approved leave for current date (all rules same for all residents)
         vendor_tz = _timezone(setting.get("timezone"))
         local_now = timestamp.astimezone(vendor_tz) if timestamp.tzinfo else timestamp.replace(tzinfo=timezone.utc).astimezone(vendor_tz)
         alert_date = local_now.date().isoformat()

@@ -24,7 +24,6 @@ const defaults = {
   parent_template: DEFAULT_PARENT_TEMPLATE,
   owner_summary_enabled: 1,
   leave_checkout_alert_enabled: 1,
-  leave_checkout_gender_filter: 'female_only',
   leave_checkout_template: DEFAULT_LEAVE_CHECKOUT_TEMPLATE,
 };
 
@@ -37,7 +36,6 @@ const normalizeSettings = (value = {}) => ({
   student_template: value.student_template || DEFAULT_STUDENT_TEMPLATE,
   parent_template: value.parent_template || DEFAULT_PARENT_TEMPLATE,
   leave_checkout_alert_enabled: value.leave_checkout_alert_enabled === undefined || value.leave_checkout_alert_enabled ? 1 : 0,
-  leave_checkout_gender_filter: value.leave_checkout_gender_filter || 'female_only',
   leave_checkout_template: value.leave_checkout_template || DEFAULT_LEAVE_CHECKOUT_TEMPLATE,
 });
 
@@ -108,51 +106,79 @@ function Toast({ toast, onClose }) {
 function MessageEditor({ title, description, value, onChange, onReset, accent, fields = TEMPLATE_FIELDS }) {
   const appendField = (field) => onChange(`${value || ''}${value?.endsWith(' ') || !value ? '' : ' '}${field}`);
   return (
-    <article className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <div className={`border-b px-5 py-4 ${accent === 'emerald' ? 'bg-emerald-50/70' : accent === 'fuchsia' ? 'bg-fuchsia-50/70' : 'bg-indigo-50/70'}`}>
-        <div className="flex items-start justify-between gap-3">
+    <article className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:shadow-md">
+      <div className={`border-b px-6 py-4 ${accent === 'emerald' ? 'bg-emerald-50/70 border-emerald-100' : accent === 'fuchsia' ? 'bg-fuchsia-50/70 border-fuchsia-100' : 'bg-indigo-50/70 border-indigo-100'}`}>
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
             <div className="flex items-center gap-2">
-              <MessageCircle size={18} className={accent === 'emerald' ? 'text-emerald-600' : accent === 'fuchsia' ? 'text-fuchsia-600' : 'text-indigo-600'} />
-              <h3 className="font-semibold text-slate-900">{title}</h3>
+              <MessageCircle size={19} className={accent === 'emerald' ? 'text-emerald-600' : accent === 'fuchsia' ? 'text-fuchsia-600' : 'text-indigo-600'} />
+              <h3 className="font-bold text-slate-900 text-base">{title}</h3>
             </div>
-            <p className="mt-1 text-xs leading-5 text-slate-500">{description}</p>
+            <p className="mt-1 text-xs text-slate-600 leading-relaxed">{description}</p>
           </div>
-          <button type="button" onClick={onReset} className="flex shrink-0 cursor-pointer items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-slate-600 hover:bg-white hover:text-indigo-700">
-            <RotateCcw size={13} /> Reset
+          <button
+            type="button"
+            onClick={onReset}
+            className="flex shrink-0 cursor-pointer items-center gap-1.5 self-start sm:self-auto rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 shadow-xs transition hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-700"
+          >
+            <RotateCcw size={13} /> Reset template
           </button>
         </div>
       </div>
-      <div className="grid gap-5 p-5 xl:grid-cols-[minmax(0,1.05fr)_minmax(250px,.95fr)]">
-        <div>
-          <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">Message text</label>
+
+      <div className="grid gap-6 p-6 lg:grid-cols-[1fr_360px] items-start">
+        {/* Left: Expanded Textarea & Tags */}
+        <div className="flex flex-col min-w-0">
+          <div className="flex items-center justify-between mb-2">
+            <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Message Text Template</label>
+            <span className="text-[11px] font-medium text-slate-400">{String(value || '').length} characters</span>
+          </div>
           <textarea
-            rows="8"
+            rows="7"
             value={value || ''}
             onChange={(event) => onChange(event.target.value)}
-            className="mt-2 w-full resize-y rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3 text-sm leading-6 text-slate-800 outline-none transition focus:border-indigo-400 focus:bg-white focus:ring-4 focus:ring-indigo-50"
+            placeholder="Type your WhatsApp template here..."
+            className="w-full resize-y rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-800 font-mono outline-none transition focus:border-indigo-400 focus:bg-white focus:ring-4 focus:ring-indigo-50"
           />
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <span className="mr-1 text-xs font-medium text-slate-500">Insert field:</span>
-            {fields.map((field) => (
-              <button key={field} type="button" onClick={() => appendField(field)} className="cursor-pointer rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-indigo-700 transition hover:border-indigo-300 hover:bg-indigo-50">
-                {field}
-              </button>
-            ))}
+          <div className="mt-3.5">
+            <span className="block text-xs font-semibold text-slate-500 mb-2">Click tag to insert into message:</span>
+            <div className="flex flex-wrap items-center gap-2">
+              {fields.map((field) => (
+                <button
+                  key={field}
+                  type="button"
+                  onClick={() => appendField(field)}
+                  className="cursor-pointer rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-indigo-700 transition hover:border-indigo-400 hover:bg-indigo-50 hover:text-indigo-800 shadow-2xs"
+                >
+                  + {field}
+                </button>
+              ))}
+            </div>
           </div>
-          <p className="mt-3 text-right text-[11px] text-slate-400">{String(value || '').length} characters</p>
         </div>
-        <div>
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">WhatsApp preview</p>
-          <div className="rounded-[1.75rem] bg-slate-900 p-2 shadow-lg">
-            <div className="min-h-56 rounded-[1.3rem] bg-[#efeae2] p-3">
-              <div className="mb-3 flex items-center gap-2 rounded-xl bg-white/80 px-3 py-2">
-                <div className="grid h-8 w-8 place-items-center rounded-full bg-emerald-600 text-xs font-bold text-white">HX</div>
-                <div><p className="text-xs font-semibold text-slate-800">Hostel Desk</p><p className="text-[10px] text-slate-500">WhatsApp notification</p></div>
-              </div>
-              <div className="ml-auto max-w-[94%] rounded-2xl rounded-br-sm bg-[#d9fdd3] px-3 py-2.5 shadow-sm">
-                <p className="whitespace-pre-wrap text-[11px] leading-5 text-slate-800">{previewTemplate(value) || 'Your message preview will appear here.'}</p>
-                <p className="mt-1 text-right text-[9px] text-slate-500">Preview ✓✓</p>
+
+        {/* Right: Phone Live Mockup */}
+        <div className="w-full max-w-[360px] mx-auto">
+          <p className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">WhatsApp Live Preview</p>
+          <div className="rounded-[2.2rem] bg-slate-900 p-2.5 shadow-xl border-4 border-slate-800">
+            <div className="min-h-64 rounded-[1.6rem] bg-[#efeae2] p-3.5 flex flex-col justify-between">
+              <div>
+                <div className="mb-3 flex items-center gap-2.5 rounded-xl bg-white/95 px-3 py-2 shadow-xs">
+                  <div className="grid h-8 w-8 place-items-center rounded-full bg-emerald-600 text-xs font-bold text-white shadow-xs">HX</div>
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold text-slate-900 truncate">Hostel Gate Desk</p>
+                    <p className="text-[10px] text-emerald-700 flex items-center gap-1 font-medium">
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" /> Verified automated desk
+                    </p>
+                  </div>
+                </div>
+                <div className="ml-auto max-w-[96%] rounded-2xl rounded-br-xs bg-[#d9fdd3] px-3.5 py-2.5 shadow-sm">
+                  <p className="whitespace-pre-wrap text-xs leading-5 text-slate-800 font-sans">{previewTemplate(value) || 'Your message preview will appear here.'}</p>
+                  <div className="mt-1.5 flex items-center justify-end gap-1 text-[10px] text-slate-500">
+                    <span>Just now</span>
+                    <span className="text-emerald-600 font-bold">✓✓</span>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -352,6 +378,7 @@ export default function HostelAlerts() {
         </div>
       </section>
 
+      {/* Leave & Night Out Checkout WhatsApp Alerts */}
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm md:p-6">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="flex gap-3">
@@ -361,7 +388,7 @@ export default function HostelAlerts() {
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="font-bold text-slate-900">Leave & Night Out departure alerts to parents</h2>
-                <span className="rounded-full bg-fuchsia-100 px-2.5 py-0.5 text-xs font-semibold text-fuchsia-800">Safety feature</span>
+                <span className="rounded-full bg-fuchsia-100 px-2.5 py-0.5 text-xs font-semibold text-fuchsia-800">All residents</span>
               </div>
               <p className="mt-1 max-w-2xl text-sm leading-5 text-slate-500">
                 Instantly notify parents on WhatsApp when their ward checks out (exits) through the hostel gate during an approved leave or night out. Curfew alerts are automatically suppressed while residents are on approved leave.
@@ -375,57 +402,43 @@ export default function HostelAlerts() {
           />
         </div>
 
-        <div className="mt-5 grid gap-4 border-t border-slate-100 pt-5 md:grid-cols-2">
-          <div>
-            <label className="text-sm font-semibold text-slate-700" htmlFor="leave-gender-filter">Target resident group</label>
-            <select
-              id="leave-gender-filter"
-              value={settings.leave_checkout_gender_filter || 'female_only'}
-              onChange={(event) => update('leave_checkout_gender_filter', event.target.value)}
-              className="mt-2 w-full cursor-pointer rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm outline-none transition focus:border-indigo-400 focus:bg-white focus:ring-4 focus:ring-indigo-50"
-            >
-              <option value="female_only">Female residents only (Recommended for girls’ safety)</option>
-              <option value="all">All residents (Both male and female)</option>
-            </select>
-            <span className="mt-1.5 block text-[11px] text-slate-400">
-              Filtered using the resident gender specified in student profile / custom data.
-            </span>
-          </div>
-          <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-            <CheckCircle2 size={18} className="shrink-0 text-emerald-600" />
-            <div className="text-xs text-slate-600">
-              <span className="font-semibold text-slate-800">Approved leave suppression active: </span>
-              Students on approved leave or night out are automatically exempted from missing-entry reminders and parent curfew alerts.
-            </div>
+        <div className="mt-5 flex items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50/70 px-4 py-3">
+          <CheckCircle2 size={18} className="shrink-0 text-emerald-600" />
+          <div className="text-xs text-slate-700">
+            <span className="font-semibold text-slate-900">Standardized across all residents: </span>
+            Applies equally to all hostel residents on approved leave. When a resident checks out at the gate, their parent is notified on WhatsApp, and curfew/absent alerts are automatically suppressed during their approved leave window.
           </div>
         </div>
       </section>
 
-      <section>
-        <div className="mb-4">
-          <h2 className="text-lg font-bold text-slate-900">WhatsApp messages</h2>
-          <p className="mt-1 text-sm text-slate-500">Personalize each message and preview exactly what recipients will see.</p>
+      {/* WhatsApp Message Templates - Expanded Full-Width Components */}
+      <section className="space-y-4">
+        <div>
+          <h2 className="text-lg font-bold text-slate-900">WhatsApp notification templates</h2>
+          <p className="mt-1 text-sm text-slate-500">Personalize message wording and insert dynamic tags. The preview accurately reflects what parents and residents see on their phone.</p>
         </div>
-        <div className="grid gap-5 xl:grid-cols-3">
+        <div className="space-y-6">
           <MessageEditor
             title="Resident reminder"
-            description={`Sent at ${formatClock(settings.cutoff_time)} when hostel entry is missing.`}
+            description={`Sent automatically at ${formatClock(settings.cutoff_time)} to students who have not checked in by cutoff time.`}
             value={settings.student_template}
             onChange={(value) => update('student_template', value)}
             onReset={() => update('student_template', DEFAULT_STUDENT_TEMPLATE)}
             accent="indigo"
+            fields={TEMPLATE_FIELDS}
           />
           <MessageEditor
             title="Parent / guardian escalation"
-            description={`Sent at ${escalationTime} only if the resident still has not returned.`}
+            description={`Sent automatically at ${escalationTime} to parents if the resident still has not returned.`}
             value={settings.parent_template}
             onChange={(value) => update('parent_template', value)}
             onReset={() => update('parent_template', DEFAULT_PARENT_TEMPLATE)}
             accent="emerald"
+            fields={TEMPLATE_FIELDS}
           />
           <MessageEditor
-            title="Leave / Night Out departure"
-            description="Sent to parents when the resident checks out on an approved leave."
+            title="Leave & Night Out departure alert"
+            description="Sent instantly to parents when any resident on an approved leave or night out checks out (exits) through the hostel gate."
             value={settings.leave_checkout_template}
             onChange={(value) => update('leave_checkout_template', value)}
             onReset={() => update('leave_checkout_template', DEFAULT_LEAVE_CHECKOUT_TEMPLATE)}
