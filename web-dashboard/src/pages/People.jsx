@@ -285,7 +285,7 @@ const People = () => {
       
       if (!parentName && (normKey.includes('parent') || normKey.includes('guardian') || normKey.includes('father') || normKey.includes('mother')) &&
           (normKey.includes('name') || normKey === 'parent' || normKey === 'guardian' || normKey === 'parents')) {
-        if (!/^[\d\s+\-]+$/.test(val)) parentName = val;
+        if (!/^[\d\s+-]+$/.test(val)) parentName = val;
       }
       
       if (!parentEmail && (normKey.includes('parent') || normKey.includes('guardian')) && normKey.includes('email')) {
