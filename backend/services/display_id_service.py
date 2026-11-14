@@ -22,6 +22,45 @@ def compact_vendor_display_ids(conn, vendor_id):
     placeholder = "%s" if is_pg else "?"
     cursor = conn.cursor()
 
+    # Identify any faculty faces associated with this vendor so their records
+    # do not displace students or employees (faculty accounts use usernames/emails,
+    # not serial display IDs).
+    faculty_pids = set()
+    try:
+        cursor.execute(
+            f"SELECT person_id FROM system_users WHERE vendor_id = {placeholder} AND LOWER(role) = 'faculty' AND person_id IS NOT NULL",
+            (vendor_id,),
+        )
+        faculty_pids.update(int(row[0]) for row in (cursor.fetchall() or []) if row[0] is not None)
+    except Exception:
+        pass
+
+    try:
+        if is_pg:
+            cursor.execute(
+                f"SELECT id FROM faces WHERE vendor_id = {placeholder} AND custom_data IS NOT NULL AND custom_data::text LIKE '%%\"person_type\": \"faculty\"%%'",
+                (vendor_id,),
+            )
+        else:
+            cursor.execute(
+                f"SELECT id FROM faces WHERE vendor_id = {placeholder} AND custom_data IS NOT NULL AND custom_data LIKE '%\"person_type\": \"faculty\"%'",
+                (vendor_id,),
+            )
+        faculty_pids.update(int(row[0]) for row in (cursor.fetchall() or []) if row[0] is not None)
+    except Exception:
+        pass
+
+    # Ensure faculty faces do not hold a serial display_id
+    if faculty_pids:
+        try:
+            placeholders = ",".join([placeholder] * len(faculty_pids))
+            cursor.execute(
+                f"UPDATE faces SET display_id = NULL WHERE vendor_id = {placeholder} AND id IN ({placeholders}) AND display_id IS NOT NULL",
+                (vendor_id, *faculty_pids),
+            )
+        except Exception:
+            pass
+
     # Use the same per-vendor transaction lock as face registration so an
     # enrollment cannot allocate MAX(display_id)+1 during compaction.
     if is_pg:
@@ -30,12 +69,19 @@ def compact_vendor_display_ids(conn, vendor_id):
             (int(vendor_id),),
         )
 
+        faculty_clause = ""
+        faculty_params = []
+        if faculty_pids:
+            fac_ph = ",".join(["%s"] * len(faculty_pids))
+            faculty_clause = f"AND id NOT IN ({fac_ph})"
+            faculty_params = list(faculty_pids)
+
         # PostgreSQL can rank and update the whole vendor roster in one
-        # statement.  The previous row-by-row loop added one database round
+        # statement. The previous row-by-row loop added one database round
         # trip per employee, which made deleting an early serial increasingly
         # slow as a vendor's roster grew.
         cursor.execute(
-            """
+            f"""
             WITH ranked AS (
                 SELECT id,
                        ROW_NUMBER() OVER (
@@ -45,6 +91,7 @@ def compact_vendor_display_ids(conn, vendor_id):
                        )::integer AS expected_display_id
                 FROM faces
                 WHERE vendor_id = %s
+                {faculty_clause}
             ), updated AS (
                 UPDATE faces AS f
                    SET display_id = ranked.expected_display_id
@@ -56,7 +103,7 @@ def compact_vendor_display_ids(conn, vendor_id):
             )
             SELECT id, display_id FROM updated ORDER BY display_id ASC, id ASC
             """,
-            (vendor_id, vendor_id),
+            (vendor_id, *faculty_params, vendor_id),
         )
         changed = [
             {"person_id": int(row[0]), "display_id": int(row[1])}
@@ -65,11 +112,18 @@ def compact_vendor_display_ids(conn, vendor_id):
         cursor.close()
         return changed
 
+    faculty_clause = ""
+    faculty_params = []
+    if faculty_pids:
+        fac_ph = ",".join(["?"] * len(faculty_pids))
+        faculty_clause = f"AND id NOT IN ({fac_ph})"
+        faculty_params = list(faculty_pids)
+
     cursor.execute(
-        "SELECT id, display_id FROM faces "
-        f"WHERE vendor_id = {placeholder} "
+        f"SELECT id, display_id FROM faces "
+        f"WHERE vendor_id = {placeholder} {faculty_clause} "
         "ORDER BY CASE WHEN display_id IS NULL THEN 1 ELSE 0 END, display_id ASC, id ASC",
-        (vendor_id,),
+        (vendor_id, *faculty_params),
     )
     rows = cursor.fetchall() or []
     changed = []

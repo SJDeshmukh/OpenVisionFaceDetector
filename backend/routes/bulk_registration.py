@@ -13,6 +13,7 @@ from utils import (
     vendor_has_feature,
 )
 from db_factory import get_table_columns
+from services.display_id_service import compact_vendor_display_ids
 from services.auth_service import require_auth, hash_password, is_valid_login_email, normalize_login_email
 from services.person_scope_service import is_school_hostel, is_classroom, is_student_vertical, parse_custom_data
 from services.spreadsheet_mapping_service import map_spreadsheet_headers

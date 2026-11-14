@@ -415,9 +415,15 @@ const People = () => {
             );
             updateUsersAndCache((current) => current
               .filter((person) => !deletedIds.has(String(person.id || person.person_id)))
-              .map((person) => {
+              .map((person, index) => {
                 const id = String(person.id || person.person_id);
-                return displayIds.has(id) ? { ...person, display_id: displayIds.get(id) } : person;
+                const serverId = displayIds.get(id);
+                return {
+                  ...person,
+                  display_id: serverId !== undefined && serverId !== null && Number(serverId) > 0
+                    ? serverId
+                    : (index + 1)
+                };
               }));
             return;
           }
@@ -465,13 +471,21 @@ const People = () => {
       const faces = schoolFlow
         ? receivedFaces.filter(face => (face.person_type || face.custom_data?.person_type || 'student') === 'student' && face.role !== 'faculty')
         : receivedFaces;
-      setUsers(faces);
+      const normalizedFaces = faces.map((face, index) => {
+        const expectedId = index + 1;
+        const hasGapOrOffset = !faces[0]?.display_id || Number(faces[0]?.display_id) !== 1;
+        return {
+          ...face,
+          display_id: hasGapOrOffset ? expectedId : (face.display_id || expectedId)
+        };
+      });
+      setUsers(normalizedFaces);
       setLoading(false);
       if (!isFaculty) {
         // Face images and templates can make this synchronous browser write
         // several megabytes. Cache the list metadata used for the first paint;
         // the authoritative fetch fills recognition assets afterward.
-        localStorage.setItem(peopleCacheKey, JSON.stringify(peopleCachePayload(faces)));
+        localStorage.setItem(peopleCacheKey, JSON.stringify(peopleCachePayload(normalizedFaces)));
       }
     } catch (error) {
       console.error("Error fetching users:", error);
@@ -642,9 +656,15 @@ const People = () => {
           const displayIds = new Map(
             (resp.data.renumbered || []).map((item) => [String(item.person_id), item.display_id])
           );
-          updateUsersAndCache((current) => current.map((person) => {
+          updateUsersAndCache((current) => current.map((person, index) => {
             const personId = String(person.id || person.person_id);
-            return displayIds.has(personId) ? { ...person, display_id: displayIds.get(personId) } : person;
+            const serverId = displayIds.get(personId);
+            return {
+              ...person,
+              display_id: serverId !== undefined && serverId !== null && Number(serverId) > 0
+                ? serverId
+                : (index + 1)
+            };
           }));
           addToast(`${personLabel} deleted successfully.`, 'success');
         } else {
@@ -1607,7 +1627,7 @@ const People = () => {
                                 <PersonAvatar person={person} />
                                 <div>
                                   <div className="text-sm font-bold text-slate-800 tracking-tight">{person.name}</div>
-                                  <div className="text-[10px] text-slate-400 font-mono uppercase">#{person.display_id || person.id}</div>
+                                  <div className="text-[10px] text-slate-400 font-mono uppercase">#{searchTerm ? (person.display_id || (idx + 1)) : (idx + 1)}</div>
                                 </div>
                               </div>
                             </td>

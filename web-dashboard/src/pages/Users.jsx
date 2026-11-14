@@ -68,9 +68,13 @@ const Users = () => {
       const displayIds = new Map(
         (response.data.renumbered || []).map((item) => [String(item.person_id), item.display_id])
       );
-      setUsers((current) => current.map((entry) => {
+      setUsers((current) => current.map((entry, index) => {
         const id = String(entry.id || entry.person_id);
-        return displayIds.has(id) ? { ...entry, display_id: displayIds.get(id) } : entry;
+        const serverId = displayIds.get(id);
+        return {
+          ...entry,
+          display_id: serverId !== undefined && serverId !== null && Number(serverId) > 0 ? serverId : (index + 1)
+        };
       }));
     } catch (error) {
       setUsers(previousUsers);

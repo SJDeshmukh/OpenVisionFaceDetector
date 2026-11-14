@@ -2424,6 +2424,10 @@ def delete_all_faces():
             
             message = "All student data cleared. Registration configuration preserved."
         
+        try:
+            compact_vendor_display_ids(conn, vendor_id)
+        except Exception:
+            pass
         conn.commit()
         
         cache_delete_vendor_prefix(vendor_id)
