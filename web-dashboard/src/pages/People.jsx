@@ -1208,6 +1208,18 @@ const People = () => {
       }
     }
 
+    // Filter by student lifecycle status
+    if (statusFilter !== 'all') {
+      result = result.filter(u => {
+        const s = (u.student_status || 'active').toLowerCase();
+        const h = (u.hostel_status || '').toLowerCase();
+        if (statusFilter === 'left_hostel') {
+          return h === 'left_hostel' || s === 'left_hostel';
+        }
+        return s === statusFilter;
+      });
+    }
+
     if (!searchTerm) return result;
     const lowerSearch = searchTerm.toLowerCase();
     return result.filter(u => {
@@ -1240,17 +1252,6 @@ const People = () => {
       }
       return false;
     });
-    if (statusFilter !== 'all') {
-      result = result.filter(u => {
-        const s = (u.student_status || 'active').toLowerCase();
-        const h = (u.hostel_status || '').toLowerCase();
-        if (statusFilter === 'left_hostel') {
-          return h === 'left_hostel' || s === 'left_hostel';
-        }
-        return s === statusFilter;
-      });
-    }
-    return result;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [users, searchTerm, selectedClassForView, statusFilter]);
 
@@ -2633,6 +2634,381 @@ const People = () => {
               </div>
             </form>
           </motion.div>
+        </div>
+      )}
+
+      {/* Student Lifecycle Status Modal */}
+      {isStatusModalOpen && statusModalTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+              <div className="flex items-center gap-3">
+                <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+                  statusModalData.status === 'active' ? 'bg-emerald-100 text-emerald-700' :
+                  statusModalData.status === 'graduated' ? 'bg-indigo-100 text-indigo-700' :
+                  statusModalData.status === 'left_college' ? 'bg-orange-100 text-orange-700' :
+                  statusModalData.status === 'left_hostel' ? 'bg-amber-100 text-amber-700' :
+                  'bg-rose-100 text-rose-700'
+                }`}>
+                  {statusModalData.status === 'active' && <CheckCircle2 size={22} />}
+                  {statusModalData.status === 'graduated' && <GraduationCap size={22} />}
+                  {statusModalData.status === 'left_college' && <LogOut size={22} />}
+                  {statusModalData.status === 'left_hostel' && <Home size={22} />}
+                  {statusModalData.status === 'suspended' && <AlertOctagon size={22} />}
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-slate-800">
+                    {statusModalData.status === 'active' ? 'Reactivate Student' :
+                     statusModalData.status === 'graduated' ? 'Mark as Graduated' :
+                     statusModalData.status === 'left_college' ? 'Mark as Left College' :
+                     statusModalData.status === 'left_hostel' ? 'Mark as Left Hostel' :
+                     'Suspend Student'}
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium">
+                    {statusModalTarget.name} (#{statusModalTarget.display_id || statusModalTarget.id})
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsStatusModalOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleStatusSubmit} className="p-6 space-y-5">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase tracking-wider">
+                  Target Lifecycle Status
+                </label>
+                <select
+                  value={statusModalData.status}
+                  onChange={(e) => setStatusModalData(prev => ({ ...prev, status: e.target.value }))}
+                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-medium text-slate-800"
+                >
+                  <option value="active">Active (Full Access & Attendance)</option>
+                  <option value="graduated">Graduated (Login & Attendance Disabled)</option>
+                  <option value="left_college">Left College (Login & Attendance Disabled)</option>
+                  <option value="left_hostel">Left Hostel (Hostel Attendance & Occupancy Disabled)</option>
+                  <option value="suspended">Suspended (Temporary Access Blocked)</option>
+                </select>
+              </div>
+
+              <div className={`p-3.5 rounded-xl text-xs leading-relaxed border ${
+                statusModalData.status === 'active' ? 'bg-emerald-50 text-emerald-800 border-emerald-200' :
+                statusModalData.status === 'left_hostel' ? 'bg-amber-50 text-amber-800 border-amber-200' :
+                'bg-slate-50 text-slate-700 border-slate-200'
+              }`}>
+                {statusModalData.status === 'active' && 'Reactivating will re-enable student login, restore active attendance tracking, and allow new leave requests.'}
+                {statusModalData.status === 'graduated' && 'Graduating disables student login and removes them from daily attendance tracking. Academic history, attendance, and parent portal access are preserved.'}
+                {statusModalData.status === 'left_college' && 'Disables student portal login and daily attendance tracking. Historical records remain fully archived and accessible.'}
+                {statusModalData.status === 'left_hostel' && 'Student will be removed from hostel occupancy and hostel gate pass tracking. If enrolled in college, college account remains active.'}
+                {statusModalData.status === 'suspended' && 'Suspends portal login, invalidates active sessions, and disables biometric attendance punches until reactivated.'}
+              </div>
+
+              {statusModalData.status !== 'active' && (
+                <>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase tracking-wider">
+                      Effective Date <span className="text-rose-500">*</span>
+                    </label>
+                    <div className="relative">
+                      <Calendar size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                      <input
+                        type="date"
+                        required
+                        value={statusModalData.effective_date}
+                        onChange={(e) => setStatusModalData(prev => ({ ...prev, effective_date: e.target.value }))}
+                        className="w-full pl-9 pr-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-medium text-slate-800"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase tracking-wider">
+                      Reason for Status Change <span className="text-rose-500">*</span>
+                    </label>
+                    <textarea
+                      required
+                      rows={3}
+                      value={statusModalData.reason}
+                      onChange={(e) => setStatusModalData(prev => ({ ...prev, reason: e.target.value }))}
+                      placeholder="Enter detailed reason for audit records..."
+                      className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 text-slate-800 placeholder-slate-400"
+                    />
+
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {(statusModalData.status === 'graduated' ? [
+                        'Completed degree requirements', 'Course completion', 'Final semester passed'
+                      ] : statusModalData.status === 'left_college' ? [
+                        'College transfer', 'Personal relocation', 'Discontinued course'
+                      ] : statusModalData.status === 'left_hostel' ? [
+                        'Day scholar conversion', 'Vacated hostel room', 'Completed tenure'
+                      ] : [
+                        'Disciplinary action', 'Pending inquiry', 'Administrative suspension'
+                      ]).map((sug, idx) => (
+                        <button
+                          key={idx}
+                          type="button"
+                          onClick={() => setStatusModalData(prev => ({ ...prev, reason: sug }))}
+                          className="text-[11px] px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors"
+                        >
+                          + {sug}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
+
+              <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setIsStatusModalOpen(false)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={statusSubmitting}
+                  className={`px-5 py-2 text-xs font-bold text-white rounded-xl shadow-lg transition-all flex items-center gap-2 ${
+                    statusModalData.status === 'active'
+                      ? 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-500/20'
+                      : 'bg-blue-600 hover:bg-blue-700 shadow-blue-500/20'
+                  }`}
+                >
+                  {statusSubmitting ? 'Updating...' : 'Confirm Status Change'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Student Profile Modal */}
+      {isProfileModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden max-h-[90vh] flex flex-col animate-in fade-in zoom-in-95 duration-150">
+            <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+              <div className="flex items-center gap-4">
+                <PersonAvatar person={profileData || profileTarget} />
+                <div>
+                  <div className="flex items-center gap-2.5">
+                    <h2 className="text-xl font-bold text-slate-800">{(profileData || profileTarget)?.name}</h2>
+                    <span className="text-xs font-mono bg-slate-100 text-slate-600 px-2 py-0.5 rounded">
+                      #{(profileData || profileTarget)?.display_id || (profileData || profileTarget)?.id}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-0.5 font-medium">
+                    {(profileData || profileTarget)?.department || 'General'}
+                    {(profileData || profileTarget)?.custom_data?.branch ? ` • ${(profileData || profileTarget).custom_data.branch}` : ''}
+                  </p>
+                </div>
+              </div>
+              <button onClick={() => setIsProfileModalOpen(false)} className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto space-y-6">
+              {profileLoading ? (
+                <div className="py-12 text-center text-slate-400 text-sm">Loading profile...</div>
+              ) : profileData ? (
+                <>
+                  <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <StatusBadge person={profileData} />
+                      <span className={`text-xs px-2.5 py-0.5 rounded-full font-semibold ${
+                        profileData.login_enabled
+                          ? 'bg-blue-50 text-blue-700 border border-blue-200'
+                          : 'bg-slate-200 text-slate-600'
+                      }`}>
+                        Login: {profileData.login_enabled ? 'Enabled' : 'Disabled'}
+                      </span>
+                      {profileData.hostel_status && profileData.hostel_status !== 'not_applicable' && (
+                        <span className={`text-xs px-2.5 py-0.5 rounded-full font-semibold ${
+                          profileData.hostel_status === 'resident'
+                            ? 'bg-teal-50 text-teal-700 border border-teal-200'
+                            : 'bg-amber-50 text-amber-700 border border-amber-200'
+                        }`}>
+                          Hostel: {profileData.hostel_status === 'resident' ? 'Resident' : 'Left Hostel'}
+                        </span>
+                      )}
+                    </div>
+                    {profileData.exit_date && (
+                      <div className="text-xs text-slate-500 font-medium">
+                        Effective: <span className="font-bold text-slate-700">{profileData.exit_date}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {profileData.exit_reason && (
+                    <div className="p-3 bg-amber-50/60 border border-amber-200 rounded-xl text-xs text-amber-900">
+                      <span className="font-bold">Deactivation Reason:</span> {profileData.exit_reason}
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div className="p-3 bg-white border border-slate-200 rounded-xl shadow-xs">
+                      <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Attendance</div>
+                      <div className="text-lg font-bold text-slate-800 mt-0.5">
+                        {profileData.attendance_stats?.total_punches || 0}
+                      </div>
+                      <div className="text-[10px] text-slate-400">Total punches</div>
+                    </div>
+                    <div className="p-3 bg-white border border-slate-200 rounded-xl shadow-xs">
+                      <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Total Leaves</div>
+                      <div className="text-lg font-bold text-slate-800 mt-0.5">
+                        {profileData.leave_stats?.total || 0}
+                      </div>
+                      <div className="text-[10px] text-slate-400">Requests</div>
+                    </div>
+                    <div className="p-3 bg-white border border-slate-200 rounded-xl shadow-xs">
+                      <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Approved</div>
+                      <div className="text-lg font-bold text-emerald-600 mt-0.5">
+                        {profileData.leave_stats?.approved || 0}
+                      </div>
+                      <div className="text-[10px] text-slate-400">Leaves</div>
+                    </div>
+                    <div className="p-3 bg-white border border-slate-200 rounded-xl shadow-xs">
+                      <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Pending</div>
+                      <div className="text-lg font-bold text-amber-600 mt-0.5">
+                        {profileData.leave_stats?.pending || 0}
+                      </div>
+                      <div className="text-[10px] text-slate-400">In review</div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">
+                      Academic & Contact Information
+                    </h4>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs bg-slate-50/50 p-4 rounded-xl border border-slate-100">
+                      <div>
+                        <span className="text-slate-400">Phone:</span>
+                        <span className="ml-2 font-medium text-slate-800">{profileData.phone || '-'}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400">Department:</span>
+                        <span className="ml-2 font-medium text-slate-800">{profileData.department || '-'}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400">Branch:</span>
+                        <span className="ml-2 font-medium text-slate-800">{profileData.custom_data?.branch || '-'}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400">Class / Section:</span>
+                        <span className="ml-2 font-medium text-slate-800">
+                          {[profileData.custom_data?.class_year, profileData.custom_data?.division].filter(Boolean).join(' - ') || '-'}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400">Registered:</span>
+                        <span className="ml-2 font-medium text-slate-800">
+                          {profileData.registered_at ? new Date(profileData.registered_at).toLocaleDateString() : '-'}
+                        </span>
+                      </div>
+                      {profileData.status_updated_by && (
+                        <div>
+                          <span className="text-slate-400">Status Updated By:</span>
+                          <span className="ml-2 font-medium text-slate-800">{profileData.status_updated_by}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {profileData.hostel_allocation && (
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">
+                        Hostel Occupancy
+                      </h4>
+                      <div className="p-3.5 bg-blue-50/50 border border-blue-100 rounded-xl text-xs flex items-center justify-between">
+                        <div>
+                          <div className="font-bold text-slate-800">
+                            Building: {profileData.hostel_allocation.building_name} • Floor: {profileData.hostel_allocation.floor_name}
+                          </div>
+                          <div className="text-slate-500 mt-0.5">
+                            Room: {profileData.hostel_allocation.room_number} • Bed: {profileData.hostel_allocation.bed_label}
+                          </div>
+                        </div>
+                        <span className="px-2.5 py-1 bg-blue-100 text-blue-700 font-bold rounded-lg text-[10px]">
+                          ALLOCATED
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  <div>
+                    <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">
+                      Linked Parent Accounts ({profileData.parents?.length || 0})
+                    </h4>
+                    {(!profileData.parents || profileData.parents.length === 0) ? (
+                      <div className="p-3 bg-slate-50 rounded-xl text-slate-400 text-xs italic">
+                        No parent account linked to this student.
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {profileData.parents.map(p => (
+                          <div key={p.id} className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs flex items-center justify-between">
+                            <div>
+                              <div className="font-bold text-slate-800">{p.username}</div>
+                              <div className="text-slate-400 text-[11px] mt-0.5">
+                                {p.contact_phone || 'No phone'} • {p.contact_email || 'No email'}
+                              </div>
+                            </div>
+                            <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 font-semibold rounded text-[10px] border border-emerald-200">
+                              LINKED
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {profileData.lifecycle_history && profileData.lifecycle_history.length > 0 && (
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">
+                        Lifecycle Audit History
+                      </h4>
+                      <div className="space-y-2">
+                        {profileData.lifecycle_history.map((log, idx) => (
+                          <div key={idx} className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs">
+                            <div className="flex items-center justify-between">
+                              <span className="font-semibold text-slate-700 capitalize">
+                                {log.parsed_details?.new_status?.replace('_', ' ') || 'Status Update'}
+                              </span>
+                              <span className="text-[10px] text-slate-400">{log.timestamp}</span>
+                            </div>
+                            {log.parsed_details?.reason && (
+                              <div className="text-slate-500 text-[11px] mt-1">
+                                Reason: {log.parsed_details.reason}
+                              </div>
+                            )}
+                            <div className="text-[10px] text-slate-400 mt-1">
+                              By {log.actor_username} (Effective: {log.parsed_details?.effective_date || 'Immediate'})
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="py-8 text-center text-slate-400 text-xs">Failed to load profile.</div>
+              )}
+            </div>
+
+            <div className="p-4 border-t border-slate-100 bg-slate-50/50 flex justify-end">
+              <button
+                onClick={() => setIsProfileModalOpen(false)}
+                className="px-5 py-2 text-xs font-semibold bg-white border border-slate-200 text-slate-700 rounded-xl hover:bg-slate-100 shadow-sm"
+              >
+                Close
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
