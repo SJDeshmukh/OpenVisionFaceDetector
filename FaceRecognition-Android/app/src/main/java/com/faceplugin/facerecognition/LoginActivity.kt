@@ -48,7 +48,8 @@ class LoginActivity : AppCompatActivity() {
         checkAndPromptPermissionsAndLocation()
 
         // Show connected server (Debug info)
-        Toast.makeText(this, "Connected to: " + RetrofitClient.getBaseUrl(), Toast.LENGTH_LONG).show()
+        // User-facing branding: do not expose raw server URL
+        // Toast removed to preserve clean TapInX branding
 
         val etUsername = findViewById<EditText>(R.id.et_username)
         val etPassword = findViewById<EditText>(R.id.et_password)
@@ -158,7 +159,7 @@ class LoginActivity : AppCompatActivity() {
             if (!BuildConfig.IS_ATTENDX) btnParentLogin.visibility = View.GONE
         }
         
-        tvServerUrl.text = "Server: " + RetrofitClient.getBaseUrl()
+        tvServerUrl.text = "TapInX"
         tvServerUrl.setOnClickListener {
             showServerUrlDialog()
         }

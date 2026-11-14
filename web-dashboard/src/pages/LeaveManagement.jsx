@@ -685,7 +685,19 @@ const LeaveManagement = () => {
                         <User size={24} />
                       </div>
                       <div className="space-y-1">
-                        <h3 className="font-bold text-slate-800 text-lg">{req.student_name || req.name || req.employee_name}</h3>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="font-bold text-slate-800 text-lg">{req.student_name || req.name || req.employee_name}</h3>
+                          {req.no_hod_configured && (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-rose-50 text-rose-700 border border-rose-200">
+                              ⚠ No HOD configured for {req.student_branch || 'branch'}
+                            </span>
+                          )}
+                          {req.student_branch && !req.no_hod_configured && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600">
+                              Branch: {req.student_branch}
+                            </span>
+                          )}
+                        </div>
                         <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-500 items-center">
                           <span className="flex items-center gap-1">
                             <FileText size={14} /> {formatLeaveType(req.leave_type)}

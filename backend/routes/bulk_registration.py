@@ -289,6 +289,21 @@ def bulk_registration_upload():
         features = json.loads(s_row[0] or '[]') if s_row else []
         inking_enabled = 'leave_management' in features or 'mobile_app' in features
 
+        valid_hostel_branches = set()
+        if vendor_vertical == 'hostel':
+            c.execute("SELECT DISTINCT branch FROM classes WHERE vendor_id = ? AND branch IS NOT NULL AND branch <> ''", (vendor_id,))
+            for br in c.fetchall() or []:
+                if br[0]: valid_hostel_branches.add(str(br[0]).strip().lower())
+            c.execute("SELECT departments FROM vendors WHERE id = ?", (vendor_id,))
+            v_dept_row = c.fetchone()
+            if v_dept_row and v_dept_row[0]:
+                try:
+                    d_list = json.loads(v_dept_row[0]) if isinstance(v_dept_row[0], str) else v_dept_row[0]
+                    for d in d_list:
+                        if d: valid_hostel_branches.add(str(d).strip().lower())
+                except Exception:
+                    pass
+
         success_count = 0
         created_count = 0
         updated_count = 0
@@ -334,6 +349,15 @@ def bulk_registration_upload():
                 row_class_year = req_class_year or (str(row.get(class_year_key) or '').strip() if class_year_key else None)
                 row_division = req_division or (str(row.get(division_key) or '').strip() if division_key else None)
                 row_branch = req_branch or (str(row.get(branch_key) or '').strip() if branch_key else None)
+                if vendor_vertical == 'hostel':
+                    if not row_branch or not str(row_branch).strip():
+                        errors.append(f"Row {row_idx + 2}: Branch is mandatory for hostel resident registration")
+                        skipped_count += 1
+                        continue
+                    if valid_hostel_branches and str(row_branch).strip().lower() not in valid_hostel_branches:
+                        errors.append(f"Row {row_idx + 2}: Invalid branch '{row_branch}'. Must be one of the vendor's configured branches: {', '.join(sorted(valid_hostel_branches))}")
+                        skipped_count += 1
+                        continue
                 row_academic_payload = dict(req_academic_payload) if req_academic_payload else None
                 if not row_class_id and excel_class_id_key:
                     row_class_id = str(row.get(excel_class_id_key) or '').strip()

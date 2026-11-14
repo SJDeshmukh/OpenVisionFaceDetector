@@ -627,6 +627,21 @@ const People = () => {
         delete payload.templates;
       }
 
+      // Set hostel branch and department
+      if (isHostel && formData.branch) {
+        payload.branch = formData.branch;
+        payload.department = formData.branch;
+        const existingCustom = typeof payload.custom_data === 'string'
+          ? JSON.parse(payload.custom_data || '{}')
+          : (payload.custom_data || {});
+        payload.custom_data = JSON.stringify({
+          ...existingCustom,
+          branch: formData.branch,
+          department: formData.branch,
+          person_type: 'student'
+        });
+      }
+
       // Map class_id to scope fields if selected (Prefer these over manual Year/Div inputs)
       if (formData.class_id) {
         const selectedClass = vendorClasses.find(c => String(c.id) === String(formData.class_id));
@@ -850,8 +865,8 @@ const People = () => {
 
   const downloadAcademicTemplate = () => {
     const lines = [
-      ['admission_number', 'student_name', 'academic_session', 'program_code', 'year_of_study', 'division', 'phone', 'parent_name', 'parent_phone', 'email', 'semester', 'roll_number'],
-      ['ADM-001', 'Sample Resident', '2026-27', 'BSC-CS', '1', 'A', '9000000001', 'Sample Parent', '9000000101', 'resident@example.com', '1', '11'],
+      ['admission_number', 'student_name', 'branch', 'academic_session', 'program_code', 'year_of_study', 'division', 'phone', 'parent_name', 'parent_phone', 'email', 'semester', 'roll_number'],
+      ['ADM-001', 'Sample Resident', 'Computer Science', '2026-27', 'BSC-CS', '1', 'A', '9000000001', 'Sample Parent', '9000000101', 'resident@example.com', '1', '11'],
     ];
     const csv = lines.map(row => row.map(value => `"${String(value).replaceAll('"', '""')}"`).join(',')).join('\n');
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
@@ -1529,6 +1544,39 @@ const People = () => {
                   );
                 })}
                 
+                {/* Mandatory Branch Selection for Hostel Residents */}
+                {isHostel && (
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-700">
+                      Branch <span className="text-red-500">*</span>
+                    </label>
+                    <div className="relative">
+                      <select
+                        value={formData.branch || ''}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setFormData(prev => ({
+                            ...prev,
+                            branch: val,
+                            department: val,
+                            Department: val
+                          }));
+                        }}
+                        className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                        required
+                      >
+                        <option value="">-- Select Branch --</option>
+                        {Array.from(new Set([
+                          ...(vendorClasses || []).map(c => c.branch).filter(Boolean),
+                          ...(Array.isArray(user?.departments) ? user.departments : (typeof user?.departments === 'string' ? JSON.parse(user.departments || '[]') : []))
+                        ])).map(br => (
+                          <option key={br} value={br}>{br}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                )}
+
                 {/* Simplified Class Selection - Hidden for Hostels where allocations are done on the floor map */}
                 {classField && !isHostel && (
                   <div className="space-y-2">

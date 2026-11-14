@@ -1408,7 +1408,16 @@ def parent_login():
                 except Exception: pass
 
         token_username = f"parent_{actual_vendor_id}_{student_id}"
-        token = generate_token_with_claims(token_username, "parent", {"sv": int(session_version)})
+        token = generate_token_with_claims(
+            token_username,
+            "parent",
+            {
+                "sv": int(session_version),
+                "vendor_id": actual_vendor_id,
+                "student_number": student_id,
+                "student_id": student_id,
+            },
+        )
 
         # Fetch vendor vertical, bundle, and feature flags for the app to adapt its UI
         vendor_vertical = None

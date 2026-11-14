@@ -111,10 +111,31 @@ def _authenticated_leave_staff(vendor_id, required_role=None):
         conn.close()
 
 
+def _student_branch(row):
+    raw = row.get("student_custom_data")
+    custom = {}
+    if raw:
+        try:
+            custom = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        except Exception:
+            custom = {}
+    return (
+        custom.get("branch")
+        or row.get("student_branch")
+        or row.get("student_dept")
+        or custom.get("department")
+        or custom.get("Department")
+        or ""
+    ).strip()
+
+
 def _student_matches_department(request_row, department):
     if not department:
         return False
     expected = str(department).strip().lower()
+    student_branch = _student_branch(request_row).lower()
+    if student_branch and student_branch == expected:
+        return True
     if str(request_row.get("student_dept") or "").strip().lower() == expected:
         return True
     raw = request_row.get("student_custom_data")
@@ -122,7 +143,11 @@ def _student_matches_department(request_row, department):
         custom = json.loads(raw) if isinstance(raw, str) else (raw or {})
     except (TypeError, ValueError):
         custom = {}
-    return str(custom.get("department") or "").strip().lower() == expected
+    return (
+        str(custom.get("branch") or "").strip().lower() == expected
+        or str(custom.get("department") or "").strip().lower() == expected
+        or str(custom.get("Department") or "").strip().lower() == expected
+    )
 
 
 def _notify_parent_when_current(conn, vendor_id, request_row):
@@ -334,30 +359,13 @@ def create_leave_request():
         conn.commit()
         steps = snapshot_request(conn, vendor_id, request_id) if request_id else []
         if request_id:
-            if is_parent_caller:
-                # The parent initiated this leave request, so the parent stage is
-                # approved by definition. Advance to the administrative stage immediately.
-                for stage in steps:
-                    if stage.get("actor_type") == "parent":
-                        decide_current_stage(
-                            conn,
-                            vendor_id,
-                            {"id": request_id, "vendor_id": vendor_id, "student_id": student_id, "final_status": "pending"},
-                            "approved",
-                            actor_type="parent",
-                            role_key="parent",
-                            actor_id=parent_account["id"],
-                            actor_name=parent_account.get("student_number") or g.username,
-                            metadata={"source": "parent_submission", "ip": request.remote_addr},
-                        )
-                        break
-                steps = snapshot_request(conn, vendor_id, request_id)
-            else:
-                _notify_parent_when_current(conn, vendor_id, {
-                    "id": request_id,
-                    "vendor_id": vendor_id,
-                    "student_id": student_id,
-                })
+            # Student submitted the leave request. Parent stage remains pending
+            # so the parent reviews and approves it via the Parent Portal.
+            _notify_parent_when_current(conn, vendor_id, {
+                "id": request_id,
+                "vendor_id": vendor_id,
+                "student_id": student_id,
+            })
         return jsonify({"status": "success", "request_id": request_id, "approval_steps": steps})
     except Exception as e:
         if is_pg: conn.rollback()
@@ -782,12 +790,28 @@ def get_admin_pending_requests():
         """, (vendor_id,))
         rows = [get_row_dict(r) for r in c.fetchall()]
         attach_approval_steps(conn, rows)
+
+        # Retrieve all branches configured with an active HOD
+        c.execute("SELECT LOWER(TRIM(department)) FROM leave_staff WHERE vendor_id = ? AND role = 'hod' AND department IS NOT NULL AND department <> ''", (vendor_id,))
+        configured_hod_branches = {r[0] for r in c.fetchall() if r[0]}
+
         pending = []
         for row in rows:
             stage = row.get("current_stage")
             if not stage or stage.get("actor_type") != "staff":
                 continue
-            if not is_vendor_admin or (role and role not in ("vendor_admin", "admin", "owner", "all")):
+            student_br = _student_branch(row)
+            row["student_branch"] = student_br
+
+            # If current stage is HOD, verify that an HOD is configured for this student's branch
+            if stage.get("role_key") == "hod":
+                has_hod = student_br.lower() in configured_hod_branches if student_br else False
+                if not has_hod:
+                    row["unassigned_hod"] = True
+                    row["no_hod_configured"] = True
+                    row["hod_warning"] = f"No HOD is configured for branch '{student_br or 'Unassigned'}'"
+
+            if not is_vendor_admin or (role and role not in ("vendor_admin", "admin", "owner", "super_admin", "all")):
                 if stage.get("role_key") != role:
                     continue
             if stage.get("department_scoped") and dept and not _student_matches_department(row, dept):

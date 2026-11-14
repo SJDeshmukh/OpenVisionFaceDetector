@@ -78,7 +78,7 @@ class ParentAnalyticsFragment : Fragment() {
             legend.textColor = Color.WHITE
             legend.textSize = 12f
             setDrawEntryLabels(false)
-            setNoDataText("Loading...")
+            setNoDataText("No data available")
             setNoDataTextColor(Color.WHITE)
         }
     }
@@ -90,7 +90,7 @@ class ParentAnalyticsFragment : Fragment() {
             setDrawBarShadow(false)
             setFitBars(true)
             legend.isEnabled = false
-            setNoDataText("Loading...")
+            setNoDataText("No data available")
             setNoDataTextColor(Color.WHITE)
             axisLeft.textColor = Color.parseColor("#99FFFFFF")
             axisLeft.gridColor = Color.parseColor("#22FFFFFF")
@@ -123,8 +123,46 @@ class ParentAnalyticsFragment : Fragment() {
         }
     }
 
+    private fun showLoadingState() {
+        if (!isAdded) return
+        try {
+            val pie = root.findViewById<PieChart>(R.id.pie_chart)
+            val bar = root.findViewById<BarChart>(R.id.bar_chart)
+            pie.data = null
+            bar.data = null
+            pie.setNoDataText("Loading attendance data...")
+            bar.setNoDataText("Loading trend data...")
+            pie.clear()
+            bar.clear()
+            pie.invalidate()
+            bar.invalidate()
+        } catch (_: Exception) {}
+    }
+
+    private fun showEmptyAnalyticsState() {
+        if (!isAdded) return
+        try {
+            root.findViewById<TextView>(R.id.tv_analytics_present).text = "0"
+            root.findViewById<TextView>(R.id.tv_analytics_absent).text = "0"
+            root.findViewById<TextView>(R.id.tv_analytics_rate).text = "0%"
+            root.findViewById<TextView>(R.id.tv_analytics_insight).text = "No attendance records available for this period."
+
+            val pie = root.findViewById<PieChart>(R.id.pie_chart)
+            val bar = root.findViewById<BarChart>(R.id.bar_chart)
+            pie.data = null
+            bar.data = null
+            pie.setNoDataText("No data available")
+            bar.setNoDataText("No data available")
+            pie.clear()
+            bar.clear()
+            pie.invalidate()
+            bar.invalidate()
+        } catch (_: Exception) {}
+    }
+
     // AttendX: count only from faculty-conducted lectures — no phantom days
     private fun loadAttendXData() {
+        showLoadingState()
         val (startDate, endDate) = filterDates()
         RetrofitClient.getService()
             .getParentLectureAttendance(startDate, endDate)
@@ -135,22 +173,24 @@ class ParentAnalyticsFragment : Fragment() {
                         (activity as? ParentActivity)?.performLogout(); return
                     }
                     if (!response.isSuccessful || response.body() == null) {
-                        showAnalyticsError("No data found. Please contact your administrator.")
+                        showAnalyticsError("No data available for this period.")
                         return
                     }
                     val body = response.body()!!
-                    val list = try { body.getAsJsonArray("attendance") } catch (_: Exception) { return }
+                    val list = try { body.getAsJsonArray("attendance") } catch (_: Exception) { null }
+                    if (list == null || list.size() == 0) {
+                        showEmptyAnalyticsState()
+                        return
+                    }
 
                     var present = 0
                     var absent = 0
-                    // Group by date for bar chart
-                    val byDate = linkedMapOf<String, Pair<Int, Int>>() // date → (present, absent)
+                    val byDate = linkedMapOf<String, Pair<Int, Int>>()
 
                     for (i in 0 until list.size()) {
                         val obj = try { list[i].asJsonObject } catch (_: Exception) { continue }
                         val status = try { obj.get("status")?.asString ?: "absent" } catch (_: Exception) { "absent" }
                         val rawDate = try { obj.get("lecture_date")?.asString ?: "" } catch (_: Exception) { "" }
-                        // Normalize date: take first 10 chars if it's a full datetime
                         val dateKey = rawDate.take(10).let {
                             if (it.matches(Regex("\\d{4}-\\d{2}-\\d{2}"))) it
                             else rawDate.take(11).replace(" ", "").take(10)
@@ -167,7 +207,11 @@ class ParentAnalyticsFragment : Fragment() {
                     }
 
                     val total = present + absent
-                    val rate = if (total > 0) present * 100 / total else 0
+                    if (total == 0) {
+                        showEmptyAnalyticsState()
+                        return
+                    }
+                    val rate = present * 100 / total
                     root.findViewById<TextView>(R.id.tv_analytics_present).text = "$present"
                     root.findViewById<TextView>(R.id.tv_analytics_absent).text = "$absent"
                     root.findViewById<TextView>(R.id.tv_analytics_rate).text = "$rate%"
@@ -177,13 +221,14 @@ class ParentAnalyticsFragment : Fragment() {
                     updateInsight(present, absent, rate)
                 }
                 override fun onFailure(call: Call<JsonObject>, t: Throwable) {
-                    if (isAdded) showAnalyticsError("Connection error. Check your internet and try again.")
+                    if (isAdded) showAnalyticsError("Connection error. Tap to retry.")
                 }
             })
     }
 
     // TapInX: count from check-in events (day = present if has CHECK_IN)
     private fun loadTapInXData() {
+        showLoadingState()
         RetrofitClient.getService().getParentAttendance().enqueue(object : Callback<JsonObject> {
             override fun onResponse(call: Call<JsonObject>, response: Response<JsonObject>) {
                 if (!isAdded) return
@@ -191,14 +236,22 @@ class ParentAnalyticsFragment : Fragment() {
                     (activity as? ParentActivity)?.performLogout(); return
                 }
                 if (!response.isSuccessful || response.body() == null) {
-                    showAnalyticsError("No data found. Please contact your administrator.")
+                    showAnalyticsError("No data available for this period.")
                     return
                 }
                 val body = response.body()!!
-                val list = try { body.getAsJsonArray("attendance") } catch (_: Exception) { return }
+                val list = try { body.getAsJsonArray("attendance") } catch (_: Exception) { null }
+                if (list == null || list.size() == 0) {
+                    showEmptyAnalyticsState()
+                    return
+                }
 
                 val (startStr, _) = filterDates()
-                val cutoff = try { sdf.parse(startStr) } catch (_: Exception) { null } ?: return
+                val cutoff = try { sdf.parse(startStr) } catch (_: Exception) { null }
+                if (cutoff == null) {
+                    showEmptyAnalyticsState()
+                    return
+                }
 
                 val dayPresent = mutableMapOf<String, Boolean>()
                 for (i in 0 until list.size()) {
@@ -215,15 +268,18 @@ class ParentAnalyticsFragment : Fragment() {
 
                 val present = dayPresent.values.count { it }
                 val total = dayPresent.size
+                if (total == 0) {
+                    showEmptyAnalyticsState()
+                    return
+                }
                 val absent = total - present
-                val rate = if (total > 0) present * 100 / total else 0
+                val rate = present * 100 / total
 
                 root.findViewById<TextView>(R.id.tv_analytics_present).text = "$present"
                 root.findViewById<TextView>(R.id.tv_analytics_absent).text = "$absent"
                 root.findViewById<TextView>(R.id.tv_analytics_rate).text = "$rate%"
 
                 updatePieChart(present, absent)
-                // Bar chart: only days that have a record (no phantom days)
                 val byDate = dayPresent.entries
                     .sortedBy { it.key }
                     .associate { it.key.takeLast(5) to (if (it.value) 1 to 0 else 0 to 1) }
@@ -231,7 +287,7 @@ class ParentAnalyticsFragment : Fragment() {
                 updateInsight(present, absent, rate)
             }
             override fun onFailure(call: Call<JsonObject>, t: Throwable) {
-                if (isAdded) showAnalyticsError("Connection error. Check your internet and try again.")
+                if (isAdded) showAnalyticsError("Connection error. Tap to retry.")
             }
         })
     }
@@ -295,11 +351,22 @@ class ParentAnalyticsFragment : Fragment() {
             root.findViewById<TextView>(R.id.tv_analytics_present).text = "—"
             root.findViewById<TextView>(R.id.tv_analytics_absent).text = "—"
             root.findViewById<TextView>(R.id.tv_analytics_rate).text = "—"
-            root.findViewById<TextView>(R.id.tv_analytics_insight).text = msg
-            root.findViewById<com.github.mikephil.charting.charts.PieChart>(R.id.pie_chart).setNoDataText(msg)
-            root.findViewById<com.github.mikephil.charting.charts.BarChart>(R.id.bar_chart).setNoDataText(msg)
-            root.findViewById<com.github.mikephil.charting.charts.PieChart>(R.id.pie_chart).invalidate()
-            root.findViewById<com.github.mikephil.charting.charts.BarChart>(R.id.bar_chart).invalidate()
+            val insight = root.findViewById<TextView>(R.id.tv_analytics_insight)
+            insight.text = msg
+            insight.setOnClickListener { loadData() }
+
+            val pie = root.findViewById<PieChart>(R.id.pie_chart)
+            val bar = root.findViewById<BarChart>(R.id.bar_chart)
+            pie.data = null
+            bar.data = null
+            pie.setNoDataText(msg)
+            bar.setNoDataText(msg)
+            pie.clear()
+            bar.clear()
+            pie.invalidate()
+            bar.invalidate()
+            pie.setOnClickListener { loadData() }
+            bar.setOnClickListener { loadData() }
         } catch (_: Exception) {}
     }
 }

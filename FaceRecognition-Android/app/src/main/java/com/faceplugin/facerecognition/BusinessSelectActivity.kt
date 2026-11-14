@@ -56,7 +56,7 @@ class BusinessSelectActivity : AppCompatActivity() {
         if (!initialUrl.isNullOrBlank()) {
             RetrofitClient.setBaseUrl(initialUrl)
         }
-        tvServerUrl.text = "Server: " + RetrofitClient.getBaseUrl()
+        tvServerUrl.text = "TapInX"
         tvServerUrl.setOnClickListener {
             showServerUrlDialog(tvServerUrl, progress, tvError, prefs)
         }
@@ -176,7 +176,7 @@ class BusinessSelectActivity : AppCompatActivity() {
                 if (!url.endsWith("/")) url += "/"
                 prefs.edit().putString("server_url", url).apply()
                 RetrofitClient.setBaseUrl(url)
-                tvServerUrl.text = "Server: $url"
+                tvServerUrl.text = "TapInX"
                 fetchBusinessTypes(progress, tvError, prefs)
             }
         }

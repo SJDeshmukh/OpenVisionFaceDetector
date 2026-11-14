@@ -12,6 +12,8 @@ parent_reset_bp = Blueprint('parent_reset_bp', __name__)
 _FACE_RESET_DISABLED_VERTICALS = {'daily_wages', 'wages', 'factory', 'enterprise'}
 
 def _ensure_face_reset_supported(cursor, vendor_id):
+    if not vendor_id:
+        return None
     cursor.execute("SELECT vertical FROM vendors WHERE id = ?", (vendor_id,))
     row = cursor.fetchone()
     vertical = str(row[0] if row else '').strip().lower()
@@ -23,7 +25,12 @@ def _ensure_face_reset_supported(cursor, vendor_id):
         features = json.loads(row[0] or '[]') if row else []
     except (TypeError, ValueError, json.JSONDecodeError):
         features = []
-    if 'parent_login' not in features:
+
+    # In hostel and school/education verticals, parent login & face reset are supported capabilities.
+    # Also support if 'parent_login', 'face_reset', or 'leave_management' is in features.
+    is_supported_vertical = vertical in {'hostel', 'school', 'education', 'college', 'university'}
+    has_feature = any(f in features for f in ('parent_login', 'face_reset', 'leave_management'))
+    if not (is_supported_vertical or has_feature):
         return jsonify({"error": "Face reset is not enabled for this business"}), 404
     return None
 
@@ -37,23 +44,41 @@ def request_face_reset():
         return jsonify({"error": "Unauthorized: Parent access required"}), 401
     
     req_data = request.json or {}
-    reason = req_data.get("reason", "")
+    reason = req_data.get("reason", "Parent requested face reset from mobile app")
+    username = data.get('username')
     vendor_id = data.get('vendor_id')
     student_number = data.get('student_number')
     
     conn = get_db_connection()
     c = conn.cursor()
     try:
+        # Resolve parent from username if vendor_id or student_number was missing
+        parent_row = None
+        if username:
+            c.execute(
+                "SELECT id, vendor_id, student_number, selected_person_id FROM parent_users WHERE username = ?",
+                (username,)
+            )
+            parent_row = c.fetchone()
+        
+        if not parent_row and vendor_id and student_number:
+            c.execute(
+                "SELECT id, vendor_id, student_number, selected_person_id FROM parent_users WHERE vendor_id = ? AND student_number = ?",
+                (vendor_id, student_number)
+            )
+            parent_row = c.fetchone()
+            
+        if not parent_row:
+            return jsonify({"error": "Parent record not found"}), 404
+            
+        parent_id = parent_row[0]
+        vendor_id = parent_row[1]
+        student_number = parent_row[2]
+        associated_person_id = parent_row[3]
+
         unsupported = _ensure_face_reset_supported(c, vendor_id)
         if unsupported:
             return unsupported
-        # Find parent_id
-        c.execute("SELECT id FROM parent_users WHERE vendor_id = ? AND student_number = ?", (vendor_id, student_number))
-        row = c.fetchone()
-        if not row:
-            return jsonify({"error": "Parent record not found"}), 404
-        
-        parent_id = row[0]
         
         # Check if a pending request already exists
         c.execute("SELECT id FROM face_reset_requests WHERE parent_id = ? AND status = 'pending'", (parent_id,))
