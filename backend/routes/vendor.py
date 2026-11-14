@@ -2047,23 +2047,19 @@ def mobile_heartbeat():
                     WHERE vendor_id = ? AND device_id = ?
                 """, (now, battery_level, vendor_id, device_id))
         else:
-             # Device not found (e.g., student device or missing record), insert it
+             # Device is not registered in vendor_devices (or was deleted/revoked by administrator).
+             # Do NOT auto-register unauthorized devices into vendor_devices.
              try:
-                 # INSERT OR IGNORE is translated by our PostgresCursorWrapper
-                 c.execute("""
-                    INSERT OR IGNORE INTO vendor_devices 
-                    (vendor_id, device_id, device_name, registered_at, last_active_at, battery_level, last_lat, last_lng) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                 """, (vendor_id, device_id, f"Mobile {device_id[:6]}", now, now, battery_level, lat, lng))
-                 
-                 # Immediately update in case it was IGNORED above but needs fields updated
-                 c.execute("""
-                     UPDATE vendor_devices 
-                     SET last_active_at = ?, battery_level = ?, last_lat = ?, last_lng = ?
-                     WHERE vendor_id = ? AND device_id = ?
-                 """, (now, battery_level, lat, lng, vendor_id, device_id))
-             except Exception as e:
-                 logger.error(f"Error upserting vendor_device in heartbeat: {e}")
+                 c.execute("DELETE FROM active_sessions WHERE vendor_id = ? AND device_id = ?", (vendor_id, device_id))
+                 conn.commit()
+             except Exception:
+                 pass
+             conn.close()
+             return jsonify({
+                 "error": "Device is not registered or has been removed by administrator.",
+                 "code": "DEVICE_NOT_REGISTERED",
+                 "force_logout": True
+             }), 401
             
         conn.commit()
         

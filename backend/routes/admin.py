@@ -759,6 +759,7 @@ def delete_vendor_device(vendor_id, device_id):
         try:
             socketio.emit("vendor_updated", {"vendor_id": vendor_id}, room="super_admin")
             socketio.emit("device_removed", {"vendor_id": vendor_id, "device_id": device_id}, room=f"vendor_{vendor_id}")
+            socketio.emit("force_logout", {"vendor_id": vendor_id, "device_id": device_id, "reason": "Device deleted by admin"}, room=f"vendor_{vendor_id}")
             socketio.emit("force_logout_mobile", {"vendor_id": vendor_id, "device_id": device_id, "reason": "Device deleted by admin"}, room=f"vendor_{vendor_id}")
             logger.info("Socket events emitted")
         except Exception as e:
@@ -802,6 +803,7 @@ def logout_vendor_device(vendor_id, device_id):
         conn.commit()
         conn.close()
         try:
+            socketio.emit("force_logout", {"vendor_id": vendor_id, "device_id": device_id, "reason": "Remote logout by admin"}, room=f"vendor_{vendor_id}")
             socketio.emit("force_logout_mobile", {"vendor_id": vendor_id, "device_id": device_id, "reason": "Remote logout by admin"}, room=f"vendor_{vendor_id}")
         except Exception:
             pass

@@ -351,21 +351,29 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            mSocket?.on("force_logout") { args ->
+            val handleForceLogout: (Array<Any>) -> Unit = { args ->
                 if (args.isNotEmpty()) {
-                    val data = args[0] as JSONObject
-                    val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
-                    val myVendorId = prefs.getInt("vendor_id", -1)
-                    val targetVendorId = data.optInt("vendor_id", -1)
+                    val data = args[0] as? JSONObject
+                    if (data != null) {
+                        val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+                        val myVendorId = prefs.getInt("vendor_id", -1)
+                        val targetVendorId = data.optInt("vendor_id", -1)
+                        val targetDid = data.optString("device_id", "")
+                        val myDeviceId = android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: ""
 
-                    if (myVendorId != -1 && myVendorId == targetVendorId) {
-                        runOnUiThread {
-                            val reason = data.optString("reason", "Subscription expired")
-                            performLogout("Access Denied: $reason")
+                        if (myVendorId != -1 && myVendorId == targetVendorId) {
+                            if (targetDid.isEmpty() || targetDid == myDeviceId) {
+                                runOnUiThread {
+                                    val reason = data.optString("reason", "Device deleted or revoked by administrator")
+                                    performLogout("Access Denied: $reason")
+                                }
+                            }
                         }
                     }
                 }
             }
+            mSocket?.on("force_logout") { args -> handleForceLogout(args) }
+            mSocket?.on("force_logout_mobile") { args -> handleForceLogout(args) }
             
             // Sync device name in real-time
             mSocket?.on("device_name_updated") { args ->
@@ -1392,6 +1400,9 @@ class MainActivity : AppCompatActivity() {
                                     android.util.Log.w("Heartbeat", "Server geofencing active but no GPS coordinates provided by device")
                                 }
                             }
+                        } else if (response.code() == 401 || response.code() == 403) {
+                            android.util.Log.w("Heartbeat", "Heartbeat rejected (${response.code()}) -> Device not registered or revoked")
+                            performLogout("Device is not registered or has been removed by administrator.")
                         }
                     }
                     override fun onFailure(call: Call<JsonObject>, t: Throwable) {
