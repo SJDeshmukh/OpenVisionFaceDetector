@@ -7,7 +7,7 @@ import os
 import hashlib
 import io
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import unquote, urlparse
 import numpy as np
 import cv2
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 from services.auth_service import authenticate_vendor_access, extract_token, verify_token, check_vendor_status, hash_password, login_email_from_profile
 import db_factory
 from db_factory import set_row_factory, get_table_columns
-from utils import get_db_connection, LOW_RAM_MODE, _VENDOR_EMB_CACHE, ALL_FEATURES, cache_delete_vendor_prefix, cache_delete, require_feature, cache_get, cache_set, decode_image_to_bgr, decode_image_to_rgb, get_face_augmentations, vendor_has_feature, extract_student_number_from_custom_data
+from utils import get_db_connection, LOW_RAM_MODE, _VENDOR_EMB_CACHE, ALL_FEATURES, cache_delete_vendor_prefix, cache_delete, require_feature, cache_get, cache_set, decode_image_to_bgr, decode_image_to_rgb, get_face_augmentations, vendor_has_feature, extract_student_number_from_custom_data, extract_parent_info_from_custom_data
 from services.face_service import _ensure_vendor_emb_cache, _normalize_vec, _suggest_from_cache
 from storage import upload_base64_image, presigned_url_for_key, OBJECT_STORAGE_ENABLED, compress_image
 import db_factory
@@ -3006,11 +3006,13 @@ def get_person_profile(person_id):
                 pd["status"] = "linked"
                 parents.append(pd)
 
-            # Fallback 1: If not in student_parents, check parent_users by student_number or phone
+            parent_info = extract_parent_info_from_custom_data(custom)
+
+            # Fallback 1: If not in student_parents, check parent_users by student_number or parent_phone
             if not parents:
                 student_num = str(custom.get("student_id") or custom.get("id_number") or "").strip()
-                parent_phone = str(custom.get("parent_phone") or custom.get("parent_contact") or person.get("phone") or "").strip()
-                if student_num or parent_phone:
+                parent_phone = parent_info.get("phone") or str(person.get("phone") or "").strip()
+                if student_num or (parent_info.get("phone") and parent_info.get("phone") != str(person.get("phone") or "").strip()):
                     c.execute(
                         """SELECT p.id, p.username, p.contact_phone, p.contact_email
                            FROM parent_users p
@@ -3034,10 +3036,10 @@ def get_person_profile(person_id):
 
             # Fallback 2: If no mobile app portal account exists yet, surface registered contact from custom_data
             if not parents:
-                reg_name = custom.get("parent_name") or custom.get("father_name") or custom.get("mother_name") or custom.get("guardian_name")
-                reg_phone = custom.get("parent_phone") or custom.get("parent_contact") or custom.get("guardian_phone")
-                reg_email = custom.get("parent_email") or custom.get("guardian_email")
-                if reg_name or reg_phone:
+                reg_name = parent_info.get("name")
+                reg_phone = parent_info.get("phone")
+                reg_email = parent_info.get("email")
+                if reg_name or reg_phone or reg_email:
                     parents.append({
                         "id": None,
                         "username": reg_name or "Parent / Guardian",

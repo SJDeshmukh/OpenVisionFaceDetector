@@ -41,10 +41,19 @@ _SYNONYMS = {
     "year_of_study": ("year of study", "study year", "program year", "programme year", "course year"),
     "semester": ("semester", "semester number", "sem", "sem no"),
     "roll_number": ("roll number", "roll no", "class roll number", "class roll no"),
-    "parent_name": ("parent name", "guardian name", "father name", "mother name", "parent guardian name"),
+    "parent_name": ("parent name", "parents name", "guardian name", "father name", "mother name", "parent guardian name", "parents guardian name", "guardian"),
     "parent_phone": (
-        "parent phone", "parent mobile", "parent whatsapp", "guardian phone", "guardian mobile",
-        "guardian whatsapp", "father mobile", "mother mobile", "parent contact number",
+        "parent phone", "parent phone number", "parents phone", "parents phone number",
+        "parent number", "parents number", "parent no", "parents no",
+        "parent mobile", "parents mobile", "parent mobile number", "parents mobile number",
+        "parent contact", "parents contact", "parent contact number", "parents contact number",
+        "parent whatsapp", "parents whatsapp",
+        "guardian phone", "guardian phone number", "guardian number", "guardian no",
+        "guardian mobile", "guardian mobile number", "guardian contact", "guardian contact number",
+        "guardian whatsapp",
+        "father mobile", "father phone", "father number", "father contact",
+        "mother mobile", "mother phone", "mother number", "mother contact",
+        "emergency contact", "emergency phone", "emergency mobile", "emergency number",
     ),
 }
 

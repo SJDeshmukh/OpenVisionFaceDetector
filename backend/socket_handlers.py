@@ -81,8 +81,8 @@ def register_socket_handlers(socketio):
         socket_identities.pop(request.sid, None)
 
     @socketio.on('join_super_admin')
-    def handle_join_super_admin():
-        identity = _socket_identity()
+    def handle_join_super_admin(data=None):
+        identity = _socket_identity(data)
         if not identity or identity['role'] != 'super_admin':
             return {'error': 'forbidden'}, 403
         join_room('super_admin')

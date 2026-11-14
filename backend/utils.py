@@ -203,6 +203,81 @@ def extract_student_number_from_custom_data(c_data_raw, search_term=None):
 
     return ""
 
+def extract_parent_info_from_custom_data(c_data_raw):
+    """
+    Extracts parent/guardian contact info (name, phone, email) from custom_data.
+    Handles varied key casing, synonyms, and JSON strings.
+    """
+    if not c_data_raw:
+        return {"name": "", "phone": "", "email": ""}
+    try:
+        cd = json.loads(c_data_raw) if isinstance(c_data_raw, str) else dict(c_data_raw)
+    except Exception:
+        return {"name": "", "phone": "", "email": ""}
+    if not isinstance(cd, dict):
+        return {"name": "", "phone": "", "email": ""}
+
+    cd_norm = {}
+    for k, v in cd.items():
+        if v is not None and str(v).strip():
+            norm_k = re.sub(r"[^a-z0-9]+", "_", str(k).strip().lower()).strip("_")
+            cd_norm[norm_k] = str(v).strip()
+
+    phone_keys = [
+        "parent_phone", "parent_number", "parents_phone", "parents_number",
+        "parent_phone_number", "parents_phone_number",
+        "parent_mobile", "parents_mobile", "parent_mobile_number", "parents_mobile_number",
+        "parent_contact", "parents_contact", "parent_contact_number", "parents_contact_number",
+        "parent_whatsapp", "parents_whatsapp",
+        "guardian_phone", "guardian_number", "guardian_mobile", "guardian_contact", "guardian_whatsapp",
+        "father_phone", "father_number", "father_mobile", "father_contact",
+        "mother_phone", "mother_number", "mother_mobile", "mother_contact",
+        "emergency_phone", "emergency_number", "emergency_mobile", "emergency_contact",
+    ]
+    phone = ""
+    for k in phone_keys:
+        val = cd_norm.get(k, "")
+        if val and re.search(r"\d{7,}", val):
+            phone = val
+            break
+    if not phone:
+        for k, v in cd_norm.items():
+            if any(p in k for p in ("parent", "guardian", "father", "mother")) and any(w in k for w in ("phone", "mobile", "number", "contact", "whatsapp")):
+                if re.search(r"\d{7,}", v):
+                    phone = v
+                    break
+
+    name_keys = [
+        "parent_name", "parents_name", "guardian_name",
+        "parent_guardian_name", "father_name", "mother_name",
+        "guardian", "parent",
+    ]
+    name = ""
+    for k in name_keys:
+        val = cd_norm.get(k, "")
+        if val and not re.fullmatch(r"[\d\s+\-]+", val):
+            name = val
+            break
+    if not name:
+        for k, v in cd_norm.items():
+            if any(p in k for p in ("parent", "guardian", "father", "mother")) and "name" in k:
+                if not re.fullmatch(r"[\d\s+\-]+", v):
+                    name = v
+                    break
+
+    email_keys = [
+        "parent_email", "parents_email", "guardian_email",
+        "father_email", "mother_email",
+    ]
+    email = ""
+    for k in email_keys:
+        val = cd_norm.get(k, "")
+        if val and "@" in val:
+            email = val
+            break
+
+    return {"name": name, "phone": phone, "email": email}
+
 def get_face_augmentations(img_rgb: np.ndarray) -> list[np.ndarray]:
     """
     Generates augmented views to maximise recognition coverage across real-world conditions.

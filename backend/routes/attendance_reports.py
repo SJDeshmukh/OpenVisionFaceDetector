@@ -452,7 +452,6 @@ def get_analytics(valid_data: PayrollReportRequest):
     query = "SELECT * FROM attendance WHERE timestamp >= ? AND timestamp < ? AND vendor_id = ? ORDER BY timestamp ASC"
     c.execute(query, (f"{start_date} 00:00:00", f"{fetch_end} 00:00:00", vendor_id))
     rows = c.fetchall()
-    conn.close()
     
     user_records = defaultdict(list)
     for row in rows:
@@ -565,6 +564,8 @@ def get_analytics(valid_data: PayrollReportRequest):
             overdue_leaves_count = c.fetchone()[0] or 0
     except Exception:
         pass
+    finally:
+        conn.close()
     result = {
         "daily_stats": daily_stats,
         "person_stats": person_stats,

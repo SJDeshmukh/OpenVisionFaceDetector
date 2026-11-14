@@ -549,9 +549,9 @@ def bulk_registration_upload():
                 custom_dict["person_type"] = "employee" if employee_record_flow else "student"
                 if login_email:
                     custom_dict["email"] = login_email
-                if school_student_flow and parent_name:
+                if parent_name:
                     custom_dict["parent_name"] = parent_name
-                if school_student_flow and parent_phone:
+                if parent_phone:
                     custom_dict["parent_phone"] = parent_phone
                 canonical_by_header = {header: canonical for canonical, header in header_mapping.items()}
                 core_keys = {key for key in (
