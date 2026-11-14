@@ -668,6 +668,7 @@ def parent_approve_request():
                 "verification": "server_face_match",
                 "device_id": parent.get("device_id"),
                 "ip": request.remote_addr,
+                "captured_face": captured_face,
             },
         )
         return jsonify({"status": "success", "similarity": similarity})

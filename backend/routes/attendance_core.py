@@ -457,6 +457,30 @@ def person_event(valid_data: PersonEventSchema):
 
     captured_image = valid_data.image
     is_attendance = valid_data.is_attendance
+    if is_attendance and vendor_id_to_check:
+        # Enforce that attendance can only be punched using the Attendance/Kiosk login provided by SuperAdmin
+        conn_k = get_db_connection()
+        ck = conn_k.cursor()
+        kiosk_acc = None
+        try:
+            ck.execute("SELECT kiosk_username FROM vendors WHERE id = ? LIMIT 1", (vendor_id_to_check,))
+            k_row = ck.fetchone()
+            if k_row and k_row[0]:
+                kiosk_acc = str(k_row[0]).strip().lower()
+        except Exception:
+            pass
+        finally:
+            conn_k.close()
+
+        caller_user = str(getattr(g, "username", "") or "").strip().lower()
+        caller_role = str(getattr(g, "user_role", "") or "").strip().lower()
+        if kiosk_acc and caller_user and caller_user != kiosk_acc and caller_role not in ("kiosk",):
+            return jsonify({
+                "error": "Attendance marking is restricted to the designated Attendance/Kiosk login provided by SuperAdmin.",
+                "code": "KIOSK_LOGIN_REQUIRED",
+                "speak": True,
+                "text": "Attendance can only be marked from the designated kiosk login."
+            }), 403
     current_time_obj = _resolve_event_time(valid_data.timestamp)
 
     if not detected: return jsonify({"speak": False})

@@ -89,6 +89,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
     private boolean isCapturing = false;
     private int consecutiveValidFrames = 0;
     private static final int REQUIRED_VALID_FRAMES = 7;
+    private boolean isVerification = false;
 
     private boolean isCaptureOnly = false;
     private long lastStreamTime = 0;
@@ -105,6 +106,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
         context = this;
         isCaptureOnly = getIntent().getBooleanExtra("is_capture_only", false);
         forceFrontCamera = getIntent().getBooleanExtra("force_front_camera", false);
+        isVerification = getIntent().getBooleanExtra("is_verification", false);
 
         // --- Socket.IO & WebRTC Init ---
         android.content.SharedPreferences sharedPref = getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
@@ -486,8 +488,11 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
                                 capturedFace = candidate;
                             }
                             captureView.setCapturedBitmap(capturedBitmap);
-                            if (consecutiveValidFrames >= REQUIRED_VALID_FRAMES) {
-                                capturedTemplate = LocalFaceEngineFacade.INSTANCE.aggregateTemplates(enrollmentTemplates);
+                            int targetRequiredFrames = isVerification ? 1 : REQUIRED_VALID_FRAMES;
+                            if (consecutiveValidFrames >= targetRequiredFrames) {
+                                capturedTemplate = (isVerification && validCandidateTemplate != null)
+                                        ? validCandidateTemplate
+                                        : LocalFaceEngineFacade.INSTANCE.aggregateTemplates(enrollmentTemplates);
                                 if (capturedTemplate != null) {
                                     warningTxt.setText("");
                                     captureView.setViewMode(CaptureView.VIEW_MODE.FACE_CAPTURE_PREPARE);
@@ -496,7 +501,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
                                     warningTxt.setText("Unable to build face template; try again");
                                 }
                             } else {
-                                warningTxt.setText("Hold still " + consecutiveValidFrames
+                                warningTxt.setText(isVerification ? "Verifying face..." : ("Hold still " + consecutiveValidFrames
                                         + "/" + REQUIRED_VALID_FRAMES);
                             }
                         }

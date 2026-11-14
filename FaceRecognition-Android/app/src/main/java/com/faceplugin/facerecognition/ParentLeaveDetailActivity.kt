@@ -78,7 +78,7 @@ class ParentLeaveDetailActivity : AppCompatActivity() {
         val prefs = getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
         val faceRegistered = prefs.getBoolean("face_registered", false)
         val hasTemplate = prefs.getString("parent_face_template", "")?.isNotEmpty() == true
-        if (!faceRegistered || !hasTemplate) {
+        if (!faceRegistered && !hasTemplate) {
             Toast.makeText(this, "Please register your face to approve/reject leaves", Toast.LENGTH_LONG).show()
             startActivity(Intent(this, ParentFaceRegistrationActivity::class.java))
             finish()
@@ -89,6 +89,7 @@ class ParentLeaveDetailActivity : AppCompatActivity() {
         pendingAction = action
         val intent = Intent(this, CaptureActivity::class.java)
         intent.putExtra("is_capture_only", true)
+        intent.putExtra("is_verification", true)
         intent.putExtra("force_front_camera", true)
         cameraLauncher.launch(intent)
     }

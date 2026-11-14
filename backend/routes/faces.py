@@ -3003,7 +3003,48 @@ def get_person_profile(person_id):
             )
             for prow in c.fetchall() or []:
                 pd = dict(prow) if not isinstance(prow, dict) else prow
+                pd["status"] = "linked"
                 parents.append(pd)
+
+            # Fallback 1: If not in student_parents, check parent_users by student_number or phone
+            if not parents:
+                student_num = str(custom.get("student_id") or custom.get("id_number") or "").strip()
+                parent_phone = str(custom.get("parent_phone") or custom.get("parent_contact") or person.get("phone") or "").strip()
+                if student_num or parent_phone:
+                    c.execute(
+                        """SELECT p.id, p.username, p.contact_phone, p.contact_email
+                           FROM parent_users p
+                           WHERE p.vendor_id = ? AND (
+                               (p.student_number IS NOT NULL AND LOWER(p.student_number) = LOWER(?))
+                               OR (p.contact_phone IS NOT NULL AND p.contact_phone = ?)
+                           ) LIMIT 1""",
+                        (vendor_id, student_num, parent_phone),
+                    )
+                    p_match = c.fetchone()
+                    if p_match:
+                        pd = dict(p_match) if not isinstance(p_match, dict) else p_match
+                        pd["status"] = "linked"
+                        parents.append(pd)
+                        try:
+                            c.execute("INSERT OR IGNORE INTO student_parents (vendor_id, person_id, parent_id) VALUES (?, ?, ?)",
+                                      (vendor_id, person_id, pd["id"]))
+                            conn.commit()
+                        except Exception:
+                            pass
+
+            # Fallback 2: If no mobile app portal account exists yet, surface registered contact from custom_data
+            if not parents:
+                reg_name = custom.get("parent_name") or custom.get("father_name") or custom.get("mother_name") or custom.get("guardian_name")
+                reg_phone = custom.get("parent_phone") or custom.get("parent_contact") or custom.get("guardian_phone")
+                reg_email = custom.get("parent_email") or custom.get("guardian_email")
+                if reg_name or reg_phone:
+                    parents.append({
+                        "id": None,
+                        "username": reg_name or "Parent / Guardian",
+                        "contact_phone": reg_phone,
+                        "contact_email": reg_email,
+                        "status": "pending_login",
+                    })
         except Exception:
             pass
         person["parents"] = parents

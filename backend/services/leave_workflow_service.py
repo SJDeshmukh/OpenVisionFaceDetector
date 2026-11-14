@@ -262,7 +262,16 @@ def snapshot_request(conn, vendor_id, request_id, legacy_request=None):
     existing = []
     for row in cursor.fetchall():
         mapped = _row_dict(row)
-        existing.append(mapped if isinstance(mapped, dict) else dict(zip(columns, row)))
+        item = mapped if isinstance(mapped, dict) else dict(zip(columns, row))
+        dm = item.get("decision_metadata")
+        if dm and isinstance(dm, str):
+            try:
+                meta = json.loads(dm)
+                if isinstance(meta, dict) and "captured_face" in meta:
+                    item["captured_face"] = meta["captured_face"]
+            except Exception:
+                pass
+        existing.append(item)
     if existing:
         return existing
 

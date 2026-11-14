@@ -777,11 +777,13 @@ const LeaveManagement = () => {
                       {/* Logic for steps */}
                       {(req.approval_steps?.length ? req.approval_steps.map(step => ({
                         label: step.display_name,
-                        status: step.status
+                        status: step.status,
+                        captured_face: step.captured_face,
+                        actor_type: step.actor_type
                       })) : isStudentFlow ? [
                         { label: 'Rector', status: req.rector_status },
                         { label: 'HOD', status: req.hod_status },
-                        { label: 'Parent', status: req.parent_status }
+                        { label: 'Parent', status: req.parent_status, captured_face: req.parent_captured_face }
                       ] : [
                         { label: 'Supervisor', status: req.rector_status || req.status },
                         { label: 'HR / Admin', status: req.hod_status || (req.rector_status === 'approved' ? 'approved' : req.status) }
@@ -796,6 +798,16 @@ const LeaveManagement = () => {
                             </div>
                             <span className="text-[10px] uppercase font-bold mt-2 tracking-wider text-slate-500">{step.label}</span>
                             <span className={`text-[9px] mt-0.5 ${isDone ? 'text-green-600' : isRejected ? 'text-red-600' : 'text-slate-400'}`}>{stepStatus.toUpperCase()}</span>
+                            {step.captured_face && (
+                              <div className="mt-1 flex flex-col items-center">
+                                <img
+                                  src={step.captured_face.startsWith('data:') ? step.captured_face : `data:image/jpeg;base64,${step.captured_face}`}
+                                  alt="Verified parent"
+                                  className="w-6 h-6 rounded-full object-cover border border-emerald-500 shadow-xs hover:scale-125 transition-transform"
+                                  title="Verified Photo at Approval"
+                                />
+                              </div>
+                            )}
                           </div>
                         );
                       })}

@@ -2964,24 +2964,29 @@ const People = () => {
 
                   <div>
                     <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">
-                      Linked Parent Accounts ({profileData.parents?.length || 0})
+                      Parent / Guardian Information ({profileData.parents?.length || 0})
                     </h4>
                     {(!profileData.parents || profileData.parents.length === 0) ? (
                       <div className="p-3 bg-slate-50 rounded-xl text-slate-400 text-xs italic">
-                        No parent account linked to this student.
+                        No parent contact or mobile account linked to this {personLabel.toLowerCase()}.
                       </div>
                     ) : (
                       <div className="space-y-2">
-                        {profileData.parents.map(p => (
-                          <div key={p.id} className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs flex items-center justify-between">
+                        {profileData.parents.map((p, idx) => (
+                          <div key={p.id || p.username || idx} className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs flex items-center justify-between">
                             <div>
                               <div className="font-bold text-slate-800">{p.username}</div>
-                              <div className="text-slate-400 text-[11px] mt-0.5">
-                                {p.contact_phone || 'No phone'} • {p.contact_email || 'No email'}
+                              <div className="text-slate-500 text-[11px] mt-0.5">
+                                {p.contact_phone ? `Phone: ${p.contact_phone}` : 'No phone registered'}
+                                {p.contact_email ? ` • ${p.contact_email}` : ''}
                               </div>
                             </div>
-                            <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 font-semibold rounded text-[10px] border border-emerald-200">
-                              LINKED
+                            <span className={`px-2.5 py-1 font-bold rounded-lg text-[10px] uppercase tracking-wider ${
+                              p.status === 'pending_login'
+                                ? 'bg-amber-100 text-amber-800 border border-amber-200'
+                                : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                            }`}>
+                              {p.status === 'pending_login' ? 'App Login Pending' : 'Linked'}
                             </span>
                           </div>
                         ))}
