@@ -638,19 +638,6 @@ def get_persons():
                 r["face_image"] = f"data:image/jpeg;base64,{img}"
 
         custom["person_type"] = resolved_type
-        r_status = (r.get("student_status") or "active").lower()
-        r_hostel = (r.get("hostel_status") or ("resident" if vertical == "hostel" else "not_applicable")).lower()
-        r_login_enabled = bool(r.get("login_enabled", 1) if r.get("login_enabled") is not None else 1)
-
-        is_active_for_sync = (r_status == "active" and r_login_enabled)
-        if vertical == "hostel" and r_hostel == "left_hostel":
-            is_active_for_sync = False
-        if not is_active_for_sync:
-            person_id_int = int(r.get("id"))
-            if changed_ids is not None and person_id_int in changed_ids:
-                if person_id_int not in deleted_ids:
-                    deleted_ids.append(person_id_int)
-            continue
         r["person_type"] = resolved_type
         r["student_status"] = (r.get("student_status") or "active").lower()
         r["hostel_status"] = (r.get("hostel_status") or ("resident" if vertical == "hostel" else "not_applicable")).lower()

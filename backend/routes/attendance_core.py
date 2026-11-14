@@ -1129,10 +1129,12 @@ def person_event(valid_data: PersonEventSchema):
 def get_attendance(valid_data: AttendanceFilterSchema):
     vendor_id = g.vendor_id
     late_enabled = vendor_has_feature(vendor_id, "late_mark")
+    no_cache = request.headers.get("Cache-Control") in ("no-cache", "max-age=0") or request.args.get("nocache") == "1"
     cache_params = sorted(request.args.items())
     cache_key = f"vendor:{vendor_id}:attendance_list:{hash(tuple(cache_params))}"
-    cached = cache_get(cache_key)
-    if cached: return jsonify(cached)
+    if not no_cache:
+        cached = cache_get(cache_key)
+        if cached: return jsonify(cached)
 
     conn = get_db_connection(); conn.row_factory = sqlite3.Row; c = conn.cursor()
     vertical = vendor_vertical(c, vendor_id)

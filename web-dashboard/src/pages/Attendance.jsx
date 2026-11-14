@@ -143,7 +143,12 @@ const Attendance = () => {
       if (filters.deviceName && String(filters.deviceName).trim() !== '') {
         params.append('device_name', filters.deviceName);
       }
-      const response = await axios.get(`${API_URL}/attendance?${params.toString()}`);
+      if (!isBackground) {
+        params.append('nocache', '1');
+      }
+      const response = await axios.get(`${API_URL}/attendance?${params.toString()}`, {
+        headers: { 'Cache-Control': 'no-cache' }
+      });
       const list = response.data?.attendance || [];
       setLogs(list);
       try {
