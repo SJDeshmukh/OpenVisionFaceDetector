@@ -2997,62 +2997,75 @@ def get_person_profile(person_id):
 
         # Linked parents
         parents = []
+        effective_vid = vendor_id or person.get("vendor_id")
+        parent_info = extract_parent_info_from_custom_data(custom)
+
+        # 1. Query student_parents join parent_users
         try:
+            sp_where = "sp.person_id = ? AND sp.vendor_id = ?" if effective_vid else "sp.person_id = ?"
+            sp_params = (person_id, effective_vid) if effective_vid else (person_id,)
             c.execute(
-                """SELECT p.id, p.username, p.contact_phone, p.contact_email
+                f"""SELECT p.id, p.username, p.contact_phone, p.contact_email
                    FROM student_parents sp
                    JOIN parent_users p ON p.id = sp.parent_id
-                   WHERE sp.person_id = ? AND sp.vendor_id = ?""",
-                (person_id, vendor_id),
+                   WHERE {sp_where}""",
+                sp_params,
             )
             for prow in c.fetchall() or []:
                 pd = dict(prow) if not isinstance(prow, dict) else prow
                 pd["status"] = "linked"
                 parents.append(pd)
+        except Exception as _sp_err:
+            if getattr(conn, "_is_pg", False):
+                try: conn.rollback()
+                except Exception: pass
+            logger.warning("Error fetching student_parents for person %s: %s", person_id, _sp_err)
 
-            parent_info = extract_parent_info_from_custom_data(custom)
-
-            # Fallback 1: If not in student_parents, check parent_users by student_number or parent_phone
-            if not parents:
-                student_num = str(custom.get("student_id") or custom.get("id_number") or "").strip()
-                parent_phone = parent_info.get("phone") or str(person.get("phone") or "").strip()
-                if student_num or (parent_info.get("phone") and parent_info.get("phone") != str(person.get("phone") or "").strip()):
-                    c.execute(
-                        """SELECT p.id, p.username, p.contact_phone, p.contact_email
-                           FROM parent_users p
-                           WHERE p.vendor_id = ? AND (
-                               (p.student_number IS NOT NULL AND LOWER(p.student_number) = LOWER(?))
-                               OR (p.contact_phone IS NOT NULL AND p.contact_phone = ?)
-                           ) LIMIT 1""",
-                        (vendor_id, student_num, parent_phone),
-                    )
+        # 2. Check parent_users directly
+        if not parents:
+            try:
+                student_num = str(
+                    custom.get("student_id") or custom.get("STUDENT_ID") or
+                    custom.get("id_number") or custom.get("ID_NUMBER") or
+                    custom.get("admission_number") or custom.get("ADMISSION_NUMBER") or ""
+                ).strip()
+                parent_phone = parent_info.get("phone") or ""
+                if student_num or parent_phone:
+                    pu_where = "p.vendor_id = ? AND " if effective_vid else ""
+                    pu_params = [effective_vid] if effective_vid else []
+                    pu_sql = f"""SELECT p.id, p.username, p.contact_phone, p.contact_email
+                               FROM parent_users p
+                               WHERE {pu_where} (
+                                   (p.student_number IS NOT NULL AND LOWER(p.student_number) = LOWER(?))
+                                   OR (p.contact_phone IS NOT NULL AND p.contact_phone = ?)
+                               ) LIMIT 1"""
+                    pu_params.extend([student_num or "___none___", parent_phone or "___none___"])
+                    c.execute(pu_sql, pu_params)
                     p_match = c.fetchone()
                     if p_match:
                         pd = dict(p_match) if not isinstance(p_match, dict) else p_match
                         pd["status"] = "linked"
                         parents.append(pd)
-                        try:
-                            c.execute("INSERT OR IGNORE INTO student_parents (vendor_id, person_id, parent_id) VALUES (?, ?, ?)",
-                                      (vendor_id, person_id, pd["id"]))
-                            conn.commit()
-                        except Exception:
-                            pass
+            except Exception as _pu_err:
+                if getattr(conn, "_is_pg", False):
+                    try: conn.rollback()
+                    except Exception: pass
+                logger.warning("Error checking parent_users for person %s: %s", person_id, _pu_err)
 
-            # Fallback 2: If no mobile app portal account exists yet, surface registered contact from custom_data
-            if not parents:
-                reg_name = parent_info.get("name")
-                reg_phone = parent_info.get("phone")
-                reg_email = parent_info.get("email")
-                if reg_name or reg_phone or reg_email:
-                    parents.append({
-                        "id": None,
-                        "username": reg_name or "Parent / Guardian",
-                        "contact_phone": reg_phone,
-                        "contact_email": reg_email,
-                        "status": "pending_login",
-                    })
-        except Exception:
-            pass
+        # 3. Always fallback to custom_data registration info if no mobile portal login exists yet
+        if not parents:
+            reg_name = parent_info.get("name")
+            reg_phone = parent_info.get("phone")
+            reg_email = parent_info.get("email")
+            if reg_name or reg_phone or reg_email:
+                parents.append({
+                    "id": None,
+                    "username": reg_name or "Parent / Guardian",
+                    "contact_phone": reg_phone or "",
+                    "contact_email": reg_email or "",
+                    "status": "pending_login",
+                })
+
         person["parents"] = parents
 
         # Hostel bed allocation (if applicable)

@@ -261,6 +261,66 @@ const People = () => {
     }
   };
 
+  const resolvePersonParents = (profile, target) => {
+    // 1. If profile has linked parents from server, return them
+    if (profile?.parents && Array.isArray(profile.parents) && profile.parents.length > 0) {
+      return profile.parents;
+    }
+
+    // 2. Otherwise extract parent name/phone from custom_data
+    const cd = profile?.custom_data || target?.custom_data || {};
+    let parentPhone = '';
+    let parentName = '';
+    let parentEmail = '';
+
+    for (const [k, v] of Object.entries(cd)) {
+      if (!v) continue;
+      const val = String(v).trim();
+      const normKey = String(k).toLowerCase().replace(/[^a-z0-9]/g, '_');
+      
+      if (!parentPhone && (normKey.includes('parent') || normKey.includes('guardian') || normKey.includes('father') || normKey.includes('mother') || normKey.includes('emergency')) &&
+          (normKey.includes('phone') || normKey.includes('mobile') || normKey.includes('number') || normKey.includes('contact') || normKey.includes('no') || normKey.includes('whatsapp') || normKey.includes('cell'))) {
+        if (/\d{7,}/.test(val)) parentPhone = val;
+      }
+      
+      if (!parentName && (normKey.includes('parent') || normKey.includes('guardian') || normKey.includes('father') || normKey.includes('mother')) &&
+          (normKey.includes('name') || normKey === 'parent' || normKey === 'guardian' || normKey === 'parents')) {
+        if (!/^[\d\s+\-]+$/.test(val)) parentName = val;
+      }
+      
+      if (!parentEmail && (normKey.includes('parent') || normKey.includes('guardian')) && normKey.includes('email')) {
+        if (val.includes('@')) parentEmail = val;
+      }
+    }
+
+    // 3. Fallback: check dynamic registration columns
+    if (!parentPhone || !parentName) {
+      (registrationColumns || []).forEach(col => {
+        const val = getCellValue(profile || target, col.field);
+        if (!val || val === '-') return;
+        const norm = String(col.label || col.field).toLowerCase();
+        if (!parentPhone && (norm.includes('parent') || norm.includes('guardian') || norm.includes('emergency')) && (norm.includes('phone') || norm.includes('mobile') || norm.includes('contact') || norm.includes('number') || norm.includes('no'))) {
+          if (/\d{7,}/.test(val)) parentPhone = val;
+        }
+        if (!parentName && (norm.includes('parent') || norm.includes('guardian')) && norm.includes('name')) {
+          parentName = val;
+        }
+      });
+    }
+
+    if (parentPhone || parentName || parentEmail) {
+      return [{
+        id: null,
+        username: parentName || 'Parent / Guardian',
+        contact_phone: parentPhone || '',
+        contact_email: parentEmail || '',
+        status: 'pending_login'
+      }];
+    }
+
+    return [];
+  };
+
   const handleViewProfile = async (person) => {
     setProfileTarget(person);
     setProfileData(null);
@@ -471,14 +531,10 @@ const People = () => {
       const faces = schoolFlow
         ? receivedFaces.filter(face => (face.person_type || face.custom_data?.person_type || 'student') === 'student' && face.role !== 'faculty')
         : receivedFaces;
-      const normalizedFaces = faces.map((face, index) => {
-        const expectedId = index + 1;
-        const hasGapOrOffset = !faces[0]?.display_id || Number(faces[0]?.display_id) !== 1;
-        return {
-          ...face,
-          display_id: hasGapOrOffset ? expectedId : (face.display_id || expectedId)
-        };
-      });
+      const normalizedFaces = faces.map((face, index) => ({
+        ...face,
+        display_id: index + 1
+      }));
       setUsers(normalizedFaces);
       setLoading(false);
       if (!isFaculty) {
@@ -2982,37 +3038,42 @@ const People = () => {
                     </div>
                   )}
 
-                  <div>
-                    <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">
-                      Parent / Guardian Information ({profileData.parents?.length || 0})
-                    </h4>
-                    {(!profileData.parents || profileData.parents.length === 0) ? (
-                      <div className="p-3 bg-slate-50 rounded-xl text-slate-400 text-xs italic">
-                        No parent contact or mobile account linked to this {personLabel.toLowerCase()}.
-                      </div>
-                    ) : (
-                      <div className="space-y-2">
-                        {profileData.parents.map((p, idx) => (
-                          <div key={p.id || p.username || idx} className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs flex items-center justify-between">
-                            <div>
-                              <div className="font-bold text-slate-800">{p.username}</div>
-                              <div className="text-slate-500 text-[11px] mt-0.5">
-                                {p.contact_phone ? `Phone: ${p.contact_phone}` : 'No phone registered'}
-                                {p.contact_email ? ` • ${p.contact_email}` : ''}
-                              </div>
-                            </div>
-                            <span className={`px-2.5 py-1 font-bold rounded-lg text-[10px] uppercase tracking-wider ${
-                              p.status === 'pending_login'
-                                ? 'bg-amber-100 text-amber-800 border border-amber-200'
-                                : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
-                            }`}>
-                              {p.status === 'pending_login' ? 'App Login Pending' : 'Linked'}
-                            </span>
+                  {(() => {
+                    const displayParents = resolvePersonParents(profileData, profileTarget);
+                    return (
+                      <div>
+                        <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">
+                          Parent / Guardian Information ({displayParents.length})
+                        </h4>
+                        {displayParents.length === 0 ? (
+                          <div className="p-3 bg-slate-50 rounded-xl text-slate-400 text-xs italic">
+                            No parent contact or mobile account linked to this {personLabel.toLowerCase()}.
                           </div>
-                        ))}
+                        ) : (
+                          <div className="space-y-2">
+                            {displayParents.map((p, idx) => (
+                              <div key={p.id || p.username || idx} className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs flex items-center justify-between">
+                                <div>
+                                  <div className="font-bold text-slate-800">{p.username}</div>
+                                  <div className="text-slate-500 text-[11px] mt-0.5">
+                                    {p.contact_phone ? `Phone: ${p.contact_phone}` : 'No phone registered'}
+                                    {p.contact_email ? ` • ${p.contact_email}` : ''}
+                                  </div>
+                                </div>
+                                <span className={`px-2.5 py-1 font-bold rounded-lg text-[10px] uppercase tracking-wider ${
+                                  p.status === 'pending_login'
+                                    ? 'bg-amber-100 text-amber-800 border border-amber-200'
+                                    : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                                }`}>
+                                  {p.status === 'pending_login' ? 'App Login Pending' : 'Linked'}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
+                    );
+                  })()}
 
                   {profileData.lifecycle_history && profileData.lifecycle_history.length > 0 && (
                     <div>

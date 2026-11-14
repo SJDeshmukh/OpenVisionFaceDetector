@@ -224,28 +224,33 @@ def extract_parent_info_from_custom_data(c_data_raw):
             cd_norm[norm_k] = str(v).strip()
 
     phone_keys = [
-        "parent_phone", "parent_number", "parents_phone", "parents_number",
-        "parent_phone_number", "parents_phone_number",
-        "parent_mobile", "parents_mobile", "parent_mobile_number", "parents_mobile_number",
-        "parent_contact", "parents_contact", "parent_contact_number", "parents_contact_number",
+        "parent_phone", "parent_number", "parent_no", "parents_phone", "parents_number", "parents_no",
+        "parent_phone_no", "parents_phone_no", "parent_phone_number", "parents_phone_number",
+        "parent_mobile", "parents_mobile", "parent_mobile_no", "parents_mobile_no", "parent_mobile_number", "parents_mobile_number",
+        "parent_contact", "parents_contact", "parent_contact_no", "parents_contact_no", "parent_contact_number", "parents_contact_number",
         "parent_whatsapp", "parents_whatsapp",
-        "guardian_phone", "guardian_number", "guardian_mobile", "guardian_contact", "guardian_whatsapp",
-        "father_phone", "father_number", "father_mobile", "father_contact",
-        "mother_phone", "mother_number", "mother_mobile", "mother_contact",
-        "emergency_phone", "emergency_number", "emergency_mobile", "emergency_contact",
+        "guardian_phone", "guardian_number", "guardian_no", "guardian_mobile", "guardian_mobile_no", "guardian_contact", "guardian_contact_no", "guardian_whatsapp",
+        "father_phone", "father_number", "father_no", "father_mobile", "father_contact",
+        "mother_phone", "mother_number", "mother_no", "mother_mobile", "mother_contact",
+        "emergency_phone", "emergency_number", "emergency_no", "emergency_mobile", "emergency_contact", "emergency_contact_no",
     ]
     phone = ""
     for k in phone_keys:
         val = cd_norm.get(k, "")
-        if val and re.search(r"\d{7,}", val):
-            phone = val
+        if val and re.search(r"\d{7,}", str(val)):
+            phone = str(val).strip()
             break
     if not phone:
         for k, v in cd_norm.items():
-            if any(p in k for p in ("parent", "guardian", "father", "mother")) and any(w in k for w in ("phone", "mobile", "number", "contact", "whatsapp")):
-                if re.search(r"\d{7,}", v):
-                    phone = v
+            if any(p in k for p in ("parent", "guardian", "father", "mother", "emergency")) and any(w in k for w in ("phone", "mobile", "number", "contact", "whatsapp", "no", "cell")):
+                if re.search(r"\d{7,}", str(v)):
+                    phone = str(v).strip()
                     break
+    if not phone:
+        for k, v in cd_norm.items():
+            if any(p in k for p in ("parent", "guardian", "father", "mother")) and re.search(r"\d{7,}", str(v)):
+                phone = str(v).strip()
+                break
 
     name_keys = [
         "parent_name", "parents_name", "guardian_name",
