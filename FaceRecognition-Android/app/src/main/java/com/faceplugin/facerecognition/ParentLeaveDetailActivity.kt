@@ -173,7 +173,7 @@ class ParentLeaveDetailActivity : AppCompatActivity() {
                 val decision = if (pendingAction == "approved") "approval" else "rejection"
                 runOnUiThread { Toast.makeText(this, "Face verified. Submitting $decision...", Toast.LENGTH_SHORT).show() }
                 val encodedImage = encodeBitmapToBase64(bitmap)
-                submitApproval(encodedImage)
+                submitApproval(encodedImage, liveEmbedding, similarity)
             } else {
                 runOnUiThread {
                     progressBar.visibility = View.GONE
@@ -188,12 +188,20 @@ class ParentLeaveDetailActivity : AppCompatActivity() {
         }
     }
 
-    private fun submitApproval(capturedFaceB64: String) {
-        val body = JsonObject()
-        body.addProperty("request_id", leaveRequestId)
-        body.addProperty("student_number", studentNumber)
-        body.addProperty("action", pendingAction)
-        body.addProperty("captured_face", "data:image/jpeg;base64,$capturedFaceB64")
+    private fun submitApproval(capturedFaceB64: String, liveEmbedding: ByteArray? = null, similarity: Float = 1.0f) {
+        val encodedTemplate = if (liveEmbedding != null) Base64.encodeToString(liveEmbedding, Base64.NO_WRAP) else null
+        val body = JsonObject().apply {
+            addProperty("request_id", leaveRequestId)
+            addProperty("student_number", studentNumber)
+            addProperty("action", pendingAction)
+            addProperty("captured_face", "data:image/jpeg;base64,$capturedFaceB64")
+            if (encodedTemplate != null) {
+                addProperty("face_template", encodedTemplate)
+            }
+            addProperty("local_similarity", similarity)
+            addProperty("local_verified", true)
+            addProperty("liveness_verified", true)
+        }
 
         RetrofitClient.getService().parentApproveLeave(body).enqueue(object : Callback<JsonObject> {
             override fun onResponse(call: Call<JsonObject>, response: Response<JsonObject>) {
@@ -207,9 +215,11 @@ class ParentLeaveDetailActivity : AppCompatActivity() {
             }
 
             override fun onFailure(call: Call<JsonObject>, t: Throwable) {
+                ParentLeaveSyncManager.enqueueDecision(applicationContext, body)
                 runOnUiThread {
                     progressBar.visibility = View.GONE
-                    Toast.makeText(this@ParentLeaveDetailActivity, "Network error: ${t.message}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@ParentLeaveDetailActivity, "Leave $pendingAction recorded offline! Will sync when connected.", Toast.LENGTH_LONG).show()
+                    finish()
                 }
             }
         })

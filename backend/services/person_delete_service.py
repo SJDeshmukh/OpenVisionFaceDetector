@@ -18,6 +18,8 @@ def delete_person_dependencies(execute, person_id, vendor_id=None, name=None):
             ("DELETE FROM advances WHERE person_id = ?", (person_id,)),
             ("DELETE FROM attendance_events WHERE person_id = ? OR legacy_attendance_id IN (SELECT id FROM attendance WHERE person_id = ?)", (person_id, person_id)),
             ("DELETE FROM attendance WHERE person_id = ?", (person_id,)),
+            ("DELETE FROM parent_tokens WHERE student_number IN (SELECT student_number FROM parent_users WHERE selected_person_id = ?)", (person_id,)),
+            ("DELETE FROM parent_users WHERE selected_person_id = ? AND id NOT IN (SELECT parent_id FROM student_parents WHERE person_id != ?)", (person_id, person_id)),
             ("DELETE FROM student_parents WHERE person_id = ?", (person_id,)),
             ("UPDATE parent_users SET selected_person_id = NULL WHERE selected_person_id = ?", (person_id,)),
             ("DELETE FROM leave_requests WHERE student_id = ?", (person_id,)),
@@ -46,6 +48,14 @@ def delete_person_dependencies(execute, person_id, vendor_id=None, name=None):
             ("DELETE FROM advances WHERE vendor_id = ? AND person_id = ?", (vendor_id, person_id)),
             ("DELETE FROM attendance_events WHERE vendor_id = ? AND (person_id = ? OR legacy_attendance_id IN (SELECT id FROM attendance WHERE vendor_id = ? AND person_id = ?))", (vendor_id, person_id, vendor_id, person_id)),
             ("DELETE FROM attendance WHERE vendor_id = ? AND person_id = ?", (vendor_id, person_id)),
+            (
+                "DELETE FROM parent_tokens WHERE vendor_id = ? AND student_number IN (SELECT student_number FROM parent_users WHERE vendor_id = ? AND selected_person_id = ?)",
+                (vendor_id, vendor_id, person_id),
+            ),
+            (
+                "DELETE FROM parent_users WHERE vendor_id = ? AND selected_person_id = ? AND id NOT IN (SELECT parent_id FROM student_parents WHERE vendor_id = ? AND person_id != ?)",
+                (vendor_id, person_id, vendor_id, person_id),
+            ),
             ("DELETE FROM student_parents WHERE vendor_id = ? AND person_id = ?", (vendor_id, person_id)),
             (
                 "UPDATE parent_users SET selected_person_id = NULL WHERE vendor_id = ? AND selected_person_id = ?",

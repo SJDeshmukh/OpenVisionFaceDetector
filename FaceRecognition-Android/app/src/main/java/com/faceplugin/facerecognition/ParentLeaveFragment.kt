@@ -54,6 +54,7 @@ class ParentLeaveFragment : Fragment() {
 
     override fun onResume() {
         super.onResume()
+        context?.let { ParentLeaveSyncManager.syncPendingDecisions(it.applicationContext) }
         fetchPendingLeaves()
     }
 

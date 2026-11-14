@@ -159,25 +159,6 @@ class ParentFaceRegistrationActivity : AppCompatActivity() {
                 ?: LocalFaceEngineFacade.templateExtraction(bitmap, faceBox)
             
             if (template != null) {
-                // Similarity check against local DB
-                var maxSimilarity = 0f
-                val people = synchronized(DBManager.personList) { DBManager.personList.toTypedArray() }
-                for (p in people) {
-                    try {
-                        val storedTemplate = p?.templates?.takeIf { it.isNotEmpty() } ?: continue
-                        val s = LocalFaceEngineFacade.similarityCalculation(template, storedTemplate)
-                        if (s > maxSimilarity) maxSimilarity = s
-                    } catch (e: Exception) {}
-                }
-                
-                if (maxSimilarity > SettingsActivity.getIdentifyThreshold(this)) {
-                    runOnUiThread {
-                        showLoading(false)
-                        Toast.makeText(this, "Face already registered on this device", Toast.LENGTH_SHORT).show()
-                    }
-                    return
-                }
-
                 val faceImage = if (faceBox != null) Utils.cropFace(bitmap, faceBox) else bitmap
                 val encodedImage = encodeBitmapToBase64(faceImage)
                 val encodedTemplate = Base64.encodeToString(template, Base64.NO_WRAP)

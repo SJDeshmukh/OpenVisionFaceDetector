@@ -103,6 +103,7 @@ class ParentActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         checkFaceRegistrationStatus()
+        ParentLeaveSyncManager.syncPendingDecisions(applicationContext)
     }
 
     private fun checkFaceRegistrationStatus() {
@@ -168,7 +169,7 @@ class ParentActivity : AppCompatActivity() {
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED).build()
         val req = PeriodicWorkRequest.Builder(
-            AttendanceSyncWorker::class.java, 15, java.util.concurrent.TimeUnit.MINUTES
+            ParentAttendanceWorker::class.java, 15, java.util.concurrent.TimeUnit.MINUTES
         ).setConstraints(constraints).build()
         WorkManager.getInstance(this).enqueueUniquePeriodicWork(
             "ParentAttendanceSync", ExistingPeriodicWorkPolicy.KEEP, req

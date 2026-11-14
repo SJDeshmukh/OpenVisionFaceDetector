@@ -254,7 +254,7 @@ class ParentFaceVerificationActivity : AppCompatActivity() {
                             }
 
                             playAttendanceBeep()
-                            submitVerificationDecision(bitmap, faceBox)
+                            submitVerificationDecision(bitmap, faceBox, template, similarity)
                             return
                         } else {
                             consecutiveNonMatches++
@@ -299,7 +299,7 @@ class ParentFaceVerificationActivity : AppCompatActivity() {
         }.start()
     }
 
-    private fun submitVerificationDecision(bitmap: Bitmap, faceBox: FaceBox) {
+    private fun submitVerificationDecision(bitmap: Bitmap, faceBox: FaceBox, template: ByteArray?, similarity: Float) {
         Thread {
             try {
                 // Ensure camera is stopped to save battery & prevent frame conflicts
@@ -315,12 +315,19 @@ class ParentFaceVerificationActivity : AppCompatActivity() {
                 }
                 val resizedBitmap = Utils.resizeBitmap(facePhoto, 360)
                 val encodedImage = encodeBitmapToBase64(resizedBitmap)
+                val encodedTemplate = if (template != null) Base64.encodeToString(template, Base64.NO_WRAP) else null
 
                 val body = JsonObject().apply {
                     addProperty("request_id", requestId)
                     addProperty("student_number", studentNumber)
                     addProperty("action", action)
                     addProperty("captured_face", "data:image/jpeg;base64,$encodedImage")
+                    if (encodedTemplate != null) {
+                        addProperty("face_template", encodedTemplate)
+                    }
+                    addProperty("local_similarity", similarity)
+                    addProperty("local_verified", true)
+                    addProperty("liveness_verified", true)
                 }
 
                 RetrofitClient.getService().parentApproveLeave(body).enqueue(object : Callback<JsonObject> {
@@ -349,11 +356,18 @@ class ParentFaceVerificationActivity : AppCompatActivity() {
                     }
 
                     override fun onFailure(call: Call<JsonObject>, t: Throwable) {
+                        Log.w(TAG, "Network failure submitting parent leave decision, enqueuing locally: ${t.message}")
+                        ParentLeaveSyncManager.enqueueDecision(applicationContext, body)
                         runOnUiThread {
                             progressBar.visibility = View.GONE
-                            Toast.makeText(this@ParentFaceVerificationActivity, "Network error: ${t.message}", Toast.LENGTH_LONG).show()
-                            isVerifiedOrSubmitting = false
-                            bindCameraUseCases()
+                            val decision = if (action == "approved") "approved" else "rejected"
+                            Toast.makeText(
+                                this@ParentFaceVerificationActivity,
+                                "Leave $decision verified offline! Will sync automatically when connected.",
+                                Toast.LENGTH_LONG
+                            ).show()
+                            setResult(RESULT_OK)
+                            finish()
                         }
                     }
                 })

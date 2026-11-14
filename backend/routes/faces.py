@@ -2043,11 +2043,11 @@ def delete_face(name):
                     [vid, *ids],
                 )
                 _safe_execute(
-                    f"UPDATE parent_users SET selected_person_id = NULL WHERE vendor_id = ? AND selected_person_id IN ({placeholders})",
-                    [vid, *ids],
+                    f"DELETE FROM parent_users WHERE vendor_id = ? AND selected_person_id IN ({placeholders}) AND NOT EXISTS (SELECT 1 FROM student_parents WHERE parent_id = parent_users.id AND person_id NOT IN ({placeholders}))",
+                    [vid, *ids, *ids],
                 )
                 _safe_execute(
-                    f"DELETE FROM parent_users WHERE vendor_id = ? AND selected_person_id IN ({placeholders}) AND NOT EXISTS (SELECT 1 FROM student_parents WHERE parent_id = parent_users.id)",
+                    f"UPDATE parent_users SET selected_person_id = NULL WHERE vendor_id = ? AND selected_person_id IN ({placeholders})",
                     [vid, *ids],
                 )
                 # Delete leave requests and lecture attendance for the deleted person(s)
