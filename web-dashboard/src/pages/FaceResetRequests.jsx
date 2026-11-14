@@ -1,5 +1,5 @@
 import { useCallback, useState, useEffect } from 'react';
-import { Shield, CheckCircle, XCircle, Clock, Search, RefreshCw, Trash2 } from 'lucide-react';
+import { Shield, CheckCircle, XCircle, Clock, Search, RefreshCw, Check } from 'lucide-react';
 import { API_URL } from '../config';
 import axios from 'axios';
 
@@ -133,7 +133,7 @@ const FaceResetRequests = () => {
                                                         disabled={processingId === req.id}
                                                         className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition-colors title='Approve & Reset Face'"
                                                     >
-                                                        <Trash2 size={20} />
+                                                        <Check size={20} />
                                                     </button>
                                                     <button
                                                         onClick={() => handleAction(req.id, 'rejected')}

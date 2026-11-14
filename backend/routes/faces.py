@@ -1954,10 +1954,10 @@ def delete_face(name):
     try:
         face_rows = []
         if vendor_id:
-            c.execute("SELECT id, vendor_id, display_id, phone, custom_data FROM faces WHERE name = ? AND vendor_id = ?", (name, vendor_id))
+            c.execute("SELECT id, vendor_id, display_id, phone, custom_data, name FROM faces WHERE LOWER(TRIM(name)) = LOWER(TRIM(?)) AND vendor_id = ?", (name, vendor_id))
             face_rows = c.fetchall() or []
         else:
-            c.execute("SELECT id, vendor_id, display_id, phone, custom_data FROM faces WHERE name = ?", (name,))
+            c.execute("SELECT id, vendor_id, display_id, phone, custom_data, name FROM faces WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))", (name,))
             face_rows = c.fetchall() or []
         
         if not face_rows:
@@ -1998,12 +1998,13 @@ def delete_face(name):
             # Remove every FK dependency before deleting the faces row. This
             # includes payroll advances, which previously blocked PostgreSQL
             # deletions with advances_person_id_fkey.
-            delete_person_dependencies(_safe_execute, p_id, v_id)
+            p_name = r[5] if len(r) > 5 else name
+            delete_person_dependencies(_safe_execute, p_id, v_id, name=p_name)
 
         if vendor_id:
-            c.execute("DELETE FROM faces WHERE name = ? AND vendor_id = ?", (name, vendor_id))
+            c.execute("DELETE FROM faces WHERE LOWER(TRIM(name)) = LOWER(TRIM(?)) AND vendor_id = ?", (name, vendor_id))
         else:
-            c.execute("DELETE FROM faces WHERE name = ?", (name,))
+            c.execute("DELETE FROM faces WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))", (name,))
         deleted_faces = c.rowcount
 
         by_vendor = {}
@@ -2237,7 +2238,7 @@ def delete_face_by_id(person_id):
             if getattr(conn, "_is_pg", False): c.execute("ROLLBACK TO SAVEPOINT sp_fac")
             logger.warning(f"Faculty class unassign skipped for person_id={person_id}: {_e}")
 
-        delete_person_dependencies(_safe_execute, person_id, target_vendor_id)
+        delete_person_dependencies(_safe_execute, person_id, target_vendor_id, name=name)
 
         if sn:
             for _sql, _args in [

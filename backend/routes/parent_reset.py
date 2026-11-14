@@ -167,6 +167,18 @@ def handle_face_reset():
             # 2. Update request status
             c.execute("UPDATE face_reset_requests SET status = 'approved' WHERE id = ?", (request_id,))
             conn.commit()
+
+            # 3. Notify parent app via socketio
+            try:
+                from app import socketio
+                socketio.emit(
+                    "parent_face_reset",
+                    {"parent_id": parent_id, "status": "approved"},
+                    room=f"vendor_{vendor_id}"
+                )
+            except Exception as _sock_err:
+                logger.warning(f"Socket emit parent_face_reset skipped: {_sock_err}")
+
             return jsonify({"status": "success", "message": "Parent face reset approved. They can now register a new face."})
         else:
             # Reject request

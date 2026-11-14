@@ -95,6 +95,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
     private long lastStreamTime = 0;
 
     private boolean forceFrontCamera = false;
+    private boolean enableLiveness = false;
     private WebRTCManager webrtcManager;
     private Socket mSocket;
 
@@ -106,6 +107,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
         context = this;
         isCaptureOnly = getIntent().getBooleanExtra("is_capture_only", false);
         forceFrontCamera = getIntent().getBooleanExtra("force_front_camera", false);
+        enableLiveness = getIntent().getBooleanExtra("enable_liveness", false);
         isVerification = getIntent().getBooleanExtra("is_verification", false);
 
         // --- Socket.IO & WebRTC Init ---
@@ -333,18 +335,20 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
     public void view5_finished() {
 
         if (capturedBitmap == null || capturedFace == null) return;
-        FaceDetectionParam param = isCaptureOnly ? FacePipeline.enrollmentDetectionParams(this) : FacePipeline.secureDetectionParams(this);
+        FaceDetectionParam param = (isCaptureOnly && !enableLiveness) ? FacePipeline.enrollmentDetectionParams(this) : FacePipeline.secureDetectionParams(this);
 
         List<FaceBox> faceBoxes = LocalFaceEngineFacade.INSTANCE.faceDetection(capturedBitmap, param);
         if(faceBoxes != null && faceBoxes.size() > 0) {
-            if (isCaptureOnly) {
+            if (isCaptureOnly && !enableLiveness) {
                 livenessTxt.setVisibility(View.GONE);
             } else if(FacePipeline.isLive(context, faceBoxes.get(0), false)) {
                 String msg = String.format("Liveness: Real, score = %.03f", faceBoxes.get(0).liveness);
+                livenessTxt.setVisibility(View.VISIBLE);
                 livenessTxt.setText(msg);
             }
             else {
                 String msg = String.format("Liveness: Spoof, score =  %.03f", faceBoxes.get(0).liveness);
+                livenessTxt.setVisibility(View.VISIBLE);
                 livenessTxt.setText(msg);
             }
         }
@@ -418,10 +422,10 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
             }
             // -----------------------
 
-            FaceDetectionParam param = isCaptureOnly ? FacePipeline.enrollmentDetectionParams(this) : FacePipeline.secureDetectionParams(this);
+            FaceDetectionParam param = (isCaptureOnly && !enableLiveness) ? FacePipeline.enrollmentDetectionParams(this) : FacePipeline.secureDetectionParams(this);
 
             List<FaceBox> faceBoxes = LocalFaceEngineFacade.INSTANCE.faceDetection(bitmap, param);
-            FACE_CAPTURE_STATE evaluatedState = checkFace(faceBoxes, this, bitmap.getWidth(), bitmap.getHeight());
+            FACE_CAPTURE_STATE evaluatedState = checkFace(faceBoxes, this, bitmap.getWidth(), bitmap.getHeight(), enableLiveness || !isCaptureOnly);
             boolean collectingEnrollmentFrames = captureView.viewMode == CaptureView.VIEW_MODE.FACE_CIRCLE;
             byte[] candidateTemplate = null;
             if (collectingEnrollmentFrames && evaluatedState == FACE_CAPTURE_STATE.CAPTURE_OK) {
@@ -597,7 +601,11 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
     }
 
     public static FACE_CAPTURE_STATE checkFace(List<FaceBox> faceBoxes, Context context, int width, int height) {
-        return FacePipeline.enrollmentState(faceBoxes, context, width, height);
+        return checkFace(faceBoxes, context, width, height, false);
+    }
+
+    public static FACE_CAPTURE_STATE checkFace(List<FaceBox> faceBoxes, Context context, int width, int height, boolean checkLiveness) {
+        return FacePipeline.enrollmentState(faceBoxes, context, width, height, checkLiveness);
     }
 
     private void resetEnrollmentSequence() {

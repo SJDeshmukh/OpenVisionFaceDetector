@@ -527,8 +527,13 @@ def parent_register_face():
             conn.close()
             return jsonify({"error": f"Invalid parent face template: {e}"}), 400
 
-        # Get all faces for this vendor to compare.
-        c.execute("SELECT id, templates, name FROM faces WHERE vendor_id = ?", (vendor_id,))
+        # Get all active faces for this vendor to compare. Exclude deleted/inactive students.
+        c.execute("""
+            SELECT id, templates, name FROM faces 
+            WHERE vendor_id = ? 
+              AND (student_status = 'active' OR student_status IS NULL) 
+              AND (login_enabled = 1 OR login_enabled IS NULL)
+        """, (vendor_id,))
         rows = c.fetchall()
         for row in rows:
             r = get_row_dict(row)

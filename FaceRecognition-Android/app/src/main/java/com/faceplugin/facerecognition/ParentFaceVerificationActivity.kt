@@ -224,6 +224,16 @@ class ParentFaceVerificationActivity : AppCompatActivity() {
 
             if (faceBoxes.isNotEmpty()) {
                 val faceBox = faceBoxes[0]
+
+                // Anti-spoofing check
+                if (!FacePipeline.isLive(this, faceBox, false)) {
+                    runOnUiThread {
+                        faceView.setRecognizedName("Spoof Detected")
+                        tvStatus.text = "Spoof face detected: Real live face required"
+                    }
+                    return
+                }
+
                 if (FacePipeline.recognitionReady(this, faceBox, bitmap.width, bitmap.height)) {
                     val template = LocalFaceEngineFacade.templateExtraction(bitmap, faceBox)
                     val parentTemplate = savedTemplate

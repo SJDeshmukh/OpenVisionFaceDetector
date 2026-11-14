@@ -1126,7 +1126,7 @@ def get_attendance(valid_data: AttendanceFilterSchema):
     wanted_type = requested_person_type(valid_data.person_type, vertical)
     s_date, e_date, name = valid_data.start_date, valid_data.end_date, valid_data.name
     query = """
-        SELECT a.*, f.department, f.designation, f.shift, f.phone, f.custom_data AS face_custom_data,
+        SELECT a.*, f.id AS matched_face_id, f.student_status, f.department, f.designation, f.shift, f.phone, f.custom_data AS face_custom_data,
                (SELECT su.role FROM system_users su
                 WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
                 ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
@@ -1190,6 +1190,10 @@ def get_attendance(valid_data: AttendanceFilterSchema):
             continue
         if e_date and (attendance_day is None or attendance_day.isoformat() > e_date):
             continue
+        # In hostel/student verticals, exclude attendance logs for deleted residents
+        if is_student_vertical(vertical) and (not r.get("matched_face_id") or r.get("student_status") == "deleted"):
+            continue
+
         custom = parse_custom_data(r.get("face_custom_data"))
         resolved_type = person_type_for(custom, r.get("system_role"), vertical)
         if wanted_type and resolved_type != wanted_type:

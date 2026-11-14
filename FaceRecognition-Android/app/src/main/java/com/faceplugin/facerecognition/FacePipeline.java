@@ -84,6 +84,11 @@ public final class FacePipeline {
      */
     public static FACE_CAPTURE_STATE enrollmentState(
             List<FaceBox> faces, Context context, int width, int height) {
+        return enrollmentState(faces, context, width, height, false);
+    }
+
+    public static FACE_CAPTURE_STATE enrollmentState(
+            List<FaceBox> faces, Context context, int width, int height, boolean checkLiveness) {
         if (faces == null || faces.isEmpty()) return FACE_CAPTURE_STATE.NO_FACE;
         if (faces.size() != 1) return FACE_CAPTURE_STATE.MULTIPLE_FACES;
         if (width <= 0 || height <= 0) return FACE_CAPTURE_STATE.NO_FACE;
@@ -161,7 +166,9 @@ public final class FacePipeline {
                 || face.face_luminance > SettingsActivity.getMaxLuminance(context)) {
             return FACE_CAPTURE_STATE.BAD_LIGHTING;
         }
-        // Spoof / liveness check is intentionally skipped for registration/enrollment.
+        if (checkLiveness && !isLive(context, face, false)) {
+            return FACE_CAPTURE_STATE.SPOOFED_FACE;
+        }
         return FACE_CAPTURE_STATE.CAPTURE_OK;
     }
 

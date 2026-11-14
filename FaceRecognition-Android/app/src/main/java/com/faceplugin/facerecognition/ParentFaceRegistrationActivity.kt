@@ -45,6 +45,7 @@ class ParentFaceRegistrationActivity : AppCompatActivity() {
             val intent = Intent(this, CaptureActivity::class.java)
             intent.putExtra("is_capture_only", true)
             intent.putExtra("force_front_camera", true)
+            intent.putExtra("enable_liveness", true)
             cameraLauncher.launch(intent)
         }
     }
@@ -118,7 +119,7 @@ class ParentFaceRegistrationActivity : AppCompatActivity() {
     }
 
     private fun processImage(bitmap: Bitmap, capturedTemplate: ByteArray?, capturedVerified: Boolean) {
-        val faces = LocalFaceEngineFacade.faceDetection(bitmap, FacePipeline.enrollmentDetectionParams(this))
+        val faces = LocalFaceEngineFacade.faceDetection(bitmap, FacePipeline.secureDetectionParams(this))
         val hasCapturedTemplate = capturedVerified
             && capturedTemplate != null && capturedTemplate.isNotEmpty()
 
@@ -134,10 +135,19 @@ class ParentFaceRegistrationActivity : AppCompatActivity() {
             }
         } else {
             val faceBox = faces.firstOrNull()
+
+            // Anti-spoofing check
+            if (faceBox != null && !FacePipeline.isLive(this, faceBox, false)) {
+                runOnUiThread {
+                    showLoading(false)
+                    Toast.makeText(this, "Anti-spoofing check failed: Real live face required", Toast.LENGTH_LONG).show()
+                }
+                return
+            }
             
-            // Frontality and quality check (spoof disabled for registration)
+            // Frontality and quality check
             if (!hasCapturedTemplate && !FacePipeline.recognitionReady(
-                    this, faceBox, bitmap.width, bitmap.height, true)) {
+                    this, faceBox, bitmap.width, bitmap.height, false)) {
                 runOnUiThread {
                     showLoading(false)
                     Toast.makeText(this, "A clear front-facing face is required", Toast.LENGTH_SHORT).show()
@@ -171,11 +181,11 @@ class ParentFaceRegistrationActivity : AppCompatActivity() {
                 val faceImage = if (faceBox != null) Utils.cropFace(bitmap, faceBox) else bitmap
                 val encodedImage = encodeBitmapToBase64(faceImage)
                 val encodedTemplate = Base64.encodeToString(template, Base64.NO_WRAP)
-                saveFaceLocally(encodedTemplate)
                 if (NetworkUtils.isOnline(applicationContext)) {
                     registerFace(encodedImage, encodedTemplate)
                 } else {
-                    runOnUiThread { finishLocalRegistration("Face saved on this device") }
+                    saveFaceLocally(encodedTemplate)
+                    runOnUiThread { finishLocalRegistration("Face saved on this device (offline)") }
                 }
             } else {
                 runOnUiThread {
@@ -208,17 +218,19 @@ class ParentFaceRegistrationActivity : AppCompatActivity() {
 
         RetrofitClient.getService().parentRegisterFace(request).enqueue(object : Callback<com.google.gson.JsonObject> {
             override fun onResponse(call: Call<com.google.gson.JsonObject>, response: Response<com.google.gson.JsonObject>) {
-                runOnUiThread { showLoading(false) }
                 val status = try { response.body()?.get("status")?.asString } catch (_: Exception) { null }
                 if (status == "already_registered") {
-                    getSharedPreferences("app_prefs", Context.MODE_PRIVATE).edit()
-                        .putBoolean("face_registered", true)
-                        .apply()
-                    finishLocalRegistration("Face already registered")
+                    runOnUiThread {
+                        saveFaceLocally(faceTemplate)
+                        finishLocalRegistration("Face already registered")
+                    }
                     return
                 }
                 if (response.isSuccessful && status == "success") {
-                    finishLocalRegistration("Face saved and synced")
+                    runOnUiThread {
+                        saveFaceLocally(faceTemplate)
+                        finishLocalRegistration("Face saved and synced")
+                    }
                 } else {
                     var errorMsg = "Registration failed"
                     try {
@@ -236,13 +248,16 @@ class ParentFaceRegistrationActivity : AppCompatActivity() {
                     } catch (e: Exception) {
                         e.printStackTrace()
                     }
-                    val syncMessage = "Face saved locally; cloud sync failed: $errorMsg"
-                    runOnUiThread { finishLocalRegistration(syncMessage) }
+                    runOnUiThread {
+                        showLoading(false)
+                        Toast.makeText(this@ParentFaceRegistrationActivity, errorMsg, Toast.LENGTH_LONG).show()
+                    }
                 }
             }
 
             override fun onFailure(call: Call<com.google.gson.JsonObject>, t: Throwable) {
                 runOnUiThread {
+                    saveFaceLocally(faceTemplate)
                     finishLocalRegistration("Face saved locally; cloud sync will need retrying")
                 }
             }

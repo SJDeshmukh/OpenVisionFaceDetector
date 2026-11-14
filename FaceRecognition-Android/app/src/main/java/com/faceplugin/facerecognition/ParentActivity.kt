@@ -14,6 +14,7 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import android.view.View
 import android.view.animation.AccelerateDecelerateInterpolator
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -97,6 +98,38 @@ class ParentActivity : AppCompatActivity() {
         
         val filter = IntentFilter(MyGlobal.ACTION_AUTH_FAILURE)
         ContextCompat.registerReceiver(this, authFailureReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        checkFaceRegistrationStatus()
+    }
+
+    private fun checkFaceRegistrationStatus() {
+        if (!NetworkUtils.isOnline(applicationContext)) return
+        RetrofitClient.getService().getParentFaceStatus().enqueue(object : Callback<JsonObject> {
+            override fun onResponse(call: Call<JsonObject>, response: Response<JsonObject>) {
+                val registered = try {
+                    response.body()?.get("face_registered")?.asBoolean == true
+                } catch (_: Exception) { true }
+
+                if (!registered) {
+                    // Face was reset by admin! Clear local cached credentials & force registration first
+                    getSharedPreferences("app_prefs", Context.MODE_PRIVATE).edit()
+                        .putBoolean("face_registered", false)
+                        .remove("parent_face_template")
+                        .apply()
+                    runOnUiThread {
+                        Toast.makeText(this@ParentActivity, "Face reset was approved by admin. Please register your new face to continue.", Toast.LENGTH_LONG).show()
+                        val intent = Intent(this@ParentActivity, ParentFaceRegistrationActivity::class.java)
+                        intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+                        startActivity(intent)
+                        finish()
+                    }
+                }
+            }
+            override fun onFailure(call: Call<JsonObject>, t: Throwable) {}
+        })
     }
 
     override fun onDestroy() {
