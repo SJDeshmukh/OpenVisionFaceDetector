@@ -502,7 +502,7 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
                                 }
                             } else {
                                 warningTxt.setText(isVerification ? "Verifying face..." : ("Hold still " + consecutiveValidFrames
-                                        + "/" + REQUIRED_VALID_FRAMES);
+                                        + "/" + REQUIRED_VALID_FRAMES));
                             }
                         }
                     }
