@@ -173,6 +173,16 @@ const LeaveManagement = () => {
     }
   };
 
+  const handleDeleteParent = async (parentId, name) => {
+    if (!window.confirm(`Are you sure you want to delete the parent record and registered face for ${name || 'this student'}? This cannot be undone.`)) return;
+    try {
+      await axios.delete(`${API_URL}/leave/parent-faces/${parentId}`);
+      fetchData();
+    } catch (err) {
+      alert("Error deleting parent: " + (err.response?.data?.error || err.message));
+    }
+  };
+
   const handleSubmitRequest = async (e) => {
     e.preventDefault();
     setLoading(true);
@@ -928,9 +938,26 @@ const LeaveManagement = () => {
                           <Clock size={12} /> Phone: <span className="text-slate-800">{parent.contact_phone || '-'}</span>
                         </p>
                       </div>
-                      <button className="w-full mt-2 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 rounded-md border border-slate-200 transition-colors">
-                        View History
-                      </button>
+                      <div className="flex gap-2 mt-2">
+                        <button 
+                          type="button"
+                          onClick={() => {
+                            setSearchTerm(parent.student_name || parent.student_number || '');
+                            setActiveTab('history');
+                          }}
+                          className="flex-1 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 rounded-md border border-slate-200 transition-colors"
+                        >
+                          View History
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteParent(parent.id, parent.student_name || parent.student_number)}
+                          className="py-1.5 px-2.5 text-xs font-medium text-red-600 hover:bg-red-50 rounded-md border border-red-200 transition-colors flex items-center justify-center gap-1"
+                          title="Delete Parent Account & Registered Face"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ))

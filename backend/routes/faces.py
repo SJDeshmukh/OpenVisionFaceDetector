@@ -883,35 +883,33 @@ def upload_face():
                 or department
                 or custom_dict.get("Department")
             )
-            if not student_branch or not str(student_branch).strip():
-                return jsonify({"error": "Branch selection is mandatory for hostel resident registration."}), 400
+            if student_branch and str(student_branch).strip():
+                student_branch_clean = str(student_branch).strip()
             
-            student_branch_clean = str(student_branch).strip()
-            
-            # Validate branch against vendor configured branches
-            metadata_cursor.execute(
-                "SELECT DISTINCT branch FROM classes WHERE vendor_id = ? AND branch IS NOT NULL AND branch <> ''",
-                (vendor_id,)
-            )
-            valid_branches = {r[0].strip().lower() for r in metadata_cursor.fetchall() if r[0]}
-            metadata_cursor.execute("SELECT departments FROM vendors WHERE id = ?", (vendor_id,))
-            v_dept_row = metadata_cursor.fetchone()
-            if v_dept_row and v_dept_row[0]:
-                try:
-                    d_list = json.loads(v_dept_row[0]) if isinstance(v_dept_row[0], str) else v_dept_row[0]
-                    for d in d_list:
-                        if d: valid_branches.add(str(d).strip().lower())
-                except Exception:
-                    pass
-            
-            if valid_branches and student_branch_clean.lower() not in valid_branches:
-                return jsonify({
-                    "error": f"Invalid branch '{student_branch_clean}'. Must be one of the vendor's configured branches."
-                }), 400
-            
-            custom_dict["branch"] = student_branch_clean
-            if not department:
-                department = student_branch_clean
+                # Validate branch against vendor configured branches
+                metadata_cursor.execute(
+                    "SELECT DISTINCT branch FROM classes WHERE vendor_id = ? AND branch IS NOT NULL AND branch <> ''",
+                    (vendor_id,)
+                )
+                valid_branches = {r[0].strip().lower() for r in metadata_cursor.fetchall() if r[0]}
+                metadata_cursor.execute("SELECT departments FROM vendors WHERE id = ?", (vendor_id,))
+                v_dept_row = metadata_cursor.fetchone()
+                if v_dept_row and v_dept_row[0]:
+                    try:
+                        d_list = json.loads(v_dept_row[0]) if isinstance(v_dept_row[0], str) else v_dept_row[0]
+                        for d in d_list:
+                            if d: valid_branches.add(str(d).strip().lower())
+                    except Exception:
+                        pass
+                
+                if valid_branches and student_branch_clean.lower() not in valid_branches:
+                    return jsonify({
+                        "error": f"Invalid branch '{student_branch_clean}'. Must be one of the vendor's configured branches."
+                    }), 400
+                
+                custom_dict["branch"] = student_branch_clean
+                if not department:
+                    department = student_branch_clean
 
         if vendor_id:
             from services.config_utils import load_registration_config, validate_registration_values

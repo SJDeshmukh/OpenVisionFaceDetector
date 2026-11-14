@@ -1725,6 +1725,33 @@ def get_parent_faces():
     finally:
         conn.close()
 
+@leave_bp.route("/parent-faces/<int:parent_id>", methods=["DELETE"])
+def delete_parent_face(parent_id):
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+    role_error = _require_role("vendor_admin", "admin", "owner", "super_admin")
+    if role_error: return role_error
+    
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute("SELECT student_number FROM parent_users WHERE id = ? AND vendor_id = ?", (parent_id, vendor_id))
+        row = c.fetchone()
+        if not row:
+            return jsonify({"error": "Parent record not found"}), 404
+        sn = row[0] if not hasattr(row, 'keys') else row['student_number']
+        c.execute("DELETE FROM student_parents WHERE parent_id = ? AND vendor_id = ?", (parent_id, vendor_id))
+        if sn:
+            c.execute("DELETE FROM parent_tokens WHERE student_number = ? AND vendor_id = ?", (str(sn).strip(), vendor_id))
+        c.execute("DELETE FROM parent_users WHERE id = ? AND vendor_id = ?", (parent_id, vendor_id))
+        conn.commit()
+        return jsonify({"status": "success", "message": "Parent account and face registration deleted."})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
 @leave_bp.route("/student/history", methods=["GET"])
 @require_feature("leave_management")
 def get_student_history():

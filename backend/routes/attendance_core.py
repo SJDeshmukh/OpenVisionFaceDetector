@@ -48,6 +48,7 @@ from schemas import AttendanceFilterSchema, PersonEventSchema, PublicAttendanceR
 from storage import compact_image_data_url
 from services.person_scope_service import (
     class_scope_for,
+    is_student_vertical,
     parse_custom_data,
     person_type_for,
     requested_person_type,
