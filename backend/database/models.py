@@ -76,6 +76,13 @@ class Face(Base):
     vendor_id = Column(Integer, ForeignKey('vendors.id'))
     custom_data = Column(Text) # JSON string
     display_id = Column(Integer)
+    student_status = Column(String(50), default='active')
+    hostel_status = Column(String(50), default='not_applicable')
+    login_enabled = Column(Integer, default=1)
+    exit_date = Column(Date)
+    exit_reason = Column(Text)
+    status_updated_at = Column(DateTime)
+    status_updated_by = Column(String(255))
 
     vendor = relationship("Vendor", back_populates="faces")
     attendance_records = relationship("Attendance", back_populates="person")

@@ -270,6 +270,22 @@ def create_leave_request():
             if not resolved_student_id or (linked_person_ids and resolved_student_id not in linked_person_ids):
                 return jsonify({"error": "This parent account is not linked to that student"}), 403
             student_id = resolved_student_id
+
+            # Validate student lifecycle status for parent leave request
+            c.execute(
+                "SELECT student_status, hostel_status, login_enabled FROM faces WHERE id = ? AND vendor_id = ?",
+                (int(student_id), vendor_id),
+            )
+            l_chk = c.fetchone()
+            if l_chk:
+                st_stat = str(l_chk[0] or "active").lower()
+                h_stat = str(l_chk[1] or "not_applicable").lower()
+                l_en = l_chk[2] if l_chk[2] is not None else 1
+                if st_stat in ("graduated", "left_college", "suspended") or l_en == 0 or h_stat == "left_hostel":
+                    conn.close()
+                    return jsonify({
+                        "error": f"Leave requests cannot be submitted for deactivated students ({st_stat.replace('_', ' ').title()})"
+                    }), 400
         else:
             # Never trust a body-supplied student ID. Resolve the student from the
             # authenticated account and only use the body field as a consistency check.
@@ -338,6 +354,22 @@ def create_leave_request():
                     logger.error(f"Student {student_id} not found in faces table")
                     return jsonify({"error": f"Student with ID {student_id} not found in face records"}), 404
                 return jsonify({"error": "Student account is not linked to a face record"}), 409
+
+        # Verify student lifecycle status before inserting leave request
+        c.execute(
+            "SELECT student_status, hostel_status, login_enabled FROM faces WHERE id = ? AND vendor_id = ?",
+            (int(student_id), vendor_id),
+        )
+        s_chk = c.fetchone()
+        if s_chk:
+            st_stat = str(s_chk[0] or "active").lower()
+            h_stat = str(s_chk[1] or "not_applicable").lower()
+            l_en = s_chk[2] if s_chk[2] is not None else 1
+            if st_stat in ("graduated", "left_college", "suspended") or l_en == 0 or h_stat == "left_hostel":
+                conn.close()
+                return jsonify({
+                    "error": f"Leave requests cannot be submitted for deactivated students ({st_stat.replace('_', ' ').title()})"
+                }), 400
 
         if is_pg:
             c.execute("""

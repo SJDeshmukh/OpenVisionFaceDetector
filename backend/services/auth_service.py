@@ -213,11 +213,16 @@ def authenticate_vendor_access():
                         account_vendor_id = account["vendor_id"] if hasattr(account, "keys") else account[1]
                         if person_id:
                             c.execute(
-                                "SELECT designation, custom_data FROM faces WHERE id = ? AND vendor_id = ?",
+                                "SELECT designation, custom_data, student_status, login_enabled FROM faces WHERE id = ? AND vendor_id = ?",
                                 (person_id, account_vendor_id),
                             )
                             profile = c.fetchone()
                             if profile:
+                                p_st = str((profile[2] if len(profile) > 2 else "active") or "active").lower()
+                                p_en = profile[3] if len(profile) > 3 and profile[3] is not None else 1
+                                if p_st in ("graduated", "left_college", "suspended") or p_en == 0:
+                                    conn.close()
+                                    return None, (jsonify({"error": "Account deactivated. Please contact administration.", "code": "ACCOUNT_DEACTIVATED"}), 403)
                                 designation = profile[0] if not hasattr(profile, "keys") else profile["designation"]
                                 custom_data = profile[1] if not hasattr(profile, "keys") else profile["custom_data"]
                                 if is_student_profile(designation, custom_data):

@@ -616,6 +616,31 @@ def login():
         if (_is_kiosk_request or platform.lower() in {"mobile", "kiosk"}) and is_student_mobile_login:
             return jsonify({"error": "Student and resident accounts are not permitted to log in at the kiosk level."}), 403
 
+        # Student Lifecycle verification: check if account has been deactivated
+        if user.get("role") in {"user", "student", "resident"} and user.get("person_id"):
+            lifecycle_conn = get_db_connection()
+            try:
+                l_cur = lifecycle_conn.cursor()
+                l_cur.execute(
+                    "SELECT student_status, hostel_status, login_enabled, exit_reason FROM faces WHERE id = ? AND vendor_id = ?",
+                    (user.get("person_id"), user.get("vendor_id")),
+                )
+                l_row = l_cur.fetchone()
+                if l_row:
+                    l_s_status = str(l_row[0] or "active").lower()
+                    l_h_status = str(l_row[1] or "not_applicable").lower()
+                    l_enabled = l_row[2] if l_row[2] is not None else 1
+                    l_reason = l_row[3] or ""
+                    if l_s_status in ("graduated", "left_college", "suspended") or l_enabled == 0:
+                        status_str = l_s_status.replace("_", " ").title()
+                        err_msg = f"Your student account is deactivated ({status_str}). Login is disabled."
+                        if l_reason:
+                            err_msg += f" Reason: {l_reason}."
+                        err_msg += " Please contact your institution administration."
+                        return jsonify({"error": err_msg, "code": "ACCOUNT_DEACTIVATED", "status": l_s_status}), 403
+            finally:
+                lifecycle_conn.close()
+
         # Hostel kiosk security: on the kiosk platform or TapinX kiosk app, only accounts that are
         # explicitly designated as kiosk accounts or administrators may proceed. This prevents
         # students or unauthorized accounts from logging into the kiosk

@@ -532,7 +532,9 @@ def get_persons():
                (SELECT su.role FROM system_users su
                 WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
                 ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
-                LIMIT 1) AS system_role
+                LIMIT 1) AS system_role,
+                f.student_status, f.hostel_status, f.login_enabled,
+                f.exit_date, f.exit_reason, f.status_updated_at, f.status_updated_by
         FROM faces f
     """
     params = []
@@ -636,7 +638,35 @@ def get_persons():
                 r["face_image"] = f"data:image/jpeg;base64,{img}"
 
         custom["person_type"] = resolved_type
+        r_status = (r.get("student_status") or "active").lower()
+        r_hostel = (r.get("hostel_status") or ("resident" if vertical == "hostel" else "not_applicable")).lower()
+        r_login_enabled = bool(r.get("login_enabled", 1) if r.get("login_enabled") is not None else 1)
+
+        is_active_for_sync = (r_status == "active" and r_login_enabled)
+        if vertical == "hostel" and r_hostel == "left_hostel":
+            is_active_for_sync = False
+        if not is_active_for_sync:
+            person_id_int = int(r.get("id"))
+            if changed_ids is not None and person_id_int in changed_ids:
+                if person_id_int not in deleted_ids:
+                    deleted_ids.append(person_id_int)
+            continue
         r["person_type"] = resolved_type
+        r["student_status"] = (r.get("student_status") or "active").lower()
+        r["hostel_status"] = (r.get("hostel_status") or ("resident" if vertical == "hostel" else "not_applicable")).lower()
+        r["login_enabled"] = bool(r.get("login_enabled", 1) if r.get("login_enabled") is not None else 1)
+        r["exit_date"] = str(r["exit_date"]) if r.get("exit_date") else None
+        r["exit_reason"] = r.get("exit_reason") or ""
+        r["status_updated_at"] = str(r["status_updated_at"]) if r.get("status_updated_at") else None
+        r["status_updated_by"] = r.get("status_updated_by") or ""
+
+        status_filter = str(request.args.get("status", "")).strip().lower()
+        if status_filter and status_filter != "all":
+            if status_filter == "left_hostel":
+                if r["hostel_status"] != "left_hostel":
+                    continue
+            elif r["student_status"] != status_filter:
+                continue
         r["custom_data"] = custom
         persons.append(r)
 
@@ -1767,7 +1797,9 @@ def download_faces():
                (SELECT su.role FROM system_users su
                 WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
                 ORDER BY CASE LOWER(su.role) WHEN 'faculty' THEN 0 WHEN 'student' THEN 1 ELSE 2 END
-                LIMIT 1) AS system_role
+                LIMIT 1) AS system_role,
+                f.student_status, f.hostel_status, f.login_enabled,
+                f.exit_date, f.exit_reason, f.status_updated_at, f.status_updated_by
         FROM faces f
     """
     params = []
@@ -1856,6 +1888,19 @@ def download_faces():
         if wanted_type and resolved_type != wanted_type:
             continue
         custom["person_type"] = resolved_type
+        r_status = (r.get("student_status") or "active").lower()
+        r_hostel = (r.get("hostel_status") or ("resident" if vertical == "hostel" else "not_applicable")).lower()
+        r_login_enabled = bool(r.get("login_enabled", 1) if r.get("login_enabled") is not None else 1)
+
+        is_active_for_sync = (r_status == "active" and r_login_enabled)
+        if vertical == "hostel" and r_hostel == "left_hostel":
+            is_active_for_sync = False
+        if not is_active_for_sync:
+            person_id_int = int(r.get("id"))
+            if changed_ids is not None and person_id_int in changed_ids:
+                if person_id_int not in deleted_ids:
+                    deleted_ids.append(person_id_int)
+            continue
         face_item = {
             "id": str(r.get("id")),
             "display_id": r.get("display_id") or r.get("id"),
@@ -2731,4 +2776,319 @@ def delete_advance_record(record_id):
     finally:
         conn.close()
 
+VALID_STUDENT_STATUSES = {"active", "graduated", "left_college", "left_hostel", "suspended"}
+
+
+@faces_bp.route("/persons/<int:person_id>/status", methods=["PUT"])
+def update_person_status(person_id):
+    from app import get_db_connection, socketio
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+
+    if getattr(g, "user_role", None) not in {"admin", "vendor_admin", "owner", "super_admin"}:
+        return jsonify({"error": "Admin privileges required to update student lifecycle status"}), 403
+
+    data = request.get_json(silent=True) or {}
+    new_status = str(data.get("status") or "").strip().lower()
+    if new_status not in VALID_STUDENT_STATUSES:
+        return jsonify({
+            "error": f"Invalid status '{new_status}'. Allowed statuses: {', '.join(sorted(VALID_STUDENT_STATUSES))}"
+        }), 400
+
+    effective_date = data.get("effective_date")
+    reason = str(data.get("reason") or "").strip()
+
+    if new_status != "active":
+        if not effective_date:
+            effective_date = date.today().isoformat()
+        if not reason:
+            return jsonify({"error": "A reason is required when deactivating or changing student status"}), 400
+    else:
+        effective_date = None
+        reason = None
+
+    conn = get_db_connection()
+    set_row_factory(conn)
+    c = conn.cursor()
+    try:
+        vertical = vendor_vertical(c, vendor_id) if vendor_id else ""
+        c.execute(
+            """SELECT id, name, vendor_id, student_status, hostel_status, login_enabled
+               FROM faces WHERE id = ? AND vendor_id = ?""",
+            (person_id, vendor_id),
+        )
+        person = c.fetchone()
+        if not person:
+            conn.close()
+            return jsonify({"error": "Person not found"}), 404
+
+        person_dict = dict(person) if not isinstance(person, dict) else person
+        old_status = (person_dict.get("student_status") or "active").lower()
+        old_hostel = (person_dict.get("hostel_status") or "not_applicable").lower()
+
+        if new_status == "active":
+            target_student_status = "active"
+            target_login_enabled = 1
+            target_hostel_status = "resident" if vertical == "hostel" else (old_hostel if old_hostel != "left_hostel" else "resident")
+        elif new_status == "graduated":
+            target_student_status = "graduated"
+            target_login_enabled = 0
+            target_hostel_status = "left_hostel"
+        elif new_status == "left_college":
+            target_student_status = "left_college"
+            target_login_enabled = 0
+            target_hostel_status = "left_hostel"
+        elif new_status == "left_hostel":
+            target_hostel_status = "left_hostel"
+            if vertical == "hostel":
+                target_student_status = "left_hostel"
+                target_login_enabled = 0
+            else:
+                target_student_status = old_status if old_status != "left_hostel" else "active"
+                target_login_enabled = 1
+        elif new_status == "suspended":
+            target_student_status = "suspended"
+            target_login_enabled = 0
+            target_hostel_status = old_hostel
+
+        actor_username = getattr(g, "username", "admin")
+
+        c.execute(
+            """UPDATE faces
+               SET student_status = ?,
+                   hostel_status = ?,
+                   login_enabled = ?,
+                   exit_date = ?,
+                   exit_reason = ?,
+                   status_updated_at = CURRENT_TIMESTAMP,
+                   status_updated_by = ?
+               WHERE id = ? AND vendor_id = ?""",
+            (
+                target_student_status,
+                target_hostel_status,
+                target_login_enabled,
+                effective_date,
+                reason,
+                actor_username,
+                person_id,
+                vendor_id,
+            ),
+        )
+
+        if target_login_enabled == 0 or target_student_status != "active":
+            try:
+                c.execute(
+                    "SELECT username FROM system_users WHERE person_id = ? AND vendor_id = ?",
+                    (person_id, vendor_id),
+                )
+                user_rows = c.fetchall() or []
+                for u in user_rows:
+                    uname = u[0] if not hasattr(u, "keys") else u["username"]
+                    if uname:
+                        c.execute("DELETE FROM active_sessions WHERE username = ?", (uname,))
+            except Exception as session_err:
+                logger.warning(f"Failed to clear active sessions for person {person_id}: {session_err}")
+
+        if target_hostel_status == "left_hostel":
+            try:
+                c.execute(
+                    "DELETE FROM hostel_allocations WHERE person_id = ? AND vendor_id = ?",
+                    (person_id, vendor_id),
+                )
+            except Exception:
+                pass
+
+        audit_details = json.dumps({
+            "person_id": person_id,
+            "person_name": person_dict.get("name"),
+            "old_status": old_status,
+            "new_status": target_student_status,
+            "hostel_status": target_hostel_status,
+            "login_enabled": target_login_enabled,
+            "effective_date": effective_date,
+            "reason": reason,
+        })
+        try:
+            c.execute(
+                """INSERT INTO audit_logs (actor_username, actor_role, target_vendor_id, action, details)
+                   VALUES (?, ?, ?, 'student_lifecycle_update', ?)""",
+                (actor_username, getattr(g, "user_role", "admin"), vendor_id, audit_details),
+            )
+        except Exception as audit_err:
+            logger.warning(f"Failed to write audit log: {audit_err}")
+
+        conn.commit()
+        cache_delete_vendor_prefix(vendor_id)
+
+        try:
+            socketio.emit("student_status_updated", {
+                "vendor_id": vendor_id,
+                "person_id": person_id,
+                "student_status": target_student_status,
+                "hostel_status": target_hostel_status,
+                "login_enabled": bool(target_login_enabled),
+            })
+        except Exception:
+            pass
+
+        return jsonify({
+            "success": True,
+            "person_id": person_id,
+            "student_status": target_student_status,
+            "hostel_status": target_hostel_status,
+            "login_enabled": bool(target_login_enabled),
+            "exit_date": effective_date,
+            "exit_reason": reason,
+            "status_updated_at": datetime.now(timezone.utc).isoformat(),
+            "status_updated_by": actor_username,
+        })
+    except Exception as e:
+        if getattr(conn, "_is_pg", False):
+            try: conn.rollback()
+            except Exception: pass
+        logger.error(f"Error updating person status {person_id}: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@faces_bp.route("/persons/<int:person_id>/profile", methods=["GET"])
+def get_person_profile(person_id):
+    from app import get_db_connection
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+
+    conn = get_db_connection()
+    set_row_factory(conn)
+    c = conn.cursor()
+    try:
+        vertical = vendor_vertical(c, vendor_id) if vendor_id else ""
+        c.execute(
+            """SELECT f.id, f.display_id, f.name, f.department, f.designation,
+                      f.shift, f.phone, f.custom_data, f.joining_date, f.registered_at,
+                      f.student_status, f.hostel_status, f.login_enabled,
+                      f.exit_date, f.exit_reason, f.status_updated_at, f.status_updated_by,
+                      CASE WHEN f.face_image IS NOT NULL AND f.face_image <> '' THEN 1 ELSE 0 END AS has_face_image
+               FROM faces f
+               WHERE f.id = ? AND f.vendor_id = ?""",
+            (person_id, vendor_id),
+        )
+        row = c.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"error": "Person not found"}), 404
+
+        person = dict(row) if not isinstance(row, dict) else row.copy()
+        custom = parse_custom_data(person.get("custom_data"))
+        person["custom_data"] = custom
+        person["student_status"] = (person.get("student_status") or "active").lower()
+        person["hostel_status"] = (person.get("hostel_status") or ("resident" if vertical == "hostel" else "not_applicable")).lower()
+        person["login_enabled"] = bool(person.get("login_enabled", 1) if person.get("login_enabled") is not None else 1)
+        person["exit_date"] = str(person["exit_date"]) if person.get("exit_date") else None
+        person["exit_reason"] = person.get("exit_reason") or ""
+        person["status_updated_at"] = str(person["status_updated_at"]) if person.get("status_updated_at") else None
+        person["status_updated_by"] = person.get("status_updated_by") or ""
+
+        # Linked parents
+        parents = []
+        try:
+            c.execute(
+                """SELECT p.id, p.username, p.contact_phone, p.contact_email
+                   FROM student_parents sp
+                   JOIN parent_users p ON p.id = sp.parent_id
+                   WHERE sp.person_id = ? AND sp.vendor_id = ?""",
+                (person_id, vendor_id),
+            )
+            for prow in c.fetchall() or []:
+                pd = dict(prow) if not isinstance(prow, dict) else prow
+                parents.append(pd)
+        except Exception:
+            pass
+        person["parents"] = parents
+
+        # Hostel bed allocation (if applicable)
+        hostel_bed = None
+        try:
+            c.execute(
+                """SELECT b.bed_label, r.room_number, fl.name AS floor_name, bld.name AS building_name
+                   FROM hostel_allocations a
+                   JOIN hostel_beds b ON b.id = a.bed_id
+                   JOIN hostel_rooms r ON r.id = b.room_id
+                   JOIN hostel_floors fl ON fl.id = r.floor_id
+                   JOIN hostel_buildings bld ON bld.id = fl.building_id
+                   WHERE a.person_id = ? AND a.vendor_id = ?""",
+                (person_id, vendor_id),
+            )
+            h_row = c.fetchone()
+            if h_row:
+                hostel_bed = dict(h_row) if not isinstance(h_row, dict) else h_row
+        except Exception:
+            pass
+        person["hostel_allocation"] = hostel_bed
+
+        # Recent attendance stats
+        attendance_stats = {"total_punches": 0, "last_punch": None}
+        try:
+            c.execute(
+                "SELECT COUNT(*), MAX(timestamp) FROM attendance WHERE person_id = ? AND vendor_id = ?",
+                (person_id, vendor_id),
+            )
+            att_row = c.fetchone()
+            if att_row:
+                attendance_stats["total_punches"] = att_row[0] or 0
+                attendance_stats["last_punch"] = str(att_row[1]) if att_row[1] else None
+        except Exception:
+            pass
+        person["attendance_stats"] = attendance_stats
+
+        # Leave summary
+        leave_stats = {"total": 0, "approved": 0, "pending": 0, "rejected": 0}
+        try:
+            c.execute(
+                """SELECT final_status, COUNT(*) FROM leave_requests
+                   WHERE student_id = ? AND vendor_id = ?
+                   GROUP BY final_status""",
+                (person_id, vendor_id),
+            )
+            for l_row in c.fetchall() or []:
+                st = (l_row[0] or "").lower()
+                cnt = l_row[1] or 0
+                leave_stats["total"] += cnt
+                if st in leave_stats:
+                    leave_stats[st] = cnt
+        except Exception:
+            pass
+        person["leave_stats"] = leave_stats
+
+        # Audit logs for status changes
+        lifecycle_history = []
+        try:
+            c.execute(
+                """SELECT actor_username, action, details, timestamp
+                   FROM audit_logs
+                   WHERE target_vendor_id = ? AND action = 'student_lifecycle_update'
+                     AND details LIKE ?
+                   ORDER BY id DESC LIMIT 10""",
+                (vendor_id, f'%"person_id": {person_id}%'),
+            )
+            for a_row in c.fetchall() or []:
+                ad = dict(a_row) if not isinstance(a_row, dict) else a_row
+                try:
+                    ad["parsed_details"] = json.loads(ad.get("details") or "{}")
+                except Exception:
+                    ad["parsed_details"] = {}
+                ad["timestamp"] = str(ad.get("timestamp") or "")
+                lifecycle_history.append(ad)
+        except Exception:
+            pass
+        person["lifecycle_history"] = lifecycle_history
+
+        conn.close()
+        return jsonify({"person": person})
+    except Exception as e:
+        conn.close()
+        logger.error(f"Error fetching person profile {person_id}: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
 

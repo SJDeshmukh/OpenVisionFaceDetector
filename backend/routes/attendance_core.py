@@ -428,18 +428,18 @@ def person_event(valid_data: PersonEventSchema):
              if isinstance(person_id, str) and person_id.startswith("local:"):
                  luid = person_id.replace("local:", "")
                  cc.execute(
-                     "SELECT vendor_id FROM faces WHERE local_uid = ? AND vendor_id = ? LIMIT 1",
+                     "SELECT vendor_id, student_status, hostel_status, login_enabled FROM faces WHERE local_uid = ? AND vendor_id = ? LIMIT 1",
                      (luid, kiosk_vendor_id),
                  )
                  fr = cc.fetchone()
              else:
                  cc.execute(
-                     "SELECT vendor_id FROM faces WHERE id = ? AND vendor_id = ?",
+                     "SELECT vendor_id, student_status, hostel_status, login_enabled FROM faces WHERE id = ? AND vendor_id = ?",
                      (person_id, kiosk_vendor_id),
                  )
                  fr = cc.fetchone()
          if not fr and not person_id and name and kiosk_vendor_id:
-             cc.execute("SELECT vendor_id FROM faces WHERE name = ? AND vendor_id = ? LIMIT 1", (name, kiosk_vendor_id))
+             cc.execute("SELECT vendor_id, student_status, hostel_status, login_enabled FROM faces WHERE name = ? AND vendor_id = ? LIMIT 1", (name, kiosk_vendor_id))
              fr = cc.fetchone()
          conn_c.close()
          if fr: person_vendor_id = fr[0]

@@ -846,6 +846,13 @@ def _init_pg_schema_on_conn(conn):
         ("faces", "late_deduction_amount", "REAL DEFAULT 0"),
         ("faces", "joining_date", "DATE"),
         ("faces", "registered_at", "TIMESTAMP"),
+        ("faces", "student_status", "TEXT DEFAULT 'active'"),
+        ("faces", "hostel_status", "TEXT DEFAULT 'not_applicable'"),
+        ("faces", "login_enabled", "INTEGER DEFAULT 1"),
+        ("faces", "exit_date", "DATE"),
+        ("faces", "exit_reason", "TEXT"),
+        ("faces", "status_updated_at", "TIMESTAMP"),
+        ("faces", "status_updated_by", "TEXT"),
         ("advances", "amount_cash", "REAL DEFAULT 0"),
         ("advances", "amount_online", "REAL DEFAULT 0"),
         ("advances", "approved_by", "TEXT"),
@@ -887,6 +894,14 @@ def _init_pg_schema_on_conn(conn):
             run_migration(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {col_type}", f"Add {col} to {table}")
         else:
             run_migration(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}", f"Add {col} to {table}")
+
+    try:
+        cur.execute("UPDATE faces SET student_status = 'active' WHERE student_status IS NULL")
+        cur.execute("UPDATE faces SET login_enabled = 1 WHERE login_enabled IS NULL")
+        cur.execute("UPDATE faces SET hostel_status = 'resident' WHERE hostel_status IS NULL AND vendor_id IN (SELECT id FROM vendors WHERE vertical = 'hostel')")
+        cur.execute("UPDATE faces SET hostel_status = 'not_applicable' WHERE hostel_status IS NULL")
+    except Exception:
+        pass
 
     baseline_utc = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(sep=" ")
     run_migration(
@@ -1371,6 +1386,14 @@ def init_sqlite_schema(conn):
         except Exception:
             pass
 
+    try:
+        cur.execute("UPDATE faces SET student_status = 'active' WHERE student_status IS NULL")
+        cur.execute("UPDATE faces SET login_enabled = 1 WHERE login_enabled IS NULL")
+        cur.execute("UPDATE faces SET hostel_status = 'resident' WHERE hostel_status IS NULL AND vendor_id IN (SELECT id FROM vendors WHERE vertical = 'hostel')")
+        cur.execute("UPDATE faces SET hostel_status = 'not_applicable' WHERE hostel_status IS NULL")
+    except Exception:
+        pass
+
     baseline_utc = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(sep=" ")
     cur.execute(
         """INSERT INTO attendance_action_mode_history
@@ -1419,7 +1442,7 @@ def init_sqlite_schema(conn):
     except Exception:
         pass
             
-    for col in ["display_id INTEGER", "local_uid TEXT", "daily_wage REAL DEFAULT 0", "basic_salary REAL DEFAULT 0", "hra REAL DEFAULT 0", "conveyance REAL DEFAULT 0", "special_allowance REAL DEFAULT 0", "pf_enabled INTEGER DEFAULT 0", "esi_enabled INTEGER DEFAULT 0", "gratuity_enabled INTEGER DEFAULT 0", "professional_tax REAL DEFAULT 0", "late_allowance_days INTEGER", "late_deduction_amount REAL DEFAULT 0", "joining_date DATE", "registered_at DATETIME"]:
+    for col in ["display_id INTEGER", "local_uid TEXT", "daily_wage REAL DEFAULT 0", "basic_salary REAL DEFAULT 0", "hra REAL DEFAULT 0", "conveyance REAL DEFAULT 0", "special_allowance REAL DEFAULT 0", "pf_enabled INTEGER DEFAULT 0", "esi_enabled INTEGER DEFAULT 0", "gratuity_enabled INTEGER DEFAULT 0", "professional_tax REAL DEFAULT 0", "late_allowance_days INTEGER", "late_deduction_amount REAL DEFAULT 0", "joining_date DATE", "registered_at DATETIME", "student_status TEXT DEFAULT 'active'", "hostel_status TEXT DEFAULT 'not_applicable'", "login_enabled INTEGER DEFAULT 1", "exit_date DATE", "exit_reason TEXT", "status_updated_at DATETIME", "status_updated_by TEXT"]:
         try:
             cur.execute(f"ALTER TABLE faces ADD COLUMN {col}")
         except Exception:

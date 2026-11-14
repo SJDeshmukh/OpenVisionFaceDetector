@@ -19,7 +19,14 @@ import {
   Check,
   Hash,
   Type,
-  HelpCircle
+  HelpCircle,
+  GraduationCap,
+  LogOut,
+  Home,
+  AlertOctagon,
+  CheckCircle2,
+  Calendar,
+  Eye
 } from 'lucide-react';
 import { useSocket } from '../context/SocketContext';
 import { API_URL, BASE_URL } from '../config';
@@ -185,6 +192,173 @@ const People = () => {
     const id = Math.random().toString(36).substr(2, 9);
     setToasts(prev => [...prev, { id, message, type }]);
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
+  };
+
+  // Student Lifecycle States
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [activeMenuPersonId, setActiveMenuPersonId] = useState(null);
+  
+  // Status Modal State
+  const [isStatusModalOpen, setIsStatusModalOpen] = useState(false);
+  const [statusModalTarget, setStatusModalTarget] = useState(null);
+  const [statusModalData, setStatusModalData] = useState({
+    status: 'active',
+    effective_date: new Date().toISOString().split('T')[0],
+    reason: ''
+  });
+  const [statusSubmitting, setStatusSubmitting] = useState(false);
+
+  // Profile Modal State
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  const [profileTarget, setProfileTarget] = useState(null);
+  const [profileData, setProfileData] = useState(null);
+  const [profileLoading, setProfileLoading] = useState(false);
+
+  useEffect(() => {
+    const handleCloseMenu = () => setActiveMenuPersonId(null);
+    window.addEventListener('click', handleCloseMenu);
+    return () => window.removeEventListener('click', handleCloseMenu);
+  }, []);
+
+  const handleOpenStatusModal = (person, targetStatus) => {
+    setStatusModalTarget(person);
+    setStatusModalData({
+      status: targetStatus,
+      effective_date: new Date().toISOString().split('T')[0],
+      reason: ''
+    });
+    setIsStatusModalOpen(true);
+  };
+
+  const handleStatusSubmit = async (e) => {
+    e.preventDefault();
+    if (!statusModalTarget) return;
+    setStatusSubmitting(true);
+    try {
+      const res = await axios.put(`${API_URL}/persons/${statusModalTarget.id}/status`, statusModalData);
+      addToast('Student status updated successfully', 'success');
+      setIsStatusModalOpen(false);
+      
+      updateUsersAndCache(prev => prev.map(u => {
+        if (u.id === statusModalTarget.id) {
+          return {
+            ...u,
+            student_status: res.data.student_status,
+            hostel_status: res.data.hostel_status,
+            login_enabled: res.data.login_enabled,
+            exit_date: res.data.exit_date,
+            exit_reason: res.data.exit_reason,
+            status_updated_at: res.data.status_updated_at,
+            status_updated_by: res.data.status_updated_by
+          };
+        }
+        return u;
+      }));
+    } catch (err) {
+      addToast(err.response?.data?.error || err.message || 'Failed to update status', 'error');
+    } finally {
+      setStatusSubmitting(false);
+    }
+  };
+
+  const handleViewProfile = async (person) => {
+    setProfileTarget(person);
+    setProfileData(null);
+    setIsProfileModalOpen(true);
+    setProfileLoading(true);
+    try {
+      const res = await axios.get(`${API_URL}/persons/${person.id}/profile`);
+      setProfileData(res.data.person);
+    } catch (err) {
+      addToast('Failed to load profile details', 'error');
+    } finally {
+      setProfileLoading(false);
+    }
+  };
+
+  const statusCounts = useMemo(() => {
+    const counts = { all: users.length, active: 0, graduated: 0, left_college: 0, left_hostel: 0, suspended: 0 };
+    users.forEach(u => {
+      const s = (u.student_status || 'active').toLowerCase();
+      const h = (u.hostel_status || '').toLowerCase();
+      if (h === 'left_hostel' || s === 'left_hostel') {
+        counts.left_hostel++;
+      }
+      if (counts[s] !== undefined && s !== 'left_hostel') {
+        counts[s]++;
+      } else if (s === 'active') {
+        counts.active++;
+      }
+    });
+    return counts;
+  }, [users]);
+
+  const StatusBadge = ({ person }) => {
+    const status = (person?.student_status || 'active').toLowerCase();
+    const hostelStatus = (person?.hostel_status || '').toLowerCase();
+    
+    if (hostelStatus === 'left_hostel' && isHostel) {
+      return (
+        <div>
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+            <Home size={12} />
+            Left Hostel
+          </span>
+          {person.exit_date && <div className="text-[10px] text-slate-400 mt-0.5 font-medium">Eff: {person.exit_date}</div>}
+        </div>
+      );
+    }
+
+    switch (status) {
+      case 'graduated':
+        return (
+          <div>
+            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
+              <GraduationCap size={12} />
+              Graduated
+            </span>
+            {person.exit_date && <div className="text-[10px] text-slate-400 mt-0.5 font-medium">Eff: {person.exit_date}</div>}
+          </div>
+        );
+      case 'left_college':
+        return (
+          <div>
+            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-orange-50 text-orange-700 border border-orange-200">
+              <LogOut size={12} />
+              Left College
+            </span>
+            {person.exit_date && <div className="text-[10px] text-slate-400 mt-0.5 font-medium">Eff: {person.exit_date}</div>}
+          </div>
+        );
+      case 'left_hostel':
+        return (
+          <div>
+            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+              <Home size={12} />
+              Left Hostel
+            </span>
+            {person.exit_date && <div className="text-[10px] text-slate-400 mt-0.5 font-medium">Eff: {person.exit_date}</div>}
+          </div>
+        );
+      case 'suspended':
+        return (
+          <div>
+            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200">
+              <AlertOctagon size={12} />
+              Suspended
+            </span>
+            {person.exit_date && <div className="text-[10px] text-slate-400 mt-0.5 font-medium">Eff: {person.exit_date}</div>}
+          </div>
+        );
+      case 'active':
+      default:
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+            Active
+          </span>
+        );
+    }
   };
 
   // Class Selection View State
@@ -1066,8 +1240,19 @@ const People = () => {
       }
       return false;
     });
+    if (statusFilter !== 'all') {
+      result = result.filter(u => {
+        const s = (u.student_status || 'active').toLowerCase();
+        const h = (u.hostel_status || '').toLowerCase();
+        if (statusFilter === 'left_hostel') {
+          return h === 'left_hostel' || s === 'left_hostel';
+        }
+        return s === statusFilter;
+      });
+    }
+    return result;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [users, searchTerm, selectedClassForView]);
+  }, [users, searchTerm, selectedClassForView, statusFilter]);
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
@@ -1338,6 +1523,53 @@ const People = () => {
                   </button>
                 </div>
               )}
+              {/* Search & Status Filter bar */}
+              <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 mb-4">
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0">
+                  {[
+                    { key: 'all', label: 'All', count: statusCounts.all },
+                    { key: 'active', label: 'Active', count: statusCounts.active },
+                    { key: 'graduated', label: 'Graduated', count: statusCounts.graduated },
+                    { key: 'left_college', label: 'Left College', count: statusCounts.left_college },
+                    ...(isHostel || statusCounts.left_hostel > 0 ? [{ key: 'left_hostel', label: 'Left Hostel', count: statusCounts.left_hostel }] : []),
+                    { key: 'suspended', label: 'Suspended', count: statusCounts.suspended },
+                  ].map(tab => (
+                    <button
+                      key={tab.key}
+                      onClick={() => setStatusFilter(tab.key)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all border flex items-center gap-1.5 ${
+                        statusFilter === tab.key
+                          ? 'bg-slate-800 text-white border-slate-800 shadow-sm'
+                          : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                      }`}
+                    >
+                      <span>{tab.label}</span>
+                      <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                        statusFilter === tab.key ? 'bg-slate-700 text-slate-100' : 'bg-slate-100 text-slate-500'
+                      }`}>
+                        {tab.count}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+
+                <div className="relative min-w-[240px]">
+                  <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    placeholder={`Search ${peopleLabel.toLowerCase()} by name, ID, phone...`}
+                    className="w-full pl-9 pr-8 py-1.5 text-xs bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 shadow-sm"
+                  />
+                  {searchTerm && (
+                    <button onClick={() => setSearchTerm('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+                      <X size={13} />
+                    </button>
+                  )}
+                </div>
+              </div>
+
               {/* Table */}
               <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden text-sm">
                 <div className="overflow-x-auto">
@@ -1350,17 +1582,18 @@ const People = () => {
                             {col.label}
                           </th>
                         ))}
+                        <th className="px-6 py-4 font-bold">Status</th>
                         {user?.role !== 'faculty' && <th className="px-6 py-4 font-bold text-right">Actions</th>}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {loading ? (
                         <tr>
-                          <td colSpan={tableColumns.length + 2} className="px-6 py-8 text-center text-slate-400 italic">Loading {peopleLabel.toLowerCase()}...</td>
+                          <td colSpan={tableColumns.length + 3} className="px-6 py-8 text-center text-slate-400 italic">Loading {peopleLabel.toLowerCase()}...</td>
                         </tr>
                       ) : filteredUsers.length === 0 ? (
                         <tr>
-                          <td colSpan={tableColumns.length + 2} className="px-6 py-8 text-center text-slate-400">No records found.</td>
+                          <td colSpan={tableColumns.length + 3} className="px-6 py-8 text-center text-slate-400">No records found.</td>
                         </tr>
                       ) : (
                         filteredUsers.map((person, idx) => (
@@ -1381,21 +1614,128 @@ const People = () => {
                               </td>
                             ))}
 
+                            {/* Status Column */}
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <StatusBadge person={person} />
+                            </td>
+
                             {user?.role !== 'faculty' && (
                               <td className="px-6 py-4 whitespace-nowrap text-right">
-                                <div className="flex justify-end space-x-2">
+                                <div className="flex justify-end items-center space-x-1 relative">
+                                  <button
+                                    onClick={() => handleViewProfile(person)}
+                                    className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
+                                    title="View Student Profile"
+                                  >
+                                    <Eye size={16} />
+                                  </button>
                                   <button
                                     onClick={() => handleEdit(person)}
                                     className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
+                                    title="Edit Student"
                                   >
                                     <Edit2 size={16} />
                                   </button>
-                                  <button
-                                    onClick={() => handleDelete(person.id, person.name)}
-                                    className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
-                                  >
-                                    <Trash2 size={16} />
-                                  </button>
+                                  
+                                  {/* Student Action Menu */}
+                                  <div className="relative">
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setActiveMenuPersonId(activeMenuPersonId === person.id ? null : person.id);
+                                      }}
+                                      className={`p-1.5 rounded-lg transition-all ${
+                                        activeMenuPersonId === person.id
+                                          ? 'bg-slate-200 text-slate-800'
+                                          : 'text-slate-400 hover:text-slate-600 hover:bg-slate-100'
+                                      }`}
+                                      title="Student Lifecycle Actions"
+                                    >
+                                      <MoreVertical size={16} />
+                                    </button>
+
+                                    {activeMenuPersonId === person.id && (
+                                      <div
+                                        onClick={(e) => e.stopPropagation()}
+                                        className="absolute right-0 top-full mt-1 w-56 bg-white border border-slate-200 rounded-xl shadow-xl z-30 py-1.5 text-left text-xs divide-y divide-slate-100 animate-in fade-in zoom-in-95 duration-100"
+                                      >
+                                        <div className="py-1">
+                                          <button
+                                            onClick={() => { setActiveMenuPersonId(null); handleViewProfile(person); }}
+                                            className="w-full px-3.5 py-2 flex items-center gap-2.5 text-slate-700 hover:bg-slate-50 font-medium"
+                                          >
+                                            <User size={14} className="text-slate-400" />
+                                            View Profile
+                                          </button>
+                                          <button
+                                            onClick={() => { setActiveMenuPersonId(null); handleEdit(person); }}
+                                            className="w-full px-3.5 py-2 flex items-center gap-2.5 text-slate-700 hover:bg-slate-50 font-medium"
+                                          >
+                                            <Edit2 size={14} className="text-slate-400" />
+                                            Edit Student
+                                          </button>
+                                        </div>
+
+                                        <div className="py-1">
+                                          <div className="px-3.5 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                                            Lifecycle Actions
+                                          </div>
+                                          {(person.student_status || 'active').toLowerCase() !== 'active' ? (
+                                            <button
+                                              onClick={() => { setActiveMenuPersonId(null); handleOpenStatusModal(person, 'active'); }}
+                                              className="w-full px-3.5 py-2 flex items-center gap-2.5 text-emerald-600 hover:bg-emerald-50 font-semibold"
+                                            >
+                                              <CheckCircle2 size={14} />
+                                              Reactivate Student
+                                            </button>
+                                          ) : (
+                                            <>
+                                              <button
+                                                onClick={() => { setActiveMenuPersonId(null); handleOpenStatusModal(person, 'graduated'); }}
+                                                className="w-full px-3.5 py-2 flex items-center gap-2.5 text-indigo-600 hover:bg-indigo-50 font-medium"
+                                              >
+                                                <GraduationCap size={14} />
+                                                Mark as Graduated
+                                              </button>
+                                              <button
+                                                onClick={() => { setActiveMenuPersonId(null); handleOpenStatusModal(person, 'left_college'); }}
+                                                className="w-full px-3.5 py-2 flex items-center gap-2.5 text-orange-600 hover:bg-orange-50 font-medium"
+                                              >
+                                                <LogOut size={14} />
+                                                Mark as Left College
+                                              </button>
+                                              {(isHostel || (person.hostel_status && person.hostel_status !== 'not_applicable')) && (
+                                                <button
+                                                  onClick={() => { setActiveMenuPersonId(null); handleOpenStatusModal(person, 'left_hostel'); }}
+                                                  className="w-full px-3.5 py-2 flex items-center gap-2.5 text-amber-600 hover:bg-amber-50 font-medium"
+                                                >
+                                                  <Home size={14} />
+                                                  Mark as Left Hostel
+                                                </button>
+                                              )}
+                                              <button
+                                                onClick={() => { setActiveMenuPersonId(null); handleOpenStatusModal(person, 'suspended'); }}
+                                                className="w-full px-3.5 py-2 flex items-center gap-2.5 text-rose-600 hover:bg-rose-50 font-medium"
+                                              >
+                                                <AlertOctagon size={14} />
+                                                Suspend Student
+                                              </button>
+                                            </>
+                                          )}
+                                        </div>
+
+                                        <div className="py-1">
+                                          <button
+                                            onClick={() => { setActiveMenuPersonId(null); handleDelete(person.id, person.name); }}
+                                            className="w-full px-3.5 py-2 flex items-center gap-2.5 text-red-600 hover:bg-red-50 font-medium"
+                                          >
+                                            <Trash2 size={14} />
+                                            Delete Student
+                                          </button>
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
                                 </div>
                               </td>
                             )}
