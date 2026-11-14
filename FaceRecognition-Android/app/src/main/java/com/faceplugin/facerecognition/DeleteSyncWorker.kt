@@ -46,10 +46,7 @@ class DeleteSyncWorker(appContext: Context, params: WorkerParameters) : Worker(a
                     db.deleteDeleteQueueItem(item.id)
                 } else {
                     val code = resp.code()
-                    if (code == 401 || code == 403) {
-                        return Result.success()
-                    }
-                    if (code == 408 || code == 429 || (code in 500..599)) {
+                    if (code == 401 || code == 403 || code == 408 || code == 429 || (code in 500..599)) {
                         needsRetry = db.markDeleteQueueItemRetry(item.id, "HTTP $code") || needsRetry
                     } else {
                         db.markDeleteQueueItemFailed(item.id, "HTTP $code")

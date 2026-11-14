@@ -709,7 +709,7 @@ def get_leave_tracking():
         query = """
             SELECT lr.*, f.name as student_name, f.department as student_dept
             FROM leave_requests lr
-            JOIN faces f ON lr.student_id = f.id
+            LEFT JOIN faces f ON lr.student_id = f.id
             WHERE lr.vendor_id = ? AND lr.final_status = 'approved'
             AND (lr.end_date >= ? OR lr.end_date < ?) -- Show upcoming and past due
         """
@@ -822,7 +822,7 @@ def get_admin_pending_requests():
             SELECT lr.*, f.name AS student_name, f.department AS student_dept,
                    f.custom_data AS student_custom_data
             FROM leave_requests lr
-            JOIN faces f ON lr.student_id = f.id
+            LEFT JOIN faces f ON lr.student_id = f.id
             WHERE lr.vendor_id = ? AND lr.final_status = 'pending'
             ORDER BY lr.created_at ASC
         """, (vendor_id,))
@@ -964,9 +964,9 @@ def admin_approve_request():
     c = conn.cursor()
     try:
         c.execute("""
-            SELECT lr.*, f.name AS student_name, f.department AS student_dept,
+            SELECT lr.*, COALESCE(f.name, 'Resident') AS student_name, f.department AS student_dept,
                    f.custom_data AS student_custom_data
-            FROM leave_requests lr JOIN faces f ON lr.student_id = f.id
+            FROM leave_requests lr LEFT JOIN faces f ON lr.student_id = f.id
             WHERE lr.id = ? AND lr.vendor_id = ? AND lr.final_status = 'pending'
         """, (request_id, vendor_id))
         row = c.fetchone()
@@ -975,7 +975,7 @@ def admin_approve_request():
         request_row = get_row_dict(row)
         stages = snapshot_request(conn, vendor_id, request_id, request_row)
         stage = current_stage(stages)
-        if not stage or stage.get("actor_type") != "staff":
+        if not stage or (stage.get("actor_type") != "staff" and not is_vendor_admin):
             waiting_for = stage.get("display_name") if stage else "another stage"
             return jsonify({"error": f"Leave request is awaiting {waiting_for} approval"}), 409
         if not is_vendor_admin and stage.get("role_key") != role:
@@ -984,16 +984,17 @@ def admin_approve_request():
         if stage.get("department_scoped") and staff.get("department") and not _student_matches_department(request_row, staff.get("department")):
             return jsonify({"error": "This request is outside your assigned department"}), 403
 
+        is_override = stage.get("actor_type") != "staff" and is_vendor_admin
         decide_current_stage(
             conn,
             vendor_id,
             request_row,
             action,
-            actor_type="staff",
-            role_key=role,
+            actor_type="staff" if not is_override else stage.get("actor_type"),
+            role_key=role if not is_override else stage.get("role_key"),
             actor_id=staff.get("id"),
-            actor_name=staff.get("name") or role,
-            metadata={"ip": request.remote_addr, "department": staff.get("department")},
+            actor_name=f"{staff.get('name') or role} (Admin override)" if is_override else (staff.get("name") or role),
+            metadata={"ip": request.remote_addr, "department": staff.get("department"), "override": is_override},
         )
         _notify_parent_when_current(conn, vendor_id, request_row)
         try:

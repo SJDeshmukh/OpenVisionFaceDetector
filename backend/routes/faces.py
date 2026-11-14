@@ -1939,7 +1939,7 @@ def download_faces():
 
 
 @faces_bp.route("/sync/delete/<name>", methods=["DELETE"])
-@require_feature("mobile_app")
+@require_feature("mobile_app", "enable_attendance", "manage_users", "employee_management")
 def delete_face(name):
     from app import get_db_connection, socketio, is_testing
     from services.auth_service import extract_token, verify_token
@@ -2160,7 +2160,7 @@ def delete_face(name):
 
 
 @faces_bp.route("/sync/delete/id/<int:person_id>", methods=["DELETE"])
-@require_feature("mobile_app")
+@require_feature("mobile_app", "enable_attendance", "manage_users", "employee_management")
 def delete_face_by_id(person_id):
     from app import get_db_connection, socketio, is_testing
     from services.auth_service import extract_token, verify_token
