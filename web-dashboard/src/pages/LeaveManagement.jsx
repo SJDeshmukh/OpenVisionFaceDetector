@@ -21,12 +21,13 @@ import {
   ChevronDown,
   ChevronRight
 } from 'lucide-react';
-import { getBusinessTerminology, usesStudentRecords } from '../lib/businessTerminology';
+import { getBusinessTerminology, usesStudentRecords, isHostelVertical } from '../lib/businessTerminology';
 
 const LeaveManagement = () => {
   const { user, staffSession, loginAsStaff, logout, logoutStaff } = useAuth();
   const terminology = getBusinessTerminology(user?.vertical);
   const isStudentFlow = usesStudentRecords(user?.vertical);
+  const isHostel = isHostelVertical(user?.vertical);
   const isRegularUser = (user?.role === 'user' || user?.role === 'student') && !staffSession;
 
   const [activeTab, setActiveTab] = useState(isRegularUser ? 'new_request' : 'pending');
@@ -308,12 +309,12 @@ const LeaveManagement = () => {
         <div>
           <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
             <ShieldCheck className="text-blue-600" />
-            Leave Management
+            {isHostel ? "Leave & Gate Pass Management" : "Leave Management"}
           </h1>
           <p className="text-slate-500">
             {isRegularUser
-              ? (isStudentFlow ? "Apply for campus leave and view your status." : "Submit and track employee leave requests.")
-              : (isStudentFlow ? "Review and approve student leave permissions." : "Review and approve employee leave requests.")}
+              ? (isHostel ? "Apply for hostel leave/gate pass and view approval status." : isStudentFlow ? "Apply for campus leave and view your status." : "Submit and track employee leave requests.")
+              : (isHostel ? "Review and approve resident leave requests and gate passes." : isStudentFlow ? "Review and approve student leave permissions." : "Review and approve employee leave requests.")}
           </p>
         </div>
 
@@ -353,14 +354,14 @@ const LeaveManagement = () => {
                 onClick={() => setActiveTab('tracking')}
                 className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === 'tracking' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}
               >
-                Leave Tracking
+                {isHostel ? "Gate Pass Tracking" : "Leave Tracking"}
               </button>
               {isStudentFlow && (
                 <button
                   onClick={() => setActiveTab('parents')}
                   className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === 'parents' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}
                 >
-                  Parent Validation
+                  {isHostel ? "Parent Verification" : "Parent Validation"}
                 </button>
               )}
               <button

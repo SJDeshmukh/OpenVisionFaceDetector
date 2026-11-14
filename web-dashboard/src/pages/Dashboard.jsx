@@ -29,7 +29,7 @@ import { API_URL } from '../config';
 import ActivityDashboard from '../components/ActivityDashboard';
 import { useAuth } from '../context/AuthContext';
 import { useSocket } from '../context/SocketContext';
-import { getBusinessTerminology, usesStudentRecords } from '../lib/businessTerminology';
+import { getBusinessTerminology, usesStudentRecords, isHostelVertical } from '../lib/businessTerminology';
 
 const KpiCard = ({ title, value, subtext, icon: Icon, color }) => (
   <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-between h-32 relative overflow-hidden group hover:shadow-md transition-shadow">
@@ -55,6 +55,7 @@ const Dashboard = () => {
   const [activeTab, setActiveTab] = useState('overview');
   const terminology = getBusinessTerminology(user?.vertical);
   const schoolFlow = usesStudentRecords(user?.vertical);
+  const isHostel = isHostelVertical(user?.vertical);
   const lateMarkEnabled = user?.features?.includes('late_mark');
   const personLabel = terminology.person;
   const peopleLabel = terminology.people;
@@ -110,6 +111,11 @@ const Dashboard = () => {
           present: summary.present_today,
           absent: summary.absent_today,
           late: summary.late_today,
+          inside_today: summary.inside_today ?? summary.present_today ?? 0,
+          outside_today: summary.outside_today ?? summary.absent_today ?? 0,
+          pending_leaves_count: summary.pending_leaves_count || 0,
+          approved_leaves_count: summary.approved_leaves_count || 0,
+          rejected_leaves_count: summary.rejected_leaves_count || 0,
           overdue_leaves_count: summary.overdue_leaves_count || 0,
           activeCameras: 1
         };
@@ -196,8 +202,8 @@ const Dashboard = () => {
     <div className="space-y-8">
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">Dashboard</h1>
-          <p className="text-slate-500">Welcome back, here's your overview.</p>
+          <h1 className="text-2xl font-bold text-slate-800">{isHostel ? "Hostel Operations Dashboard" : "Dashboard"}</h1>
+          <p className="text-slate-500">{isHostel ? "Live resident movement, leave tracking & occupancy overview." : "Welcome back, here's your overview."}</p>
         </div>
 
         {/* Tabs */}
@@ -237,9 +243,9 @@ const Dashboard = () => {
               <AlertTriangle size={24} />
             </div>
             <div>
-              <h3 className="font-bold text-lg">Leave Return Alerts</h3>
+              <h3 className="font-bold text-lg">{isHostel ? "Overdue Return Alerts" : "Leave Return Alerts"}</h3>
               <p className="text-sm text-amber-700/80">
-                {stats.overdue_leaves_count} {stats.overdue_leaves_count === 1 ? personLabel : peopleLabel} {stats.overdue_leaves_count === 1 ? 'has' : 'have'} not returned after their approved leave ended.
+                {stats.overdue_leaves_count} {stats.overdue_leaves_count === 1 ? personLabel : peopleLabel} {stats.overdue_leaves_count === 1 ? 'has' : 'have'} not returned to hostel after their approved leave ended.
               </p>
             </div>
           </div>
@@ -255,43 +261,83 @@ const Dashboard = () => {
       {activeTab === 'overview' ? (
         <>
           {/* KPI Cards */}
-          <div className={`grid grid-cols-1 md:grid-cols-2 ${lateMarkEnabled ? 'lg:grid-cols-4' : 'lg:grid-cols-3'} gap-6`}>
-            <KpiCard
-              title={`Total ${peopleLabel}`}
-              value={stats.total}
-              subtext="Registered in system"
-              icon={Users}
-              color="bg-blue-600"
-            />
-            <KpiCard
-              title="Present Today"
-              value={stats.present}
-              subtext={`${((stats.present / (stats.total || 1)) * 100).toFixed(0)}% attendance rate`}
-              icon={UserCheck}
-              color="bg-green-500"
-            />
-            <KpiCard
-              title="Absent Today"
-              value={stats.absent}
-              subtext="Unaccounted for"
-              icon={UserX}
-              color="bg-red-500"
-            />
-            {lateMarkEnabled && (
+          {isHostel ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-6">
               <KpiCard
-                title="Late Arrivals"
-                value={stats.late}
-                subtext="Exceeded grace period"
+                title="Total Residents"
+                value={stats.total}
+                subtext="Registered in hostel"
+                icon={Users}
+                color="bg-indigo-600"
+              />
+              <KpiCard
+                title="Inside Hostel"
+                value={stats.inside_today ?? stats.present}
+                subtext={`${(((stats.inside_today ?? stats.present) / (stats.total || 1)) * 100).toFixed(0)}% in premises`}
+                icon={UserCheck}
+                color="bg-emerald-600"
+              />
+              <KpiCard
+                title="Outside Hostel"
+                value={stats.outside_today ?? stats.absent}
+                subtext="Off-campus / On leave"
+                icon={UserX}
+                color="bg-sky-600"
+              />
+              <KpiCard
+                title="Leave Pending"
+                value={stats.pending_leaves_count || 0}
+                subtext="Awaiting admin approval"
                 icon={Clock}
                 color="bg-amber-500"
               />
-            )}
-          </div>
+              <KpiCard
+                title="Overdue Return"
+                value={stats.overdue_leaves_count || 0}
+                subtext="Exceeded expected return"
+                icon={AlertTriangle}
+                color="bg-rose-600"
+              />
+            </div>
+          ) : (
+            <div className={`grid grid-cols-1 md:grid-cols-2 ${lateMarkEnabled ? 'lg:grid-cols-4' : 'lg:grid-cols-3'} gap-6`}>
+              <KpiCard
+                title={`Total ${peopleLabel}`}
+                value={stats.total}
+                subtext="Registered in system"
+                icon={Users}
+                color="bg-blue-600"
+              />
+              <KpiCard
+                title="Present Today"
+                value={stats.present}
+                subtext={`${((stats.present / (stats.total || 1)) * 100).toFixed(0)}% attendance rate`}
+                icon={UserCheck}
+                color="bg-green-500"
+              />
+              <KpiCard
+                title="Absent Today"
+                value={stats.absent}
+                subtext="Unaccounted for"
+                icon={UserX}
+                color="bg-red-500"
+              />
+              {lateMarkEnabled && (
+                <KpiCard
+                  title="Late Arrivals"
+                  value={stats.late}
+                  subtext="Exceeded grace period"
+                  icon={Clock}
+                  color="bg-amber-500"
+                />
+              )}
+            </div>
+          )}
 
           {/* Charts Section */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-              <h3 className="text-lg font-bold text-slate-800 mb-6">Attendance Trend (Last 7 Days)</h3>
+              <h3 className="text-lg font-bold text-slate-800 mb-6">{isHostel ? "Hostel Occupancy & Movement Trend (Last 7 Days)" : "Attendance Trend (Last 7 Days)"}</h3>
               <div className="w-full">
                 <ResponsiveContainer width="100%" height={320}>
                   <AreaChart data={chartData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>

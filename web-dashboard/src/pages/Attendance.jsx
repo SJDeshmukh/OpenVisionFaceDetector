@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { API_URL } from '../config';
-import { getBusinessTerminology, usesStudentRecords } from '../lib/businessTerminology';
+import { getBusinessTerminology, usesStudentRecords, isHostelVertical } from '../lib/businessTerminology';
 
 import { useSocket } from '../context/SocketContext';
 
@@ -53,6 +53,7 @@ const Attendance = () => {
   const { user } = useAuth();
   const terminology = getBusinessTerminology(user?.vertical);
   const schoolFlow = usesStudentRecords(user?.vertical);
+  const isHostel = isHostelVertical(user?.vertical);
   const isRegularUser = user?.role === 'user' || user?.role === 'student';
   const lateMarkEnabled = user?.features?.includes('late_mark');
   const [personType, setPersonType] = useState('student');
@@ -189,6 +190,13 @@ const Attendance = () => {
   };
 
   const getStatus = (log) => {
+    if (isHostel) {
+      if (log.status === 'CHECK_OUT') {
+        return { label: 'Hostel Exit', color: 'bg-sky-100 text-sky-800' };
+      }
+      return { label: 'Hostel Entry', color: 'bg-emerald-100 text-emerald-800' };
+    }
+
     if (!lateMarkEnabled) {
       return log.status === 'CHECK_OUT'
         ? { label: 'Check Out', color: 'bg-slate-100 text-slate-700' }
@@ -255,8 +263,12 @@ const Attendance = () => {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">{isRegularUser ? "My Attendance" : "Attendance Logs"}</h1>
-          <p className="text-slate-500">{isRegularUser ? "View your personal punch logs and attendance history." : `Track ${personLabel.toLowerCase()} check-ins and movements.`}</p>
+          <h1 className="text-2xl font-bold text-slate-800">
+            {isRegularUser ? "My Attendance" : (isHostel ? "Hostel Attendance Logs" : "Attendance Logs")}
+          </h1>
+          <p className="text-slate-500">
+            {isRegularUser ? "View your personal punch logs and attendance history." : (isHostel ? "Track resident entries, exits, and gate movements." : `Track ${personLabel.toLowerCase()} check-ins and movements.`)}
+          </p>
         </div>
         <div className="flex space-x-3">
           {schoolFlow && !isRegularUser && (
@@ -386,7 +398,7 @@ const Attendance = () => {
                 )}
                 <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Date</th>
                 <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Time</th>
-                <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Activity</th>
+                <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">{isHostel ? 'Movement' : 'Activity'}</th>
                 <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Place</th>
                 <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Status</th>
                 <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Confidence</th>
@@ -451,7 +463,7 @@ const Attendance = () => {
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
                           <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700 border border-blue-100">
-                            {log.activity || 'Work'}{log.activity === 'Lecture' && log.subject ? `: ${log.subject}` : ''}
+                            {log.activity || (isHostel ? 'Hostel Movement' : 'Work')}{log.activity === 'Lecture' && log.subject ? `: ${log.subject}` : ''}
                           </span>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">

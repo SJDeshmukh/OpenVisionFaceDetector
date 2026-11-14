@@ -1,4 +1,6 @@
 import React from 'react';
+import { useAuth } from '../context/AuthContext';
+import { isHostelVertical } from '../lib/businessTerminology';
 
 const imageSource = (value) => {
   if (!value) return '';
@@ -7,10 +9,15 @@ const imageSource = (value) => {
 };
 
 const ActivityDashboard = ({ activities = [] }) => {
+  const { user } = useAuth();
+  const isHostel = isHostelVertical(user?.vertical);
+
   return (
     <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
       <div className="p-6 border-b border-slate-200 flex justify-between items-center">
-        <h3 className="text-lg font-bold text-slate-800">Live Recognition Feed</h3>
+        <h3 className="text-lg font-bold text-slate-800">
+          {isHostel ? 'Hostel Entry & Exit History' : 'Live Recognition Feed'}
+        </h3>
         <span className="flex items-center text-xs text-green-600 font-medium bg-green-50 px-3 py-1 rounded-full border border-green-100">
           <span className="w-2 h-2 bg-green-500 rounded-full mr-2 animate-pulse"></span>
           Live
@@ -39,11 +46,11 @@ const ActivityDashboard = ({ activities = [] }) => {
                   ? 'bg-amber-100 text-amber-800'
                   : activity.status === 'CHECK_IN' 
                     ? 'bg-green-100 text-green-800' 
-                    : 'bg-purple-100 text-purple-800'
+                    : 'bg-blue-100 text-blue-800'
               }`}>
                 {activity.is_late === 1 
                   ? 'Late' 
-                  : (activity.status === 'CHECK_IN' ? 'Check In' : 'Check Out')}
+                  : (activity.status === 'CHECK_IN' ? (isHostel ? 'Hostel Entry' : 'Check In') : (isHostel ? 'Hostel Exit' : 'Check Out'))}
                 {activity.activity && activity.activity !== 'Work' && ` (${activity.activity})`}
               </span>
               <p className="text-xs text-slate-400 mt-1">
@@ -53,7 +60,9 @@ const ActivityDashboard = ({ activities = [] }) => {
           </div>
         ))}
         {activities.length === 0 && (
-          <div className="p-8 text-center text-slate-400">No activity recorded yet.</div>
+          <div className="p-8 text-center text-slate-400">
+            {isHostel ? 'No hostel movements recorded yet.' : 'No activity recorded yet.'}
+          </div>
         )}
       </div>
     </div>

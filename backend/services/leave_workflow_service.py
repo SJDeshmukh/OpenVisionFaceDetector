@@ -364,7 +364,7 @@ def decide_current_stage(
         raise ValueError("Leave request is not awaiting an approval")
     if stage["actor_type"] != actor_type:
         raise PermissionError(f"Leave request is awaiting {stage['display_name']} approval")
-    if actor_type == "staff" and stage["role_key"] != role_key:
+    if actor_type == "staff" and stage["role_key"] != role_key and role_key not in ("admin", "vendor_admin", "owner", "super_admin"):
         raise PermissionError(f"Leave request is awaiting {stage['display_name']} approval")
 
     cursor = conn.cursor()

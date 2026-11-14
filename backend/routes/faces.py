@@ -1,4 +1,4 @@
-﻿from flask import Blueprint, request, jsonify, send_file, g, redirect, url_for
+from flask import Blueprint, request, jsonify, send_file, g, redirect, url_for
 import logging
 import sqlite3
 import json
@@ -339,6 +339,9 @@ def detect_faces_basic():
                 pass
         return jsonify(resp)
     except Exception as e:
+        if getattr(conn, "_is_pg", False):
+            try: conn.rollback()
+            except Exception: pass
         return jsonify({"error": str(e)}), 500
 
 
@@ -365,6 +368,9 @@ def search_embedding():
         task = search_embedding_task.delay(store_image_payload(img_b64), data, vendor_id)
         return jsonify({"task_id": task.id, "status": "processing"}), 202
     except Exception as e:
+        if getattr(conn, "_is_pg", False):
+            try: conn.rollback()
+            except Exception: pass
         return jsonify({"error": str(e)}), 500
 
 @faces_bp.route("/utils/detect-faces-async", methods=["POST"])
@@ -418,6 +424,9 @@ def detect_faces_async():
                 pass
         return jsonify({"task_id": task.id, "status": "processing"}), 202
     except Exception as e:
+        if getattr(conn, "_is_pg", False):
+            try: conn.rollback()
+            except Exception: pass
         return jsonify({"error": str(e)}), 500
 
 @faces_bp.route("/utils/detect-faces-batch-async", methods=["POST"])
@@ -475,6 +484,9 @@ def detect_faces_batch_async():
             resp["group_id"] = group_id
         return jsonify(resp), 202
     except Exception as e:
+        if getattr(conn, "_is_pg", False):
+            try: conn.rollback()
+            except Exception: pass
         return jsonify({"error": str(e)}), 500
 
 
@@ -785,7 +797,7 @@ def upload_face():
             if email_cursor.fetchone():
                 return jsonify({"error": "This email address is already registered to another person"}), 409
             email_cursor.execute(
-                "SELECT username FROM system_users WHERE LOWER(username) = LOWER(?) AND (? IS NULL OR person_id <> ?)",
+                "SELECT username FROM system_users WHERE LOWER(username) = LOWER(?) AND (? IS NULL OR person_id IS NULL OR person_id <> ?)",
                 (profile_email, person_id, person_id),
             )
             if email_cursor.fetchone():
@@ -1290,13 +1302,38 @@ def upload_face():
                                 
                                 # Employee/student IDs are not login identities.
                                 if str(old_username).lower() != login_email:
+                                    # Check whether the target email is already claimed by ANY
+                                    # other account. This prevents the duplicate-key PostgreSQL
+                                    # error when the email was previously registered to a
+                                    # different person_id (or a person_id=NULL admin row).
                                     c.execute(
-                                        "SELECT username FROM system_users WHERE LOWER(username) = LOWER(?) AND person_id <> ?",
+                                        "SELECT username FROM system_users WHERE LOWER(username) = LOWER(?) AND (person_id IS NULL OR person_id <> ?)",
                                         (login_email, person_id),
                                     )
-                                    if not c.fetchone():
-                                        c.execute("UPDATE system_users SET username = ? WHERE person_id = ?", (login_email, person_id))
-                                        c.execute("DELETE FROM active_sessions WHERE username = ?", (old_username,))
+                                    conflict_row = c.fetchone()
+                                    if conflict_row:
+                                        # Email already belongs to another account.
+                                        # Log instead of overwriting (data-integrity preserved).
+                                        logger.warning(
+                                            "Student login sync skipped for person_id=%s: email %s is"
+                                            " already claimed by another system_users account."
+                                            " Resolve the duplicate in the System Access panel.",
+                                            person_id, login_email,
+                                        )
+                                    else:
+                                        try:
+                                            c.execute("UPDATE system_users SET username = ? WHERE person_id = ?", (login_email, person_id))
+                                            c.execute("DELETE FROM active_sessions WHERE username = ?", (old_username,))
+                                        except Exception as _upd_err:
+                                            # Unique constraint race (PG). Roll back the sub-op only.
+                                            _sync_is_pg = getattr(conn, "_is_pg", False)
+                                            if _sync_is_pg:
+                                                try: conn.rollback()
+                                                except Exception: pass
+                                            logger.warning(
+                                                "Could not rename system_users for person_id=%s to %s: %s",
+                                                person_id, login_email, _upd_err,
+                                            )
                                 
                                 # If the password was still the old phone number, update it to the new one
                                 if old_plain == str(existing.get("phone") or "").strip():
@@ -1554,6 +1591,9 @@ def upload_face():
             "person": committed_person,
         })
     except Exception as e:
+        if getattr(conn, "_is_pg", False):
+            try: conn.rollback()
+            except Exception: pass
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
@@ -1597,6 +1637,9 @@ def register_device_token():
         conn.commit()
         return jsonify({"status": "success", "message": "Device token registered"})
     except Exception as e:
+        if getattr(conn, "_is_pg", False):
+            try: conn.rollback()
+            except Exception: pass
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
@@ -2310,6 +2353,9 @@ def delete_all_faces():
         
         return jsonify({"status": "success", "message": message})
     except Exception as e:
+        if getattr(conn, "_is_pg", False):
+            try: conn.rollback()
+            except Exception: pass
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
@@ -2490,6 +2536,9 @@ def record_advance():
         email_queued = queue_advance_notification(advance_id, "requested")
         return jsonify({"success": True, "id": advance_id, "status": "pending", "email_queued": email_queued})
     except Exception as e:
+        if getattr(conn, "_is_pg", False):
+            try: conn.rollback()
+            except Exception: pass
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
@@ -2526,6 +2575,9 @@ def get_person_advances(person_id):
             advance["edit_history"] = revisions_by_advance.get(advance["id"], [])
         return jsonify({"success": True, "advances": advances})
     except Exception as e:
+        if getattr(conn, "_is_pg", False):
+            try: conn.rollback()
+            except Exception: pass
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
@@ -2635,6 +2687,9 @@ def delete_advance_record(record_id):
         conn.commit()
         return jsonify({"success": True})
     except Exception as e:
+        if getattr(conn, "_is_pg", False):
+            try: conn.rollback()
+            except Exception: pass
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()

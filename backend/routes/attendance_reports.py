@@ -538,6 +538,33 @@ def get_analytics(valid_data: PayrollReportRequest):
             "name": d_name, "date": d_str, "present": p, "absent": a, "late": l, "total": len(persons)
         })
 
+    overdue_leaves_count = 0
+    pending_leaves_count = 0
+    approved_leaves_count = 0
+    rejected_leaves_count = 0
+    try:
+        is_pg = getattr(conn, "_is_pg", False)
+        today_iso = date.today().isoformat()
+        if is_pg:
+            c.execute("SELECT COUNT(*) FROM leave_requests WHERE vendor_id = %s AND final_status = 'pending'", (vendor_id,))
+            pending_leaves_count = c.fetchone()[0] or 0
+            c.execute("SELECT COUNT(*) FROM leave_requests WHERE vendor_id = %s AND final_status = 'approved'", (vendor_id,))
+            approved_leaves_count = c.fetchone()[0] or 0
+            c.execute("SELECT COUNT(*) FROM leave_requests WHERE vendor_id = %s AND final_status = 'rejected'", (vendor_id,))
+            rejected_leaves_count = c.fetchone()[0] or 0
+            c.execute("SELECT COUNT(*) FROM leave_requests WHERE vendor_id = %s AND final_status = 'approved' AND end_date < %s", (vendor_id, today_iso))
+            overdue_leaves_count = c.fetchone()[0] or 0
+        else:
+            c.execute("SELECT COUNT(*) FROM leave_requests WHERE vendor_id = ? AND final_status = 'pending'", (vendor_id,))
+            pending_leaves_count = c.fetchone()[0] or 0
+            c.execute("SELECT COUNT(*) FROM leave_requests WHERE vendor_id = ? AND final_status = 'approved'", (vendor_id,))
+            approved_leaves_count = c.fetchone()[0] or 0
+            c.execute("SELECT COUNT(*) FROM leave_requests WHERE vendor_id = ? AND final_status = 'rejected'", (vendor_id,))
+            rejected_leaves_count = c.fetchone()[0] or 0
+            c.execute("SELECT COUNT(*) FROM leave_requests WHERE vendor_id = ? AND final_status = 'approved' AND end_date < ?", (vendor_id, today_iso))
+            overdue_leaves_count = c.fetchone()[0] or 0
+    except Exception:
+        pass
     result = {
         "daily_stats": daily_stats,
         "person_stats": person_stats,
@@ -554,6 +581,12 @@ def get_analytics(valid_data: PayrollReportRequest):
             "present_today": present_today,
             "absent_today": absent_today,   # based on students only
             "late_today": late_today,
+            "inside_today": present_today,
+            "outside_today": absent_today,
+            "overdue_leaves_count": overdue_leaves_count,
+            "pending_leaves_count": pending_leaves_count,
+            "approved_leaves_count": approved_leaves_count,
+            "rejected_leaves_count": rejected_leaves_count,
             "avg_attendance": round(sum(p['attendance_rate'] for p in person_stats.values()) / len(person_stats), 1) if person_stats else 0
         }
     }

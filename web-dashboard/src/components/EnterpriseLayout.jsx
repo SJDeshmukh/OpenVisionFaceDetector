@@ -174,6 +174,9 @@ export const Sidebar = ({ isOpen, onClose }) => {
   const navLabel = (item) => {
     if (item.path === '/people') return terminology.people;
     if (item.path === '/classes') return terminology.groups;
+    if (item.path === '/leave-management' && terminology.leaveManagement) return terminology.leaveManagement;
+    if (item.path === '/attendance' && terminology.attendance) return terminology.attendance;
+    if (item.path === '/dashboard' && terminology.dashboard) return terminology.dashboard;
     return item.name;
   };
 
