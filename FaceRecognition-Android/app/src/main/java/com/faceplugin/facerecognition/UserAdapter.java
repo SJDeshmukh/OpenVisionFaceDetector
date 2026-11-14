@@ -84,6 +84,7 @@ public class UserAdapter extends RecyclerView.Adapter<UserAdapter.UserViewHolder
             if (samePerson(userList.get(i), person)) {
                 userList.remove(i);
                 notifyItemRemoved(i);
+                notifyItemRangeChanged(i, userList.size() - i);
                 return;
             }
         }
@@ -167,9 +168,7 @@ public class UserAdapter extends RecyclerView.Adapter<UserAdapter.UserViewHolder
             }
         }
 
-        String idLabel = person.displayId > 0
-                ? String.valueOf(person.displayId)
-                : person.id != null && !person.id.isEmpty() ? person.id : String.valueOf(position + 1);
+        String idLabel = "#" + (position + 1);
         StringBuilder details = new StringBuilder("ID: ").append(idLabel);
         if (person.department != null && !person.department.isEmpty()) details.append(" • ").append(person.department);
         if (person.designation != null && !person.designation.isEmpty()) details.append(" • ").append(person.designation);

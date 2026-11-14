@@ -474,7 +474,7 @@ def person_event(valid_data: PersonEventSchema):
 
         caller_user = str(getattr(g, "username", "") or "").strip().lower()
         caller_role = str(getattr(g, "user_role", "") or "").strip().lower()
-        if kiosk_acc and caller_user and caller_user != kiosk_acc and caller_role not in ("kiosk",):
+        if caller_role not in ("kiosk", "user") or (kiosk_acc and caller_user and caller_user != kiosk_acc and caller_role not in ("kiosk",)):
             return jsonify({
                 "error": "Attendance marking is restricted to the designated Attendance/Kiosk login provided by SuperAdmin.",
                 "code": "KIOSK_LOGIN_REQUIRED",

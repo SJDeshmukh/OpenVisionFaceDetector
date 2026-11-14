@@ -1983,11 +1983,11 @@ const People = () => {
                   );
                 })}
                 
-                {/* Mandatory Branch Selection for Hostel Residents */}
+                {/* Branch Selection for Hostel Residents (Optional) */}
                 {isHostel && (
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-slate-700">
-                      Branch <span className="text-red-500">*</span>
+                      Branch <span className="text-slate-400 font-normal">(Optional)</span>
                     </label>
                     <div className="relative">
                       <select
@@ -2002,7 +2002,6 @@ const People = () => {
                           }));
                         }}
                         className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                        required
                       >
                         <option value="">-- Select Branch --</option>
                         {Array.from(new Set([

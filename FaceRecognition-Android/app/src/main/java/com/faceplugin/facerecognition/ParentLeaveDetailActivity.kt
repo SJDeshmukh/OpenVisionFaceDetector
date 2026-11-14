@@ -87,22 +87,16 @@ class ParentLeaveDetailActivity : AppCompatActivity() {
 
     private fun startVerification(action: String) {
         pendingAction = action
-        val intent = Intent(this, CaptureActivity::class.java)
-        intent.putExtra("is_capture_only", true)
-        intent.putExtra("is_verification", true)
-        intent.putExtra("force_front_camera", true)
-        cameraLauncher.launch(intent)
+        val intent = Intent(this, ParentFaceVerificationActivity::class.java)
+        intent.putExtra("action", action)
+        intent.putExtra("request_id", leaveRequestId)
+        intent.putExtra("student_number", studentNumber)
+        verificationLauncher.launch(intent)
     }
 
-    private val cameraLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-            val imageUriString = result.data?.getStringExtra("image_uri")
-            val capturedTemplate = result.data?.getByteArrayExtra("face_template")
-            val capturedVerified = result.data?.getBooleanExtra("face_verified", false) == true
-            if (imageUriString != null) {
-                val imageUri = android.net.Uri.parse(imageUriString)
-                processCapturedImage(imageUri, capturedTemplate, capturedVerified)
-            }
+    private val verificationLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            finish()
         }
     }
 

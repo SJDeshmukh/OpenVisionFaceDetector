@@ -320,8 +320,14 @@ public class CameraActivity extends AppCompatActivity implements TextToSpeech.On
         SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US);
         String timestamp = sdf.format(new Date());
         
-        // Use constructor with is_attendance=true explicitly and include timestamp
-        PersonEventRequest request = new PersonEventRequest(detected, recognized, personId, name, confidence, imageBase64, true, timestamp);
+        // Enforce that attendance marking is restricted to designated kiosk/user accounts
+        android.content.SharedPreferences prefs = getSharedPreferences("app_prefs", Context.MODE_PRIVATE);
+        String currentRole = prefs.getString("role", null);
+        if (currentRole == null || currentRole.trim().isEmpty()) {
+            currentRole = prefs.getString("offline_saved_role", "user");
+        }
+        boolean canMark = RecognitionModePolicy.canMarkAttendance(currentRole);
+        PersonEventRequest request = new PersonEventRequest(detected, recognized, personId, name, confidence, imageBase64, canMark, timestamp);
         
         service.sendPersonEvent(request).enqueue(new Callback<GreetingResponse>() {
             @Override

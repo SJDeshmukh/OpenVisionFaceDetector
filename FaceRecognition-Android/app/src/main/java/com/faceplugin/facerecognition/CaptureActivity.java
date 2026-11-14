@@ -509,7 +509,8 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
                 });
             } else if(captureView.viewMode == CaptureView.VIEW_MODE.FACE_CAPTURE_PREPARE) {
                 if(faceCaptureState == FACE_CAPTURE_STATE.CAPTURE_OK) {
-                    if (isCaptureOnly && consecutiveValidFrames >= REQUIRED_VALID_FRAMES) {
+                    int targetRequired = isVerification ? 1 : REQUIRED_VALID_FRAMES;
+                    if (isCaptureOnly && consecutiveValidFrames >= targetRequired) {
                         runOnUiThread(() -> performCapture());
                     }
                 } else {
@@ -537,9 +538,10 @@ public class CaptureActivity extends AppCompatActivity implements CaptureView.Vi
 
     private void performCapture() {
         if (isCapturing) return;
+        int targetRequired = isVerification ? 1 : REQUIRED_VALID_FRAMES;
         if (capturedBitmap == null || capturedFace == null
                 || capturedTemplate == null
-                || consecutiveValidFrames < REQUIRED_VALID_FRAMES) {
+                || consecutiveValidFrames < targetRequired) {
             Toast.makeText(context, "Hold still while capturing face", Toast.LENGTH_SHORT).show();
             return;
         }
