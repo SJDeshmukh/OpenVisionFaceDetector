@@ -19,6 +19,14 @@ DEFAULT_PARENT_TEMPLATE = (
     "Dear Parent/Guardian, {student_name} has not recorded hostel entry as of {current_time} "
     "on {date}. Please contact the student or hostel administrator."
 )
+DEFAULT_LEAVE_CHECKOUT_TEMPLATE = (
+    "🚪 *Hostel Departure Notification*\n\n"
+    "Dear Parent/Guardian, your ward *{student_name}* has checked out (departed) from the hostel "
+    "on approved *{leave_type}* at *{exit_time}* on *{date}*.\n\n"
+    "Reason: {reason}\n"
+    "Expected Return: {expected_return}\n\n"
+    "_TapInX Hostel Safety Monitoring._"
+)
 
 
 def ensure_tables(conn):
@@ -39,6 +47,9 @@ def ensure_tables(conn):
             parent_template TEXT,
             owner_summary_enabled INTEGER NOT NULL DEFAULT 1,
             schedule_revision INTEGER NOT NULL DEFAULT 1,
+            leave_checkout_alert_enabled INTEGER NOT NULL DEFAULT 1,
+            leave_checkout_gender_filter TEXT NOT NULL DEFAULT 'female_only',
+            leave_checkout_template TEXT,
             created_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP,
             updated_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP
         )
@@ -65,6 +76,18 @@ def ensure_tables(conn):
             ALTER TABLE hostel_alert_settings
             ADD COLUMN IF NOT EXISTS schedule_revision INTEGER NOT NULL DEFAULT 1
         """)
+        c.execute("""
+            ALTER TABLE hostel_alert_settings
+            ADD COLUMN IF NOT EXISTS leave_checkout_alert_enabled INTEGER NOT NULL DEFAULT 1
+        """)
+        c.execute("""
+            ALTER TABLE hostel_alert_settings
+            ADD COLUMN IF NOT EXISTS leave_checkout_gender_filter TEXT NOT NULL DEFAULT 'female_only'
+        """)
+        c.execute("""
+            ALTER TABLE hostel_alert_settings
+            ADD COLUMN IF NOT EXISTS leave_checkout_template TEXT
+        """)
     else:
         c.execute("PRAGMA table_info(hostel_alert_settings)")
         columns = {row[1] if not hasattr(row, "keys") else row["name"] for row in (c.fetchall() or [])}
@@ -72,6 +95,21 @@ def ensure_tables(conn):
             c.execute("""
                 ALTER TABLE hostel_alert_settings
                 ADD COLUMN schedule_revision INTEGER NOT NULL DEFAULT 1
+            """)
+        if "leave_checkout_alert_enabled" not in columns:
+            c.execute("""
+                ALTER TABLE hostel_alert_settings
+                ADD COLUMN leave_checkout_alert_enabled INTEGER NOT NULL DEFAULT 1
+            """)
+        if "leave_checkout_gender_filter" not in columns:
+            c.execute("""
+                ALTER TABLE hostel_alert_settings
+                ADD COLUMN leave_checkout_gender_filter TEXT NOT NULL DEFAULT 'female_only'
+            """)
+        if "leave_checkout_template" not in columns:
+            c.execute("""
+                ALTER TABLE hostel_alert_settings
+                ADD COLUMN leave_checkout_template TEXT
             """)
     conn.commit()
 
@@ -134,6 +172,9 @@ def validate_settings(data):
     owner_phone = str(payload.get("owner_phone") or "").strip()
     if owner_phone and not _valid_phone(owner_phone):
         raise ValueError("Enter a valid hostel administrator WhatsApp number")
+    gender_filter = str(payload.get("leave_checkout_gender_filter") or "female_only").strip().lower()
+    if gender_filter not in {"female_only", "all"}:
+        gender_filter = "female_only"
     return {
         "enabled": 1 if payload.get("enabled") else 0,
         "owner_phone": owner_phone or None,
@@ -143,6 +184,9 @@ def validate_settings(data):
         "student_template": str(payload.get("student_template") or "").strip() or None,
         "parent_template": str(payload.get("parent_template") or "").strip() or None,
         "owner_summary_enabled": 1 if payload.get("owner_summary_enabled", True) else 0,
+        "leave_checkout_alert_enabled": 1 if payload.get("leave_checkout_alert_enabled", True) else 0,
+        "leave_checkout_gender_filter": gender_filter,
+        "leave_checkout_template": str(payload.get("leave_checkout_template") or "").strip() or None,
     }
 
 
@@ -179,8 +223,10 @@ def save_settings(vendor_id, data, connection_factory=None):
         c.execute("""
             INSERT INTO hostel_alert_settings
                 (vendor_id, enabled, owner_phone, cutoff_time, escalation_minutes, timezone,
-                 student_template, parent_template, owner_summary_enabled, schedule_revision, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+                 student_template, parent_template, owner_summary_enabled,
+                 leave_checkout_alert_enabled, leave_checkout_gender_filter, leave_checkout_template,
+                 schedule_revision, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
             ON CONFLICT (vendor_id) DO UPDATE SET
                 schedule_revision = CASE WHEN
                     hostel_alert_settings.enabled <> EXCLUDED.enabled OR
@@ -198,12 +244,18 @@ def save_settings(vendor_id, data, connection_factory=None):
                 student_template = EXCLUDED.student_template,
                 parent_template = EXCLUDED.parent_template,
                 owner_summary_enabled = EXCLUDED.owner_summary_enabled,
+                leave_checkout_alert_enabled = EXCLUDED.leave_checkout_alert_enabled,
+                leave_checkout_gender_filter = EXCLUDED.leave_checkout_gender_filter,
+                leave_checkout_template = EXCLUDED.leave_checkout_template,
                 updated_at = CURRENT_TIMESTAMP
         """, (
             vendor_id, normalized["enabled"], normalized["owner_phone"],
             normalized["cutoff_time"], normalized["escalation_minutes"], normalized["timezone"],
             normalized["student_template"], normalized["parent_template"],
             normalized["owner_summary_enabled"],
+            normalized["leave_checkout_alert_enabled"],
+            normalized["leave_checkout_gender_filter"],
+            normalized["leave_checkout_template"],
         ))
         conn.commit()
         return get_settings(vendor_id, connection_factory=connection_factory)
@@ -267,18 +319,50 @@ def _latest_status_by_person(c, vendor_id, alert_date):
         person_id = row[0] if not hasattr(row, "keys") else row["person_id"]
         status = row[1] if not hasattr(row, "keys") else row["status"]
         latest[person_id] = str(status or "").upper()
+        if person_id is not None:
+            try:
+                latest[int(person_id)] = str(status or "").upper()
+            except (ValueError, TypeError):
+                pass
+            latest[str(person_id)] = str(status or "").upper()
     return latest
 
 
 def _approved_leave_people(c, vendor_id, alert_date):
+    """Return set of student IDs with active approved leave covering alert_date."""
     try:
         c.execute("""
-            SELECT student_id FROM leave_requests
-            WHERE vendor_id = ? AND final_status = 'approved'
-              AND start_date <= ? AND end_date >= ?
-        """, (vendor_id, alert_date, alert_date))
-        return {row[0] if not hasattr(row, "keys") else row["student_id"] for row in (c.fetchall() or [])}
-    except Exception:
+            SELECT student_id, start_date, end_date, final_status, rector_status
+            FROM leave_requests
+            WHERE vendor_id = ? AND (
+                LOWER(TRIM(COALESCE(final_status, ''))) = 'approved'
+                OR LOWER(TRIM(COALESCE(rector_status, ''))) = 'approved'
+            )
+        """, (vendor_id,))
+        rows = c.fetchall() or []
+        leave_ids = set()
+        for row in rows:
+            sid = row[0] if not hasattr(row, "keys") else row["student_id"]
+            s_date = str(row[1] if not hasattr(row, "keys") else row["start_date"] or "")[:10]
+            e_date = str(row[2] if not hasattr(row, "keys") else row["end_date"] or "")[:10]
+            if s_date and e_date:
+                if s_date <= alert_date <= e_date:
+                    if sid is not None:
+                        try:
+                            leave_ids.add(int(sid))
+                        except (ValueError, TypeError):
+                            pass
+                        leave_ids.add(str(sid))
+            elif s_date and s_date == alert_date:
+                if sid is not None:
+                    try:
+                        leave_ids.add(int(sid))
+                    except (ValueError, TypeError):
+                        pass
+                    leave_ids.add(str(sid))
+        return leave_ids
+    except Exception as e:
+        logger.warning("Error checking approved leave people for vendor %s: %s", vendor_id, e)
         return set()
 
 
@@ -378,10 +462,13 @@ def process_due_alerts(now_utc=None, connection_factory=None, sender=None):
 
             latest = _latest_status_by_person(c, vendor_id, alert_date)
             approved_leave = _approved_leave_people(c, vendor_id, alert_date)
+            present_statuses = {"CHECK_IN", "IN", "PRESENT", "PUNCH IN", "CHECKIN", "ENTRY"}
             absent = [
                 person for person in people
                 if person["id"] not in approved_leave
-                and latest.get(person["id"], "") not in {"CHECK_IN", "IN", "PRESENT"}
+                and str(person["id"]) not in approved_leave
+                and latest.get(person["id"], "") not in present_statuses
+                and latest.get(str(person["id"]), "") not in present_statuses
             ]
             owner_summary_names = []
             for person in absent:
@@ -451,6 +538,156 @@ def process_due_alerts(now_utc=None, connection_factory=None, sender=None):
         conn.close()
 
 
+def process_leave_checkout_alert(vendor_id, person_id, timestamp=None, connection_factory=None, sender=None):
+    """Notify parents via WhatsApp when a resident on approved leave/night out checks out from hostel."""
+    if connection_factory is None:
+        from utils import get_db_connection
+        connection_factory = get_db_connection
+    if sender is None:
+        from services.evolution_whatsapp_service import send_whatsapp_text
+        sender = send_whatsapp_text
+
+    timestamp = timestamp or datetime.now(timezone.utc)
+    conn = connection_factory()
+    try:
+        ensure_tables(conn)
+        c = conn.cursor()
+
+        # 1. Check vendor settings
+        c.execute("""
+            SELECT h.leave_checkout_alert_enabled, h.leave_checkout_gender_filter,
+                   h.leave_checkout_template, h.timezone,
+                   v.status AS vendor_status, s.features,
+                   w.status AS whatsapp_status
+            FROM hostel_alert_settings h
+            JOIN vendors v ON v.id = h.vendor_id
+            JOIN subscriptions s ON s.vendor_id = h.vendor_id
+            LEFT JOIN vendor_whatsapp_settings w ON w.vendor_id = h.vendor_id
+            WHERE h.vendor_id = ?
+        """, (vendor_id,))
+        row = c.fetchone()
+        if not row:
+            return {"status": "skipped", "reason": "No hostel alert settings"}
+        columns = [item[0] for item in c.description]
+        setting = _row_dict(row, columns)
+
+        if not setting.get("leave_checkout_alert_enabled"):
+            return {"status": "skipped", "reason": "Leave checkout alerts disabled"}
+        if str(setting.get("vendor_status") or "").lower() != "active":
+            return {"status": "skipped", "reason": "Vendor not active"}
+        if FEATURE_NAME not in _features(setting.get("features")):
+            return {"status": "skipped", "reason": "Feature not enabled"}
+        if str(setting.get("whatsapp_status") or "").lower() != "connected":
+            return {"status": "skipped", "reason": "WhatsApp disconnected"}
+
+        # 2. Check resident and gender filter
+        c.execute("SELECT id, name, phone, custom_data FROM faces WHERE id = ? AND vendor_id = ?", (person_id, vendor_id))
+        person_row = c.fetchone()
+        if not person_row:
+            return {"status": "skipped", "reason": "Person not found"}
+        person = _row_dict(person_row, ("id", "name", "phone", "custom_data"))
+        custom = _parse_custom(person.get("custom_data"))
+        person["custom"] = custom
+
+        gender_filter = str(setting.get("leave_checkout_gender_filter") or "female_only").lower().strip()
+        if gender_filter == "female_only":
+            gender = str(custom.get("gender") or custom.get("sex") or "").lower().strip()
+            if gender not in {"female", "girl", "f", "women", "woman"}:
+                logger.info("Leave checkout alert skipped for person %s: gender '%s' is not female", person_id, gender)
+                return {"status": "skipped", "reason": f"Resident gender '{gender}' does not match female_only filter"}
+
+        # 3. Check approved leave for current date
+        vendor_tz = _timezone(setting.get("timezone"))
+        local_now = timestamp.astimezone(vendor_tz) if timestamp.tzinfo else timestamp.replace(tzinfo=timezone.utc).astimezone(vendor_tz)
+        alert_date = local_now.date().isoformat()
+
+        c.execute("""
+            SELECT id, leave_type, reason, start_date, end_date, start_time, end_time
+            FROM leave_requests
+            WHERE vendor_id = ? AND student_id = ?
+              AND (
+                  LOWER(TRIM(COALESCE(final_status, ''))) = 'approved'
+                  OR LOWER(TRIM(COALESCE(rector_status, ''))) = 'approved'
+              )
+              AND SUBSTR(start_date, 1, 10) <= ?
+              AND SUBSTR(end_date, 1, 10) >= ?
+            ORDER BY id DESC LIMIT 1
+        """, (vendor_id, person_id, alert_date, alert_date))
+        leave_row = c.fetchone()
+        if not leave_row:
+            logger.info("Leave checkout alert skipped for person %s: no approved leave active on %s", person_id, alert_date)
+            return {"status": "skipped", "reason": "No approved leave active today"}
+        leave_cols = [item[0] for item in c.description]
+        leave_req = _row_dict(leave_row, leave_cols)
+
+        # 4. Check parent phone
+        parent_phone = _valid_phone(_parent_phone(c, vendor_id, person_id, custom))
+        leave_req_id = leave_req["id"]
+        alert_type = f"leave_checkout:{leave_req_id}"
+
+        # 5. Prevent duplicate alert for this leave request today
+        if not _claim_delivery(c, vendor_id, person_id, alert_date, alert_type, parent_phone):
+            logger.info("Leave checkout alert already claimed for person %s, leave %s on %s", person_id, leave_req_id, alert_date)
+            return {"status": "skipped", "reason": "Leave checkout alert already delivered"}
+
+        if not parent_phone:
+            result = {"success": False, "error": "Parent WhatsApp number is missing or invalid"}
+            _finish_delivery(c, vendor_id, person_id, alert_date, alert_type, result)
+            conn.commit()
+            return {"status": "failed", "error": result["error"]}
+
+        # 6. Format leave type & template
+        raw_type = str(leave_req.get("leave_type") or "leave").lower()
+        leave_type_labels = {
+            "night_out": "Night Out",
+            "home": "Home Visit",
+            "outing": "Day Outing",
+            "medical": "Medical Leave",
+            "casual": "Casual Leave",
+        }
+        leave_type_label = leave_type_labels.get(raw_type, raw_type.replace("_", " ").title())
+
+        expected_return = str(leave_req.get("end_date") or "").strip()
+        if leave_req.get("end_time"):
+            expected_return += f" by {leave_req['end_time']}"
+
+        values = {
+            "student_name": person.get("name") or "Resident",
+            "leave_type": leave_type_label,
+            "date": local_now.strftime("%d-%b-%Y"),
+            "exit_time": local_now.strftime("%I:%M %p"),
+            "reason": leave_req.get("reason") or "Approved Leave",
+            "expected_return": expected_return or "Scheduled end date",
+            "hostel_name": "Hostel",
+        }
+        template = setting.get("leave_checkout_template") or DEFAULT_LEAVE_CHECKOUT_TEMPLATE
+        message = _render(template, values)
+
+        # 7. Dispatch WhatsApp message
+        result = sender(vendor_id, parent_phone, message)
+        success = _finish_delivery(c, vendor_id, person_id, alert_date, alert_type, result)
+        conn.commit()
+        logger.info("Dispatched leave checkout alert to %s for person %s: %s", parent_phone, person_id, result)
+        return {"status": "sent" if success else "failed", "recipient": parent_phone}
+    except Exception as e:
+        conn.rollback()
+        logger.exception("Error in process_leave_checkout_alert for person %s: %s", person_id, e)
+        return {"status": "error", "error": str(e)}
+    finally:
+        conn.close()
+
+
+def trigger_leave_checkout_alert_async(vendor_id, person_id, timestamp=None):
+    """Fire-and-forget background worker for leave checkout alert."""
+    import threading
+    def worker():
+        try:
+            process_leave_checkout_alert(vendor_id, person_id, timestamp)
+        except Exception as e:
+            logger.error("Error in trigger_leave_checkout_alert_async: %s", e)
+    threading.Thread(target=worker, daemon=True).start()
+
+
 def recent_deliveries(vendor_id, limit=100, connection_factory=None):
     if connection_factory is None:
         from utils import get_db_connection
@@ -471,10 +708,13 @@ def recent_deliveries(vendor_id, limit=100, connection_factory=None):
         deliveries = [_row_dict(row, columns) for row in (c.fetchall() or [])]
         for delivery in deliveries:
             stored_type = str(delivery.get("alert_type") or "")
-            base_type, separator, revision = stored_type.rpartition(":r")
-            if separator and revision.isdigit():
-                delivery["alert_type"] = base_type
-                delivery["schedule_revision"] = int(revision)
+            if stored_type.startswith("leave_checkout"):
+                delivery["alert_type"] = "leave_checkout"
+            else:
+                base_type, separator, revision = stored_type.rpartition(":r")
+                if separator and revision.isdigit():
+                    delivery["alert_type"] = base_type
+                    delivery["schedule_revision"] = int(revision)
         return deliveries
     finally:
         conn.close()

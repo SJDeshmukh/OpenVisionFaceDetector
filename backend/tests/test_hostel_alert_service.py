@@ -9,7 +9,11 @@ BACKEND = Path(__file__).resolve().parents[1]
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
-from services.hostel_alert_service import process_due_alerts, save_settings
+from services.hostel_alert_service import (
+    process_due_alerts,
+    process_leave_checkout_alert,
+    save_settings,
+)
 
 
 def _database(tmp_path):
@@ -21,7 +25,7 @@ def _database(tmp_path):
         CREATE TABLE vendor_whatsapp_settings (vendor_id INTEGER, status TEXT);
         CREATE TABLE faces (id INTEGER PRIMARY KEY, vendor_id INTEGER, name TEXT, phone TEXT, custom_data TEXT);
         CREATE TABLE attendance (id INTEGER PRIMARY KEY, vendor_id INTEGER, person_id INTEGER, status TEXT, timestamp DATETIME, attendance_date DATE);
-        CREATE TABLE leave_requests (vendor_id INTEGER, student_id INTEGER, start_date DATE, end_date DATE, final_status TEXT);
+        CREATE TABLE leave_requests (id INTEGER PRIMARY KEY, vendor_id INTEGER, student_id INTEGER, leave_type TEXT, reason TEXT, start_date DATE, end_date DATE, start_time TEXT, end_time TEXT, final_status TEXT, rector_status TEXT);
         CREATE TABLE student_parents (id INTEGER PRIMARY KEY, vendor_id INTEGER, person_id INTEGER, parent_id INTEGER);
         CREATE TABLE parent_users (id INTEGER PRIMARY KEY, contact_phone TEXT);
 
@@ -35,7 +39,7 @@ def _database(tmp_path):
         INSERT INTO attendance VALUES
             (1, 1, 1, 'CHECK_OUT', '2026-09-21 09:00:00', '2026-09-21'),
             (2, 1, 2, 'CHECK_IN', '2026-09-21 12:00:00', '2026-09-21');
-        INSERT INTO leave_requests VALUES (1, 3, '2026-09-20', '2026-09-22', 'approved');
+        INSERT INTO leave_requests VALUES (1, 1, 3, 'home', 'Family visit', '2026-09-20', '2026-09-22', '10:00', '18:00', 'approved', 'approved');
     """)
     conn.commit()
     conn.close()
@@ -192,3 +196,74 @@ def test_time_change_starts_new_same_day_alert_cycle(tmp_path):
     assert after_time_change["sent"] == 1
     assert new_duplicate["sent"] == 0
     assert sent == ["9000000001", "9000000001"]
+
+
+def test_approved_leave_with_datetime_string_suppresses_alerts(tmp_path):
+    factory = _database(tmp_path)
+    conn = factory()
+    conn.execute("INSERT INTO faces VALUES (4, 1, 'Leave Resident', '9000000010', '{\"person_type\":\"student\",\"parent_phone\":\"9000000011\"}')")
+    conn.execute("INSERT INTO leave_requests VALUES (2, 1, 4, 'home', 'Family visit', '2026-09-21 10:00:00', '2026-09-22 18:00:00', '10:00', '18:00', 'approved', 'approved')")
+    conn.commit()
+    conn.close()
+
+    save_settings(1, {
+        "enabled": True,
+        "cutoff_time": "19:00",
+        "escalation_minutes": 60,
+        "timezone": "Asia/Kolkata",
+        "owner_summary_enabled": False,
+    }, connection_factory=factory)
+    sent = []
+    sender = lambda vendor_id, phone, message: sent.append(phone) or {"success": True}
+
+    process_due_alerts(
+        datetime(2026, 9, 21, 14, 31, tzinfo=timezone.utc),  # 20:01 IST
+        connection_factory=factory,
+        sender=sender,
+    )
+    # Resident 4 must NOT receive alerts because they are on approved leave
+    assert "9000000010" not in sent
+    assert "9000000011" not in sent
+
+
+def test_leave_checkout_alert_dispatches_to_parent_for_girl_on_night_out(tmp_path):
+    factory = _database(tmp_path)
+    conn = factory()
+    conn.execute("INSERT INTO faces VALUES (5, 1, 'Priya Patel', '9000000020', '{\"person_type\":\"student\",\"gender\":\"female\",\"parent_phone\":\"9000000021\"}')")
+    conn.execute("INSERT INTO faces VALUES (6, 1, 'Rahul Verma', '9000000022', '{\"person_type\":\"student\",\"gender\":\"male\",\"parent_phone\":\"9000000023\"}')")
+    conn.execute("INSERT INTO leave_requests VALUES (101, 1, 5, 'night_out', 'Family function', '2026-09-21', '2026-09-22', '18:00', '20:00', 'approved', 'approved')")
+    conn.execute("INSERT INTO leave_requests VALUES (102, 1, 6, 'night_out', 'Friends meetup', '2026-09-21', '2026-09-22', '18:00', '20:00', 'approved', 'approved')")
+    conn.commit()
+    conn.close()
+
+    save_settings(1, {
+        "enabled": True,
+        "leave_checkout_alert_enabled": True,
+        "leave_checkout_gender_filter": "female_only",
+        "timezone": "Asia/Kolkata",
+    }, connection_factory=factory)
+
+    sent = []
+    def sender(vendor_id, phone, message):
+        sent.append((vendor_id, phone, message))
+        return {"success": True}
+
+    checkout_time = datetime(2026, 9, 21, 12, 30, tzinfo=timezone.utc)  # 18:00 IST
+
+    # 1. Girl on night out checks out -> sends WhatsApp to parent
+    res_female = process_leave_checkout_alert(1, 5, checkout_time, connection_factory=factory, sender=sender)
+    assert res_female["status"] == "sent"
+    assert len(sent) == 1
+    assert sent[0][1] == "9000000021"
+    assert "Priya Patel" in sent[0][2]
+    assert "Night Out" in sent[0][2]
+
+    # 2. Duplicate checkout on same day -> skipped
+    res_dup = process_leave_checkout_alert(1, 5, checkout_time, connection_factory=factory, sender=sender)
+    assert res_dup["status"] == "skipped"
+    assert len(sent) == 1
+
+    # 3. Male student checks out when female_only is set -> skipped
+    res_male = process_leave_checkout_alert(1, 6, checkout_time, connection_factory=factory, sender=sender)
+    assert res_male["status"] == "skipped"
+    assert len(sent) == 1

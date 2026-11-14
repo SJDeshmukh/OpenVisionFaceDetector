@@ -2,14 +2,17 @@ import { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import {
   AlertTriangle, Bell, CheckCircle2, ChevronRight, Clock3, Inbox,
-  LoaderCircle, MessageCircle, Phone, RefreshCw, RotateCcw, Save,
+  LoaderCircle, LogOut, MessageCircle, Phone, RefreshCw, RotateCcw, Save,
   Send, ShieldCheck, Users, X,
 } from 'lucide-react';
 import { API_URL } from '../config';
 
 const DEFAULT_STUDENT_TEMPLATE = '⚠️ *Hostel Entry Reminder*\n\nHello {student_name}, no hostel entry was recorded by {cutoff_time} on {date}. Please report to the hostel or contact the administrator.';
 const DEFAULT_PARENT_TEMPLATE = '⚠️ *Hostel Attendance Alert*\n\nDear Parent/Guardian, {student_name} has not recorded hostel entry as of {current_time} on {date}. Please contact the student or hostel administrator.';
+const DEFAULT_LEAVE_CHECKOUT_TEMPLATE = '🚪 *Hostel Departure Notification*\n\nDear Parent/Guardian, your ward *{student_name}* has checked out (departed) from the hostel on approved *{leave_type}* at *{exit_time}* on *{date}*.\n\nReason: {reason}\nExpected Return: {expected_return}\n\n_TapInX Hostel Safety Monitoring._';
+
 const TEMPLATE_FIELDS = ['{student_name}', '{date}', '{cutoff_time}', '{current_time}'];
+const LEAVE_CHECKOUT_TEMPLATE_FIELDS = ['{student_name}', '{date}', '{exit_time}', '{leave_type}', '{reason}', '{expected_return}'];
 
 const defaults = {
   enabled: 0,
@@ -20,6 +23,9 @@ const defaults = {
   student_template: DEFAULT_STUDENT_TEMPLATE,
   parent_template: DEFAULT_PARENT_TEMPLATE,
   owner_summary_enabled: 1,
+  leave_checkout_alert_enabled: 1,
+  leave_checkout_gender_filter: 'female_only',
+  leave_checkout_template: DEFAULT_LEAVE_CHECKOUT_TEMPLATE,
 };
 
 const normalizeSettings = (value = {}) => ({
@@ -30,6 +36,9 @@ const normalizeSettings = (value = {}) => ({
   escalation_minutes: Number(value.escalation_minutes ?? 60),
   student_template: value.student_template || DEFAULT_STUDENT_TEMPLATE,
   parent_template: value.parent_template || DEFAULT_PARENT_TEMPLATE,
+  leave_checkout_alert_enabled: value.leave_checkout_alert_enabled === undefined || value.leave_checkout_alert_enabled ? 1 : 0,
+  leave_checkout_gender_filter: value.leave_checkout_gender_filter || 'female_only',
+  leave_checkout_template: value.leave_checkout_template || DEFAULT_LEAVE_CHECKOUT_TEMPLATE,
 });
 
 const comparableSettings = (value) => JSON.stringify(normalizeSettings(value));
@@ -38,7 +47,11 @@ const previewTemplate = (template) => String(template || '')
   .replaceAll('{student_name}', 'Ananya Sharma')
   .replaceAll('{date}', '21 Sep 2026')
   .replaceAll('{cutoff_time}', '07:00 PM')
-  .replaceAll('{current_time}', '08:00 PM');
+  .replaceAll('{current_time}', '08:00 PM')
+  .replaceAll('{exit_time}', '05:30 PM')
+  .replaceAll('{leave_type}', 'Night Out')
+  .replaceAll('{reason}', 'Family function at home')
+  .replaceAll('{expected_return}', '22 Sep 2026');
 
 const formatClock = (value) => {
   const [hours = 0, minutes = 0] = String(value || '00:00').split(':').map(Number);
@@ -59,7 +72,8 @@ const formatStage = (value) => ({
   parent_alert: 'Parent escalation',
   parent_escalation: 'Parent escalation',
   owner_summary: 'Admin summary',
-}[value] || String(value || 'Alert').replaceAll('_', ' '));
+  leave_checkout: 'Leave departure (Exit)',
+}[value] || (String(value || '').startsWith('leave_checkout') ? 'Leave departure (Exit)' : String(value || 'Alert').replaceAll('_', ' ')));
 
 function Toggle({ checked, onChange, label }) {
   return (
@@ -91,15 +105,15 @@ function Toast({ toast, onClose }) {
   );
 }
 
-function MessageEditor({ title, description, value, onChange, onReset, accent }) {
+function MessageEditor({ title, description, value, onChange, onReset, accent, fields = TEMPLATE_FIELDS }) {
   const appendField = (field) => onChange(`${value || ''}${value?.endsWith(' ') || !value ? '' : ' '}${field}`);
   return (
     <article className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <div className={`border-b px-5 py-4 ${accent === 'emerald' ? 'bg-emerald-50/70' : 'bg-indigo-50/70'}`}>
+      <div className={`border-b px-5 py-4 ${accent === 'emerald' ? 'bg-emerald-50/70' : accent === 'fuchsia' ? 'bg-fuchsia-50/70' : 'bg-indigo-50/70'}`}>
         <div className="flex items-start justify-between gap-3">
           <div>
             <div className="flex items-center gap-2">
-              <MessageCircle size={18} className={accent === 'emerald' ? 'text-emerald-600' : 'text-indigo-600'} />
+              <MessageCircle size={18} className={accent === 'emerald' ? 'text-emerald-600' : accent === 'fuchsia' ? 'text-fuchsia-600' : 'text-indigo-600'} />
               <h3 className="font-semibold text-slate-900">{title}</h3>
             </div>
             <p className="mt-1 text-xs leading-5 text-slate-500">{description}</p>
@@ -120,7 +134,7 @@ function MessageEditor({ title, description, value, onChange, onReset, accent })
           />
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <span className="mr-1 text-xs font-medium text-slate-500">Insert field:</span>
-            {TEMPLATE_FIELDS.map((field) => (
+            {fields.map((field) => (
               <button key={field} type="button" onClick={() => appendField(field)} className="cursor-pointer rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-indigo-700 transition hover:border-indigo-300 hover:bg-indigo-50">
                 {field}
               </button>
@@ -221,6 +235,7 @@ export default function HostelAlerts() {
         ...settings,
         enabled: Boolean(settings.enabled),
         owner_summary_enabled: Boolean(settings.owner_summary_enabled),
+        leave_checkout_alert_enabled: Boolean(settings.leave_checkout_alert_enabled),
         escalation_minutes: Number(settings.escalation_minutes),
       });
       const normalized = normalizeSettings(response.data?.settings);
@@ -337,11 +352,86 @@ export default function HostelAlerts() {
         </div>
       </section>
 
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm md:p-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex gap-3">
+            <div className={`grid h-11 w-11 shrink-0 place-items-center rounded-xl ${settings.leave_checkout_alert_enabled ? 'bg-fuchsia-100 text-fuchsia-700' : 'bg-slate-100 text-slate-500'}`}>
+              <LogOut size={22} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="font-bold text-slate-900">Leave & Night Out departure alerts to parents</h2>
+                <span className="rounded-full bg-fuchsia-100 px-2.5 py-0.5 text-xs font-semibold text-fuchsia-800">Safety feature</span>
+              </div>
+              <p className="mt-1 max-w-2xl text-sm leading-5 text-slate-500">
+                Instantly notify parents on WhatsApp when their ward checks out (exits) through the hostel gate during an approved leave or night out. Curfew alerts are automatically suppressed while residents are on approved leave.
+              </p>
+            </div>
+          </div>
+          <Toggle
+            checked={Boolean(settings.leave_checkout_alert_enabled)}
+            onChange={(value) => update('leave_checkout_alert_enabled', value ? 1 : 0)}
+            label="Leave departure notifications"
+          />
+        </div>
+
+        <div className="mt-5 grid gap-4 border-t border-slate-100 pt-5 md:grid-cols-2">
+          <div>
+            <label className="text-sm font-semibold text-slate-700" htmlFor="leave-gender-filter">Target resident group</label>
+            <select
+              id="leave-gender-filter"
+              value={settings.leave_checkout_gender_filter || 'female_only'}
+              onChange={(event) => update('leave_checkout_gender_filter', event.target.value)}
+              className="mt-2 w-full cursor-pointer rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm outline-none transition focus:border-indigo-400 focus:bg-white focus:ring-4 focus:ring-indigo-50"
+            >
+              <option value="female_only">Female residents only (Recommended for girls’ safety)</option>
+              <option value="all">All residents (Both male and female)</option>
+            </select>
+            <span className="mt-1.5 block text-[11px] text-slate-400">
+              Filtered using the resident gender specified in student profile / custom data.
+            </span>
+          </div>
+          <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+            <CheckCircle2 size={18} className="shrink-0 text-emerald-600" />
+            <div className="text-xs text-slate-600">
+              <span className="font-semibold text-slate-800">Approved leave suppression active: </span>
+              Students on approved leave or night out are automatically exempted from missing-entry reminders and parent curfew alerts.
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section>
-        <div className="mb-4"><h2 className="text-lg font-bold text-slate-900">WhatsApp messages</h2><p className="mt-1 text-sm text-slate-500">Personalize each message and preview exactly what recipients will see.</p></div>
-        <div className="grid gap-5 2xl:grid-cols-2">
-          <MessageEditor title="Resident reminder" description={`Sent at ${formatClock(settings.cutoff_time)} when hostel entry is missing.`} value={settings.student_template} onChange={(value) => update('student_template', value)} onReset={() => update('student_template', DEFAULT_STUDENT_TEMPLATE)} accent="indigo" />
-          <MessageEditor title="Parent / guardian escalation" description={`Sent at ${escalationTime} only if the resident still has not returned.`} value={settings.parent_template} onChange={(value) => update('parent_template', value)} onReset={() => update('parent_template', DEFAULT_PARENT_TEMPLATE)} accent="emerald" />
+        <div className="mb-4">
+          <h2 className="text-lg font-bold text-slate-900">WhatsApp messages</h2>
+          <p className="mt-1 text-sm text-slate-500">Personalize each message and preview exactly what recipients will see.</p>
+        </div>
+        <div className="grid gap-5 xl:grid-cols-3">
+          <MessageEditor
+            title="Resident reminder"
+            description={`Sent at ${formatClock(settings.cutoff_time)} when hostel entry is missing.`}
+            value={settings.student_template}
+            onChange={(value) => update('student_template', value)}
+            onReset={() => update('student_template', DEFAULT_STUDENT_TEMPLATE)}
+            accent="indigo"
+          />
+          <MessageEditor
+            title="Parent / guardian escalation"
+            description={`Sent at ${escalationTime} only if the resident still has not returned.`}
+            value={settings.parent_template}
+            onChange={(value) => update('parent_template', value)}
+            onReset={() => update('parent_template', DEFAULT_PARENT_TEMPLATE)}
+            accent="emerald"
+          />
+          <MessageEditor
+            title="Leave / Night Out departure"
+            description="Sent to parents when the resident checks out on an approved leave."
+            value={settings.leave_checkout_template}
+            onChange={(value) => update('leave_checkout_template', value)}
+            onReset={() => update('leave_checkout_template', DEFAULT_LEAVE_CHECKOUT_TEMPLATE)}
+            accent="fuchsia"
+            fields={LEAVE_CHECKOUT_TEMPLATE_FIELDS}
+          />
         </div>
       </section>
 
