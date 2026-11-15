@@ -921,12 +921,21 @@ const People = () => {
         if (formData.id && committedPerson) {
           updateUsersAndCache((current) => current.map((person) =>
             String(person.id || person.person_id) === String(committedPerson.id || committedPerson.person_id)
-              ? { ...person, ...committedPerson }
+              ? {
+                  ...person,
+                  ...committedPerson,
+                  custom_data: {
+                    ...(person.custom_data || {}),
+                    ...(committedPerson.custom_data || {}),
+                  }
+                }
               : person
           ));
+          addToast(`${personLabel} updated successfully.`, 'success');
         } else {
           // New registrations need the server-generated face assets.
           fetchUsers();
+          addToast(`${personLabel} registered successfully.`, 'success');
         }
         setIsModalOpen(false);
         setFormData(emptyPersonForm(registrationColumns));
@@ -935,6 +944,7 @@ const People = () => {
     } catch (error) {
       console.error("Error registering user:", error);
       const msg = error?.response?.data?.error || "Failed to register user";
+      addToast(msg, 'error');
       alert(msg);
     } finally {
       setSubmitting(false);
@@ -1233,11 +1243,13 @@ const People = () => {
     
     // Normalize field mapping: if the field is a variant of mobile number, use 'phone'
     let effectiveField = field;
-    if (['mobile_number', 'mobile number', 'phone_number', 'contact'].includes(String(field).toLowerCase())) {
+    if (['mobile_number', 'mobile number', 'phone_number', 'contact', 'phone'].includes(String(field).toLowerCase())) {
         effectiveField = 'phone';
     }
 
-    if (person?.custom_data && person.custom_data[effectiveField] !== undefined && person.custom_data[effectiveField] !== null) {
+    if (effectiveField === 'phone') {
+      rawValue = (person?.phone && String(person.phone).trim()) || person?.custom_data?.phone || person?.custom_data?.mobile_number;
+    } else if (person?.custom_data && person.custom_data[effectiveField] !== undefined && person.custom_data[effectiveField] !== null) {
       rawValue = person.custom_data[effectiveField];
     } else if (person && person[effectiveField] !== undefined && person[effectiveField] !== null) {
       rawValue = person[effectiveField];
@@ -1863,17 +1875,18 @@ const People = () => {
 
       {/* Registration Modal */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden max-h-[90vh] overflow-y-auto">
-            <div className="flex justify-between items-center p-6 border-b border-slate-100 sticky top-0 bg-white z-10">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden max-h-[90vh] flex flex-col">
+            <div className="flex justify-between items-center px-6 py-4 border-b border-slate-100 shrink-0 bg-white z-10">
               <h2 className="text-xl font-bold text-slate-800">{isEditing ? `Edit ${personLabel}` : `Add New ${personLabel}`}</h2>
               <button onClick={() => setIsModalOpen(false)} className="text-slate-400 hover:text-slate-600">
                 <X size={24} />
               </button>
             </div>
 
-            <form onSubmit={handleSubmit} className="p-6 space-y-6">
-              <div className="flex flex-col items-center justify-center space-y-4">
+            <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0 overflow-hidden">
+              <div className="p-6 space-y-6 overflow-y-auto flex-1">
+                <div className="flex flex-col items-center justify-center space-y-4">
                 <div className="relative group cursor-pointer">
                   <div className="w-32 h-32 rounded-full bg-slate-100 flex items-center justify-center overflow-hidden border-2 border-dashed border-slate-300 group-hover:border-blue-500 transition-colors">
                     {formData.photoPreview ? (
@@ -2060,19 +2073,20 @@ const People = () => {
                   </div>
                 )}
               </div>
+            </div>
 
-              <div className="flex gap-3 pt-2">
+              <div className="flex gap-3 p-4 border-t border-slate-100 bg-slate-50/80 shrink-0">
                 <button
                   type="button"
                   onClick={() => setIsModalOpen(false)}
-                  className="flex-1 px-4 py-2 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 font-medium"
+                  className="flex-1 px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-slate-600 hover:bg-slate-50 font-semibold text-sm shadow-sm transition-all"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={submitting || !formData.name}
-                  className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="flex-1 px-4 py-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-semibold text-sm disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"
                 >
                   {submitting ? 'Saving...' : (isEditing ? 'Save Changes' : `Register ${personLabel}`)}
                 </button>
@@ -2203,7 +2217,7 @@ const People = () => {
                         File: <span className="font-mono">{bulkMappingRequest.filename}</span> ({bulkMappingRequest.totalRows} records detected)
                       </h4>
                       <p className="text-[11px] text-blue-700 mt-0.5 leading-relaxed">
-                        Review each column’s type (<strong>Text</strong>, <strong>Numerical</strong>, or <strong>Dropdown</strong>). This configuration is automatically synchronized with the mobile app and web registration forms.
+                        Review each column's type (<strong>Text</strong>, <strong>Numerical</strong>, or <strong>Dropdown</strong>). This configuration is automatically synchronized with the mobile app and web registration forms.
                       </p>
                     </div>
                   </div>

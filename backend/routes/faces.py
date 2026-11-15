@@ -715,6 +715,10 @@ def upload_face():
     }
     custom_dict = parse_custom_data(data.get("custom_data"))
     custom_dict.update({k: v for k, v in data.items() if k not in standard_fields})
+    if phone and str(phone).strip():
+        custom_dict["phone"] = str(phone).strip()
+        custom_dict["mobile_number"] = str(phone).strip()
+        custom_dict["phone_number"] = str(phone).strip()
     
     # Ensure scope fields are in custom_dict for UI visibility (Faces table lacks columns)
     if class_year: custom_dict['class_year'] = class_year
@@ -1181,6 +1185,10 @@ def upload_face():
                 # Only overwrite if the new value is non-empty.
                 if v is not None and str(v).strip() != "":
                     old[k] = v
+            if phone is not None and str(phone).strip() != "":
+                old["phone"] = str(phone).strip()
+                old["mobile_number"] = str(phone).strip()
+                old["phone_number"] = str(phone).strip()
             if is_student_vertical(vertical):
                 old["person_type"] = "student"
             custom_data = json.dumps(old, separators=(',', ':')) if old else None
@@ -1365,14 +1373,20 @@ def upload_face():
                                             person_id, login_email,
                                         )
                                     else:
+                                        _sync_is_pg = getattr(conn, "_is_pg", False)
+                                        if _sync_is_pg:
+                                            try: c.execute("SAVEPOINT login_user_sync")
+                                            except Exception: pass
                                         try:
                                             c.execute("UPDATE system_users SET username = ? WHERE person_id = ?", (login_email, person_id))
                                             c.execute("DELETE FROM active_sessions WHERE username = ?", (old_username,))
-                                        except Exception as _upd_err:
-                                            # Unique constraint race (PG). Roll back the sub-op only.
-                                            _sync_is_pg = getattr(conn, "_is_pg", False)
                                             if _sync_is_pg:
-                                                try: conn.rollback()
+                                                try: c.execute("RELEASE SAVEPOINT login_user_sync")
+                                                except Exception: pass
+                                        except Exception as _upd_err:
+                                            # Unique constraint race (PG). Roll back the sub-op only via SAVEPOINT.
+                                            if _sync_is_pg:
+                                                try: c.execute("ROLLBACK TO SAVEPOINT login_user_sync")
                                                 except Exception: pass
                                             logger.warning(
                                                 "Could not rename system_users for person_id=%s to %s: %s",
