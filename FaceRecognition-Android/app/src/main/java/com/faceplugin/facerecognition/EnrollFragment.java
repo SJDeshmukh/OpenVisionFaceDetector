@@ -1033,13 +1033,24 @@ public class EnrollFragment extends Fragment {
                             }
                         }
                     } catch (Exception ignored) {}
-                    Toast.makeText(getContext(), errorMsg + " (will sync in background)", Toast.LENGTH_LONG).show();
-                    try {
-                        Context ctx = getContext();
-                        if (ctx != null) {
-                            SyncScheduler.scheduleImmediate(ctx.getApplicationContext());
+
+                    int code = response.code();
+                    if (code == 409 || code == 400 || code == 403 || code == 422) {
+                        // Hard rejection (Duplicate face, parent duplicate, validation error).
+                        // Roll back and delete local person so it is NEVER recognized or stored!
+                        if (dbManager != null && localUid != null) {
+                            dbManager.deletePersonByLocalUid(localUid);
                         }
-                    } catch (Exception ignored) {}
+                        Toast.makeText(getContext(), errorMsg, Toast.LENGTH_LONG).show();
+                    } else {
+                        Toast.makeText(getContext(), errorMsg + " (will sync in background)", Toast.LENGTH_LONG).show();
+                        try {
+                            Context ctx = getContext();
+                            if (ctx != null) {
+                                SyncScheduler.scheduleImmediate(ctx.getApplicationContext());
+                            }
+                        } catch (Exception ignored) {}
+                    }
                 }
             }
 

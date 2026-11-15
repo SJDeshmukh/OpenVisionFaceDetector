@@ -97,7 +97,13 @@ class FaceSyncWorker(appContext: Context, params: WorkerParameters) : Worker(app
                     if (code == 401 || code == 403) {
                         return Result.success()
                     }
-                    if (code == 408 || code == 429 || (code in 500..599)) {
+                    if (code == 409 || code == 400 || code == 422) {
+                        // Hard rejection (duplicate face, parent duplicate, validation failure)
+                        // Permanently remove from local database so the rejected face does not linger locally
+                        try {
+                            db.deletePersonByLocalUid(p.localUid)
+                        } catch (_: Exception) {}
+                    } else if (code == 408 || code == 429 || (code in 500..599)) {
                         needsRetry = true
                     }
                 }

@@ -482,6 +482,19 @@ public class UsersFragment extends Fragment {
                             }
                         }
                     } catch (Exception ignored) {}
+
+                    int code = response.code();
+                    if (code == 409 || code == 400 || code == 403 || code == 422) {
+                        // Hard server rejection (duplicate face, parent duplicate, etc.)
+                        if (person.id == null || person.id.isEmpty()) {
+                            dbManager.deletePersonByLocalUid(person.localUid);
+                        } else {
+                            dbManager.updatePersonFaceByLocalUid(person.localUid, null, null);
+                        }
+                        if (adapter != null) {
+                            adapter.replaceUsers(DBManager.personList);
+                        }
+                    }
                     if (getContext() != null) Toast.makeText(getContext(), errorMsg, Toast.LENGTH_LONG).show();
                 }
             }
