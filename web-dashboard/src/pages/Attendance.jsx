@@ -75,13 +75,13 @@ const Attendance = () => {
       // If filters are active, we might need a full refresh to be safe
       // but for "real time" we can just re-fetch the current view.
       if (String(ev.vendor_id) === String(user.vendor_id)) {
-        fetchLogs(true);
+        fetchLogs(true, true);
         fetchFilters(filtersRef.current);
       }
     };
     const handlePersonsUpdated = (ev) => {
       if (String(ev.vendor_id) === String(user.vendor_id)) {
-        fetchLogs(true);
+        fetchLogs(true, true);
         fetchFilters(filtersRef.current);
       }
     };
@@ -124,7 +124,7 @@ const Attendance = () => {
     }
   };
 
-  const fetchLogs = async (isBackground = false) => {
+  const fetchLogs = async (isBackground = false, forceRefresh = false) => {
     // Only set refreshing state for manual actions (not auto-refresh)
     if (!isBackground) setIsRefreshing(true);
 
@@ -143,12 +143,12 @@ const Attendance = () => {
       if (filters.deviceName && String(filters.deviceName).trim() !== '') {
         params.append('device_name', filters.deviceName);
       }
-      if (!isBackground) {
+      params.append('limit', '100');
+      if (forceRefresh) {
         params.append('nocache', '1');
       }
-      const response = await axios.get(`${API_URL}/attendance?${params.toString()}`, {
-        headers: { 'Cache-Control': 'no-cache' }
-      });
+      const headers = forceRefresh ? { 'Cache-Control': 'no-cache' } : {};
+      const response = await axios.get(`${API_URL}/attendance?${params.toString()}`, { headers });
       const list = response.data?.attendance || [];
       setLogs(list);
       try {
@@ -173,7 +173,7 @@ const Attendance = () => {
   };
 
   const handleSearch = () => {
-    fetchLogs();
+    fetchLogs(false, true);
   };
 
   const handleExport = () => {
@@ -307,7 +307,7 @@ const Attendance = () => {
             </button>
           </div>
           <button
-            onClick={() => fetchLogs(false)}
+            onClick={() => fetchLogs(false, true)}
             className="flex items-center space-x-2 px-4 py-2 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 font-medium transition-colors"
           >
             <RefreshCw size={18} className={isRefreshing ? "animate-spin" : ""} />

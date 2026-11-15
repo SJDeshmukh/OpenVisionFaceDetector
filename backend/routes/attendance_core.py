@@ -1249,7 +1249,7 @@ def get_attendance(valid_data: AttendanceFilterSchema):
     query += " ORDER BY a.timestamp DESC"
     # FIX 4: SQL-level LIMIT to avoid loading thousands of rows just for
     # Python-side slicing. Add a generous safety cap; the UI shows max 500.
-    sql_limit = max(1, min(int(valid_data.limit or 500), 2000))
+    sql_limit = max(1, min(int(valid_data.limit or 100), 500))
     sql_offset = max(0, int(valid_data.offset or 0))
     query += f" LIMIT {sql_limit} OFFSET {sql_offset}"
     c.execute(query, params)
@@ -1308,7 +1308,7 @@ def get_attendance(valid_data: AttendanceFilterSchema):
             "is_late": r.get("is_late", 0) if late_enabled else 0,
             "department": r["department"], "designation": r["designation"],
             "shift": r["shift"],
-            "captured_image": compact_image_data_url(r["captured_image"]),
+            "captured_image": compact_image_data_url(r["captured_image"]) if (r.get("captured_image") and len(str(r["captured_image"])) > 15000 and not str(r["captured_image"]).startswith("data:image/webp")) else r.get("captured_image"),
             "device_name": device_name,
             "class_id": custom.get("class_id"),
             "class_year": r.get("class_year"),
