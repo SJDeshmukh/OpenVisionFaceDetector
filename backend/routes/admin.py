@@ -1272,7 +1272,7 @@ def get_vendor_email_logs(vendor_id):
     c = conn.cursor()
     try:
         c.execute("""
-            SELECT id, vendor_id, recipient, subject, email_type, status, error, created_at
+            SELECT id, vendor_id, recipient, subject, email_type, status, error_message as error, created_at
             FROM vendor_email_logs WHERE vendor_id = ?
             ORDER BY created_at DESC LIMIT ?
         """, (vendor_id, limit))

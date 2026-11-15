@@ -191,78 +191,93 @@ def _send_leave_stage_email_async(vendor_id, request_id, stage):
             is_pg = getattr(conn, "_is_pg", False)
 
             # 1. Fetch leave request details
-            if is_pg:
-                c.execute("""
-                    SELECT lr.id, lr.leave_type, lr.reason, lr.start_date, lr.end_date, lr.start_time, lr.end_time,
-                           f.name as student_name, f.department as student_dept, f.custom_data, v.name as vendor_name
-                    FROM leave_requests lr
-                    LEFT JOIN faces f ON lr.student_id = f.id
-                    LEFT JOIN vendors v ON lr.vendor_id = v.id
-                    WHERE lr.id = %s AND lr.vendor_id = %s
-                """, (request_id, vendor_id))
-            else:
-                c.execute("""
-                    SELECT lr.id, lr.leave_type, lr.reason, lr.start_date, lr.end_date, lr.start_time, lr.end_time,
-                           f.name as student_name, f.department as student_dept, f.custom_data, v.name as vendor_name
-                    FROM leave_requests lr
-                    LEFT JOIN faces f ON lr.student_id = f.id
-                    LEFT JOIN vendors v ON lr.vendor_id = v.id
-                    WHERE lr.id = ? AND lr.vendor_id = ?
-                """, (request_id, vendor_id))
-            row = c.fetchone()
-            if not row:
+            try:
+                if is_pg:
+                    c.execute("""
+                        SELECT lr.id, lr.leave_type, lr.reason, lr.start_date, lr.end_date, lr.start_time, lr.end_time,
+                               f.name as student_name, f.department as student_dept, f.custom_data, v.company_name as vendor_name
+                        FROM leave_requests lr
+                        LEFT JOIN faces f ON lr.student_id = f.id
+                        LEFT JOIN vendors v ON lr.vendor_id = v.id
+                        WHERE lr.id = %s AND lr.vendor_id = %s
+                    """, (request_id, vendor_id))
+                else:
+                    c.execute("""
+                        SELECT lr.id, lr.leave_type, lr.reason, lr.start_date, lr.end_date, lr.start_time, lr.end_time,
+                               f.name as student_name, f.department as student_dept, f.custom_data, v.company_name as vendor_name
+                        FROM leave_requests lr
+                        LEFT JOIN faces f ON lr.student_id = f.id
+                        LEFT JOIN vendors v ON lr.vendor_id = v.id
+                        WHERE lr.id = ? AND lr.vendor_id = ?
+                    """, (request_id, vendor_id))
+                row = c.fetchone()
+                if not row:
+                    return
+                req = get_row_dict(row)
+
+                student_name = req.get("student_name") or "Student"
+                student_dept = req.get("student_dept") or ""
+                if not student_dept and req.get("custom_data"):
+                    try:
+                        cd = json.loads(req["custom_data"]) if isinstance(req["custom_data"], str) else req["custom_data"]
+                        student_dept = cd.get("department") or cd.get("branch") or ""
+                    except Exception:
+                        pass
+
+                vendor_name = req.get("vendor_name") or "TapInX"
+                leave_type = str(req.get("leave_type") or "Leave").replace("_", " ").title()
+                start_date = str(req.get("start_date") or "")
+                end_date = str(req.get("end_date") or "")
+                reason = str(req.get("reason") or "No reason provided")
+                stage_name = stage.get("display_name") or stage.get("role_key") or "Staff"
+                role_key = stage.get("role_key")
+                dept_scoped = bool(stage.get("department_scoped"))
+
+                # 2. Fetch staff approvers with valid emails
+                if is_pg:
+                    if dept_scoped and student_dept:
+                        c.execute("""
+                            SELECT name, email FROM leave_staff
+                            WHERE vendor_id = %s AND LOWER(TRIM(role)) = LOWER(TRIM(%s)) AND email IS NOT NULL AND email <> ''
+                              AND (LOWER(TRIM(COALESCE(department, ''))) = LOWER(TRIM(%s)) OR department IS NULL OR department = '')
+                        """, (vendor_id, role_key, student_dept))
+                    else:
+                        c.execute("""
+                            SELECT name, email FROM leave_staff
+                            WHERE vendor_id = %s AND LOWER(TRIM(role)) = LOWER(TRIM(%s)) AND email IS NOT NULL AND email <> ''
+                        """, (vendor_id, role_key))
+                else:
+                    if dept_scoped and student_dept:
+                        c.execute("""
+                            SELECT name, email FROM leave_staff
+                            WHERE vendor_id = ? AND LOWER(TRIM(role)) = LOWER(TRIM(?)) AND email IS NOT NULL AND email <> ''
+                              AND (LOWER(TRIM(COALESCE(department, ''))) = LOWER(TRIM(?)) OR department IS NULL OR department = '')
+                        """, (vendor_id, role_key, student_dept))
+                    else:
+                        c.execute("""
+                            SELECT name, email FROM leave_staff
+                            WHERE vendor_id = ? AND LOWER(TRIM(role)) = LOWER(TRIM(?)) AND email IS NOT NULL AND email <> ''
+                        """, (vendor_id, role_key))
+                approvers = c.fetchall() or []
+
+                # Fallback: if department scoping returned no staff, get all staff for this role
+                if not approvers and dept_scoped:
+                    if is_pg:
+                        c.execute("""
+                            SELECT name, email FROM leave_staff
+                            WHERE vendor_id = %s AND LOWER(TRIM(role)) = LOWER(TRIM(%s)) AND email IS NOT NULL AND email <> ''
+                        """, (vendor_id, role_key))
+                    else:
+                        c.execute("""
+                            SELECT name, email FROM leave_staff
+                            WHERE vendor_id = ? AND LOWER(TRIM(role)) = LOWER(TRIM(?)) AND email IS NOT NULL AND email <> ''
+                        """, (vendor_id, role_key))
+                    approvers = c.fetchall() or []
+            finally:
                 conn.close()
-                return
-            req = get_row_dict(row)
-
-            student_name = req.get("student_name") or "Student"
-            student_dept = req.get("student_dept") or ""
-            if not student_dept and req.get("custom_data"):
-                try:
-                    cd = json.loads(req["custom_data"]) if isinstance(req["custom_data"], str) else req["custom_data"]
-                    student_dept = cd.get("department") or cd.get("branch") or ""
-                except Exception:
-                    pass
-
-            vendor_name = req.get("vendor_name") or "TapInX"
-            leave_type = str(req.get("leave_type") or "Leave").replace("_", " ").title()
-            start_date = str(req.get("start_date") or "")
-            end_date = str(req.get("end_date") or "")
-            reason = str(req.get("reason") or "No reason provided")
-            stage_name = stage.get("display_name") or stage.get("role_key") or "Staff"
-            role_key = stage.get("role_key")
-            dept_scoped = bool(stage.get("department_scoped"))
-
-            # 2. Fetch staff approvers with valid emails
-            if is_pg:
-                if dept_scoped and student_dept:
-                    c.execute("""
-                        SELECT name, email FROM leave_staff
-                        WHERE vendor_id = %s AND role = %s AND email IS NOT NULL AND email <> ''
-                          AND LOWER(TRIM(department)) = LOWER(TRIM(%s))
-                    """, (vendor_id, role_key, student_dept))
-                else:
-                    c.execute("""
-                        SELECT name, email FROM leave_staff
-                        WHERE vendor_id = %s AND role = %s AND email IS NOT NULL AND email <> ''
-                    """, (vendor_id, role_key))
-            else:
-                if dept_scoped and student_dept:
-                    c.execute("""
-                        SELECT name, email FROM leave_staff
-                        WHERE vendor_id = ? AND role = ? AND email IS NOT NULL AND email <> ''
-                          AND LOWER(TRIM(department)) = LOWER(TRIM(?))
-                    """, (vendor_id, role_key, student_dept))
-                else:
-                    c.execute("""
-                        SELECT name, email FROM leave_staff
-                        WHERE vendor_id = ? AND role = ? AND email IS NOT NULL AND email <> ''
-                    """, (vendor_id, role_key))
-            approvers = c.fetchall() or []
-            conn.close()
 
             if not approvers:
-                logger.info(f"No staff email found for stage '{stage_name}' (role={role_key}) in vendor {vendor_id}")
+                logger.warning(f"No staff email found for stage '{stage_name}' (role={role_key}) in vendor {vendor_id}. Ensure approvers have their email registered in SuperAdmin.")
                 return
 
             from services.email_service import send_email

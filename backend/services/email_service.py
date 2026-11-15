@@ -63,15 +63,25 @@ def send_email(subject, text_body, recipient, attachments=None, html_body=None, 
             conn = get_db_connection()
             c = conn.cursor()
             is_pg = getattr(conn, "_is_pg", False)
-            if is_pg:
-                c.execute("SELECT features FROM subscriptions WHERE vendor_id = %s", (vendor_id,))
-            else:
-                c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
-            row = c.fetchone()
-            conn.close()
-            if row:
+            try:
+                if is_pg:
+                    c.execute("SELECT features FROM subscriptions WHERE vendor_id = %s", (vendor_id,))
+                else:
+                    c.execute("SELECT features FROM subscriptions WHERE vendor_id = ?", (vendor_id,))
+                row = c.fetchone()
+            finally:
+                conn.close()
+
+            if row and row[0]:
                 features_str = str(row[0] or "")
-                if "email_notifications" not in features_str and "automated_email_reports" not in features_str:
+                # Allow if email_notifications is toggled, or if this is a leave alert and vendor has leave_management
+                is_leave_alert = (email_type == "leave_stage_notification")
+                has_perm = (
+                    "email_notifications" in features_str
+                    or "automated_email_reports" in features_str
+                    or (is_leave_alert and "leave_management" in features_str)
+                )
+                if not has_perm:
                     logger.info(f"Skipping email to {recipient} for vendor {vendor_id}: email_notifications feature is not enabled")
                     return None
         except Exception as ex:
