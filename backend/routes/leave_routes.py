@@ -212,6 +212,9 @@ def create_leave_request():
     
     if not all([student_id, leave_type, reason, start_date, end_date]):
         return jsonify({"error": "Missing required fields"}), 400
+
+    if start_date > end_date:
+        return jsonify({"error": "Start date cannot be after end date"}), 400
         
     conn = get_db_connection()
     c = conn.cursor()
@@ -371,6 +374,39 @@ def create_leave_request():
                     "error": f"Leave requests cannot be submitted for deactivated students ({st_stat.replace('_', ' ').title()})"
                 }), 400
 
+        # Check for overlapping leave requests for this student (active/pending/approved, not rejected or cancelled)
+        if is_pg:
+            c.execute("""
+                SELECT id, leave_type, start_date, end_date, final_status
+                FROM leave_requests
+                WHERE vendor_id = %s AND student_id = %s
+                  AND final_status NOT IN ('rejected', 'cancelled')
+                  AND start_date <= %s AND end_date >= %s
+                ORDER BY start_date ASC
+                LIMIT 1
+            """, (vendor_id, student_id, end_date, start_date))
+        else:
+            c.execute("""
+                SELECT id, leave_type, start_date, end_date, final_status
+                FROM leave_requests
+                WHERE vendor_id = ? AND student_id = ?
+                  AND final_status NOT IN ('rejected', 'cancelled')
+                  AND start_date <= ? AND end_date >= ?
+                ORDER BY start_date ASC
+                LIMIT 1
+            """, (vendor_id, student_id, end_date, start_date))
+
+        overlap_row = c.fetchone()
+        if overlap_row:
+            overlap_data = get_row_dict(overlap_row)
+            o_type = overlap_data.get("leave_type") if isinstance(overlap_data, dict) else overlap_row[1]
+            o_start = overlap_data.get("start_date") if isinstance(overlap_data, dict) else overlap_row[2]
+            o_end = overlap_data.get("end_date") if isinstance(overlap_data, dict) else overlap_row[3]
+            o_stat = overlap_data.get("final_status") if isinstance(overlap_data, dict) else overlap_row[4]
+            return jsonify({
+                "error": f"You already have a leave request ({o_type}) from {o_start} to {o_end} (Status: {o_stat}). Overlapping leave dates are not permitted."
+            }), 409
+
         if is_pg:
             c.execute("""
                 INSERT INTO leave_requests 
@@ -404,6 +440,176 @@ def create_leave_request():
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
+
+@leave_bp.route("/request/<int:request_id>", methods=["PUT"])
+@require_feature("leave_management")
+def update_leave_request(request_id):
+    vendor_id, error = authenticate_vendor_access()
+    if error: return error
+
+    role_error = _require_role("user", "student", "parent", "super_admin")
+    if role_error: return role_error
+
+    data = request.json or {}
+    new_leave_type = data.get("leave_type")
+    new_reason = data.get("reason")
+    new_start_date = data.get("start_date")
+    new_end_date = data.get("end_date")
+    new_start_time = data.get("start_time", "10:00")
+    new_end_time = data.get("end_time", "18:00")
+
+    if not all([new_leave_type, new_reason, new_start_date, new_end_date]):
+        return jsonify({"error": "Missing required fields"}), 400
+
+    if new_start_date > new_end_date:
+        return jsonify({"error": "Start date cannot be after end date"}), 400
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        is_pg = getattr(conn, "_is_pg", False)
+
+        # 1. Fetch existing request
+        if is_pg:
+            c.execute("SELECT * FROM leave_requests WHERE id = %s AND vendor_id = %s", (request_id, vendor_id))
+        else:
+            c.execute("SELECT * FROM leave_requests WHERE id = ? AND vendor_id = ?", (request_id, vendor_id))
+        row = c.fetchone()
+        if not row:
+            return jsonify({"error": "Leave request not found"}), 404
+        req_row = get_row_dict(row)
+        student_id = req_row["student_id"]
+
+        # 2. Authorization check
+        caller_role = getattr(g, "user_role", None)
+        if caller_role in ("user", "student"):
+            # Resolve caller's person_id
+            if is_pg:
+                c.execute("SELECT person_id FROM system_users WHERE vendor_id = %s AND username = %s AND role IN ('user', 'student')", (vendor_id, g.username))
+            else:
+                c.execute("SELECT person_id FROM system_users WHERE vendor_id = ? AND username = ? AND role IN ('user', 'student')", (vendor_id, g.username))
+            u_row = c.fetchone()
+            caller_person_id = (get_row_dict(u_row).get("person_id") if u_row and hasattr(u_row, "keys") else (u_row[0] if u_row else None))
+            if caller_person_id is None:
+                # Fallback to faces check
+                if is_pg:
+                    c.execute("""SELECT id FROM faces WHERE vendor_id = %s AND (
+                        id::text = %s OR
+                        LOWER(TRIM(custom_data::jsonb->>'student_id')) = LOWER(TRIM(%s)) OR
+                        LOWER(TRIM(custom_data::jsonb->>'id_number')) = LOWER(TRIM(%s)) OR
+                        LOWER(TRIM(custom_data::jsonb->>'employee_id')) = LOWER(TRIM(%s))
+                    )""", (vendor_id, str(g.username), str(g.username), str(g.username), str(g.username)))
+                else:
+                    c.execute("""SELECT id FROM faces WHERE vendor_id = ? AND (
+                        CAST(id AS TEXT) = ? OR
+                        LOWER(TRIM(json_extract(custom_data, '$.student_id'))) = LOWER(TRIM(?)) OR
+                        LOWER(TRIM(json_extract(custom_data, '$.id_number'))) = LOWER(TRIM(?)) OR
+                        LOWER(TRIM(json_extract(custom_data, '$.employee_id'))) = LOWER(TRIM(?))
+                    )""", (vendor_id, str(g.username), str(g.username), str(g.username), str(g.username)))
+                f_row = c.fetchone()
+                if f_row:
+                    caller_person_id = f_row["id"] if hasattr(f_row, "keys") else f_row[0]
+            if caller_person_id is None or int(caller_person_id) != int(student_id):
+                return jsonify({"error": "You are not authorized to edit this leave request"}), 403
+
+        elif caller_role == "parent":
+            parent_account = _authenticated_parent(c, vendor_id)
+            if not parent_account:
+                return jsonify({"error": "Parent account not found or session invalid"}), 403
+            linked_person_ids = set()
+            if parent_account.get("selected_person_id"):
+                linked_person_ids.add(int(parent_account["selected_person_id"]))
+            try:
+                c.execute("SELECT person_id FROM student_parents WHERE vendor_id = ? AND parent_id = ?", (vendor_id, parent_account["id"]))
+                for r in c.fetchall() or []:
+                    pid_val = r[0] if not hasattr(r, "keys") else r["person_id"]
+                    if pid_val is not None: linked_person_ids.add(int(pid_val))
+            except Exception:
+                pass
+            if int(student_id) not in linked_person_ids:
+                return jsonify({"error": "You are not authorized to edit leave for this student"}), 403
+
+        # 3. Check if any approval or rejection has already arrived
+        final_status = str(req_row.get("final_status") or "pending").lower()
+        if final_status != "pending":
+            return jsonify({"error": f"Leave request cannot be edited because it is already {final_status}."}), 400
+
+        stages = snapshot_request(conn, vendor_id, request_id, req_row)
+        approved_stage = next((s for s in stages if str(s.get("status") or "").lower() == "approved"), None)
+        if approved_stage:
+            return jsonify({
+                "error": f"Leave request cannot be edited once an approval has been granted ({approved_stage.get('display_name', 'Stage')})."
+            }), 400
+
+        rejected_stage = next((s for s in stages if str(s.get("status") or "").lower() == "rejected"), None)
+        if rejected_stage:
+            return jsonify({"error": "Leave request cannot be edited because it has been rejected."}), 400
+
+        for col in ("rector_status", "hod_status", "parent_status"):
+            if str(req_row.get(col) or "").lower() == "approved":
+                return jsonify({"error": "Leave request cannot be edited once an approval has been granted."}), 400
+
+        # 4. Check for overlapping leave requests with other leaves
+        if is_pg:
+            c.execute("""
+                SELECT id, leave_type, start_date, end_date, final_status
+                FROM leave_requests
+                WHERE vendor_id = %s AND student_id = %s
+                  AND id != %s
+                  AND final_status NOT IN ('rejected', 'cancelled')
+                  AND start_date <= %s AND end_date >= %s
+                ORDER BY start_date ASC
+                LIMIT 1
+            """, (vendor_id, student_id, request_id, new_end_date, new_start_date))
+        else:
+            c.execute("""
+                SELECT id, leave_type, start_date, end_date, final_status
+                FROM leave_requests
+                WHERE vendor_id = ? AND student_id = ?
+                  AND id != ?
+                  AND final_status NOT IN ('rejected', 'cancelled')
+                  AND start_date <= ? AND end_date >= ?
+                ORDER BY start_date ASC
+                LIMIT 1
+            """, (vendor_id, student_id, request_id, new_end_date, new_start_date))
+
+        overlap_row = c.fetchone()
+        if overlap_row:
+            overlap_data = get_row_dict(overlap_row)
+            o_type = overlap_data.get("leave_type") if isinstance(overlap_data, dict) else overlap_row[1]
+            o_start = overlap_data.get("start_date") if isinstance(overlap_data, dict) else overlap_row[2]
+            o_end = overlap_data.get("end_date") if isinstance(overlap_data, dict) else overlap_row[3]
+            o_stat = overlap_data.get("final_status") if isinstance(overlap_data, dict) else overlap_row[4]
+            return jsonify({
+                "error": f"You already have another leave request ({o_type}) from {o_start} to {o_end} (Status: {o_stat}). Overlapping leave dates are not permitted."
+            }), 409
+
+        # 5. Execute Update
+        if is_pg:
+            c.execute("""
+                UPDATE leave_requests
+                SET leave_type = %s, reason = %s, start_date = %s, end_date = %s, start_time = %s, end_time = %s
+                WHERE id = %s AND vendor_id = %s
+            """, (new_leave_type, new_reason, new_start_date, new_end_date, new_start_time, new_end_time, request_id, vendor_id))
+        else:
+            c.execute("""
+                UPDATE leave_requests
+                SET leave_type = ?, reason = ?, start_date = ?, end_date = ?, start_time = ?, end_time = ?
+                WHERE id = ? AND vendor_id = ?
+            """, (new_leave_type, new_reason, new_start_date, new_end_date, new_start_time, new_end_time, request_id, vendor_id))
+
+        conn.commit()
+        return jsonify({
+            "status": "success",
+            "message": "Leave request updated successfully",
+            "request_id": request_id
+        })
+    except Exception as e:
+        if is_pg: conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
 
 @leave_bp.route("/parent/pending", methods=["GET"])
 @leave_bp.route("/parent/requests", methods=["GET"])
@@ -1437,15 +1643,15 @@ def manage_leave_workflow():
     vendor_id, error = authenticate_vendor_access()
     if error:
         return error
-    if getattr(g, "user_role", None) not in {"super_admin", "vendor_admin", "admin", "owner"}:
-        return jsonify({"error": "Workflow configuration requires administrator access"}), 403
-    if not vendor_id:
-        return jsonify({"error": "Select a vendor before configuring its workflow"}), 400
-
     conn = get_db_connection()
     try:
         if request.method == "GET":
             return jsonify({"workflow": get_active_workflow(conn, vendor_id)})
+
+        # Workflow configuration can only be modified by super_admin
+        if getattr(g, "user_role", None) != "super_admin":
+            return jsonify({"error": "Workflow configuration can only be modified by SuperAdmin."}), 403
+
         payload = request.get_json(silent=True) or {}
         try:
             workflow = replace_workflow(

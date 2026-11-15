@@ -19,7 +19,9 @@ import {
   Trash2,
   ChevronUp,
   ChevronDown,
-  ChevronRight
+  ChevronRight,
+  Edit2,
+  X
 } from 'lucide-react';
 import { getBusinessTerminology, usesStudentRecords, isHostelVertical } from '../lib/businessTerminology';
 
@@ -45,7 +47,53 @@ const LeaveManagement = () => {
   const [studentWorkflow, setStudentWorkflow] = useState(null);
   const [dataError, setDataError] = useState('');
   const [savingWorkflow, setSavingWorkflow] = useState(false);
-  const canConfigureWorkflow = ['super_admin', 'vendor_admin', 'admin', 'owner'].includes(user?.role);
+  const isSuperAdmin = user?.role === 'super_admin';
+  const canViewWorkflow = ['super_admin', 'vendor_admin', 'admin', 'owner', 'rector', 'hod', 'staff'].includes(user?.role) || !isRegularUser;
+  const canConfigureWorkflow = isSuperAdmin;
+  
+  const [editingLeave, setEditingLeave] = useState(null);
+  const [editFormData, setEditFormData] = useState({
+    leave_type: 'home',
+    reason: '',
+    start_date: '',
+    end_date: '',
+    start_time: '10:00',
+    end_time: '18:00'
+  });
+  const [editSubmitting, setEditSubmitting] = useState(false);
+  const [previewImage, setPreviewImage] = useState(null);
+
+  const handleOpenEdit = (req) => {
+    setEditingLeave(req);
+    setEditFormData({
+      leave_type: req.leave_type || (isStudentFlow ? 'home' : 'casual'),
+      reason: req.reason || '',
+      start_date: req.start_date || '',
+      end_date: req.end_date || '',
+      start_time: req.start_time || '10:00',
+      end_time: req.end_time || '18:00'
+    });
+  };
+
+  const handleUpdateLeave = async (e) => {
+    e.preventDefault();
+    if (!editingLeave) return;
+    if (editFormData.start_date && editFormData.end_date && editFormData.start_date > editFormData.end_date) {
+      alert("Error: Start date cannot be after end date.");
+      return;
+    }
+    setEditSubmitting(true);
+    try {
+      await axios.put(`${API_URL}/leave/request/${editingLeave.id}`, editFormData, isRegularUser ? {} : staffRequestConfig);
+      alert("Leave request updated successfully!");
+      setEditingLeave(null);
+      fetchData();
+    } catch (err) {
+      alert("Error updating leave request: " + (err.response?.data?.error || err.message));
+    } finally {
+      setEditSubmitting(false);
+    }
+  };
   
   const currentRole = staffSession?.role || user?.role;
   const staffRequestConfig = staffSession?.access_token
@@ -185,6 +233,10 @@ const LeaveManagement = () => {
 
   const handleSubmitRequest = async (e) => {
     e.preventDefault();
+    if (formData.start_date && formData.end_date && formData.start_date > formData.end_date) {
+      alert("Error: Start date cannot be after end date.");
+      return;
+    }
     setLoading(true);
     try {
       const payload = { ...formData };
@@ -380,12 +432,12 @@ const LeaveManagement = () => {
               >
                 Leave History
               </button>
-              {canConfigureWorkflow && (
+              {canViewWorkflow && (
                 <button
                   onClick={() => setActiveTab('workflow')}
                   className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === 'workflow' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}
                 >
-                  Workflow Setup
+                  Workflow Setup {isSuperAdmin ? '' : '(View Only)'}
                 </button>
               )}
             </>
@@ -460,22 +512,34 @@ const LeaveManagement = () => {
         <div className="grid grid-cols-1 gap-4">
           {activeTab === 'workflow' ? (
             <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-6">
+              {!isSuperAdmin && (
+                <div className="flex items-center gap-3 p-4 bg-slate-50 border border-slate-200 rounded-xl text-slate-700 text-sm">
+                  <ShieldCheck size={20} className="text-blue-600 shrink-0" />
+                  <div>
+                    <p className="font-bold text-slate-800">Workflow Setup (View Only)</p>
+                    <p className="text-xs text-slate-500">The leave approval workflow hierarchy is centrally managed and configured exclusively by SuperAdmin.</p>
+                  </div>
+                </div>
+              )}
               <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
                 <div className="flex-1">
                   <label className="block text-sm font-bold text-slate-700 mb-2">Workflow name</label>
                   <input
                     value={workflow?.name || ''}
+                    disabled={!isSuperAdmin}
                     onChange={(e) => setWorkflow(prev => ({ ...(prev || { stages: [] }), name: e.target.value }))}
-                    className="w-full p-3 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full p-3 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-50 disabled:text-slate-700"
                     placeholder="Student Leave Approval"
                   />
                   <p className="text-xs text-slate-500 mt-2">
                     Version {workflow?.version || 'new'} · Changes apply only to newly submitted requests.
                   </p>
                 </div>
-                <button onClick={addWorkflowStage} className="flex items-center justify-center gap-2 px-4 py-3 border border-blue-200 text-blue-700 rounded-lg hover:bg-blue-50 font-bold">
-                  <Plus size={18} /> Add Stage
-                </button>
+                {isSuperAdmin && (
+                  <button onClick={addWorkflowStage} className="flex items-center justify-center gap-2 px-4 py-3 border border-blue-200 text-blue-700 rounded-lg hover:bg-blue-50 font-bold">
+                    <Plus size={18} /> Add Stage
+                  </button>
+                )}
               </div>
 
               <div className="space-y-3">
@@ -486,18 +550,20 @@ const LeaveManagement = () => {
                       <label className="text-[10px] uppercase font-bold text-slate-400">Stage name</label>
                       <input
                         value={stage.display_name || ''}
+                        disabled={!isSuperAdmin}
                         onChange={(e) => updateWorkflowStage(index, { display_name: e.target.value })}
-                        className="w-full p-2 border border-slate-200 rounded-lg bg-white"
+                        className="w-full p-2 border border-slate-200 rounded-lg bg-white disabled:bg-slate-100 disabled:text-slate-700"
                       />
                     </div>
                     <div>
                       <label className="text-[10px] uppercase font-bold text-slate-400">Approver type</label>
                       <select
                         value={stage.actor_type || 'staff'}
+                        disabled={!isSuperAdmin}
                         onChange={(e) => updateWorkflowStage(index, e.target.value === 'parent'
                           ? { actor_type: 'parent', role_key: 'parent', auth_method: 'face', department_scoped: false }
                           : { actor_type: 'staff', role_key: stage.role_key === 'parent' ? `approver_${index + 1}` : stage.role_key, auth_method: 'staff_pin' })}
-                        className="w-full p-2 border border-slate-200 rounded-lg bg-white"
+                        className="w-full p-2 border border-slate-200 rounded-lg bg-white disabled:bg-slate-100 disabled:text-slate-700"
                       >
                         <option value="staff">Staff</option>
                         <option value="parent">Parent</option>
@@ -507,35 +573,47 @@ const LeaveManagement = () => {
                       <label className="text-[10px] uppercase font-bold text-slate-400">Role key</label>
                       <input
                         value={stage.role_key || ''}
-                        disabled={stage.actor_type === 'parent'}
+                        disabled={!isSuperAdmin || stage.actor_type === 'parent'}
                         onChange={(e) => updateWorkflowStage(index, { role_key: e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, '_') })}
-                        className="w-full p-2 border border-slate-200 rounded-lg bg-white disabled:bg-slate-100"
+                        className="w-full p-2 border border-slate-200 rounded-lg bg-white disabled:bg-slate-100 disabled:text-slate-700"
                         placeholder="warden"
                       />
                     </div>
                     <label className="flex items-center gap-2 text-sm text-slate-600 whitespace-nowrap">
                       <input
                         type="checkbox"
-                        disabled={stage.actor_type === 'parent'}
+                        disabled={!isSuperAdmin || stage.actor_type === 'parent'}
                         checked={Boolean(stage.department_scoped)}
                         onChange={(e) => updateWorkflowStage(index, { department_scoped: e.target.checked })}
                       />
                       Department scoped
                     </label>
-                    <div className="flex items-center justify-end gap-1">
-                      <button onClick={() => moveWorkflowStage(index, -1)} disabled={index === 0} className="p-2 text-slate-500 hover:bg-white rounded disabled:opacity-30" title="Move up"><ChevronUp size={18} /></button>
-                      <button onClick={() => moveWorkflowStage(index, 1)} disabled={index === workflow.stages.length - 1} className="p-2 text-slate-500 hover:bg-white rounded disabled:opacity-30" title="Move down"><ChevronDown size={18} /></button>
-                      <button onClick={() => setWorkflow(prev => ({ ...prev, stages: prev.stages.filter((_, i) => i !== index) }))} className="p-2 text-red-500 hover:bg-red-50 rounded" title="Remove stage"><Trash2 size={18} /></button>
-                    </div>
+                    {isSuperAdmin ? (
+                      <div className="flex items-center justify-end gap-1">
+                        <button onClick={() => moveWorkflowStage(index, -1)} disabled={index === 0} className="p-2 text-slate-500 hover:bg-white rounded disabled:opacity-30" title="Move up"><ChevronUp size={18} /></button>
+                        <button onClick={() => moveWorkflowStage(index, 1)} disabled={index === workflow.stages.length - 1} className="p-2 text-slate-500 hover:bg-white rounded disabled:opacity-30" title="Move down"><ChevronDown size={18} /></button>
+                        <button onClick={() => setWorkflow(prev => ({ ...prev, stages: prev.stages.filter((_, i) => i !== index) }))} className="p-2 text-red-500 hover:bg-red-50 rounded" title="Remove stage"><Trash2 size={18} /></button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-end text-xs text-slate-400 font-medium">
+                        Stage #{index + 1}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
 
               <div className="flex items-center justify-between border-t border-slate-100 pt-5">
                 <p className="text-xs text-slate-500">Parent stages always require face authentication. Staff stages use an assigned staff PIN session.</p>
-                <button onClick={saveWorkflow} disabled={savingWorkflow || !workflow?.stages?.length} className="flex items-center gap-2 px-5 py-3 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 disabled:opacity-50">
-                  <Settings size={18} /> {savingWorkflow ? 'Saving...' : 'Save Workflow'}
-                </button>
+                {isSuperAdmin ? (
+                  <button onClick={saveWorkflow} disabled={savingWorkflow || !workflow?.stages?.length} className="flex items-center gap-2 px-5 py-3 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 disabled:opacity-50">
+                    <Settings size={18} /> {savingWorkflow ? 'Saving...' : 'Save Workflow'}
+                  </button>
+                ) : (
+                  <span className="text-xs font-semibold px-3 py-1.5 bg-slate-100 text-slate-500 rounded-lg border border-slate-200">
+                    Configuration Locked (SuperAdmin Only)
+                  </span>
+                )}
               </div>
             </div>
           ) : activeTab === 'new_request' ? (
@@ -722,6 +800,34 @@ const LeaveManagement = () => {
                         <p className="text-slate-700 bg-slate-50 p-2 rounded border border-slate-100 mt-2 italic text-sm">
                           "{req.reason}"
                         </p>
+                        {/* Parent Face Verification Badge & Thumbnail if parent approved */}
+                        {(req.approval_steps?.some(s => s.captured_face) || req.parent_captured_face) && (
+                          <div className="mt-2.5 flex items-center gap-3 p-2 bg-emerald-50/80 border border-emerald-200/70 rounded-lg">
+                            <div
+                              className="w-12 h-12 rounded-lg overflow-hidden border-2 border-emerald-500 shadow-2xs cursor-pointer hover:scale-105 transition-transform shrink-0"
+                              onClick={() => {
+                                const stepWithFace = req.approval_steps?.find(s => s.captured_face);
+                                const faceSrc = stepWithFace?.captured_face || req.parent_captured_face;
+                                if (faceSrc) setPreviewImage(faceSrc.startsWith('data:') ? faceSrc : `data:image/jpeg;base64,${faceSrc}`);
+                              }}
+                              title="Click to view full verified parent photo"
+                            >
+                              <img
+                                src={(() => {
+                                  const stepWithFace = req.approval_steps?.find(s => s.captured_face);
+                                  const faceSrc = stepWithFace?.captured_face || req.parent_captured_face;
+                                  return faceSrc.startsWith('data:') ? faceSrc : `data:image/jpeg;base64,${faceSrc}`;
+                                })()}
+                                alt="Verified parent"
+                                className="w-full h-full object-cover"
+                              />
+                            </div>
+                            <div>
+                              <span className="text-[10px] uppercase font-bold text-emerald-800">Parent Verified</span>
+                              <p className="text-[11px] text-emerald-700 font-medium">Approved with face verification (Click to enlarge)</p>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
                     
@@ -809,21 +915,47 @@ const LeaveManagement = () => {
                             <span className="text-[10px] uppercase font-bold mt-2 tracking-wider text-slate-500">{step.label}</span>
                             <span className={`text-[9px] mt-0.5 ${isDone ? 'text-green-600' : isRejected ? 'text-red-600' : 'text-slate-400'}`}>{stepStatus.toUpperCase()}</span>
                             {step.captured_face && (
-                              <div className="mt-1 flex flex-col items-center">
-                                <img
-                                  src={step.captured_face.startsWith('data:') ? step.captured_face : `data:image/jpeg;base64,${step.captured_face}`}
-                                  alt="Verified parent"
-                                  className="w-6 h-6 rounded-full object-cover border border-emerald-500 shadow-xs hover:scale-125 transition-transform"
-                                  title="Verified Photo at Approval"
-                                />
+                              <div className="mt-2 flex flex-col items-center">
+                                <div
+                                  className="w-12 h-12 rounded-lg overflow-hidden border-2 border-emerald-500 shadow-2xs cursor-pointer hover:ring-2 hover:ring-emerald-400 hover:scale-105 transition-all shrink-0"
+                                  onClick={() => setPreviewImage(step.captured_face.startsWith('data:') ? step.captured_face : `data:image/jpeg;base64,${step.captured_face}`)}
+                                  title="Click to view full verified parent photo"
+                                >
+                                  <img
+                                    src={step.captured_face.startsWith('data:') ? step.captured_face : `data:image/jpeg;base64,${step.captured_face}`}
+                                    alt="Verified parent"
+                                    className="w-full h-full object-cover"
+                                  />
+                                </div>
+                                <span className="text-[9px] font-bold text-emerald-700 bg-emerald-50 px-1 py-0.5 rounded border border-emerald-200 mt-1 whitespace-nowrap">
+                                  Parent Photo
+                                </span>
                               </div>
                             )}
                           </div>
                         );
                       })}
                     </div>
-                    <div className="mt-4 pt-4 border-t border-slate-50 text-sm text-slate-600 italic">
-                      "{req.reason}"
+                    <div className="mt-4 pt-4 border-t border-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-sm text-slate-600">
+                      <p className="italic">"{req.reason}"</p>
+                      {/* Check if leave can be edited by student: pending final status and 0 approvals */}
+                      {(() => {
+                        const hasApproval = (req.approval_steps || []).some(s => ['approved', 'rejected'].includes(String(s.status || '').toLowerCase()))
+                          || ['approved', 'rejected'].includes(String(req.rector_status || '').toLowerCase())
+                          || ['approved', 'rejected'].includes(String(req.hod_status || '').toLowerCase())
+                          || ['approved', 'rejected'].includes(String(req.parent_status || '').toLowerCase());
+                        const isEditable = String(req.final_status || '').toLowerCase() === 'pending' && !hasApproval;
+                        if (!isEditable) return null;
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEdit(req)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-lg text-xs font-bold border border-blue-200 transition-colors shrink-0 shadow-2xs"
+                          >
+                            <Edit2 size={13} /> Edit Leave
+                          </button>
+                        );
+                      })()}
                     </div>
                   </div>
                 ))
@@ -900,64 +1032,80 @@ const LeaveManagement = () => {
             </div>
           ) : (
             /* Parent Validation Tab */
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
               {filteredParents.length > 0 ? (
                 filteredParents.map(parent => (
-                  <div key={parent.id} className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
-                    <div className="aspect-square relative group bg-slate-100">
-                      {parent.face_image ? (
-                        <img 
-                          src={parent.face_image} 
-                          alt={parent.username} 
-                          className="w-full h-full object-cover"
-                        />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center">
-                          <User size={64} className="text-slate-300" />
+                  <div key={parent.id} className="bg-white rounded-xl border border-slate-200/90 shadow-2xs hover:shadow-xs p-4 flex flex-col justify-between transition-all">
+                    <div className="flex items-start gap-3.5">
+                      {/* Compact Professional ID-style photo */}
+                      <div 
+                        className="w-20 h-24 rounded-lg overflow-hidden bg-slate-100 border border-slate-200 shrink-0 relative group cursor-pointer shadow-2xs"
+                        onClick={() => parent.face_image && setPreviewImage(parent.face_image)}
+                        title="Click to view full image"
+                      >
+                        {parent.face_image ? (
+                          <img 
+                            src={parent.face_image} 
+                            alt={parent.username} 
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-slate-300">
+                            <User size={32} />
+                          </div>
+                        )}
+                        <span className="absolute bottom-1 right-1 bg-emerald-600 text-white text-[8px] font-bold px-1.5 py-0.5 rounded shadow-2xs">
+                          Verified
+                        </span>
+                      </div>
+
+                      {/* Details */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex justify-between items-start gap-1">
+                          <h3 className="font-bold text-slate-800 text-sm truncate" title={parent.username}>
+                            {parent.username}
+                          </h3>
+                          <span className="text-[10px] text-slate-400 font-mono shrink-0">
+                            {parent.created_at?.split('T')[0]}
+                          </span>
                         </div>
-                      )}
-                      <div className="absolute top-2 right-2 bg-blue-600 text-white text-[10px] uppercase font-bold px-2 py-0.5 rounded shadow-sm">
-                        Registered
-                      </div>
-                    </div>
-                    <div className="p-4 space-y-2">
-                      <div className="flex justify-between items-start">
-                        <h3 className="font-bold text-slate-800">{parent.username}</h3>
-                        <span className="text-[10px] text-slate-400 font-mono">{parent.created_at?.split('T')[0]}</span>
-                      </div>
-                      <div className="text-xs text-slate-500 space-y-1">
-                        <div className="p-2 bg-slate-50 rounded-lg border border-slate-100">
-                          <p className="text-[10px] uppercase font-bold text-slate-400 mb-1">Student Linked</p>
-                          <p className="font-bold text-slate-800 flex items-center gap-1">
-                            <User size={12} className="text-blue-600" />
-                            {parent.student_name || 'Not Found'}
+                        
+                        <div className="mt-2 p-2 bg-slate-50/80 rounded-lg border border-slate-100 text-xs">
+                          <p className="text-[10px] uppercase font-bold text-slate-400">Linked Student</p>
+                          <p className="font-semibold text-slate-800 truncate flex items-center gap-1 mt-0.5">
+                            <User size={12} className="text-blue-600 shrink-0" />
+                            {parent.student_name || 'Not Linked'}
                           </p>
-                          <p className="text-[10px] font-mono text-slate-500">{parent.student_number}</p>
+                          <p className="text-[10px] font-mono text-slate-500">{parent.student_number || '-'}</p>
                         </div>
-                        <p className="flex items-center gap-1 pt-1">
-                          <Clock size={12} /> Phone: <span className="text-slate-800">{parent.contact_phone || '-'}</span>
+
+                        <p className="text-xs text-slate-500 mt-2 flex items-center gap-1.5 truncate">
+                          <span className="text-slate-400">Phone:</span>
+                          <span className="font-medium text-slate-700">{parent.contact_phone || '-'}</span>
                         </p>
                       </div>
-                      <div className="flex gap-2 mt-2">
-                        <button 
-                          type="button"
-                          onClick={() => {
-                            setSearchTerm(parent.student_name || parent.student_number || '');
-                            setActiveTab('history');
-                          }}
-                          className="flex-1 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 rounded-md border border-slate-200 transition-colors"
-                        >
-                          View History
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteParent(parent.id, parent.student_name || parent.student_number)}
-                          className="py-1.5 px-2.5 text-xs font-medium text-red-600 hover:bg-red-50 rounded-md border border-red-200 transition-colors flex items-center justify-center gap-1"
-                          title="Delete Parent Account & Registered Face"
-                        >
-                          <Trash2 size={13} />
-                        </button>
-                      </div>
+                    </div>
+
+                    {/* Action buttons */}
+                    <div className="flex gap-2 mt-3 pt-3 border-t border-slate-100">
+                      <button 
+                        type="button"
+                        onClick={() => {
+                          setSearchTerm(parent.student_name || parent.student_number || '');
+                          setActiveTab('history');
+                        }}
+                        className="flex-1 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 rounded-lg border border-slate-200 transition-colors"
+                      >
+                        View History
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteParent(parent.id, parent.student_name || parent.student_number)}
+                        className="py-1.5 px-2.5 text-xs font-medium text-red-600 hover:bg-red-50 rounded-lg border border-red-200 transition-colors flex items-center justify-center gap-1"
+                        title="Delete Parent Account & Registered Face"
+                      >
+                        <Trash2 size={13} />
+                      </button>
                     </div>
                   </div>
                 ))
@@ -1015,6 +1163,167 @@ const LeaveManagement = () => {
                 </button>
               )}
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Leave Request Modal (Only editable before 1st approval) */}
+      {editingLeave && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-[100] animate-fadeIn">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200">
+            <div className="flex justify-between items-center pb-4 border-b border-slate-100">
+              <div>
+                <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                  <Edit2 size={18} className="text-blue-600" /> Edit Leave Request
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Editable because no hierarchy stage has approved yet.
+                </p>
+              </div>
+              <button
+                onClick={() => setEditingLeave(null)}
+                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={handleUpdateLeave} className="space-y-4 mt-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-600 uppercase mb-1.5">Leave Type</label>
+                <select
+                  value={editFormData.leave_type}
+                  onChange={(e) => setEditFormData({ ...editFormData, leave_type: e.target.value })}
+                  className="w-full p-2.5 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 text-sm bg-white"
+                >
+                  {isStudentFlow ? (
+                    <>
+                      <option value="home">Home Visit</option>
+                      <option value="night_out">Night Out</option>
+                      <option value="outing">Day Outing</option>
+                      <option value="medical">Medical Leave</option>
+                      <option value="other">Other / Special Leave</option>
+                    </>
+                  ) : (
+                    <>
+                      <option value="casual">Casual Leave (CL)</option>
+                      <option value="sick">Sick Leave (SL)</option>
+                      <option value="privilege">Privilege Leave (PL)</option>
+                      <option value="half_day">Half Day</option>
+                      <option value="comp_off">Comp Off</option>
+                      <option value="unpaid">Leave Without Pay</option>
+                    </>
+                  )}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 uppercase mb-1.5">Start Date</label>
+                  <input
+                    type="date"
+                    required
+                    value={editFormData.start_date}
+                    onChange={(e) => setEditFormData({ ...editFormData, start_date: e.target.value })}
+                    className="w-full p-2.5 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 uppercase mb-1.5">End Date</label>
+                  <input
+                    type="date"
+                    required
+                    value={editFormData.end_date}
+                    min={editFormData.start_date}
+                    onChange={(e) => setEditFormData({ ...editFormData, end_date: e.target.value })}
+                    className="w-full p-2.5 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 uppercase mb-1.5">Out Time</label>
+                  <input
+                    type="time"
+                    value={editFormData.start_time}
+                    onChange={(e) => setEditFormData({ ...editFormData, start_time: e.target.value })}
+                    className="w-full p-2.5 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 uppercase mb-1.5">Expected Return</label>
+                  <input
+                    type="time"
+                    value={editFormData.end_time}
+                    onChange={(e) => setEditFormData({ ...editFormData, end_time: e.target.value })}
+                    className="w-full p-2.5 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 uppercase mb-1.5">Reason for Leave</label>
+                <textarea
+                  required
+                  rows={3}
+                  value={editFormData.reason}
+                  onChange={(e) => setEditFormData({ ...editFormData, reason: e.target.value })}
+                  placeholder="Specify reason for leave..."
+                  className="w-full p-2.5 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 text-sm resize-none"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setEditingLeave(null)}
+                  className="px-4 py-2 border border-slate-200 text-slate-600 rounded-lg text-sm font-medium hover:bg-slate-50 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={editSubmitting}
+                  className="px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-bold hover:bg-blue-700 transition-colors shadow-sm disabled:opacity-50"
+                >
+                  {editSubmitting ? 'Saving Changes...' : 'Save Changes'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Verified Photo Enlarged Preview Modal */}
+      {previewImage && (
+        <div 
+          className="fixed inset-0 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 z-[110] animate-fadeIn"
+          onClick={() => setPreviewImage(null)}
+        >
+          <div 
+            className="bg-white rounded-2xl max-w-sm w-full p-4 shadow-2xl border border-slate-200 flex flex-col items-center"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="w-full flex justify-between items-center mb-3 pb-2 border-b border-slate-100">
+              <h4 className="font-bold text-slate-800 text-sm flex items-center gap-1.5">
+                <ShieldCheck size={16} className="text-emerald-600" /> Verified Photo Capture
+              </h4>
+              <button 
+                onClick={() => setPreviewImage(null)}
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="w-64 h-64 rounded-xl overflow-hidden bg-slate-100 border border-slate-200 shadow-inner">
+              <img 
+                src={previewImage} 
+                alt="Face Preview" 
+                className="w-full h-full object-cover" 
+              />
+            </div>
+            <p className="text-[11px] text-slate-500 mt-2 font-medium">Captured & verified during approval process</p>
           </div>
         </div>
       )}
