@@ -1053,7 +1053,8 @@ def get_vendors():
                NULL as user_password,
                (SELECT COUNT(*) FROM system_users WHERE vendor_id = v.id AND role = 'vendor_admin') as admin_count,
                (SELECT COUNT(*) FROM vendor_devices WHERE vendor_id = v.id) as device_count,
-               (SELECT COUNT(*) FROM faces WHERE vendor_id = v.id) as employee_count
+               (SELECT COUNT(*) FROM faces WHERE vendor_id = v.id) as employee_count,
+               (SELECT COUNT(*) FROM vendor_email_logs WHERE vendor_id = v.id AND status = 'sent') as email_count
         FROM vendors v
         LEFT JOIN subscriptions s ON v.id = s.vendor_id
         LEFT JOIN vendor_whatsapp_settings ws ON v.id = ws.vendor_id
@@ -1256,6 +1257,30 @@ def get_automated_report_deliveries(vendor_id):
             ORDER BY created_at DESC LIMIT ?
         """, (vendor_id, limit))
         return jsonify({"deliveries": [dict(row) for row in (c.fetchall() or [])]})
+    finally:
+        conn.close()
+
+
+@admin_bp.route("/vendors/<int:vendor_id>/email-logs", methods=["GET"])
+@super_admin_required
+def get_vendor_email_logs(vendor_id):
+    try:
+        limit = max(1, min(int(request.args.get("limit", 50)), 200))
+    except ValueError:
+        limit = 50
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        c.execute("""
+            SELECT id, vendor_id, recipient, subject, email_type, status, error, created_at
+            FROM vendor_email_logs WHERE vendor_id = ?
+            ORDER BY created_at DESC LIMIT ?
+        """, (vendor_id, limit))
+        logs = [dict(row) for row in (c.fetchall() or [])]
+        return jsonify({"logs": logs, "total_sent": len([l for l in logs if l.get("status") == "sent"])})
+    except Exception as e:
+        logger.warning(f"Failed to fetch vendor email logs: {e}")
+        return jsonify({"logs": [], "total_sent": 0})
     finally:
         conn.close()
 

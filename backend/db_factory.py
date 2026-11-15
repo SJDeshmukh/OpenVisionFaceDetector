@@ -661,7 +661,7 @@ def _init_pg_schema_on_conn(conn):
         "CREATE TABLE IF NOT EXISTS person_embeddings (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id), class_year TEXT, division TEXT, branch TEXT, vec BYTEA, dim INTEGER, struct_vec BYTEA, landmarks_3d TEXT, model_version TEXT DEFAULT 'faceplugin-onnx-v1', quality_score REAL, source TEXT DEFAULT 'registration', status TEXT DEFAULT 'trusted', confirmed_by TEXT, confirmed_at TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS class_batches (id TEXT PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), class_year TEXT, division TEXT, branch TEXT, status TEXT DEFAULT 'active', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS class_batch_items (id TEXT PRIMARY KEY, batch_id TEXT REFERENCES class_batches(id), seq INTEGER, image_b64 TEXT, annotated_b64 TEXT, faces_json TEXT, status TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
-        "CREATE TABLE IF NOT EXISTS leave_staff (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), name TEXT, role TEXT, pin TEXT, department TEXT, navbar_items TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS leave_staff (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), name TEXT, email TEXT, role TEXT, pin TEXT, department TEXT, navbar_items TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS leave_workflows (id SERIAL PRIMARY KEY, vendor_id INTEGER NOT NULL REFERENCES vendors(id), name TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, is_active INTEGER NOT NULL DEFAULT 1, created_by TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, version))",
         "CREATE TABLE IF NOT EXISTS leave_workflow_stages (id SERIAL PRIMARY KEY, workflow_id INTEGER NOT NULL REFERENCES leave_workflows(id) ON DELETE CASCADE, stage_key TEXT NOT NULL, display_name TEXT NOT NULL, actor_type TEXT NOT NULL, role_key TEXT, sequence INTEGER NOT NULL, department_scoped INTEGER NOT NULL DEFAULT 0, auth_method TEXT NOT NULL DEFAULT 'staff_session', UNIQUE(workflow_id, sequence), UNIQUE(workflow_id, stage_key))",
         "CREATE TABLE IF NOT EXISTS leave_request_stages (id SERIAL PRIMARY KEY, request_id INTEGER NOT NULL REFERENCES leave_requests(id) ON DELETE CASCADE, vendor_id INTEGER NOT NULL REFERENCES vendors(id), workflow_id INTEGER REFERENCES leave_workflows(id), workflow_version INTEGER NOT NULL, stage_key TEXT NOT NULL, display_name TEXT NOT NULL, actor_type TEXT NOT NULL, role_key TEXT, sequence INTEGER NOT NULL, department_scoped INTEGER NOT NULL DEFAULT 0, auth_method TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', actor_id TEXT, actor_name TEXT, decided_at TIMESTAMP, decision_metadata TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(request_id, sequence))",
@@ -697,6 +697,8 @@ def _init_pg_schema_on_conn(conn):
         "CREATE TABLE IF NOT EXISTS hostel_allocations (id SERIAL PRIMARY KEY, vendor_id INTEGER NOT NULL REFERENCES vendors(id), person_id INTEGER NOT NULL REFERENCES faces(id), bed_id INTEGER NOT NULL REFERENCES hostel_beds(id), allocated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, allocated_by TEXT, UNIQUE(vendor_id, person_id), UNIQUE(bed_id))",
         "CREATE TABLE IF NOT EXISTS hostel_allocation_history (id SERIAL PRIMARY KEY, vendor_id INTEGER NOT NULL REFERENCES vendors(id), person_id INTEGER NOT NULL, action TEXT NOT NULL, previous_bed_id INTEGER, new_bed_id INTEGER, actor_username TEXT, reason TEXT, override_reason TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS hostel_staff_permissions (id SERIAL PRIMARY KEY, vendor_id INTEGER NOT NULL REFERENCES vendors(id), username TEXT NOT NULL, building_id INTEGER REFERENCES hostel_buildings(id) ON DELETE CASCADE, access_role TEXT NOT NULL DEFAULT 'viewer', can_export INTEGER NOT NULL DEFAULT 0, can_override_eligibility INTEGER NOT NULL DEFAULT 0, can_view_resident_details INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, username, building_id))",
+        "CREATE TABLE IF NOT EXISTS vendor_email_logs (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id) ON DELETE CASCADE, recipient TEXT NOT NULL, subject TEXT, email_type TEXT DEFAULT 'general', status TEXT DEFAULT 'sent', error_message TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE INDEX IF NOT EXISTS idx_vendor_email_logs_vendor ON vendor_email_logs(vendor_id)",
 
         # --- Performance Indices ---
         "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_time ON attendance(vendor_id, timestamp)",
@@ -887,6 +889,7 @@ def _init_pg_schema_on_conn(conn):
         ("person_embeddings", "confirmed_by", "TEXT"),
         ("person_embeddings", "confirmed_at", "TIMESTAMP"),
         ("leave_staff", "navbar_items", "TEXT"),
+        ("leave_staff", "email", "TEXT"),
     ]
     
     for table, col, col_type in cols:
@@ -1237,7 +1240,7 @@ def init_sqlite_schema(conn):
         "CREATE TABLE IF NOT EXISTS person_embeddings (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, person_id INTEGER, class_year TEXT, division TEXT, branch TEXT, vec BLOB, dim INTEGER, struct_vec BLOB, landmarks_3d TEXT, model_version TEXT DEFAULT 'faceplugin-onnx-v1', quality_score REAL, source TEXT DEFAULT 'registration', status TEXT DEFAULT 'trusted', confirmed_by TEXT, confirmed_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS class_batches (id TEXT PRIMARY KEY, vendor_id INTEGER, class_year TEXT, division TEXT, branch TEXT, status TEXT DEFAULT 'active', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS class_batch_items (id TEXT PRIMARY KEY, batch_id TEXT, seq INTEGER, image_b64 TEXT, annotated_b64 TEXT, faces_json TEXT, status TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
-        "CREATE TABLE IF NOT EXISTS leave_staff (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, name TEXT, role TEXT, pin TEXT, department TEXT, navbar_items TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS leave_staff (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, name TEXT, email TEXT, role TEXT, pin TEXT, department TEXT, navbar_items TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS leave_workflows (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER NOT NULL, name TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, is_active INTEGER NOT NULL DEFAULT 1, created_by TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, version))",
         "CREATE TABLE IF NOT EXISTS leave_workflow_stages (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id INTEGER NOT NULL, stage_key TEXT NOT NULL, display_name TEXT NOT NULL, actor_type TEXT NOT NULL, role_key TEXT, sequence INTEGER NOT NULL, department_scoped INTEGER NOT NULL DEFAULT 0, auth_method TEXT NOT NULL DEFAULT 'staff_session', UNIQUE(workflow_id, sequence), UNIQUE(workflow_id, stage_key))",
         "CREATE TABLE IF NOT EXISTS leave_request_stages (id INTEGER PRIMARY KEY AUTOINCREMENT, request_id INTEGER NOT NULL, vendor_id INTEGER NOT NULL, workflow_id INTEGER, workflow_version INTEGER NOT NULL, stage_key TEXT NOT NULL, display_name TEXT NOT NULL, actor_type TEXT NOT NULL, role_key TEXT, sequence INTEGER NOT NULL, department_scoped INTEGER NOT NULL DEFAULT 0, auth_method TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', actor_id TEXT, actor_name TEXT, decided_at DATETIME, decision_metadata TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(request_id, sequence))",
@@ -1272,6 +1275,8 @@ def init_sqlite_schema(conn):
         "CREATE TABLE IF NOT EXISTS hostel_allocations (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER NOT NULL, person_id INTEGER NOT NULL, bed_id INTEGER NOT NULL, allocated_at DATETIME DEFAULT CURRENT_TIMESTAMP, allocated_by TEXT, UNIQUE(vendor_id, person_id), UNIQUE(bed_id))",
         "CREATE TABLE IF NOT EXISTS hostel_allocation_history (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER NOT NULL, person_id INTEGER NOT NULL, action TEXT NOT NULL, previous_bed_id INTEGER, new_bed_id INTEGER, actor_username TEXT, reason TEXT, override_reason TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS hostel_staff_permissions (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER NOT NULL, username TEXT NOT NULL, building_id INTEGER, access_role TEXT NOT NULL DEFAULT 'viewer', can_export INTEGER NOT NULL DEFAULT 0, can_override_eligibility INTEGER NOT NULL DEFAULT 0, can_view_resident_details INTEGER NOT NULL DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, username, building_id))",
+        "CREATE TABLE IF NOT EXISTS vendor_email_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, recipient TEXT NOT NULL, subject TEXT, email_type TEXT DEFAULT 'general', status TEXT DEFAULT 'sent', error_message TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE INDEX IF NOT EXISTS idx_vendor_email_logs_vendor ON vendor_email_logs(vendor_id)",
 
         # --- Performance Indices ---
         "CREATE INDEX IF NOT EXISTS idx_attendance_vendor_time ON attendance(vendor_id, timestamp)",
@@ -1428,6 +1433,11 @@ def init_sqlite_schema(conn):
 
     try:
         cur.execute("ALTER TABLE leave_staff ADD COLUMN navbar_items TEXT")
+    except Exception:
+        pass
+
+    try:
+        cur.execute("ALTER TABLE leave_staff ADD COLUMN email TEXT")
     except Exception:
         pass
             

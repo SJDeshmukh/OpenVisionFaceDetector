@@ -357,7 +357,7 @@ const SuperAdminDashboard = () => {
 
   // Features Config
   const [availableFeatures, setAvailableFeatures] = useState([
-    'reports', 'report_detailed', 'report_payroll', 'automated_email_reports', 'employee_reports', 'xchat_ai', 'mobile_app', 'payroll', 'shifts',
+    'reports', 'report_detailed', 'report_payroll', 'automated_email_reports', 'email_notifications', 'employee_reports', 'xchat_ai', 'mobile_app', 'payroll', 'shifts',
     'live_attendance', 'cameras', 'add_shift', 'payable_hours', 'enable_attendance', 
     'night_shift_logic', 'geofencing', 'whatsapp_alerts', 'hostel_attendance_alerts', 'hostel_allocation', 'api_access', 'white_labeling',
     'late_mark', 'bulk_image_attendance', 'classes', 'academic_management', 'leave_management', 'parent_login',
@@ -456,8 +456,9 @@ const SuperAdminDashboard = () => {
    const [savingLeaveWorkflow, setSavingLeaveWorkflow] = useState(false);
    const [loadingLeaveData, setLoadingLeaveData] = useState(false);
    const [newDept, setNewDept] = useState('');
-   const [newStaff, setNewStaff] = useState({ name: '', role: 'rector', pin: '', department: '', navbar_items: DEFAULT_STAFF_NAV_KEYS });
-   const [staffEditor, setStaffEditor] = useState({ staffId: null, name: '', role: '', pin: '', department: '', items: [], saving: false });
+   const [newStaff, setNewStaff] = useState({ name: '', email: '', role: 'rector', pin: '', department: '', navbar_items: DEFAULT_STAFF_NAV_KEYS });
+   const [staffEditor, setStaffEditor] = useState({ staffId: null, name: '', email: '', role: '', pin: '', department: '', items: [], saving: false });
+   const [selectedVendorEmailLogs, setSelectedVendorEmailLogs] = useState(null);
    const [configLoading, setConfigLoading] = useState(false);
 
    // Use the live feature toggles from the vendor edit form when it is open,
@@ -1159,6 +1160,7 @@ const SuperAdminDashboard = () => {
       fetchLeaveStaff(vendorId);
       setNewStaff({
         name: '',
+        email: '',
         role: leaveWorkflow?.stages?.find(stage => stage.actor_type === 'staff')?.role_key || 'rector',
         pin: '',
         department: '',
@@ -1176,16 +1178,30 @@ const SuperAdminDashboard = () => {
       await axios.put(`${API_URL}/leave/admin/staff?vendor_id=${vendorId}`, {
         id: staffEditor.staffId,
         name: staffEditor.name,
+        email: staffEditor.email,
         role: staffEditor.role,
         pin: staffEditor.pin,
         department: staffEditor.department,
         navbar_items: staffEditor.items,
       }, { headers: { Authorization: `Bearer ${user?.token}` } });
       await fetchLeaveStaff(vendorId);
-      setStaffEditor({ staffId: null, name: '', role: '', pin: '', department: '', items: [], saving: false });
+      setStaffEditor({ staffId: null, name: '', email: '', role: '', pin: '', department: '', items: [], saving: false });
     } catch (e) {
       alert(e.response?.data?.error || 'Failed to save staff member');
       setStaffEditor(prev => ({ ...prev, saving: false }));
+    }
+  };
+
+  const handleViewEmailLogs = async (vendor) => {
+    setSelectedVendorEmailLogs({ vendor, logs: [], loading: true });
+    try {
+      const res = await axios.get(`${API_URL}/vendors/${vendor.id}/email-logs?limit=50`, {
+        headers: { Authorization: `Bearer ${user?.token}` }
+      });
+      setSelectedVendorEmailLogs({ vendor, logs: res.data.logs || [], loading: false, total_sent: res.data.total_sent || 0 });
+    } catch (err) {
+      alert("Failed to load email logs: " + (err.response?.data?.error || err.message));
+      setSelectedVendorEmailLogs(null);
     }
   };
 
@@ -2306,6 +2322,20 @@ const SuperAdminDashboard = () => {
                                 </span>
                               )}
                             </div>
+                          </div>
+                          <div className="flex justify-between items-center min-w-[120px] pt-1.5 border-t border-slate-100">
+                            <span className="text-slate-500 flex items-center gap-1 text-xs">
+                              <Mail size={12} className="text-indigo-500" />
+                              Emails Sent:
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleViewEmailLogs(vendor)}
+                              className="font-mono font-bold text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-md transition-colors"
+                              title="Click to view automated email dispatch logs"
+                            >
+                              {vendor.email_count || 0}
+                            </button>
                           </div>
                         </div>
                       </td>
@@ -4420,7 +4450,9 @@ const SuperAdminDashboard = () => {
                             ? 'Report to Each Employee'
                             : feature === 'academic_management'
                               ? 'Resident Academic Setup'
-                              : feature.replace(/_/g, ' ')}
+                              : feature === 'email_notifications'
+                                ? 'Automated Email Notifications (SES)'
+                                : feature.replace(/_/g, ' ')}
                         </span>
                         {feature === 'employee_reports' && (
                           <span className="text-[10px] uppercase font-bold bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded ml-auto">Add-on</span>
@@ -5083,6 +5115,18 @@ const SuperAdminDashboard = () => {
                       />
                     </div>
                     <div>
+                      <label className="block text-[10px] uppercase font-bold text-slate-400 mb-1 ml-1">Email (For Automated Leave Alerts)</label>
+                      <input 
+                        type="email" 
+                        placeholder="e.g. staff@institution.edu" 
+                        className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500/20 outline-none transition-all shadow-sm"
+                        value={newStaff.email || ''}
+                        onChange={e => setNewStaff({ ...newStaff, email: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div>
                       <label className="block text-[10px] uppercase font-bold text-slate-400 mb-1 ml-1">Role</label>
                       <select 
                         className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500/20 outline-none transition-all shadow-sm"
@@ -5094,8 +5138,6 @@ const SuperAdminDashboard = () => {
                           .map(stage => <option key={stage.role_key} value={stage.role_key}>{stage.display_name}</option>)}
                       </select>
                     </div>
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-[10px] uppercase font-bold text-slate-400 mb-1 ml-1">PIN Code (4 digits)</label>
                       <input 
@@ -5163,6 +5205,12 @@ const SuperAdminDashboard = () => {
                                 <p className="text-[10px] font-medium uppercase text-slate-500">
                                   {staff.role} {staff.department ? `• ${staff.department}` : ''}
                                 </p>
+                                {staff.email && (
+                                  <p className="text-[11px] text-slate-500 flex items-center gap-1 mt-0.5 truncate">
+                                    <Mail size={11} className="text-slate-400 shrink-0" />
+                                    <span className="truncate">{staff.email}</span>
+                                  </p>
+                                )}
                               </div>
                             </div>
                             <div className="flex items-center gap-2">
@@ -5173,10 +5221,11 @@ const SuperAdminDashboard = () => {
                               <button
                                 type="button"
                                 onClick={() => setStaffEditor(editingStaff
-                                  ? { staffId: null, name: '', role: '', pin: '', department: '', items: [], saving: false }
+                                  ? { staffId: null, name: '', email: '', role: '', pin: '', department: '', items: [], saving: false }
                                   : {
                                       staffId: staff.id,
                                       name: staff.name || '',
+                                      email: staff.email || '',
                                       role: staff.role || '',
                                       pin: staff.pin || '',
                                       department: staff.department || '',
@@ -5210,6 +5259,16 @@ const SuperAdminDashboard = () => {
                                   />
                                 </div>
                                 <div>
+                                  <label className="mb-1 block text-[10px] font-bold uppercase text-slate-400">Email (For Automated Leave Alerts)</label>
+                                  <input
+                                    type="email"
+                                    placeholder="e.g. staff@institution.edu"
+                                    value={staffEditor.email || ''}
+                                    onChange={e => setStaffEditor(prev => ({ ...prev, email: e.target.value }))}
+                                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20"
+                                  />
+                                </div>
+                                <div>
                                   <label className="mb-1 block text-[10px] font-bold uppercase text-slate-400">Role</label>
                                   <select
                                     value={staffEditor.role}
@@ -5236,7 +5295,7 @@ const SuperAdminDashboard = () => {
                                     className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm tracking-widest outline-none focus:ring-2 focus:ring-indigo-500/20"
                                   />
                                 </div>
-                                <div>
+                                <div className="md:col-span-2">
                                   <label className="mb-1 block text-[10px] font-bold uppercase text-slate-400">Department (when scoped)</label>
                                   <select
                                     value={staffEditor.department}
@@ -5522,6 +5581,75 @@ const SuperAdminDashboard = () => {
                   Save Geofence
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Vendor Email Logs Modal */}
+      {selectedVendorEmailLogs && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-[70]">
+          <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl border border-slate-100 flex flex-col max-h-[85vh]">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-indigo-50 text-indigo-600 rounded-xl">
+                  <Mail size={20} />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-slate-800">Email Delivery Logs</h3>
+                  <p className="text-xs text-slate-500">Vendor: {selectedVendorEmailLogs.vendor?.name} (ID: {selectedVendorEmailLogs.vendor?.id})</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedVendorEmailLogs(null)}
+                className="p-2 text-slate-400 hover:text-slate-600 rounded-xl hover:bg-slate-100 transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto py-4 space-y-3">
+              {selectedVendorEmailLogs.loading ? (
+                <div className="text-center py-12 text-slate-400 text-sm">Loading delivery logs...</div>
+              ) : selectedVendorEmailLogs.logs.length === 0 ? (
+                <div className="text-center py-12 text-slate-400 text-sm border-2 border-dashed border-slate-100 rounded-xl">
+                  No email dispatch records found for this vendor yet.
+                </div>
+              ) : (
+                selectedVendorEmailLogs.logs.map(log => (
+                  <div key={log.id} className="p-3.5 rounded-xl border border-slate-100 bg-slate-50/50 flex flex-col gap-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-bold text-slate-800 truncate">{log.subject}</span>
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${
+                        log.status === 'sent' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
+                      }`}>
+                        {log.status}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-xs text-slate-500">
+                      <span>To: <strong className="text-slate-700">{log.recipient}</strong></span>
+                      <span className="text-[11px] text-slate-400">{log.created_at ? new Date(log.created_at).toLocaleString() : ''}</span>
+                    </div>
+                    {log.error && (
+                      <p className="text-[11px] text-red-600 bg-red-50 p-2 rounded-lg font-mono">{log.error}</p>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="pt-4 border-t border-slate-100 flex items-center justify-between">
+              <span className="text-xs text-slate-500 font-medium">
+                Total Delivered: <strong className="text-emerald-600 font-bold">{selectedVendorEmailLogs.total_sent || 0}</strong>
+              </span>
+              <button
+                type="button"
+                onClick={() => setSelectedVendorEmailLogs(null)}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all"
+              >
+                Close
+              </button>
             </div>
           </div>
         </div>

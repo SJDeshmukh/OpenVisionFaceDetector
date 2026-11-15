@@ -196,6 +196,10 @@ const People = () => {
 
   // Student Lifecycle States
   const [statusFilter, setStatusFilter] = useState('all');
+  const [selectedDeptFilter, setSelectedDeptFilter] = useState('all');
+  const [selectedGroupFilter, setSelectedGroupFilter] = useState('all');
+  const [faceFilter, setFaceFilter] = useState('all'); // 'all' | 'registered' | 'missing'
+  const [parentFilter, setParentFilter] = useState('all'); // 'all' | 'linked' | 'missing'
   const [activeMenuPersonId, setActiveMenuPersonId] = useState(null);
   
   // Status Modal State
@@ -1276,6 +1280,42 @@ const People = () => {
     return '-';
   };
 
+  // Extract unique departments
+  const uniqueDepartments = useMemo(() => {
+    const set = new Set();
+    (vendorDepartments || []).forEach(d => {
+      const name = typeof d === 'string' ? d : d?.name;
+      if (name && typeof name === 'string' && name.trim()) set.add(name.trim());
+    });
+    users.forEach(u => {
+      const dept = u.department || u.custom_data?.department || u.custom_data?.branch;
+      if (dept && typeof dept === 'string' && dept.trim()) set.add(dept.trim());
+    });
+    return Array.from(set).sort();
+  }, [vendorDepartments, users]);
+
+  // Extract unique groups / rooms / classes
+  const uniqueGroups = useMemo(() => {
+    const set = new Set();
+    users.forEach(u => {
+      const grp = u.hostel_room || u.custom_data?.room_number || u.custom_data?.room || 
+        (u.custom_data?.class_year ? `${u.custom_data.class_year}${u.custom_data.division ? ` - ${u.custom_data.division}` : ''}` : null) ||
+        u.class_name;
+      if (grp && typeof grp === 'string' && grp.trim()) set.add(grp.trim());
+    });
+    return Array.from(set).sort();
+  }, [users]);
+
+  const isAnyFilterActive = selectedDeptFilter !== 'all' || selectedGroupFilter !== 'all' || faceFilter !== 'all' || parentFilter !== 'all' || Boolean(searchTerm);
+
+  const handleClearFilters = () => {
+    setSelectedDeptFilter('all');
+    setSelectedGroupFilter('all');
+    setFaceFilter('all');
+    setParentFilter('all');
+    setSearchTerm('');
+  };
+
   const filteredUsers = useMemo(() => {
     let result = users;
     
@@ -1306,6 +1346,42 @@ const People = () => {
           return h === 'left_hostel' || s === 'left_hostel';
         }
         return s === statusFilter;
+      });
+    }
+
+    // Filter by Department / Branch
+    if (selectedDeptFilter !== 'all') {
+      result = result.filter(u => {
+        const d = (u.department || u.custom_data?.department || u.custom_data?.branch || '').trim().toLowerCase();
+        return d === selectedDeptFilter.trim().toLowerCase();
+      });
+    }
+
+    // Filter by Group / Room / Class
+    if (selectedGroupFilter !== 'all') {
+      result = result.filter(u => {
+        const grp = (u.hostel_room || u.custom_data?.room_number || u.custom_data?.room || 
+          (u.custom_data?.class_year ? `${u.custom_data.class_year}${u.custom_data.division ? ` - ${u.custom_data.division}` : ''}` : null) ||
+          u.class_name || '').trim().toLowerCase();
+        return grp === selectedGroupFilter.trim().toLowerCase();
+      });
+    }
+
+    // Filter by Face Registration Status
+    if (faceFilter !== 'all') {
+      result = result.filter(u => {
+        const hasFace = Boolean(personImageSource(u));
+        return faceFilter === 'registered' ? hasFace : !hasFace;
+      });
+    }
+
+    // Filter by Parent Link Status
+    if (parentFilter !== 'all') {
+      result = result.filter(u => {
+        const hasParent = Boolean(
+          u.parent_phone || u.custom_data?.parent_phone || u.custom_data?.parent_mobile || u.custom_data?.guardian_phone || u.parent_user_id
+        );
+        return parentFilter === 'linked' ? hasParent : !hasParent;
       });
     }
 
@@ -1342,7 +1418,7 @@ const People = () => {
       return false;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [users, searchTerm, selectedClassForView, statusFilter, isHostel]);
+  }, [users, searchTerm, selectedClassForView, statusFilter, isHostel, selectedDeptFilter, selectedGroupFilter, faceFilter, parentFilter, registrationColumns]);
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
@@ -1660,6 +1736,85 @@ const People = () => {
                     </button>
                   )}
                 </div>
+              </div>
+
+              {/* Dropdown Filters Bar */}
+              <div className="flex flex-wrap items-center gap-2.5 mb-4 p-3 bg-white border border-slate-200 rounded-xl shadow-sm text-xs">
+                <div className="flex items-center gap-1.5 text-slate-500 font-semibold shrink-0 mr-1">
+                  <Filter size={14} className="text-blue-600" />
+                  <span>Filters:</span>
+                </div>
+
+                {/* Department / Branch Filter */}
+                {uniqueDepartments.length > 0 && (
+                  <div className="flex items-center">
+                    <select
+                      value={selectedDeptFilter}
+                      onChange={(e) => setSelectedDeptFilter(e.target.value)}
+                      className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 font-medium focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all cursor-pointer"
+                    >
+                      <option value="all">All Departments / Branches</option>
+                      {uniqueDepartments.map(dept => (
+                        <option key={dept} value={dept}>{dept}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {/* Group / Room / Class Filter */}
+                {uniqueGroups.length > 0 && (
+                  <div className="flex items-center">
+                    <select
+                      value={selectedGroupFilter}
+                      onChange={(e) => setSelectedGroupFilter(e.target.value)}
+                      className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 font-medium focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all cursor-pointer"
+                    >
+                      <option value="all">All {groupsLabel}</option>
+                      {uniqueGroups.map(grp => (
+                        <option key={grp} value={grp}>{grp}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {/* Face Registration Status Filter */}
+                <div className="flex items-center">
+                  <select
+                    value={faceFilter}
+                    onChange={(e) => setFaceFilter(e.target.value)}
+                    className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 font-medium focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all cursor-pointer"
+                  >
+                    <option value="all">All Photos (Face Status)</option>
+                    <option value="registered">With Photo (Registered)</option>
+                    <option value="missing">Missing Photo</option>
+                  </select>
+                </div>
+
+                {/* Parent Status Filter (for student / hostel records) */}
+                {schoolFlow && (
+                  <div className="flex items-center">
+                    <select
+                      value={parentFilter}
+                      onChange={(e) => setParentFilter(e.target.value)}
+                      className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 font-medium focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all cursor-pointer"
+                    >
+                      <option value="all">All Parent Links</option>
+                      <option value="linked">Parent Linked</option>
+                      <option value="missing">Missing Parent Info</option>
+                    </select>
+                  </div>
+                )}
+
+                {/* Active Filter Clear Button */}
+                {isAnyFilterActive && (
+                  <button
+                    onClick={handleClearFilters}
+                    className="ml-auto flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 border border-rose-200 text-rose-600 rounded-lg font-bold hover:bg-rose-100 transition-colors shadow-sm"
+                  >
+                    <X size={13} />
+                    <span>Clear Filters</span>
+                  </button>
+                )}
               </div>
 
               {/* Table */}

@@ -174,6 +174,195 @@ def _notify_parent_when_current(conn, vendor_id, request_row):
         pass
 
 
+def _send_leave_stage_email_async(vendor_id, request_id, stage):
+    """Notify the assigned staff member(s) via automated email when a request reaches their stage."""
+    if not stage or stage.get("actor_type") != "staff":
+        return
+
+    import threading
+    import logging
+    logger = logging.getLogger(__name__)
+
+    def _worker():
+        try:
+            from utils import get_db_connection
+            conn = get_db_connection()
+            c = conn.cursor()
+            is_pg = getattr(conn, "_is_pg", False)
+
+            # 1. Fetch leave request details
+            if is_pg:
+                c.execute("""
+                    SELECT lr.id, lr.leave_type, lr.reason, lr.start_date, lr.end_date, lr.start_time, lr.end_time,
+                           f.name as student_name, f.department as student_dept, f.custom_data, v.name as vendor_name
+                    FROM leave_requests lr
+                    LEFT JOIN faces f ON lr.student_id = f.id
+                    LEFT JOIN vendors v ON lr.vendor_id = v.id
+                    WHERE lr.id = %s AND lr.vendor_id = %s
+                """, (request_id, vendor_id))
+            else:
+                c.execute("""
+                    SELECT lr.id, lr.leave_type, lr.reason, lr.start_date, lr.end_date, lr.start_time, lr.end_time,
+                           f.name as student_name, f.department as student_dept, f.custom_data, v.name as vendor_name
+                    FROM leave_requests lr
+                    LEFT JOIN faces f ON lr.student_id = f.id
+                    LEFT JOIN vendors v ON lr.vendor_id = v.id
+                    WHERE lr.id = ? AND lr.vendor_id = ?
+                """, (request_id, vendor_id))
+            row = c.fetchone()
+            if not row:
+                conn.close()
+                return
+            req = get_row_dict(row)
+
+            student_name = req.get("student_name") or "Student"
+            student_dept = req.get("student_dept") or ""
+            if not student_dept and req.get("custom_data"):
+                try:
+                    cd = json.loads(req["custom_data"]) if isinstance(req["custom_data"], str) else req["custom_data"]
+                    student_dept = cd.get("department") or cd.get("branch") or ""
+                except Exception:
+                    pass
+
+            vendor_name = req.get("vendor_name") or "TapInX"
+            leave_type = str(req.get("leave_type") or "Leave").replace("_", " ").title()
+            start_date = str(req.get("start_date") or "")
+            end_date = str(req.get("end_date") or "")
+            reason = str(req.get("reason") or "No reason provided")
+            stage_name = stage.get("display_name") or stage.get("role_key") or "Staff"
+            role_key = stage.get("role_key")
+            dept_scoped = bool(stage.get("department_scoped"))
+
+            # 2. Fetch staff approvers with valid emails
+            if is_pg:
+                if dept_scoped and student_dept:
+                    c.execute("""
+                        SELECT name, email FROM leave_staff
+                        WHERE vendor_id = %s AND role = %s AND email IS NOT NULL AND email <> ''
+                          AND LOWER(TRIM(department)) = LOWER(TRIM(%s))
+                    """, (vendor_id, role_key, student_dept))
+                else:
+                    c.execute("""
+                        SELECT name, email FROM leave_staff
+                        WHERE vendor_id = %s AND role = %s AND email IS NOT NULL AND email <> ''
+                    """, (vendor_id, role_key))
+            else:
+                if dept_scoped and student_dept:
+                    c.execute("""
+                        SELECT name, email FROM leave_staff
+                        WHERE vendor_id = ? AND role = ? AND email IS NOT NULL AND email <> ''
+                          AND LOWER(TRIM(department)) = LOWER(TRIM(?))
+                    """, (vendor_id, role_key, student_dept))
+                else:
+                    c.execute("""
+                        SELECT name, email FROM leave_staff
+                        WHERE vendor_id = ? AND role = ? AND email IS NOT NULL AND email <> ''
+                    """, (vendor_id, role_key))
+            approvers = c.fetchall() or []
+            conn.close()
+
+            if not approvers:
+                logger.info(f"No staff email found for stage '{stage_name}' (role={role_key}) in vendor {vendor_id}")
+                return
+
+            from services.email_service import send_email
+
+            subject = f"[Action Required] Leave Request from {student_name} - {vendor_name}"
+            for staff_row in approvers:
+                staff_dict = get_row_dict(staff_row)
+                staff_name = staff_dict.get("name") if isinstance(staff_dict, dict) else staff_row[0]
+                staff_email = staff_dict.get("email") if isinstance(staff_dict, dict) else staff_row[1]
+                if not staff_email:
+                    continue
+
+                text_body = f"""Hello {staff_name},
+
+A new leave request is awaiting your review and approval for stage: {stage_name}.
+
+Student: {student_name}
+Department / Branch: {student_dept or 'N/A'}
+Leave Type: {leave_type}
+Duration: {start_date} to {end_date}
+Reason: {reason}
+
+Please log in to the TapInX Staff Portal to review and approve or reject this request.
+
+Regards,
+{vendor_name} Leave Management System
+"""
+
+                html_body = f"""
+                <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background: #ffffff;">
+                    <div style="border-bottom: 2px solid #2563eb; padding-bottom: 12px; margin-bottom: 20px;">
+                        <h2 style="color: #1e293b; margin: 0; font-size: 20px;">TapInX | Leave Approval Request</h2>
+                        <p style="color: #64748b; margin: 4px 0 0 0; font-size: 13px;">Stage: <strong>{stage_name}</strong> · Vendor: {vendor_name}</p>
+                    </div>
+
+                    <p style="color: #334155; font-size: 15px; margin-bottom: 16px;">
+                        Hello <strong>{staff_name}</strong>,
+                    </p>
+                    <p style="color: #475569; font-size: 14px; margin-bottom: 20px; line-height: 1.5;">
+                        A student leave request has advanced to your stage and is awaiting your review and authorization.
+                    </p>
+
+                    <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin-bottom: 24px;">
+                        <table style="width: 100%; border-collapse: collapse; font-size: 13px; color: #334155;">
+                            <tr>
+                                <td style="padding: 6px 0; color: #64748b; width: 140px;">Student Name:</td>
+                                <td style="padding: 6px 0; font-weight: 600;">{student_name}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 6px 0; color: #64748b;">Department:</td>
+                                <td style="padding: 6px 0; font-weight: 600;">{student_dept or 'N/A'}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 6px 0; color: #64748b;">Leave Type:</td>
+                                <td style="padding: 6px 0; font-weight: 600;">{leave_type}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 6px 0; color: #64748b;">Duration:</td>
+                                <td style="padding: 6px 0; font-weight: 600; color: #2563eb;">{start_date} &rarr; {end_date}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 6px 0; color: #64748b; vertical-align: top;">Reason:</td>
+                                <td style="padding: 6px 0; font-style: italic; color: #1e293b;">"{reason}"</td>
+                            </tr>
+                        </table>
+                    </div>
+
+                    <div style="text-align: center; margin: 28px 0 16px 0;">
+                        <a href="https://openvisionx.in/leave" style="background: #2563eb; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 14px; display: inline-block;">
+                            Open Staff Portal & Review Request
+                        </a>
+                    </div>
+
+                    <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0 16px 0;" />
+                    <p style="color: #94a3b8; font-size: 11px; text-align: center; margin: 0;">
+                        This is an automated operational notification generated by TapInX on behalf of {vendor_name}.
+                    </p>
+                </div>
+                """
+
+                try:
+                    send_email(
+                        subject=subject,
+                        text_body=text_body,
+                        recipient=staff_email,
+                        html_body=html_body,
+                        vendor_id=vendor_id,
+                        email_type="leave_stage_notification",
+                    )
+                    logger.info(f"Leave stage email sent to {staff_email} for stage {stage_name}")
+                except Exception as ex:
+                    logger.warning(f"Failed to send leave email to {staff_email}: {ex}")
+
+        except Exception as e:
+            logger.warning(f"Error in _send_leave_stage_email_async worker: {e}")
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+
+
 def _extract_server_face_template(face_image, vendor_id):
     """Extract a server-controlled embedding from an audit image."""
     from tasks import detect_faces_task
@@ -427,13 +616,15 @@ def create_leave_request():
         conn.commit()
         steps = snapshot_request(conn, vendor_id, request_id) if request_id else []
         if request_id:
-            # Student submitted the leave request. Parent stage remains pending
-            # so the parent reviews and approves it via the Parent Portal.
-            _notify_parent_when_current(conn, vendor_id, {
-                "id": request_id,
-                "vendor_id": vendor_id,
-                "student_id": student_id,
-            })
+            st1 = current_stage(steps)
+            if st1 and st1.get("actor_type") == "parent":
+                _notify_parent_when_current(conn, vendor_id, {
+                    "id": request_id,
+                    "vendor_id": vendor_id,
+                    "student_id": student_id,
+                })
+            elif st1 and st1.get("actor_type") == "staff":
+                _send_leave_stage_email_async(vendor_id, request_id, st1)
         return jsonify({"status": "success", "request_id": request_id, "approval_steps": steps})
     except Exception as e:
         if is_pg: conn.rollback()
@@ -914,6 +1105,11 @@ def parent_approve_request():
                 "captured_face": captured_face,
             },
         )
+        if action == "approved":
+            new_steps = snapshot_request(conn, vendor_id, request_id)
+            nxt_st = current_stage(new_steps)
+            if nxt_st and nxt_st.get("actor_type") == "staff":
+                _send_leave_stage_email_async(vendor_id, request_id, nxt_st)
         return jsonify({"status": "success", "similarity": similarity, "method": verification_method})
     finally:
         conn.close()
@@ -1235,6 +1431,13 @@ def admin_approve_request():
             metadata={"ip": request.remote_addr, "department": staff.get("department"), "override": is_override},
         )
         _notify_parent_when_current(conn, vendor_id, request_row)
+        if action == "approved":
+            new_steps = snapshot_request(conn, vendor_id, request_id)
+            nxt_st = current_stage(new_steps)
+            if nxt_st and nxt_st.get("actor_type") == "staff":
+                _send_leave_stage_email_async(vendor_id, request_id, nxt_st)
+            elif nxt_st and nxt_st.get("actor_type") == "parent":
+                _notify_parent_when_current(conn, vendor_id, request_row)
         try:
             from services.evolution_whatsapp_service import notify_leave_event_async
             notify_leave_event_async(vendor_id, request_id, action)
@@ -1407,15 +1610,15 @@ def manage_staff():
         vendor_features = _vendor_subscription_features(c, vendor_id)
         if request.method == "GET":
             if is_pg:
-                c.execute("SELECT id, name, role, pin, department, navbar_items FROM leave_staff WHERE vendor_id = %s ORDER BY name, id", (vendor_id,))
+                c.execute("SELECT id, name, email, role, pin, department, navbar_items FROM leave_staff WHERE vendor_id = %s ORDER BY name, id", (vendor_id,))
             else:
-                c.execute("SELECT id, name, role, pin, department, navbar_items FROM leave_staff WHERE vendor_id = ? ORDER BY name, id", (vendor_id,))
+                c.execute("SELECT id, name, email, role, pin, department, navbar_items FROM leave_staff WHERE vendor_id = ? ORDER BY name, id", (vendor_id,))
             staff = c.fetchall()
             payload = []
             for row in staff:
                 item = get_row_dict(row)
                 if not isinstance(item, dict):
-                    item = {"id": row[0], "name": row[1], "role": row[2], "pin": row[3], "department": row[4], "navbar_items": row[5]}
+                    item = {"id": row[0], "name": row[1], "email": row[2], "role": row[3], "pin": row[4], "department": row[5], "navbar_items": row[6]}
                 item["navbar_items"] = load_staff_nav_items_for_features(
                     item.get("navbar_items"), vendor_features,
                 )
@@ -1423,8 +1626,9 @@ def manage_staff():
             return jsonify({"staff": payload})
             
         elif request.method == "POST":
-            data = request.json
+            data = request.json or {}
             name = data.get("name")
+            email = str(data.get("email") or "").strip() or None
             role = data.get("role")
             pin = data.get("pin")
             department = data.get("department")
@@ -1467,18 +1671,18 @@ def manage_staff():
 
             if is_pg:
                 c.execute(
-                    "INSERT INTO leave_staff (vendor_id, name, role, pin, department, navbar_items) VALUES (%s, %s, %s, %s, %s, %s)",
-                    (vendor_id, name, role, pin, department, navbar_items)
+                    "INSERT INTO leave_staff (vendor_id, name, email, role, pin, department, navbar_items) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    (vendor_id, name, email, role, pin, department, navbar_items)
                 )
             else:
                 c.execute(
-                    "INSERT INTO leave_staff (vendor_id, name, role, pin, department, navbar_items) VALUES (?, ?, ?, ?, ?, ?)",
-                    (vendor_id, name, role, pin, department, navbar_items)
+                    "INSERT INTO leave_staff (vendor_id, name, email, role, pin, department, navbar_items) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (vendor_id, name, email, role, pin, department, navbar_items)
                 )
             conn.commit()
             log_audit(
                 "leave_staff_created",
-                {"name": name, "role": role, "department": department, "navbar_items": normalize_staff_nav_items(navbar_items)},
+                {"name": name, "email": email, "role": role, "department": department, "navbar_items": normalize_staff_nav_items(navbar_items)},
                 target_vendor_id=vendor_id,
                 actor=getattr(g, "username", None),
             )
@@ -1494,12 +1698,12 @@ def manage_staff():
 
             if is_pg:
                 c.execute(
-                    "SELECT id, name, role, pin, department, navbar_items FROM leave_staff WHERE id = %s AND vendor_id = %s",
+                    "SELECT id, name, email, role, pin, department, navbar_items FROM leave_staff WHERE id = %s AND vendor_id = %s",
                     (staff_id, vendor_id),
                 )
             else:
                 c.execute(
-                    "SELECT id, name, role, pin, department, navbar_items FROM leave_staff WHERE id = ? AND vendor_id = ?",
+                    "SELECT id, name, email, role, pin, department, navbar_items FROM leave_staff WHERE id = ? AND vendor_id = ?",
                     (staff_id, vendor_id),
                 )
             current_row = c.fetchone()
@@ -1510,13 +1714,15 @@ def manage_staff():
                 current = {
                     "id": current_row[0],
                     "name": current_row[1],
-                    "role": current_row[2],
-                    "pin": current_row[3],
-                    "department": current_row[4],
-                    "navbar_items": current_row[5],
+                    "email": current_row[2],
+                    "role": current_row[3],
+                    "pin": current_row[4],
+                    "department": current_row[5],
+                    "navbar_items": current_row[6],
                 }
 
             name = str(data.get("name", current.get("name")) or "").strip()
+            email = str(data.get("email", current.get("email")) or "").strip() or None
             role = str(data.get("role", current.get("role")) or "").strip()
             pin = str(data.get("pin", current.get("pin")) or "").strip()
             department = str(data.get("department", current.get("department")) or "").strip()
@@ -1580,13 +1786,13 @@ def manage_staff():
 
             if is_pg:
                 c.execute(
-                    "UPDATE leave_staff SET name = %s, role = %s, pin = %s, department = %s, navbar_items = %s WHERE id = %s AND vendor_id = %s",
-                    (name, role, pin, department, navbar_items, staff_id, vendor_id),
+                    "UPDATE leave_staff SET name = %s, email = %s, role = %s, pin = %s, department = %s, navbar_items = %s WHERE id = %s AND vendor_id = %s",
+                    (name, email, role, pin, department, navbar_items, staff_id, vendor_id),
                 )
             else:
                 c.execute(
-                    "UPDATE leave_staff SET name = ?, role = ?, pin = ?, department = ?, navbar_items = ? WHERE id = ? AND vendor_id = ?",
-                    (name, role, pin, department, navbar_items, staff_id, vendor_id),
+                    "UPDATE leave_staff SET name = ?, email = ?, role = ?, pin = ?, department = ?, navbar_items = ? WHERE id = ? AND vendor_id = ?",
+                    (name, email, role, pin, department, navbar_items, staff_id, vendor_id),
                 )
             if not c.rowcount:
                 return jsonify({"error": "Staff member not found"}), 404
@@ -1597,9 +1803,11 @@ def manage_staff():
                 {
                     "staff_id": staff_id,
                     "previous_name": current.get("name"),
+                    "previous_email": current.get("email"),
                     "previous_role": current.get("role"),
                     "previous_department": current.get("department"),
                     "name": name,
+                    "email": email,
                     "role": role,
                     "department": department,
                     "navbar_items": normalized_items,
@@ -1612,6 +1820,7 @@ def manage_staff():
                 "staff": {
                     "id": staff_id,
                     "name": name,
+                    "email": email,
                     "role": role,
                     "pin": pin,
                     "department": department,
