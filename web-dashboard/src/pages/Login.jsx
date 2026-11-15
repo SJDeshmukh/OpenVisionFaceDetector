@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import axios from 'axios';
 import { Lock, User, Eye, EyeOff, Zap, Mail } from 'lucide-react';
@@ -424,6 +424,15 @@ const Login = () => {
         </div>
 
       </motion.div>
+
+      {/* ── Public Footer Links ── */}
+      <div className="absolute bottom-4 left-0 right-0 text-center text-xs z-10" style={{ color: '#6A6A9F' }}>
+        <Link to="/privacy-policy" className="hover:text-purple-300 transition underline underline-offset-4 mr-3">
+          Privacy Policy
+        </Link>
+        <span>•</span>
+        <span className="ml-3">TapInX © {new Date().getFullYear()}</span>
+      </div>
 
       {/* ── Forgot Password Modal ── */}
       <AnimatePresence>

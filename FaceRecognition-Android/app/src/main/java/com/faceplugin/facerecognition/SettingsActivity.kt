@@ -386,6 +386,20 @@ class SettingsActivity : AppCompatActivity() {
                 Toast.makeText(activity, getString(R.string.cleared_all_person), Toast.LENGTH_LONG).show()
                 true
             }
+
+            val privacyPref = findPreference<Preference>("privacy_policy")
+            privacyPref?.setOnPreferenceClickListener {
+                try {
+                    val browserIntent = android.content.Intent(
+                        android.content.Intent.ACTION_VIEW,
+                        android.net.Uri.parse("https://tapinx.in/privacy-policy")
+                    )
+                    startActivity(browserIntent)
+                } catch (_: Exception) {
+                    Toast.makeText(activity, "Visit https://tapinx.in/privacy-policy", Toast.LENGTH_LONG).show()
+                }
+                true
+            }
         }
     }
 }

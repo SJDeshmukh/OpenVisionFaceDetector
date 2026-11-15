@@ -49,6 +49,7 @@ android {
             buildConfigField "String", "LOCAL_BASE_URL", "\"http://192.168.1.8:5001/\""
             buildConfigField "String", "REMOTE_BASE_URL", "\"https://api.tapinx.in/\""
             buildConfigField "String", "WEB_LOGIN_URL", "\"http://192.168.1.8:5001/login\""
+            buildConfigField "Boolean", "IS_PLAYSTORE", "false"
         }
         remote {
             dimension "env"
@@ -56,6 +57,15 @@ android {
             buildConfigField "String", "LOCAL_BASE_URL", "\"https://api.tapinx.in/\""
             buildConfigField "String", "REMOTE_BASE_URL", "\"https://api.tapinx.in/\""
             buildConfigField "String", "WEB_LOGIN_URL", "\"https://www.tapinx.in/login\""
+            buildConfigField "Boolean", "IS_PLAYSTORE", "false"
+        }
+        playstore {
+            dimension "env"
+            buildConfigField "String", "BASE_URL", "\"https://api.tapinx.in/\""
+            buildConfigField "String", "LOCAL_BASE_URL", "\"https://api.tapinx.in/\""
+            buildConfigField "String", "REMOTE_BASE_URL", "\"https://api.tapinx.in/\""
+            buildConfigField "String", "WEB_LOGIN_URL", "\"https://www.tapinx.in/login\""
+            buildConfigField "Boolean", "IS_PLAYSTORE", "true"
         }
     }
 

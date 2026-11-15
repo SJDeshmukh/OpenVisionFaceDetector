@@ -28,6 +28,7 @@ import FaceResetRequests from './pages/FaceResetRequests';
 import OwnerAdvances from './pages/OwnerAdvances';
 import HostelAlerts from './pages/HostelAlerts';
 import HostelAllocation from './pages/HostelAllocation';
+import PrivacyPolicy from './pages/PrivacyPolicy';
 
 import { usesStudentRecords } from './lib/businessTerminology';
 import { staffCanAccessNav } from './lib/staffNavigation';
@@ -100,6 +101,8 @@ function App() {
         <BrowserRouter>
           <Routes>
             <Route path="/login" element={<Login />} />
+            <Route path="/privacy-policy" element={<PrivacyPolicy />} />
+            <Route path="/privacy" element={<Navigate to="/privacy-policy" replace />} />
             <Route path="/super_admin" element={<SuperAdminLogin />} />
 
             {/* Standalone Protected Routes */}

@@ -71,6 +71,10 @@ object AppUpdateManager {
      * If an update is found with versionCode > local versionCode, triggers background download.
      */
     fun checkAndUpdateInBackground(context: Context, quiet: Boolean = true, callback: UpdateCallback? = null) {
+        if (com.faceplugin.facerecognition.BuildConfig.IS_PLAYSTORE) {
+            Log.d(TAG, "Play Store build: APK self-updates disabled (managed by Google Play)")
+            return
+        }
         val now = System.currentTimeMillis()
         if (quiet && (now - lastCheckedTs < CHECK_INTERVAL_MS)) {
             Log.d(TAG, "Skipping update check; checked recently")
@@ -292,6 +296,10 @@ object AppUpdateManager {
      * Otherwise, it uses Android's FileProvider to trigger the standard system package installer.
      */
     fun installApk(context: Context, apkFile: File) {
+        if (com.faceplugin.facerecognition.BuildConfig.IS_PLAYSTORE) {
+            Log.d(TAG, "Play Store build: APK self-installation disabled")
+            return
+        }
         if (!apkFile.exists()) {
             Log.e(TAG, "Cannot install; APK file does not exist: ${apkFile.absolutePath}")
             return

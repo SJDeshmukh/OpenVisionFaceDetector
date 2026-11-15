@@ -82,6 +82,7 @@
                 android:padding="24dp"
                 android:background="@drawable/bg_glass_card"
                 app:layout_constraintBottom_toBottomOf="parent"
+
                 app:layout_constraintEnd_toEndOf="parent"
                 app:layout_constraintStart_toStartOf="parent"
                 app:layout_constraintTop_toBottomOf="@+id/logo_login">
@@ -230,10 +231,25 @@
                 android:text="TapInX"
                 style="@style/Typography.Micro"
                 android:textColor="@color/text_tertiary"
-                app:layout_constraintBottom_toBottomOf="parent"
+
                 app:layout_constraintEnd_toEndOf="parent"
                 app:layout_constraintStart_toStartOf="parent"
                 app:layout_constraintTop_toBottomOf="@+id/login_card" />
+
+            <TextView
+                android:id="@+id/tv_privacy_policy"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:layout_marginBottom="16dp"
+                android:text="Privacy Policy"
+                style="@style/Typography.Micro"
+                android:textColor="@color/primary_brand"
+                android:padding="6dp"
+                app:layout_constraintBottom_toBottomOf="parent"
+                app:layout_constraintEnd_toEndOf="parent"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toBottomOf="@+id/tv_server_url" />
 
         </androidx.constraintlayout.widget.ConstraintLayout>
     </ScrollView>

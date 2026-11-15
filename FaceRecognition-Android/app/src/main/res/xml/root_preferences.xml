@@ -125,4 +125,12 @@
 
     </PreferenceCategory>
 
+    <PreferenceCategory
+        app:title="Legal &amp; Privacy">
+        <Preference
+            app:key="privacy_policy"
+            app:title="Privacy Policy"
+            app:summary="Tap to view our Biometric, Camera &amp; Location Data Protection Policy" />
+    </PreferenceCategory>
+
 </PreferenceScreen>

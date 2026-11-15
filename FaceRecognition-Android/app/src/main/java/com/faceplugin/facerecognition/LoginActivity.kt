@@ -1,6 +1,7 @@
 package com.faceplugin.facerecognition
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.widget.Button
 import android.widget.EditText
@@ -59,6 +60,15 @@ class LoginActivity : AppCompatActivity() {
         val tvBusiness = findViewById<TextView>(R.id.tv_business_name)
         val btnParentLogin = findViewById<TextView>(R.id.btn_parent_login)
         val btnFacultyLogin = findViewById<TextView>(R.id.btn_faculty_login)
+
+        findViewById<TextView>(R.id.tv_privacy_policy)?.setOnClickListener {
+            try {
+                val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://tapinx.in/privacy-policy"))
+                startActivity(browserIntent)
+            } catch (_: Exception) {
+                Toast.makeText(this, "Visit https://tapinx.in/privacy-policy", Toast.LENGTH_LONG).show()
+            }
+        }
 
         val etStudentId = findViewById<EditText>(R.id.et_student_id)
         val etMobileNumber = findViewById<EditText>(R.id.et_mobile_number)
@@ -773,10 +783,43 @@ class LoginActivity : AppCompatActivity() {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
         if (ungranted.isNotEmpty()) {
-            ActivityCompat.requestPermissions(this, ungranted.toTypedArray(), REQUEST_PERMISSIONS)
+            val prefs = getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+            val disclosureAccepted = prefs.getBoolean("privacy_disclosure_accepted", false)
+            if (!disclosureAccepted) {
+                showProminentPrivacyDisclosure(ungranted)
+            } else {
+                ActivityCompat.requestPermissions(this, ungranted.toTypedArray(), REQUEST_PERMISSIONS)
+            }
         } else {
             promptEnableLocationSettings()
         }
+    }
+
+    private fun showProminentPrivacyDisclosure(ungranted: List<String>) {
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Permissions & Privacy Notice")
+            .setMessage(
+                "TapInX requires the following permissions to verify attendance securely:\n\n" +
+                "• Camera: To capture facial images for anti-spoofing liveness checks and on-device face recognition.\n\n" +
+                "• Location: Strictly used during attendance check-in/out to verify you are within authorized organization premises (geofencing).\n\n" +
+                "Biometric templates are stored securely and never sold or shared with third-party advertisers.\n\n" +
+                "Learn more at https://tapinx.in/privacy-policy"
+            )
+            .setPositiveButton("Agree & Continue") { _, _ ->
+                getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+                    .edit()
+                    .putBoolean("privacy_disclosure_accepted", true)
+                    .apply()
+                ActivityCompat.requestPermissions(this, ungranted.toTypedArray(), REQUEST_PERMISSIONS)
+            }
+            .setNeutralButton("Privacy Policy") { _, _ ->
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://tapinx.in/privacy-policy")))
+                } catch (_: Exception) {}
+            }
+            .setNegativeButton("Not Now", null)
+            .setCancelable(false)
+            .show()
     }
 
     private fun promptEnableLocationSettings() {
