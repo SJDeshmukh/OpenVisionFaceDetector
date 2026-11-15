@@ -42,7 +42,7 @@ const SECTIONS = [
   { id: 'section-12', title: '12. Cookies & Web Tracking' },
   { id: 'section-13', title: '13. International Transfers' },
   { id: 'section-14', title: '14. Policy Updates' },
-  { id: 'section-15', title: '15. Contact & Grievance Officer' },
+  { id: 'section-15', title: '15. Contact & Privacy Redressal' },
 ];
 
 export default function PrivacyPolicy() {
@@ -241,7 +241,7 @@ export default function PrivacyPolicy() {
                 <div className="rounded-xl bg-slate-50 p-3 border border-slate-100 text-left">
                   <p className="text-[11px] font-bold text-slate-800">Need Privacy Support?</p>
                   <p className="text-[10px] text-slate-500 mt-0.5 leading-snug">
-                    Contact our Data Grievance Officer directly:
+                    Contact our Privacy and Support Team:
                   </p>
                   <a
                     href="mailto:support@tapinx.in"
@@ -829,7 +829,7 @@ export default function PrivacyPolicy() {
               </div>
             </section>
 
-            {/* ── Section 15: Contact and Grievance Officer ── */}
+            {/* ── Section 15: Contact and Privacy Redressal ── */}
             <section
               id="section-15"
               className="scroll-mt-24 rounded-2xl border border-violet-300 bg-gradient-to-br from-white via-violet-50/30 to-indigo-50/40 p-6 sm:p-8 shadow-xs space-y-4"
@@ -840,15 +840,15 @@ export default function PrivacyPolicy() {
                 </div>
                 <div>
                   <h2 className="text-lg font-bold text-slate-900">
-                    15. Contact and Grievance Officer
+                    15. Contact and Privacy Redressal
                   </h2>
-                  <p className="text-xs text-slate-400">Dedicated statutory grievance redressal channel</p>
+                  <p className="text-xs text-slate-400">Dedicated statutory privacy and grievance redressal channel</p>
                 </div>
               </div>
 
               <div className="text-sm text-slate-600 leading-relaxed space-y-3">
                 <p>
-                  If you have inquiries, complaints, or grievance requests concerning your personal or biometric information, or wish to exercise your data protection rights, please contact our designated Grievance Officer:
+                  If you have inquiries, complaints, or grievance requests concerning your personal or biometric information, or wish to exercise your data protection rights, please contact our Privacy and Support Team:
                 </p>
 
                 <div className="rounded-xl border border-violet-200 bg-white p-5 text-xs space-y-2 shadow-2xs">
@@ -862,10 +862,6 @@ export default function PrivacyPolicy() {
                       <span className="font-semibold text-slate-900 text-sm">TapInX</span>
                     </div>
                     <div>
-                      <span className="font-bold text-slate-800 block text-[11px] uppercase tracking-wider text-slate-400">Designated Grievance Officer</span>
-                      <span className="font-semibold text-slate-900 text-sm">Sudhanshu Deshmukh</span>
-                    </div>
-                    <div>
                       <span className="font-bold text-slate-800 block text-[11px] uppercase tracking-wider text-slate-400">Official Privacy Email</span>
                       <a href="mailto:support@tapinx.in" className="font-bold text-violet-700 underline text-sm">support@tapinx.in</a>
                     </div>
@@ -873,9 +869,9 @@ export default function PrivacyPolicy() {
                       <span className="font-bold text-slate-800 block text-[11px] uppercase tracking-wider text-slate-400">Official Portal</span>
                       <a href="https://tapinx.in" className="text-violet-600 underline">https://tapinx.in</a>
                     </div>
-                    <div>
+                    <div className="sm:col-span-2">
                       <span className="font-bold text-slate-800 block text-[11px] uppercase tracking-wider text-slate-400">Response Turnaround</span>
-                      <span className="font-semibold text-emerald-700">All grievances resolved within 72 business hours</span>
+                      <span className="font-semibold text-emerald-700">All inquiries and requests resolved within 72 business hours</span>
                     </div>
                   </div>
                 </div>
