@@ -1141,7 +1141,7 @@ class MainActivity : AppCompatActivity() {
                             val signature = facesSignature(faces)
                             val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
                             val lastSig = prefs.getString("last_faces_signature", null)
-                            if (fullSync && lastSig != null && lastSig == signature && !DBManager.personList.isEmpty()) {
+                            if (fullSync && lastSig != null && lastSig == signature && DBManager.personList.size == faces.size) {
                                 Thread {
                                     val imageBatch = dbManager.beginPersonBatch()
                                     try {

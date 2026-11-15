@@ -43,6 +43,13 @@ class FaceSyncWorker(appContext: Context, params: WorkerParameters) : Worker(app
                 
                 val json = JsonObject()
                 json.addProperty("local_uid", p.localUid)
+                if (!p.id.isNullOrBlank()) {
+                    json.addProperty("person_id", p.id)
+                }
+                val vendorId = prefs.getInt("vendor_id", -1)
+                if (vendorId != -1) {
+                    json.addProperty("vendor_id", vendorId)
+                }
                 json.addProperty("name", p.name ?: "")
                 json.addProperty("templates", Base64.encodeToString(p.templates, Base64.NO_WRAP))
 
@@ -99,9 +106,13 @@ class FaceSyncWorker(appContext: Context, params: WorkerParameters) : Worker(app
                     }
                     if (code == 409 || code == 400 || code == 422) {
                         // Hard rejection (duplicate face, parent duplicate, validation failure)
-                        // Permanently remove from local database so the rejected face does not linger locally
+                        // NEVER delete an existing roster member! Clear their face data only.
                         try {
-                            db.deletePersonByLocalUid(p.localUid)
+                            if (!p.id.isNullOrBlank() || p.displayId > 0) {
+                                db.clearPersonFaceByLocalUid(p.localUid)
+                            } else {
+                                db.deletePersonByLocalUid(p.localUid)
+                            }
                         } catch (_: Exception) {}
                     } else if (code == 408 || code == 429 || (code in 500..599)) {
                         needsRetry = true

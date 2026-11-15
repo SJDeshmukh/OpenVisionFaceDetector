@@ -502,9 +502,53 @@ import java.util.concurrent.CopyOnWriteArrayList;
         }
     }
 
+    public int getPersonCount() {
+        SQLiteDatabase db = this.getReadableDatabase();
+        Cursor cur = null;
+        try {
+            cur = db.rawQuery("SELECT count(*) FROM person", null);
+            if (cur.moveToFirst()) return cur.getInt(0);
+        } catch (Exception ignored) {
+        } finally {
+            if (cur != null) cur.close();
+        }
+        return 0;
+    }
+
+    public void clearPersonFaceByLocalUid(String localUid) {
+        if (localUid == null || localUid.isEmpty()) return;
+        try {
+            SQLiteDatabase db = this.getWritableDatabase();
+            ContentValues cv = new ContentValues();
+            cv.putNull("face");
+            cv.putNull("templates");
+            cv.putNull("image_url");
+            cv.put("synced", 1);
+            db.update("person", cv, "local_uid = ?", new String[]{localUid});
+
+            synchronized (personList) {
+                for (Person p : personList) {
+                    if (p.localUid != null && p.localUid.equals(localUid)) {
+                        p.setTemplates(null);
+                        p.synced = true;
+                        break;
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+    }
+
     public void updatePersonFaceByLocalUid(String localUid, Bitmap face, byte[] templates) {
-        if (localUid == null || localUid.isEmpty() || face == null || templates == null) return;
-        
+        updatePersonFaceByLocalUid(localUid, face, templates, false);
+    }
+
+    public void updatePersonFaceByLocalUid(String localUid, Bitmap face, byte[] templates, boolean synced) {
+        if (localUid == null || localUid.isEmpty()) return;
+        if (face == null || templates == null) {
+            clearPersonFaceByLocalUid(localUid);
+            return;
+        }
+
         byte[] faceJpg = null;
         if (!face.isRecycled()) {
             ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
@@ -517,7 +561,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
         ContentValues contentValues = new ContentValues();
         contentValues.put("face", faceJpg);
         contentValues.put("templates", templates);
-        contentValues.put("synced", 0);
+        contentValues.put("synced", synced ? 1 : 0);
 
         db.update("person", contentValues, "local_uid = ?", new String[]{localUid});
 
@@ -525,7 +569,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
             for (Person p : personList) {
                 if (p.localUid != null && p.localUid.equals(localUid)) {
                     p.setTemplates(templates);
-                    p.synced = false;
+                    p.synced = synced;
                     break;
                 }
             }
@@ -1501,7 +1545,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
         SQLiteDatabase db = this.getReadableDatabase();
         Cursor res = null;
         try {
-            res = db.rawQuery("select local_uid, id, name, face, templates, phone, department, designation, shift, custom_data, synced from person where synced = 0", null);
+            res = db.rawQuery("select local_uid, id, name, face, templates, phone, department, designation, shift, custom_data, synced, display_id from person where synced = 0", null);
             if (res.moveToFirst()) {
                 while (!res.isAfterLast()) {
                     String localUid = res.getString(res.getColumnIndexOrThrow("local_uid"));
@@ -1526,11 +1570,15 @@ import java.util.concurrent.CopyOnWriteArrayList;
                     if (shiftIdx != -1) shift = res.getString(shiftIdx);
                     int cdIdx = res.getColumnIndex("custom_data");
                     if (cdIdx != -1) customData = res.getString(cdIdx);
+                    int displayId = 0;
+                    int dispIdx = res.getColumnIndex("display_id");
+                    if (dispIdx != -1) displayId = res.getInt(dispIdx);
 
                     if (templates != null) {
                         Bitmap face = (faceJpg != null) ? BitmapFactory.decodeByteArray(faceJpg, 0, faceJpg.length) : null;
                         Person p = new Person(localUid, id, name, templates, phone, department, designation, shift, customData, face);
                         p.synced = false;
+                        p.displayId = displayId;
                         list.add(p);
                     }
                     res.moveToNext();

@@ -53,7 +53,8 @@ class FaceDownloadWorker(appContext: Context, params: WorkerParameters) : Worker
         val signature = facesSignature(faces)
         val lastSig = prefs.getString("last_faces_signature", null)
         val db = DBManager(applicationContext)
-        if (fullSync && lastSig != null && lastSig == signature && hasLocalFaces()) {
+        val localCount = db.personCount
+        if (fullSync && lastSig != null && lastSig == signature && localCount == faces.size) {
             val imageBatch = db.beginPersonBatch()
             try {
                 for (face in faces) {

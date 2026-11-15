@@ -374,17 +374,26 @@ public class UsersFragment extends Fragment {
             return;
         }
 
-        dbManager.updatePersonFaceByLocalUid(pendingPersonForRegistration.localUid, faceImage, templates);
-        if (adapter != null) adapter.invalidateFace(pendingPersonForRegistration);
-
-        if (NetworkUtils.INSTANCE.isOnline(requireContext().getApplicationContext()) &&
-            "true".equalsIgnoreCase(requireContext().getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE).getString("cloud_sync", "true"))) {
-            syncFaceToBackend(pendingPersonForRegistration, templates, faceImage);
-        } else {
-            Toast.makeText(getContext(), "Registered face locally (Offline)", Toast.LENGTH_SHORT).show();
-        }
-        
+        final Person targetPerson = pendingPersonForRegistration;
         pendingPersonForRegistration = null;
+
+        boolean isOnline = false;
+        try {
+            isOnline = NetworkUtils.INSTANCE.isOnline(requireContext().getApplicationContext());
+        } catch (Exception ignored) {}
+
+        boolean cloudSync = "true".equalsIgnoreCase(
+                requireContext().getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE)
+                        .getString("cloud_sync", "true"));
+
+        if (isOnline && cloudSync) {
+            Toast.makeText(getContext(), "Validating face for " + targetPerson.name + "...", Toast.LENGTH_SHORT).show();
+            syncFaceToBackend(targetPerson, templates, faceImage);
+        } else {
+            dbManager.updatePersonFaceByLocalUid(targetPerson.localUid, faceImage, templates, false);
+            if (adapter != null) adapter.invalidateFace(targetPerson);
+            Toast.makeText(getContext(), "Registered face locally (Offline); will sync when online", Toast.LENGTH_SHORT).show();
+        }
     }
 
     @Override
@@ -450,6 +459,7 @@ public class UsersFragment extends Fragment {
             @Override
             public void onResponse(Call<UploadFaceResponse> call, Response<UploadFaceResponse> response) {
                 if (response.isSuccessful()) {
+                    dbManager.updatePersonFaceByLocalUid(person.localUid, faceImage, templates, true);
                     if (getContext() != null) Toast.makeText(getContext(), "Face Registered & Synced for " + person.name, Toast.LENGTH_SHORT).show();
                     String newId = null;
                     Integer assignedDisplayId = null;
@@ -486,14 +496,16 @@ public class UsersFragment extends Fragment {
                     int code = response.code();
                     if (code == 409 || code == 400 || code == 403 || code == 422) {
                         // Hard server rejection (duplicate face, parent duplicate, etc.)
-                        if (person.id == null || person.id.isEmpty()) {
-                            dbManager.deletePersonByLocalUid(person.localUid);
-                        } else {
-                            dbManager.updatePersonFaceByLocalUid(person.localUid, null, null);
-                        }
+                        // Clear rejected face data. NEVER DELETE THE ROSTER MEMBER!
+                        dbManager.clearPersonFaceByLocalUid(person.localUid);
                         if (adapter != null) {
+                            adapter.invalidateFace(person);
                             adapter.replaceUsers(DBManager.personList);
                         }
+                    } else {
+                        // Transient failure: save locally with synced = 0 for background worker retry
+                        dbManager.updatePersonFaceByLocalUid(person.localUid, faceImage, templates, false);
+                        if (adapter != null) adapter.invalidateFace(person);
                     }
                     if (getContext() != null) Toast.makeText(getContext(), errorMsg, Toast.LENGTH_LONG).show();
                 }
@@ -501,7 +513,10 @@ public class UsersFragment extends Fragment {
             @Override
             public void onFailure(Call<UploadFaceResponse> call, Throwable t) {
                 t.printStackTrace();
-                if (getContext() != null) Toast.makeText(getContext(), "Network error during sync", Toast.LENGTH_SHORT).show();
+                // Network error mid-request: save locally with synced = 0 so background worker syncs when online
+                dbManager.updatePersonFaceByLocalUid(person.localUid, faceImage, templates, false);
+                if (adapter != null) adapter.invalidateFace(person);
+                if (getContext() != null) Toast.makeText(getContext(), "Network error during sync; saved locally for retry", Toast.LENGTH_SHORT).show();
             }
         });
     }
