@@ -291,6 +291,7 @@ def _send_leave_stage_email_async(vendor_id, request_id, stage):
             if "openvisionx.in" in portal_url:
                 portal_url = "https://tapinx.in"
             portal_link = f"{portal_url}/?redirect=/leave-management"
+            badge_url = f"{portal_url}/api/leave/requests/{request_id}/status-badge.png"
 
             # Distinct subject with request ID to guarantee separate email threads in Gmail/Outlook
             subject = f"Leave Request #{request_id} · {student_name} ({leave_type}) · {stage_name}"
@@ -365,11 +366,11 @@ Regards,
                     <div style="text-align: center; margin: 28px 0 16px 0;">
                         <!-- Live Dynamic Status Badge (updates in real-time when reopened in inbox) -->
                         <div style="margin-bottom: 14px;">
-                            <img src="https://openvisionx.in/api/leave/requests/{request_id}/status-badge.png"
-                                 alt="Current Status"
+                            <img src="{badge_url}"
+                                 alt="Status"
                                  width="260"
                                  height="36"
-                                 style="display: inline-block; max-width: 100%; height: auto; vertical-align: middle; border-radius: 18px;" />
+                                 style="display: inline-block; max-width: 100%; height: auto; vertical-align: middle; border: none; border-radius: 18px;" />
                         </div>
                         <a href="{portal_link}" style="background: #2563eb; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 14px; display: inline-block;">
                             Open Staff Portal & Review Request
@@ -485,6 +486,7 @@ def _send_cancellation_email_async(vendor_id, request_id):
             if "openvisionx.in" in portal_url:
                 portal_url = "https://tapinx.in"
             portal_link = f"{portal_url}/?redirect=/leave-management"
+            badge_url = f"{portal_url}/api/leave/requests/{request_id}/status-badge.png"
 
             subject = f"Leave Cancellation Approved · Request #{request_id} · {student_name} ({leave_type})"
             for staff_row in approvers:
@@ -587,11 +589,11 @@ Regards,
                     <div style="text-align: center; margin: 24px 0 16px 0;">
                         <!-- Live Dynamic Status Badge (updates in real-time when reopened in inbox) -->
                         <div style="margin-bottom: 14px;">
-                            <img src="https://openvisionx.in/api/leave/requests/{request_id}/status-badge.png"
-                                 alt="Current Status"
+                            <img src="{badge_url}"
+                                 alt="Status"
                                  width="260"
                                  height="36"
-                                 style="display: inline-block; max-width: 100%; height: auto; vertical-align: middle; border-radius: 18px;" />
+                                 style="display: inline-block; max-width: 100%; height: auto; vertical-align: middle; border: none; border-radius: 18px;" />
                         </div>
                         <a href="{portal_link}" style="background: #0f172a; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 14px; display: inline-block;">
                             Open Staff Portal
