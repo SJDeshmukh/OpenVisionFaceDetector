@@ -1346,59 +1346,64 @@ def parent_approve_request():
         # Check if this request is a cancellation request
         if int(request_row.get("is_cancellation") or 0) == 1:
             if action == "approved":
-                if is_pg:
-                    c.execute("""
-                        UPDATE leave_requests
-                        SET final_status = 'cancelled',
-                            parent_status = 'approved',
-                            cancellation_status = 'approved'
-                        WHERE id = %s AND vendor_id = %s
-                    """, (request_id, vendor_id))
-                else:
-                    c.execute("""
-                        UPDATE leave_requests
-                        SET final_status = 'cancelled',
-                            parent_status = 'approved',
-                            cancellation_status = 'approved'
-                        WHERE id = ? AND vendor_id = ?
-                    """, (request_id, vendor_id))
+                meta_json = json.dumps({
+                    "face_similarity": similarity,
+                    "verification": verification_method,
+                    "device_id": parent.get("device_id"),
+                    "ip": request.remote_addr,
+                    "captured_face": captured_face,
+                    "cancellation_approval": True,
+                }, separators=(",", ":"))
+                now_iso = datetime.now(timezone.utc).isoformat()
 
-                # Update the parent stage in leave_request_stages
-                try:
-                    decide_current_stage(
-                        conn,
-                        vendor_id,
-                        request_row,
-                        "approved",
-                        actor_type="parent",
-                        role_key="parent",
-                        actor_id=parent["id"],
-                        actor_name=parent["student_number"],
-                        metadata={
-                            "face_similarity": similarity,
-                            "verification": verification_method,
-                            "device_id": parent.get("device_id"),
-                            "ip": request.remote_addr,
-                            "captured_face": captured_face,
-                            "cancellation_approval": True,
-                        },
-                    )
-                except Exception as ex:
-                    import logging
-                    logging.getLogger(__name__).warning("decide_current_stage fallback for cancellation: %s", ex)
-
-                # Skip any remaining stages since the leave is cancelled
                 if is_pg:
+                    # 1. Update the parent stage directly in leave_request_stages with verified face capture
+                    c.execute("""
+                        UPDATE leave_request_stages
+                        SET status = 'approved',
+                            actor_id = %s,
+                            actor_name = %s,
+                            decided_at = %s,
+                            decision_metadata = %s
+                        WHERE request_id = %s AND vendor_id = %s AND actor_type = 'parent'
+                    """, (str(parent["id"]), parent["student_number"], now_iso, meta_json, request_id, vendor_id))
+                    # 2. Skip any remaining pending stages
                     c.execute("""
                         UPDATE leave_request_stages
                         SET status = 'skipped'
                         WHERE request_id = %s AND vendor_id = %s AND actor_type != 'parent' AND status = 'pending'
                     """, (request_id, vendor_id))
+                    # 3. Mark final_status = 'cancelled', parent_status = 'approved', cancellation_status = 'approved', is_cancellation = 0
+                    c.execute("""
+                        UPDATE leave_requests
+                        SET final_status = 'cancelled',
+                            parent_status = 'approved',
+                            cancellation_status = 'approved',
+                            is_cancellation = 0
+                        WHERE id = %s AND vendor_id = %s
+                    """, (request_id, vendor_id))
                 else:
+                    c.execute("""
+                        UPDATE leave_request_stages
+                        SET status = 'approved',
+                            actor_id = ?,
+                            actor_name = ?,
+                            decided_at = ?,
+                            decision_metadata = ?
+                        WHERE request_id = ? AND vendor_id = ? AND actor_type = 'parent'
+                    """, (str(parent["id"]), parent["student_number"], now_iso, meta_json, request_id, vendor_id))
                     c.execute("""
                         UPDATE leave_request_stages
                         SET status = 'skipped'
                         WHERE request_id = ? AND vendor_id = ? AND actor_type != 'parent' AND status = 'pending'
+                    """, (request_id, vendor_id))
+                    c.execute("""
+                        UPDATE leave_requests
+                        SET final_status = 'cancelled',
+                            parent_status = 'approved',
+                            cancellation_status = 'approved',
+                            is_cancellation = 0
+                        WHERE id = ? AND vendor_id = ?
                     """, (request_id, vendor_id))
                 conn.commit()
 
@@ -1420,7 +1425,7 @@ def parent_approve_request():
 
                 return jsonify({
                     "status": "success",
-                    "message": "Leave request cancelled successfully and staff notified.",
+                    "message": "Leave cancelled successfully!",
                     "similarity": similarity,
                     "method": verification_method,
                 })
@@ -1431,7 +1436,6 @@ def parent_approve_request():
                         UPDATE leave_requests
                         SET is_cancellation = 0,
                             cancellation_status = 'rejected',
-                            parent_status = 'approved',
                             final_status = 'approved'
                         WHERE id = %s AND vendor_id = %s
                     """, (request_id, vendor_id))
@@ -1440,7 +1444,6 @@ def parent_approve_request():
                         UPDATE leave_requests
                         SET is_cancellation = 0,
                             cancellation_status = 'rejected',
-                            parent_status = 'approved',
                             final_status = 'approved'
                         WHERE id = ? AND vendor_id = ?
                     """, (request_id, vendor_id))
@@ -2768,28 +2771,6 @@ def cancel_leave_request():
             return jsonify({"error": "Cannot cancel an already rejected leave request"}), 400
         if int(req.get("is_cancellation") or 0) == 1 and req.get("cancellation_status") == "pending":
             return jsonify({"error": "A cancellation request is already pending parent approval"}), 400
-
-        # Validate that the leave has not already started
-        start_date_str = str(req.get("start_date") or "").strip()
-        start_time_str = str(req.get("start_time") or "00:00").strip()
-        if start_date_str:
-            try:
-                from datetime import timezone, timedelta
-                tz_ist = timezone(timedelta(hours=5, minutes=30))
-                now_ist = datetime.now(tz_ist)
-                start_dt = datetime.strptime(f"{start_date_str} {start_time_str}", "%Y-%m-%d %H:%M").replace(tzinfo=tz_ist)
-                if now_ist >= start_dt:
-                    return jsonify({
-                        "error": "Leave cannot be cancelled after it has already started.",
-                        "error_code": "LEAVE_ALREADY_STARTED"
-                    }), 400
-            except Exception:
-                today_str = datetime.now().strftime("%Y-%m-%d")
-                if start_date_str <= today_str:
-                    return jsonify({
-                        "error": "Leave cannot be cancelled after it has already started.",
-                        "error_code": "LEAVE_ALREADY_STARTED"
-                    }), 400
 
         # 3. Update leave_requests with cancellation intent
         if is_pg:

@@ -134,15 +134,6 @@ const LeaveManagement = () => {
   const [submittingCancel, setSubmittingCancel] = useState(false);
 
   const handleOpenCancelModal = (req) => {
-    if (isLeaveStarted(req)) {
-      showToast({
-        type: 'error',
-        title: 'Cannot Cancel Started Leave',
-        message: 'Leave requests that have already commenced cannot be cancelled.',
-        duration: 5000,
-      });
-      return;
-    }
     setCancelTarget(req);
     setCancellationReason('');
     setCancelModalOpen(true);
@@ -246,11 +237,13 @@ const LeaveManagement = () => {
     }
   };
 
-  const fetchData = async () => {
+  const fetchData = async (isSilent = false) => {
     if (isRegularUser && !['new_request', 'history'].includes(activeTab)) return;
-    setLoading(true);
-    setDataError('');
-    if (['pending', 'history'].includes(activeTab)) setRequests([]);
+    if (!isSilent) {
+      setLoading(true);
+      setDataError('');
+      if (['pending', 'history'].includes(activeTab)) setRequests([]);
+    }
     try {
       if (activeTab === 'new_request' && isRegularUser) {
         const res = await axios.get(`${API_URL}/leave/student/workflow`);
@@ -290,11 +283,24 @@ const LeaveManagement = () => {
       }
     } catch (err) {
       console.error("Error fetching leave data:", err);
-      setDataError(err.response?.data?.error || 'Unable to load leave information. Please refresh and try again.');
+      if (!isSilent) {
+        setDataError(err.response?.data?.error || 'Unable to load leave information. Please refresh and try again.');
+      }
     } finally {
-      setLoading(false);
+      if (!isSilent) setLoading(false);
     }
   };
+
+  // Real-time automatic background synchronization every 4 seconds
+  useEffect(() => {
+    if (!['pending', 'history', 'tracking'].includes(activeTab)) return;
+    const interval = setInterval(() => {
+      if (!document.hidden) {
+        fetchData(true);
+      }
+    }, 4000);
+    return () => clearInterval(interval);
+  }, [activeTab, currentRole, statusFilter]);
 
   useEffect(() => {
     fetchData();
@@ -1101,8 +1107,8 @@ const LeaveManagement = () => {
                           </div>
                         </div>
                       </div>
-                      {req.final_status === 'cancelled' ? (
-                        <span className="px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-slate-100 text-slate-700 border border-slate-300">
+                      {req.final_status === 'cancelled' || req.cancellation_status === 'approved' ? (
+                        <span className="px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-rose-100 text-rose-800 border border-rose-300">
                           Cancelled
                         </span>
                       ) : Number(req.is_cancellation) === 1 && req.cancellation_status === 'pending' ? (
@@ -1210,22 +1216,16 @@ const LeaveManagement = () => {
                             </button>
                           );
                         })()}
-                        {/* Student Cancel Leave Button - only if leave has not started */}
-                        {isRegularUser && req.final_status !== 'cancelled' && req.final_status !== 'rejected' && !(Number(req.is_cancellation) === 1 && req.cancellation_status === 'pending') && (
-                          isLeaveStarted(req) ? (
-                            <span className="text-[11px] font-medium text-slate-400 italic bg-slate-50 px-2.5 py-1 rounded-md border border-slate-200" title="Leaves that have already commenced cannot be cancelled">
-                              Leave started · Cannot cancel
-                            </span>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => handleOpenCancelModal(req)}
-                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 text-rose-700 hover:bg-rose-100 rounded-lg text-xs font-bold border border-rose-200 transition-colors shrink-0 shadow-2xs"
-                              title="Request cancellation for this leave ticket"
-                            >
-                              <Ban size={13} /> Cancel Leave
-                            </button>
-                          )
+                        {/* Student Cancel Leave Button */}
+                        {isRegularUser && req.final_status !== 'cancelled' && req.cancellation_status !== 'approved' && req.final_status !== 'rejected' && !(Number(req.is_cancellation) === 1 && req.cancellation_status === 'pending') && (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenCancelModal(req)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 text-rose-700 hover:bg-rose-100 rounded-lg text-xs font-bold border border-rose-200 transition-colors shrink-0 shadow-2xs"
+                            title="Request cancellation for this leave ticket"
+                          >
+                            <Ban size={13} /> Cancel Leave
+                          </button>
                         )}
                       </div>
                     </div>

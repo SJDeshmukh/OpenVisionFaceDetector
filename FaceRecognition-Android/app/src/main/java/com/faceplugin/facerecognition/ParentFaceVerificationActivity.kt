@@ -336,8 +336,12 @@ class ParentFaceVerificationActivity : AppCompatActivity() {
                         val isSuccess = response.isSuccessful && response.body()?.get("status")?.asString == "success"
                         if (isSuccess) {
                             runOnUiThread {
+                                val serverMsg = try {
+                                    response.body()?.get("message")?.asString
+                                } catch (_: Exception) { null }
                                 val decision = if (action == "approved") "approved" else "rejected"
-                                Toast.makeText(this@ParentFaceVerificationActivity, "Leave $decision successfully!", Toast.LENGTH_LONG).show()
+                                val finalToast = serverMsg ?: "Leave $decision successfully!"
+                                Toast.makeText(this@ParentFaceVerificationActivity, finalToast, Toast.LENGTH_LONG).show()
                                 setResult(RESULT_OK)
                                 finish()
                             }

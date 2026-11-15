@@ -207,7 +207,11 @@ class ParentLeaveDetailActivity : AppCompatActivity() {
             override fun onResponse(call: Call<JsonObject>, response: Response<JsonObject>) {
                 runOnUiThread { progressBar.visibility = View.GONE }
                 if (response.isSuccessful && response.body()?.get("status")?.asString == "success") {
-                    Toast.makeText(this@ParentLeaveDetailActivity, "Leave $pendingAction successfully", Toast.LENGTH_SHORT).show()
+                    val serverMsg = try {
+                        response.body()?.get("message")?.asString
+                    } catch (_: Exception) { null }
+                    val finalToast = serverMsg ?: "Leave $pendingAction successfully"
+                    Toast.makeText(this@ParentLeaveDetailActivity, finalToast, Toast.LENGTH_SHORT).show()
                     finish()
                 } else {
                     Toast.makeText(this@ParentLeaveDetailActivity, "Action failed: ${response.message()}", Toast.LENGTH_SHORT).show()
