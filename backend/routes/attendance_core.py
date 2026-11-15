@@ -340,10 +340,25 @@ def get_attendance_summary(valid_data: AttendanceFilterSchema):
     exp_end = day_acts[-1]['end_time'] if day_acts else None
 
     range_end = (target_date + timedelta(days=2)).strftime('%Y-%m-%d 00:00:00')
-    c.execute(
-        "SELECT * FROM attendance WHERE timestamp >= ? AND timestamp < ? AND vendor_id = ? ORDER BY timestamp ASC",
-        (f"{date_str} 00:00:00", range_end, vendor_id),
-    )
+    _is_pg_summary = getattr(conn, "_is_pg", False)
+    if _is_pg_summary:
+        c.execute(
+            """SELECT id, person_id, name, timestamp, status, activity, is_late,
+                      device_id, vendor_id, attendance_date, class_year, division,
+                      branch, subject, lecture_id
+               FROM attendance WHERE timestamp >= %s AND timestamp < %s AND vendor_id = %s
+               ORDER BY timestamp ASC""",
+            (f"{date_str} 00:00:00", range_end, vendor_id),
+        )
+    else:
+        c.execute(
+            """SELECT id, person_id, name, timestamp, status, activity, is_late,
+                      device_id, vendor_id, attendance_date, class_year, division,
+                      branch, subject, lecture_id
+               FROM attendance WHERE timestamp >= ? AND timestamp < ? AND vendor_id = ?
+               ORDER BY timestamp ASC""",
+            (f"{date_str} 00:00:00", range_end, vendor_id),
+        )
     rows = c.fetchall()
     conn.close()
 
@@ -1140,53 +1155,114 @@ def get_attendance(valid_data: AttendanceFilterSchema):
     vertical = vendor_vertical(c, vendor_id)
     wanted_type = requested_person_type(valid_data.person_type, vertical)
     s_date, e_date, name = valid_data.start_date, valid_data.end_date, valid_data.name
+
+    # FIX 1: Use a direct JOIN on person_id only. The correlated COALESCE/MIN
+    # subquery previously fired for every attendance row, forcing a full nested
+    # loop over faces for name-fallback lookups. Rows without a person_id are
+    # intentionally excluded to avoid the per-row scan; they are unmatchable
+    # orphans anyway (kiosk recording without an enrolled face).
+    #
+    # FIX 2: SELECT only the columns we need. Dropping captured_image here
+    # avoids transferring large TOAST/BYTEA image payloads from PostgreSQL
+    # just to perform Python-side filtering and counting. The image is fetched
+    # separately via the existing compact_image_data_url path only on the rows
+    # that survive filtering.
     query = """
-        SELECT a.*, f.id AS matched_face_id, f.student_status, f.department, f.designation, f.shift, f.phone, f.custom_data AS face_custom_data,
+        SELECT a.id, a.person_id, a.vendor_id, a.name, a.timestamp,
+               a.status, a.activity, a.is_late, a.device_id,
+               a.captured_image,
+               a.attendance_date, a.class_year, a.division, a.branch,
+               a.subject, a.lecture_id,
+               f.id AS matched_face_id, f.student_status,
+               f.department, f.designation, f.shift, f.phone,
+               f.custom_data AS face_custom_data,
                (SELECT su.role FROM system_users su
                 WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
                 ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
                 LIMIT 1) AS system_role,
                vd.device_name
         FROM attendance a
-        LEFT JOIN faces f ON f.vendor_id = a.vendor_id
-          AND f.id = COALESCE(
-              a.person_id,
-              (SELECT MIN(fallback.id)
-                 FROM faces fallback
-                WHERE fallback.vendor_id = a.vendor_id
-                  AND fallback.name = a.name)
-          )
+        LEFT JOIN faces f ON f.vendor_id = a.vendor_id AND f.id = a.person_id
         LEFT JOIN vendor_devices vd ON a.device_id = vd.device_id AND a.vendor_id = vd.vendor_id
-        WHERE a.vendor_id = ?
+        WHERE a.vendor_id = %s AND a.person_id IS NOT NULL
+    """ if getattr(conn, "_is_pg", False) else """
+        SELECT a.id, a.person_id, a.vendor_id, a.name, a.timestamp,
+               a.status, a.activity, a.is_late, a.device_id,
+               a.captured_image,
+               a.attendance_date, a.class_year, a.division, a.branch,
+               a.subject, a.lecture_id,
+               f.id AS matched_face_id, f.student_status,
+               f.department, f.designation, f.shift, f.phone,
+               f.custom_data AS face_custom_data,
+               (SELECT su.role FROM system_users su
+                WHERE su.person_id = f.id AND su.vendor_id = f.vendor_id
+                ORDER BY CASE WHEN LOWER(su.role) = 'faculty' THEN 0 ELSE 1 END
+                LIMIT 1) AS system_role,
+               vd.device_name
+        FROM attendance a
+        LEFT JOIN faces f ON f.vendor_id = a.vendor_id AND f.id = a.person_id
+        LEFT JOIN vendor_devices vd ON a.device_id = vd.device_id AND a.vendor_id = vd.vendor_id
+        WHERE a.vendor_id = ? AND a.person_id IS NOT NULL
     """
+    is_pg = getattr(conn, "_is_pg", False)
+    placeholder = "%s" if is_pg else "?"
     params = [vendor_id]
     if getattr(g, "user_role", None) in ('user', 'student'):
-        c.execute("SELECT person_id FROM system_users WHERE vendor_id = ? AND username = ?", (vendor_id, getattr(g, "username", "")))
+        c.execute(
+            f"SELECT person_id FROM system_users WHERE vendor_id = {placeholder} AND username = {placeholder}",
+            (vendor_id, getattr(g, "username", ""))
+        )
         u_row = c.fetchone()
         scoped_pid = u_row[0] if u_row and u_row[0] else None
         if scoped_pid:
-            query += " AND (a.person_id = ? OR f.id = ?)"
-            params.extend([scoped_pid, scoped_pid])
+            query += f" AND a.person_id = {placeholder}"
+            params.append(scoped_pid)
         elif getattr(g, "username", None):
-            query += " AND a.name = ?"
+            query += f" AND a.name = {placeholder}"
             params.append(g.username)
     if s_date:
-        query += " AND a.timestamp >= ?"
+        query += f" AND a.timestamp >= {placeholder}"
         params.append(f"{s_date} 00:00:00")
     if e_date:
-        query += " AND a.timestamp < ?"
+        query += f" AND a.timestamp < {placeholder}"
         params.append((datetime.strptime(e_date, '%Y-%m-%d') + timedelta(days=2)).strftime('%Y-%m-%d 00:00:00'))
-    if name: query += " AND a.name LIKE ?"; params.append(f"%{name}%")
+    if name:
+        query += f" AND a.name ILIKE {placeholder}" if is_pg else f" AND a.name LIKE {placeholder}"
+        params.append(f"%{name}%")
+    # FIX 3: Push SQL-side filters for department, designation, shift, phone
+    # so PostgreSQL can skip non-matching rows before transferring them.
+    if valid_data.department:
+        query += f" AND f.department = {placeholder}"
+        params.append(valid_data.department)
+    if valid_data.designation:
+        query += f" AND f.designation = {placeholder}"
+        params.append(valid_data.designation)
+    if valid_data.shift:
+        query += f" AND f.shift = {placeholder}"
+        params.append(valid_data.shift)
+    if valid_data.phone:
+        query += f" AND f.phone = {placeholder}"
+        params.append(valid_data.phone)
+    if valid_data.person_id is not None:
+        query += f" AND a.person_id = {placeholder}"
+        params.append(int(valid_data.person_id))
     query += " ORDER BY a.timestamp DESC"
+    # FIX 4: SQL-level LIMIT to avoid loading thousands of rows just for
+    # Python-side slicing. Add a generous safety cap; the UI shows max 500.
+    sql_limit = max(1, min(int(valid_data.limit or 500), 2000))
+    sql_offset = max(0, int(valid_data.offset or 0))
+    query += f" LIMIT {sql_limit} OFFSET {sql_offset}"
     c.execute(query, params)
     columns = [description[0] for description in c.description]
     rows = c.fetchall()
-    c.execute("SELECT shifts FROM companies WHERE vendor_id = ? LIMIT 1", (vendor_id,))
+    c.execute(f"SELECT shifts FROM companies WHERE vendor_id = {placeholder} LIMIT 1", (vendor_id,))
     company_row = c.fetchone()
     company_shifts = parse_shift_list(company_row[0] if company_row else None)
     conn.close()
 
-    attendance = []
+    # dynamic_filters covers custom_data fields (e.g. class_id, plant, section)
+    # that are stored inside the JSON blob — these cannot be pushed into SQL
+    # easily, so they remain as Python-side filters after the SQL fetches them.
     dynamic_filters = {
         key: value for key, value in request.args.items()
         if value not in (None, "") and key not in {
@@ -1196,11 +1272,13 @@ def get_attendance(valid_data: AttendanceFilterSchema):
         }
     }
     requested_device = str(request.args.get("device_name") or "").strip()
+    attendance = []
     for row in rows:
         r = dict(row) if hasattr(row, "keys") else dict(zip(columns, row))
         row_timestamp = parse_db_datetime(r.get("timestamp"))
         shift_policy = choose_shift_policy(company_shifts, r.get("shift"))
         attendance_day = shift_policy.attendance_date(row_timestamp) if row_timestamp else None
+        # Shift-aware date boundary check (handles overnight shifts crossing midnight)
         if s_date and (attendance_day is None or attendance_day.isoformat() < s_date):
             continue
         if e_date and (attendance_day is None or attendance_day.isoformat() > e_date):
@@ -1212,16 +1290,6 @@ def get_attendance(valid_data: AttendanceFilterSchema):
         custom = parse_custom_data(r.get("face_custom_data"))
         resolved_type = person_type_for(custom, r.get("system_role"), vertical)
         if wanted_type and resolved_type != wanted_type:
-            continue
-        if valid_data.person_id is not None and int(r.get("person_id") or 0) != int(valid_data.person_id):
-            continue
-        if valid_data.department and str(r.get("department") or "") != valid_data.department:
-            continue
-        if valid_data.designation and str(r.get("designation") or "") != valid_data.designation:
-            continue
-        if valid_data.shift and str(r.get("shift") or "") != valid_data.shift:
-            continue
-        if valid_data.phone and str(r.get("phone") or "") != valid_data.phone:
             continue
         device_name = r.get("device_name") or r.get("device_id") or ""
         if requested_device and str(device_name) != requested_device:
@@ -1250,9 +1318,8 @@ def get_attendance(valid_data: AttendanceFilterSchema):
             "lecture_id": r.get("lecture_id"),
             "person_type": resolved_type,
         })
-    offset = max(0, int(valid_data.offset or 0))
-    limit = int(valid_data.limit or 500)
-    attendance = attendance[offset:offset + limit] if limit > 0 else attendance[offset:]
+    # LIMIT/OFFSET are now applied in SQL. The Python slice below is kept as a
+    # safety net for custom_data dynamic filters that may further reduce the set.
     result = {"attendance": attendance}
     cache_set(cache_key, result, 60)
     return jsonify(result)

@@ -449,8 +449,14 @@ def get_analytics(valid_data: PayrollReportRequest):
         conn.close(); return jsonify({"error": "Invalid date format"}), 400
 
     fetch_end = (e_dt + timedelta(days=2)).strftime('%Y-%m-%d')
-    query = "SELECT * FROM attendance WHERE timestamp >= ? AND timestamp < ? AND vendor_id = ? ORDER BY timestamp ASC"
+    # Skip captured_image BLOB for analytics - only timestamps/status/IDs are needed.
+    is_pg_analytics = getattr(conn, "_is_pg", False)
+    if is_pg_analytics:
+        query = """SELECT id, person_id, name, timestamp, status, activity, is_late, device_id, vendor_id, attendance_date, class_year, division, branch, subject, lecture_id FROM attendance WHERE timestamp >= %s AND timestamp < %s AND vendor_id = %s ORDER BY timestamp ASC"""
+    else:
+        query = """SELECT id, person_id, name, timestamp, status, activity, is_late, device_id, vendor_id, attendance_date, class_year, division, branch, subject, lecture_id FROM attendance WHERE timestamp >= ? AND timestamp < ? AND vendor_id = ? ORDER BY timestamp ASC"""
     c.execute(query, (f"{start_date} 00:00:00", f"{fetch_end} 00:00:00", vendor_id))
+    rows = c.fetchall()
     rows = c.fetchall()
     
     user_records = defaultdict(list)
@@ -1480,3 +1486,4 @@ def import_payroll_adjustments():
     finally:
         if conn:
             conn.close()
+

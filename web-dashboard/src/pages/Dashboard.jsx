@@ -99,7 +99,7 @@ const Dashboard = () => {
       try {
         const [analyticsRes, attendanceRes] = await Promise.all([
           axios.get(`${API_URL}/reports/analytics`, { params: schoolFlow ? { person_type: 'student' } : {} }),
-          axios.get(`${API_URL}/attendance`, { params: schoolFlow ? { person_type: 'student' } : {} })
+          axios.get(`${API_URL}/attendance`, { params: { limit: 5, ...(schoolFlow ? { person_type: 'student' } : {}) } })
         ]);
 
         setError(null);
