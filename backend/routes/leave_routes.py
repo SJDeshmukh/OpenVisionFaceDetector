@@ -282,6 +282,15 @@ def _send_leave_stage_email_async(vendor_id, request_id, stage):
 
             from services.email_service import send_email
 
+            portal_url = (
+                os.environ.get("TAPINX_PORTAL_URL")
+                or os.environ.get("FRONTEND_URL")
+                or "https://tapinx.in"
+            ).strip().rstrip("/")
+            if "openvisionx.in" in portal_url:
+                portal_url = "https://tapinx.in"
+            portal_link = f"{portal_url}/?redirect=/leave-management"
+
             # Distinct subject with request ID to guarantee separate email threads in Gmail/Outlook
             subject = f"Leave Request #{request_id} · {student_name} ({leave_type}) · {stage_name}"
             for staff_row in approvers:
@@ -303,7 +312,7 @@ Duration: {start_date} to {end_date}
 Reason: {reason}
 
 Review & Approve Request:
-https://openvisionx.in/?redirect=/leave-management
+{portal_link}
 
 Regards,
 {vendor_name} Leave Management System
@@ -353,7 +362,7 @@ Regards,
                     </div>
 
                     <div style="text-align: center; margin: 28px 0 16px 0;">
-                        <a href="https://openvisionx.in/?redirect=/leave-management" style="background: #2563eb; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 14px; display: inline-block;">
+                        <a href="{portal_link}" style="background: #2563eb; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 14px; display: inline-block;">
                             Open Staff Portal & Review Request
                         </a>
                     </div>
@@ -459,6 +468,15 @@ def _send_cancellation_email_async(vendor_id, request_id):
 
             from services.email_service import send_email
 
+            portal_url = (
+                os.environ.get("TAPINX_PORTAL_URL")
+                or os.environ.get("FRONTEND_URL")
+                or "https://tapinx.in"
+            ).strip().rstrip("/")
+            if "openvisionx.in" in portal_url:
+                portal_url = "https://tapinx.in"
+            portal_link = f"{portal_url}/?redirect=/leave-management"
+
             subject = f"Leave Cancellation Approved · Request #{request_id} · {student_name} ({leave_type})"
             for staff_row in approvers:
                 staff_dict = get_row_dict(staff_row)
@@ -484,7 +502,7 @@ ATTENDANCE NOTICE:
 The student's attendance will continue to be marked regularly as normal. The student may now apply for leave again on these dates if needed.
 
 Staff Portal:
-https://openvisionx.in/?redirect=/leave-management
+{portal_link}
 
 Regards,
 {vendor_name} Leave Management System
@@ -558,7 +576,7 @@ Regards,
                     </div>
 
                     <div style="text-align: center; margin: 24px 0 16px 0;">
-                        <a href="https://openvisionx.in/?redirect=/leave-management" style="background: #0f172a; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 14px; display: inline-block;">
+                        <a href="{portal_link}" style="background: #0f172a; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 14px; display: inline-block;">
                             Open Staff Portal
                         </a>
                     </div>
