@@ -418,26 +418,22 @@ export default function HostelAllocation() {
                         event.stopPropagation();
                         beginAssignment(event.dataTransfer.getData('residentId'), { ...bed, room });
                       }}
-                      className={`min-h-[70px] rounded-xl border p-2.5 text-left text-xs transition-all focus:ring-2 focus:ring-indigo-500 ${visual.card}`}
-                      aria-label={`Room ${room.room_number}, ${bed.bed_label}, ${bed.status}${bed.resident ? `, occupied by ${bed.resident.name} (${visual.label})` : ''}`}
+                      className={`min-h-[66px] rounded-xl border p-2.5 text-left text-xs transition-all focus:ring-2 focus:ring-indigo-500 flex flex-col justify-between ${visual.card}`}
+                      aria-label={`Room ${room.room_number}, ${bed.bed_label}, ${bed.status}${bed.resident ? `, occupied by ${bed.resident.name}` : ''}`}
                     >
-                      <div className="flex items-center justify-between gap-1">
-                        <span className="flex items-center gap-1.5 font-bold">
-                          <BedDouble className="shrink-0" size={14} />
-                          <span className="truncate" title={bed.bed_label}>{bed.bed_label}</span>
-                        </span>
-                        <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${visual.badge}`}>
-                          <span className={`h-1.5 w-1.5 rounded-full ${visual.dot}`} />
-                          {visual.label}
-                        </span>
+                      <div className="flex items-center gap-1.5 font-bold">
+                        <BedDouble className="shrink-0 opacity-80" size={14} />
+                        <span className="truncate" title={bed.bed_label}>{bed.bed_label}</span>
                       </div>
                       {bed.resident ? (
-                        <div className="mt-1.5 min-w-0">
+                        <div className="mt-1 min-w-0">
                           <span className="block truncate font-semibold leading-tight text-slate-900" title={bed.resident.name}>{bed.resident.name}</span>
                           <span className="block text-[10px] opacity-75 truncate">ID: {bed.resident.resident_id}</span>
                         </div>
                       ) : (
-                        <span className="mt-2 block text-[11px] font-medium opacity-75">{bed.status === 'available' ? 'Vacant bed' : bed.status}</span>
+                        bed.status !== 'available' ? (
+                          <span className="mt-1 block text-[10px] font-medium opacity-75 capitalize">{bed.status}</span>
+                        ) : null
                       )}
                     </button>
                   );
