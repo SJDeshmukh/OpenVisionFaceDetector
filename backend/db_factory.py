@@ -653,7 +653,7 @@ def _init_pg_schema_on_conn(conn):
         "CREATE TABLE IF NOT EXISTS audit_logs (id SERIAL PRIMARY KEY, actor_username TEXT, actor_role TEXT, target_vendor_id INTEGER, action TEXT, details TEXT, ip TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT)",
         "CREATE TABLE IF NOT EXISTS parent_users (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), username TEXT UNIQUE, password TEXT, contact_email TEXT, contact_phone TEXT, student_number TEXT, selected_person_id INTEGER, device_id TEXT, fcm_token TEXT, session_version INTEGER DEFAULT 1, face_image TEXT, face_template TEXT, face_server_template TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
-        "CREATE TABLE IF NOT EXISTS leave_requests (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), student_id INTEGER REFERENCES faces(id), leave_type TEXT, reason TEXT, start_date DATE, end_date DATE, start_time TEXT, end_time TEXT, parent_status TEXT DEFAULT 'pending', rector_status TEXT DEFAULT 'pending', hod_status TEXT DEFAULT 'pending', final_status TEXT DEFAULT 'pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS leave_requests (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), student_id INTEGER REFERENCES faces(id), leave_type TEXT, reason TEXT, start_date DATE, end_date DATE, start_time TEXT, end_time TEXT, parent_status TEXT DEFAULT 'pending', rector_status TEXT DEFAULT 'pending', hod_status TEXT DEFAULT 'pending', final_status TEXT DEFAULT 'pending', is_cancellation INTEGER DEFAULT 0, cancellation_reason TEXT, cancellation_status TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS student_parents (id SERIAL PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), person_id INTEGER REFERENCES faces(id), parent_id INTEGER REFERENCES parent_users(id), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(person_id, parent_id))",
         "CREATE TABLE IF NOT EXISTS parent_tokens (token TEXT PRIMARY KEY, vendor_id INTEGER REFERENCES vendors(id), student_number TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS vendor_device_tokens (id SERIAL PRIMARY KEY, vendor_id INTEGER NOT NULL REFERENCES vendors(id), device_id TEXT, fcm_token TEXT NOT NULL, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, fcm_token))",
@@ -890,6 +890,9 @@ def _init_pg_schema_on_conn(conn):
         ("person_embeddings", "confirmed_at", "TIMESTAMP"),
         ("leave_staff", "navbar_items", "TEXT"),
         ("leave_staff", "email", "TEXT"),
+        ("leave_requests", "is_cancellation", "INTEGER DEFAULT 0"),
+        ("leave_requests", "cancellation_reason", "TEXT"),
+        ("leave_requests", "cancellation_status", "TEXT"),
     ]
     
     for table, col, col_type in cols:
@@ -1232,7 +1235,7 @@ def init_sqlite_schema(conn):
         "CREATE TABLE IF NOT EXISTS audit_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, actor_username TEXT, actor_role TEXT, target_vendor_id INTEGER, action TEXT, details TEXT, ip TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT)",
         "CREATE TABLE IF NOT EXISTS parent_users (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, username TEXT UNIQUE, password TEXT, contact_email TEXT, contact_phone TEXT, student_number TEXT, selected_person_id INTEGER, device_id TEXT, fcm_token TEXT, session_version INTEGER DEFAULT 1, face_image TEXT, face_template TEXT, face_server_template TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
-        "CREATE TABLE IF NOT EXISTS leave_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, student_id INTEGER, leave_type TEXT, reason TEXT, start_date DATE, end_date DATE, start_time TEXT, end_time TEXT, parent_status TEXT DEFAULT 'pending', rector_status TEXT DEFAULT 'pending', hod_status TEXT DEFAULT 'pending', final_status TEXT DEFAULT 'pending', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS leave_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, student_id INTEGER, leave_type TEXT, reason TEXT, start_date DATE, end_date DATE, start_time TEXT, end_time TEXT, parent_status TEXT DEFAULT 'pending', rector_status TEXT DEFAULT 'pending', hod_status TEXT DEFAULT 'pending', final_status TEXT DEFAULT 'pending', is_cancellation INTEGER DEFAULT 0, cancellation_reason TEXT, cancellation_status TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS student_parents (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, person_id INTEGER, parent_id INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(person_id, parent_id))",
         "CREATE TABLE IF NOT EXISTS parent_tokens (token TEXT PRIMARY KEY, vendor_id INTEGER, student_number TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS vendor_device_tokens (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER NOT NULL, device_id TEXT, fcm_token TEXT NOT NULL, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(vendor_id, fcm_token))",
@@ -1440,6 +1443,16 @@ def init_sqlite_schema(conn):
         cur.execute("ALTER TABLE leave_staff ADD COLUMN email TEXT")
     except Exception:
         pass
+
+    for c_def in [
+        "is_cancellation INTEGER DEFAULT 0",
+        "cancellation_reason TEXT",
+        "cancellation_status TEXT",
+    ]:
+        try:
+            cur.execute(f"ALTER TABLE leave_requests ADD COLUMN {c_def}")
+        except Exception:
+            pass
             
     for col in ["max_web_sessions INTEGER DEFAULT 1", "grace_period_days INTEGER DEFAULT 0", "cost_per_employee REAL DEFAULT 0", "setup_fee REAL DEFAULT 0", "setup_fee_paid INTEGER DEFAULT 0", "xchat_billing_mode TEXT DEFAULT 'payg'", "xchat_token_limit INTEGER DEFAULT 0", "xchat_tokens_used INTEGER DEFAULT 0", "xchat_input_tokens INTEGER DEFAULT 0", "xchat_output_tokens INTEGER DEFAULT 0", "xchat_tokens_billed INTEGER DEFAULT 0", "xchat_price_per_1k_tokens REAL DEFAULT 0"]:
         try:

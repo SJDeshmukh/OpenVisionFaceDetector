@@ -385,6 +385,211 @@ Regards,
     thread.start()
 
 
+def _send_cancellation_email_async(vendor_id, request_id):
+    """Notify all assigned staff members via email when a leave cancellation is approved by parent."""
+    import threading
+    import logging
+    logger = logging.getLogger(__name__)
+
+    def _worker():
+        try:
+            from utils import get_db_connection
+            conn = get_db_connection()
+            c = conn.cursor()
+            is_pg = getattr(conn, "_is_pg", False)
+
+            try:
+                if is_pg:
+                    c.execute("""
+                        SELECT lr.id, lr.leave_type, lr.reason, lr.cancellation_reason, lr.start_date, lr.end_date, lr.start_time, lr.end_time,
+                               f.name as student_name, f.department as student_dept, f.custom_data, v.company_name as vendor_name
+                        FROM leave_requests lr
+                        LEFT JOIN faces f ON lr.student_id = f.id
+                        LEFT JOIN vendors v ON lr.vendor_id = v.id
+                        WHERE lr.id = %s AND lr.vendor_id = %s
+                    """, (request_id, vendor_id))
+                else:
+                    c.execute("""
+                        SELECT lr.id, lr.leave_type, lr.reason, lr.cancellation_reason, lr.start_date, lr.end_date, lr.start_time, lr.end_time,
+                               f.name as student_name, f.department as student_dept, f.custom_data, v.company_name as vendor_name
+                        FROM leave_requests lr
+                        LEFT JOIN faces f ON lr.student_id = f.id
+                        LEFT JOIN vendors v ON lr.vendor_id = v.id
+                        WHERE lr.id = ? AND lr.vendor_id = ?
+                    """, (request_id, vendor_id))
+                row = c.fetchone()
+                if not row:
+                    return
+                req = get_row_dict(row)
+
+                student_name = req.get("student_name") or "Student"
+                student_dept = req.get("student_dept") or ""
+                if not student_dept and req.get("custom_data"):
+                    try:
+                        cd = json.loads(req["custom_data"]) if isinstance(req["custom_data"], str) else req["custom_data"]
+                        student_dept = cd.get("department") or cd.get("branch") or ""
+                    except Exception:
+                        pass
+
+                vendor_name = req.get("vendor_name") or "TapInX"
+                leave_type = str(req.get("leave_type") or "Leave").replace("_", " ").title()
+                start_date = str(req.get("start_date") or "")
+                end_date = str(req.get("end_date") or "")
+                reason = str(req.get("reason") or "No reason provided")
+                cancellation_reason = str(req.get("cancellation_reason") or "Student requested cancellation")
+
+                # Fetch all staff approvers with valid emails for this vendor
+                if is_pg:
+                    c.execute("""
+                        SELECT DISTINCT name, email, role FROM leave_staff
+                        WHERE vendor_id = %s AND email IS NOT NULL AND email <> ''
+                    """, (vendor_id,))
+                else:
+                    c.execute("""
+                        SELECT DISTINCT name, email, role FROM leave_staff
+                        WHERE vendor_id = ? AND email IS NOT NULL AND email <> ''
+                    """, (vendor_id,))
+                approvers = c.fetchall() or []
+            finally:
+                conn.close()
+
+            if not approvers:
+                logger.warning(f"No staff emails found to notify about cancellation of request #{request_id} in vendor {vendor_id}.")
+                return
+
+            from services.email_service import send_email
+
+            subject = f"Leave Cancellation Approved · Request #{request_id} · {student_name} ({leave_type})"
+            for staff_row in approvers:
+                staff_dict = get_row_dict(staff_row)
+                staff_name = staff_dict.get("name") if isinstance(staff_dict, dict) else staff_row[0]
+                staff_email = staff_dict.get("email") if isinstance(staff_dict, dict) else staff_row[1]
+                if not staff_email:
+                    continue
+
+                text_body = f"""Hello {staff_name},
+
+NOTICE: Leave Request #{request_id} for {student_name} has been CANCELLED and approved by parent.
+
+Request ID: #{request_id}
+Student: {student_name}
+Department / Branch: {student_dept or 'N/A'}
+Original Leave Type: {leave_type}
+Dates: {start_date} to {end_date}
+Cancellation Reason: {cancellation_reason}
+Parent Approval: Verified & Approved with Face Scan
+Status: CANCELLED
+
+ATTENDANCE NOTICE:
+The student's attendance will continue to be marked regularly as normal. The student may now apply for leave again on these dates if needed.
+
+Staff Portal:
+https://openvisionx.in/?redirect=/leave-management
+
+Regards,
+{vendor_name} Leave Management System
+"""
+
+                html_body = f"""
+                <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #fecaca; border-radius: 12px; background: #ffffff;">
+                    <div style="border-bottom: 2px solid #ef4444; padding-bottom: 12px; margin-bottom: 20px;">
+                        <span style="background: #fee2e2; color: #b91c1c; font-size: 11px; font-weight: bold; padding: 4px 10px; border-radius: 12px; text-transform: uppercase; letter-spacing: 0.5px;">
+                            Cancellation Approved
+                        </span>
+                        <h2 style="color: #1e293b; margin: 8px 0 0 0; font-size: 20px;">TapInX | Leave Cancellation Notice</h2>
+                        <p style="color: #64748b; margin: 4px 0 0 0; font-size: 13px;">Request #{request_id} · Vendor: {vendor_name}</p>
+                    </div>
+
+                    <p style="color: #334155; font-size: 15px; margin-bottom: 14px;">
+                        Hello <strong>{staff_name}</strong>,
+                    </p>
+                    <p style="color: #475569; font-size: 14px; margin-bottom: 20px; line-height: 1.5;">
+                        Student <strong>{student_name}</strong> requested to cancel their leave request (<strong>#{request_id}</strong>). The cancellation has been <strong>verified and approved by the parent</strong> via mobile face authentication.
+                    </p>
+
+                    <div style="background: #fff1f2; border: 1px solid #fecdd3; border-radius: 8px; padding: 14px 16px; margin-bottom: 20px;">
+                        <p style="margin: 0; color: #9f1239; font-size: 13px; font-weight: 600;">
+                            &#9888; Attendance Notice:
+                        </p>
+                        <p style="margin: 4px 0 0 0; color: #881337; font-size: 13px; line-height: 1.4;">
+                            The student is <strong>no longer on leave</strong>. Regular attendance marking applies as normal. The student may also re-apply for leave during these dates without restriction.
+                        </p>
+                    </div>
+
+                    <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin-bottom: 24px;">
+                        <table style="width: 100%; border-collapse: collapse; font-size: 13px; color: #334155;">
+                            <tr>
+                                <td style="padding: 6px 0; color: #64748b; width: 140px;">Request ID:</td>
+                                <td style="padding: 6px 0; font-weight: 600; color: #2563eb;">#{request_id}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 6px 0; color: #64748b;">Student Name:</td>
+                                <td style="padding: 6px 0; font-weight: 600;">{student_name}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 6px 0; color: #64748b;">Department:</td>
+                                <td style="padding: 6px 0; font-weight: 600;">{student_dept or 'N/A'}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 6px 0; color: #64748b;">Leave Type:</td>
+                                <td style="padding: 6px 0; font-weight: 600;">{leave_type}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 6px 0; color: #64748b;">Duration:</td>
+                                <td style="padding: 6px 0; font-weight: 600;">{start_date} &rarr; {end_date}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 6px 0; color: #64748b; vertical-align: top;">Original Reason:</td>
+                                <td style="padding: 6px 0; font-style: italic; color: #64748b;">"{reason}"</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 6px 0; color: #b91c1c; vertical-align: top; font-weight: 600;">Cancellation Reason:</td>
+                                <td style="padding: 6px 0; font-weight: 600; color: #b91c1c;">"{cancellation_reason}"</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 6px 0; color: #047857; font-weight: 600;">Parent Approval:</td>
+                                <td style="padding: 6px 0; font-weight: 600; color: #047857;">&#10004; Verified & Approved with Mobile Face Scan</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 6px 0; color: #64748b;">Final Status:</td>
+                                <td style="padding: 6px 0;"><span style="background: #fee2e2; color: #991b1b; padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size: 11px;">CANCELLED</span></td>
+                            </tr>
+                        </table>
+                    </div>
+
+                    <div style="text-align: center; margin: 24px 0 16px 0;">
+                        <a href="https://openvisionx.in/?redirect=/leave-management" style="background: #0f172a; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 14px; display: inline-block;">
+                            Open Staff Portal
+                        </a>
+                    </div>
+
+                    <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0 16px 0;" />
+                    <p style="color: #94a3b8; font-size: 11px; text-align: center; margin: 0;">
+                        This is an automated operational notification generated by TapInX on behalf of {vendor_name}.
+                    </p>
+                </div>
+                """
+
+                try:
+                    send_email(
+                        subject=subject,
+                        text_body=text_body,
+                        recipient=staff_email,
+                        html_body=html_body,
+                        vendor_id=vendor_id,
+                        email_type="leave_cancellation_notification",
+                    )
+                    logger.info(f"Leave cancellation email sent to {staff_email} for request #{request_id}")
+                except Exception as ex:
+                    logger.warning(f"Failed to send cancellation email to {staff_email}: {ex}")
+
+        except Exception as e:
+            logger.warning(f"Error in _send_cancellation_email_async worker: {e}")
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+
+
 def _extract_server_face_template(face_image, vendor_id):
     """Extract a server-controlled embedding from an audit image."""
     from tasks import detect_faces_task
@@ -758,6 +963,9 @@ def update_leave_request(request_id):
         if rejected_stage:
             return jsonify({"error": "Leave request cannot be edited because it has been rejected."}), 400
 
+        if int(req_row.get("is_cancellation") or 0) == 1:
+            return jsonify({"error": "Cannot edit a leave request with an active or pending cancellation."}), 400
+
         for col in ("rector_status", "hod_status", "parent_status"):
             if str(req_row.get(col) or "").lower() == "approved":
                 return jsonify({"error": "Leave request cannot be edited once an approval has been granted."}), 400
@@ -858,6 +1066,16 @@ def get_parent_pending_requests():
         status_param = request.args.get("status")
         include_all = request.args.get("all") in ("1", "true") or request.path.endswith(("/requests", "/history"))
 
+        def _format_for_parent(item_list):
+            for r in item_list:
+                if int(r.get("is_cancellation") or 0) == 1:
+                    orig_type = str(r.get("leave_type") or "Leave").replace("_", " ").title()
+                    c_reason = r.get("cancellation_reason") or "Cancellation requested by student"
+                    orig_reason = r.get("reason") or "No reason provided"
+                    r["leave_type"] = f"Cancellation: {orig_type}"
+                    r["reason"] = f"[CANCELLATION REQUEST] {c_reason} (Original: {orig_reason})"
+            return item_list
+
         if include_all or status_param:
             if status_param and status_param != "all":
                 c.execute("""SELECT * FROM leave_requests
@@ -869,7 +1087,8 @@ def get_parent_pending_requests():
                              ORDER BY created_at DESC""", (student_id, vendor_id))
             rows = [get_row_dict(r) for r in c.fetchall()]
             attach_approval_steps(conn, rows)
-            return jsonify({"requests": rows, "history": rows})
+            formatted = _format_for_parent(rows)
+            return jsonify({"requests": formatted, "history": formatted})
 
         c.execute("""SELECT * FROM leave_requests
                      WHERE student_id = ? AND vendor_id = ? AND final_status = 'pending'
@@ -880,7 +1099,7 @@ def get_parent_pending_requests():
             row for row in rows
             if row.get("current_stage") and row["current_stage"].get("actor_type") == "parent"
         ]
-        return jsonify({"requests": pending})
+        return jsonify({"requests": _format_for_parent(pending)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
@@ -1109,6 +1328,115 @@ def parent_approve_request():
 
         if not verified or similarity < 0.58:
              return jsonify({"error": "Face verification failed", "similarity": similarity}), 401
+
+        # Check if this request is a cancellation request
+        if int(request_row.get("is_cancellation") or 0) == 1:
+            if action == "approved":
+                if is_pg:
+                    c.execute("""
+                        UPDATE leave_requests
+                        SET final_status = 'cancelled',
+                            parent_status = 'approved',
+                            cancellation_status = 'approved'
+                        WHERE id = %s AND vendor_id = %s
+                    """, (request_id, vendor_id))
+                else:
+                    c.execute("""
+                        UPDATE leave_requests
+                        SET final_status = 'cancelled',
+                            parent_status = 'approved',
+                            cancellation_status = 'approved'
+                        WHERE id = ? AND vendor_id = ?
+                    """, (request_id, vendor_id))
+
+                # Update the parent stage in leave_request_stages
+                try:
+                    decide_current_stage(
+                        conn,
+                        vendor_id,
+                        request_row,
+                        "approved",
+                        actor_type="parent",
+                        role_key="parent",
+                        actor_id=parent["id"],
+                        actor_name=parent["student_number"],
+                        metadata={
+                            "face_similarity": similarity,
+                            "verification": verification_method,
+                            "device_id": parent.get("device_id"),
+                            "ip": request.remote_addr,
+                            "captured_face": captured_face,
+                            "cancellation_approval": True,
+                        },
+                    )
+                except Exception as ex:
+                    import logging
+                    logging.getLogger(__name__).warning("decide_current_stage fallback for cancellation: %s", ex)
+
+                # Skip any remaining stages since the leave is cancelled
+                if is_pg:
+                    c.execute("""
+                        UPDATE leave_request_stages
+                        SET status = 'skipped'
+                        WHERE request_id = %s AND vendor_id = %s AND actor_type != 'parent' AND status = 'pending'
+                    """, (request_id, vendor_id))
+                else:
+                    c.execute("""
+                        UPDATE leave_request_stages
+                        SET status = 'skipped'
+                        WHERE request_id = ? AND vendor_id = ? AND actor_type != 'parent' AND status = 'pending'
+                    """, (request_id, vendor_id))
+                conn.commit()
+
+                # Automated notification email to all staff members
+                _send_cancellation_email_async(vendor_id, request_id)
+
+                # Send FCM push notification to student / parent
+                try:
+                    from notifications import notify_parent_async
+                    notify_parent_async(
+                        student_id,
+                        vendor_id,
+                        "Leave Cancellation Approved",
+                        "The leave request has been successfully cancelled and all staff members have been notified.",
+                        {"type": "leave_cancelled", "request_id": str(request_id)},
+                    )
+                except Exception:
+                    pass
+
+                return jsonify({
+                    "status": "success",
+                    "message": "Leave request cancelled successfully and staff notified.",
+                    "similarity": similarity,
+                    "method": verification_method,
+                })
+            else:
+                # Parent rejected cancellation
+                if is_pg:
+                    c.execute("""
+                        UPDATE leave_requests
+                        SET is_cancellation = 0,
+                            cancellation_status = 'rejected',
+                            parent_status = 'approved',
+                            final_status = 'approved'
+                        WHERE id = %s AND vendor_id = %s
+                    """, (request_id, vendor_id))
+                else:
+                    c.execute("""
+                        UPDATE leave_requests
+                        SET is_cancellation = 0,
+                            cancellation_status = 'rejected',
+                            parent_status = 'approved',
+                            final_status = 'approved'
+                        WHERE id = ? AND vendor_id = ?
+                    """, (request_id, vendor_id))
+                conn.commit()
+                return jsonify({
+                    "status": "success",
+                    "message": "Leave cancellation was rejected. Original leave request remains active.",
+                    "similarity": similarity,
+                    "method": verification_method,
+                })
 
         decide_current_stage(
             conn,
@@ -2323,5 +2651,172 @@ def get_student_history():
         rows = [get_row_dict(r) for r in c.fetchall()]
         attach_approval_steps(conn, rows)
         return jsonify({"status": "success", "requests": rows})
+    finally:
+        conn.close()
+
+
+@leave_bp.route("/student/cancel-request", methods=["POST"])
+@leave_bp.route("/cancel-request", methods=["POST"])
+@require_feature("leave_management")
+def cancel_leave_request():
+    vendor_id, error = authenticate_vendor_access()
+    if error:
+        return error
+    role_error = _require_role("user", "student", "parent")
+    if role_error:
+        return role_error
+
+    data = request.json or {}
+    request_id = data.get("request_id")
+    cancellation_reason = (data.get("cancellation_reason") or "").strip()
+
+    if not request_id:
+        return jsonify({"error": "Missing request_id"}), 400
+    if not cancellation_reason:
+        return jsonify({"error": "Please provide a reason for cancelling this leave"}), 400
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    try:
+        is_pg = getattr(conn, "_is_pg", False)
+        caller_role = getattr(g, "user_role", None)
+
+        # 1. Resolve student ID
+        person_id = None
+        if caller_role == "parent":
+            parent = _authenticated_parent(c, vendor_id)
+            if not parent:
+                return jsonify({"error": "Parent access required"}), 403
+            person_id = parent.get("selected_person_id")
+        else:
+            username = getattr(g, "username", None)
+            if not username:
+                return jsonify({"error": "Student account required"}), 401
+            if is_pg:
+                c.execute(
+                    "SELECT person_id FROM system_users WHERE vendor_id = %s AND username = %s AND person_id IS NOT NULL",
+                    (vendor_id, username),
+                )
+            else:
+                c.execute(
+                    "SELECT person_id FROM system_users WHERE vendor_id = ? AND username = ? AND person_id IS NOT NULL",
+                    (vendor_id, username),
+                )
+            acct = c.fetchone()
+            if acct:
+                person_id = acct["person_id"] if hasattr(acct, "keys") else acct[0]
+            if person_id is None:
+                if is_pg:
+                    c.execute("""SELECT id FROM faces WHERE vendor_id = %s AND (
+                        id::text = %s OR
+                        LOWER(TRIM(custom_data::jsonb->>'student_id')) = LOWER(TRIM(%s)) OR
+                        LOWER(TRIM(custom_data::jsonb->>'id_number')) = LOWER(TRIM(%s)) OR
+                        LOWER(TRIM(custom_data::jsonb->>'employee_id')) = LOWER(TRIM(%s))
+                    )""", (vendor_id, username, username, username, username))
+                else:
+                    c.execute("""SELECT id FROM faces WHERE vendor_id = ? AND (
+                        CAST(id AS TEXT) = ? OR
+                        LOWER(TRIM(json_extract(custom_data, '$.student_id'))) = LOWER(TRIM(?)) OR
+                        LOWER(TRIM(json_extract(custom_data, '$.id_number'))) = LOWER(TRIM(?)) OR
+                        LOWER(TRIM(json_extract(custom_data, '$.employee_id'))) = LOWER(TRIM(?))
+                    )""", (vendor_id, username, username, username, username))
+                fc = c.fetchone()
+                if fc:
+                    person_id = fc["id"] if hasattr(fc, "keys") else fc[0]
+
+        if person_id is None:
+            return jsonify({"error": "Could not identify student record"}), 404
+
+        # 2. Fetch the target leave request
+        if is_pg:
+            c.execute("""
+                SELECT lr.*, f.name as student_name
+                FROM leave_requests lr
+                LEFT JOIN faces f ON lr.student_id = f.id
+                WHERE lr.id = %s AND lr.vendor_id = %s AND lr.student_id = %s
+            """, (request_id, vendor_id, person_id))
+        else:
+            c.execute("""
+                SELECT lr.*, f.name as student_name
+                FROM leave_requests lr
+                LEFT JOIN faces f ON lr.student_id = f.id
+                WHERE lr.id = ? AND lr.vendor_id = ? AND lr.student_id = ?
+            """, (request_id, vendor_id, person_id))
+        req_row = c.fetchone()
+        if not req_row:
+            return jsonify({"error": "Leave request not found or does not belong to you"}), 404
+
+        req = get_row_dict(req_row)
+        current_final = str(req.get("final_status") or "").lower()
+        if current_final == "cancelled":
+            return jsonify({"error": "This leave request has already been cancelled"}), 400
+        if current_final == "rejected":
+            return jsonify({"error": "Cannot cancel an already rejected leave request"}), 400
+        if int(req.get("is_cancellation") or 0) == 1 and req.get("cancellation_status") == "pending":
+            return jsonify({"error": "A cancellation request is already pending parent approval"}), 400
+
+        # 3. Update leave_requests with cancellation intent
+        if is_pg:
+            c.execute("""
+                UPDATE leave_requests
+                SET is_cancellation = 1,
+                    cancellation_reason = %s,
+                    cancellation_status = 'pending',
+                    final_status = 'pending',
+                    parent_status = 'pending'
+                WHERE id = %s AND vendor_id = %s
+            """, (cancellation_reason, request_id, vendor_id))
+        else:
+            c.execute("""
+                UPDATE leave_requests
+                SET is_cancellation = 1,
+                    cancellation_reason = ?,
+                    cancellation_status = 'pending',
+                    final_status = 'pending',
+                    parent_status = 'pending'
+                WHERE id = ? AND vendor_id = ?
+            """, (cancellation_reason, request_id, vendor_id))
+
+        # 4. In leave_request_stages, ensure stages exist and reset parent stage to pending
+        snapshot_request(conn, vendor_id, request_id, req)
+        if is_pg:
+            c.execute("""
+                UPDATE leave_request_stages
+                SET status = 'pending', decided_at = NULL, actor_id = NULL, actor_name = NULL, decision_metadata = NULL
+                WHERE request_id = %s AND vendor_id = %s AND actor_type = 'parent'
+            """, (request_id, vendor_id))
+        else:
+            c.execute("""
+                UPDATE leave_request_stages
+                SET status = 'pending', decided_at = NULL, actor_id = NULL, actor_name = NULL, decision_metadata = NULL
+                WHERE request_id = ? AND vendor_id = ? AND actor_type = 'parent'
+            """, (request_id, vendor_id))
+
+        conn.commit()
+
+        # 5. Send FCM push notification to parent
+        try:
+            from notifications import notify_parent_async
+            student_name = req.get("student_name") or "Your student"
+            orig_type = str(req.get("leave_type") or "leave").replace("_", " ").title()
+            notify_parent_async(
+                person_id,
+                vendor_id,
+                "Leave Cancellation awaiting your approval",
+                f"{student_name} requested to cancel their leave ({orig_type}). Please review and approve with face verification.",
+                {
+                    "type": "leave_approval",
+                    "request_id": str(request_id),
+                    "stage": "parent",
+                },
+            )
+        except Exception as ex:
+            import logging
+            logging.getLogger(__name__).warning("Could not send cancellation FCM: %s", ex)
+
+        return jsonify({
+            "status": "success",
+            "message": "Leave cancellation request submitted successfully. Awaiting parent face approval."
+        })
     finally:
         conn.close()

@@ -21,7 +21,8 @@ import {
   ChevronDown,
   ChevronRight,
   Edit2,
-  X
+  X,
+  Ban
 } from 'lucide-react';
 import { getBusinessTerminology, usesStudentRecords, isHostelVertical } from '../lib/businessTerminology';
 
@@ -92,6 +93,40 @@ const LeaveManagement = () => {
       alert("Error updating leave request: " + (err.response?.data?.error || err.message));
     } finally {
       setEditSubmitting(false);
+    }
+  };
+
+  const [cancelModalOpen, setCancelModalOpen] = useState(false);
+  const [cancelTarget, setCancelTarget] = useState(null);
+  const [cancellationReason, setCancellationReason] = useState('');
+  const [submittingCancel, setSubmittingCancel] = useState(false);
+
+  const handleOpenCancelModal = (req) => {
+    setCancelTarget(req);
+    setCancellationReason('');
+    setCancelModalOpen(true);
+  };
+
+  const handleConfirmCancel = async () => {
+    if (!cancellationReason.trim()) {
+      alert("Please provide a reason for cancelling this leave.");
+      return;
+    }
+    setSubmittingCancel(true);
+    try {
+      const res = await axios.post(`${API_URL}/leave/student/cancel-request`, {
+        request_id: cancelTarget.id,
+        cancellation_reason: cancellationReason.trim()
+      }, isRegularUser ? {} : staffRequestConfig);
+      alert(res.data.message || "Cancellation submitted! Awaiting parent approval on mobile app.");
+      setCancelModalOpen(false);
+      setCancelTarget(null);
+      setCancellationReason('');
+      fetchData();
+    } catch (err) {
+      alert("Error submitting cancellation: " + (err.response?.data?.error || err.message));
+    } finally {
+      setSubmittingCancel(false);
     }
   };
   
@@ -880,9 +915,19 @@ const LeaveManagement = () => {
                           </div>
                         </div>
                       </div>
-                      <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${req.final_status === 'approved' ? 'bg-green-100 text-green-700' : req.final_status === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
-                        {req.final_status}
-                      </span>
+                      {req.final_status === 'cancelled' ? (
+                        <span className="px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-slate-100 text-slate-700 border border-slate-300">
+                          Cancelled
+                        </span>
+                      ) : Number(req.is_cancellation) === 1 && req.cancellation_status === 'pending' ? (
+                        <span className="px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-purple-100 text-purple-700 border border-purple-200">
+                          Cancellation Pending Parent
+                        </span>
+                      ) : (
+                        <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${req.final_status === 'approved' ? 'bg-green-100 text-green-700' : req.final_status === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
+                          {req.final_status}
+                        </span>
+                      )}
                     </div>
                     
                     {/* Visual Tracker */}
@@ -936,26 +981,61 @@ const LeaveManagement = () => {
                         );
                       })}
                     </div>
+
+                    {/* Cancellation notice banner if cancellation requested or done */}
+                    {req.cancellation_reason && (
+                      <div className="mt-3 p-3 rounded-lg bg-rose-50 border border-rose-200 text-xs text-rose-800">
+                        <div className="flex items-center gap-1.5 font-bold">
+                          <Ban size={14} className="text-rose-600 shrink-0" />
+                          <span>Cancellation Reason:</span>
+                          <span className="font-normal italic">"{req.cancellation_reason}"</span>
+                        </div>
+                        {Number(req.is_cancellation) === 1 && req.cancellation_status === 'pending' && (
+                          <p className="mt-1 font-semibold text-rose-700 flex items-center gap-1">
+                            <Clock size={12} /> Awaiting parent approval via mobile face scan
+                          </p>
+                        )}
+                        {req.final_status === 'cancelled' && (
+                          <p className="mt-1 font-semibold text-emerald-700 flex items-center gap-1">
+                            <CheckCircle size={12} /> Cancelled & approved by parent · Attendance active as normal
+                          </p>
+                        )}
+                      </div>
+                    )}
+
                     <div className="mt-4 pt-4 border-t border-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-sm text-slate-600">
                       <p className="italic">"{req.reason}"</p>
-                      {/* Check if leave can be edited by student: pending final status and 0 approvals */}
-                      {(() => {
-                        const hasApproval = (req.approval_steps || []).some(s => ['approved', 'rejected'].includes(String(s.status || '').toLowerCase()))
-                          || ['approved', 'rejected'].includes(String(req.rector_status || '').toLowerCase())
-                          || ['approved', 'rejected'].includes(String(req.hod_status || '').toLowerCase())
-                          || ['approved', 'rejected'].includes(String(req.parent_status || '').toLowerCase());
-                        const isEditable = String(req.final_status || '').toLowerCase() === 'pending' && !hasApproval;
-                        if (!isEditable) return null;
-                        return (
+                      <div className="flex items-center gap-2 shrink-0">
+                        {/* Check if leave can be edited by student: pending final status and 0 approvals and no active cancellation */}
+                        {(() => {
+                          const hasApproval = (req.approval_steps || []).some(s => ['approved', 'rejected'].includes(String(s.status || '').toLowerCase()))
+                            || ['approved', 'rejected'].includes(String(req.rector_status || '').toLowerCase())
+                            || ['approved', 'rejected'].includes(String(req.hod_status || '').toLowerCase())
+                            || ['approved', 'rejected'].includes(String(req.parent_status || '').toLowerCase());
+                          const isEditable = String(req.final_status || '').toLowerCase() === 'pending' && !hasApproval && !(Number(req.is_cancellation) === 1);
+                          if (!isEditable) return null;
+                          return (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenEdit(req)}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-lg text-xs font-bold border border-blue-200 transition-colors shrink-0 shadow-2xs"
+                            >
+                              <Edit2 size={13} /> Edit Leave
+                            </button>
+                          );
+                        })()}
+                        {/* Student Cancel Leave Button */}
+                        {isRegularUser && req.final_status !== 'cancelled' && req.final_status !== 'rejected' && !(Number(req.is_cancellation) === 1 && req.cancellation_status === 'pending') && (
                           <button
                             type="button"
-                            onClick={() => handleOpenEdit(req)}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-lg text-xs font-bold border border-blue-200 transition-colors shrink-0 shadow-2xs"
+                            onClick={() => handleOpenCancelModal(req)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 text-rose-700 hover:bg-rose-100 rounded-lg text-xs font-bold border border-rose-200 transition-colors shrink-0 shadow-2xs"
+                            title="Request cancellation for this leave ticket"
                           >
-                            <Edit2 size={13} /> Edit Leave
+                            <Ban size={13} /> Cancel Leave
                           </button>
-                        );
-                      })()}
+                        )}
+                      </div>
                     </div>
                   </div>
                 ))
@@ -1324,6 +1404,87 @@ const LeaveManagement = () => {
               />
             </div>
             <p className="text-[11px] text-slate-500 mt-2 font-medium">Captured & verified during approval process</p>
+          </div>
+        </div>
+      )}
+
+      {/* Student Cancel Leave Modal */}
+      {cancelModalOpen && cancelTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 animate-in fade-in zoom-in duration-150">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-rose-100 text-rose-600 rounded-xl">
+                  <Ban size={20} />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-800 text-base">Cancel Leave Request</h3>
+                  <p className="text-xs text-slate-500">Ticket #{cancelTarget.id} · {formatLeaveType(cancelTarget.leave_type)}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => { setCancelModalOpen(false); setCancelTarget(null); }}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-md"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-3.5">
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-950 leading-relaxed">
+                <p className="font-bold mb-1 flex items-center gap-1 text-amber-900">
+                  <span>&#9888; Parent Approval Required</span>
+                </p>
+                Submitting this cancellation will notify your linked parent on their mobile app. Your parent must verify their face scan to authorize the cancellation.
+                <div className="mt-2 pt-2 border-t border-amber-200/60 text-[11px] text-amber-900 space-y-1">
+                  <p>&#10004; Once approved, all assigned staff are automatically notified via email.</p>
+                  <p>&#10004; Your regular attendance will continue to be marked as normal.</p>
+                  <p>&#10004; You can re-apply for leave on these dates without conflict.</p>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                  Reason for Cancellation <span className="text-rose-500">*</span>
+                </label>
+                <textarea
+                  value={cancellationReason}
+                  onChange={(e) => setCancellationReason(e.target.value)}
+                  rows={3}
+                  placeholder="e.g. Plans cancelled, event rescheduled, staying back in campus..."
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-rose-500 focus:border-rose-500 outline-none transition-all placeholder:text-slate-400"
+                />
+              </div>
+            </div>
+
+            <div className="mt-6 flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => { setCancelModalOpen(false); setCancelTarget(null); }}
+                disabled={submittingCancel}
+                className="px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors disabled:opacity-50"
+              >
+                Keep Leave
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmCancel}
+                disabled={submittingCancel || !cancellationReason.trim()}
+                className="inline-flex items-center gap-2 px-5 py-2 text-sm font-bold text-white bg-rose-600 hover:bg-rose-700 active:bg-rose-800 rounded-xl transition-colors disabled:opacity-50 shadow-sm"
+              >
+                {submittingCancel ? (
+                  <>
+                    <RotateCcw size={14} className="animate-spin" />
+                    Submitting...
+                  </>
+                ) : (
+                  <>
+                    <Ban size={14} />
+                    Confirm Cancellation
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}

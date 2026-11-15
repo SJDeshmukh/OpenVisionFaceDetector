@@ -338,6 +338,7 @@ def _approved_leave_people(c, vendor_id, alert_date):
                 LOWER(TRIM(COALESCE(final_status, ''))) = 'approved'
                 OR LOWER(TRIM(COALESCE(rector_status, ''))) = 'approved'
             )
+            AND LOWER(TRIM(COALESCE(final_status, ''))) NOT IN ('rejected', 'cancelled')
         """, (vendor_id,))
         rows = c.fetchall() or []
         leave_ids = set()
@@ -602,6 +603,7 @@ def process_leave_checkout_alert(vendor_id, person_id, timestamp=None, connectio
                   LOWER(TRIM(COALESCE(final_status, ''))) = 'approved'
                   OR LOWER(TRIM(COALESCE(rector_status, ''))) = 'approved'
               )
+              AND LOWER(TRIM(COALESCE(final_status, ''))) NOT IN ('rejected', 'cancelled')
               AND SUBSTR(start_date, 1, 10) <= ?
               AND SUBSTR(end_date, 1, 10) >= ?
             ORDER BY id DESC LIMIT 1
