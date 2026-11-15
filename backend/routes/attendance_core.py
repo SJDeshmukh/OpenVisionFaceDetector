@@ -1184,7 +1184,7 @@ def get_attendance(valid_data: AttendanceFilterSchema):
         FROM attendance a
         LEFT JOIN faces f ON f.vendor_id = a.vendor_id AND f.id = a.person_id
         LEFT JOIN vendor_devices vd ON a.device_id = vd.device_id AND a.vendor_id = vd.vendor_id
-        WHERE a.vendor_id = %s AND a.person_id IS NOT NULL
+        WHERE a.vendor_id = %s
     """ if getattr(conn, "_is_pg", False) else """
         SELECT a.id, a.person_id, a.vendor_id, a.name, a.timestamp,
                a.status, a.activity, a.is_late, a.device_id,
@@ -1202,7 +1202,7 @@ def get_attendance(valid_data: AttendanceFilterSchema):
         FROM attendance a
         LEFT JOIN faces f ON f.vendor_id = a.vendor_id AND f.id = a.person_id
         LEFT JOIN vendor_devices vd ON a.device_id = vd.device_id AND a.vendor_id = vd.vendor_id
-        WHERE a.vendor_id = ? AND a.person_id IS NOT NULL
+        WHERE a.vendor_id = ?
     """
     is_pg = getattr(conn, "_is_pg", False)
     placeholder = "%s" if is_pg else "?"

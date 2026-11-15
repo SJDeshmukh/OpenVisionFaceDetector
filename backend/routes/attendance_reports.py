@@ -349,9 +349,10 @@ def get_analytics(valid_data: PayrollReportRequest):
         
     filter_cache_part = json.dumps(sorted(request.args.items()), separators=(",", ":"))
     cache_key = f"vendor:{vendor_id}:analytics:{start_date}:{end_date}:{valid_data.person_type or 'default'}:{filter_cache_part}"
-    cached = cache_get(cache_key)
-    if cached: return jsonify(cached)
-
+    no_cache = request.headers.get("Cache-Control") in ("no-cache", "max-age=0") or request.args.get("nocache") == "1"
+    if not no_cache:
+        cached = cache_get(cache_key)
+        if cached: return jsonify(cached)
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -457,8 +458,8 @@ def get_analytics(valid_data: PayrollReportRequest):
         query = """SELECT id, person_id, name, timestamp, status, activity, is_late, device_id, vendor_id, attendance_date, class_year, division, branch, subject, lecture_id FROM attendance WHERE timestamp >= ? AND timestamp < ? AND vendor_id = ? ORDER BY timestamp ASC"""
     c.execute(query, (f"{start_date} 00:00:00", f"{fetch_end} 00:00:00", vendor_id))
     rows = c.fetchall()
-    rows = c.fetchall()
-    
+
+
     user_records = defaultdict(list)
     for row in rows:
         record = dict(row) if hasattr(row, 'keys') else dict(zip([d[0] for d in c.description], row))
@@ -471,9 +472,8 @@ def get_analytics(valid_data: PayrollReportRequest):
     
     total_days = (e_dt - s_dt).days + 1
     all_dates = [(s_dt + timedelta(days=x)).strftime('%Y-%m-%d') for x in range(total_days)]
-    
     for pid, person_info in persons.items():
-        records = user_records.get(pid, [])
+        records = user_records.get(pid) or user_records.get(int(pid) if str(pid).isdigit() else pid) or user_records.get(str(pid)) or []
         p_total_hours = 0
         p_present_days = 0
         p_late_count = 0

@@ -410,8 +410,15 @@ const Attendance = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {loading ? (
-                <tr><td colSpan="8" className="p-8 text-center text-slate-500">Loading logs...</td></tr>
+              {(loading || (isRefreshing && sortedGroups.length === 0)) ? (
+                <tr>
+                  <td colSpan="8" className="p-8 text-center text-slate-500">
+                    <div className="flex items-center justify-center space-x-2">
+                      <RefreshCw className="animate-spin text-blue-500 inline mr-2" size={18} />
+                      <span>Loading logs...</span>
+                    </div>
+                  </td>
+                </tr>
               ) : sortedGroups.length === 0 ? (
                 <tr><td colSpan="8" className="p-8 text-center text-slate-500">No attendance records found.</td></tr>
               ) : (

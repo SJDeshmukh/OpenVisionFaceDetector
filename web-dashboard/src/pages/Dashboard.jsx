@@ -98,7 +98,10 @@ const Dashboard = () => {
     const fetchData = async () => {
       try {
         const [analyticsRes, attendanceRes] = await Promise.all([
-          axios.get(`${API_URL}/reports/analytics`, { params: schoolFlow ? { person_type: 'student' } : {} }),
+          axios.get(`${API_URL}/reports/analytics`, {
+            params: schoolFlow ? { person_type: 'student' } : {},
+            headers: { 'Cache-Control': 'no-cache' }
+          }),
           axios.get(`${API_URL}/attendance`, { params: { limit: 5, ...(schoolFlow ? { person_type: 'student' } : {}) } })
         ]);
 
