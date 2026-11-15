@@ -38,16 +38,26 @@ const Attendance = () => {
     return `data:image/jpeg;base64,${value}`;
   };
 
+  const getLocalDateString = (d = new Date()) => {
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
   const [filterOptions, setFilterOptions] = useState({ names: [], departments: [], designations: [], shifts: [], phones: [], dynamic_filters: {}, visible_standard_filters: {} });
-  const [filters, setFilters] = useState({
-    startDate: '',
-    endDate: '',
-    department: '',
-    designation: '',
-    shift: '',
-    phone: '',
-    name: '',
-    deviceName: ''
+  const [filters, setFilters] = useState(() => {
+    const today = getLocalDateString();
+    return {
+      startDate: today,
+      endDate: today,
+      department: '',
+      designation: '',
+      shift: '',
+      phone: '',
+      name: '',
+      deviceName: ''
+    };
   });
   const [deviceOptions, setDeviceOptions] = useState([]);
   const { user } = useAuth();
@@ -290,13 +300,11 @@ const Attendance = () => {
           <div className="relative">
             <button
               onClick={() => {
+                const today = getLocalDateString();
                 setFilters({
-                  startDate: new Date().toISOString().split('T')[0],
-                  endDate: new Date().toISOString().split('T')[0],
-                  department: '',
-                  designation: '',
-                  shift: '',
-                  phone: '',
+                  ...filters,
+                  startDate: today,
+                  endDate: today,
                   name: ''
                 });
               }}
