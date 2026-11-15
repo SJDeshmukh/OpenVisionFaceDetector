@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify, g
+from flask import Blueprint, request, jsonify, g, Response
 import json
 import base64
 import numpy as np
@@ -362,6 +362,14 @@ Regards,
                     </div>
 
                     <div style="text-align: center; margin: 28px 0 16px 0;">
+                        <!-- Live Dynamic Status Badge (updates in real-time when reopened in inbox) -->
+                        <div style="margin-bottom: 14px;">
+                            <img src="https://openvisionx.in/api/leave/requests/{request_id}/status-badge.png"
+                                 alt="Current Status"
+                                 width="260"
+                                 height="36"
+                                 style="display: inline-block; max-width: 100%; height: auto; vertical-align: middle; border-radius: 18px;" />
+                        </div>
                         <a href="{portal_link}" style="background: #2563eb; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 14px; display: inline-block;">
                             Open Staff Portal & Review Request
                         </a>
@@ -576,6 +584,14 @@ Regards,
                     </div>
 
                     <div style="text-align: center; margin: 24px 0 16px 0;">
+                        <!-- Live Dynamic Status Badge (updates in real-time when reopened in inbox) -->
+                        <div style="margin-bottom: 14px;">
+                            <img src="https://openvisionx.in/api/leave/requests/{request_id}/status-badge.png"
+                                 alt="Current Status"
+                                 width="260"
+                                 height="36"
+                                 style="display: inline-block; max-width: 100%; height: auto; vertical-align: middle; border-radius: 18px;" />
+                        </div>
                         <a href="{portal_link}" style="background: #0f172a; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 14px; display: inline-block;">
                             Open Staff Portal
                         </a>
@@ -2855,3 +2871,210 @@ def cancel_leave_request():
         })
     finally:
         conn.close()
+
+
+# ==============================================================================
+# LIVE DYNAMIC STATUS BADGE (FOR EMAILS)
+# ==============================================================================
+
+def _generate_status_badge_png(status_key):
+    """
+    Generate an anti-aliased high-DPI (2x) PNG status pill badge.
+    Works with Pillow ImageDraw.
+    """
+    import io
+    import os
+    from PIL import Image, ImageDraw, ImageFont
+
+    width, height = 520, 72
+    corner_radius = height // 2
+
+    config = {
+        "pending": {
+            "bg": (239, 246, 255, 255),         # #eff6ff
+            "border": (147, 197, 253, 255),     # #93c5fd
+            "dot": (37, 99, 235, 255),          # #2563eb
+            "text_color": (29, 78, 216, 255),   # #1d4ed8
+            "label": "Action Required · Pending Review",
+        },
+        "approved": {
+            "bg": (241, 245, 249, 255),         # #f1f5f9
+            "border": (203, 213, 225, 255),     # #cbd5e1
+            "dot": (16, 185, 129, 255),         # #10b981
+            "text_color": (71, 85, 105, 255),   # #475569
+            "label": "Completed · Already Approved",
+        },
+        "cancelled": {
+            "bg": (248, 250, 252, 255),         # #f8fafc
+            "border": (226, 232, 240, 255),     # #e2e8f0
+            "dot": (148, 163, 184, 255),        # #94a3b8
+            "text_color": (100, 116, 139, 255), # #64748b
+            "label": "Cancelled · Request Withdrawn",
+        },
+        "rejected": {
+            "bg": (254, 242, 242, 255),         # #fef2f2
+            "border": (254, 202, 202, 255),     # #fecaca
+            "dot": (239, 68, 68, 255),          # #ef4444
+            "text_color": (153, 27, 27, 255),   # #991b1b
+            "label": "Closed · Request Rejected",
+        },
+    }
+
+    style = config.get(status_key, config["pending"])
+
+    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    try:
+        draw.rounded_rectangle(
+            [(2, 2), (width - 3, height - 3)],
+            radius=corner_radius,
+            fill=style["bg"],
+            outline=style["border"],
+            width=3,
+        )
+    except AttributeError:
+        draw.rectangle(
+            [(2, 2), (width - 3, height - 3)],
+            fill=style["bg"],
+            outline=style["border"],
+            width=3,
+        )
+
+    # Indicator circle
+    dot_radius = 11
+    dot_cx = 44
+    dot_cy = height // 2
+    draw.ellipse(
+        [
+            (dot_cx - dot_radius, dot_cy - dot_radius),
+            (dot_cx + dot_radius, dot_cy + dot_radius),
+        ],
+        fill=style["dot"],
+    )
+
+    # Font setup
+    font = None
+    font_paths = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+        "C:\\Windows\\Fonts\\arialbd.ttf",
+        "C:\\Windows\\Fonts\\arial.ttf",
+    ]
+    for p in font_paths:
+        try:
+            if os.path.exists(p):
+                font = ImageFont.truetype(p, 23)
+                break
+        except Exception:
+            continue
+    if font is None:
+        try:
+            font = ImageFont.load_default()
+        except Exception:
+            pass
+
+    text_x = 72
+    try:
+        bbox = font.getbbox(style["label"])
+        text_h = bbox[3] - bbox[1]
+        text_y = (height - text_h) // 2 - bbox[1]
+    except Exception:
+        text_y = (height // 2) - 12
+
+    draw.text((text_x, text_y), style["label"], fill=style["text_color"], font=font)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
+def _generate_status_badge_svg(status_key):
+    """Fallback vector SVG badge."""
+    config = {
+        "pending": ("#eff6ff", "#93c5fd", "#2563eb", "#1d4ed8", "Action Required · Pending Review"),
+        "approved": ("#f1f5f9", "#cbd5e1", "#10b981", "#475569", "Completed · Already Approved"),
+        "cancelled": ("#f8fafc", "#e2e8f0", "#94a3b8", "#64748b", "Cancelled · Request Withdrawn"),
+        "rejected": ("#fef2f2", "#fecaca", "#ef4444", "#991b1b", "Closed · Request Rejected"),
+    }
+    bg, border, dot, text_color, label = config.get(status_key, config["pending"])
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="260" height="36" viewBox="0 0 260 36">
+  <rect x="0.5" y="0.5" width="259" height="35" rx="18" fill="{bg}" stroke="{border}" stroke-width="1.5"/>
+  <circle cx="20" cy="18" r="5" fill="{dot}"/>
+  <text x="34" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="{text_color}">{label}</text>
+</svg>"""
+
+
+@leave_bp.route("/requests/<int:request_id>/status-badge.png", methods=["GET"])
+@leave_bp.route("/requests/<int:request_id>/status-badge.svg", methods=["GET"])
+@leave_bp.route("/requests/<int:request_id>/status-badge", methods=["GET"])
+def get_leave_status_badge(request_id):
+    """
+    Public dynamic status badge for email clients.
+    Re-evaluates leave status in real-time every time the email is opened.
+    Disables browser & mail proxy caching via strict headers.
+    """
+    from flask import Response
+    from utils import get_db_connection
+
+    status_key = "pending"
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        is_pg = getattr(conn, "_is_pg", False)
+        try:
+            if is_pg:
+                c.execute("""
+                    SELECT final_status, cancellation_status, is_cancellation
+                    FROM leave_requests
+                    WHERE id = %s
+                """, (request_id,))
+            else:
+                c.execute("""
+                    SELECT final_status, cancellation_status, is_cancellation
+                    FROM leave_requests
+                    WHERE id = ?
+                """, (request_id,))
+            row = c.fetchone()
+            if row:
+                final_status = str(row[0] or "").lower()
+                cancellation_status = str(row[1] or "").lower()
+
+                if final_status == "cancelled" or cancellation_status == "approved":
+                    status_key = "cancelled"
+                elif final_status == "rejected":
+                    status_key = "rejected"
+                elif final_status == "approved":
+                    status_key = "approved"
+                else:
+                    status_key = "pending"
+        finally:
+            conn.close()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("Error fetching leave badge status for #%s: %s", request_id, e)
+        status_key = "pending"
+
+    is_svg_requested = request.path.endswith(".svg") or "svg" in request.headers.get("Accept", "")
+
+    if is_svg_requested:
+        svg_content = _generate_status_badge_svg(status_key)
+        resp = Response(svg_content, mimetype="image/svg+xml")
+    else:
+        try:
+            png_bytes = _generate_status_badge_png(status_key)
+            resp = Response(png_bytes, mimetype="image/png")
+        except Exception as ex:
+            import logging
+            logging.getLogger(__name__).warning("PNG badge generation failed, falling back to SVG: %s", ex)
+            svg_content = _generate_status_badge_svg(status_key)
+            resp = Response(svg_content, mimetype="image/svg+xml")
+
+    # Anti-caching headers for email proxies (Gmail Image Proxy, Yahoo, Outlook)
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0, post-check=0, pre-check=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp
+
