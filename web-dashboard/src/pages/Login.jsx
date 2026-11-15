@@ -84,26 +84,39 @@ const Login = () => {
   const [resetEmail, setResetEmail] = useState('');
   const [resetStatus, setResetStatus] = useState({ type: '', message: '' });
   const [resetting, setResetting] = useState(false);
-  const { user, login, logout, loginAsStaff } = useAuth();
+  const { user, staffSession, login, logout, loginAsStaff } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const redirectTarget = searchParams.get('redirect');
 
-  // If already logged in, automatically navigate to the requested redirect target or default dashboard
+  // If already logged in, manage staff PIN verification or auto-forward
   useEffect(() => {
-    if (user) {
-      if (redirectTarget) {
-        navigate(redirectTarget, { replace: true });
-      } else if (user.role === 'super_admin') {
-        navigate('/admin/vendors', { replace: true });
-      } else if (user.role === 'user' || user.role === 'student') {
-        const isStudent = usesStudentRecords(user?.vertical);
-        navigate(isStudent ? '/leave-management' : '/attendance', { replace: true });
-      } else {
-        navigate('/dashboard', { replace: true });
-      }
+    if (!user) return;
+
+    const isManagerRole = ['vendor_admin', 'admin', 'owner'].includes(user?.role);
+    const hasLeaveManagement = Array.isArray(user?.features) && user.features.includes('leave_management');
+
+    // When the organization has leave management, always require the 4-digit PIN
+    // if no staff session is currently active so each staff member can verify their identity!
+    if (isManagerRole && hasLeaveManagement && !staffSession) {
+      setStep(1);
+      return;
     }
-  }, [user, redirectTarget, navigate]);
+
+    // While awaiting 4-digit PIN input on Step 1, do not auto-redirect away
+    if (step === 1) return;
+
+    if (redirectTarget) {
+      navigate(redirectTarget, { replace: true });
+    } else if (user.role === 'super_admin') {
+      navigate('/admin/vendors', { replace: true });
+    } else if (user.role === 'user' || user.role === 'student') {
+      const isStudent = usesStudentRecords(user?.vertical);
+      navigate(isStudent ? '/leave-management' : '/attendance', { replace: true });
+    } else {
+      navigate('/dashboard', { replace: true });
+    }
+  }, [user, staffSession, redirectTarget, navigate, step]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -116,7 +129,9 @@ const Login = () => {
       if (result.force_password_change) { setShowPasswordChange(true); return; }
       if (result.status === 'success' && result.needs_student_password) { setShowStudentPasswordModal(true); return; }
       const storedUser = JSON.parse(localStorage.getItem('user'));
-      if (storedUser?.role === 'vendor_admin' && storedUser?.features?.includes('leave_management')) { setStep(1); return; }
+      const isManagerRole = ['vendor_admin', 'admin', 'owner'].includes(storedUser?.role);
+      const hasLeaveManagement = Array.isArray(storedUser?.features) && storedUser.features.includes('leave_management');
+      if (isManagerRole && hasLeaveManagement) { setStep(1); return; }
       if (redirectTarget) { navigate(redirectTarget); return; }
       if (result.role === 'faculty') { navigate('/classes'); return; }
       if (result.role === 'user' || result.role === 'student') {
@@ -323,15 +338,6 @@ const Login = () => {
                   )}
                 </AnimatePresence>
 
-                {redirectTarget && (
-                  <div
-                    className="flex items-center gap-2 p-3 rounded-xl text-xs font-medium"
-                    style={{ background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.25)', color: '#818CF8' }}
-                  >
-                    <span>🔒 Please sign in to access the leave review portal.</span>
-                  </div>
-                )}
-
                 <Field label="Email" icon={User} type="text"
                   value={username} onChange={e => setUsername(e.target.value)}
                   placeholder="Enter your registered email" custom={0} />
@@ -450,6 +456,16 @@ const Login = () => {
                     onMouseLeave={e => e.currentTarget.style.color = '#5050A0'}
                   >
                     Skip to Dashboard
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { logout(); setStep(0); setPin(''); }}
+                    className="w-full py-1.5 text-xs font-medium transition-colors"
+                    style={{ color: '#6A6A9F' }}
+                    onMouseEnter={e => e.currentTarget.style.color = '#FF7070'}
+                    onMouseLeave={e => e.currentTarget.style.color = '#6A6A9F'}
+                  >
+                    Sign in with a different account
                   </button>
                 </div>
               </motion.form>
